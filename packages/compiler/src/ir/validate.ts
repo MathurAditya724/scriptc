@@ -357,7 +357,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       const fits = (cls: string, t: IrType): boolean =>
         cls === "bool"
           ? t.kind === "bool"
-          : cls === "string"
+          : cls === "string" || cls === "cstring"
             ? t.kind === "string"
             : cls === "bytes"
               ? t.kind === "bytes" && t.elem === "u8"
@@ -1932,8 +1932,8 @@ function validateFunction(
       }
       case "regexLit": {
         if (e.type.kind !== "regex") err("regexLit must be regex-typed", e.loc);
-        if (!/^[gimsuy]*$/.test(e.flags)) {
-          err(`regexLit flags "${e.flags}" outside the supported alphabet (gimsuy)`, e.loc);
+        if (!/^[gimsuvy]*$/.test(e.flags)) {
+          err(`regexLit flags "${e.flags}" outside the supported alphabet (gimsuvy)`, e.loc);
         }
         if (new Set(e.flags).size !== e.flags.length) {
           err(`regexLit flags "${e.flags}" contain a duplicate`, e.loc);
@@ -4112,8 +4112,16 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "tp.setTimeoutValue" || e.fn === "tp.setImmediateValue") {
-      const value = e.args[e.fn === "tp.setTimeoutValue" ? 1 : 0];
+    if (
+      e.fn === "tp.setTimeoutValue" ||
+      e.fn === "tp.setImmediateValue" ||
+      e.fn === "tp.setTimeoutSignal" ||
+      e.fn === "tp.setImmediateSignal" ||
+      e.fn === "tp.schedulerWaitValue" ||
+      e.fn === "tp.schedulerWaitSignal"
+    ) {
+      const value =
+        e.args[e.fn === "tp.setImmediateValue" || e.fn === "tp.setImmediateSignal" ? 0 : 1];
       if (value?.type.kind !== "promise" || !typeEquals(e.type, value.type)) {
         err(`libCall ${e.fn} must be the value's promise type`, e.loc);
       }

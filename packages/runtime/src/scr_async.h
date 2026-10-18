@@ -77,6 +77,25 @@ bool scr_wasi_module_await_prepare(ScrFiber *self, ScrPromise *p);
 void scr_wasi_async_finish(ScrFiber *self);
 void scr_wasi_gen_finish(ScrFiber *self);
 
+/* Native stackless async functions: an async body the compiler lowered to
+ * an LLVM switched coroutine because it suspends only at its own awaits.
+ * It runs on whichever stack resumes it (the spawner's for the eager
+ * prefix, the loop's afterwards) with a heap frame holding the values live
+ * across its awaits, instead of a dedicated fiber stack. Each await first
+ * prepares the continuation (true: the coroutine must suspend; false: it
+ * continues in place, exactly where a fiber's hop would continue without
+ * switching), then extracts the settled result after resuming without any
+ * further hop or park (a rejection re-throws). */
+ScrPromise *scr_async_spawn_stackless(void (*entry)(ScrFiber *, void *), void *argpack);
+bool scr_coro_await_prepare(ScrFiber *self, ScrPromise *p);
+bool scr_coro_hop_prepare(ScrFiber *self);
+void scr_coro_async_finish(ScrFiber *self);
+void scr_coro_await_void(ScrPromise *p);
+double scr_coro_await_f64(ScrPromise *p);
+bool scr_coro_await_bool(ScrPromise *p);
+ScrStr *scr_coro_await_str(ScrPromise *p); /* +1 */
+void *scr_coro_await_ref(ScrPromise *p);   /* +1 via the stored retain */
+
 double scr_await_f64(ScrPromise *p); /* rejected promises re-throw */
 bool scr_await_bool(ScrPromise *p);
 ScrStr *scr_await_str(ScrPromise *p); /* +1 */
@@ -197,6 +216,10 @@ void scr_emit_warning(const char *name, const char *code, ScrStr *message);
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */
 extern SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message);
+/* Node's traceWarningHelperShown: the "(Use `node --trace-warnings ...`"
+ * hint follows only the first warning report of the process, whichever
+ * unit prints it (scr_lib.c). */
+extern SCR_TL bool scr_warning_trace_hint_shown;
 /* process.noDeprecation (which 0) and process.throwDeprecation (which 1):
  * the stored value (+1; undefined until assigned), the assignment
  * (borrowed), and the truthiness the warning paths test. */
@@ -344,6 +367,14 @@ ScrPromise *scr_immediate_promise(void);
 void scr_clear_interval(double handle);
 
 double scr_set_timeout_handle(ScrClosure *cb, double ms); /* cb ownership moves in */
+/* Queues `cb` (moved) on the MockTimers that mocks AbortSignal.timeout
+ * (scr_test.c), NULL while it is not mocked. AbortSignal.timeout then
+ * aborts its signal from that queue instead of arming a loop timer. */
+extern SCR_TL void (*scr_mt_abort_timeout_arm)(ScrClosure *cb, double ms);
+/* scheduler.wait's mock.timers state (scr_test.c): 0 real, 1 mocked, 2 the
+ * real one restored after a reset, which throws ERR_INVALID_THIS in Node.
+ * scr_tp_scheduler_wait_signal reads it. */
+extern SCR_TL int scr_mt_wait_state;
 void scr_timers_teardown(void);
 /* Timeout.unref()/ref()/hasRef(): loop-liveness bookkeeping over the timer
  * handle (setTimeout/setInterval's id). unref drops the timer from the

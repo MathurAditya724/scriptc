@@ -1187,6 +1187,84 @@ static void check_large_old_buffer_with_nursery_candidates(void) {
   }
 }
 
+/* The death rule: once objects have died outside passes (the live count
+ * fell by 1/32 of the heap the last full pass left, here the floor's), a
+ * full pass is due as soon as the heap has grown the base quarter past it,
+ * however wide the growth fraction has become. With the old level's
+ * fraction at the cap, the dead old ring below would otherwise wait until
+ * the heap had grown to the cap. A fall that the pass it brings finds
+ * nothing behind doubles the fall the next one needs. */
+static size_t watched_freed;
+static void watched_free(void *obj) {
+  watched_freed++;
+  node_free(obj);
+}
+
+/* Fresh live leaves that are never released, each followed by a dead
+ * one-node ring, which keeps the release path running its passes without
+ * buffering the leaves, until the watched ring is freed or `limit` leaves
+ * have been made. Returns how many it made. */
+static size_t grow_until_watched(Node **keep, size_t limit, size_t watched) {
+  size_t n = 0;
+  while (watched_freed < watched && n < limit) {
+    keep[n++] = make_leaf();
+    release_live(make_ring(1));
+  }
+  return n;
+}
+
+static void check_death_brings_full_pass(void) {
+  enum { FLOOR = 4096, RING = 64, LEAVES = 1024 };
+  static ScrCycType watched_type = { &node_trace, &watched_free, 0 };
+  size_t cap = configured_growth_cap();
+  if (cap < 4) return; /* growth alone is due about as soon */
+  size_t limit = FLOOR + FLOOR / 4 + 2 * configured_nursery_threshold() + 2;
+  Node **leaves = calloc(LEAVES, sizeof(*leaves));
+  Node **keep = calloc(limit, sizeof(*keep));
+  if (!leaves || !keep) scr_trap("cycle test: out of memory\n");
+  /* Growth passes that find nothing widen the old fraction to the cap. */
+  for (int i = 0; i < 4; i++) grow_dead_cycle_until_full_pass(0, false);
+
+  Node *ring = make_ring_of(RING, &watched_type);
+  age_to_old(ring);
+  for (size_t i = 0; i < LEAVES; i++) leaves[i] = make_leaf();
+  scr_collect_cycles();
+  check(scr_cyc_live < FLOOR - LEAVES, "live heap did not start below the growth floor");
+  watched_freed = 0;
+  drop_leaves(leaves, LEAVES); /* gone by reference counting: the live count falls */
+  scr_cyc_collect_scheduled(); /* a check reads the whole fall */
+  release_live(ring); /* a dead old cycle */
+  size_t grown = grow_until_watched(keep, limit, RING);
+  check(watched_freed == RING, "the fall did not bring a full pass by the base fraction");
+  drop_leaves(keep, grown);
+  scr_collect_cycles();
+
+  /* A fall with nothing behind it: the pass it brings finds nothing. */
+  for (size_t i = 0; i < LEAVES; i++) leaves[i] = make_leaf();
+  scr_collect_cycles();
+  drop_leaves(leaves, LEAVES);
+  scr_cyc_collect_scheduled();
+  grown = grow_until_watched(keep, limit, 1);
+  drop_leaves(keep, grown);
+  /* So the next death pass needs twice the fall: 1/32 of the floor, enough
+   * before, no longer is. */
+  ring = make_ring_of(RING, &watched_type);
+  age_to_old(ring);
+  for (size_t i = 0; i < FLOOR / 32; i++) leaves[i] = make_leaf();
+  scr_collect_cycles();
+  watched_freed = 0;
+  drop_leaves(leaves, FLOOR / 32);
+  scr_cyc_collect_scheduled();
+  release_live(ring);
+  grown = grow_until_watched(keep, limit, RING);
+  check(watched_freed == 0, "a fall smaller than the backed-off one brought a full pass");
+  drop_leaves(keep, grown);
+  scr_collect_cycles();
+  check(watched_freed == RING, "the full sweep did not reclaim the dead old ring");
+  free(leaves);
+  free(keep);
+}
+
 int main(void) {
   check_old_garbage_reclaimed_while_growing();
   check_older_rings_into_old();
@@ -1207,6 +1285,7 @@ int main(void) {
   check_growth_schedule_follows_yield();
   check_growth_cap_bounds_floating_garbage();
   check_mixed_dead_structure_narrows();
+  check_death_brings_full_pass();
   check_nursery_bypass();
   check_mature_bypass();
   check_probe_sees_candidate_rings();

@@ -135,12 +135,17 @@ function inspectSupport(
     case "regex":
     case "symbol":
     case "bigint":
+    case "date":
     case "dyn":
       return null;
     case "array":
       return inspectSupport(lowerer, t.elem, visiting, out);
     case "bytes":
-      return "typed arrays inside composites have no inspect lowering yet (Buffer's <Buffer ..> form vs Uint8Array's is not recorded in the static type here)";
+      // A Uint8Array and a Buffer share the u8 representation and print
+      // differently; the other element kinds are never Buffers.
+      return t.elem === "u8"
+        ? "Uint8Array and Buffer values inside composites have no inspect lowering yet (Buffer's <Buffer ..> form vs Uint8Array's is not recorded in the static type here)"
+        : null;
     case "record": {
       if (visiting.has(t.shapeId)) {
         out.recursive = true;
@@ -321,7 +326,20 @@ export function inspectExpr(
       return { kind: "libCall", fn: "sym.toString", args: [value], type: STRING, loc };
     case "bigint":
       return { kind: "libCall", fn: "bigint.inspect", args: [value], type: STRING, loc };
+    case "date":
+      // Node prints a Date's toISOString() at every depth, and its
+      // toString() ("Invalid Date") when the time value is NaN.
+      return { kind: "libCall", fn: "insp.date", args: [value], type: STRING, loc };
     case "bytes":
+      if (t.elem !== "u8") {
+        return {
+          kind: "libCall",
+          fn: "insp.typedArray",
+          args: [value, recurse, depth],
+          type: STRING,
+          loc,
+        };
+      }
       return { kind: "libCall", fn: "insp.buffer", args: [value], type: STRING, loc };
     case "dyn":
       return { kind: "libCall", fn: "insp.dyn", args: [value, recurse, depth], type: STRING, loc };
@@ -1436,22 +1454,26 @@ export function lowerConsoleInspectArg(
   }
   if (t.kind === "bytes") {
     // One runtime representation serves Buffer AND Uint8Array; their
-    // renderings differ, so the argument's checker type picks — and only
-    // Buffer lowers (lowerInspectCall's stance).
+    // renderings differ, so the argument's checker type picks
+    // (lowerInspectCall's stance).
     const tname = lowerer.checker.typeToString(
       lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node)),
     );
-    const isBuffer =
-      tname === "Buffer" ||
-      tname === "NonSharedBuffer" ||
-      tname.startsWith("Buffer<") ||
-      tname.startsWith("NonSharedBuffer<");
-    if (t.elem !== "u8" || !isBuffer) {
+    if (isDataViewTypeName(tname)) {
       lowerer.unsupported(
         "SC1090",
         node,
-        `${surface} of '${tname}' values (Buffer's <Buffer ..> form is the lowered typed-array rendering; other typed arrays fence)`,
+        `${surface} of '${tname}' values (Buffer and the numeric typed arrays are the lowered byte renderings; DataView has none yet)`,
       );
+    }
+    if (!isBufferTypeName(tname)) {
+      return {
+        kind: "libCall",
+        fn: "insp.typedArray",
+        args: [value, numLit(0, loc), numLit(2, loc)],
+        type: STRING,
+        loc,
+      };
     }
     return inspectExpr(lowerer, t, value, numLit(0, loc), numLit(2, loc), loc);
   }
@@ -1464,6 +1486,10 @@ export function lowerConsoleInspectArg(
       `${surface} of a void call result (call it as its own statement, then ${surface}(undefined))`,
     );
   }
+  // A read that always throws (an ambient name, a binding whose
+  // initializer threw) never produces a value to render.
+  if (value.kind === "libCall" && value.fn === "global.undefRead")
+    return formatValueExpr(lowerer, DYN, { ...value, type: DYN }, 2, loc);
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, t, new Set(), walk);
   if (reason !== null) {
@@ -1472,18 +1498,41 @@ export function lowerConsoleInspectArg(
   return formatValueExpr(lowerer, t, value, 2, loc);
 }
 
+/** The checker's spelling of a Buffer, whose bytes print as <Buffer ..>. */
+function isBufferTypeName(tname: string): boolean {
+  return (
+    tname === "Buffer" ||
+    tname === "NonSharedBuffer" ||
+    tname.startsWith("Buffer<") ||
+    tname.startsWith("NonSharedBuffer<")
+  );
+}
+
+function isDataViewTypeName(tname: string): boolean {
+  return tname === "DataView" || tname.startsWith("DataView<");
+}
+
 /* ── the callsite: options, direct function/class names ──────────────── */
 
 /** The parsed options literal: the resolved depth (numeric; Infinity for
- * `null`), with every non-default knob fenced by name. */
+ * `null`), breakLength (numeric; default 80) and compact (numeric, 0 for
+ * false; default 3), with every other non-default knob fenced by name. */
+interface InspectOptions {
+  depth: number;
+  breakLength: number;
+  compact: number;
+  sorted: boolean;
+}
+
 function parseInspectOptions(
   lowerer: Lowerer,
   node: ts.Expression | undefined,
   recursive: boolean,
   dir = false,
-): number {
+): InspectOptions {
   const surface = dir ? "console.dir" : "util.inspect";
-  if (!node || (ts.isIdentifier(node) && node.text === "undefined")) return 2;
+  const options: InspectOptions = { depth: 2, breakLength: 80, compact: 3, sorted: false };
+  if (!node || (ts.isIdentifier(node) && node.text === "undefined")) return options;
   if (!ts.isObjectLiteralExpression(node)) {
     lowerer.noLowering(
       `${surface} with a non-literal options argument`,
@@ -1491,7 +1540,6 @@ function parseInspectOptions(
       "the options must be an object literal ({ depth, colors: false, ... }) so the knobs resolve at compile time",
     );
   }
-  let depth = 2;
   for (const prop of node.properties) {
     if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
       lowerer.noLowering(
@@ -1522,7 +1570,7 @@ function parseInspectOptions(
         // machinery ([Circular *N]) cuts every cycle, so the walk is
         // bounded by the (finite) object graph — exactly Node.
         void recursive;
-        depth = Infinity;
+        options.depth = Infinity;
       } else if (!(ts.isIdentifier(value) && value.text === "undefined")) {
         const n = numeric();
         if (n === null) {
@@ -1532,7 +1580,7 @@ function parseInspectOptions(
             "depth must be a numeric literal (or null)",
           );
         }
-        depth = n;
+        options.depth = n;
       }
     } else if (key === "colors") {
       if (value.kind !== ts.SyntaxKind.FalseKeyword) {
@@ -1543,21 +1591,37 @@ function parseInspectOptions(
         );
       }
     } else if (key === "compact") {
-      if (numeric() !== 3) {
+      // Node tries the single-line form and groups arrays only for a
+      // compact of at least 1; false and smaller numbers break every
+      // composite onto its own lines. compact: true is the older layout.
+      const n = value.kind === ts.SyntaxKind.FalseKeyword ? 0 : numeric();
+      if (n === null || Number.isNaN(n)) {
         lowerer.noLowering(
-          `${surface} with a non-default compact option`,
+          `${surface} with this compact option`,
           value,
-          "only the default compact: 3 is lowered",
+          "compact must be false or a numeric literal (compact: true has no lowering)",
         );
       }
+      options.compact = Math.max(n, 0);
+    } else if (key === "sorted") {
+      if (value.kind !== ts.SyntaxKind.TrueKeyword && value.kind !== ts.SyntaxKind.FalseKeyword) {
+        lowerer.noLowering(
+          `${surface} with this sorted option`,
+          value,
+          "sorted must be true or false (a comparator function has no lowering)",
+        );
+      }
+      options.sorted = value.kind === ts.SyntaxKind.TrueKeyword;
     } else if (key === "breakLength") {
-      if (numeric() !== 80) {
+      const n = ts.isIdentifier(value) && value.text === "Infinity" ? Infinity : numeric();
+      if (n === null || Number.isNaN(n)) {
         lowerer.noLowering(
-          `${surface} with a non-default breakLength option`,
+          `${surface} with a non-literal breakLength option`,
           value,
-          "only the default breakLength: 80 is lowered",
+          "breakLength must be a numeric literal or Infinity",
         );
       }
+      options.breakLength = n;
     } else if (dir && key === "customInspect") {
       // console.dir's own default; only that value is lowered.
       if (value.kind !== ts.SyntaxKind.FalseKeyword) {
@@ -1571,11 +1635,49 @@ function parseInspectOptions(
       lowerer.noLowering(
         `${surface} with the '${key}' option`,
         prop,
-        `the lowered options are depth (numeric literal or null), colors: false, compact: 3, ${dir ? "breakLength: 80, and customInspect: false" : "and breakLength: 80"}`,
+        `the lowered options are depth (numeric literal or null), colors: false, compact (false or a number), breakLength, ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
       );
     }
   }
-  return depth;
+  return options;
+}
+
+/** A render under non-default breakLength/compact/sorted: the value is evaluated
+ * first, the layout applies to this render only, and the defaults return
+ * afterwards. */
+function withInspectLayout(
+  lowerer: Lowerer,
+  options: InspectOptions,
+  value: IrExpr,
+  render: (value: IrExpr) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (options.breakLength === 80 && options.compact === 3 && !options.sorted) return render(value);
+  const input = lowerer.declareHiddenLocal("%inspectInput", value.type);
+  const text = lowerer.declareHiddenLocal("%inspectText", STRING);
+  const layout = (breakLength: number, compact: number, sorted: boolean): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "insp.layout",
+      args: [numLit(breakLength, loc), numLit(compact, loc), boolLit(sorted, loc)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: input.id, init: value, loc },
+      layout(options.breakLength, options.compact, options.sorted),
+      { kind: "varDecl", localId: text.id, init: render(varRef(input.id, value.type, loc)), loc },
+      layout(80, 3, false),
+    ],
+    result: varRef(text.id, STRING, loc),
+    type: STRING,
+    loc,
+  };
 }
 
 /** `util.inspect(fn)` / `util.inspect(Cls)` over a DIRECT identifier
@@ -1664,33 +1766,45 @@ export function lowerInspectValue(
   if (value.type.kind === "bytes") {
     // One runtime representation serves Buffer AND Uint8Array; their
     // renderings differ (<Buffer aa> vs Uint8Array(1) [ 170 ]), so the
-    // TOP-LEVEL argument's checker type picks — and only Buffer lowers.
-    // Nested bytes fence in inspectSupport (no checker type survives
-    // into shapes).
+    // TOP-LEVEL argument's checker type picks. Nested u8 bytes fence in
+    // inspectSupport (no checker type survives into shapes).
     const tname = lowerer.checker.typeToString(
       lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(valueNode)),
     );
-    const isBuffer =
-      tname === "Buffer" ||
-      tname === "NonSharedBuffer" ||
-      tname.startsWith("Buffer<") ||
-      tname.startsWith("NonSharedBuffer<");
-    if (dir) {
+    const isBuffer = isBufferTypeName(tname);
+    if (dir && isBuffer) {
       lowerer.noLowering(
         `console.dir of '${tname}' values`,
         valueNode,
         "console.dir disables custom inspection, and the typed-array rendering it falls back to has no lowering yet — use console.log",
       );
     }
-    if (value.type.elem !== "u8" || !isBuffer) {
+    if (isDataViewTypeName(tname)) {
       lowerer.noLowering(
         `util.inspect of '${tname}' values`,
         valueNode,
-        "Buffer's <Buffer ..> form is the lowered typed-array rendering; other typed arrays fence",
+        "Buffer and the numeric typed arrays are the lowered byte renderings; DataView has none yet",
       );
     }
-    const bufDepth = parseInspectOptions(lowerer, optionsNode, false, dir);
-    void bufDepth; // Buffers render fully at any depth (custom inspect)
+    const options = parseInspectOptions(lowerer, optionsNode, false, dir);
+    if (!isBuffer) {
+      // A numeric typed array: Uint8Array(n) [ ... ] under the depth and
+      // layout options.
+      return withInspectLayout(
+        lowerer,
+        options,
+        value,
+        (input) => ({
+          kind: "libCall",
+          fn: "insp.typedArray",
+          args: [input, numLit(0, loc), numLit(options.depth, loc)],
+          type: STRING,
+          loc,
+        }),
+        loc,
+      );
+    }
+    // Buffers render fully at any depth and on one line (custom inspect).
     return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(2, loc), loc);
   }
   const walk = { recursive: false };
@@ -1698,17 +1812,30 @@ export function lowerInspectValue(
   if (reason !== null) {
     lowerer.noLowering(`${surface} of '${lowerer.fmt(value.type)}' values`, valueNode, reason);
   }
-  const depth = parseInspectOptions(lowerer, optionsNode, walk.recursive, dir);
+  const options = parseInspectOptions(lowerer, optionsNode, walk.recursive, dir);
+  const depth = options.depth;
   if (dir && value.type.kind === "dyn") {
-    return {
-      kind: "libCall",
-      fn: "console.dirDyn",
-      args: [value, numLit(depth, loc)],
-      type: STRING,
+    return withInspectLayout(
+      lowerer,
+      options,
+      value,
+      (input) => ({
+        kind: "libCall",
+        fn: "console.dirDyn",
+        args: [input, numLit(depth, loc)],
+        type: STRING,
+        loc,
+      }),
       loc,
-    };
+    );
   }
-  return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(depth, loc), loc);
+  return withInspectLayout(
+    lowerer,
+    options,
+    value,
+    (input) => inspectExpr(lowerer, value.type, input, numLit(0, loc), numLit(depth, loc), loc),
+    loc,
+  );
 }
 
 /* ── util.format / util.formatWithOptions ────────────────────────────── */
@@ -1811,6 +1938,34 @@ function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
   return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(depth, loc), loc);
 }
 
+/** %d and %i over the argument types Node formats without a number
+ * conversion: a bigint prints as `${n}n` (formatBigInt) and a symbol as NaN;
+ * null is Number(null) (0) under %d and parseInt("null") (NaN) under %i, and
+ * undefined (including a void call) is NaN under both. Other arguments
+ * still evaluate. Null for other types. */
+function formatIntegerFixed(value: IrExpr, spec: "%d" | "%i", loc: SrcLoc): IrExpr | null {
+  if (value.type.kind === "bigint") {
+    return { kind: "libCall", fn: "bigint.inspect", args: [value], type: STRING, loc };
+  }
+  let text: string;
+  if (
+    value.type.kind === "symbol" ||
+    value.type.kind === "undefinedT" ||
+    value.type.kind === "void"
+  )
+    text = "NaN";
+  else if (value.type.kind === "nullT") text = spec === "%d" ? "0" : "NaN";
+  else return null;
+  if (value.kind === "unitLit") return strLit(text, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: strLit(text, loc),
+    type: STRING,
+    loc,
+  };
+}
+
 /** util.format(...) / util.formatWithOptions({}, ...): the compile-time
  * %-substitution over a literal format string (formatWithOptionsInternal
  * ported exactly — the arg cursor, the args-exhausted guard, %c's
@@ -1880,6 +2035,8 @@ export function lowerFormatCall(
         // strings through the runtime's ECMA-exact StringToNumber
         // (num.fromString — the same lowering Number(aString) takes).
         const value = lowerer.lowerExpr(node);
+        const fixed = formatIntegerFixed(value, "%d", loc);
+        if (fixed) return fixed;
         if (value.type.kind === "f64")
           return { kind: "libCall", fn: "insp.f64", args: [value], type: STRING, loc };
         if (value.type.kind === "string") {
@@ -1935,6 +2092,8 @@ export function lowerFormatCall(
       case 105: {
         // %i — parseInt(ToString(arg)): the spec-exact composition.
         const value = lowerer.lowerExpr(node);
+        const fixed = formatIntegerFixed(value, "%i", loc);
+        if (fixed) return fixed;
         if (
           value.type.kind === "f64" ||
           value.type.kind === "bool" ||
@@ -1975,10 +2134,10 @@ export function lowerFormatCall(
           return strLit("undefined", loc);
         }
         // A checked-dynamic argument (`console.error('headers: %j',
-        // headers)` — the suite's http logging idiom): the runtime dyn
-        // walk stringifies JS-exactly (root undefined/function prints
-        // "undefined"; a handle in the tree throws the "not supported yet"
-        // Error).
+        // headers)` — the suite's http logging idiom): the runtime runs
+        // JSON.stringify's walk (toJSON hooks included; a root it drops
+        // prints "undefined") and prints "[Circular]" for a circular
+        // structure. A typed argument prints "[Circular]" the same way.
         if (value.type.kind === "dyn") {
           return { kind: "libCall", fn: "insp.jsonDyn", args: [value], type: STRING, loc };
         }
@@ -1989,7 +2148,7 @@ export function lowerFormatCall(
             "only JSON-safe static types lower",
           );
         }
-        return { kind: "jsonStringify", value, type: STRING, loc };
+        return { kind: "jsonStringify", value, circular: true, type: STRING, loc };
       }
       case 102: {
         // %f — parseFloat(String(arg)) formatted: a number keeps its value

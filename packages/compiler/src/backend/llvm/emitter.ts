@@ -49,7 +49,7 @@ import {
   STRING,
   VOID,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
+import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
@@ -89,6 +89,7 @@ import {
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { RESULT_ENTRY_PREFIX, addRecordResultEntries } from "./record-results.js";
+import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import {
@@ -142,6 +143,7 @@ import {
   mangleArgPack,
   mangleAsyncAdoptCall,
   mangleAsyncAwaitCall,
+  mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
   mangleBorrowedFunction,
   mangleClassObj,
@@ -197,7 +199,12 @@ import {
   type LocalArrayRead,
 } from "./local-array-reads.js";
 import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
-import { emitDenseArrayGet, emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
+import {
+  emitDenseArrayGet,
+  emitDenseArrayPop,
+  emitDenseArraySet,
+  emitDenseSlotUnlink,
+} from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
@@ -209,6 +216,7 @@ import { findMapEntryFusions, type MapEntryFusion } from "./map-entry-fusion.js"
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { borrowableInputs, emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { analyzeWalks, findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
+import { lastUseRead } from "./local-extents.js";
 import { findReboundParameters } from "./rebound-parameters.js";
 import { ReferenceEffects } from "./reference-effects.js";
 import { ReferenceWrites, type Writes } from "./reference-writes.js";
@@ -480,11 +488,14 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
     options.debugSources === undefined
       ? addRecordResultEntries(
           scalarizeNumericRecords(
-            specializeNumericCalls(
-              foldConstantGlobals(
-                copyStableCaptures(
-                  hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                foldConstantGlobals(
+                  copyStableCaptures(
+                    hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                  ),
                 ),
+                mangleFunction,
               ),
               mangleFunction,
             ),
@@ -505,11 +516,14 @@ export function emitLlvmModuleSource(
     options.debugSources === undefined
       ? addRecordResultEntries(
           scalarizeNumericRecords(
-            specializeNumericCalls(
-              foldConstantGlobals(
-                copyStableCaptures(
-                  hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                foldConstantGlobals(
+                  copyStableCaptures(
+                    hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                  ),
                 ),
+                mangleFunction,
               ),
               mangleFunction,
             ),
@@ -528,6 +542,18 @@ function llStrBytes(text: string): string {
 }
 
 const NO_BORROWED: ReadonlySet<number> = new Set();
+
+/** Runtime entry points (and await-call entries) that may park the running
+ * execution context, as they appear in emitted function text. */
+const SUSPENDS =
+  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_)|sc_a[wd]_)/;
+/** The suspensions of a fiber body's own awaits, which its stackless
+ * coroutine form suspends itself at instead. */
+const AWAIT_SUSPENSIONS = /@(?:scr_await_(?:void|f64|bool|str|ref|hop)\b|sc_a[wd]_[A-Za-z0-9_]+)/g;
+/** SUSPENDS in a stackless coroutine body, whose frame bookkeeping reads its
+ * own fiber and promise. */
+const COROUTINE_SUSPENDS =
+  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_(?!self\b|promise\b))|sc_a[wd]_)/;
 /** ScrExcKind tags of a generator slot holding a number or a boolean. */
 const SCR_EXC_F64 = 1;
 const SCR_EXC_BOOL = 2;
@@ -651,6 +677,12 @@ export class LlEmitter {
    * generator stacks) and so do debug builds (the debugger reads locals
    * from the native frame). */
   private stacklessGenerators = false;
+  /** Async bodies that suspend only at their own awaits compile to the same
+   * switched coroutines on native targets (selectStacklessAsync), under the
+   * generators' conditions; library and Windows builds keep fibers. */
+  private stacklessAsyncAllowed = false;
+  /** The async functions selectStacklessAsync lowered as coroutines. */
+  private readonly stacklessAsync = new Set<string>();
   /** Some function in the module is lowered as a coroutine. */
   private usesCoroutines = false;
   /** The target lacks a rounding instruction at its baseline CPU (x86-64
@@ -837,6 +869,12 @@ export class LlEmitter {
   /** Async functions returned directly at some `return f(...)` site of an
    * async function; each gets an adopting entry (emitAsyncAwaitCall). */
   readonly adoptCallees = new Set<string>();
+  /** Fiberless async functions a stackless coroutine body awaits directly;
+   * each gets an inline await entry (emitCoroInlineAwait). */
+  readonly inlineAwaitCallees = new Set<string>();
+  /** The async functions whose bodies never suspend and that a direct
+   * await may enter in place (selectStacklessAsync). */
+  private inlineAwaitable = new Set<string>();
   /** The promise a `return` emitted past its finally regions already
    * produced for its adopting await (borrowed from the return's parked
    * slot); that await takes it instead of evaluating its operand. */
@@ -850,6 +888,9 @@ export class LlEmitter {
   /** setTimeout and friends appeared somewhere: main must run the event
    * loop even in programs with no async functions. */
   usesTimers = false;
+  /** The program calls mock.timers members (moduleUsesMockTimers): timer
+   * calls emit scr_test.c's mock-aware entry points. */
+  readonly mockTimers: boolean;
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();
@@ -988,6 +1029,9 @@ export class LlEmitter {
    * not a constructor (where they change), not async or a generator. */
   private finalFieldBorrows = false;
   integerRanges: IntegerRanges = new Map();
+  /** Number arrays of the current function whose every present element is
+   * an int32 (Int32[] contracts), or null when the module has none. */
+  int32Elements: ((arr: IrExpr) => boolean) | null = null;
   /** Sums whose result only feeds 32-bit conversions (wrapping-sums.ts). */
   wrappingSums = new Set<IrExpr>();
   private byteWindowsEnabled = true;
@@ -1073,6 +1117,7 @@ export class LlEmitter {
         }),
     );
     this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
+    this.mockTimers = moduleUsesMockTimers(mod);
     this.debug =
       options.debugSources === undefined
         ? null
@@ -1147,6 +1192,10 @@ export class LlEmitter {
     this.mayThrow = mt.fns;
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
+    // A stackless call's eager prefix borrows its caller's stack; the
+    // runtime moves deep prefix nests to a fresh stack using the guard,
+    // which Windows lacks.
+    this.stacklessAsyncAllowed = this.stacklessGenerators && mod.lib === undefined && !windows;
     this.publishedTypes = computePublishedTypes(mod);
     this.immutableFields = computeImmutableFields(mod);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
@@ -1865,6 +1914,7 @@ export class LlEmitter {
       fnDefs.push(def);
       this.fnDefText.set(fn.name, def);
     }
+    this.selectStacklessAsync(fnDefs);
     const errorViews: string[] = [];
     for (const property of ["name", "message"])
       if (this.mod.functions.some((fn) => fn.name === `%error.${property}.read`)) {
@@ -2000,12 +2050,28 @@ export class LlEmitter {
             this.dyn.toDynHelper({ kind: "object", className: "%Writable" }),
           ]
         : null;
-    if (childStreamBoxes) {
+    // worker.stdout and worker.stderr box the stream unit's Readable the
+    // same way, and worker.stdin its Writable when the program has one
+    // (scr_worker_stdio_install, scr_worker_events.c).
+    const workerStdioBox =
+      this.mod.workers === true && usesStream && this.classMeta.has("%Readable")
+        ? (childStreamBoxes?.[0] ??
+          this.dyn.toDynHelper({ kind: "object", className: "%Readable" }))
+        : null;
+    const workerStdinBox =
+      this.mod.workers === true && usesStream && this.classMeta.has("%Writable")
+        ? (childStreamBoxes?.[1] ??
+          this.dyn.toDynHelper({ kind: "object", className: "%Writable" }))
+        : null;
+    if (childStreamBoxes || workerStdioBox || workerStdinBox) {
       this.declare(
         `@scr_stream_child_ops = external constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr }`,
       );
-      this.declare(`declare void @scr_child_dyn_streams_install(ptr, ptr, ptr)`);
     }
+    if (childStreamBoxes)
+      this.declare(`declare void @scr_child_dyn_streams_install(ptr, ptr, ptr)`);
+    if (workerStdioBox || workerStdinBox)
+      this.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
     if (usesFsWatch) this.declare(`declare void @scr_watch_install()`);
     if (this.ffiHasForeignCallback) this.declare(`declare void @scr_ffi_install()`);
     if (usesStream) this.declare(`declare void @scr_stream_install()`);
@@ -2018,7 +2084,10 @@ export class LlEmitter {
     if (usesHttp) this.declare(`declare void @scr_http_dyn_install()`);
     if (usesFetch) this.declare(`declare void @scr_fetch_install()`);
 
-    if (usesNodeTest) this.declare(`declare i32 @scr_test_exit_code()`);
+    if (usesNodeTest) {
+      this.declare(`declare i32 @scr_test_exit_code()`);
+      this.declare(`declare void @scr_test_init()`);
+    }
     if (snapshotsTlsCa) {
       this.declare(`declare void @scr_tls_ca_install()`);
     }
@@ -2161,6 +2230,12 @@ export class LlEmitter {
       }
       if (this.mod.lib.exports.some((e) => e.returns === "bytes")) {
         this.declare(`declare void @scr_library_bytes_out(ptr, ptr, ptr)`);
+      }
+      if (this.mod.lib.exports.some((e) => e.params.includes("cstring"))) {
+        this.declare(`declare ptr @scr_library_cstr_in(ptr, ptr)`);
+      }
+      if (this.mod.lib.exports.some((e) => e.returns === "cstring")) {
+        this.declare(`declare ptr @scr_library_cstr_out(ptr)`);
       }
     }
     // Helpers assemble BEFORE the declaration table flushes (they add
@@ -2595,6 +2670,11 @@ export class LlEmitter {
             `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,
           ]
         : []),
+      ...(workerStdioBox || workerStdinBox
+        ? [
+            `  call void @scr_worker_stdio_install(ptr @scr_stream_child_ops, ptr ${workerStdioBox ? `@${workerStdioBox}` : "null"}, ptr ${workerStdinBox ? `@${workerStdinBox}` : "null"})`,
+          ]
+        : []),
       // fs.watch programs fill the loop's watch hooks the same way —
       // scr_watch.c links only when this line is emitted.
       ...(usesFsWatch ? [`  call void @scr_watch_install()`] : []),
@@ -2607,6 +2687,8 @@ export class LlEmitter {
       ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
       ...(usesStream ? [`  call void @scr_stream_install()`] : []),
       `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
+      // node:test takes Node's --test-update-snapshots out of argv first.
+      ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
       ...(asyncEntry
         ? [`  %top = call ptr @${mangleAsyncSpawn(this.mod.entry)}()`]
         : [`  call void @${mangleFunction(this.mod.entry)}()`]),
@@ -2938,6 +3020,15 @@ export class LlEmitter {
           ``,
         );
       }
+      if (e.inboundCstringTrap !== undefined) {
+        // The cstring-in helper's host-contract trap message (a NULL
+        // `const char *`): same assembled structured form and SC4012 code.
+        const trapBytes = Buffer.byteLength(e.inboundCstringTrap, "utf8");
+        out.push(
+          `@sc_lib_cstr_trap_${e.symbol} = internal constant [${trapBytes + 1} x i8] c"${llStrBytes(e.inboundCstringTrap)}"`,
+          ``,
+        );
+      }
       e.params.forEach((cls, i) => {
         switch (cls) {
           case "f64":
@@ -2992,6 +3083,13 @@ export class LlEmitter {
             params.push(`ptr %a${i}_ptr`, `${this.sizeType} %a${i}_len`);
             body.push(
               `  %c${i} = call ptr @scr_library_bytes_in(ptr %a${i}_ptr, ${this.sizeType} %a${i}_len, ptr @sc_lib_bytes_trap_${e.symbol})`,
+            );
+            args.push(`ptr %c${i}`);
+            break;
+          case "cstring":
+            params.push(`ptr %a${i}`);
+            body.push(
+              `  %c${i} = call ptr @scr_library_cstr_in(ptr %a${i}, ptr @sc_lib_cstr_trap_${e.symbol})`,
             );
             args.push(`ptr %c${i}`);
             break;
@@ -3057,6 +3155,16 @@ export class LlEmitter {
             `  call void @scr_library_check_exc()`,
             `  call void @scr_library_bytes_out(ptr %r, ptr %out, ptr %out_len)`,
             `  ret void`,
+          );
+          break;
+        case "cstring":
+          // The result's arena copy, returned as `const char *`.
+          retType = "ptr";
+          body.push(
+            `  %r = call ptr ${target}(${callArgs})`,
+            `  call void @scr_library_check_exc()`,
+            `  %z = call ptr @scr_library_cstr_out(ptr %r)`,
+            `  ret ptr %z`,
           );
           break;
       }
@@ -3720,29 +3828,49 @@ export class LlEmitter {
    * cannot reorder execution undetected: the runtime traps when a context parks while a
    * fiberless body is on its stack. */
   private fiberlessAsyncFunctions(): Set<string> {
+    const parks = this.parkingFunctions();
+    const eligible = parks === null ? new Set<string>() : this.neverParkingAsync(parks);
+    for (const name of this.inlineAwaitCallees)
+      if (!eligible.has(name))
+        throw new InternalCompilerError(`llvm emitter bug: inline await of suspending ${name}`);
+    return eligible;
+  }
+
+  /** The async functions `parks` leaves fiberless (fiberlessAsyncFunctions). */
+  private neverParkingAsync(parks: ReadonlySet<string>): Set<string> {
     const eligible = new Set<string>();
-    if (this.wasi || this.mod.workers === true) return eligible;
-    const suspends =
-      /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_)|sc_a[wd]_)/;
-    for (const decl of this.decls) if (/@scr_test_sub\b/.test(decl)) return eligible;
-    for (const text of this.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return eligible;
-    const byMangled = new Map<string, string>();
     for (const fn of this.mod.functions) {
-      byMangled.set(mangleFunction(fn.name), fn.name);
-      byMangled.set(mangleBorrowedFunction(fn.name), fn.name);
+      if (fn.async !== true || fn.generator !== undefined) continue;
+      if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) continue;
+      if (fn.returnType.kind === "dyn" || parks.has(fn.name)) continue;
+      if (!this.fnDefText.has(fn.name) || this.stacklessAsync.has(fn.name)) continue;
+      eligible.add(fn.name);
     }
+    return eligible;
+  }
+
+  /** The module functions whose bodies may park their execution context:
+   * their emitted text mentions a suspension entry point (SUSPENDS), or
+   * they mention such a function (transitively). Null where async bodies
+   * must keep fibers regardless: wasm32 (its coroutine lowering owns async
+   * bodies), worker programs, and programs that use node:test subtests,
+   * whose `t.test()` awaits on the CURRENT fiber even from synchronous
+   * code. */
+  private parkingFunctions(): Set<string> | null {
+    if (this.wasi || this.mod.workers === true) return null;
+    for (const decl of this.decls) if (/@scr_test_sub\b/.test(decl)) return null;
+    for (const text of this.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return null;
     // Reverse mention edges, then propagate "may park" to every mentioner.
     const mentionedBy = new Map<string, Set<string>>();
     const parks = new Set<string>();
     const work: string[] = [];
     for (const [name, text] of this.fnDefText) {
-      if (suspends.test(text)) {
+      if (SUSPENDS.test(text)) {
         parks.add(name);
         work.push(name);
       }
-      for (const match of text.matchAll(/@(sc_b?f_[A-Za-z0-9_]+)/g)) {
-        const callee = byMangled.get(match[1]!);
-        if (callee === undefined || callee === name) continue;
+      for (const callee of this.mentionedFunctions(text)) {
+        if (callee === name) continue;
         let callers = mentionedBy.get(callee);
         if (callers === undefined) mentionedBy.set(callee, (callers = new Set()));
         callers.add(name);
@@ -3757,14 +3885,67 @@ export class LlEmitter {
         work.push(caller);
       }
     }
-    for (const fn of this.mod.functions) {
-      if (fn.async !== true || fn.generator !== undefined) continue;
-      if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) continue;
-      if (fn.returnType.kind === "dyn" || parks.has(fn.name)) continue;
-      if (!this.fnDefText.has(fn.name)) continue;
-      eligible.add(fn.name);
+    return parks;
+  }
+
+  private mangledFunctions: Map<string, string> | null = null;
+
+  /** The module functions whose ordinary or borrowed body `text` mentions. */
+  private *mentionedFunctions(text: string): Generator<string> {
+    if (this.mangledFunctions === null) {
+      this.mangledFunctions = new Map();
+      for (const fn of this.mod.functions) {
+        this.mangledFunctions.set(mangleFunction(fn.name), fn.name);
+        this.mangledFunctions.set(mangleBorrowedFunction(fn.name), fn.name);
+      }
     }
-    return eligible;
+    for (const match of text.matchAll(/@(sc_b?f_[A-Za-z0-9_]+)/g)) {
+      const callee = this.mangledFunctions.get(match[1]!);
+      if (callee !== undefined) yield callee;
+    }
+  }
+
+  /** Chooses the native async functions whose bodies compile to switched
+   * coroutines instead of running on a fiber: a suspended call then keeps a
+   * heap frame of the values live across its awaits rather than a fiber and
+   * its stack. A body qualifies when its only suspension points are its own
+   * awaits, which the coroutine form suspends itself at (emitCoroAwait), so
+   * nothing it runs can park the stack it borrows. It is first emitted as
+   * usual: that text may suspend only through await runtime calls and
+   * await-call entries, which the coroutine form replaces, and may call no
+   * function that parks. The coroutine form is then emitted and must pass
+   * the same test with no exceptions (its frame bookkeeping excepted);
+   * otherwise the fiber form stays. Bodies that never suspend stay
+   * fiberless, and module evaluation bodies and `dyn` results keep fibers
+   * as they do there. The runtime traps if a stackless body ever parks. */
+  private selectStacklessAsync(fnDefs: string[]): void {
+    if (!this.stacklessAsyncAllowed) return;
+    const parks = this.parkingFunctions();
+    if (parks === null) return;
+    // Coroutine bodies emitted below are the only inline-await callers, and
+    // replacing their text changes no other function's parking.
+    this.inlineAwaitable = this.neverParkingAsync(parks);
+    const qualifies = (fn: IrFunction, text: string, suspends: RegExp): boolean => {
+      if (suspends.test(text)) return false;
+      for (const callee of this.mentionedFunctions(text))
+        if (callee !== fn.name && parks.has(callee)) return false;
+      return true;
+    };
+    this.mod.functions.forEach((fn, index) => {
+      if (fn.async !== true || fn.generator !== undefined) return;
+      if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) return;
+      if (fn.returnType.kind === "dyn" || !parks.has(fn.name)) return;
+      const fiberText = fnDefs[index]!;
+      if (!qualifies(fn, fiberText.replace(AWAIT_SUSPENSIONS, ""), SUSPENDS)) return;
+      this.stacklessAsync.add(fn.name);
+      const coroText = this.emitFunction(fn);
+      if (!qualifies(fn, coroText, COROUTINE_SUSPENDS)) {
+        this.stacklessAsync.delete(fn.name);
+        return;
+      }
+      fnDefs[index] = coroText;
+      this.fnDefText.set(fn.name, coroText);
+    });
   }
 
   /** The spawn wrapper of a fiberless async function: runs the body on the
@@ -3813,11 +3994,83 @@ export class LlEmitter {
    * entry's result is the awaited value of f's own body type; direct calls
    * never carry a lifted environment. */
   awaitCallEligible(fnName: string): boolean {
-    if (this.wasi || this.mod.workers === true) return false;
+    // A coroutine body suspends itself at the await; the entry would park
+    // the stack it runs on.
+    if (this.wasi || this.mod.workers === true || this.currentCoro !== null) return false;
     const fn = this.fnByName.get(fnName);
     if (fn === undefined || fn.async !== true || fn.generator !== undefined) return false;
     if (fn.captures !== undefined || fn.returnType.kind === "dyn") return false;
     return fn.asyncCacheGlobal === undefined && fn.asyncCycleCacheGlobal === undefined;
+  }
+
+  /** Whether a stackless coroutine body's `await f(...)` may run f's body in
+   * place (emitCoroInlineAwait): f never suspends, and its direct call is
+   * one an await-call entry could take. */
+  inlineAwaitEligible(fnName: string): boolean {
+    if (this.wasi || this.currentCoro?.kind !== "async") return false;
+    const fn = this.fnByName.get(fnName);
+    if (fn === undefined || !this.inlineAwaitable.has(fnName)) return false;
+    return fn.captures === undefined;
+  }
+
+  /** The inline await entry of a fiberless async function (`sc_ai_*`): its
+   * body on the caller's stack between scr_async_inline_enter/exit, as in
+   * its spawn wrapper, returning the result and leaving a throw pending for
+   * the awaiting coroutine (emitCoroInlineAwait). */
+  private emitAsyncInlineAwaitCall(fn: IrFunction): string[] {
+    const retTy = this.llType(fn.returnType);
+    const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
+    const args = params.join(", ");
+    this.declare(`declare void @scr_async_inline_enter(ptr)`);
+    this.declare(`declare void @scr_async_inline_exit(ptr)`);
+    const bodyCall = `call ${retTy} @${mangleFunction(fn.name)}(${args})`;
+    return [
+      `define internal ${retTy} @${mangleAsyncInlineAwaitCall(fn.name)}(${args}) ${FN_ATTRS} { ; inline await ${fn.name}`,
+      `entry:`,
+      `  %frame = alloca { ptr, ptr }`,
+      `  call void @scr_async_inline_enter(ptr %frame)`,
+      retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`,
+      `  call void @scr_async_inline_exit(ptr %frame)`,
+      retTy === "void" ? `  ret void` : `  ret ${retTy} %r`,
+      `}`,
+      ``,
+    ];
+  }
+
+  /** A stackless coroutine body's `await f(...)` of a fiberless f, the
+   * await-call entry's turns without its promise: the body runs in place,
+   * then a clean result takes the await's turn, and a throw becomes the
+   * rejected promise the await takes its turn on and re-throws, exactly as
+   * the spawn wrapper's promise would. An adopting await (`return f(...)`)
+   * first takes the adoption's then-job turn either way. */
+  emitCoroInlineAwait(call: ExprOf<"call">, adopt: boolean): LlValue {
+    const B = this.B;
+    const value = emitCallExpr(this, call, "inline");
+    const thrown = B.tmp();
+    for (const line of this.pendingTestLines(thrown)) B.line(line.trim());
+    if (adopt) this.emitCoroAwait(null);
+    const clean = B.newLabel("ai.clean");
+    const rejected = B.newLabel("ai.rejected");
+    const join = B.newLabel("ai.join");
+    B.condBr(thrown, rejected, clean);
+    B.startBlock(clean);
+    this.emitCoroAwait(null);
+    B.br(join);
+    B.startBlock(rejected);
+    this.declare(`declare ptr @scr_promise_new()`);
+    this.declare(`declare void @scr_promise_reject_pending(ptr)`);
+    this.declare(`declare void @scr_coro_await_void(ptr)`);
+    this.declare(`declare void @scr_promise_release(ptr)`);
+    const promise = B.tmp();
+    B.line(`${promise} = call ptr @scr_promise_new()`);
+    B.line(`call void @scr_promise_reject_pending(ptr ${promise})`);
+    this.emitCoroAwait(promise);
+    B.line(`call void @scr_coro_await_void(ptr ${promise})`);
+    B.line(`call void @scr_promise_release(ptr ${promise})`);
+    B.br(join);
+    B.startBlock(join);
+    this.emitPendingCheck();
+    return value;
   }
 
   /** The await-call entry of an async function (`sc_aw_*`): one direct
@@ -3877,6 +4130,21 @@ export class LlEmitter {
         `entry:`,
         `  %p = call ptr @${mangleAsyncSpawn(fn.name)}(${args})`,
         `  call void @scr_await_hop()`,
+        awaitLine("%v", "%p"),
+        `  call void @scr_promise_release(ptr %p)`,
+        retLine("%v"),
+        `}`,
+        ``,
+      ];
+    }
+    if (argPackLines !== null && this.stacklessAsync.has(fn.name)) {
+      // A stackless body's eager prefix already runs on the awaiter's
+      // stack, which then awaits the promise like the two separate steps.
+      this.declare(`declare void @scr_promise_release(ptr)`);
+      return [
+        head,
+        `entry:`,
+        `  %p = call ptr @${mangleAsyncSpawn(fn.name)}(${args})`,
         awaitLine("%v", "%p"),
         `  call void @scr_promise_release(ptr %p)`,
         retLine("%v"),
@@ -3984,6 +4252,9 @@ export class LlEmitter {
       if (fiberless.has(fn.name) && this.adoptCallees.has(fn.name)) {
         for (const line of this.emitAsyncAwaitCall(fn, null, true)) out.push(line);
       }
+      if (this.inlineAwaitCallees.has(fn.name)) {
+        for (const line of this.emitAsyncInlineAwaitCall(fn)) out.push(line);
+      }
       if (fiberless.has(fn.name)) {
         const fieldTys = [
           ...(fn.captures !== undefined ? ["ptr"] : []),
@@ -4002,10 +4273,12 @@ export class LlEmitter {
       if (this.adoptCallees.has(fn.name)) {
         for (const line of this.emitAsyncAwaitCall(fn, argPackLines, true)) out.push(line);
       }
+      const stackless = this.stacklessAsync.has(fn.name);
+      const spawn = stackless ? "scr_async_spawn_stackless" : "scr_async_spawn";
       this.declare(`declare ptr @scr_fiber_promise(ptr)`);
-      this.declare(`declare ptr @scr_async_spawn(ptr, ptr)`);
+      this.declare(`declare ptr @${spawn}(ptr, ptr)`);
       this.needOom();
-      if (this.wasi) {
+      if (this.wasi || stackless) {
         // The coroutine body settles its own promise and owns the retained
         // lifted environment until final suspension. Its initial call
         // returns here at the first suspend (or final suspend).
@@ -4061,7 +4334,7 @@ export class LlEmitter {
         ...argPackLines,
       ];
       sp.push(
-        `  %p = call ptr @scr_async_spawn(ptr @${mangleTrampoline(fn.name)}, ptr %ap)`,
+        `  %p = call ptr @${spawn}(ptr @${mangleTrampoline(fn.name)}, ptr %ap)`,
         ...(cache !== null
           ? [
               // The module loader owns this evaluation promise
@@ -4105,10 +4378,12 @@ export class LlEmitter {
   }
 
   /** Whether `fn`'s body is emitted as an LLVM switched coroutine: every
-   * wasm32 async or generator body, and native synchronous generators. */
+   * wasm32 async or generator body, native synchronous generators, and the
+   * native async bodies selectStacklessAsync chose. */
   private coroLowered(fn: IrFunction): boolean {
     if (this.wasi) return fn.async === true || fn.generator !== undefined;
-    return this.stacklessGenerators && fn.generator !== undefined && fn.async !== true;
+    if (fn.async === true) return fn.generator === undefined && this.stacklessAsync.has(fn.name);
+    return this.stacklessGenerators && fn.generator !== undefined;
   }
 
   /** Per-generator-function machinery — the async scaffolding's lazy
@@ -6129,6 +6404,53 @@ export class LlEmitter {
     this.emitCoroSuspendPrepared();
   }
 
+  /** Awaits in the current body suspend its coroutine: every wasm32 async
+   * body, and native stackless async bodies (selectStacklessAsync). */
+  get coroAwait(): boolean {
+    return this.wasi || this.currentCoro?.kind === "async";
+  }
+
+  /** Suspends the current coroutine body at an await of `promise` (null: a
+   * single microtask hop, as for a non-promise operand). A native body
+   * suspends unless the runtime continues it in place, where a fiber's
+   * hop would continue without switching (scr_coro_await_prepare). */
+  emitCoroAwait(promise: string | null): void {
+    if (this.wasi) {
+      this.emitWasiSuspend(promise);
+      return;
+    }
+    const coro = this.currentCoro;
+    if (coro === null)
+      throw new InternalCompilerError("llvm emitter bug: await suspension outside a coroutine");
+    const B = this.B;
+    const suspend = B.tmp();
+    if (promise === null) {
+      this.declare(`declare zeroext i1 @scr_coro_hop_prepare(ptr)`);
+      B.line(`${suspend} = call zeroext i1 @scr_coro_hop_prepare(ptr ${coro.self})`);
+    } else {
+      this.declare(`declare zeroext i1 @scr_coro_await_prepare(ptr, ptr)`);
+      B.line(
+        `${suspend} = call zeroext i1 @scr_coro_await_prepare(ptr ${coro.self}, ptr ${promise})`,
+      );
+    }
+    const park = B.newLabel("await.suspend");
+    const ready = B.newLabel("await.ready");
+    B.condBr(suspend, park, ready);
+    B.startBlock(park);
+    this.emitCoroSuspendPrepared();
+    B.br(ready);
+    B.startBlock(ready);
+  }
+
+  /** The runtime entry extracting an await's result of `kind`. A native
+   * coroutine has already suspended until the promise settled, so its
+   * extraction takes no further turn. */
+  awaitResultFn(kind: "void" | "f64" | "bool" | "str" | "ref"): string {
+    return !this.wasi && this.currentCoro?.kind === "async"
+      ? `scr_coro_await_${kind}`
+      : `scr_await_${kind}`;
+  }
+
   /** A native generator's OUT slot (scr_async.c's ScrGen.out, mirrored by
    * %ScrGenHead and %ScrGenSlot { kind, f64, b, payload, release_fn }). */
   genOutSlot(gen: string): string {
@@ -6405,7 +6727,9 @@ export class LlEmitter {
     this.localUnionStorageProofs = findLocalUnionStorage(fn, this.callLifetimes, this.unionSources);
     this.localUnionStorage = new Map();
     this.walkBorrows = this.walkBorrowsByFunction.get(fn.name) ?? new Set();
-    this.integerRanges = analyzeIntegerRanges(numericFn, this.int32Slots.facts(fn.name));
+    const slotFacts = this.int32Slots.facts(fn.name);
+    this.integerRanges = analyzeIntegerRanges(numericFn, slotFacts);
+    this.int32Elements = slotFacts.elements ?? null;
     this.bytesBounds = findBytesBounds(numericFn, this.integerRanges);
     // Debug builds keep every number local a double for the debugger's
     // variable view. Lazily boxed captured parameters keep their double,
@@ -6449,6 +6773,9 @@ export class LlEmitter {
     this.currentGenerator = fn.generator ?? null;
     this.currentAsyncGenerator = fn.async === true && fn.generator !== undefined;
     this.currentBorrowedReturn = this.borrowedReturns.has(fn.name);
+    this.lastUseMoves.clear();
+    this.varRefCounts = null;
+    this.currentFunctionBody = fn.body;
     this.inConstructor = this.constructorFunctions.has(fn.name);
     this.currentCoro = null;
     this.logArgSlots = 0;
@@ -6648,7 +6975,10 @@ export class LlEmitter {
       if (this.storeInt32Local(p.localId, incoming)) continue;
       B.line(`store ${this.llType(p.type)} %p_${mangleLocal(p.localId)}, ptr ${slot}`);
       this.storeIntegerView(p.localId, incoming);
-      if (isRefCounted(p.type) && !borrowed?.has(index)) fnScope.push({ slot, type: p.type });
+      if (isRefCounted(p.type) && !borrowed?.has(index)) {
+        fnScope.push({ slot, type: p.type });
+        this.noteParameterMove(fn, p.localId, slot);
+      }
       if (this.reboundByFunction.get(fn.name)?.has(p.localId) && borrowed?.has(index)) {
         // The caller's borrow stays in the parameter slot; values the body
         // assigns are owned here until rebinding or exit releases them.
@@ -6707,8 +7037,9 @@ export class LlEmitter {
         this.declare(`declare void @${finish}(ptr)`);
         B.line(`call void @${finish}(ptr ${coro.self})`);
       } else {
-        this.declare(`declare void @scr_wasi_async_finish(ptr)`);
-        B.line(`call void @scr_wasi_async_finish(ptr ${coro.self})`);
+        const finish = this.wasi ? "scr_wasi_async_finish" : "scr_coro_async_finish";
+        this.declare(`declare void @${finish}(ptr)`);
+        B.line(`call void @${finish}(ptr ${coro.self})`);
       }
       const finalState = B.tmp();
       B.line(`${finalState} = call i8 @llvm.coro.suspend(token none, i1 true)`);
@@ -7216,6 +7547,91 @@ export class LlEmitter {
     this.B.line(`call void @scr_async_gen_hop_done()`);
   }
 
+  /** Owned-binding reads that take over the binding's reference, by read
+   * node (the binding's slot). */
+  private readonly lastUseMoves = new Map<IrExpr, string>();
+  /** How often each varRef node object occurs in the current function:
+   * lowering may share one node between several reads, and a move keyed by
+   * node identity must fire for exactly one of them. */
+  private varRefCounts: Map<IrExpr, number> | null = null;
+  private currentFunctionBody: IrStmt[] = [];
+
+  private varRefCount(e: IrExpr): number {
+    if (this.varRefCounts === null) {
+      const counts = new Map<IrExpr, number>();
+      everyStmtList(this.currentFunctionBody, {
+        stmt: () => true,
+        expr: (node) => {
+          if (node.kind === "varRef") counts.set(node, (counts.get(node) ?? 0) + 1);
+          return true;
+        },
+      });
+      this.varRefCounts = counts;
+    }
+    return this.varRefCounts.get(e) ?? 0;
+  }
+
+  /** Moves need plain slots that nothing else reads behind the binding's
+   * back: no debugger view, no coroutine frame, no borrowed (+0) return. */
+  private lastUseMovesAllowed(): boolean {
+    return (
+      this.debug === null &&
+      !this.currentBorrowedReturn &&
+      this.currentCoro === null &&
+      this.currentGenerator === null
+    );
+  }
+
+  /** An owned local declared at the statement cursor whose last statement
+   * reads it once (lastUseRead): that read moves the reference. */
+  private noteLastUseMove(
+    s: IrStmt & { kind: "varDecl" },
+    b: ReturnType<LlEmitter["binding"]>,
+  ): void {
+    const cursor = this.stmtCursor;
+    if (
+      !this.lastUseMovesAllowed() ||
+      cursor === null ||
+      cursor.stmts[cursor.index] !== s ||
+      b.kind !== "local" ||
+      b.local === undefined ||
+      b.local.boxed ||
+      b.local.tdz ||
+      this.integerViews.has(s.localId)
+    )
+      return;
+    const read = lastUseRead(cursor.stmts, cursor.index, s.localId);
+    if (read !== null && this.varRefCount(read) === 1) this.lastUseMoves.set(read, b.slot);
+  }
+
+  /** An owned parameter whose last statement in the body reads it once:
+   * that read moves the reference. Walk locals may borrow from an owned
+   * parameter's slot (they need it until the function returns), so bodies
+   * with walks keep their parameters, and locals rebound from the
+   * parameter count as derived from it. */
+  private noteParameterMove(fn: IrFunction, localId: string, slot: string): void {
+    if (
+      !this.lastUseMovesAllowed() ||
+      fn.async ||
+      fn.generator !== undefined ||
+      (this.walkBorrowsByFunction.get(fn.name)?.size ?? 0) > 0 ||
+      this.reboundByFunction.get(fn.name)?.has(localId) === true ||
+      this.integerViews.has(localId)
+    )
+      return;
+    const read = lastUseRead(fn.body, -1, localId, true);
+    if (read !== null && this.varRefCount(read) === 1) this.lastUseMoves.set(read, slot);
+  }
+
+  /** Emits the move of a noted last read: the slot is cleared, so scope
+   * exits release nothing and the read's owned temp carries the reference. */
+  takeLastUseMove(e: IrExpr, slot: string, type: IrType): boolean {
+    if (this.lastUseMoves.get(e) !== slot || !typeEquals(type, e.type)) return false;
+    this.lastUseMoves.delete(e);
+    this.B.line(`store ptr null, ptr ${slot}`);
+    return true;
+  }
+
   /** `return x` of a local whose slot is an owned scope entry of the same
    * type: the return can take over the local's reference. */
   private movableReturn(
@@ -7584,6 +8000,7 @@ export class LlEmitter {
         this.storeIntegerView(s.localId, v, s.init);
         if (isRefCounted(b.type)) {
           this.scopes[this.scopes.length - 1]!.push({ slot: b.slot, type: b.type });
+          this.noteLastUseMove(s, b);
         }
         break;
       }
@@ -7736,6 +8153,28 @@ export class LlEmitter {
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
         B.startBlock(resize);
+        if (s.pop === true) {
+          // A discarded pop's `length - 1` on a packed array removes the
+          // last element inline, then releases it.
+          const call = B.newLabel("arr.len.call"),
+            pop = B.newLabel("arr.len.pop");
+          const lastNumber = B.tmp(),
+            dropsLast = B.tmp();
+          B.line(`${lastNumber} = fsub double ${lenNumber}, 1.0`);
+          B.line(`${dropsLast} = fcmp oeq double ${length.name}, ${lastNumber}`);
+          B.condBr(dropsLast, pop, call);
+          B.startBlock(pop);
+          const elem = s.arr.type.elem;
+          const acc = elemAccess(elem);
+          const raw = emitDenseArrayPop(this, arr.name, acc, call, call);
+          if (acc === "ref" && isRefCounted(elem)) {
+            const old = B.tmp();
+            B.line(`${old} = inttoptr i64 ${raw} to ptr`);
+            this.releaseValue(old, elem);
+          }
+          B.br(done);
+          B.startBlock(call);
+        }
         B.line(`call void @scr_arr_set_len(ptr ${arr.name}, double ${length.name})`);
         this.emitPendingCheck();
         B.br(done);
@@ -8587,6 +9026,12 @@ export class LlEmitter {
         // own turn is the await (nothing runs in between).
         const genSettles =
           this.currentAsyncGenerator && (s.awaited === true || this.finallyStack.length > 0);
+        // A completion turn that awaits x replaces a return() request's
+        // already-taken await.
+        if (this.currentAsyncGenerator && !genSettles) {
+          this.declare(`declare void @scr_async_gen_return_awaits()`);
+          B.line(`call void @scr_async_gen_return_awaits()`);
+        }
         if (this.currentAsyncGenerator && s.awaited !== true && this.finallyStack.length > 0) {
           if (this.wasi) this.emitWasiSuspend(null);
           else {

@@ -160,7 +160,56 @@ describe("library profile validation", () => {
   });
 
   test("parse error", () => expectSc4001("{ not json", "not valid JSON"));
-  test("wrong format", () => expectSc4001({ ...good, profile_format: 2 }, "profile_format"));
+  test("wrong format", () => expectSc4001({ ...good, profile_format: 3 }, "profile_format"));
+  test("the cstring class requires profile_format 2", () => {
+    const cstringExport = {
+      export: "greet",
+      symbol: "kx_greet",
+      params: ["cstring"],
+      returns: "cstring",
+    };
+    const v2 = loadLibraryProfile(
+      writeProfile({ ...good, profile_format: 2, exports: [...good.exports, cstringExport] }),
+    );
+    expect(v2.ok).toBe(true);
+    if (v2.ok) {
+      expect(v2.profile.profileFormat).toBe(2);
+      expect(v2.profile.exports.at(-1)).toMatchObject({ params: ["cstring"], returns: "cstring" });
+    }
+    expectSc4001(
+      { ...good, exports: [...good.exports, cstringExport] },
+      "'exports[2].params[0]' class 'cstring' requires profile_format 2",
+    );
+    expectSc4001(
+      { ...good, exports: [...good.exports, { ...cstringExport, params: [] }] },
+      "'exports[2].returns' class 'cstring' requires profile_format 2",
+    );
+    const callbackAbi = { ...good.abi, callback_register_symbol: "kx_set_callback" };
+    const cstringCallback = { name: "log", params: ["cstring"], returns: "void" };
+    expect(
+      loadLibraryProfile(
+        writeProfile({
+          ...good,
+          profile_format: 2,
+          abi: callbackAbi,
+          callbacks: [cstringCallback],
+        }),
+      ).ok,
+    ).toBe(true);
+    expectSc4001(
+      { ...good, abi: callbackAbi, callbacks: [cstringCallback] },
+      "'callbacks[0].params[0]' class 'cstring' requires profile_format 2",
+    );
+    expectSc4001(
+      {
+        ...good,
+        profile_format: 2,
+        abi: callbackAbi,
+        callbacks: [{ name: "log", params: [], returns: "cstring" }],
+      },
+      "a callback return stays scalar",
+    );
+  });
   test("missing name", () => {
     const { name: _drop, ...rest } = good;
     expectSc4001(rest, "'name'");

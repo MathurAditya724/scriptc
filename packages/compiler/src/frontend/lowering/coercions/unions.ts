@@ -77,6 +77,48 @@ export function narrowedRetagHelper(
   return lowerer.unionRetagHelper(fromId, toId, loc, trappable);
 }
 
+/** A union conversion whose source arms include an object type with a
+ * required property of type `never` (the error arm of `Result<T, never>`).
+ * No value has that type, but its arm still has a storage layout (never
+ * maps to the f64 placeholder) that no destination arm matches. When the
+ * node's checker type proves a source arm uninhabited, the re-tag traps on
+ * it instead of needing a destination. Optional `never` properties,
+ * `never[]` and functions returning `never` have values and keep their
+ * arms. Null when no source arm is proven uninhabited. */
+export function uninhabitedArmRetagHelper(
+  lowerer: Lowerer,
+  node: ts.Node,
+  fromId: string,
+  toId: string,
+  loc: SrcLoc,
+): string | null {
+  const type = lowerer.typeOf(node);
+  if (!type.isUnionType()) return null;
+  const uninhabited = new Set<number>();
+  const inhabited = new Set<number>();
+  for (const part of ts.constituentTypes(type)) {
+    const arm = lowerer.mapTypeOf(part);
+    const tag = arm ? lowerer.armTag(fromId, arm) : -1;
+    if (tag < 0) continue;
+    (hasRequiredNeverProperty(lowerer, part) ? uninhabited : inhabited).add(tag);
+  }
+  // An arm shared with an inhabited constituent holds real values.
+  for (const tag of inhabited) uninhabited.delete(tag);
+  if (uninhabited.size === 0) return null;
+  return lowerer.unionRetagHelper(fromId, toId, loc, uninhabited);
+}
+
+function hasRequiredNeverProperty(lowerer: Lowerer, type: ts.Type): boolean {
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  return lowerer.checker
+    .getPropertiesOfType(type)
+    .some(
+      (property) =>
+        (property.flags & ts.SymbolFlags.Optional) === 0 &&
+        (lowerer.checker.getTypeOfSymbol(property).flags & ts.TypeFlags.Never) !== 0,
+    );
+}
+
 /** The stranded-UNIT trap for PLAIN (non-union) slots: a null/undefined
  * value flowing into a non-nullable typed slot the checker approved —
  * `null!` and `null as any as T` casts, and the non-strict world's

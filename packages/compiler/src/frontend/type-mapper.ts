@@ -130,6 +130,7 @@ export const FETCH_AMBIENT_TYPES = [
   "RequestInit",
   "Event",
   "CustomEvent",
+  "MessageEvent",
   "EventTarget",
   "AddEventListenerOptions",
   "EventListenerOptions",
@@ -995,6 +996,13 @@ export type TypeParamTsResolver = (t: ts.Type) => ts.Type | null;
  * one new field here, not a new parameter at every call site. */
 export interface TypeMapperCtx {
   checker: ts.TypeChecker;
+  /** Set while mapping a generic callable member's erased type
+   * (erasedGenericMemberType): the signature's own type parameters
+   * resolve to `unknown` instead of refusing the mapping. */
+  erasingSignature?: ts.Signature;
+  /** True while an erased generic body lowers (its type parameters are
+   * bound to `unknown`). */
+  isErasing?: () => boolean;
   shapes: ShapeRegistry;
   unions: UnionRegistry;
   classNamer: ClassNamer;
@@ -1236,7 +1244,8 @@ function isWorkerHandleSymbol(
   return (
     (symbol?.name === "Worker" ||
       symbol?.name === "MessagePort" ||
-      symbol?.name === "MessageChannel") &&
+      symbol?.name === "MessageChannel" ||
+      symbol?.name === "BroadcastChannel") &&
     ctx.checker
       .declarationsOf(symbol)
       .some(
@@ -1382,6 +1391,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // still the T it maps.
   const immutableSource = immutableSourceType(type, ctx);
   if (immutableSource !== null) return mapType(immutableSource, ctx);
+  // Inside an erased generic signature or body, every type that mentions
+  // an erased type parameter is `unknown` (`T[]`, `Map<string, T>`,
+  // `[A, B]`, `T[K]`, callbacks over `T`): its values cross through the
+  // checked-dynamic boundary, as JavaScript sees them. The erased
+  // signature itself maps its parameters and result this way.
+  if (
+    (ctx.erasingSignature || ctx.isErasing?.()) &&
+    !(type.flags & ts.TypeFlags.TypeParameter) &&
+    !checker.getCallSignatures(type).some((sig) => sig === ctx.erasingSignature) &&
+    !ERASURE_KEPT_CONTAINERS.has(type.getSymbol()?.name ?? "") &&
+    mentionsErasedTypeParam(type, ctx, 0)
+  ) {
+    contextResolutions++;
+    return DYN;
+  }
   if (resolveTypeParam && type.flags & ts.TypeFlags.TypeParameter) {
     const bound = resolveTypeParam(type);
     if (bound) {
@@ -1419,6 +1443,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (viaIndexed !== null) {
       contextResolutions++;
       return viaIndexed;
+    }
+    // A conditional type over a bound parameter (`Infer<S["left"]>`, a
+    // mapped type's member): evaluate it against the bindings.
+    if (type.isConditionalType()) {
+      const evaluated = evalMappedTemplate(type, new Map(), new Map(), ctx);
+      if (evaluated && evaluated !== type) {
+        const viaConditional = mapType(evaluated, ctx);
+        if (viaConditional !== null) {
+          contextResolutions++;
+          return viaConditional;
+        }
+      }
     }
   }
   const widened = checker.getBaseTypeOfLiteralType(type);
@@ -2302,6 +2338,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!elem) return null;
     return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
   }
+  // node:net's SocketAddress and BlockList: native handles (scr_net.c)
+  // whose getters and methods dispatch through the handle.
+  if (
+    (psym?.name === "SocketAddress" || psym?.name === "BlockList") &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()),
+      )
+  ) {
+    return DYN;
+  }
   // node:crypto's KeyObject: secret keys are native handles (scr_lib.c)
   // whose getters and methods dispatch through the handle. The JsonWebKey
   // that export() returns is a plain checked-dynamic object.
@@ -2341,9 +2391,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // representation and consumed by the console method lowerings. The
   // stdlib Disposable (events.addAbortListener's result) and
   // AsyncDisposable are checked objects carrying their Symbol.dispose or
-  // Symbol.asyncDispose method.
+  // Symbol.asyncDispose method. A DisposableStack is a native handle whose
+  // methods are function values of its checked-dynamic view.
   if (
-    (psym?.name === "Console" || psym?.name === "Disposable" || psym?.name === "AsyncDisposable") &&
+    (psym?.name === "Console" ||
+      psym?.name === "Disposable" ||
+      psym?.name === "AsyncDisposable" ||
+      psym?.name === "DisposableStack") &&
     checker
       .declarationsOf(psym)
       .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
@@ -2469,6 +2523,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // ToInt32-wrap) — the Atomics.wait sleep idiom constructs one over a
   // SharedArrayBuffer, and the i32 semantics hold for every other use.
   if (isStdlibInterface("Int32Array")) return bytesOf("i32");
+  if (isStdlibInterface("Float16Array")) return bytesOf("f16");
   if (isStdlibInterface("Float32Array")) return bytesOf("f32");
   if (isStdlibInterface("Float64Array")) return bytesOf("f64");
   // DataView: the ONE view kind — a u8 bytes value whose runtime
@@ -3787,7 +3842,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const callSigs = checker.getCallSignatures(widened);
   if (callSigs.length === 1) {
     const sig = callSigs[0]!;
-    if (sig.getTypeParameters().length) return null;
+    if (sig.getTypeParameters().length && ctx.erasingSignature !== sig) return null;
     // A SYNTHESIZED rest param (tsc's JS inference for a function body
     // reading `arguments` — `(...args: any[]) => any` whose args symbol
     // has no declaration): the dotDotDot check below can't see it, and a
@@ -4050,6 +4105,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (childShaped && core >= 2) return CHILD_T;
   }
   if (flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection) && callSigs.length === 0) {
+    const viaMapped = mapBoundMappedType(widened, ctx);
+    if (viaMapped) return viaMapped;
     const viaAlias = mapGenericUtilityAlias(widened, ctx);
     if (viaAlias) return viaAlias;
     const record = mapRecordType(widened, ctx);
@@ -4689,6 +4746,187 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
   return covered.every((t) => typeEquals(t, first)) ? first : null;
 }
 
+/** A mapped type over a type parameter of the instance being lowered (`{
+ * [K in keyof S]: S[K] }`, `{ [K in keyof S]: Infer<S[K]> }`): the checker
+ * keeps it symbolic inside the generic body, but the instance binds `S`,
+ * so each property of the bound type maps through the template evaluated
+ * with `K` set to that property's key. Optionality follows the `?`
+ * modifier, or the bound property's own for a homomorphic mapping. Null
+ * when the shape is anything else or a template form does not evaluate. */
+function mapBoundMappedType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const { checker, resolveTypeParamTs, shapes, unions } = ctx;
+  if (!resolveTypeParamTs || !isMappedShape(widened)) return null;
+  const symbol = widened.getSymbol();
+  const node = symbol
+    ? checker.declarationsOf(symbol).find((d): d is ts.MappedTypeNode => ts.isMappedTypeNode(d))
+    : undefined;
+  const constraint = node?.typeParameter.constraint;
+  if (
+    !node?.type ||
+    !constraint ||
+    !ts.isTypeOperatorNode(constraint) ||
+    constraint.operator !== ts.SyntaxKind.KeyOfKeyword
+  )
+    return null;
+  const source = checker.getTypeFromTypeNode(constraint.type);
+  if (!(source.flags & ts.TypeFlags.TypeParameter)) return null;
+  const bound = resolveTypeParamTs(source);
+  const key = checker.getSymbolAtLocation(node.typeParameter.name);
+  if (!bound || !key) return null;
+  const template = checker.getTypeFromTypeNode(node.type);
+  const modifier = node.questionToken?.kind;
+  const fields: { name: string; type: IrType }[] = [];
+  const order: string[] = [];
+  for (const property of checker.getPropertiesOfType(bound)) {
+    const name = property.name;
+    const evaluated = evalMappedTemplate(template, new Map([[key, name]]), new Map(), ctx);
+    let type = evaluated ? mapType(evaluated, ctx) : null;
+    if (!type) return null;
+    const optional =
+      modifier === ts.SyntaxKind.MinusToken
+        ? false
+        : modifier !== undefined || (property.flags & ts.SymbolFlags.Optional) !== 0;
+    if (optional) {
+      const armed = withUndefinedArm(type, unions);
+      if (!armed) return null;
+      type = armed;
+    }
+    fields.push({ name, type });
+    order.push(name);
+  }
+  fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return { kind: "record", shapeId: shapes.intern(fields, false, undefined, order) };
+}
+
+/** The checker type a mapped type's template stands for at one key:
+ * `keys` binds the mapped type parameter to a property name, `aliases`
+ * binds type-alias and `infer` parameters met on the way. Handles type
+ * parameters (through the instance's bindings), indexed accesses
+ * (`S[K]`, `S[K]["_output"]`) and conditional types whose `extends` side
+ * is a reference to the same generic type as the checked type
+ * (`S extends Schema<infer T> ? T : never`); answers the type itself
+ * when it mentions none of the bound parameters, null otherwise. */
+function evalMappedTemplate(
+  type: ts.Type,
+  keys: Map<ts.Symbol, string>,
+  aliases: Map<ts.Symbol, ts.Type>,
+  ctx: TypeMapperCtx,
+): ts.Type | null {
+  const { checker, resolveTypeParamTs } = ctx;
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const symbol = type.getSymbol();
+    if (symbol && keys.has(symbol)) return null;
+    if (symbol && aliases.has(symbol)) return aliases.get(symbol)!;
+    return resolveTypeParamTs?.(type) ?? null;
+  }
+  if (type.isIndexedAccessType()) {
+    const object = type.getObjectType();
+    const index = type.getIndexType();
+    if (!object || !index) return null;
+    const receiver = evalMappedTemplate(object, keys, aliases, ctx);
+    const indexSymbol = index.flags & ts.TypeFlags.TypeParameter ? index.getSymbol() : undefined;
+    const name =
+      indexSymbol && keys.has(indexSymbol)
+        ? keys.get(indexSymbol)!
+        : index.isStringLiteralType()
+          ? index.value
+          : index.isNumberLiteralType()
+            ? String(index.value)
+            : null;
+    if (!receiver || name === null) return null;
+    const property = checker.getPropertyOfType(receiver, name);
+    return property ? checker.getTypeOfSymbol(property) : null;
+  }
+  if (type.isConditionalType()) {
+    // A conditional reached through an alias (`Infer<S[K]>`) checks the
+    // alias's own parameters: bind them to the evaluated arguments.
+    let scope = aliases;
+    const alias = type.getAliasSymbol();
+    const aliasArgs = type.getAliasTypeArguments();
+    const aliasDecl = alias
+      ? checker
+          .declarationsOf(alias)
+          .find((d): d is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(d))
+      : undefined;
+    if (aliasDecl?.typeParameters && aliasArgs.length === aliasDecl.typeParameters.length) {
+      scope = new Map(aliases);
+      for (let i = 0; i < aliasArgs.length; i++) {
+        const param = checker.getSymbolAtLocation(aliasDecl.typeParameters[i]!.name);
+        const arg = evalMappedTemplate(aliasArgs[i]!, keys, aliases, ctx);
+        if (!param || !arg) return null;
+        scope.set(param, arg);
+      }
+    }
+    const checkType = type.getCheckType();
+    const extendsType = type.getExtendsType();
+    if (!checkType || !extendsType) return null;
+    const checked = evalMappedTemplate(checkType, keys, scope, ctx);
+    if (!checked) return null;
+    const inferred = matchInferReference(checked, extendsType, ctx);
+    if (inferred === undefined) return null;
+    const branch = inferred ? type.getTrueType() : type.getFalseType();
+    const branchScope = inferred ? new Map([...scope, ...inferred]) : scope;
+    return evalMappedTemplate(branch, keys, branchScope, ctx);
+  }
+  return mentionsMappedParams(type, keys, aliases) ? null : type;
+}
+
+/** `checked extends G<..., infer T, ...>`: the infer bindings when
+ * `checked` is a reference to the same generic `G` (its arguments bind the
+ * infer positions; other positions must be the same types), false when it
+ * is a reference to another type or a primitive, undefined when the match
+ * cannot be decided this way. */
+function matchInferReference(
+  checked: ts.Type,
+  extendsType: ts.Type,
+  ctx: TypeMapperCtx,
+): Map<ts.Symbol, ts.Type> | false | undefined {
+  const { checker } = ctx;
+  const target = (t: ts.Type): ts.Type | undefined =>
+    t.isTypeReference?.() ? (t as ts.TypeReference).getTarget?.() : undefined;
+  const wantTarget = target(extendsType) ?? extendsType.getAliasSymbol();
+  if (!wantTarget) return undefined;
+  const gotTarget = target(checked) ?? checked.getAliasSymbol();
+  if (!gotTarget) return checked.flags & ts.TypeFlags.Object ? undefined : false;
+  if (gotTarget !== wantTarget) return undefined;
+  const wantArgs = target(extendsType)
+    ? checker.getTypeArguments(extendsType as ts.TypeReference)
+    : extendsType.getAliasTypeArguments();
+  const gotArgs = target(checked)
+    ? checker.getTypeArguments(checked as ts.TypeReference)
+    : checked.getAliasTypeArguments();
+  if (wantArgs.length !== gotArgs.length) return undefined;
+  const inferred = new Map<ts.Symbol, ts.Type>();
+  for (let i = 0; i < wantArgs.length; i++) {
+    const want = wantArgs[i]!;
+    const symbol = want.flags & ts.TypeFlags.TypeParameter ? want.getSymbol() : undefined;
+    const isInfer = symbol
+      ? checker
+          .declarationsOf(symbol)
+          .some((d) => d.parent !== undefined && ts.isInferTypeNode(d.parent))
+      : false;
+    if (isInfer && symbol) inferred.set(symbol, gotArgs[i]!);
+    else if (want !== gotArgs[i]) return undefined;
+  }
+  return inferred;
+}
+
+/** The type mentions a mapped key or bound alias parameter (a template
+ * shape evalMappedTemplate does not reduce). */
+function mentionsMappedParams(
+  type: ts.Type,
+  keys: Map<ts.Symbol, string>,
+  aliases: Map<ts.Symbol, ts.Type>,
+): boolean {
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const symbol = type.getSymbol();
+    return symbol !== undefined && (keys.has(symbol) || aliases.has(symbol));
+  }
+  if (type.isUnionType() || type.isIntersectionType())
+    return ts.constituentTypes(type).some((part) => mentionsMappedParams(part, keys, aliases));
+  return false;
+}
+
 function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { resolveTypeParam, shapes, unions } = ctx;
   if (!resolveTypeParam) return null;
@@ -5200,6 +5438,67 @@ export function isGenericCallableMemberType(t: ts.Type, checker: ts.TypeChecker)
   );
 }
 
+/** Result containers an erased async function or generator must keep:
+ * their contents are erased instead (`Promise<T>` maps as
+ * `Promise<unknown>`). */
+const ERASURE_KEPT_CONTAINERS = new Set(["Promise", "Generator", "AsyncGenerator"]);
+
+/** The type mentions a type parameter that the active erasure binds to
+ * `unknown` (erasedGenericMemberType, erased bodies). */
+function mentionsErasedTypeParam(type: ts.Type, ctx: TypeMapperCtx, depth: number): boolean {
+  if (depth > 8) return false;
+  const { checker } = ctx;
+  if (type.flags & ts.TypeFlags.TypeParameter) return ctx.resolveTypeParam?.(type)?.kind === "dyn";
+  if (
+    type.flags &
+    (ts.TypeFlags.IndexedAccess | ts.TypeFlags.Conditional | ts.TypeFlags.Substitution)
+  )
+    return true;
+  if (type.isUnionType() || type.isIntersectionType())
+    return ts.constituentTypes(type).some((part) => mentionsErasedTypeParam(part, ctx, depth + 1));
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  if (
+    (type as ts.Type).isTypeReference() &&
+    checker
+      .getTypeArguments(type as ts.TypeReference)
+      .some((arg) => mentionsErasedTypeParam(arg, ctx, depth + 1))
+  )
+    return true;
+  for (const sig of checker.getCallSignatures(type)) {
+    if (mentionsErasedTypeParam(checker.getReturnTypeOfSignature(sig), ctx, depth + 1)) return true;
+    for (const param of sig.getParameters())
+      if (mentionsErasedTypeParam(checker.getTypeOfSymbol(param), ctx, depth + 1)) return true;
+  }
+  const symbol = type.getSymbol();
+  const anonymous =
+    symbol !== undefined &&
+    (symbol.flags & (ts.SymbolFlags.TypeLiteral | ts.SymbolFlags.ObjectLiteral)) !== 0;
+  if (anonymous)
+    for (const property of checker.getPropertiesOfType(type))
+      if (mentionsErasedTypeParam(checker.getTypeOfSymbol(property), ctx, depth + 1)) return true;
+  return false;
+}
+
+/** A generic callable member's runtime type: its one call signature with
+ * every own type parameter bound to `unknown`, the erased instance a stored
+ * or escaping definition carries (JavaScript erases type parameters the
+ * same way). Undefined when the member has overloads or the erased
+ * signature does not map: the member then stays out of the shape, and only
+ * calls on a provable definition compile. */
+export function erasedGenericMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType | null | undefined {
+  const sigs = ctx.checker.getCallSignatures(t);
+  if (sigs.length !== 1) return undefined;
+  const sig = sigs[0]!;
+  const own = new Set(sig.getTypeParameters());
+  const outer = ctx.resolveTypeParam;
+  const erased = mapType(t, {
+    ...ctx,
+    erasingSignature: sig,
+    resolveTypeParam: (param) => (own.has(param) ? DYN : (outer?.(param) ?? null)),
+  });
+  return erased?.kind === "func" ? erased : undefined;
+}
+
 /** The computed pieces of a record shape mapRecordTypeInner hands back for
  * the OUTER frame to intern — or, when a back-reference minted a recursive
  * placeholder for the type mid-construction, to finalize INTO that
@@ -5581,8 +5880,10 @@ function mapRecordTypeInner(
       // can hold them — see isGenericCallableMemberType): the shape keeps
       // its data fields, and calls of the member monomorphize per call
       // site against the defining object literal's declaration.
-      if (isGenericCallableMemberType(fieldTs, checker)) continue;
-      let pt = mapType(fieldTs, ctx);
+      let pt = isGenericCallableMemberType(fieldTs, checker)
+        ? erasedGenericMemberType(fieldTs, ctx)
+        : mapType(fieldTs, ctx);
+      if (pt === undefined) continue;
       // tsgo PANICS computing `readonly []` through the symbol-type query
       // (the TupleType conversion — the facade's panic fence answers
       // `any`), which would absorb the whole shape into the dynamic tier.
@@ -5902,8 +6203,10 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
       return null;
     }
     const fieldTs = checker.getTypeOfSymbol(p);
-    if (isGenericCallableMemberType(fieldTs, checker)) continue;
-    let pt = mapType(fieldTs, ctx);
+    let pt = isGenericCallableMemberType(fieldTs, checker)
+      ? erasedGenericMemberType(fieldTs, ctx)
+      : mapType(fieldTs, ctx);
+    if (pt === undefined) continue;
     if (pt?.kind === "void" && isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam))
       pt = unitOnlyUnion(ctx.unions);
     if (!pt || pt.kind === "void") {

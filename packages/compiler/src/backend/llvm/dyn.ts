@@ -1108,11 +1108,14 @@ export class LlDyn {
   private readonly recordNameTables = new Map<string, { names: string; lens: string }>();
 
   /** Targets the one-pass parser (scr_json_parse_schema) can build
-   * directly: number, boolean and string leaves inside arrays and plain
-   * records (no tuple, index signature, internal '%' slot or `__proto__`
-   * member; 1..64 fields). Everything else keeps the checked-dynamic
-   * route alone. */
-  private jsonSchemaSupported(t: IrType, visiting: Set<string>): boolean {
+   * directly: number, boolean and string leaves inside arrays and records
+   * (no tuple, internal '%' slot or `__proto__` member; at most 64 declared
+   * fields, and at least one unless an index signature collects the
+   * members), record members typed as unions of those leaves, records and
+   * arrays, null and undefined (optional and nullable members; see
+   * jsonUnionSupported), and index signatures whose value type is not a
+   * union. Everything else keeps the checked-dynamic route alone. */
+  private jsonSchemaSupported(t: IrType, visiting: Set<string>, member = false): boolean {
     switch (t.kind) {
       case "f64":
       case "bool":
@@ -1123,19 +1126,54 @@ export class LlDyn {
       case "record": {
         if (visiting.has(t.shapeId)) return true;
         const shape = this.host.recordsById.get(t.shapeId);
-        if (!shape || shape.tuple || shape.indexValue) return false;
-        if (shape.fields.length === 0 || shape.fields.length > 64) return false;
+        if (!shape || shape.tuple) return false;
+        const index = shape.indexValue;
+        if (shape.fields.length > 64 || (shape.fields.length === 0 && !index)) return false;
         visiting.add(t.shapeId);
-        return shape.fields.every(
-          (f) =>
-            !f.name.startsWith("%") &&
-            f.name !== "__proto__" &&
-            this.jsonSchemaSupported(f.type, visiting),
+        return (
+          shape.fields.every(
+            (f) =>
+              !f.name.startsWith("%") &&
+              f.name !== "__proto__" &&
+              this.jsonSchemaSupported(f.type, visiting, true),
+          ) &&
+          (!index || this.jsonSchemaSupported(index, visiting))
         );
       }
+      case "union":
+        return member && this.jsonUnionSupported(t, visiting);
       default:
         return false;
     }
+  }
+
+  /** A union record member the one-pass parser writes directly: every arm
+   * a number, boolean, string, null, undefined, or a supported record or
+   * array, with at most one record and one array arm and no discriminant.
+   * Each JSON value kind then selects at most one arm, so the checked
+   * route's first full match is that arm, and a value that arm rejects
+   * fails every arm. */
+  private jsonUnionSupported(t: IrType & { kind: "union" }, visiting: Set<string>): boolean {
+    const def = this.host.unionsById.get(t.unionId);
+    if (!def || def.discriminant) return false;
+    let records = 0,
+      arrays = 0;
+    return def.arms.every((arm) => {
+      switch (arm.kind) {
+        case "f64":
+        case "bool":
+        case "string":
+        case "nullT":
+        case "undefinedT":
+          return true;
+        case "record":
+          return ++records === 1 && this.jsonSchemaSupported(arm, visiting);
+        case "array":
+          return ++arrays === 1 && this.jsonSchemaSupported(arm, visiting);
+        default:
+          return false;
+      }
+    });
   }
 
   /** The ScrJsonSchema constant for t (scr_runtime.h layout). Records list
@@ -1155,7 +1193,7 @@ export class LlDyn {
       case "bool":
       case "string": {
         const kind = t.kind === "f64" ? 0 : t.kind === "bool" ? 1 : 2;
-        body = `${S} ${kind}, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null`;
+        body = `${S} ${kind}, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null, ptr null, ${S} 0`;
         break;
       }
       case "array": {
@@ -1169,7 +1207,7 @@ export class LlDyn {
           `}`,
           ``,
         );
-        body = `${S} 4, ${S} 0, ptr null, ptr @${elem}, ptr null, ptr @${ctor}, ptr ${vAdapters(host, t).release}`;
+        body = `${S} 4, ${S} 0, ptr null, ptr @${elem}, ptr null, ptr @${ctor}, ptr ${vAdapters(host, t).release}, ptr null, ${S} 0`;
         break;
       }
       case "record": {
@@ -1190,22 +1228,110 @@ export class LlDyn {
           const offset = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${index.get(fieldName)}) to ${S})`;
           return `${fieldTy} { ptr ${host.cstr(fieldName)}, ${S} ${Buffer.byteLength(fieldName, "utf8")}, ${S} ${offset}, ptr @${sub} }`;
         });
-        const fields = `${name}_fields`;
-        this.defs.push(
-          `@${fields} = internal constant [${entries.length} x ${fieldTy}] [${entries.join(", ")}]`,
-          ``,
-        );
-        body = `${S} 3, ${S} ${entries.length}, ptr @${fields}, ptr null, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}`;
+        let fields = "null";
+        if (entries.length > 0) {
+          fields = `@${name}_fields`;
+          this.defs.push(
+            `${fields} = internal constant [${entries.length} x ${fieldTy}] [${entries.join(", ")}]`,
+            ``,
+          );
+        }
+        // An index signature's undeclared members go to the overflow map
+        // after the declared fields.
+        const overflow = shape.indexValue
+          ? {
+              elem: `@${this.jsonSchema(shape.indexValue)}`,
+              offset: `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${shape.fields.length + base}) to ${S})`,
+            }
+          : { elem: "null", offset: "0" };
+        body = `${S} 3, ${S} ${entries.length}, ptr ${fields}, ptr ${overflow.elem}, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}, ptr null, ${S} ${overflow.offset}`;
         break;
       }
+      case "union":
+        body = `${S} 5, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null, ptr @${this.jsonUnionSchema(t, name)}, ${S} 0`;
+        break;
       default:
         throw new InternalCompilerError(`llvm emitter bug: JSON schema of ${t.kind}`);
     }
     this.defs.push(
-      `@${name} = internal constant { ${S}, ${S}, ptr, ptr, ptr, ptr, ptr } { ${body} }`,
+      `@${name} = internal constant { ${S}, ${S}, ptr, ptr, ptr, ptr, ptr, ptr, ${S} } { ${body} }`,
       ``,
     );
     return name;
+  }
+
+  /** The ScrJsonUnion descriptor of a union member (scr_json.h layout):
+   * its slot representation, the arm each JSON value kind selects, and the
+   * values the runtime stores for null and for a missing member. Boxed
+   * unions build their boxes through `<name>_box`. */
+  private jsonUnionSchema(t: IrType & { kind: "union" }, name: string): string {
+    const host = this.host;
+    const S = host.sizeType;
+    const def = host.unionsById.get(t.unionId);
+    if (!def) throw new InternalCompilerError(`llvm emitter bug: JSON schema of ${t.unionId}`);
+    const nullable = host.nullableUnions.has(t.unionId);
+    const inline = host.inlineUnions.record(t);
+    const repr = nullable ? 0 : inline ? 1 : 2;
+    // Indexed by SCR_JARM_*: null, number, boolean, string, object, array, absent.
+    const armKinds = ["nullT", "f64", "bool", "string", "record", "array", "undefinedT"];
+    const tags = armKinds.map((kind) => def.arms.findIndex((arm) => arm.kind === kind));
+    const arms = armKinds.map((_, i) =>
+      i >= 1 && i <= 5 && tags[i]! >= 0
+        ? `ptr @${this.jsonSchema(def.arms[tags[i]!]!)}`
+        : "ptr null",
+    );
+    const nullTag = tags[0]!;
+    const absentTag = tags[6]!;
+    const nullValue = !inline && nullTag >= 0 ? host.unitInstanceRef(t.unionId, nullTag) : "null";
+    const absentValue = !inline && absentTag >= 0 ? host.absentInstanceRef(t.unionId) : "null";
+    let box = "null";
+    if (repr === 2) {
+      box = `@${name}_box`;
+      const lines = [`define internal ptr ${box}(i32 %tag, i64 %bits) ${FN_ATTRS} {`, `entry:`];
+      const cases: string[] = [];
+      const blocks: string[] = [];
+      def.arms.forEach((arm, tag) => {
+        if (arm.kind === "nullT" || arm.kind === "undefinedT") return;
+        cases.push(`i32 ${tag}, label %arm${tag}`);
+        blocks.push(`arm${tag}:`);
+        if (arm.kind === "f64") {
+          host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
+          blocks.push(
+            `  %f${tag} = bitcast i64 %bits to double`,
+            `  %u${tag} = call ptr @scr_union_new_f64(i32 ${tag}, double %f${tag})`,
+          );
+        } else if (arm.kind === "bool") {
+          host.declare(`declare ptr @scr_union_new_bool(i32, i1 zeroext)`);
+          blocks.push(
+            `  %b${tag} = trunc i64 %bits to i1`,
+            `  %u${tag} = call ptr @scr_union_new_bool(i32 ${tag}, i1 zeroext %b${tag})`,
+          );
+        } else {
+          const rc = vAdapters(host, arm);
+          host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
+          blocks.push(
+            `  %p${tag} = inttoptr i64 %bits to ptr`,
+            `  %u${tag} = call ptr @scr_union_new_ref(i32 ${tag}, ptr %p${tag}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host, arm)})`,
+          );
+        }
+        blocks.push(`  ret ptr %u${tag}`);
+      });
+      this.defs.push(
+        ...lines,
+        `  switch i32 %tag, label %none [ ${cases.join(" ")} ]`,
+        `none:`,
+        `  unreachable`,
+        ...blocks,
+        `}`,
+        ``,
+      );
+    }
+    const descriptor = `${name}_union`;
+    this.defs.push(
+      `@${descriptor} = internal constant { ${S}, [7 x ${S}], [7 x ptr], ptr, ptr, ptr } { ${S} ${repr}, [7 x ${S}] [${tags.map((tag) => `${S} ${tag}`).join(", ")}], [7 x ptr] [${arms.join(", ")}], ptr ${nullValue}, ptr ${absentValue}, ptr ${box} }`,
+      ``,
+    );
+    return descriptor;
   }
 
   /** The declared-name tables scr_record_source_note scans: parallel
@@ -2295,6 +2421,15 @@ export class LlDyn {
     const B = new BlockBuilder();
     let sourceAccessor: { name: string; release: string } | null = null;
     switch (t.kind) {
+      case "date": {
+        // A Date handle holding the same time value; native Dates are
+        // immutable values, and so is the handle.
+        host.declare(`declare ptr @scr_dyn_native_date_from_ms(double)`);
+        const r = B.tmp();
+        B.line(`${r} = call ptr @scr_dyn_native_date_from_ms(double %v)`);
+        B.terminate(`ret ptr ${r}`);
+        break;
+      }
       case "url":
       case "searchParams": {
         const native = t.kind === "url" ? "url" : "search_params";
@@ -3087,82 +3222,19 @@ export class LlDyn {
         this.puts(B, "%b", "[object Object]");
         B.br(done);
         B.startBlock(lErr);
-        const en = this.objGetLit(B, "%d", "name");
-        const em = this.objGetLit(B, "%d", "message");
-        // ens/ems: the member's ScrStr when it is a string, else null.
-        const strOf = (m: string, hint: string): string => {
-          const slot = B.slot();
-          B.entryAllocas.push(`${slot} = alloca ptr`);
-          B.line(`store ptr null, ptr ${slot}`);
-          const nn = B.tmp();
-          B.line(`${nn} = icmp ne ptr ${m}, null`);
-          const lt = B.newLabel(`${hint}.t`);
-          const lj = B.newLabel(`${hint}.j`);
-          B.condBr(nn, lt, lj);
-          B.startBlock(lt);
-          const k = this.kindOf(B, m);
-          const isStr = B.tmp();
-          B.line(`${isStr} = icmp eq i32 ${k}, ${DYN_KIND.STR}`);
-          const ls = B.newLabel(`${hint}.s`);
-          B.condBr(isStr, ls, lj);
-          B.startBlock(ls);
-          const sv = this.payloadOf(B, m, "ptr");
-          B.line(`store ptr ${sv}, ptr ${slot}`);
-          B.br(lj);
-          B.startBlock(lj);
-          const out = B.tmp();
-          B.line(`${out} = load ptr, ptr ${slot}`);
-          return out;
-        };
-        const ens = strOf(en, "ds.en");
-        const ems = strOf(em, "ds.em");
-        const putIf = (s: string, hint: string): void => {
-          const nn = B.tmp();
-          B.line(`${nn} = icmp ne ptr ${s}, null`);
-          const lt = B.newLabel(`${hint}.t`);
-          const lj = B.newLabel(`${hint}.j`);
-          B.condBr(nn, lt, lj);
-          B.startBlock(lt);
-          this.putScrStr(B, "%b", s);
-          B.br(lj);
-          B.startBlock(lj);
-        };
-        putIf(ens, "ds.pn");
-        {
-          // if (ens && ens->len && ems && ems->len) ": "
-          const lenNz = (s: string, hint: string): string => {
-            const slot = B.slot();
-            B.entryAllocas.push(`${slot} = alloca i1`);
-            B.line(`store i1 false, ptr ${slot}`);
-            const nn = B.tmp();
-            B.line(`${nn} = icmp ne ptr ${s}, null`);
-            const lt = B.newLabel(`${hint}.t`);
-            const lj = B.newLabel(`${hint}.j`);
-            B.condBr(nn, lt, lj);
-            B.startBlock(lt);
-            const { len } = this.strParts(B, s);
-            const nz = B.tmp();
-            B.line(`${nz} = icmp ne ${this.S} ${len}, 0`);
-            B.line(`store i1 ${nz}, ptr ${slot}`);
-            B.br(lj);
-            B.startBlock(lj);
-            const out = B.tmp();
-            B.line(`${out} = load i1, ptr ${slot}`);
-            return out;
-          };
-          const a = lenNz(ens, "ds.ln");
-          const b2 = lenNz(ems, "ds.lm");
-          const both = B.tmp();
-          B.line(`${both} = and i1 ${a}, ${b2}`);
-          const lt = B.newLabel("ds.cl");
-          const lj = B.newLabel("ds.cj");
-          B.condBr(both, lt, lj);
-          B.startBlock(lt);
-          this.puts(B, "%b", ": ");
-          B.br(lj);
-          B.startBlock(lj);
-        }
-        putIf(ems, "ds.pm");
+        // Error.prototype.toString, reading name and message through the
+        // prototype. Null leaves the exception its conversion threw pending.
+        host.declare(`declare ptr @scr_dyn_error_string(ptr)`);
+        host.declare(`declare void @scr_str_release(ptr)`);
+        const text = B.tmp();
+        B.line(`${text} = call ptr @scr_dyn_error_string(ptr %d)`);
+        const written = B.tmp();
+        B.line(`${written} = icmp ne ptr ${text}, null`);
+        const lPut = B.newLabel("ds.ep");
+        B.condBr(written, lPut, done);
+        B.startBlock(lPut);
+        this.putScrStr(B, "%b", text);
+        B.line(`call void @scr_str_release(ptr ${text})`);
         B.br(done);
       }
       B.startBlock(labels.get(DYN_KIND.BYTES)!);
@@ -3590,6 +3662,21 @@ export class LlDyn {
       host.declare(`declare ptr @scr_dyn_handle_key_get(ptr, ptr)`);
       const r = B.tmp();
       B.line(`${r} = call ptr @scr_dyn_handle_key_get(ptr %d, ptr %k)`);
+      B.terminate(`ret ptr ${r}`);
+      B.startBlock(lNext);
+    }
+    // PROMISE: Promise.prototype.then/catch/finally as function values;
+    // every other key is undefined (promises have no own properties).
+    {
+      const isP = B.tmp();
+      B.line(`${isP} = icmp eq i32 ${kd}, ${DYN_KIND.PROMISE}`);
+      const lP = B.newLabel("kg.p");
+      const lNext = B.newLabel("kg.n");
+      B.condBr(isP, lP, lNext);
+      B.startBlock(lP);
+      host.declare(`declare ptr @scr_dyn_promise_key_get(ptr, ptr)`);
+      const r = B.tmp();
+      B.line(`${r} = call ptr @scr_dyn_promise_key_get(ptr %d, ptr %k)`);
       B.terminate(`ret ptr ${r}`);
       B.startBlock(lNext);
     }

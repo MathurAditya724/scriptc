@@ -691,6 +691,117 @@ static void json_schema_parse(void) {
 #endif
 }
 
+/* Union members: a nullable string with an undefined arm, an inline
+ * number | null | undefined pair, and a boxed number | string. */
+typedef struct {
+  uint32_t tag;
+  uint64_t bits;
+} TestInline;
+typedef struct {
+  size_t rc;
+  ScrStr *name;   /* string | undefined: the payload, NULL, or test_absent */
+  TestInline age; /* number (0) | null (1) | undefined (2) */
+  ScrUnion *key;  /* number (0) | string (1) */
+} TestOpt;
+static size_t test_absent[4] = {SIZE_MAX, 0, 0, 0};
+static int test_opts_live = 0;
+static void *test_opt_new(void) {
+  TestOpt *opt = calloc(1, sizeof *opt);
+  assert(opt);
+  opt->rc = 1;
+  test_opts_live++;
+  return opt;
+}
+static void test_opt_release(void *ptr) {
+  TestOpt *opt = ptr;
+  if (!opt || --opt->rc) return;
+  if (opt->name && opt->name != (ScrStr *)test_absent) scr_str_release(opt->name);
+  scr_union_release(opt->key);
+  test_opts_live--;
+  scr_weak_dispose(opt);
+  free(opt);
+}
+static void *test_key_box(uint32_t tag, uint64_t bits) {
+  if (tag == 0) {
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return scr_union_new_f64(0, d);
+  }
+  return scr_union_new_ref(1, (void *)(uintptr_t)bits, scr_str_retain_v, scr_str_release_v, NULL);
+}
+#define NO_ARM SCR_JSCHEMA_NO_ARM
+static const ScrJsonUnion test_name_union = {
+    SCR_JUNION_NULLABLE, {NO_ARM, NO_ARM, NO_ARM, 0, NO_ARM, NO_ARM, 1},
+    {NULL, NULL, NULL, &test_str, NULL, NULL, NULL}, NULL, test_absent, NULL};
+static const ScrJsonUnion test_age_union = {
+    SCR_JUNION_INLINE, {1, 0, NO_ARM, NO_ARM, NO_ARM, NO_ARM, 2},
+    {NULL, &test_f64, NULL, NULL, NULL, NULL, NULL}, NULL, NULL, NULL};
+static const ScrJsonUnion test_key_union = {
+    SCR_JUNION_BOXED, {NO_ARM, 0, NO_ARM, 1, NO_ARM, NO_ARM, NO_ARM},
+    {NULL, &test_f64, NULL, &test_str, NULL, NULL, NULL}, NULL, NULL, test_key_box};
+#undef NO_ARM
+static const ScrJsonSchema test_name = {SCR_JSCHEMA_UNION, 0, NULL, NULL, NULL, NULL, NULL, &test_name_union};
+static const ScrJsonSchema test_age = {SCR_JSCHEMA_UNION, 0, NULL, NULL, NULL, NULL, NULL, &test_age_union};
+static const ScrJsonSchema test_key = {SCR_JSCHEMA_UNION, 0, NULL, NULL, NULL, NULL, NULL, &test_key_union};
+static const ScrJsonSchemaField test_opt_fields[] = {
+    {"name", 4, offsetof(TestOpt, name), &test_name},
+    {"age", 3, offsetof(TestOpt, age), &test_age},
+    {"key", 3, offsetof(TestOpt, key), &test_key},
+};
+static const ScrJsonSchema test_opt = {SCR_JSCHEMA_REC, 3, test_opt_fields, NULL, test_opt_new, NULL, test_opt_release};
+
+static TestOpt *opt_parse(const char *text) {
+  ScrStr *input = scr_str_new(text, strlen(text));
+  TestOpt *opt = scr_json_parse_schema(input, &test_opt);
+  scr_str_release(input);
+  assert(!scr_exc_pending());
+  return opt;
+}
+
+static void json_schema_union_members(void) {
+  TestOpt *opt = opt_parse("{\"name\":\"n\",\"age\":2.5,\"key\":\"k\"}");
+  assert(opt && str_is(opt->name, "n") && opt->age.tag == 0);
+  double age;
+  memcpy(&age, &opt->age.bits, sizeof age);
+  assert(age == 2.5);
+  assert(opt->key->tag == 1 && str_is(scr_union_peek(opt->key), "k"));
+  assert(!scr_record_source_has(opt));
+  test_opt_release(opt);
+  /* Missing undefined-armed members take their ABSENT states; null lands
+   * in the null arm with zero bits. */
+  opt = opt_parse("{\"key\":-1}");
+  assert(opt && opt->name == (ScrStr *)test_absent);
+  assert(opt->age.tag == 2 && opt->age.bits == 1);
+  assert(opt->key->tag == 0 && scr_union_get_f64(opt->key) == -1);
+  test_opt_release(opt);
+  opt = opt_parse("{\"age\":null,\"key\":0}");
+  assert(opt && opt->name == (ScrStr *)test_absent && opt->age.tag == 1 && opt->age.bits == 0);
+  test_opt_release(opt);
+  /* A reordered member keeps the source beside the record, absent members
+   * included. */
+  opt = opt_parse("{\"key\":\"z\",\"name\":\"y\"}");
+  assert(opt && str_is(opt->name, "y") && opt->age.tag == 2 && opt->age.bits == 1);
+  assert(scr_record_source_has(opt));
+  test_opt_release(opt);
+  /* No arm of the value's kind, or a missing member without an undefined
+   * arm, declines. */
+  static const char *const declined[] = {
+      "{\"name\":null,\"key\":1}",
+      "{\"age\":\"1\",\"key\":1}",
+      "{\"key\":true}",
+      "{\"key\":null}",
+      "{\"name\":\"a\"}",
+      "{}",
+      "{\"key\":1,\"key\":2}",
+      "{\"age\":nul,\"key\":1}",
+  };
+  for (size_t i = 0; i < sizeof declined / sizeof *declined; i++) {
+    assert(!opt_parse(declined[i]));
+    assert(test_opts_live == 0);
+  }
+  assert(test_opts_live == 0);
+}
+
 int main(void) {
   json_string_boundaries();
   json_indent_ownership();
@@ -702,6 +813,7 @@ int main(void) {
   json_intact_regions();
   json_schema_parse();
   json_schema_special_names();
+  json_schema_union_members();
   /* Native Set boxes may own headerless scalar/string maps. Collecting an
    * enclosing cycle must neither trace those leaves nor skip their release. */
   for (int i = 0; i < 2000; i++) {

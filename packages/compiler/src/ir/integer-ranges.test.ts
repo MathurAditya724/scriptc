@@ -52,6 +52,28 @@ test("tracks exact additions and bitwise conversions through assignments", () =>
   expect(ranges.get(unsigned)).toEqual({ min: 0, max: 4294967295 });
 });
 
+test("element reads of Int32[] arrays that found a value are int32s", () => {
+  const arrType = { kind: "array", elem: F64 } as const;
+  const read = (localId: string): IrExpr => ({
+    loc,
+    kind: "arrayGet",
+    arr: { loc, kind: "varRef", localId, type: arrType },
+    index: num(0),
+    type: F64,
+  });
+  const checked = read("ints");
+  const other = read("floats");
+  const ranges = analyzeIntegerRanges(
+    fn([
+      { loc, kind: "exprStmt", expr: checked },
+      { loc, kind: "exprStmt", expr: other },
+    ]),
+    { elements: (arr) => arr.kind === "varRef" && arr.localId === "ints" },
+  );
+  expect(ranges.get(checked)).toEqual({ min: -2147483648, max: 2147483647 });
+  expect(ranges.get(other) ?? null).toBeNull();
+});
+
 test("rejects negative zero, fractions, nonfinite values and imprecise sums", () => {
   for (const value of [-0, 0.5, NaN, Infinity, -Infinity, 9007199254740992]) {
     const sum = bin("+", num(value), num(0));

@@ -638,6 +638,12 @@ struct ScrFiber {
   bool await_parked;
 #ifdef SCR_ASAN_FIBERS
   void *fake_stack;
+  /* Live stackless async fibers (scr_async_spawn_stackless) form a list
+   * rooted in a global, the stack root regions' counterpart: a suspended
+   * coroutine frame that never resumes stays reachable for the leak check
+   * as an abandoned fiber stack does. */
+  struct ScrFiber *stackless_next;
+  struct ScrFiber **stackless_previous;
 #endif
 };
 
@@ -713,6 +719,8 @@ static void scr_fiber_keep_abandoned(ScrFiber *fiber) {
   }
   scr_abandoned_fibers[scr_abandoned_len++] = fiber;
 }
+
+static SCR_TL ScrFiber *scr_stackless_fibers;
 #endif
 
 void *scr_fiber_self(void) { return scr_current; }
@@ -985,6 +993,9 @@ double scr_set_interval(ScrClosure *cb, double ms) {
   scr_timer_push(t);
   return (double)id;
 }
+
+SCR_TL void (*scr_mt_abort_timeout_arm)(ScrClosure *cb, double ms) = NULL;
+SCR_TL int scr_mt_wait_state = 0;
 
 double scr_set_timeout_handle(ScrClosure *cb, double ms) {
   ms = scr_timer_coerce_ms(ms);
@@ -1816,7 +1827,7 @@ static void scr_trampoline(void) {
 /* Seeds a fresh fiber's register file so its first switch-in enters the
  * trampoline with an ABI-conforming stack. The stack itself is only
  * written at its top word, so the mapping stays lazily committed. */
-static void scr_fiber_context_init(ScrFiber *f) {
+static void scr_fiber_context_start(ScrFiber *f, void (*start)(void)) {
   f->stack = scr_fiber_stack_new();
   uintptr_t top = ((uintptr_t)f->stack + SCR_FIBER_STACK) & ~(uintptr_t)15;
   memset(&f->ctx, 0, sizeof f->ctx);
@@ -1826,13 +1837,13 @@ static void scr_fiber_context_init(ScrFiber *f) {
   void **sp = (void **)top;
   *--sp = NULL;
   f->ctx.gpr[0] = sp;
-  f->ctx.gpr[7] = (void *)scr_trampoline;
+  f->ctx.gpr[7] = (void *)start;
   f->ctx.mxcsr = __builtin_ia32_stmxcsr();
   __asm__ volatile("fnstcw %0" : "=m"(f->ctx.fpcw));
 #else
-  f->ctx.reg[0] = (uint64_t)(uintptr_t)scr_trampoline; /* x19, for scr_ctx_boot */
-  f->ctx.reg[11] = (uint64_t)(uintptr_t)scr_ctx_boot;  /* x30: resume address */
-  f->ctx.reg[12] = (uint64_t)top;                      /* sp */
+  f->ctx.reg[0] = (uint64_t)(uintptr_t)start;        /* x19, for scr_ctx_boot */
+  f->ctx.reg[11] = (uint64_t)(uintptr_t)scr_ctx_boot; /* x30: resume address */
+  f->ctx.reg[12] = (uint64_t)top;                     /* sp */
 #endif
 }
 #elif !defined(_WIN32) && !defined(__wasi__)
@@ -1845,7 +1856,7 @@ static void scr_fiber_context_init(ScrFiber *f) {
  * same as when initializing the full mapping; ordinary calls can still
  * use all of SCR_FIBER_STACK.
  * See libplatform/src/ucontext/generic/makecontext.c's arm64 implementation. */
-static void scr_fiber_context_init(ScrFiber *f) {
+static void scr_fiber_context_start(ScrFiber *f, void (*start)(void)) {
   f->stack = scr_fiber_stack_new();
   if (getcontext(&f->ctx) != 0) scr_trap("scriptc: getcontext failed\n");
   f->ctx.uc_stack.ss_sp = f->stack;
@@ -1857,10 +1868,13 @@ static void scr_fiber_context_init(ScrFiber *f) {
   f->ctx.uc_stack.ss_sp = f->stack + SCR_FIBER_STACK - bootstrap;
   f->ctx.uc_stack.ss_size = bootstrap;
 #endif
-  makecontext(&f->ctx, scr_trampoline, 0);
+  makecontext(&f->ctx, start, 0);
   f->ctx.uc_stack.ss_sp = f->stack;
   f->ctx.uc_stack.ss_size = SCR_FIBER_STACK;
 }
+#endif
+#if !defined(_WIN32) && !defined(__wasi__)
+static void scr_fiber_context_init(ScrFiber *f) { scr_fiber_context_start(f, scr_trampoline); }
 #endif
 
 /* Frees a finished fiber's execution resources (the promise release and
@@ -1872,6 +1886,12 @@ static void scr_fiber_destroy(ScrFiber *f) {
   if (f->context_previous) {
     *f->context_previous = f->context_next;
     if (f->context_next) f->context_next->context_previous = f->context_previous;
+  }
+#endif
+#ifdef SCR_ASAN_FIBERS
+  if (f->stackless_previous) {
+    *f->stackless_previous = f->stackless_next;
+    if (f->stackless_next) f->stackless_next->stackless_previous = f->stackless_previous;
   }
 #endif
 #ifdef __wasi__
@@ -1989,6 +2009,105 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
   return scr_async_spawn_impl(entry, argpack, NULL);
 }
 
+#ifndef __wasi__
+/* ── stackless async functions ────────────────────────────────────────
+ * The compiler lowers an async body that suspends only at its own awaits
+ * to an LLVM switched coroutine (scr_async.h). Its fiber is a scheduler
+ * envelope without a stack or saved context: the eager prefix runs on the
+ * spawner's stack (the WASI spawn's shape), and every later step runs on
+ * the loop's (scr_resume_fiber). The exception cell, AsyncLocalStorage
+ * context, and Error.stack chain swap exactly as a fiber switch swaps them,
+ * and the promise settles and wakes its waiters through the same paths. */
+#ifndef _WIN32
+/* The stack a nest of eager prefixes leaves above the running stack's
+ * guard before the next prefix moves to a fresh stack. Each fiber of the
+ * stackful form brought its own stack, so an async recursion as deep as
+ * memory allows keeps working; between moves the stack guard (with its
+ * reserve below the guard) still covers synchronous recursion. */
+#define SCR_STACKLESS_PREFIX_ROOM ((uintptr_t)64 << 10)
+
+static SCR_TL struct {
+  ScrFiber *body;
+  void (*entry)(ScrFiber *, void *);
+  void *argpack;
+} scr_prefix_call;
+
+/* Runs on the carrier's fresh stack: the body's prefix as the body's own
+ * fiber, then back to the spawner, which frees the stack. */
+static void scr_prefix_trampoline(void) {
+#ifdef SCR_ASAN_FIBERS
+  const void *ob;
+  size_t os;
+  __sanitizer_finish_switch_fiber(scr_current->fake_stack, &ob, &os);
+#endif
+  ScrFiber *carrier = scr_current;
+  ScrFiber *f = scr_prefix_call.body;
+  void (*entry)(ScrFiber *, void *) = scr_prefix_call.entry;
+  void *argpack = scr_prefix_call.argpack;
+  scr_current = f;
+  scr_exc_swap_cell(&f->exc);
+  scr_als_active = &f->als;
+  entry(f, argpack);
+  scr_current = carrier;
+  scr_switch(&carrier->ctx, carrier->return_to, NULL);
+  /* unreachable */
+}
+
+static void scr_prefix_on_fresh_stack(ScrFiber *f, void (*entry)(ScrFiber *, void *),
+                                      void *argpack) {
+  ScrFiber carrier;
+  memset(&carrier, 0, sizeof carrier);
+  scr_fiber_context_start(&carrier, scr_prefix_trampoline);
+  ScrCtx here;
+  carrier.return_to = &here;
+  scr_prefix_call.body = f;
+  scr_prefix_call.entry = entry;
+  scr_prefix_call.argpack = argpack;
+  scr_switch(&here, &carrier.ctx, &carrier);
+  scr_fiber_stack_free(carrier.stack);
+}
+#endif
+
+ScrPromise *scr_async_spawn_stackless(void (*entry)(ScrFiber *, void *), void *argpack) {
+  ScrFiber *f = scr_mem_calloc(sizeof *f);
+  if (!f) scr_oom();
+  scr_fiber_track(f);
+  f->promise = scr_promise_new();
+  f->stackless = true;
+  f->als = scr_als_ctx_retain(*SCR_ALS_SLOT());
+  scr_fibers_live++;
+#ifdef SCR_ASAN_FIBERS
+  f->stackless_next = scr_stackless_fibers;
+  f->stackless_previous = &scr_stackless_fibers;
+  if (scr_stackless_fibers) scr_stackless_fibers->stackless_previous = &f->stackless_next;
+  scr_stackless_fibers = f;
+#endif
+  ScrFiber *spawner = scr_current;
+#ifndef _WIN32
+  uintptr_t guard = scr_stack_guard;
+  if (guard != 0 && (uintptr_t)__builtin_frame_address(0) < guard + SCR_STACKLESS_PREFIX_ROOM) {
+    scr_prefix_on_fresh_stack(f, entry, argpack);
+  } else
+#endif
+  {
+    scr_current = f;
+    scr_exc_swap_cell(&f->exc);
+    scr_als_active = &f->als;
+    entry(f, argpack); /* the eager prefix: returns at a suspension or the end */
+  }
+  scr_current = spawner;
+  scr_exc_swap_cell(spawner ? &spawner->exc : NULL);
+  scr_als_active = spawner ? &spawner->als : &scr_als_main_slot;
+  ScrPromise *result = scr_promise_retain(f->promise);
+  if (f->done) {
+    scr_promise_release(f->promise);
+    scr_fiber_destroy(f);
+    scr_fibers_live--;
+  }
+  return result;
+}
+#endif
+
 static void scr_await_park(ScrPromise *p);
 static void scr_promise_rethrow(ScrPromise *p);
 
@@ -2004,7 +2123,7 @@ static ScrPromise *scr_async_spawn_await(void (*entry)(ScrFiber *, void *), void
                                          bool *ok) {
 #ifdef SCR_SPAWN_AWAIT
   ScrFiber *self = scr_current;
-  if (self != NULL && self->gen == NULL && self->inline_depth == 0) {
+  if (self != NULL && self->gen == NULL && self->inline_depth == 0 && !self->stackless) {
     ScrPromise *p = scr_async_spawn_impl(entry, argpack, self);
     if (self->await_parked) {
       self->await_parked = false;
@@ -2077,6 +2196,12 @@ void *scr_async_spawn_await_ref(void (*entry)(ScrFiber *, void *), void *argpack
  * after the body is the body's own throw. */
 static void scr_inline_park_trap(void) {
   scr_trap("scriptc: internal error: fiberless async body suspended\n");
+}
+
+/* A stackless body has no stack to park: only its own emitted awaits may
+ * suspend it (scr_coro_await_prepare). */
+static void scr_stackless_park_trap(void) {
+  scr_trap("scriptc: internal error: stackless async body parked its stack\n");
 }
 
 void scr_async_inline_enter(ScrAsyncInline *frame) {
@@ -2165,6 +2290,7 @@ static void scr_await_park(ScrPromise *p) {
     abort();
   }
   if (self->inline_depth != 0) scr_inline_park_trap();
+  if (self->stackless) scr_stackless_park_trap();
   scr_promise_add_waiter(p, self);
 #ifdef SCR_WORKERS
   self->waiting = p;
@@ -2225,6 +2351,51 @@ void scr_gen_coro_finish(ScrFiber *self) {
   }
   scr_fiber_finish(self);
 }
+
+/* A stackless async body's await. A pending promise owns the continuation
+ * through its waiter list. A settled one (or a non-promise operand) takes
+ * one microtask turn on the READY queue, except where scr_await_yield
+ * continues a fiber in place: resumed by the loop's drain with nothing
+ * else queued, this body is the very next job either way. */
+static bool scr_coro_hop_needed(ScrFiber *self) {
+  if (self->return_to == &scr_loop_ctx && scr_ready_len == 0) return false;
+  scr_ready_push(self);
+  return true;
+}
+
+bool scr_coro_await_prepare(ScrFiber *self, ScrPromise *p) {
+  if (p->state == SCR_PROM_PENDING) {
+    scr_promise_add_waiter(p, self);
+    return true;
+  }
+  return scr_coro_hop_needed(self);
+}
+
+bool scr_coro_hop_prepare(ScrFiber *self) { return scr_coro_hop_needed(self); }
+
+void scr_coro_async_finish(ScrFiber *self) { scr_fiber_finish(self); }
+
+/* Extraction after the await's suspension: the promise has settled. */
+static bool scr_coro_await_settled(ScrPromise *p) {
+  if (p->state == SCR_PROM_PENDING)
+    scr_trap("scriptc: internal error: resumed before awaited promise settled\n");
+  scr_prom_observe(p);
+  if (p->state == SCR_PROM_REJECTED) {
+    scr_promise_rethrow(p);
+    return false;
+  }
+  return true;
+}
+
+void scr_coro_await_void(ScrPromise *p) { scr_coro_await_settled(p); }
+double scr_coro_await_f64(ScrPromise *p) { return scr_coro_await_settled(p) ? p->f64 : 0; }
+bool scr_coro_await_bool(ScrPromise *p) { return scr_coro_await_settled(p) ? p->b : false; }
+ScrStr *scr_coro_await_str(ScrPromise *p) {
+  return scr_coro_await_settled(p) && p->payload ? scr_str_retain((ScrStr *)p->payload) : NULL;
+}
+void *scr_coro_await_ref(ScrPromise *p) {
+  return scr_coro_await_settled(p) && p->payload ? p->retain_fn(p->payload) : NULL;
+}
 #endif
 
 /* One microtask hop: park the current fiber on the READY queue itself and
@@ -2239,6 +2410,7 @@ static void scr_await_yield(void) {
     abort();
   }
   if (self->inline_depth != 0) scr_inline_park_trap();
+  if (self->stackless) scr_stackless_park_trap();
   if (self->gen != NULL) {
     scr_ready_push(self);
     scr_switch(&self->ctx, self->return_to, NULL);
@@ -3641,10 +3813,21 @@ static void scr_resume_fiber(ScrFiber *f) {
   scr_exc_swap_cell(NULL);
   scr_als_active = &scr_als_main_slot;
 #else
-  scr_switch(&scr_loop_ctx, &f->ctx, f);
-  f = scr_loop_reap;
-  if (f == NULL) return;
-  scr_loop_reap = NULL;
+  if (f->stackless) {
+    /* A stackless async body continues on the loop's stack. */
+    scr_current = f;
+    scr_exc_swap_cell(&f->exc);
+    scr_als_active = &f->als;
+    scr_coro_resume(f->coro);
+    scr_current = NULL;
+    scr_exc_swap_cell(NULL);
+    scr_als_active = &scr_als_main_slot;
+  } else {
+    scr_switch(&scr_loop_ctx, &f->ctx, f);
+    f = scr_loop_reap;
+    if (f == NULL) return;
+    scr_loop_reap = NULL;
+  }
 #endif
   if (f->done) {
     scr_promise_release(f->promise);
@@ -4400,7 +4583,9 @@ bool scr_report_unhandled_rejections(void) {
 #ifdef SCR_WORKERS
         if (scr_context_report_error) {
           scr_promise_rethrow(p);
+          scr_context_report_rejection = true;
           scr_exc_print_uncaught();
+          scr_context_report_rejection = false;
           scr_promise_release(p);
           continue;
         }
@@ -4680,6 +4865,13 @@ struct ScrGen {
   ScrExcCell async_error;
   bool settle_queued;
   bool success_hop_done;
+  /* A return() request at a yield: the queued job resumes the body after
+   * the return value's await (return_queued), and the body's completion,
+   * on that request or a later one, settles without another turn
+   * (return_awaited). An explicit `return x` during the unwind clears it,
+   * since that return takes its own turn to await x. */
+  bool return_queued;
+  bool return_awaited;
 #ifdef SCR_WORKERS
   bool context_abandoned;
 #endif
@@ -5081,6 +5273,8 @@ void scr_coro_yield_ref(ScrFiber *self, void *v, void (*release)(void *)) {
   scr_gen_slot_ref(&self->gen->out, v, release);
 }
 
+void scr_async_gen_return_awaits(void) { scr_gen_self()->return_awaited = false; }
+
 void scr_async_gen_hop_done(void) {
   ScrGen *g = scr_gen_self();
   if (!g->is_async) {
@@ -5360,6 +5554,21 @@ static void scr_async_gen_capture_caller_error(ScrGen *g) {
   if (cell->kind != SCR_EXC_NONE) scr_gen_exc_move(&g->async_error, cell);
 }
 
+/* Whether the body's latest stop settles its request without a further
+ * turn: a yield whose await already supplied the value, or a completion
+ * after a return() request's await. */
+static bool scr_async_gen_settles_now(ScrGen *g) {
+  if (g->success_hop_done) {
+    g->success_hop_done = false;
+    return true;
+  }
+  if (g->return_awaited && g->state == SCR_GEN_DONE) {
+    g->return_awaited = false;
+    return true;
+  }
+  return false;
+}
+
 static void scr_async_gen_run_active(ScrGen *g, ScrAsyncGenRequest *req) {
   const bool was_done = g->state == SCR_GEN_DONE;
   if (req->mode == SCR_AG_NEXT) {
@@ -5371,6 +5580,13 @@ static void scr_async_gen_run_active(ScrGen *g, ScrAsyncGenRequest *req) {
     scr_gen_slot_reset(&g->ret);
     g->ret = req->arg;
     memset(&req->arg, 0, sizeof req->arg);
+    if (g->state == SCR_GEN_SUSPENDED) {
+      /* At a yield, AsyncGeneratorYield awaits the return value before
+       * the body resumes, so finally blocks run one turn later. */
+      g->return_queued = true;
+      scr_async_gen_schedule_settle(g);
+      return;
+    }
     scr_gen_resume_return(g);
   } else {
     scr_gen_exc_move(scr_exc_current_cell(), &req->thrown);
@@ -5385,16 +5601,37 @@ static void scr_async_gen_run_active(ScrGen *g, ScrAsyncGenRequest *req) {
   if (g->state == SCR_GEN_AWAITING) return;
 
   /* next() on an already-completed generator produces its undefined done
-   * result immediately. Yield, body return, and return(value) all pass
-   * through AsyncGeneratorYield's successful Await step. */
+   * result immediately. A yield and return(value) on an unstarted or
+   * completed generator pass through an Await step; a body that falls off
+   * its end, or whose `return x` already awaited x, marks its completion
+   * as settled. */
   if (was_done && req->mode == SCR_AG_NEXT) {
     scr_async_gen_finish_active(g, false);
-  } else if (g->success_hop_done) {
-    g->success_hop_done = false;
+  } else if (scr_async_gen_settles_now(g)) {
     scr_async_gen_finish_active(g, false);
   } else {
     scr_async_gen_schedule_settle(g);
   }
+}
+
+/* The return() request's await has taken its turn: resume the body with
+ * the return completion. */
+static void scr_async_gen_resume_returning(ScrGen *g) {
+  g->return_queued = false;
+  g->return_awaited = true;
+  scr_gen_resume_return(g);
+  scr_async_gen_capture_caller_error(g);
+  if (g->async_error.kind != SCR_EXC_NONE) {
+    scr_async_gen_finish_active(g, true);
+  } else if (g->state == SCR_GEN_AWAITING) {
+    return;
+  } else if (scr_async_gen_settles_now(g)) {
+    scr_async_gen_finish_active(g, false);
+  } else {
+    scr_async_gen_schedule_settle(g);
+    return;
+  }
+  scr_async_gen_start_queued(g);
 }
 
 static void scr_async_gen_start_queued(ScrGen *g) {
@@ -5507,6 +5744,12 @@ static void scr_async_gen_job(ScrGen *g) {
     fputs("scriptc: internal error: invalid async generator settlement job\n", stderr);
     abort();
   }
+  if (g->return_queued) {
+    scr_gen_retain(g);
+    scr_async_gen_resume_returning(g);
+    scr_gen_release(g);
+    return;
+  }
   scr_async_gen_finish_active(g, false);
   scr_async_gen_start_queued(g);
 }
@@ -5524,8 +5767,7 @@ static void scr_async_gen_resume_ready(ScrGen *g) {
     scr_async_gen_finish_active(g, true);
     scr_async_gen_start_queued(g);
   } else if (g->state != SCR_GEN_AWAITING) {
-    if (g->success_hop_done) {
-      g->success_hop_done = false;
+    if (scr_async_gen_settles_now(g)) {
       scr_async_gen_finish_active(g, false);
       scr_async_gen_start_queued(g);
     } else {

@@ -279,25 +279,39 @@ export function lowerPromiseStaticCall(
   // tick-for-tick in Node for plain results (probed), with the
   // promise-returning form riding the async return-adoption machinery
   // (its one-tick residue is SEMANTICS.md 358) — so the lowering IS
-  // that wrapper: one interned async helper per callback type. The
-  // ...args form fences (close over the values instead).
+  // that wrapper: one interned async helper per callback and argument
+  // types. `Promise.try(f, ...args)` evaluates the arguments at the call
+  // and passes them to f, which still runs synchronously.
   if (member === "try") {
     const fNode = call.arguments[0];
-    if (call.arguments.length !== 1 || fNode === undefined || ts.isSpreadElement(fNode)) {
+    const argNodes = call.arguments.slice(1);
+    if (fNode === undefined || call.arguments.some(ts.isSpreadElement)) {
       lowerer.noLowering(
-        `Promise.try with ${call.arguments.length} arguments`,
+        `Promise.try with ${call.arguments.length === 0 ? "no" : "spread"} arguments`,
         call,
-        "the ...args form has no lowering — close over the values: Promise.try(() => f(a, b))",
+        "pass the callback and its arguments directly: Promise.try(f, a, b)",
       );
     }
     const f = lowerer.lowerExpr(fNode);
-    if (f.type.kind !== "func" || f.type.params.length !== 0) {
+    // Arguments past the callback's parameters are evaluated and dropped;
+    // only an arrow function, which has no `arguments`, can ignore them.
+    if (
+      f.type.kind !== "func" ||
+      f.type.params.length > argNodes.length ||
+      (f.type.params.length < argNodes.length && !ts.isArrowFunction(fNode))
+    ) {
       lowerer.noLowering(
-        `Promise.try over a callback of type '${lowerer.checker.typeToString(lowerer.typeOf(fNode))}'`,
+        `Promise.try over a callback of type '${lowerer.checker.typeToString(lowerer.typeOf(fNode))}' with ${argNodes.length} argument${argNodes.length === 1 ? "" : "s"}`,
         fNode,
-        "a zero-parameter function is the supported form",
+        "pass one argument per callback parameter: Promise.try((a, b) => a + b, 1, 2)",
       );
     }
+    const fnT = f.type;
+    const args = argNodes.map((node, i) =>
+      i < fnT.params.length
+        ? lowerer.lowerExprExpecting(node, fnT.params[i]!)
+        : lowerer.lowerExpr(node),
+    );
     const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (resultT?.kind !== "promise") {
       lowerer.noLowering(
@@ -323,13 +337,22 @@ export function lowerPromiseStaticCall(
         "annotate both to one T: Promise.try<T>(f) with f returning T or Promise<T>",
       );
     }
-    const key = `promise.try:${typeKey(f.type)}`;
+    const key = `promise.try:${typeKey(f.type)}:${args.map((a) => typeKey(a.type)).join(",")}`;
     let helper = lowerer.arrHofHelpers.get(key);
     if (!helper) {
       helper = `%promise.try.${lowerer.arrHofHelpers.size}`;
       lowerer.arrHofHelpers.set(key, helper);
       const fRef: IrExpr = { kind: "varRef", localId: "f.0", type: f.type, loc };
-      const callF: IrExpr = { kind: "callValue", callee: fRef, args: [], type: ret, loc };
+      const argLocals = args.map((a, i) => ({ id: `a${i}.0`, name: `a${i}`, type: a.type }));
+      const callF: IrExpr = {
+        kind: "callValue",
+        callee: fRef,
+        args: argLocals
+          .slice(0, fnT.params.length)
+          .map((a) => ({ kind: "varRef" as const, localId: a.id, type: a.type, loc })),
+        type: ret,
+        loc,
+      };
       // Adopt a promise result before either returning its value or completing void.
       const value: IrExpr =
         ret.kind === "promise" ? { kind: "awaitExpr", value: callF, type: ret.inner, loc } : callF;
@@ -342,16 +365,22 @@ export function lowerPromiseStaticCall(
           : [{ kind: "return", value, loc }];
       const lifted: IrFunction = {
         name: helper,
-        params: [{ localId: "f.0", name: "f", type: f.type }],
+        params: [
+          { localId: "f.0", name: "f", type: f.type },
+          ...argLocals.map((a) => ({ localId: a.id, name: a.name, type: a.type })),
+        ],
         returnType: inner,
-        locals: [{ id: "f.0", name: "f", type: f.type, mutable: true }],
+        locals: [
+          { id: "f.0", name: "f", type: f.type, mutable: true },
+          ...argLocals.map((a) => ({ ...a, mutable: true })),
+        ],
         body,
         loc,
         async: true,
       };
       lowerer.liftedFns.push(lifted);
     }
-    return { kind: "call", callee: helper, args: [f], type: resultT, loc };
+    return { kind: "call", callee: helper, args: [f, ...args], type: resultT, loc };
   }
   // Promise.resolve — the already-settled promise. Zero arguments is
   // Promise<void>; a PROMISE argument is returned as-is (the spec's

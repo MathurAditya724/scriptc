@@ -299,6 +299,51 @@ wrap empty: len 2 bytes 60 62
     expect(run.stdout).toBe(BUFFERS_EXPECTED);
   });
 
+  /* ── cstring: NUL-terminated text in, out, and through callbacks ─────── */
+
+  test("cstring parameters, results, and callback arguments", async () => {
+    const { archive, outDir } = await buildLibrary("cstrings", emission);
+    const probe = buildProbe("cstrings", archive, outDir);
+    const run = runProbe(probe, ["ok"]);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(`register: 0
+greet: hello, w\u00f6rld! (strlen 14)
+length ascii: 3
+length utf8: 4
+length malformed: 3
+length empty: 0
+log: QUIET (strlen 5, n 5)
+echo: 1
+done
+`);
+  });
+
+  test.each([
+    ["nullarg", "scriptc: library inbound cstring parameter is NULL\n", "SC4012", "kc_length"],
+    [
+      "nulresult",
+      "scriptc: TypeError: a cstring value contains U+0000, which a C string cannot hold\n",
+      "SC4015",
+      "kc_with_nul",
+    ],
+    [
+      "nularg",
+      "scriptc: TypeError: a cstring value contains U+0000, which a C string cannot hold\n",
+      "SC4015",
+      "kc_echo_nul",
+    ],
+  ])("cstring %s traps through the sink", async (mode, text, code, symbol) => {
+    const { archive, outDir } = await buildLibrary("cstrings", emission);
+    const probe = buildProbe("cstrings", archive, outDir);
+    const run = runProbe(probe, [mode]);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(
+      `register: 0\ntext=[${text}]\ncode=[${code}]\nsymbol=[${symbol}]\ntrapped\n`,
+    );
+  });
+
   /* ── K4: init re-run determinism ─────────────────────────────────────── */
 
   const SESSION = `session start counter=0

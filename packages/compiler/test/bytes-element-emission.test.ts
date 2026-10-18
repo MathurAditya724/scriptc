@@ -302,9 +302,10 @@ test("receiver assignments nested in numeric operands retain the receiver snapsh
 
   const ll = emitLlvmModule(mod);
 
-  // Two receiver snapshots plus two retains per yielded bytes assignment
-  // (one for the RHS temp and one for the binding's stored reference).
-  expect(ll.match(/call ptr @scr_bytes_retain_v/g)).toHaveLength(6);
+  // Two receiver snapshots plus one retain per yielded bytes assignment for
+  // the binding's stored reference. The RHS temp takes over the
+  // replacement's own reference: the assignment is its last use.
+  expect(ll.match(/call ptr @scr_bytes_retain_v/g)).toHaveLength(4);
 });
 
 test("canonical byte loops keep their induction variable and indices integral", () => {
