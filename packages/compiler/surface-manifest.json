@@ -612,6 +612,12 @@
       "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
     },
     {
+      "id": "node-builtin.crypto.getRandomValues",
+      "kind": "node-builtin",
+      "name": "crypto.getRandomValues",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.hash",
       "kind": "node-builtin",
       "name": "crypto.hash",
@@ -860,6 +866,13 @@
       "kind": "node-builtin",
       "name": "fs.closeSync",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.constants",
+      "kind": "node-builtin",
+      "name": "fs.constants",
+      "status": "static",
+      "note": "node_constants.cc's fs group under the target libc's macros; members a platform lacks read as undefined"
     },
     {
       "id": "node-builtin.fs.copyFileSync",

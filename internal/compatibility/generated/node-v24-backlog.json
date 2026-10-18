@@ -3,19 +3,19 @@
   "nodeVersion": "24.22.0",
   "nodeCommit": "f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93",
   "summary": {
-    "taskCount": 3456,
-    "tierItemCount": 3456,
+    "taskCount": 3454,
+    "tierItemCount": 3454,
     "tiers": {
       "static": {
-        "audit-partial": 1155,
-        "verify-gap": 2174,
+        "audit-partial": 1157,
+        "verify-gap": 2170,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
       }
     },
     "priorities": {
-      "high": 2289,
+      "high": 2287,
       "normal": 694,
       "low": 473
     }
@@ -7337,31 +7337,6 @@
         "inherited": false
       },
       "priority": "normal",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "crypto:2ab8394e29a7",
-      "chapter": "crypto",
-      "label": "crypto.getRandomValues(typedArray)",
-      "signature": "`crypto.getRandomValues(typedArray)`",
-      "apiSymbol": "crypto.getRandomValues",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/crypto.html#cryptogetrandomvaluestypedarray",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
       "tiers": {
         "static": {
           "status": "not-implemented",
@@ -27036,12 +27011,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.constants",
+          "tests": [
+            "tests/corpus/6207-fs-constants-object.ts",
+            "tests/corpus/6208-fs-constants-require.cjs"
+          ]
         }
       }
     },
@@ -32733,12 +32711,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.constants",
+          "tests": [
+            "tests/corpus/6207-fs-constants-object.ts",
+            "tests/corpus/6208-fs-constants-require.cjs"
+          ]
         }
       }
     },
@@ -80946,31 +80927,6 @@
       "signature": "Class: `Crypto`",
       "apiSymbol": "Crypto",
       "docsUrl": "https://nodejs.org/docs/v24.22.0/api/webcrypto.html#class-crypto",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "webcrypto:dcc24f369f43",
-      "chapter": "webcrypto",
-      "label": "crypto.getRandomValues(typedArray)",
-      "signature": "`crypto.getRandomValues(typedArray)`",
-      "apiSymbol": "crypto.getRandomValues",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/webcrypto.html#cryptogetrandomvaluestypedarray",
       "nodeStability": {
         "index": "2",
         "level": 2,
