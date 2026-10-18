@@ -225,7 +225,7 @@ import {
 } from "./lower-builtin-values.js";
 import { lowerArrayFromValue } from "./containers/array-construction.js";
 import { lowerPerfHooksTypeof } from "./builtins/performance.js";
-import { lowerUrlAssignment } from "./builtins/url.js";
+import { isSearchParamsIterable, lowerUrlAssignment } from "./builtins/url.js";
 import { jsBindingHasOpenWrites } from "./lower-stmts.js";
 import { checkedClassInstanceOf } from "./class-construction.js";
 import { lowerModuleNamespaceElement } from "./module-namespace-elements.js";
@@ -5889,6 +5889,11 @@ export function lowerArrayLiteral(
         const drained = generatorDrain(lowerer, src, type.elem, locOf(el));
         if (drained) src = drained;
       }
+      // `[...sp]` and `[...sp.entries()]` over a URLSearchParams: its
+      // checked-dynamic view iterates the live pair list, and the drained
+      // [name, value] pairs convert to the literal's tuple elements.
+      const searchParamsSource = isSearchParamsIterable(lowerer, el.expression);
+      if (src.type.kind === "searchParams") src = lowerer.coerceInto(el.expression, src, DYN);
       // A native checked iterable can supply scalar elements even when
       // the checker inferred a typed array from its producer. Drain once
       // and validate the elements before the ordinary spread copy.
@@ -5897,7 +5902,8 @@ export function lowerArrayLiteral(
         (type.elem.kind === "dyn" ||
           type.elem.kind === "f64" ||
           type.elem.kind === "string" ||
-          type.elem.kind === "bool")
+          type.elem.kind === "bool" ||
+          searchParamsSource)
       ) {
         src = lowerer.coerceInto(el.expression, checkedIteratorPack(lowerer, src, locOf(el)), type);
       }
@@ -13994,6 +14000,28 @@ export function lowerUnionProperty(
       };
     }
     return null;
+  }
+  // A class instance the checker sees through a wider union (`(concrete
+  // as A | B).value`): the value is that class's instance, so read its
+  // field directly.
+  if (value.type.kind === "object") {
+    const className = value.type.className;
+    const info = lowerer.classes.get(className) ?? null;
+    const field = expr.name.text;
+    const fieldType = info?.fields.get(field);
+    if (fieldType !== undefined)
+      return lowerer.fieldGetExpr(
+        { container: "class", obj: value, className, field, fieldType },
+        locOf(expr),
+        expr,
+      );
+    const getter = lowerer.findMethodOn(info, `get:${field}`);
+    if (getter)
+      return lowerer.fieldGetExpr(
+        { container: "accessor", obj: value, className, field, fieldType: getter.sig.ret },
+        locOf(expr),
+        expr,
+      );
   }
   if (value.type.kind !== "union") {
     lowerer.unsupported(

@@ -1449,6 +1449,8 @@ ScrDyn *scr_dyn_iter_pack(const ScrDyn *src, const ScrStr *msg) {
   return scr_dyn_not_iterable(src, msg);
 }
 
+static ScrDyn *scr_native_iterator_drain(const ScrDyn *src);
+
 /* The for-of-over-dyn pack accessors: the emitted index loop drives them
  * over a scr_dyn_iter_pack result (ARR by construction — the defensive
  * arms cover nothing reachable from that lowering). Never throw. */
@@ -1463,6 +1465,13 @@ ScrDyn *scr_dyn_map_seed_entries(const ScrDyn *src) {
     scr_dyn_release(view);
     if (scr_exc_pending()) return NULL;
   }
+  /* A native iterator (sp.entries(), a Map's entries()) or a handle that
+   * steps through live entries (URLSearchParams): producing its entries
+   * runs no program code, so draining them first is what the consumer
+   * observes. */
+  if (src->kind == SCR_DYN_HANDLE &&
+      (src->v.handle.tag == SCR_DYNH_ITERATOR || scr_dyn_handle_ops_of(src)->iter_step))
+    return scr_native_iterator_drain(src);
   if (src->kind == SCR_DYN_HANDLE || src->kind == SCR_DYN_TYPED_REF) {
     static const char message[] = "new Map(entries) over native non-array iterables has no lowering";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
@@ -1729,13 +1738,40 @@ static bool scr_dyn_typed_ref_prototype(const ScrDyn *value) {
   return view && (view->kind == SCR_DYN_OBJ || view->kind == SCR_DYN_ARR);
 }
 
+/* True when `prototype` is null or an object or function, the values
+ * Object.create and Object.setPrototypeOf accept. Otherwise throws Node's
+ * TypeError, whose message ends with the value's string form. */
+static bool scr_dyn_prototype_valid(const ScrDyn *prototype) {
+  if (scr_dyn_is_object(prototype) || scr_dyn_is_callable(prototype)) return true;
+  if (scr_exc_pending()) return false;
+  ScrStr *text = prototype->kind == SCR_DYN_SYMBOL
+    ? prototype->v.symbol.render(prototype->v.symbol.value) : scr_dyn_string_coerce_js(prototype);
+  if (!text) return false;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Object prototype may only be an Object or null: ");
+  scr_jb_put_str(&b, text);
+  scr_str_release(text);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return false;
+}
+
+/* A valid receiver or prototype whose kind this operation does not handle. */
+static void scr_dyn_prototype_unsupported(const char *operation) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, operation);
+  scr_jb_puts(&b, " with this value is not supported yet");
+  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+}
+
 ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
+  if (!scr_dyn_prototype_valid(prototype)) return NULL;
   if (prototype != scr_builtin_object_prototype && scr_dyn_class_reflection_fence(prototype)) return NULL;
   bool typed = scr_dyn_typed_ref_prototype(prototype);
   if (scr_exc_pending()) return NULL;
   if (prototype->kind != SCR_DYN_OBJ && prototype->kind != SCR_DYN_ARR && prototype->kind != SCR_DYN_NULL && !typed) {
-    static const char message[] = "Object prototype may only be an Object or null";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_dyn_prototype_unsupported("Object.create");
     return NULL;
   }
   ScrDyn *object = prototype->kind == SCR_DYN_NULL ? scr_dyn_new_obj_null_proto() : scr_dyn_new_obj();
@@ -1786,12 +1822,7 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
    * only check. */
   if (object->kind == SCR_DYN_BOOL || object->kind == SCR_DYN_NUM || object->kind == SCR_DYN_STR ||
       object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL) {
-    bool valid = scr_dyn_is_object(prototype) || scr_dyn_is_callable(prototype);
-    if (scr_exc_pending()) return NULL;
-    if (valid) return scr_dyn_retain(object);
-    static const char message[] = "Object prototype may only be an Object or null";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    return NULL;
+    return scr_dyn_prototype_valid(prototype) ? scr_dyn_retain(object) : NULL;
   }
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_class_reflection_fence(prototype)) return NULL;
   if (object->kind == SCR_DYN_TYPED_REF) {
@@ -1821,12 +1852,12 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
+  if (!scr_dyn_prototype_valid(prototype)) return NULL;
   bool typed = scr_dyn_typed_ref_prototype(prototype);
   if (scr_exc_pending()) return NULL;
   if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR) ||
       (prototype->kind != SCR_DYN_OBJ && prototype->kind != SCR_DYN_ARR && prototype->kind != SCR_DYN_FUNC && prototype->kind != SCR_DYN_NULL && !typed)) {
-    static const char message[] = "Object prototype may only be an Object or null";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_dyn_prototype_unsupported("Object.setPrototypeOf");
     return NULL;
   }
   for (const ScrDyn *current = scr_dyn_chain_link(prototype); current;) {
@@ -4555,6 +4586,33 @@ static ScrDyn *scr_native_collection_iterator(ScrDyn *source, unsigned selection
 
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection) {
   return scr_native_collection_iterator(source, selection);
+}
+
+/* The values a native iterator (or a live-stepping handle's entries
+ * iterator) produces from its current position, into a fresh array; NULL
+ * with the exception pending. */
+static ScrDyn *scr_native_iterator_drain(const ScrDyn *src) {
+  ScrDyn *iterator = src->v.handle.tag == SCR_DYNH_ITERATOR
+                         ? scr_dyn_retain((ScrDyn *)src)
+                         : scr_dyn_native_handle_iterator((ScrDyn *)src, 2);
+  ScrDyn *out = scr_dyn_new_arr();
+  for (;;) {
+    ScrDyn *step = scr_native_iterator_next(iterator->v.handle.ptr);
+    if (!step) {
+      scr_dyn_release(out);
+      out = NULL;
+      break;
+    }
+    bool done = scr_dyn_truthy(scr_dyn_obj_get(step, "done", 4));
+    if (!done) {
+      const ScrDyn *value = scr_dyn_obj_get(step, "value", 5);
+      scr_dyn_arr_push(out, scr_dyn_retain((ScrDyn *)(value ? value : scr_dyn_undefined())));
+    }
+    scr_dyn_release(step);
+    if (done) break;
+  }
+  scr_dyn_release(iterator);
+  return out;
 }
 
 static ScrDyn *scr_builtin_iterator_checked(int kind) {

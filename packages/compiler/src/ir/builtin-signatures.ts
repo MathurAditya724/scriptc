@@ -550,6 +550,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** os.getPriority(pid): validateInt32 (RangeError ERR_OUT_OF_RANGE),
    * then the priority; a failure throws Node's SystemError. */
   "os.getPriority": { argTypes: [F64], result: F64 },
+  /** os.setPriority(pid, priority): validateInt32 for both (priority in
+   * -20..19, RangeError ERR_OUT_OF_RANGE), then the priority; a failure
+   * throws Node's SystemError. */
+  "os.setPriority": { argTypes: [F64, F64], result: VOID },
   /** os.cpus(): cpusTake snapshots every CPU and answers the count;
    * cpusModel(i) and cpusField(i, k) (k: 0 speed, 1 user, 2 nice, 3 sys,
    * 4 idle, 5 irq) read the snapshot. Never throw. */
@@ -3806,6 +3810,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "strdec.write": { argTypes: [STRING, F64, BYTES_U8], result: STRING },
   "strdec.next": { argTypes: [STRING, F64, BYTES_U8], result: F64 },
   "strdec.end": { argTypes: [STRING, F64], result: STRING },
+  /** A runtime encoding argument's canonical name (Node's normalizeEncoding:
+   * nullish and "" are utf8); an unknown name throws ERR_UNKNOWN_ENCODING. */
+  "strdec.encoding": { argTypes: [DYN], result: STRING },
   // node:readline: the interface handle is f64; the callbacks' func types
   // are program-dependent (the emitter picks the adapter by parameter
   // count), so those slots are null like child.onExit's.

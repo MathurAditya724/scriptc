@@ -294,6 +294,15 @@ double scr_library_i64_in(int64_t v, const char *trap_msg);
 double scr_library_u64_in(uint64_t v, const char *trap_msg);
 void scr_library_str_out(ScrStr *s, const uint8_t **out, size_t *out_len);
 void scr_library_bytes_out(ScrBytes *b, const uint8_t **out, size_t *out_len);
+/* The cstring class (a NUL-terminated `const char *`). Inbound: a copy
+ * decoded as UTF-8 with U+FFFD replacement; NULL delivers trap_msg (the
+ * assembled SC4012 message). Outbound results move into the arena and
+ * return their data; callback arguments return the string's own data,
+ * borrowed for the call. A string containing U+0000 cannot be a C string:
+ * both outbound forms trap instead of truncating. */
+ScrStr *scr_library_cstr_in(const char *p, const char *trap_msg); /* +1 */
+const char *scr_library_cstr_out(ScrStr *s);
+const char *scr_library_cstr_arg(const ScrStr *s);
 
 #define scr_atexit(fn) scr_library_register_reset(fn)
 #elif defined(SCR_WORKERS)
