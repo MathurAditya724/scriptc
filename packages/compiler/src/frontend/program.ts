@@ -635,9 +635,14 @@ export function entryPackageFilePredicate(entryPath: string): (file: string) => 
 }
 
 /** maxNodeModuleJsDepth can omit relative imports within an admitted
- * package. Discover its runtime sources to a fixpoint so the checker and
- * module resolver see the same graph regardless of import traversal order. */
-function entryPackageProgramRoots7(program: ts.Program, entryPath: string): string[] {
+ * package, and opted-in packages deep in the dependency graph. Discover
+ * their runtime sources to a fixpoint so the checker and module resolver
+ * see the same graph regardless of import traversal order or depth. */
+function entryPackageProgramRoots7(
+  program: ts.Program,
+  entryPath: string,
+  rootNpmStaticEdges: boolean,
+): string[] {
   const belongsToEntry = entryPackageFilePredicate(entryPath);
   const roots = new Set<string>();
   for (const sf of program.getImplementationSourceFiles()) {
@@ -656,15 +661,63 @@ function entryPackageProgramRoots7(program: ts.Program, entryPath: string): stri
         program.getSourceFile(target) === undefined
       )
         roots.add(target);
+      // An opted-in package's bare edge counts against the same depth
+      // budget: tsgo charges every node_modules JS hop, so express's
+      // body-parser → qs → side-channel → get-intrinsic chain runs out of
+      // depth before its leaves load. Root the runtime file this edge
+      // lowers to (preflight's own resolution and miss rule) so the leaf
+      // joins like a shallow one; complete programs add nothing. Only
+      // the shadowed lowering world does this (the authored world checks
+      // user code against declarations), and only from package files: a
+      // program file's own edges are never deeper than one hop.
+      // (resolveBareModule directly: resolveNpmImport7's workspace
+      // registration stays with preflight's own walk.)
+      if (
+        target === null &&
+        rootNpmStaticEdges &&
+        npmStaticPackageOfPath(sf.fileName) !== null &&
+        !isRelativeSpecifier(specifier.text)
+      ) {
+        const spec = specifier.text;
+        if (spec.startsWith("#") || canonicalBuiltinModule(spec) !== null) continue;
+        const npm = resolveBareModule(
+          sf.fileName,
+          spec,
+          undefined,
+          moduleSpecifierKind7(specifier),
+        );
+        if (
+          npm !== null &&
+          isNpmStaticPackage(npm.packageName) &&
+          (isNodeModulesPath(npm.typesFile) || npm.workspaceDir !== undefined) &&
+          isJsSourceFileName(npm.typesFile) &&
+          npmStaticProgramFile(program, npm.typesFile) === null
+        )
+          roots.add(tsgoPath(resolve(npm.typesFile)));
+      }
     }
   }
   return [...roots].sort();
+}
+
+/** "require" for a CommonJS edge (`require("x")`, `import x = require("x")`),
+ * "import" for every ESM form — the resolution kind preflight uses. */
+function moduleSpecifierKind7(specifier: ts.StringLiteralLike): "import" | "require" {
+  const parent = specifier.parent;
+  if (ts.isExternalModuleReference(parent)) return "require";
+  return ts.isCallExpression(parent) &&
+    ts.isIdentifier(parent.expression) &&
+    parent.expression.text === "require"
+    ? "require"
+    : "import";
 }
 
 function loadProgram7(
   host: ts.Ts7Host,
   entryPath: string,
   externalTypes: ReadonlyMap<string, string> = new Map(),
+  /** The --npm-static lowering world: root opted-in packages' deep edges. */
+  rootNpmStaticEdges = false,
 ): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
   const configuredPaths = config.options["paths"];
@@ -712,7 +765,7 @@ function loadProgram7(
   try {
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
-        ...entryPackageProgramRoots7(program, entryPath),
+        ...entryPackageProgramRoots7(program, entryPath, rootNpmStaticEdges),
         ...createRequireProgramRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
         ...workerTargetPaths(program, program.getImplementationSourceFiles()),
@@ -926,7 +979,7 @@ export function loadProgram(
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
   try {
-    const load = loadProgram7(host, entryPath, externalTypes);
+    const load = loadProgram7(host, entryPath, externalTypes, npmStaticPackages.length > 0);
     let authoredHost: ts.Ts7Host | null = null;
     let authoredLoad: ReturnType<typeof loadProgram7> | null = null;
     return {
@@ -4000,6 +4053,24 @@ function locOf7(node: ts.Node): { file: string; start: number; end: number } {
   return { file: sf.fileName, start: node.getStart(sf), end: node.getEnd() };
 }
 
+/** The program file holding an opted-in package's resolved runtime JS:
+ * the file itself, or its same-stem TypeScript twin. */
+function npmStaticProgramFile(program: ts.Program, resolvedFile: string): ts.SourceFile | null {
+  let dep = program.getSourceFile(resolvedFile) ?? null;
+  if (dep === null) {
+    // A workspace-linked package shipping its .ts SOURCE beside the
+    // compiled .js: the checker's resolution preferred the source (it
+    // outranks the sibling .js under bundler resolution), so the program
+    // holds the .ts twin at the same stem — the same module, in its
+    // richer spelling.
+    for (const ext of [".ts", ".tsx", ".mts", ".cts"]) {
+      dep = program.getSourceFile(resolvedFile.replace(/\.(js|mjs|cjs)$/, ext)) ?? null;
+      if (dep !== null) break;
+    }
+  }
+  return dep;
+}
+
 /** The PROGRAM source file an opted-in --npm-static package's resolved
  * entry maps to, or null with the package marked an offender (resolution
  * still answering declarations, or the file missing from the type-checked
@@ -4016,18 +4087,7 @@ function npmStaticProgramDep(
     );
     return null;
   }
-  let dep = program.getSourceFile(resolvedFile) ?? null;
-  if (dep === null) {
-    // A workspace-linked package shipping its .ts SOURCE beside the
-    // compiled .js: the checker's resolution preferred the source (it
-    // outranks the sibling .js under bundler resolution), so the program
-    // holds the .ts twin at the same stem — the same module, in its
-    // richer spelling.
-    for (const ext of [".ts", ".tsx", ".mts", ".cts"]) {
-      dep = program.getSourceFile(resolvedFile.replace(/\.(js|mjs|cjs)$/, ext)) ?? null;
-      if (dep !== null) break;
-    }
-  }
+  const dep = npmStaticProgramFile(program, resolvedFile);
   if (dep === null) {
     reportNpmStaticOffender(
       packageName,
