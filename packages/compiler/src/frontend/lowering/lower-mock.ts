@@ -32,7 +32,8 @@ import {
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { countedFor, dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
+import { countedFor, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { mockType as mockHybridType } from "../mock-shapes.js";
 import { locOf } from "../program.js";
 import { resultIsDiscarded } from "./call-position.js";
@@ -860,6 +861,157 @@ export function lowerMockTrackerCall(
     type: VOID,
     loc: locOf(call),
   };
+}
+
+const MOCK_TIMERS_HINT =
+  "enable, tick, runAll, reset and setTime are the supported mock.timers members";
+const MOCK_TIMERS_APIS_HINT =
+  "list the mocked APIs as string literals: enable({ apis: ['setTimeout', 'Date'] })";
+/** The codes scr_test.c reads for the APIs enable() mocks, in Node's
+ * SUPPORTED_APIS order. */
+const MOCK_TIMERS_API_CODES: Readonly<Record<string, string>> = {
+  setTimeout: "T",
+  setInterval: "I",
+  setImmediate: "M",
+  Date: "D",
+  "scheduler.wait": "W",
+  "AbortSignal.timeout": "A",
+};
+/** enable() and enable({ now }) without `apis` mock every API. */
+const MOCK_TIMERS_ALL_APIS = "TIMDWA";
+
+/** `mock.timers.enable(...)` and the other MockTimers members, on the
+ * module's `mock` (tracker null) and t.mock. enable() takes no options or
+ * an object literal whose `apis`, when given, is an array literal of API
+ * names. */
+export function lowerMockTimersCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: string,
+  what: string,
+  tracker: () => MockTracker,
+  sym: ts.Symbol | null,
+): IrExpr {
+  const loc = locOf(call);
+  const args = call.arguments;
+  const optionalNumber = (fallback: number): IrExpr[] => {
+    if (args.length > 1)
+      lowerer.noLowering(`${what}.${member} with ${args.length} arguments`, call);
+    return [args.length === 1 ? lowerer.lowerExprExpecting(args[0]!, F64) : numLit(fallback, loc)];
+  };
+  if (!["enable", "tick", "setTime", "runAll", "reset"].includes(member)) {
+    lowerer.noLowering(`${what}.${member}`, call, MOCK_TIMERS_HINT, sym);
+  }
+  // The receiver evaluates before the arguments.
+  const t = tracker();
+  let rest: IrExpr[];
+  switch (member) {
+    case "enable":
+      rest = lowerMockTimersOptions(lowerer, call, what);
+      break;
+    case "tick":
+      rest = optionalNumber(1);
+      break;
+    case "setTime":
+      rest = optionalNumber(0);
+      break;
+    default:
+      if (args.length > 0) {
+        lowerer.noLowering(`${what}.${member} with ${args.length} arguments`, call);
+      }
+      rest = [];
+  }
+  const name = member[0]!.toUpperCase() + member.slice(1);
+  return {
+    kind: "libCall",
+    fn: (t ? `test.ctxMockTimers${name}` : `test.mockTimers${name}`) as IrLibFn,
+    args: t ? [t, ...rest] : rest,
+    type: VOID,
+    loc,
+  };
+}
+
+/** enable()'s { apis, now } as the libCall's API codes, `now` and flags
+ * (1 = `now` given, 2 = it is a Date). */
+function lowerMockTimersOptions(lowerer: Lowerer, call: ts.CallExpression, what: string): IrExpr[] {
+  const loc = locOf(call);
+  const options = call.arguments[0];
+  if (call.arguments.length > 1) {
+    lowerer.noLowering(`${what}.enable with ${call.arguments.length} arguments`, call);
+  }
+  if (options === undefined) {
+    return [strLit(MOCK_TIMERS_ALL_APIS, loc), numLit(0, loc), numLit(0, loc)];
+  }
+  if (!ts.isObjectLiteralExpression(options)) {
+    lowerer.noLowering(
+      `${what}.enable with a non-literal options object`,
+      options,
+      MOCK_TIMERS_APIS_HINT,
+    );
+  }
+  let codes = "";
+  let listed = false;
+  let now: IrExpr = numLit(0, loc);
+  let flags = 0;
+  for (const prop of options.properties) {
+    // `{ apis: [...] }`, `{ "now": n }` and the `{ now }` shorthand.
+    const init = ts.isPropertyAssignment(prop)
+      ? prop.initializer
+      : ts.isShorthandPropertyAssignment(prop) && ts.isIdentifier(prop.name)
+        ? prop.name
+        : null;
+    const key =
+      init && prop.name && (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name))
+        ? prop.name.text
+        : null;
+    if (key === "apis") {
+      const list = init!;
+      if (!ts.isArrayLiteralExpression(list)) {
+        lowerer.noLowering(
+          `${what}.enable with a non-literal apis list`,
+          list,
+          MOCK_TIMERS_APIS_HINT,
+        );
+      }
+      listed = true;
+      for (const el of list.elements) {
+        if (!ts.isStringLiteralLike(el)) {
+          lowerer.noLowering(
+            `${what}.enable with a non-literal API name`,
+            el,
+            MOCK_TIMERS_APIS_HINT,
+          );
+        }
+        const code = MOCK_TIMERS_API_CODES[el.text] ?? "";
+        if (code === "") {
+          lowerer.noLowering(`${what}.enable with the ${el.text} API`, el, MOCK_TIMERS_APIS_HINT);
+        }
+        codes += code;
+      }
+    } else if (key === "now") {
+      const value = lowerer.lowerExpr(init!);
+      if (value.type.kind === "date") {
+        now = { kind: "libCall", fn: "date.getTime", args: [value], type: F64, loc };
+        flags = 3;
+      } else if (value.type.kind === "f64") {
+        now = value;
+        flags = 1;
+      } else {
+        lowerer.noLowering(
+          `${what}.enable with a now value of this type`,
+          prop,
+          "now takes a number or a Date",
+        );
+      }
+    } else {
+      lowerer.noLowering(
+        `${what}.enable with this option`,
+        prop,
+        "apis and now are the supported enable options",
+      );
+    }
+  }
+  return [strLit(listed ? codes : MOCK_TIMERS_ALL_APIS, loc), now, numLit(flags, loc)];
 }
 
 /** `fn.mock.calls`: a copy of the log, as Node's getter returns. Null for

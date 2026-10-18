@@ -27,6 +27,10 @@ ScrArr *scr_os_loadavg(void);
 /* os.getPriority(pid): validateInt32, then the scheduling priority;
  * failures throw Node's RangeError or SystemError (ERR_SYSTEM_ERROR). */
 double scr_os_get_priority(double pid);
+/* os.setPriority(pid, priority): validateInt32 for both (priority within
+ * -20..19), then the scheduling priority; failures throw Node's RangeError
+ * or SystemError (ERR_SYSTEM_ERROR). */
+void scr_os_set_priority(double pid, double priority);
 /* os.cpus(): take answers the CPU count of a fresh snapshot; model and
  * field (0 speed, 1 user, 2 nice, 3 sys, 4 idle, 5 irq) read it. */
 double scr_os_cpus_take(void);
