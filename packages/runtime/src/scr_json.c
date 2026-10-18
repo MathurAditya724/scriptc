@@ -10555,7 +10555,6 @@ static ScrArr *scr_record_shared_keys(const ScrDynTypedRecordOps *record) {
 #ifdef SCR_RC_AUDIT
     scr_arr_live_forget(); /* immortal: outside the exit-time RC audit */
 #endif
-    scr_sa_thread_shares(); /* every thread reads the array */
     return built;
   }
   built->rc = 1;

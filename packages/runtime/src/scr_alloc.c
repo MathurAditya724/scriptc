@@ -630,13 +630,6 @@ static bool scr_sa_reserve_region(void) {
  * scr_sa_trim). */
 static size_t scr_sa_claim_carved[SCR_SA_ARENAS];
 static size_t scr_sa_carved(void);
-/* A worker thread's memory, discarded when it parks (see "Discarding a
- * worker's memory" below). */
-typedef struct ScrSaKeep ScrSaKeep;
-static _Thread_local bool scr_sa_worker;    /* set by scr_sa_thread_starting */
-static _Thread_local ScrSaKeep *scr_sa_keep; /* while the worker's memory is kept apart */
-static void scr_sa_keep_begin(unsigned i);
-static void scr_sa_keep_drained(ScrSaKeep *k, ScrSaBlock *b, unsigned c);
 #endif
 
 /* Moves every block other threads freed into this arena's free lists. */
@@ -645,13 +638,6 @@ static void scr_sa_drain_remote(void) {
   while (b) {
     ScrSaBlock *next = b->next;
     unsigned c = (unsigned)(((uintptr_t)b - scr_sa.base) >> scr_sa.shift);
-#ifdef SCR_SA_TRIM
-    if (scr_sa_keep) {
-      scr_sa_keep_drained(scr_sa_keep, b, c);
-      b = next;
-      continue;
-    }
-#endif
     b->next = scr_sa.free[c];
     scr_sa.free[c] = b;
     b = next;
@@ -686,7 +672,6 @@ static bool scr_sa_reserve(void) {
       scr_sa_drain_remote();
 #ifdef SCR_SA_TRIM
       scr_sa_claim_carved[i] = scr_sa_carved();
-      if (scr_sa_worker) scr_sa_keep_begin(i);
 #endif
       return true;
     }
@@ -899,303 +884,6 @@ static void scr_sa_trim(void) {
             scr_sa_arena, (int)trim, scr_sa_trim_stats[0] >> 20, scr_sa_trim_stats[1] >> 20,
             scr_sa_trim_stats[2] >> 20);
 }
-
-/* Discarding a worker's memory (Linux). Script objects stay on the thread
- * that allocated them: other threads reach one only through a message or an
- * intern table that shares a published (immortal) graph by pointer, or a
- * process-wide immortal cache, and each of those calls
- * scr_sa_thread_shares. Runtime state that outlives a thread (messages,
- * mailboxes, shared bytes, intern table entries) comes from the system
- * allocator directly. So when a worker thread parks without having shared,
- * nothing it allocated through scr_mem_* can be reachable from another
- * thread, and what it never freed (ProgramLifetime instances, published
- * module constants) is garbage. Such a thread's memory goes back whole:
- * - when a worker claims an arena, the arena's free lists and returned
- *   regions are set aside, and the worker carves only past each slice's
- *   frontier, so its blocks of class c are [start[c], bump[c]), plus the
- *   blocks it takes from the free lists set aside once a slice has no bump
- *   room left, which it records;
- * - the system blocks it allocates (large blocks, an exhausted slice) are
- *   recorded until it frees them;
- * - a remote free into its blocks means another thread held one: the same
- *   as sharing;
- * - when it parks without having shared, the trim helper returns the pages
- *   it carved (MADV_DONTNEED; the start of the first page, which it may
- *   share with older blocks, is cleared), frees the recorded system blocks,
- *   and parks the arena as the worker found it, with the blocks it took
- *   free again. A worker that shared parks
- *   its arena with the blocks set aside added to its free lists, and the
- *   ordinary trim applies.
- * SCR_SA_DISCARD=0 keeps every worker's memory. SCR_SA_DISCARD=poison makes
- * the carved pages inaccessible instead, and keeps the system blocks, so
- * that a reference to discarded memory faults (a check for tests). */
-#define SCR_SA_SYS_GONE ((void *)1) /* a removed entry of ScrSaKeep.sys */
-
-struct ScrSaKeep {
-  /* The arena as the worker claimed it: free lists (to which remote frees
-   * of older blocks are added), carve cursors and returned regions. */
-  ScrSaBlock *free[SCR_SA_NCLASS];
-  char *bump[SCR_SA_NCLASS], *lim[SCR_SA_NCLASS];
-  ScrSaHoles holes[SCR_SA_NCLASS];
-  /* Each slice's frontier then (bump and limit, NULL limits for a slice not
-   * opened yet), and the first address the worker carves in it. */
-  char *front_bump[SCR_SA_NCLASS], *front_lim[SCR_SA_NCLASS];
-  char *start[SCR_SA_NCLASS];
-  /* The worker's system blocks: an open-addressing set of `cap` slots (a
-   * power of two, or 0), NULL for an empty slot and SCR_SA_SYS_GONE for a
-   * removed entry; `used` counts both kinds of filled slots. */
-  void **sys;
-  size_t cap, used, live;
-  /* The blocks of the free lists set aside that the worker took once a slice
-   * had no bump room left, so that older free blocks are used before the
-   * slice grows; they go back to those lists with the worker's memory. */
-  ScrSaBlock **taken;
-  size_t ntaken, cap_taken;
-  bool shared;
-  bool poison;
-};
-
-static _Thread_local bool scr_sa_discarded; /* this thread's memory went back */
-static ScrSaKeep *scr_sa_parked_keep[SCR_SA_ARENAS]; /* handed to the helper */
-
-/* SCR_SA_DISCARD: 0 off, 1 on (the default), 2 poison. */
-static int scr_sa_discard_mode(void) {
-  const char *mode = getenv("SCR_SA_DISCARD");
-  if (!mode) return 1;
-  if (strcmp(mode, "0") == 0) return 0;
-  return strcmp(mode, "poison") == 0 ? 2 : 1;
-}
-
-static void scr_sa_keep_begin(unsigned i) {
-  int mode = scr_sa_discard_mode();
-  if (!mode) return;
-  ScrSaKeep *k = calloc(1, sizeof *k);
-  if (!k) return;
-  k->poison = mode == 2;
-  for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
-    ScrSaHoles *h = &scr_sa_holes[i][c];
-    k->free[c] = scr_sa.free[c];
-    k->bump[c] = scr_sa.bump[c];
-    k->lim[c] = scr_sa.lim[c];
-    k->holes[c] = *h;
-    memset(h, 0, sizeof *h);
-    scr_sa.free[c] = NULL;
-    /* While the slice carves a returned region, its frontier is kept apart. */
-    if (k->holes[c].lim) {
-      scr_sa.bump[c] = k->holes[c].bump;
-      scr_sa.lim[c] = k->holes[c].lim;
-    }
-    k->front_bump[c] = scr_sa.bump[c];
-    k->front_lim[c] = scr_sa.lim[c];
-    k->start[c] = scr_sa.lim[c] ? scr_sa.bump[c] : (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
-  }
-  scr_sa_keep = k;
-}
-
-/* A remote free of class c, drained while the worker keeps its memory
- * apart: one of its own blocks makes it share; an older block goes to the
- * free lists set aside. Once the worker has taken blocks from those lists,
- * any older block might be one of them, so it shares as well. */
-static void scr_sa_keep_drained(ScrSaKeep *k, ScrSaBlock *b, unsigned c) {
-  if ((char *)b >= k->start[c] && (char *)b < scr_sa.bump[c]) {
-    k->shared = true;
-    b->next = scr_sa.free[c];
-    scr_sa.free[c] = b;
-  } else {
-    if (k->ntaken) k->shared = true;
-    b->next = k->free[c];
-    k->free[c] = b;
-  }
-}
-
-/* A block of class c from the free lists set aside, for a worker whose
- * slice has no bump room left; NULL when there is none or it cannot be
- * recorded. */
-static ScrSaBlock *scr_sa_keep_take(ScrSaKeep *k, unsigned c) {
-  ScrSaBlock *b = k->free[c];
-  if (!b) return NULL;
-  if (k->ntaken == k->cap_taken) {
-    size_t cap = k->cap_taken ? 2 * k->cap_taken : 256;
-    ScrSaBlock **taken = realloc(k->taken, cap * sizeof *taken);
-    if (!taken) return NULL;
-    k->taken = taken;
-    k->cap_taken = cap;
-  }
-  k->free[c] = b->next;
-  k->taken[k->ntaken++] = b;
-  return b;
-}
-
-static size_t scr_sa_sys_slot(const void *p, size_t cap) {
-  return (size_t)((((uint64_t)(uintptr_t)p >> 4) * UINT64_C(0x9E3779B97F4A7C15)) >> 32) & (cap - 1);
-}
-
-/* Records system block p. A worker whose set cannot grow keeps its memory. */
-static void scr_sa_keep_add(ScrSaKeep *k, void *p) {
-  if ((k->used + 1) * 2 > k->cap) {
-    size_t cap = 64;
-    while (cap < (k->live + 1) * 4) cap *= 2;
-    void **sys = calloc(cap, sizeof *sys);
-    if (!sys) {
-      k->shared = true;
-      return;
-    }
-    for (size_t s = 0; s < k->cap; s++) {
-      void *q = k->sys[s];
-      if (!q || q == SCR_SA_SYS_GONE) continue;
-      size_t j = scr_sa_sys_slot(q, cap);
-      while (sys[j]) j = (j + 1) & (cap - 1);
-      sys[j] = q;
-    }
-    free(k->sys);
-    k->sys = sys;
-    k->cap = cap;
-    k->used = k->live;
-  }
-  size_t j = scr_sa_sys_slot(p, k->cap);
-  while (k->sys[j] && k->sys[j] != SCR_SA_SYS_GONE) j = (j + 1) & (k->cap - 1);
-  if (!k->sys[j]) k->used++;
-  k->sys[j] = p;
-  k->live++;
-}
-
-/* Forgets system block p; whether it was recorded. */
-static bool scr_sa_keep_remove(ScrSaKeep *k, const void *p) {
-  if (!k->live) return false;
-  for (size_t j = scr_sa_sys_slot(p, k->cap); k->sys[j]; j = (j + 1) & (k->cap - 1)) {
-    if (k->sys[j] != p) continue;
-    k->sys[j] = SCR_SA_SYS_GONE;
-    k->live--;
-    return true;
-  }
-  return false;
-}
-
-/* The calling thread's arena keeps the worker's memory (it shared): the
- * free lists set aside go back, followed by the worker's own free blocks,
- * and so do the returned regions, past which the worker carved. */
-static void scr_sa_keep_merge(ScrSaKeep *k) {
-  for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
-    ScrSaBlock *kept = k->free[c];
-    if (kept) {
-      ScrSaBlock *tail = kept;
-      while (tail->next) tail = tail->next;
-      tail->next = scr_sa.free[c];
-      scr_sa.free[c] = kept;
-    }
-    ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
-    *h = k->holes[c];
-    if (h->lim) {
-      h->bump = scr_sa.bump[c];
-      h->lim = scr_sa.lim[c];
-      scr_sa.bump[c] = k->bump[c];
-      scr_sa.lim[c] = k->lim[c];
-    }
-  }
-  free(k->sys);
-  free(k->taken);
-  free(k);
-}
-
-/* Returns the memory of the worker whose arena the calling thread (the
- * trim helper) holds, and restores the arena to its state at the worker's
- * claim; with poison, makes the pages inaccessible and moves the frontier
- * past them instead. */
-static void scr_sa_discard(ScrSaKeep *k) {
-  /* Remote frees since the worker's last drain. */
-  scr_sa_keep = k;
-  scr_sa_drain_remote();
-  scr_sa_keep = NULL;
-  if (k->shared) {
-    scr_sa_keep_merge(k);
-    scr_sa_trim();
-    return;
-  }
-  uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
-  if (page == 0 || page == (uintptr_t)-1) page = 4096;
-  size_t returned = 0, sys_bytes = 0, sys_blocks = 0;
-  for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
-    char *lo = k->start[c], *top = scr_sa.bump[c], *lim = scr_sa.lim[c];
-    char *bump = k->front_bump[c], *limit = k->front_lim[c];
-    if (lim && top > lo) {
-      char *first = (char *)(((uintptr_t)lo + page - 1) & ~(page - 1));
-      char *used = (char *)(((uintptr_t)top + page - 1) & ~(page - 1));
-      /* The part of a page that may also hold older blocks. */
-      if (first > lo) memset(lo, 0, (size_t)((first < top ? first : top) - lo));
-      if (k->poison) {
-        if (used > first) (void)mprotect(first, (size_t)(used - first), PROT_NONE);
-        bump = used > first ? used : top;
-        limit = lim > bump ? lim : bump;
-      } else {
-        char *end = (char *)(((uintptr_t)lim + page - 1) & ~(page - 1));
-        if (end > first) {
-          (void)madvise(first, (size_t)(end - first), MADV_DONTNEED);
-          returned += (size_t)(end - first);
-        }
-      }
-    } else {
-      bump = top;
-      limit = lim;
-    }
-    scr_sa.free[c] = k->free[c];
-    ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
-    *h = k->holes[c];
-    if (h->lim) {
-      h->bump = bump;
-      h->lim = limit;
-      scr_sa.bump[c] = k->bump[c];
-      scr_sa.lim[c] = k->lim[c];
-    } else {
-      scr_sa.bump[c] = bump;
-      scr_sa.lim[c] = limit;
-    }
-  }
-  /* The older free blocks the worker took are free again. */
-  if (!k->poison)
-    for (size_t t = 0; t < k->ntaken; t++) {
-      ScrSaBlock *b = k->taken[t];
-      unsigned c = (unsigned)(((uintptr_t)b - scr_sa.base) >> scr_sa.shift);
-      b->next = scr_sa.free[c];
-      scr_sa.free[c] = b;
-    }
-  if (!k->poison)
-    for (size_t s = 0; s < k->cap; s++) {
-      void *p = k->sys[s];
-      if (!p || p == SCR_SA_SYS_GONE) continue;
-#if defined(__GLIBC__)
-      sys_bytes += malloc_usable_size(p);
-#endif
-      sys_blocks++;
-      free(p);
-    }
-#if defined(__GLIBC__)
-  if (sys_blocks) (void)malloc_trim(0);
-#endif
-  const char *stats = getenv("SCR_SA_STATS");
-  if (stats && stats[0] == '1')
-    fprintf(stderr, "scr_sa: discard arena %d returned %zu MB, %zu system blocks (%zu MB)\n", scr_sa_arena,
-            returned >> 20, sys_blocks, sys_bytes >> 20);
-  free(k->sys);
-  free(k->taken);
-  free(k);
-}
-
-/* Hooks of the allocator's system paths and of sharing (scr_rc.h). */
-static void scr_sa_keep_note_system(void *p) {
-  if (p && scr_sa_keep) scr_sa_keep_add(scr_sa_keep, p);
-}
-
-void scr_sa_thread_shares(void) {
-  if (scr_sa_keep) scr_sa_keep->shared = true;
-}
-
-/* Library archives run on their embedder's threads and keep their memory. */
-static void scr_sa_worker_starting(void) {
-#ifndef SCR_LIB
-  scr_sa_worker = true;
-#endif
-}
-#define SCR_SA_WORKER_STARTING() scr_sa_worker_starting()
 #endif
 
 #ifdef SCR_SA_TRIM
@@ -1218,34 +906,10 @@ static void *scr_sa_trim_main(void *arg) {
   unsigned i = (unsigned)(uintptr_t)arg;
   scr_sa_arena = (int)i;
   scr_sa = scr_sa_parked[i];
-  ScrSaKeep *k = scr_sa_parked_keep[i];
-  scr_sa_parked_keep[i] = NULL;
-  if (k) scr_sa_discard(k);
-  else scr_sa_trim();
+  scr_sa_trim();
   scr_sa_release(i);
   atomic_fetch_sub_explicit(&scr_sa_trimming, 1, memory_order_release);
   return NULL;
-}
-
-/* Hands the calling thread's arena to a trim helper (with `k`, to discard
- * the worker's memory); false if no helper could start. */
-static bool scr_sa_start_helper(unsigned i, ScrSaKeep *k) {
-  scr_sa_parked[i] = scr_sa;
-  scr_sa_parked_keep[i] = k;
-  atomic_fetch_add_explicit(&scr_sa_trimming, 1, memory_order_relaxed);
-  pthread_attr_t attr;
-  pthread_t helper;
-  bool started = pthread_attr_init(&attr) == 0;
-  if (started) {
-    started = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) == 0 &&
-              pthread_create(&helper, &attr, scr_sa_trim_main, (void *)(uintptr_t)i) == 0;
-    pthread_attr_destroy(&attr);
-  }
-  if (!started) {
-    scr_sa_parked_keep[i] = NULL;
-    atomic_fetch_sub_explicit(&scr_sa_trimming, 1, memory_order_relaxed);
-  }
-  return started;
 }
 
 void scr_sa_wait_trims(void) {
@@ -1256,7 +920,6 @@ void scr_sa_wait_trims(void) {
 }
 #else
 void scr_sa_wait_trims(void) {}
-void scr_sa_thread_shares(void) {}
 #endif
 
 void scr_sa_thread_park(void) {
@@ -1266,25 +929,18 @@ void scr_sa_thread_park(void) {
   scr_sa_pf_park();
 #endif
 #ifdef SCR_SA_TRIM
-  ScrSaKeep *k = scr_sa_keep;
-  scr_sa_keep = NULL;
-  if (k && !k->shared) {
-    /* Nothing this thread allocated is reachable from another one: its
-     * memory goes back, and later frees on this thread are dropped. */
-    scr_sa_discarded = true;
-    if (!scr_sa_start_helper(i, k)) {
-      scr_sa_discard(k);
-      scr_sa_release(i);
-      return;
-    }
-    memset(&scr_sa, 0, sizeof scr_sa);
-    scr_sa_arena = -1;
-    scr_sa_refused = true;
-    return;
-  }
-  if (k) scr_sa_keep_merge(k);
   if (scr_sa_trim_worth()) {
-    if (scr_sa_start_helper(i, NULL)) {
+    scr_sa_parked[i] = scr_sa;
+    atomic_fetch_add_explicit(&scr_sa_trimming, 1, memory_order_relaxed);
+    pthread_attr_t attr;
+    pthread_t helper;
+    bool started = pthread_attr_init(&attr) == 0;
+    if (started) {
+      started = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) == 0 &&
+                pthread_create(&helper, &attr, scr_sa_trim_main, (void *)(uintptr_t)i) == 0;
+      pthread_attr_destroy(&attr);
+    }
+    if (started) {
       /* Later frees on this thread take the foreign path into the arena's
        * remote list; the helper releases the claim. */
       memset(&scr_sa, 0, sizeof scr_sa);
@@ -1292,6 +948,7 @@ void scr_sa_thread_park(void) {
       scr_sa_refused = true;
       return;
     }
+    atomic_fetch_sub_explicit(&scr_sa_trimming, 1, memory_order_relaxed);
     scr_sa_trim();
   }
 #endif
@@ -1314,9 +971,6 @@ static size_t scr_sa_foreign_size(const void *p) {
 }
 
 void scr_sa_free_foreign(void *p) {
-#ifdef SCR_SA_TRIM
-  if (scr_sa_discarded) return; /* the block went back with the thread's memory */
-#endif
   uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
   uintptr_t off = (uintptr_t)p - region;
   if (region && off < scr_sa_arena_span * SCR_SA_ARENAS) {
@@ -1328,9 +982,6 @@ void scr_sa_free_foreign(void *p) {
                                                   memory_order_relaxed));
     return;
   }
-#ifdef SCR_SA_TRIM
-  if (scr_sa_keep) (void)scr_sa_keep_remove(scr_sa_keep, p);
-#endif
   free(p);
 }
 #else
@@ -1369,15 +1020,6 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
       if (zero) memset(b, 0, n);
       return b;
     }
-#ifdef SCR_SA_TRIM
-    /* A worker that keeps its memory apart uses the arena's older free
-     * blocks before its slice grows. */
-    if (scr_sa_keep && (size_t)(scr_sa.lim[c] - scr_sa.bump[c]) < scr_sa_class_size(c) &&
-        (b = scr_sa_keep_take(scr_sa_keep, c)) != NULL) {
-      if (zero) memset(b, 0, n);
-      return b;
-    }
-#endif
 #endif
     /* Carve from the slice, opening it or raising its limit as needed;
      * fresh pages are zero. */
@@ -1409,9 +1051,6 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
     SCR_SA_LARGE_NOTE(q, n);
     SCR_SA_THREAD_LARGE_NOTE();
   }
-#ifdef SCR_SA_TRIM
-  scr_sa_keep_note_system(q);
-#endif
   return q;
 }
 
@@ -1426,14 +1065,8 @@ void *scr_mem_realloc(void *p, size_t n) {
   }
 #endif
   else {
-#ifdef SCR_SA_TRIM
-    bool kept = scr_sa_keep && scr_sa_keep_remove(scr_sa_keep, p);
-#endif
     void *q = realloc(p, n);
     if (n > SCR_SA_MAX) SCR_SA_LARGE_NOTE(q, n);
-#ifdef SCR_SA_TRIM
-    if (kept) scr_sa_keep_note_system(q ? q : p); /* a failed realloc leaves p */
-#endif
     return q;
   }
   /* Still fits its block, which is aligned for n (see the contract). */
@@ -1449,13 +1082,8 @@ void *scr_mem_realloc(void *p, size_t n) { return realloc(p, n); }
 #ifdef SCR_WORKERS
 void scr_sa_thread_park(void) {}
 void scr_sa_wait_trims(void) {}
-void scr_sa_thread_shares(void) {}
 void scr_sa_free_foreign(void *p) { free(p); }
 #endif
-#endif
-
-#ifndef SCR_SA_WORKER_STARTING
-#define SCR_SA_WORKER_STARTING() ((void)0)
 #endif
 
 #ifdef SCR_WORKERS
@@ -1488,10 +1116,7 @@ void scr_sa_free_foreign(void *p) { free(p); }
  * that are not workers (they never reserve). */
 static _Thread_local unsigned scr_sa_thread_large;
 
-void scr_sa_thread_starting(void) {
-  scr_sa_thread_large = 1;
-  SCR_SA_WORKER_STARTING();
-}
+void scr_sa_thread_starting(void) { scr_sa_thread_large = 1; }
 
 static void scr_sa_thread_reserve(void) {
   void *blocks[SCR_SA_THREAD_HEAP_RESERVE / SCR_SA_THREAD_HEAP_STEP + 1];
@@ -1511,7 +1136,7 @@ static void scr_sa_thread_large_note(void) {
   if (count == SCR_SA_THREAD_RESERVE_AFTER) scr_sa_thread_reserve();
 }
 #else
-void scr_sa_thread_starting(void) { SCR_SA_WORKER_STARTING(); }
+void scr_sa_thread_starting(void) {}
 #endif
 #endif
 
