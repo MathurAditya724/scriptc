@@ -891,13 +891,20 @@ export function unsupportedPackageValueDiag(pkg: string, loc: SrcLoc): ScrDiagno
   );
 }
 
-export function npmStaticRefusalDiag(pkg: string, detail: string, loc: SrcLoc): ScrDiagnostic {
+export function npmStaticRefusalDiag(
+  pkg: string,
+  detail: string,
+  loc: SrcLoc,
+  hint?: string,
+): ScrDiagnostic {
   return {
     code: "SC2013",
     message: `cannot compile npm package '${pkg}' statically: ${detail}`,
     loc,
     milestone: "later",
-    hint: "use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback",
+    hint:
+      hint ??
+      "use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback",
   };
 }
 

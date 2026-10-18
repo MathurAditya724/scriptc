@@ -1822,6 +1822,22 @@ export const BUILTIN_MODULE_FNS: Record<
       valueParams: [{ mode: "required", type: STRING }],
     },
   },
+  // node:punycode (deprecated): punycode.js 2.1.0's conversions over
+  // strings (scr_url.c). ucs2.decode/encode are members of the module's
+  // ucs2 object, dispatched as module members (builtinMemberOf). The
+  // DEP0040 report rides the module's load sites (punycodeLoadWarning).
+  punycode: {
+    decode: { fn: "punycode.decode", params: [STRING], result: STRING },
+    encode: { fn: "punycode.encode", params: [STRING], result: STRING },
+    toASCII: { fn: "punycode.toASCII", params: [STRING], result: STRING },
+    toUnicode: { fn: "punycode.toUnicode", params: [STRING], result: STRING },
+    "ucs2.decode": { fn: "punycode.ucs2Decode", params: [STRING], result: arrayOf(F64) },
+    "ucs2.encode": { fn: "punycode.ucs2Encode", params: [arrayOf(F64)], result: STRING },
+  },
+  // node:constants (deprecated) is one frozen object (Object.assign of
+  // os.constants' groups, fs.constants and crypto.constants): bindings of
+  // the module read it as a checked-dynamic value (builtinConstantsObject).
+  constants: {},
   // node:readline: createInterface's options are entirely special-cased
   // (exactly { input: process.stdin, output?: process.stdout } — see
   // lowerBuiltinModuleCall); the entry carries the canonical shape. The
@@ -1951,6 +1967,7 @@ export const BUILTIN_MODULE_CONSTS: Record<
   os: { EOL: "\n", devNull: "/dev/null" },
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
+  punycode: { version: "2.1.0" },
   // zlib's module-level copies of its constants (every member outside
   // BROTLI_*, Node's own loop over zlib.constants).
   zlib: Object.fromEntries(

@@ -71,6 +71,8 @@ export interface NpmStaticStatus {
   status: "static" | "refused";
   /** The first refusal reason for a refused package. */
   detail?: string;
+  /** How to act on the refusal, when there is a specific remedy. */
+  hint?: string;
 }
 
 const GREEN = "\x1b[32m";
