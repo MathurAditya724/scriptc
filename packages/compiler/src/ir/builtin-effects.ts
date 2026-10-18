@@ -47,6 +47,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "cp.spawnDynamic",
   "child.onDyn",
   "text.decoderEncoding",
+  "strdec.encoding",
   "dyn.construct",
   "dyn.reflectApply",
   "dyn.reflectGet",
@@ -569,6 +570,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
   "process.chdir",
   "os.getPriority",
+  "os.setPriority",
   // Pattern length TypeError, brace-sequence RangeError, and the
   // SyntaxError of a segment regex invalid under the u flag.
   "path.matchesGlob",

@@ -536,9 +536,9 @@
       "apiEntries": 24,
       "static": {
         "supported": 0,
-        "partial": 23,
+        "partial": 24,
         "refused": 0,
-        "not-implemented": 1,
+        "not-implemented": 0,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -836,9 +836,9 @@
       "apiEntries": 62,
       "static": {
         "supported": 0,
-        "partial": 39,
+        "partial": 42,
         "refused": 0,
-        "not-implemented": 23,
+        "not-implemented": 20,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -74097,7 +74097,8 @@
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/4598-os-available-parallelism.ts",
           "tests/corpus/5140-os-host-facts.ts",
-          "tests/corpus/5141-os-constants.ts"
+          "tests/corpus/5141-os-constants.ts",
+          "tests/corpus/5883-os-set-priority.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -74646,8 +74647,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.setPriority",
+        "tests": [
+          "tests/corpus/5883-os-set-priority.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90813,6 +90817,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
+          "tests/corpus/5882-string-decoder-runtime-encoding.ts",
           "tests/corpus/node24-string-decoder.ts"
         ]
       },
@@ -90840,7 +90845,8 @@
         "evidence": "compiler-dedicated:StringDecoder",
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
-          "tests/corpus/node24-string-decoder.ts"
+          "tests/corpus/node24-string-decoder.ts",
+          "tests/corpus/5882-string-decoder-runtime-encoding.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90867,7 +90873,8 @@
         "evidence": "compiler-dedicated:stringDecoder.end",
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
-          "tests/corpus/node24-string-decoder.ts"
+          "tests/corpus/node24-string-decoder.ts",
+          "tests/corpus/5882-string-decoder-runtime-encoding.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90894,7 +90901,8 @@
         "evidence": "compiler-dedicated:stringDecoder.write",
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
-          "tests/corpus/node24-string-decoder.ts"
+          "tests/corpus/node24-string-decoder.ts",
+          "tests/corpus/5882-string-decoder-runtime-encoding.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99047,6 +99055,8 @@
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5228-url-domain-conversion.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
+          "tests/corpus/5833-url-search-params-iterators.ts",
+          "tests/corpus/5834-url-search-params-iterators-dynamic.mjs",
           "tests/corpus/node24-file-url-buffer.ts",
           "tests/corpus/node24-file-url-errors.js",
           "tests/corpus/node24-file-url-options.ts",
@@ -99831,8 +99841,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlSearchParams.entries",
+        "tests": [
+          "tests/corpus/5833-url-search-params-iterators.ts",
+          "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99946,8 +99960,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlSearchParams.keys",
+        "tests": [
+          "tests/corpus/5833-url-search-params-iterators.ts",
+          "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100038,8 +100056,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.urlSearchParams.values",
+        "tests": [
+          "tests/corpus/5833-url-search-params-iterators.ts",
+          "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

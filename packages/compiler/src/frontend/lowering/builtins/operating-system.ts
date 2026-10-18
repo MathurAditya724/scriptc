@@ -10,6 +10,7 @@ import {
   STRING,
   type SrcLoc,
   UNDEFINED_T,
+  VOID,
   arrayOf,
   typeKey,
 } from "../../../ir/ir.js";
@@ -509,6 +510,29 @@ export function lowerPathFormatCall(
     });
   }
   return { kind: "call", callee: helper, args: [value], type: STRING, loc };
+}
+
+/** `os.setPriority([pid, ]priority)` — the one-argument form is pid 0
+ * (Node's `if (priority === undefined) { priority = pid; pid = 0; }`);
+ * the runtime validates both. */
+export function lowerOsSetPriorityCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const args = call.arguments;
+  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      "setPriority with these arguments",
+      call,
+      "setPriority(priority) or setPriority(pid, priority) takes numbers",
+    );
+  }
+  const [pid, priority] =
+    args.length === 1
+      ? [numLit(0, loc), lowerer.lowerExprExpecting(args[0]!, F64)]
+      : [lowerer.lowerExprExpecting(args[0]!, F64), lowerer.lowerExprExpecting(args[1]!, F64)];
+  return { kind: "libCall", fn: "os.setPriority", args: [pid, priority], type: VOID, loc };
 }
 
 /** `os.getPriority(pid?)` — an omitted or undefined pid is 0 (Node's

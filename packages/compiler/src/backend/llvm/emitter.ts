@@ -2194,6 +2194,12 @@ export class LlEmitter {
       if (this.mod.lib.exports.some((e) => e.returns === "bytes")) {
         this.declare(`declare void @scr_library_bytes_out(ptr, ptr, ptr)`);
       }
+      if (this.mod.lib.exports.some((e) => e.params.includes("cstring"))) {
+        this.declare(`declare ptr @scr_library_cstr_in(ptr, ptr)`);
+      }
+      if (this.mod.lib.exports.some((e) => e.returns === "cstring")) {
+        this.declare(`declare ptr @scr_library_cstr_out(ptr)`);
+      }
     }
     // Helpers assemble BEFORE the declaration table flushes (they add
     // write/abort declarations).
@@ -2970,6 +2976,15 @@ export class LlEmitter {
           ``,
         );
       }
+      if (e.inboundCstringTrap !== undefined) {
+        // The cstring-in helper's host-contract trap message (a NULL
+        // `const char *`): same assembled structured form and SC4012 code.
+        const trapBytes = Buffer.byteLength(e.inboundCstringTrap, "utf8");
+        out.push(
+          `@sc_lib_cstr_trap_${e.symbol} = internal constant [${trapBytes + 1} x i8] c"${llStrBytes(e.inboundCstringTrap)}"`,
+          ``,
+        );
+      }
       e.params.forEach((cls, i) => {
         switch (cls) {
           case "f64":
@@ -3024,6 +3039,13 @@ export class LlEmitter {
             params.push(`ptr %a${i}_ptr`, `${this.sizeType} %a${i}_len`);
             body.push(
               `  %c${i} = call ptr @scr_library_bytes_in(ptr %a${i}_ptr, ${this.sizeType} %a${i}_len, ptr @sc_lib_bytes_trap_${e.symbol})`,
+            );
+            args.push(`ptr %c${i}`);
+            break;
+          case "cstring":
+            params.push(`ptr %a${i}`);
+            body.push(
+              `  %c${i} = call ptr @scr_library_cstr_in(ptr %a${i}, ptr @sc_lib_cstr_trap_${e.symbol})`,
             );
             args.push(`ptr %c${i}`);
             break;
@@ -3089,6 +3111,16 @@ export class LlEmitter {
             `  call void @scr_library_check_exc()`,
             `  call void @scr_library_bytes_out(ptr %r, ptr %out, ptr %out_len)`,
             `  ret void`,
+          );
+          break;
+        case "cstring":
+          // The result's arena copy, returned as `const char *`.
+          retType = "ptr";
+          body.push(
+            `  %r = call ptr ${target}(${callArgs})`,
+            `  call void @scr_library_check_exc()`,
+            `  %z = call ptr @scr_library_cstr_out(ptr %r)`,
+            `  ret ptr %z`,
           );
           break;
       }

@@ -1176,8 +1176,19 @@ export interface IrLibExport {
   /** i64/u64 (ask 4): int64_t/uint64_t at the C edge — inbound values
    * range-check in the wrapper (`inboundIntTrap`), internal call sites
    * and returns are compile-time proven before this lands on the IR. */
-  params: ("f64" | "bool" | "string" | "bytes" | "u8" | "u32" | "i32" | "i64" | "u64")[];
-  returns: "f64" | "bool" | "string" | "bytes" | "void" | "i64" | "u64";
+  params: (
+    | "f64"
+    | "bool"
+    | "string"
+    | "cstring"
+    | "bytes"
+    | "u8"
+    | "u32"
+    | "i32"
+    | "i64"
+    | "u64"
+  )[];
+  returns: "f64" | "bool" | "string" | "cstring" | "bytes" | "void" | "i64" | "u64";
   /** The exact sink-message bytes this wrapper passes to the inbound-bytes
    * marshalling helper's trap — present exactly when a parameter is
    * bytes-classed. Already the assembled structured trap-teaching form
@@ -1192,6 +1203,10 @@ export interface IrLibExport {
    * value cannot ride f64 exactly (|v| past 2^53−1). Same assembled
    * structured form and the same SC4012 code — one host-contract story. */
   inboundIntTrap?: string;
+  /** The sibling message for a NULL cstring parameter: present exactly
+   * when a parameter is cstring-classed, passed to scr_library_cstr_in.
+   * Same assembled structured form and the same SC4012 code. */
+  inboundCstringTrap?: string;
 }
 
 /** One runtime-trap overlay row: the profile's teaching (replaces the
@@ -1218,7 +1233,7 @@ export interface IrLibCallback {
   name: string;
   /** The runtime channel slot (profile declaration order). */
   slot: number;
-  params: ("f64" | "bool" | "string" | "bytes" | "u8" | "u32" | "i32")[];
+  params: ("f64" | "bool" | "string" | "cstring" | "bytes" | "u8" | "u32" | "i32")[];
   returns: "f64" | "bool" | "u8" | "u32" | "i32" | "i64" | "u64" | "pointer" | "void";
   /** The unregistered-call trap text (a DETECTED trap: plain bytes the
    * library funnel classifies SC4025 and assembles with the current
