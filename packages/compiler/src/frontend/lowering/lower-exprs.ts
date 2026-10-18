@@ -203,6 +203,7 @@ import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import {
   fenceNodeModuleMutation,
   isNodeModuleValue,
+  lowerCjsTopLevelThis,
   lowerNodeModuleIdentifier,
   lowerNodeModuleProperty,
   lowerRequireCacheElement,
@@ -689,6 +690,30 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const sym = lowerer.checker.getSymbolAtLocation(tested);
       if (!sym) {
         return { kind: "strLit", value: "undefined", type: STRING, loc };
+      }
+      // `const { inspect } = require("util")` / `import { inspect } from
+      // "node:util"`: a binding of a builtin module's exported function,
+      // class or object. JavaScript sources represent such a value without
+      // its own lowering as an identity token (a string), so the operand's
+      // representation cannot answer. Node's answer follows the export's
+      // kind, and the binding read has no effects.
+      const imported = isJsSourceFile(tested.getSourceFile())
+        ? lowerer.builtinImportOf(tested)
+        : null;
+      if (
+        imported &&
+        builtinModuleConstOf(lowerer, imported.module, imported.member) === undefined
+      ) {
+        const t = lowerer.typeOf(tested);
+        if (
+          lowerer.checker.getCallSignatures(t).length > 0 ||
+          lowerer.checker.getConstructSignatures(t).length > 0
+        ) {
+          return { kind: "strLit", value: "function", type: STRING, loc };
+        }
+        if ((t.flags & ts.TypeFlags.Object) !== 0) {
+          return { kind: "strLit", value: "object", type: STRING, loc };
+        }
       }
       if (lowerer.isStdlibSymbol(sym)) {
         const t = lowerer.typeOf(expr.expression);
@@ -1661,6 +1686,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // constant. TypeScript keeps the fence (noImplicitThis makes it a
     // compile-time story there).
     if (isJsSourceFile(expr.getSourceFile())) {
+      // Module scope of a CommonJS file: `this` is module.exports.
+      const exportsThis = lowerCjsTopLevelThis(lowerer, expr);
+      if (exportsThis) return exportsThis;
       return { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc };
     }
     lowerer.unsupported("SC1080", expr);
