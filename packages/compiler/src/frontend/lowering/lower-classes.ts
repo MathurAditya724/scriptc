@@ -2999,7 +2999,14 @@ export function collectClassShapeInner(
               "overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass)",
             );
           }
-          methods.set(mName, { params: shapes, ret, abstract: true });
+          const unionReturn =
+            overridden?.sig.ret.kind === "union" && !typeEquals(ret, overridden.sig.ret);
+          if (unionReturn) lowerer.unionReturnOverrides.add(member);
+          methods.set(mName, {
+            params: shapes,
+            ret: unionReturn ? overridden.sig.ret : ret,
+            abstract: true,
+          });
           continue;
         }
         // A body-less method is an OVERLOAD SIGNATURE (abstract methods
@@ -3265,6 +3272,12 @@ export function collectClassShapeInner(
               "overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass)",
             );
           }
+        }
+        // A return narrowed to part of an inherited union returns through
+        // the union ABI; call sites narrow it back to the declared type.
+        if (overridden?.sig.ret.kind === "union" && !typeEquals(ft.ret, overridden.sig.ret)) {
+          ft.ret = overridden.sig.ret;
+          lowerer.unionReturnOverrides.add(member);
         }
         const asyncMember =
           member.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
@@ -6154,6 +6167,22 @@ function overrideReturnAbi(
   className: string,
   base: ClassInfo | null,
 ): IrType {
+  // A return narrowed to part of an inherited union (`Meta` for
+  // `Meta | undefined`) keeps the union ABI; returns convert into it.
+  if (inherited.kind === "union" && !typeEquals(declared, inherited)) {
+    const arms = lowerer.unions.get(inherited.unionId)?.arms ?? [];
+    const fits = (type: IrType): boolean =>
+      arms.some(
+        (arm) =>
+          typeEquals(arm, type) ||
+          (arm.kind === "object" &&
+            type.kind === "object" &&
+            lowerer.isSubclassOf(type.className, arm.className)),
+      );
+    const parts =
+      declared.kind === "union" ? (lowerer.unions.get(declared.unionId)?.arms ?? []) : [declared];
+    return parts.length > 0 && parts.every(fits) ? inherited : declared;
+  }
   if (declared.kind !== "object" || inherited.kind !== "object") return declared;
   if (
     lowerer.isSubclassOf(declared.className, inherited.className) ||

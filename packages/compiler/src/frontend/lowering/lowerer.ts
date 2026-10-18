@@ -2381,6 +2381,9 @@ export class Lowerer {
    * base vtable signature is collected. Unused checked slots carry undefined. */
   readonly virtualJsMethodArity = new Map<ts.MethodDeclaration, number>();
   readonly checkedVirtualJsMethods = new Set<ts.MethodDeclaration>();
+  /** Overrides whose return narrows part of the base's union return; they
+   * return through the base's union ABI (overrideReturnAbi). */
+  readonly unionReturnOverrides = new Set<ts.MethodDeclaration>();
   readonly checkedVirtualJsAccessors = new Set<
     ts.GetAccessorDeclaration | ts.SetAccessorDeclaration
   >();
