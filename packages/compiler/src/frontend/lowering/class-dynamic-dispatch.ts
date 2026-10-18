@@ -2423,6 +2423,7 @@ export class ClassDynamicDispatch {
             info,
             dispatch.source.method,
             loc,
+            receiver,
           );
           const bag = this.readPropertyBagOrEmpty(lowerer, value, loc);
           dispatch.callback.body.unshift({

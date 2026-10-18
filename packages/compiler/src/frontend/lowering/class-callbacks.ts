@@ -49,7 +49,7 @@ function observedSlot(lowerer: Lowerer, receiver: IrExpr, name: string, loc: Src
   const info =
     receiver.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : undefined;
   return info
-    ? observedPrototypeMethod(lowerer, info, name, loc)
+    ? observedPrototypeMethod(lowerer, info, name, loc, receiver)
     : lowerer.prototypeMethodAccesses.has(name);
 }
 

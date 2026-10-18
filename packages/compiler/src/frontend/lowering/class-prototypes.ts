@@ -232,8 +232,8 @@ export function classPrototypeData(
 /** Whether reads of method `name` on instances of `info` use the observed
  * prototype slot: the census marked the name and the class has prototype
  * data that holds the method. Classes without prototype data (generic
- * instantiations, mixins and their subclasses) check for an own property
- * and otherwise use the declared method. */
+ * instantiations, mixins and their subclasses) and function-local classes
+ * check for the property and otherwise use the declared method. */
 export function observedPrototypeMethod(
   lowerer: Lowerer,
   info: ClassInfo,
@@ -241,10 +241,13 @@ export function observedPrototypeMethod(
   loc: SrcLoc,
   receiver?: IrExpr,
 ): boolean {
-  return (
-    lowerer.prototypeMethodAccesses.has(name) &&
-    (info.localClass !== undefined || classPrototypeData(lowerer, info, loc, receiver) !== null)
-  );
+  if (!lowerer.prototypeMethodAccesses.has(name)) return false;
+  // Building the data also marks a function-local class whose instances
+  // need it. That class value's prototype holds only methods the program
+  // replaced there, so its reads check for the key (own or inherited) and
+  // otherwise use the declared method.
+  const data = classPrototypeData(lowerer, info, loc, receiver);
+  return data !== null && info.localClass === undefined;
 }
 
 export function hasClassPrototypeData(info: ClassInfo): boolean {
