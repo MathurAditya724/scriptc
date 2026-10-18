@@ -18,7 +18,9 @@ import { isRelativeSpecifier } from "../workspace-registry.js";
 import {
   canonicalBuiltinModule,
   cjsExportAssignmentOf,
+  cjsExportChainOf,
   cjsExportDiscardReason,
+  cjsExportTargetLiteral,
   entryPackageFilePredicate,
   isCjsJsFile,
   isJsSourceFile,
@@ -26,6 +28,7 @@ import {
   locOf,
   makeCycleAdmission,
   orderedImportsOf,
+  requireSpecOf,
   resolveImport,
   resolveNpmImport,
 } from "../program.js";
@@ -36,6 +39,13 @@ import {
   withCycleInitFlags,
 } from "./cycle-initialization.js";
 import { markRequireEarlyBindings } from "./require-initialization.js";
+import {
+  cjsTableMethodEntry,
+  inlineProgramRequireOf,
+  nestedCjsExportAssignmentsOf,
+  requireNestedPatternsOf,
+} from "./cjs-inline-require.js";
+import { isDeadTscHelperDecl, tscInteropBindingOfDecl } from "./cjs-tsc-interop.js";
 import { collectJsonRequires, isJsonRequireDecl } from "./json-require.js";
 import {
   invalidJsonModuleDiag,
@@ -1391,6 +1401,11 @@ export function collectGlobals(
           deferJsCollectionDiags(lowerer, sf, diagsBefore);
         }
       };
+      // Export members assigned in VALUE position at the module's top
+      // level (`const src = exports.src = []`) are exports too.
+      for (const nested of nestedCjsExportAssignmentsOf(stmt, cjs?.expr)) {
+        registerExport(nested.name, nested.name.text, nested.value);
+      }
       if (cjs?.kind === "member" && ts.isIdentifier(cjs.name)) {
         // `exports.C = C` naming a CLASS declaration: alias plumbing —
         // no storage (a class VALUE global would fence for
@@ -1398,6 +1413,13 @@ export function collectGlobals(
         // symbol (cjsMemberExportClassSymbol) and the class registry
         // applies unchanged.
         if (lowerer.cjsMemberExportClassSymbol(cjs.expr) !== null) continue;
+        // A chain `exports.a = exports.b = value`: every member is an
+        // export holding the chain's one value.
+        const chain = cjsExportChainOf(cjs.expr);
+        if (chain !== null) {
+          for (const nameNode of chain.names) registerExport(nameNode, nameNode.text, chain.value);
+          continue;
+        }
         registerExport(cjs.name, cjs.name.text, cjs.value);
         continue;
       }
@@ -1429,7 +1451,22 @@ export function collectGlobals(
         // statement lowering evaluates the call exactly once at its
         // source position and assigns that slot. Unmappable calls retain
         // the existing statement-level fence.
-        const factoryValued = ts.isCallExpression(rhs);
+        // Any other computed value (`os.homedir || function () {…}`,
+        // `cond ? a : b`, `new Registry()`, `ns.member`) is the same single
+        // snapshot: Node stores whatever the expression produced. A
+        // require() of a program module is not: the exporter re-exports
+        // that module's exports, which requirers resolve through the
+        // checker's alias (the statement lowers to the dep's %init).
+        const factoryValued =
+          !ts.isIdentifier(rhs) &&
+          !ts.isClassExpression(rhs) &&
+          !ts.isObjectLiteralExpression(rhs) &&
+          !(
+            requireSpecOf(rhs) !== null &&
+            inlineProgramRequireOf(lowerer, rhs) !== null &&
+            !sf.statements.some((s) => cjsExportAssignmentOf(s)?.kind === "member")
+          ) &&
+          cjsExportTargetLiteral(rhs, sf) === null;
         if (cjsScalarLiteral(rhs) || fnValued || factoryValued) {
           const diagsBefore = lowerer.diags.length;
           try {
@@ -1464,6 +1501,10 @@ export function collectGlobals(
           if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) {
             registerExport(prop.name, prop.name.text, prop.initializer);
           }
+          // A METHOD entry (`module.exports = { f(x) { … } }`) is an
+          // expression-valued export whose value is the method's function.
+          const method = cjsTableMethodEntry(prop);
+          if (method !== null) registerExport(method.name, method.name.text, method.name);
           // other property forms fence in the statement lowering
         }
         continue;
@@ -1527,6 +1568,16 @@ export function collectGlobals(
       collectNestedVarGlobals(lowerer, sf, stmt, tag);
       continue;
     }
+    // tsc's interop bindings and its then-dead helper declarations own no
+    // storage either (cjs-tsc-interop.ts).
+    if (
+      isJsSourceFile(sf) &&
+      (isDeadTscHelperDecl(lowerer, stmt) ||
+        (stmt.declarationList.declarations.length === 1 &&
+          tscInteropBindingOfDecl(lowerer, stmt.declarationList.declarations[0]!) !== null))
+    ) {
+      continue;
+    }
     // CommonJS require declarations are alias plumbing (preflight owns
     // the module edges; resolveValueSymbol routes reads through to the
     // exporter's declarations): no storage, and the statement lowers to
@@ -1547,6 +1598,38 @@ export function collectGlobals(
       if (ts.isVariableStatement(stmt) && (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0) {
         for (const decl of stmt.declarationList.declarations) {
           stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer);
+        }
+      }
+      // `const { codes: { ERR_X } } = require("./errors")`: the outer
+      // keys stay alias plumbing, but a nested pattern destructures the
+      // export's value at the require, so its bindings own storage like
+      // any destructured declaration (lowerVarDeclarator assigns them).
+      if (ts.isVariableStatement(stmt)) {
+        const isLetList =
+          (stmt.declarationList.flags & ts.NodeFlags.Let) !== 0 ||
+          (stmt.declarationList.flags & ts.NodeFlags.BlockScoped) === 0;
+        for (const decl of stmt.declarationList.declarations) {
+          for (const element of requireNestedPatternsOf(decl)) {
+            for (const nameNode of boundIdentifiersOf(element.name!)) {
+              const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+              if (!symbol || lowerer.globalsBySymbol.has(symbol)) continue;
+              const mapped = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
+              const type = mapped && mapped.kind !== "void" ? mapped : DYN;
+              const g: IrGlobal = {
+                id: `%g.${tag}${nameNode.text}`,
+                name: nameNode.text,
+                type,
+                mutable: isLetList,
+                source: bindingSource(nameNode),
+                ...((type.kind === "func" || type.kind === "dyn") && !isVarDeclared(decl)
+                  ? { tdz: true as const }
+                  : {}),
+              };
+              lowerer.globalsBySymbol.set(symbol, g);
+              lowerer.globalsList.push(g);
+              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+            }
+          }
         }
       }
       continue;
@@ -2669,6 +2752,7 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
+    if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);

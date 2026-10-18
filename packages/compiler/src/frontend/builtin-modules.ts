@@ -42,6 +42,8 @@ export const SUPPORTED_BUILTIN_MODULES = [
   "module",
   "console",
   "process",
+  "punycode",
+  "constants",
 ] as const;
 
 /** Builtins Node itself serves ONLY under the node: prefix —
