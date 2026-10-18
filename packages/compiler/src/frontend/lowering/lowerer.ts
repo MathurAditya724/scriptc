@@ -1,3 +1,4 @@
+import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
 import {
   lifetimeRegionType,
   lowerLifetimeRegionCall,
@@ -2907,6 +2908,8 @@ export class Lowerer {
       this.fileTag.set(sf, sf === entry ? "" : `%m${i}.`);
     });
     if (this.moduleOrder.length === 0) this.fileTag.set(entry, "");
+    const jsDynamic = jsDynamicDeclarations(this.moduleOrder, this.checker);
+    if (jsDynamic.size > 0) this.typeCtx.jsDynamicDeclaration = (decl) => jsDynamic.has(decl);
     this.registerBuiltinErrorClasses();
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
