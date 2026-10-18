@@ -996,6 +996,10 @@ export type TypeParamTsResolver = (t: ts.Type) => ts.Type | null;
  * one new field here, not a new parameter at every call site. */
 export interface TypeMapperCtx {
   checker: ts.TypeChecker;
+  /** JavaScript declarations whose instance or object-literal types only
+   * the checked-dynamic representation holds (js-dynamic-objects.ts).
+   * Absent when the program has none: every mapping is unchanged. */
+  jsDynamicDeclaration?: (decl: ts.Node) => boolean;
   /** Set while mapping a generic callable member's erased type
    * (erasedGenericMemberType): the signature's own type parameters
    * resolve to `unknown` instead of refusing the mapping. */
@@ -1368,6 +1372,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const intrinsic = type.getSymbol();
   if (intrinsic?.name === "globalThis" && checker.declarationsOf(intrinsic).length === 0)
     return DYN;
+  if (ctx.jsDynamicDeclaration !== undefined && intrinsic !== undefined) {
+    const objectLiteral = (intrinsic.flags & ts.SymbolFlags.ObjectLiteral) !== 0;
+    const classInstance =
+      (intrinsic.flags & ts.SymbolFlags.Class) !== 0 && type.isClassOrInterface();
+    if (
+      (objectLiteral || classInstance) &&
+      checker.declarationsOf(intrinsic).some((decl) => ctx.jsDynamicDeclaration!(decl))
+    )
+      return DYN;
+  }
   {
     const moduleId = ctx.moduleNamespaceId?.(type) ?? null;
     if (moduleId !== null) return { kind: "moduleNs", moduleId };
