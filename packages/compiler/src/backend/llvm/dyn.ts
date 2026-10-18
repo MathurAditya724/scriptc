@@ -84,6 +84,16 @@ const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   child: 16,
   fileHandle: 17,
   dir: 44,
+  cryptoHash: 49,
+  cryptoHmac: 50,
+};
+
+/** Handle kinds whose runtime unit boxes them through its own function,
+ * which installs the tag's ops on first use (scr_crypto.h). Programs that
+ * never box one of these values do not link its dynamic members. */
+const DYN_HANDLE_BOX_FN: Record<string, string> = {
+  cryptoHash: "scr_crypto_hash_to_dyn",
+  cryptoHmac: "scr_crypto_hash_to_dyn",
 };
 
 export const DYN_KIND = {
@@ -2932,9 +2942,17 @@ export class LlDyn {
         // tag's installed ops.
         const h = DYN_HANDLE_KINDS.get(t.kind);
         if (h) {
-          host.declare(`declare ptr @scr_dyn_new_handle(ptr, i32)`);
+          const box = DYN_HANDLE_BOX_FN[t.kind];
           const r = B.tmp();
-          B.line(`${r} = call ptr @scr_dyn_new_handle(ptr %v, i32 ${DYN_HANDLE_TAG_NUM[t.kind]})`);
+          if (box) {
+            host.declare(`declare ptr @${box}(ptr)`);
+            B.line(`${r} = call ptr @${box}(ptr %v)`);
+          } else {
+            host.declare(`declare ptr @scr_dyn_new_handle(ptr, i32)`);
+            B.line(
+              `${r} = call ptr @scr_dyn_new_handle(ptr %v, i32 ${DYN_HANDLE_TAG_NUM[t.kind]})`,
+            );
+          }
           B.terminate(`ret ptr ${r}`);
           break;
         }

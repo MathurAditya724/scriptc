@@ -3879,6 +3879,8 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["http2Stream", { tag: "SCR_DYNH_H2_STREAM", cls: "Http2Stream" }],
   ["httpClientReq", { tag: "SCR_DYNH_HTTP_CLIENT", cls: "ClientRequest" }],
   ["dir", { tag: "SCR_DYNH_DIR", cls: "Dir" }],
+  ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
+  ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
 ]);
 
 /** A class value that crosses an `unknown` slot as a compiler-owned typed

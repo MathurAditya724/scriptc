@@ -928,6 +928,43 @@ hash.end("abc");
   });
 });
 
+// A Hash or Hmac held in an 'unknown' slot answers update(), digest() and
+// Hash's copy(). Its other members throw a coded SC2020 error, and so do
+// those methods called with another receiver.
+describe("Hash and Hmac members through 'unknown'", () => {
+  test("throw SC2020 other than update, digest and copy", async () => {
+    const r = await compileAndRun(
+      "hash-unknown-members",
+      `const crypto = require("node:crypto");
+function attempt(value, run) {
+  try {
+    run(value);
+  } catch (error) {
+    console.log(error.name, error.code, error.message);
+  }
+}
+const hash = [crypto.createHash("sha256")][0];
+attempt(hash, (h) => h.on("data", () => {}));
+attempt(hash, (h) => h.readable);
+attempt([crypto.createHmac("sha256", "k")][0], (m) => m.write("x"));
+attempt(hash, (h) => h.digest.call({}));
+console.log(hash.update("abc").digest("hex").slice(0, 8));
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 Hash members other than update(), digest() and copy() have no lowering on an 'unknown' value; cast the value to Hash first\n".repeat(
+        2,
+      ) +
+        "Error SC2020 Hmac members other than update() and digest() have no lowering on an 'unknown' value; cast the value to Hmac first\n" +
+        "Error SC2020 Hash and Hmac methods called with a receiver other than their own Hash or Hmac have no lowering\n" +
+        "ba7816bf\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
 // Node 24.22 skips the chacha20-poly1305 tag check when neither
 // setAuthTag() nor authTagLength was used, and returns unverified
 // plaintext. scriptc keeps Node 24.15's behavior: final() fails.
