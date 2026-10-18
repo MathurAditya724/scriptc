@@ -873,6 +873,7 @@ ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, c
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
 ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, const ScrStr *what);
+ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what);
 ScrStr *scr_num_to_string_radix(double value, const ScrDyn *radix);
 /* JS String() over the dyn kind (units render "null"/"undefined" where
  * scr_dyn_to_string throws) — the web globals' WebIDL ToString. +1. */

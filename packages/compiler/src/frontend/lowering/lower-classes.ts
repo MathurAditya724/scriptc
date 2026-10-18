@@ -6918,7 +6918,8 @@ export function classMemberNameOf(lowerer: Lowerer, name: ts.PropertyName): stri
       member === "iterator" ||
       member === "asyncIterator" ||
       member === "dispose" ||
-      member === "asyncDispose"
+      member === "asyncDispose" ||
+      member === "toPrimitive"
     ) {
       return `sym:${member}`;
     }

@@ -545,6 +545,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.freeze",
   "dyn.isFrozen",
   "dyn.toString",
+  "dyn.valueOf",
   "string.fromCodePoint",
   "dyn.defineProps",
   "dyn.definePrototypeProps",
