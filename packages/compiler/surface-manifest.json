@@ -4160,6 +4160,13 @@
       "note": "UTC ISO formatting over constructed and stored Date values"
     },
     {
+      "id": "stdlib.date.toUTCString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toUTCString",
+      "status": "static",
+      "note": "RFC 7231 IMF-fixdate formatting over stored Date values"
+    },
+    {
       "id": "stdlib.date.valueOf",
       "kind": "stdlib",
       "name": "Date.prototype.valueOf",
@@ -5236,9 +5243,8 @@
       "id": "stdlib.response.static.json",
       "kind": "stdlib",
       "name": "Response.json",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: webidl-conversion, error-shape; supported scope: data that crosses the checked-dynamic boundary, serialized with JSON.stringify (toJSON hooks included); ResponseInit as for the constructor; differential evidence: fixture:static-response-json"
     },
     {
       "id": "stdlib.response.static.redirect",
