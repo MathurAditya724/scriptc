@@ -1367,6 +1367,128 @@ ScrStr *scr_regex_replace_callback(ScrStr *s, ScrRegex *re, ScrDyn *callback, bo
   return scr_jb_finish(&output);
 }
 
+/* One call of a typed replacer (scr_regex_replace_fn's contract): string
+ * arguments are passed +1 (the closure ABI's owned parameters), the offset
+ * as a number, and the result is the closure's +1 string. */
+static ScrStr *scr_regex_call_replacer(ScrClosure *f, uint32_t arity, int ncap,
+                                       ScrStr *const *caps, double offset, ScrStr *subject) {
+  void *p[4] = { NULL, NULL, NULL, NULL };
+  for (uint32_t i = 0; i < arity && i < 4; i++) {
+    if ((int)i < ncap) {
+      if (!caps[i]) scr_trap("scriptc: internal error: typed replacer capture is unset\n");
+      p[i] = scr_str_retain(caps[i]);
+    } else if ((int)i == ncap + 1) {
+      p[i] = scr_str_retain(subject);
+    }
+  }
+  void *fn = f->fn;
+  typedef ScrStr *R;
+  switch (arity) {
+  case 0: return ((R (*)(ScrClosure *))fn)(f);
+  case 1: return ((R (*)(ScrClosure *, void *))fn)(f, p[0]);
+  case 2:
+    if (ncap == 1) return ((R (*)(ScrClosure *, void *, double))fn)(f, p[0], offset);
+    return ((R (*)(ScrClosure *, void *, void *))fn)(f, p[0], p[1]);
+  case 3:
+    if (ncap == 1) return ((R (*)(ScrClosure *, void *, double, void *))fn)(f, p[0], offset, p[2]);
+    if (ncap == 2) return ((R (*)(ScrClosure *, void *, void *, double))fn)(f, p[0], p[1], offset);
+    return ((R (*)(ScrClosure *, void *, void *, void *))fn)(f, p[0], p[1], p[2]);
+  case 4:
+    if (ncap == 2)
+      return ((R (*)(ScrClosure *, void *, void *, double, void *))fn)(f, p[0], p[1], offset, p[3]);
+    if (ncap == 3)
+      return ((R (*)(ScrClosure *, void *, void *, void *, double))fn)(f, p[0], p[1], p[2], offset);
+    if (ncap >= 4)
+      return ((R (*)(ScrClosure *, void *, void *, void *, void *))fn)(f, p[0], p[1], p[2], p[3]);
+    break;
+  default: break;
+  }
+  scr_trap("scriptc: internal error: typed replacer signature\n");
+}
+
+/* scr_regex_replace_callback's algorithm for a typed replacer: the matches
+ * are collected first, keeping only the captures the replacer reads, then
+ * the replacer runs once per match in order. */
+ScrStr *scr_regex_replace_fn(ScrStr *s, ScrRegex *re, ScrClosure *f, uint32_t arity, bool all) {
+  uint8_t *bc = scr_regex_bc(re);
+  int flags = lre_get_flags(bc);
+  bool global = (flags & LRE_FLAG_GLOBAL) != 0;
+  if (all && !global) {
+    static const char message[] = "String.prototype.replaceAll called with a non-global RegExp argument";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  bool sticky = (flags & LRE_FLAG_STICKY) != 0;
+  bool unicode = (flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
+  int capture_count = lre_get_capture_count(bc);
+  size_t keep = arity < (uint32_t)capture_count ? arity : (size_t)capture_count;
+  ScrRegexInput input;
+  scr_regex_input_init(&input, re, bc, s);
+  int len = input.len;
+  struct { int start, end; } *matches = NULL;
+  ScrStr **caps = NULL;
+  size_t count = 0, capacity = 0;
+  if (global) re->last_index = 0;
+  int position = sticky ? scr_regex_start(re, len) : 0;
+  if (position < 0) position = len + 1;
+  if (sticky && !global) re->last_index = 0;
+  while (position <= len && scr_exec(&input, bc, position) == 1) {
+    uint8_t **capture = input.capture;
+    int start = scr_capture_index(&input, capture[0]);
+    int end = scr_capture_index(&input, capture[1]);
+    if (sticky && !global) re->last_index = end;
+    if (count == capacity) {
+      size_t next = capacity ? capacity * 2 : 8;
+      if (next < capacity || next > SIZE_MAX / sizeof(*matches) / (keep + 1)) scr_regex_oom();
+      void *grown = realloc(matches, next * sizeof(*matches));
+      if (!grown) scr_regex_oom();
+      matches = grown;
+      if (keep) {
+        grown = realloc(caps, next * keep * sizeof(*caps));
+        if (!grown) scr_regex_oom();
+        caps = grown;
+      }
+      capacity = next;
+    }
+    for (size_t group = 0; group < keep; group++) {
+      const uint8_t *cs = capture[group * 2], *ce = capture[group * 2 + 1];
+      caps[count * keep + group] =
+          cs && ce ? scr_regex_span(&input, scr_capture_index(&input, cs), scr_capture_index(&input, ce))
+                   : NULL;
+    }
+    matches[count].start = start;
+    matches[count].end = end;
+    count++;
+    if (!global) break;
+    position = start == end ? scr_advance(&input, end, unicode) : end;
+  }
+  ScrJsonBuf output;
+  scr_jb_init(&output);
+  int next = 0;
+  scr_dyn_this_push_dyn(NULL);
+  for (size_t i = 0; i < count; i++) {
+    ScrStr *replacement = scr_regex_call_replacer(f, arity, capture_count, caps + i * keep,
+                                                  (double)matches[i].start, s);
+    if (scr_exc_pending()) break;
+    scr_regex_put_span(&output, &input, next, matches[i].start);
+    scr_jb_put_str(&output, replacement);
+    scr_str_release(replacement);
+    next = matches[i].end;
+  }
+  scr_dyn_this_pop();
+  for (size_t i = 0; i < count * keep; i++) scr_str_release(caps[i]);
+  free(caps);
+  free(matches);
+  if (scr_exc_pending()) {
+    scr_jb_abandon(&output);
+    scr_regex_input_dispose(&input);
+    return NULL;
+  }
+  scr_regex_put_span(&output, &input, next, len);
+  scr_regex_input_dispose(&input);
+  return scr_jb_finish(&output);
+}
+
 /* The pinned Node ANSI matcher derives from ansi-regex, copyright (c)
  * Sindre Sorhus <sindresorhus@gmail.com>, used under the MIT license:
  * Permission is hereby granted, free of charge, to any person obtaining a
