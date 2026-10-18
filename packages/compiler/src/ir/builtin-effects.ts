@@ -119,6 +119,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.requestNew",
   "fetch.headersNew",
   "fetch.responseNew",
+  "fetch.responseJsonStatic",
   "fetch.abortTimeout",
   "fetch.abortAny",
   "abort.timeout",

@@ -4667,14 +4667,33 @@ static ScrDyn *sf_response_init_get(
   return NULL;
 }
 
-ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
+/* The Response constructor, and Response.json(data, init) when json_data
+ * is non-NULL: undici converts ResponseInit, serializes the data (TypeError
+ * "Value is not JSON serializable" when JSON.stringify answers undefined),
+ * then initializes the response exactly as the constructor does, with
+ * "application/json" as the default content type. */
+typedef ScrDyn *(*SfJsonSerialize)(const ScrDyn *value);
+
+/* The JSON serializer reaches the constructor only through Response.json's
+ * entry point, so programs that never call it link no JSON walker. */
+static ScrDyn *sf_response_json_serialize(const ScrDyn *value) {
+  ScrStr *gap = scr_str_new("", 0);
+  ScrDyn *serialized = scr_json_stringify_replacer(value, scr_dyn_undefined(), gap);
+  scr_str_release(gap);
+  return serialized;
+}
+
+static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
+                                     const ScrDyn *json_data,
+                                     SfJsonSerialize serialize) {
   ScrArr *header_pairs = NULL;
   ScrArr *converted_headers = NULL;
   ScrBytes *body_bytes = NULL;
   ScrStr *status_text = NULL;
   SfStream *stream = NULL;
-  bool null_body =
-      !body || body->kind == SCR_DYN_UNDEF || body->kind == SCR_DYN_NULL;
+  bool json_body = json_data != NULL;
+  bool null_body = !json_body &&
+      (!body || body->kind == SCR_DYN_UNDEF || body->kind == SCR_DYN_NULL);
   bool text_body = false;
   int status = 200;
   bool status_range_error = false;
@@ -4683,7 +4702,7 @@ ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
    * string arm therefore runs before ResponseInit's dictionary conversion,
    * while a ReadableStream is only brand-converted here — its locked/
    * disturbed state belongs to the later body-extraction phase. */
-  if (!null_body &&
+  if (!null_body && !json_body &&
       !(body->kind == SCR_DYN_HANDLE &&
         body->v.handle.tag == SCR_DYNH_WEB_STREAM)) {
     if (body->kind == SCR_DYN_BYTES) {
@@ -4757,7 +4776,25 @@ ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
   /* Extract BodyInit before validating the response metadata. This makes a
    * locked/disturbed stream win over the later status range, statusText HTTP
    * reason-phrase, and HeadersInit validation exactly as in pinned Node. */
-  if (null_body) {
+  if (json_body) {
+    ScrDyn *serialized = serialize(json_data);
+    if (!serialized) goto fail;
+    if (serialized->kind != SCR_DYN_STR) {
+      static const char unserializable[30] = "Value is not JSON serializable";
+      scr_dyn_release(serialized);
+      scr_throw_error_msg(SCR_ERR_TYPE, unserializable, sizeof unserializable);
+      goto fail;
+    }
+    ScrStr *encoding = scr_str_new("utf8", 4);
+    body_bytes = scr_bytes_from_str(serialized->v.str, encoding);
+    scr_str_release(encoding);
+    scr_dyn_release(serialized);
+    stream = sf_stream_new_native();
+    sf_stream_enqueue_bytes(stream, body_bytes);
+    sf_stream_close(stream);
+    scr_bytes_release(body_bytes);
+    body_bytes = NULL;
+  } else if (null_body) {
     stream = sf_stream_new_native();
     sf_stream_close(stream);
   } else if (body->kind == SCR_DYN_HANDLE &&
@@ -4808,6 +4845,11 @@ ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
     sf_push_header_text(header_pairs, "content-type",
                         "text/plain;charset=UTF-8", 24);
   }
+  if (json_body && !sf_pairs_have(header_pairs, "content-type")) {
+    static const char json_type[16] = "application/json";
+    scr_arr_push_ref(header_pairs, scr_str_new("content-type", 12));
+    scr_arr_push_ref(header_pairs, scr_str_new(json_type, sizeof json_type));
+  }
 
   SfResponse *response = calloc(1, sizeof *response);
   if (!response) sf_oom();
@@ -4831,6 +4873,15 @@ fail:
   scr_arr_release(header_pairs);
   scr_arr_release(converted_headers);
   return NULL;
+}
+
+ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
+  return sf_response_construct(body, init, NULL, NULL);
+}
+
+ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init) {
+  return sf_response_construct(NULL, init, data ? data : scr_dyn_undefined(),
+                               &sf_response_json_serialize);
 }
 
 /* Request uses the same body stream and Headers ownership as Response. */

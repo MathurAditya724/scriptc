@@ -64,6 +64,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * are opaque checked-dynamic handles. */
   "fetch.start": { argTypes: [STRING, DYN], result: { kind: "promise", inner: DYN } },
   "fetch.responseNew": { argTypes: [DYN, DYN], result: DYN },
+  "fetch.responseJsonStatic": { argTypes: [DYN, DYN], result: DYN },
   "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "abort.controllerNew": { argTypes: [], result: DYN },
   /** EventTarget / Event / CustomEvent construction (scr_event_target.c):

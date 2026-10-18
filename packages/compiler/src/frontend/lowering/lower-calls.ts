@@ -1,6 +1,7 @@
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
+import { lowerResponseStaticJson } from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
@@ -1389,6 +1390,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // compile-time-known, so a literal key folds to a constant.
       lowerClassHasOwnPropertyCall(lowerer, expr, expr.expression) ??
       lowerObjectOwnMethodCall(lowerer, expr, expr.expression) ??
+      // Static Response.json(data, init?) builds a native Response.
+      lowerResponseStaticJson(lowerer, expr) ??
       // Refuse Response constructor operations before generic-call
       // fallbacks can report an unrelated SC1090 diagnostic.
       lowerer.fenceUnsupportedFetchConstructorMember(expr.expression) ??
