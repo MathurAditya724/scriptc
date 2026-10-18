@@ -9,6 +9,7 @@ import {
   BOOL,
   bytesOf,
   canConvertToDyn,
+  canDynCheckTo,
   CHILD_T,
   CRYPTOHASH_T,
   CRYPTOHMAC_T,
@@ -3892,158 +3893,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (hybrid) return hybrid;
   }
   const callSigs = checker.getCallSignatures(widened);
-  if (callSigs.length === 1) {
-    const sig = callSigs[0]!;
-    if (sig.getTypeParameters().length && ctx.erasingSignature !== sig) return null;
-    // A SYNTHESIZED rest param (tsc's JS inference for a function body
-    // reading `arguments` — `(...args: any[]) => any` whose args symbol
-    // has no declaration): the dotDotDot check below can't see it, and a
-    // fixed-arity func mapping would LIE about the value's calling
-    // convention. Detected by the param-count mismatch against the
-    // signature's own declaration, excluding an erased `this` parameter.
-    {
-      const sigDecl = checker.signatureDeclaration(sig);
-      const declParams =
-        sigDecl !== undefined && ts.isFunctionLike(sigDecl) ? sigDecl.parameters : undefined;
-      if (
-        declParams !== undefined &&
-        runtimeParameterCount(declParams) !== sig.getParameters().length
-      ) {
-        return null;
-      }
-      // tsgo never SYNTHESIZES that rest param into the inferred signature
-      // (5.9.3 did — the count mismatch above was the whole detector
-      // there), so the declaration's own body answers directly.
-      if (sigDecl !== undefined && ts.isFunctionLike(sigDecl) && bodyReadsArguments(sigDecl)) {
-        return null;
-      }
-    }
-    const params: IrType[] = [];
-    let typedRest = false;
-    for (const p of sig.getParameters()) {
-      const decl = checker.valueDeclarationOf(p);
-      const rest = decl !== undefined && ts.isParameter(decl) && decl.dotDotDotToken !== undefined;
-
-      // arity ABI selected by lambdaSignature. Treating an inferred any[]
-      // declaration as a typed packed-array closure would bypass its boxed
-      // spread/error semantics and change coverage classification.
-      if (rest && decl !== undefined && isJsSourceFile(decl.getSourceFile())) return null;
-      const optional =
-        decl !== undefined &&
-        ts.isParameter(decl) &&
-        (decl.questionToken !== undefined || decl.initializer !== undefined);
-      let pt = mapType(checker.getTypeOfSymbol(p), ctx);
-      if (
-        decl &&
-        ts.isParameter(decl) &&
-        ts.isSetAccessorDeclaration(decl.parent) &&
-        isJsSourceFile(decl.getSourceFile())
-      )
-        pt = DYN;
-      // An inferred JavaScript binding pattern consumes an iterable; it
-      // does not require the caller's array to have exactly this length.
-      const executor = decl && ts.isParameter(decl) ? decl.parent : null;
-      const construction = executor?.parent;
-      const constructorSymbol =
-        construction && ts.isNewExpression(construction)
-          ? checker.getSymbolAtLocation(construction.expression)
-          : undefined;
-      const nativeExecutor =
-        executor &&
-        (ts.isArrowFunction(executor) || ts.isFunctionExpression(executor)) &&
-        construction &&
-        ts.isNewExpression(construction) &&
-        construction.arguments?.[0] === executor &&
-        ts.isIdentifier(construction.expression) &&
-        construction.expression.text === "Promise" &&
-        constructorSymbol &&
-        checker
-          .declarationsOf(constructorSymbol)
-          .some((site) => ctx.isStdlibFile(site.getSourceFile()));
-      if (
-        !nativeExecutor &&
-        decl &&
-        ts.isParameter(decl) &&
-        !decl.dotDotDotToken &&
-        !ts.isSetAccessorDeclaration(decl.parent) &&
-        isJsSourceFile(decl.getSourceFile()) &&
-        !decl.type &&
-        !/@(?:param|type)\b/.test(
-          decl.getSourceFile().text.slice(decl.parent?.pos ?? decl.pos, decl.getStart()),
-        )
-      )
-        pt = DYN;
-      if (pt) pt = jsOpenObjectType(decl, pt, ctx.shapes, ctx.unions);
-      // Belt and braces for non-strict type worlds: an optional param's
-      // ABI slot is always the undefined-armed union (strictNullChecks
-      // already spells it that way; arm it here if the world didn't).
-      if (optional && pt && pt.kind !== "void" && pt.kind !== "dyn") {
-        const armed = withUndefinedArm(pt, ctx.unions);
-        if (!armed) return null;
-        pt = armed;
-      }
-      if (!pt) return null;
-      if (rest) {
-        if (pt.kind !== "array") return null;
-        typedRest = true;
-      }
-      // `(value: void) => void` (Promise<void>'s resolve) is callable with
-      // no arguments — a void param is dropped, not a mapping failure.
-      if (pt.kind === "void") continue;
-      params.push(pt);
-    }
-    const retT = checker.getReturnTypeOfSignature(sig);
-    // `() => never` (a throw-only lambda's inferred type) is assignable to
-    // `() => void` and its calls never produce a value — map the return
-    // like declaredReturnType does for declarations. JS null/undefined
-    // returns can read mutable fields, so callable values use the same
-    // checked-native return ABI as their implementations.
-    const sigDecl = checker.signatureDeclaration(sig);
-    const jsUnitReturn =
-      sigDecl !== undefined &&
-      isJsSourceFile(sigDecl.getSourceFile()) &&
-      (retT.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0;
-    let ret =
-      jsUnitReturn || (retT.flags & ts.TypeFlags.Any) !== 0
-        ? DYN
-        : retT.flags & ts.TypeFlags.Never
-          ? VOID
-          : mapType(retT, ctx);
-    if (sigDecl && ts.isGetAccessorDeclaration(sigDecl) && isJsSourceFile(sigDecl.getSourceFile()))
-      ret = DYN;
-    if (sigDecl && isJsSourceFile(sigDecl.getSourceFile()) && ret?.kind === "array") ret = DYN;
-    if (
-      sigDecl &&
-      ts.isFunctionLike(sigDecl) &&
-      isJsSourceFile(sigDecl.getSourceFile()) &&
-      !sigDecl.type &&
-      !/@returns?\b/.test(sigDecl.getSourceFile().text.slice(sigDecl.pos, sigDecl.getStart())) &&
-      ret?.kind === "record"
-    )
-      ret = DYN;
-    if (
-      sigDecl &&
-      ts.isFunctionLike(sigDecl) &&
-      isJsSourceFile(sigDecl.getSourceFile()) &&
-      !sigDecl.type &&
-      !/@returns?\b/.test(sigDecl.getSourceFile().text.slice(sigDecl.pos, sigDecl.getStart())) &&
-      (ret?.kind === "date" ||
-        (ret?.kind === "union" &&
-          ctx.unions.get(ret.unionId)?.arms.some((arm) => arm.kind === "func")))
-    )
-      ret = DYN;
-    if (
-      ret &&
-      sigDecl &&
-      isJsSourceFile(sigDecl.getSourceFile()) &&
-      functionCanReturnUndefined(sigDecl)
-    )
-      ret = withUndefinedArm(ret, ctx.unions) ?? ret;
-    if (!ret) return null;
-    return typedRest
-      ? { kind: "func", params, ret, rest: true, restAbi: "typed" }
-      : funcOf(params, ret);
-  }
+  if (callSigs.length === 1) return mapCallSignature(callSigs[0]!, ctx);
   // Records: object types whose members are all data properties (shorthand
   // methods in type position count — they're func-typed fields) with
   // mappable types; no call/construct signatures, no index signatures, not
@@ -4315,6 +4165,162 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     }
   }
   return null;
+}
+
+/** One non-overloaded call signature's func type (mapTypeInner's
+ * single-signature rule; erasedOverloadMemberType maps each overload of a
+ * member through it). */
+function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null {
+  const { checker } = ctx;
+  if (sig.getTypeParameters().length && ctx.erasingSignature !== sig) return null;
+  // A SYNTHESIZED rest param (tsc's JS inference for a function body
+  // reading `arguments` — `(...args: any[]) => any` whose args symbol
+  // has no declaration): the dotDotDot check below can't see it, and a
+  // fixed-arity func mapping would LIE about the value's calling
+  // convention. Detected by the param-count mismatch against the
+  // signature's own declaration, excluding an erased `this` parameter.
+  {
+    const sigDecl = checker.signatureDeclaration(sig);
+    const declParams =
+      sigDecl !== undefined && ts.isFunctionLike(sigDecl) ? sigDecl.parameters : undefined;
+    if (
+      declParams !== undefined &&
+      runtimeParameterCount(declParams) !== sig.getParameters().length
+    ) {
+      return null;
+    }
+    // tsgo never SYNTHESIZES that rest param into the inferred signature
+    // (5.9.3 did — the count mismatch above was the whole detector
+    // there), so the declaration's own body answers directly.
+    if (sigDecl !== undefined && ts.isFunctionLike(sigDecl) && bodyReadsArguments(sigDecl)) {
+      return null;
+    }
+  }
+  const params: IrType[] = [];
+  let typedRest = false;
+  for (const p of sig.getParameters()) {
+    const decl = checker.valueDeclarationOf(p);
+    const rest = decl !== undefined && ts.isParameter(decl) && decl.dotDotDotToken !== undefined;
+
+    // arity ABI selected by lambdaSignature. Treating an inferred any[]
+    // declaration as a typed packed-array closure would bypass its boxed
+    // spread/error semantics and change coverage classification.
+    if (rest && decl !== undefined && isJsSourceFile(decl.getSourceFile())) return null;
+    const optional =
+      decl !== undefined &&
+      ts.isParameter(decl) &&
+      (decl.questionToken !== undefined || decl.initializer !== undefined);
+    let pt = mapType(checker.getTypeOfSymbol(p), ctx);
+    if (
+      decl &&
+      ts.isParameter(decl) &&
+      ts.isSetAccessorDeclaration(decl.parent) &&
+      isJsSourceFile(decl.getSourceFile())
+    )
+      pt = DYN;
+    // An inferred JavaScript binding pattern consumes an iterable; it
+    // does not require the caller's array to have exactly this length.
+    const executor = decl && ts.isParameter(decl) ? decl.parent : null;
+    const construction = executor?.parent;
+    const constructorSymbol =
+      construction && ts.isNewExpression(construction)
+        ? checker.getSymbolAtLocation(construction.expression)
+        : undefined;
+    const nativeExecutor =
+      executor &&
+      (ts.isArrowFunction(executor) || ts.isFunctionExpression(executor)) &&
+      construction &&
+      ts.isNewExpression(construction) &&
+      construction.arguments?.[0] === executor &&
+      ts.isIdentifier(construction.expression) &&
+      construction.expression.text === "Promise" &&
+      constructorSymbol &&
+      checker
+        .declarationsOf(constructorSymbol)
+        .some((site) => ctx.isStdlibFile(site.getSourceFile()));
+    if (
+      !nativeExecutor &&
+      decl &&
+      ts.isParameter(decl) &&
+      !decl.dotDotDotToken &&
+      !ts.isSetAccessorDeclaration(decl.parent) &&
+      isJsSourceFile(decl.getSourceFile()) &&
+      !decl.type &&
+      !/@(?:param|type)\b/.test(
+        decl.getSourceFile().text.slice(decl.parent?.pos ?? decl.pos, decl.getStart()),
+      )
+    )
+      pt = DYN;
+    if (pt) pt = jsOpenObjectType(decl, pt, ctx.shapes, ctx.unions);
+    // Belt and braces for non-strict type worlds: an optional param's
+    // ABI slot is always the undefined-armed union (strictNullChecks
+    // already spells it that way; arm it here if the world didn't).
+    if (optional && pt && pt.kind !== "void" && pt.kind !== "dyn") {
+      const armed = withUndefinedArm(pt, ctx.unions);
+      if (!armed) return null;
+      pt = armed;
+    }
+    if (!pt) return null;
+    if (rest) {
+      if (pt.kind !== "array") return null;
+      typedRest = true;
+    }
+    // `(value: void) => void` (Promise<void>'s resolve) is callable with
+    // no arguments — a void param is dropped, not a mapping failure.
+    if (pt.kind === "void") continue;
+    params.push(pt);
+  }
+  const retT = checker.getReturnTypeOfSignature(sig);
+  // `() => never` (a throw-only lambda's inferred type) is assignable to
+  // `() => void` and its calls never produce a value — map the return
+  // like declaredReturnType does for declarations. JS null/undefined
+  // returns can read mutable fields, so callable values use the same
+  // checked-native return ABI as their implementations.
+  const sigDecl = checker.signatureDeclaration(sig);
+  const jsUnitReturn =
+    sigDecl !== undefined &&
+    isJsSourceFile(sigDecl.getSourceFile()) &&
+    (retT.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0;
+  let ret =
+    jsUnitReturn || (retT.flags & ts.TypeFlags.Any) !== 0
+      ? DYN
+      : retT.flags & ts.TypeFlags.Never
+        ? VOID
+        : mapType(retT, ctx);
+  if (sigDecl && ts.isGetAccessorDeclaration(sigDecl) && isJsSourceFile(sigDecl.getSourceFile()))
+    ret = DYN;
+  if (sigDecl && isJsSourceFile(sigDecl.getSourceFile()) && ret?.kind === "array") ret = DYN;
+  if (
+    sigDecl &&
+    ts.isFunctionLike(sigDecl) &&
+    isJsSourceFile(sigDecl.getSourceFile()) &&
+    !sigDecl.type &&
+    !/@returns?\b/.test(sigDecl.getSourceFile().text.slice(sigDecl.pos, sigDecl.getStart())) &&
+    ret?.kind === "record"
+  )
+    ret = DYN;
+  if (
+    sigDecl &&
+    ts.isFunctionLike(sigDecl) &&
+    isJsSourceFile(sigDecl.getSourceFile()) &&
+    !sigDecl.type &&
+    !/@returns?\b/.test(sigDecl.getSourceFile().text.slice(sigDecl.pos, sigDecl.getStart())) &&
+    (ret?.kind === "date" ||
+      (ret?.kind === "union" &&
+        ctx.unions.get(ret.unionId)?.arms.some((arm) => arm.kind === "func")))
+  )
+    ret = DYN;
+  if (
+    ret &&
+    sigDecl &&
+    isJsSourceFile(sigDecl.getSourceFile()) &&
+    functionCanReturnUndefined(sigDecl)
+  )
+    ret = withUndefinedArm(ret, ctx.unions) ?? ret;
+  if (!ret) return null;
+  return typedRest
+    ? { kind: "func", params, ret, rest: true, restAbi: "typed" }
+    : funcOf(params, ret);
 }
 
 /** Retain a literal discriminator before widening erases its values. A
@@ -5551,6 +5557,164 @@ export function erasedGenericMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType 
   return erased?.kind === "func" ? erased : undefined;
 }
 
+/** An OVERLOADED callable member type (`on(event: "a", h: (x: number) =>
+ * void): () => void; on(event: "b", h: (x: string) => void): () => void`
+ * in a program interface or type literal): two or more call signatures and
+ * nothing else (no data properties, construct signatures, or index
+ * signatures), every one declared in TypeScript program source. Such a
+ * member keeps a record slot holding its erased runtime function
+ * (erasedOverloadMemberType); calls convert per their resolved overload
+ * (lowerRecordFieldCall). */
+export function isOverloadedCallableMemberType(t: ts.Type, checker: ts.TypeChecker): boolean {
+  const sigs = checker.getCallSignatures(t);
+  if (sigs.length < 2) return false;
+  if (
+    checker.getConstructSignatures(t).length > 0 ||
+    checker.getPropertiesOfType(t).length > 0 ||
+    checker.getIndexInfosOfType(t).length > 0
+  )
+    return false;
+  return sigs.every((sig) => {
+    const decl = checker.signatureDeclaration(sig);
+    if (decl === undefined) return false;
+    if (!ts.isMethodSignatureDeclaration(decl) && !ts.isCallSignatureDeclaration(decl))
+      return false;
+    const file = decl.getSourceFile();
+    return !file.isDeclarationFile && !isJsSourceFile(file);
+  });
+}
+
+/** Scalar arms an overload join may combine into one union. */
+const OVERLOAD_JOIN_SCALARS = new Set(["f64", "string", "bool", "undefinedT", "nullT"]);
+
+/** The join of one position's types across an overload set: equal types
+ * stay; scalar mixes form their union; anything else is `unknown` when
+ * every joined type crosses the checked-dynamic boundary in both directions
+ * (the call site converts into the slot, the implementation converts out
+ * of it). Differing callbacks (`(x: number) => void` beside `(x: string) =>
+ * void`) therefore travel as checked function values, which any
+ * implementation's own callback type adapts from. Null when no join
+ * exists. */
+function joinOverloadTypes(types: readonly IrType[], ctx: TypeMapperCtx): IrType | null {
+  const first = types[0]!;
+  if (types.every((t) => typeEquals(t, first))) return first;
+  const getRecord = (id: string) => ctx.shapes.get(id);
+  const getUnion = (id: string) => ctx.unions.get(id);
+  const arms = new Map<string, IrType>();
+  let scalar = true;
+  for (const t of types) {
+    const parts = t.kind === "union" ? (ctx.unions.get(t.unionId)?.arms ?? []) : [t];
+    if (parts.length === 0) scalar = false;
+    for (const part of parts) {
+      if (!OVERLOAD_JOIN_SCALARS.has(part.kind)) scalar = false;
+      arms.set(typeKey(part), part);
+    }
+  }
+  if (scalar && [...arms.values()].some((arm) => !isUnitType(arm))) {
+    const sorted = [...arms.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    return { kind: "union", unionId: ctx.unions.intern(sorted) };
+  }
+  if (
+    types.every(
+      (t) =>
+        t.kind === "dyn" ||
+        (t.kind !== "void" &&
+          canConvertToDyn(t, getRecord, getUnion) &&
+          canDynCheckTo(t, getRecord, getUnion)),
+    )
+  )
+    return DYN;
+  return null;
+}
+
+/** An overloaded member's runtime type (isOverloadedCallableMemberType).
+ * JavaScript stores ONE function under the member; overload signatures only
+ * constrain call sites. The slot's type joins the overloads per parameter
+ * position and result (joinOverloadTypes), and a position some overloads
+ * omit is optional. Each overload's own type parameters erase to `unknown`
+ * first. Calls pick their overload statically, convert arguments into the
+ * slot's parameter types and the result back to the overload's; an
+ * implementation converts into the slot like any function value. Undefined
+ * when the set does not join (rest parameters, a void result beside a
+ * value result, a component outside the checked-dynamic boundary): the
+ * member keeps its fence. */
+export function erasedOverloadMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType | undefined {
+  const funcs: (IrType & { kind: "func" })[] = [];
+  for (const sig of ctx.checker.getCallSignatures(t)) {
+    const own = new Set(sig.getTypeParameters());
+    const outer = ctx.resolveTypeParam;
+    const mapped = mapCallSignature(
+      sig,
+      own.size === 0
+        ? ctx
+        : {
+            ...ctx,
+            erasingSignature: sig,
+            resolveTypeParam: (param) => (own.has(param) ? DYN : (outer?.(param) ?? null)),
+          },
+    );
+    if (mapped?.kind !== "func" || mapped.rest === true || mapped.argumentsAll === true)
+      return undefined;
+    funcs.push(mapped);
+  }
+  const arity = Math.max(...funcs.map((f) => f.params.length));
+  const params: IrType[] = [];
+  for (let i = 0; i < arity; i++) {
+    const present = funcs.filter((f) => i < f.params.length).map((f) => f.params[i]!);
+    let param = joinOverloadTypes(present, ctx);
+    if (param !== null && present.length < funcs.length && param.kind !== "dyn")
+      param = withUndefinedArm(param, ctx.unions);
+    if (param === null) return undefined;
+    params.push(param);
+  }
+  const voids = funcs.filter((f) => f.ret.kind === "void").length;
+  if (voids !== 0 && voids !== funcs.length) return undefined;
+  const ret =
+    voids === funcs.length
+      ? VOID
+      : joinOverloadTypes(
+          funcs.map((f) => f.ret),
+          ctx,
+        );
+  if (ret === null) return undefined;
+  return funcOf(params, ret);
+}
+
+/** Why an overloaded member's set has no erased type
+ * (erasedOverloadMemberType): the first overload, and within it the first
+ * parameter or result, that does not map; otherwise the join itself. A
+ * message tail after "its member 'name'". */
+function describeOverloadSetBlocker(t: ts.Type, ctx: TypeMapperCtx): string {
+  const { checker } = ctx;
+  for (const sig of checker.getCallSignatures(t)) {
+    const own = new Set(sig.getTypeParameters());
+    const outer = ctx.resolveTypeParam;
+    const sigCtx: TypeMapperCtx =
+      own.size === 0
+        ? ctx
+        : {
+            ...ctx,
+            erasingSignature: sig,
+            resolveTypeParam: (param) => (own.has(param) ? DYN : (outer?.(param) ?? null)),
+          };
+    const mapped = mapCallSignature(sig, sigCtx);
+    if (mapped?.kind === "func" && mapped.rest !== true && mapped.argumentsAll !== true) continue;
+    const decl = checker.signatureDeclaration(sig);
+    const spelled = decl ? decl.getText().replace(/\s+/g, " ").replace(/;$/, "") : "";
+    const which = spelled ? `overload '${spelled}'` : "one overload";
+    if (mapped?.kind === "func")
+      return `is an overload set, and its ${which} has a rest parameter (an overload set stores one fixed-arity function)`;
+    for (const param of sig.getParameters()) {
+      const paramTs = checker.getTypeOfSymbol(param);
+      if (!mapType(paramTs, sigCtx))
+        return `is an overload set, and its ${which} has parameter '${param.name}' of type '${checker.typeToString(paramTs)}', which does not compile`;
+    }
+    const retTs = checker.getReturnTypeOfSignature(sig);
+    return `is an overload set, and its ${which} returns '${checker.typeToString(retTs)}', which does not compile`;
+  }
+  return "is an overload set whose signatures do not join into one stored function (a void result beside a value result, or positions whose differing types do not cross the checked-dynamic boundary)";
+}
+
 /** The computed pieces of a record shape mapRecordTypeInner hands back for
  * the OUTER frame to intern — or, when a back-reference minted a recursive
  * placeholder for the type mid-construction, to finalize INTO that
@@ -5932,9 +6096,14 @@ function mapRecordTypeInner(
       // can hold them — see isGenericCallableMemberType): the shape keeps
       // its data fields, and calls of the member monomorphize per call
       // site against the defining object literal's declaration.
+      // OVERLOADED members hold their erased runtime function (see
+      // erasedOverloadMemberType); a set that does not join fails the
+      // shape as before.
       let pt = isGenericCallableMemberType(fieldTs, checker)
         ? erasedGenericMemberType(fieldTs, ctx)
-        : mapType(fieldTs, ctx);
+        : isOverloadedCallableMemberType(fieldTs, checker)
+          ? (erasedOverloadMemberType(fieldTs, ctx) ?? null)
+          : mapType(fieldTs, ctx);
       if (pt === undefined) continue;
       // tsgo PANICS computing `readonly []` through the symbol-type query
       // (the TupleType conversion — the facade's panic fence answers
@@ -6255,6 +6424,10 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
       return null;
     }
     const fieldTs = checker.getTypeOfSymbol(p);
+    if (isOverloadedCallableMemberType(fieldTs, checker)) {
+      if (erasedOverloadMemberType(fieldTs, ctx) !== undefined) continue;
+      return `the record shape is supported, but its member '${p.name}' ${describeOverloadSetBlocker(fieldTs, ctx)}`;
+    }
     let pt = isGenericCallableMemberType(fieldTs, checker)
       ? erasedGenericMemberType(fieldTs, ctx)
       : mapType(fieldTs, ctx);
