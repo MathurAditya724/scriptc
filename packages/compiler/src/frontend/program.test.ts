@@ -126,10 +126,12 @@ test.for([
   ["replacement export property", "module.exports = read; module.exports.name = read;"],
   ["non-export assignment chain", "const box = {}; exports.alias = box.read = read;"],
 ])("require still refuses an early read through %s", ([, early]) => {
+  // A var binding keeps the fence (Node reads undefined there); a const
+  // compiles with initialization checks instead, from the same analysis.
   const diagnostics = requireOrderDiagnostics(`
 exports.read = read;
 ${early}
-const dep = require('./dep.cjs');
+var dep = require('./dep.cjs');
 function read() { return dep.value; }
 `);
   expect(
@@ -140,11 +142,41 @@ function read() { return dep.value; }
 test("publishing a require binding itself still reads it before initialization", () => {
   const diagnostics = requireOrderDiagnostics(`
 exports.read = read;
-const { read } = require('./dep.cjs');
+var { read } = require('./dep.cjs');
 `);
   expect(
     diagnostics.some((diag) => diag.code === "SC1013" && diag.message.includes("binding 'read'")),
   ).toBe(true);
+});
+
+test("an early-reachable const require binding compiles with initialization checks", () => {
+  // Preflight admits it; the lowering checks every reference that can run
+  // before the require (require-initialization.ts).
+  expect(
+    requireOrderDiagnostics(`
+exports.read = read;
+read();
+const dep = require('./dep.cjs');
+function read() { return dep.value; }
+`),
+  ).toEqual([]);
+});
+
+test.for([
+  ["a class whose methods read it", "class Reader { read() { return dep.value; } }"],
+  ["a stored class expression", "var Reader = class { read() { return dep.value; } };"],
+  ["a later-job callback", "setTimeout(() => dep.value, 0);"],
+  ["a published getter", "Object.defineProperty(exports, 'value', { get: () => dep.value });"],
+  ["a property stored on a published function", "module.exports = read; read.again = again;"],
+])("code that cannot run before the require does not reach it: %s", ([, early]) => {
+  expect(
+    requireOrderDiagnostics(`
+${early}
+var dep = require('./dep.cjs');
+function read() { return dep.value; }
+function again() { return dep.value; }
+`),
+  ).toEqual([]);
 });
 
 test.for([
@@ -154,7 +186,7 @@ test.for([
 ])("source bindings cannot masquerade as a CommonJS prologue: %s", (prefix) => {
   const diagnostics = requireOrderDiagnostics(`
 ${prefix}
-const dep = require('./dep.cjs');
+var dep = require('./dep.cjs');
 function read() { return dep.value; }
 `);
   expect(
@@ -165,7 +197,7 @@ function read() { return dep.value; }
 test("an earlier declarator can call an export before the require initializes", () => {
   const diagnostics = requireOrderDiagnostics(`
 exports.read = read;
-const before = read(), dep = require('./dep.cjs');
+var before = read(), dep = require('./dep.cjs');
 function read() { return dep.value; }
 `);
   expect(
@@ -181,6 +213,63 @@ const dep = require('./dep.cjs'), after = read();
 function read() { return dep.value; }
 `),
   ).toEqual([]);
+});
+
+test("a member added to a replaced export does not run the replacement (on-finished)", () => {
+  expect(
+    requireOrderDiagnostics(`
+module.exports = read;
+module.exports.check = check;
+var hooks = probe();
+var dep = require('./dep.cjs');
+function read() { return dep.value; }
+function check() { return 1; }
+function probe() { return check(); }
+`),
+  ).toEqual([]);
+});
+
+test("a require cycle whose modules export first and use each other only later is admitted", () => {
+  expect(
+    requireOrderDiagnostics(
+      `
+const ANY = Symbol('ANY');
+class Main { dep() { return new Dep(); } }
+module.exports = Main;
+const Dep = require('./dep.cjs');
+`,
+      "class Dep { main() { return new Main(); } }\nmodule.exports = Dep;\nconst Main = require('./main.cjs');\n",
+    ),
+  ).toEqual([]);
+});
+
+test.for([
+  [
+    "an export after the require",
+    "const Main = require('./main.cjs');\nmodule.exports = { Dep: 1 };\n",
+  ],
+  [
+    "a top-level use of the cycle binding",
+    "module.exports = 1;\nconst Main = require('./main.cjs');\nnew Main();\n",
+  ],
+  [
+    "an escaping export object",
+    "module.exports = 1;\nconst Main = require('./main.cjs');\nObject.assign(exports, {});\n",
+  ],
+  [
+    "a call before the export",
+    "setup();\nmodule.exports = 1;\nconst Main = require('./main.cjs');\nfunction setup() {}\n",
+  ],
+])("a require cycle keeps SC1016 for %s", ([, dependency]) => {
+  const diagnostics = requireOrderDiagnostics(
+    `
+class Main {}
+module.exports = Main;
+const dep = require('./dep.cjs');
+`,
+    dependency,
+  );
+  expect(diagnostics.some((diag) => diag.code === "SC1016")).toBe(true);
 });
 
 test("function publication does not admit CommonJS cycles", () => {
