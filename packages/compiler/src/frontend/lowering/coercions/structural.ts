@@ -1,3 +1,4 @@
+import { constructedValue } from "../constructor-returns.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import type { FieldLift } from "./structural-plans.js";
 import { buildArrayConversion } from "./builders.js";
@@ -524,7 +525,13 @@ export function recordClassWidthHelper(
     params: [{ localId: "r.0", name: "r", type: fromT }],
     returnType: toT,
     locals: [{ id: "r.0", name: "r", type: fromT, mutable: true }],
-    body: [{ kind: "return", value: { kind: "new", className, args, type: toT, loc }, loc }],
+    body: [
+      {
+        kind: "return",
+        value: constructedValue(lowerer, info, { kind: "new", className, args, type: toT, loc }),
+        loc,
+      },
+    ],
     loc,
   });
   return name;

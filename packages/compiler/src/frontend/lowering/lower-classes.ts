@@ -1,5 +1,10 @@
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
+import {
+  constructedFromValue,
+  constructedValue,
+  refuseSuperIntoResultSlot,
+} from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { lowerReadlineUiNew } from "./builtins/readline.js";
 import { collectClassMethodMutations } from "./class-method-mutations.js";
@@ -8020,6 +8025,7 @@ export function superCallStmt(
       info.decl ?? info.ctor!,
     )[0]!;
   }
+  refuseSuperIntoResultSlot(lowerer, base, info.ctor ?? info.decl!);
   lowerer.noteSuperConstructorEdge(`%${base.def.name}.constructor`);
   return {
     kind: "exprStmt",
@@ -8429,21 +8435,21 @@ function lowerProgramClassNew(
     : lowerer.completeArgs(expr.arguments ?? [], info.ctorParams, loc, expr);
   for (let current: ClassInfo | null = info; current; current = current.base) {
     if (current.def.baseValueGlobal)
-      return {
+      return constructedValue(lowerer, info, {
         kind: "newValue",
         callee: classValueRef(lowerer, info, expr),
         args,
         type: { kind: "object", className: info.def.name },
         loc,
-      };
+      });
   }
-  return {
+  return constructedValue(lowerer, info, {
     kind: "new",
     className: info.def.name,
     args,
     type: { kind: "object", className: info.def.name },
     loc,
-  };
+  });
 }
 
 function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType | null {
@@ -8731,13 +8737,18 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           below(info);
           const callee: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
           const args = lowerer.completeArgs(expr.arguments ?? [], info.ctorParams, loc, expr);
-          return {
-            kind: "newValue",
-            callee,
-            args,
-            type: { kind: "object", className: info.def.name },
-            loc,
-          };
+          return constructedFromValue(
+            lowerer,
+            info,
+            {
+              kind: "newValue",
+              callee,
+              args,
+              type: { kind: "object", className: info.def.name },
+              loc,
+            },
+            expr,
+          );
         }
       }
     }
@@ -9638,13 +9649,18 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       };
       below(info);
       const args = lowerer.completeArgs(expr.arguments ?? [], info.ctorParams, loc, expr);
-      return {
-        kind: "newValue",
-        callee,
-        args,
-        type: { kind: "object", className: info.def.name },
-        loc,
-      };
+      return constructedFromValue(
+        lowerer,
+        info,
+        {
+          kind: "newValue",
+          callee,
+          args,
+          type: { kind: "object", className: info.def.name },
+          loc,
+        },
+        expr,
+      );
     }
     if (calleeT?.kind === "union") {
       const def = lowerer.unions.get(calleeT.unionId);

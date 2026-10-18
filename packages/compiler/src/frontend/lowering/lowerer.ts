@@ -4,6 +4,7 @@ import {
   lowerLifetimeRegionCall,
   lowerLifetimeRegionNew,
 } from "./lifetime-regions.js";
+import type { ConstructorReturnPlan } from "./constructor-returns.js";
 import { internTableType, lowerInternTableCall, lowerInternTableNew } from "./intern-tables.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
@@ -2706,6 +2707,9 @@ export class Lowerer {
    * by class name (cycle-initialization.ts). */
   readonly classInitFlags = new Map<string, CycleInitFlag>();
   readonly cycleInitDeclarations = new Map<ts.Statement, CycleInitFlag[]>();
+  /** Each class's constructor return plan by class name
+   * (constructor-returns.ts); null when no return can yield an object. */
+  readonly constructorReturnPlans = new Map<string, ConstructorReturnPlan | null>();
   /** CommonJS require declarations whose bindings code running before the
    * require can read, and those references (require-initialization.ts). */
   readonly requireInitFlags = new Map<ts.VariableDeclaration, RequireInitFlag>();
