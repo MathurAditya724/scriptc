@@ -70,6 +70,16 @@ Options:
                      local declaration file. The declaration supplies types
                      for analysis; the host module remains an explicit
                      external-boundary blocker (repeatable)
+      --tier <auto|static-only>
+                     tier policy (default: auto). static-only keeps every
+                     construct without a static lowering a compile error, so
+                     the program has no dynamic-tier demotions. Both modes
+                     currently compile identically
+      --explain-dynamic[=<name>]
+                     coverage only: list the functions that operate on dynamic
+                     values and the bindings, fields, functions, classes and
+                     modules the dynamic tier would take over, with the
+                     refusal behind each; a name shows only that unit's chain
   -h, --help         show this help
   -v, --version      print the version
 `;
@@ -91,6 +101,8 @@ export const CLI_OPTIONS = {
   "npm-static": { type: "string", multiple: true },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
+  tier: { type: "string" },
+  "explain-dynamic": { type: "string" },
   lib: { type: "boolean", default: false },
   profile: { type: "string" },
   help: { type: "boolean", short: "h", default: false },

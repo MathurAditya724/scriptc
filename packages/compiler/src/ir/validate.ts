@@ -59,6 +59,7 @@ import {
 import { DYN_CLASS_PROPERTIES } from "./ir.js";
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
+import { dynamicOperationOf, functionTier } from "./tiers.js";
 import { LIB_FN_SIGS } from "./builtin-signatures.js";
 
 /** The promisified crypto calls' value kinds besides checked-dynamic. */
@@ -1019,6 +1020,14 @@ function validateFunction(
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
     errors.push({ message: `in ${fn.name}: ${message}`, loc });
+  // Invariant I1 (ir/tiers.ts): a static function reaches dynamic values
+  // only through boundary operations and moves.
+  const staticTier = functionTier(fn) === "static";
+  const checkTier = (e: IrExpr): void => {
+    const operation = dynamicOperationOf(e);
+    if (operation !== null)
+      err(`static-tier function performs the dynamic operation ${operation}`, e.loc);
+  };
 
   const asyncCaches = [
     ["asyncCacheGlobal", fn.asyncCacheGlobal],
@@ -1263,6 +1272,8 @@ function validateFunction(
         continue;
       }
       if (e.kind === "logical") {
+        // checkExpr already checked the root's tier.
+        if (staticTier && e !== root) checkTier(e);
         if (
           e.type.kind !== "f64" &&
           e.type.kind !== "string" &&
@@ -1306,6 +1317,7 @@ function validateFunction(
   }
 
   function checkExpr(e: IrExpr): void {
+    if (staticTier) checkTier(e);
     switch (e.kind) {
       case "numLit":
       case "strLit":
