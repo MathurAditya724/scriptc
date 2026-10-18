@@ -28,7 +28,7 @@ import {
   lowerYieldStarStatement,
   type GenType,
 } from "./lower-generators.js";
-import { lowerForAwaitBuiltin } from "./lower-async-iteration.js";
+import { classAsyncGeneratorIterator, lowerForAwaitBuiltin } from "./lower-async-iteration.js";
 import {
   BOOL,
   BYTES_U8,
@@ -8280,6 +8280,10 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
           );
         }
       }
+    }
+    {
+      const opened = classAsyncGeneratorIterator(lowerer, stmt.expression);
+      if (opened) return lowerForAwaitGenerator(lowerer, stmt, opened, labels);
     }
     if (
       ts.isPropertyAccessExpression(stmt.expression) &&

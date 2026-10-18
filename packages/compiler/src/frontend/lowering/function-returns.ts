@@ -1,3 +1,4 @@
+import { mapAsyncGeneratorAnnotation } from "../type-mapper.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
@@ -146,6 +147,12 @@ export function declaredReturnType(
   // (`.action(() => { throw ... })`). `never` VALUES stay unmapped.
   if (retTsType.flags & ts.TypeFlags.Never) return VOID;
   let mappedReturn = lowerer.mapTypeOf(retTsType);
+  if (
+    mappedReturn === null &&
+    decl.asteriskToken &&
+    decl.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+  )
+    mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx);
   if (
     isJsSourceFile(decl.getSourceFile()) &&
     decl.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&

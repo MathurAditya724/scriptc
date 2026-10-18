@@ -1,4 +1,4 @@
-import type { IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } from "./ir.js";
+import type { IrClassDef, IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } from "./ir.js";
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   isDirentShape,
@@ -137,6 +137,7 @@ export function moduleRuntimeFeatures(mod: IrModule): RuntimeFeatures {
 interface TypeTables {
   records: Map<string, IrRecordShape>;
   unions: Map<string, IrUnionDef>;
+  classes: Map<string, IrClassDef>;
 }
 
 /** Whether boxing a value of type `t` as dyn boxes a promise, which goes
@@ -166,6 +167,32 @@ function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean
       seen.add(t.unionId);
       const def = tables.unions.get(t.unionId);
       return def?.arms.some((a) => boxesPromise(a, tables, seen)) ?? false;
+    }
+    case "object": {
+      // A boxed class instance materializes its fields, inherited ones
+      // included, and the instance can be any subclass.
+      const key = `class:${t.className}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      const related = (def: IrClassDef): boolean => {
+        for (
+          let c: IrClassDef | undefined = def;
+          c;
+          c = c.base ? tables.classes.get(c.base) : undefined
+        )
+          if (c.name === t.className) return true;
+        return false;
+      };
+      for (const def of tables.classes.values()) {
+        if (!related(def)) continue;
+        for (
+          let c: IrClassDef | undefined = def;
+          c;
+          c = c.base ? tables.classes.get(c.base) : undefined
+        )
+          if (c.fields.some((f) => boxesPromise(f.type, tables, seen))) return true;
+      }
+      return false;
     }
     default:
       return false;
@@ -223,6 +250,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     (tables ??= {
       records: new Map((mod.records ?? []).map((r) => [r.id, r])),
       unions: new Map((mod.unions ?? []).map((u) => [u.id, u])),
+      classes: new Map((mod.classes ?? []).map((c) => [c.name, c])),
     });
   const expr = (node: IrExpr): boolean => {
     if (node.kind === "libCall") {

@@ -1313,6 +1313,32 @@ export function isWorkerHandleType(
   return handle;
 }
 
+/** The return annotation of an `async *` declaration spelled with the
+ * protocol interfaces the generator object implements —
+ * `AsyncIterator<T>`, `AsyncIterableIterator<T>` or `AsyncIterable<T>` (pi's
+ * `async *[Symbol.asyncIterator](): AsyncIterator<T>`): the body always
+ * produces an async generator, so the declaration maps exactly like an
+ * `AsyncGenerator<T, TReturn, TNext>` annotation. Values of these types
+ * elsewhere stay unmapped (they can hold any object implementing the
+ * protocol). Null when the annotation is not one of them. */
+export function mapAsyncGeneratorAnnotation(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const { checker } = ctx;
+  const symbol = type.getSymbol();
+  if (
+    !symbol ||
+    !["AsyncIterator", "AsyncIterableIterator", "AsyncIterable"].includes(symbol.name) ||
+    !checker
+      .declarationsOf(symbol)
+      .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+  )
+    return null;
+  const args = checker.getTypeArguments(type as ts.TypeReference);
+  const channels = genChannels(args[0], args[1], args[2], ctx);
+  if (!channels) return null;
+  if (!genResultRecord(channels.yieldT, channels.retT, ctx.shapes, ctx.unions)) return null;
+  return { kind: "generator", async: true, ...channels };
+}
+
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
   // These intrinsic domains cannot depend on generic bindings, declaration
