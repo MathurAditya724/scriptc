@@ -7,8 +7,8 @@
     "tierItemCount": 3457,
     "tiers": {
       "static": {
-        "audit-partial": 1155,
-        "verify-gap": 2175,
+        "audit-partial": 1166,
+        "verify-gap": 2164,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -67775,12 +67775,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.filePath",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-members.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67856,12 +67859,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.passed",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-members.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67906,12 +67912,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.attempt",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-members.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67931,12 +67940,15 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.tags",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-members.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -67956,12 +67968,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.workerId",
+          "tests": [
+            "tests/fixtures/node-test/cases/ctx-members.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68031,12 +68046,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.diagnostic",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-context.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68081,12 +68099,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.filePath",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-context.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68106,12 +68127,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.fullName",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-context.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68131,12 +68155,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.context.name",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-context.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68181,12 +68208,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.passed",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-context.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -68206,12 +68236,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:test",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:test.attempt",
+          "tests": [
+            "tests/fixtures/node-test/cases/suite-context.ts",
+            "tests/harness/node-test.test.ts"
+          ]
         }
       }
     },
@@ -76126,6 +76159,10 @@
             "tests/corpus/5629-promisify-stream.ts",
             "tests/corpus/5630-promisify-zlib.ts",
             "tests/fixtures/node-types/promisify-zlib.ts",
+            "tests/corpus/5631-promisify-crypto.ts",
+            "tests/fixtures/node-types/promisify-crypto.ts",
+            "tests/corpus/5632-promisify-dns.ts",
+            "tests/fixtures/node-types/promisify-dns.ts",
             "tests/harness/project-config.test.ts"
           ]
         }

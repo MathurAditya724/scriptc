@@ -55,6 +55,13 @@ import {
   matchIntegerBytesForLoop,
   matchIntegerCountedForLoop,
 } from "../../ir/integer-loops.js";
+import { findUnaliasedLocalArrays } from "../../ir/array-length-stability.js";
+import {
+  countedDenseShape,
+  emitDenseLoopGuard,
+  matchDenseArrayLoop,
+  type DenseArrayLoop,
+} from "./dense-array-loops.js";
 import { emitCountedLoopLimit } from "./counted-loops.js";
 import {
   emitSafeIntegerCheck,
@@ -229,7 +236,10 @@ import { findAppendedArrayLiterals } from "./appended-array-literals.js";
 import { AmbientReceiverReaders, findConstantCallbacks } from "./constant-callbacks.js";
 import {
   findScalarStringSlices,
+  findScratchStringSlices,
+  findLentStringParameters,
   emitStringSliceSnapshot,
+  type LentStringParameters,
   type StringSliceSnapshot,
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
@@ -383,6 +393,7 @@ import {
   elemAccess,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
+  emitShapeUnionHelpers,
   FN_ATTRS,
   inlineRcDecls,
   type InlineRcMode,
@@ -398,6 +409,7 @@ import {
 } from "./shapes.js";
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
 import { INLINE_LITERAL_BYTES, literalEqualityDefinition } from "./string-literal-equality.js";
+import { emitDowncastGuard, emitUnionNarrowGuard } from "./narrow-guards.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -622,6 +634,10 @@ export class LlEmitter {
   private loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   private scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
   readonly stringSlices = new Map<string, StringSliceSnapshot>();
+  /** Slices written into stack buffers (findScratchStringSlices). */
+  scratchStringSlices: ReadonlySet<IrExpr> = new Set();
+  /** String parameters a caller may lend scratch slices to. */
+  private lentStringParameters: LentStringParameters = new Map();
   private localStackUnions = new Map<string, IrExpr & { kind: "unionWrap" }>();
   private localStackObjects = new Map<string, StackObjectSource>();
   private reassignedStackObjects = new Set<string>();
@@ -671,6 +687,21 @@ export class LlEmitter {
    * and back fold. 32-bit targets load the full range anyway. */
   get arrayLengthRange(): string {
     return this.sizeType === "i64" ? ", !range !{i64 0, i64 4294967296}" : "";
+  }
+
+  /** Whether an element access at `index` of `arr` lies in the hole-free
+   * prefix: the counter of a dense array loop's fast copy indexing one of
+   * the arrays its entry test covered. */
+  provenDenseIndex(arr: IrExpr, index: IrExpr): boolean {
+    const loop = this.denseLoop;
+    return (
+      loop !== null &&
+      arr.kind === "varRef" &&
+      loop.arrays.has(arr.localId) &&
+      index.kind === "varRef" &&
+      index.localId === loop.counter &&
+      this.integerLoopBindings.has(loop.counter)
+    );
   }
 
   fieldAliasAttachment(ptr: string): string {
@@ -1029,6 +1060,14 @@ export class LlEmitter {
    * immortal from construction (classes.ts programLifetimeClass). */
   readonly programLifetime: ReadonlySet<string>;
   private numericLocals = new Map<string, IrLocal>();
+  /** Local arrays of the current function that no other binding can hold
+   * (ir/array-length-stability.ts). */
+  private unaliasedArrays: ReadonlySet<string> = new Set();
+  /** Dense array loops (dense-array-loops.ts) run in this function. */
+  private denseLoopsEnabled = false;
+  private denseLoopEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
+  /** The fast copy of a dense array loop being emitted. */
+  private denseLoop: DenseArrayLoop | null = null;
   private captureIds = new Set<string>();
   /** Active induction bindings retain their width independently of size_t. */
   integerLoopBindings = new Map<
@@ -1145,7 +1184,7 @@ export class LlEmitter {
           expr: (expr) => !(expr.kind === "libCall" && expr.fn === "error.stack"),
         }),
     );
-    this.nullableUnions = new NullableUnions(mod);
+    this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
     this.mockTimers = moduleUsesMockTimers(mod);
     this.debug =
       options.debugSources === undefined
@@ -1244,8 +1283,10 @@ export class LlEmitter {
     // Optional array reads also cover nullable unions: emitLocalArrayRead
     // then yields the (borrowed or owned) element pointer, not a stack box.
     // Arrays of such a union are read the same way.
-    this.optionalArrayReads = new OptionalArrayReads(this.fnByName, this.unionsById, (id) =>
-      this.nullableUnions.has(id),
+    this.optionalArrayReads = new OptionalArrayReads(
+      this.fnByName,
+      this.unionsById,
+      (id) => this.nullableUnions.single(id) !== null,
     );
     this.unionSources = {
       unions: this.boxedUnionsById,
@@ -1298,7 +1339,8 @@ export class LlEmitter {
           (type) =>
             this.plainReference(type) &&
             type.kind !== "string" &&
-            (type.kind !== "union" || this.nullableUnions.get(type.unionId)?.arm.kind !== "string"),
+            (type.kind !== "union" ||
+              this.nullableUnions.single(type.unionId)?.arm.kind !== "string"),
           this.walkBorrowsByFunction.get(fn.name) ?? new Set(),
         );
         if (rebound.size === 0) continue;
@@ -1324,6 +1366,8 @@ export class LlEmitter {
         return shape !== undefined && !recordDynKeepsIdentity(shape);
       },
     );
+    this.lentStringParameters =
+      this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
     // Integer clones signal a stack overflow through their result, which
     // needs the single-threaded guard; worker programs also poll for
@@ -1349,6 +1393,27 @@ export class LlEmitter {
     const traced = computeTraced(mod);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
+    // A shape union's value is whichever record it holds, and the collector
+    // visits it as that record: when one arm carries a collector header,
+    // every arm must (nullable-unions.ts). Unions that share an arm pass a
+    // header on to each other's arms, so repeat until no union adds one.
+    const shapeUnions = this.nullableUnions.allShapeUnions();
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const union of shapeUnions) {
+        if (
+          !this.tracedUnions.has(union.unionId) &&
+          !union.arms.some((arm) => this.tracedShapes.has(`record:${arm.shapeId}`))
+        )
+          continue;
+        for (const arm of union.arms) {
+          const key = `record:${arm.shapeId}`;
+          if (this.tracedShapes.has(key)) continue;
+          this.tracedShapes.add(key);
+          changed = true;
+        }
+      }
+    }
     this.shapeHost = {
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
@@ -3689,6 +3754,7 @@ export class LlEmitter {
     return [
       ...late,
       ...emitNullableRetainWrappers(this.shapeHost),
+      ...emitShapeUnionHelpers(this.shapeHost),
       ...emitInlineRcHelpers(this.shapeHost),
     ];
   }
@@ -5856,7 +5922,11 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(unionId);
     if (nullable) {
       // The owned payload IS the nullable union's value.
-      if (tag !== nullable.refTag)
+      if (
+        nullable.repr === "single"
+          ? tag !== nullable.refTag
+          : !nullable.arms.some((arm) => arm.tag === tag)
+      )
         throw new InternalCompilerError(
           `llvm emitter bug: payload wrap into unit arm ${tag} of ${unionId}`,
         );
@@ -5961,7 +6031,7 @@ export class LlEmitter {
         const index = shape.fields.findIndex((entry) => entry.name === field);
         if (index < 0)
           throw new InternalCompilerError(`llvm emitter bug: missing union field ${field}`);
-        layout = "record:";
+        layout = this.nullableUnions.fieldBase(arm.shapeId) === 2 ? "record:tagged;" : "record:";
         for (let i = 0; i <= index; i++) {
           const type = shape.fields[i]!.type;
           layout += `${llFieldType(type, this.inlineUnions.record(type))};`;
@@ -5997,7 +6067,7 @@ export class LlEmitter {
       );
     const p = this.B.tmp();
     this.B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + 1}`,
+      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
     );
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
@@ -6011,7 +6081,7 @@ export class LlEmitter {
     const p = this.B.tmp();
     const v = this.B.tmp();
     this.B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${shape.fields.length + 1}`,
+      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${shape.fields.length + this.nullableUnions.fieldBase(shapeId)}`,
     );
     this.B.line(`${v} = load ptr, ptr ${p}`);
     return v;
@@ -6674,6 +6744,7 @@ export class LlEmitter {
     const initializerBindings = this.initializerBindings.get(fn.name) ?? [];
     const numericFn = withInitializerBindings(fn, initializerBindings);
     this.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
+    this.unaliasedArrays = findUnaliasedLocalArrays(fn);
     this.borrowedParameters.clear();
     this.referenceWrites?.enter(fn);
     this.reboundOwnerSlots.clear();
@@ -6712,6 +6783,12 @@ export class LlEmitter {
     this.finalFieldBorrows =
       !fn.async && !fn.generator && constructorClass(fn.name) === null && this.finalFields.size > 0;
     this.byteWindowsEnabled = this.countedLoopsEnabled;
+    this.denseLoopsEnabled = this.countedLoopsEnabled;
+    this.denseLoop = null;
+    this.denseLoopEntries =
+      this.denseLoopsEnabled && numericFn.locals.some((l) => l.type.kind === "array")
+        ? findInitializedByteLoopBindings(fn)
+        : new Map();
     this.byteWindowEntries =
       this.byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === "bytes")
         ? findInitializedByteLoopBindings(fn)
@@ -6749,6 +6826,15 @@ export class LlEmitter {
     );
     this.scalarStringSlices =
       this.debug === null ? findScalarStringSlices(fn, this.callLifetimes) : new Map();
+    this.scratchStringSlices =
+      this.debug === null
+        ? findScratchStringSlices(
+            fn,
+            this.callLifetimes,
+            this.scalarStringSlices,
+            this.lentStringParameters,
+          )
+        : new Set();
     this.mapReadLifetimes = findMapReadLifetimes(fn, this.boxedUnionsById, this.callLifetimes);
     this.readNumberMapWrites = findReadNumberMapWrites(fn);
     this.mapEntryFusion = this.debug === null ? findMapEntryFusions(fn) : null;
@@ -8184,7 +8270,16 @@ export class LlEmitter {
         const acc = elemAccess(s.arr.type.elem);
         this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
         if (acc === "ref") this.moveTemp(v);
-        emitDenseArraySet(this, arr.name, idx, s.index, acc, s.arr.type.elem, v.name);
+        emitDenseArraySet(
+          this,
+          arr.name,
+          idx,
+          s.index,
+          acc,
+          s.arr.type.elem,
+          v.name,
+          this.provenDenseIndex(s.arr, s.index),
+        );
         break;
       }
       case "arraySetLength": {
@@ -8631,7 +8726,12 @@ export class LlEmitter {
           (this.debug === null ? matchIntegerBytesForLoop(s, this.numericLocals) : null);
         const countedLoop =
           !integerLoop && this.countedLoopsEnabled
-            ? matchIntegerCountedForLoop(s, this.numericLocals, this.integerRanges)
+            ? matchIntegerCountedForLoop(
+                s,
+                this.numericLocals,
+                this.integerRanges,
+                this.unaliasedArrays,
+              )
             : null;
         const window =
           countedLoop && this.byteWindowsEnabled
@@ -8644,6 +8744,49 @@ export class LlEmitter {
                 this.byteWindowEntries.get(s) ?? new Set(),
               )
             : null;
+        const denseShape = !this.denseLoopsEnabled
+          ? null
+          : integerArrayLoop
+            ? {
+                counter: integerArrayLoop.localId,
+                length: integerArrayLoop.limitReceiver as IrExpr & { kind: "varRef" },
+                range: { min: 0, max: 4294967294 },
+              }
+            : countedLoop && !countedLoop.guarded
+              ? countedDenseShape(s, countedLoop)
+              : null;
+        const dense =
+          denseShape && !window
+            ? matchDenseArrayLoop(
+                s,
+                denseShape,
+                this.numericLocals,
+                this.unaliasedArrays,
+                this.denseLoopEntries.get(s) ?? new Set(),
+              )
+            : null;
+        if (dense) {
+          const valid = emitDenseLoopGuard(this, dense);
+          const fast = B.newLabel("dense.loop.fast"),
+            slow = B.newLabel("dense.loop.slow"),
+            done = B.newLabel("dense.loop.done");
+          B.condBr(valid, fast, slow);
+          this.denseLoopsEnabled = false;
+          try {
+            B.startBlock(slow);
+            this.emitStmt(s);
+            B.br(done);
+            B.startBlock(fast);
+            this.denseLoop = dense;
+            this.emitStmt(s);
+            B.br(done);
+          } finally {
+            this.denseLoop = null;
+            this.denseLoopsEnabled = true;
+          }
+          B.startBlock(done);
+          break;
+        }
         if (window) {
           const valid = emitByteWindowGuard(this, window);
           const fast = B.newLabel("bytes.window.fast"),
@@ -8746,7 +8889,10 @@ export class LlEmitter {
           this.integerLoopBindings.set(integerLoop.localId, {
             slot: integerSlot,
             type: this.sizeType,
-            range: { min: 0, max: integerArrayLoop ? 4294967294 : Number.MAX_SAFE_INTEGER - 1 },
+            range:
+              this.denseLoop?.counter === integerLoop.localId
+                ? this.denseLoop.range
+                : { min: 0, max: integerArrayLoop ? 4294967294 : Number.MAX_SAFE_INTEGER - 1 },
           });
         } else if (countedLoop) {
           integerSlot = B.slot();
@@ -8761,7 +8907,10 @@ export class LlEmitter {
             slot: integerSlot,
             type: "i64",
             signed: true,
-            range: countedLoop.range,
+            range:
+              this.denseLoop?.counter === countedLoop.localId
+                ? this.denseLoop.range
+                : countedLoop.range,
           });
           countedLimit = emitCountedLoopLimit(this, countedLoop);
         } else if (s.init) {
@@ -10104,7 +10253,12 @@ export class LlEmitter {
       unionsById: this.unionsById,
       recordsById: this.recordsById,
       inlineUnions: this.inlineUnions,
-      nullableArm: (t) => this.nullableUnions.of(t)?.arm ?? null,
+      nullableArm: (t) => {
+        const nullable = this.nullableUnions.of(t);
+        return nullable?.repr === "single" ? nullable.arm : null;
+      },
+      shapeUnion: (t) => this.nullableUnions.of(t)?.repr === "shapes",
+      fieldBase: (shapeId) => this.nullableUnions.fieldBase(shapeId),
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
         return {
@@ -10356,11 +10510,16 @@ export class LlEmitter {
     if (canStackUnion(e, this.boxedUnionsById)) return emitStackUnion(this, e).value;
     if (e.kind === "unionNarrow") {
       const union = this.emitUnionProjection(e.value);
+      emitUnionNarrowGuard(this, union.name, e.unionId, e.tag);
       return { name: this.unionPeek(union.name, e.unionId), type: e.type };
     }
     if ((e.kind === "downcast" || e.kind === "upcast") && e.value.type.kind === "object") {
-      // Prefix layouts: a class cast reads the operand's own pointer.
-      return { name: this.emitReadReceiver(e.value).name, type: e.type };
+      // Prefix layouts: a class cast reads the operand's own pointer; a
+      // downcast verifies its target class (narrow-guards.ts).
+      const receiver = this.emitReadReceiver(e.value);
+      if (e.kind === "downcast" && e.type.kind === "object")
+        emitDowncastGuard(this, receiver.name, e.value.type.className, e.type.className);
+      return { name: receiver.name, type: e.type };
     }
     // A nullable-pointer field has no box to borrow. Projections use
     // emitUnionProjection; other borrowers get an owned heap box.
@@ -10820,7 +10979,11 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(e.unionId);
     if (!nullable) return null;
     if (isUnitType(e.value.type)) return e.value.kind === "unitLit" ? "unit" : null;
-    return e.tag === nullable.refTag && isRefCounted(e.value.type) ? "ref" : null;
+    const refArm =
+      nullable.repr === "single"
+        ? e.tag === nullable.refTag
+        : nullable.arms.some((arm) => arm.tag === e.tag);
+    return refArm && isRefCounted(e.value.type) ? "ref" : null;
   }
 
   materializeSplitLocal(localId: string): void {
@@ -11105,6 +11268,7 @@ export class LlEmitter {
     resultType: IrType,
     overflowOnly: boolean,
     loc?: SrcLoc,
+    missNaN = false,
   ): void {
     return keyedRecordReadInto(
       this,
@@ -11116,6 +11280,7 @@ export class LlEmitter {
       resultType,
       overflowOnly,
       loc,
+      missNaN,
     );
   }
 

@@ -11,9 +11,10 @@ import type { Lowerer } from "./lowerer.js";
  * after assignments and tests, and keeps that narrowing across calls: a
  * callback, method or getter that clears or replaces the property (or a
  * closure that reassigns the binding) leaves the reference typed by its old
- * value. Lowering bridges a narrowed union read with an UNCHECKED payload
- * extraction and folds `?.`, truthiness and `typeof` by the narrowed type,
- * so such a read would interpret the wrong arm. This analysis decides when
+ * value. Lowering bridges a narrowed union read with a payload extraction
+ * that traps on the wrong arm and folds `?.`, truthiness and `typeof` by the
+ * narrowed type, so such a read would abort or fold to the old value instead
+ * of throwing the catchable TypeError. This analysis decides when
  * the narrowing is provably current:
  *
  * - every property in the reference is construction-only (no store to its
@@ -30,6 +31,10 @@ import type { Lowerer } from "./lowerer.js";
  *   A loop around the use that starts inside that span contributes its
  *   whole body, since its back edge reaches the use again.
  *
+ * A binding initialized or assigned from a read whose narrowing may be
+ * stale inherits that narrowing (`const held: Expr = current` keeps the arm
+ * `current` was typed with), so its narrowed reads are never trusted.
+ *
  * TypeScript never carries a property narrowing into a nested function,
  * and every narrowing (an assignment, test, predicate or assertion of the
  * reference) is an occurrence of the reference, so a narrowed use always
@@ -42,6 +47,7 @@ export class NarrowingStability {
   private readonly verdicts = new Map<ts.Node, boolean>();
   private readonly effects = new Map<ts.Node, boolean>();
   private readonly capturedMutable = new Map<ts.Symbol, boolean>();
+  private readonly staleBindings = new Map<ts.Symbol, boolean>();
   private readonly identifierWrites = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   private readonly widened = new Map<ts.Node, ts.Type | null>();
   private readonly plainContainers = new Map<ts.Node, boolean>();
@@ -90,7 +96,7 @@ export class NarrowingStability {
     }
     if (ts.isIdentifier(node)) {
       const symbol = this.bindingOf(node);
-      if (!symbol || !this.isCapturedMutable(symbol)) return false;
+      if (!symbol || !this.mayHoldStaleNarrowing(symbol)) return false;
       return !this.trusted(node);
     }
     return false;
@@ -113,7 +119,8 @@ export class NarrowingStability {
       declared = this.declaredPropertyType(node);
     } else {
       const symbol = this.bindingOf(node);
-      declared = symbol && this.isCapturedMutable(symbol) ? checker.getTypeOfSymbol(symbol) : null;
+      declared =
+        symbol && this.mayHoldStaleNarrowing(symbol) ? checker.getTypeOfSymbol(symbol) : null;
     }
     if (declared === null) return null;
     const narrowedTs = checker.getTypeAtLocation(node);
@@ -245,6 +252,10 @@ export class NarrowingStability {
       )
         return false;
     }
+    if (ts.isIdentifier(chain.root)) {
+      const root = this.bindingOf(chain.root);
+      if (root !== null && this.inheritsStaleNarrowing(root)) return false;
+    }
     const rootStable =
       chain.root.kind === ts.SyntaxKind.ThisKeyword ||
       (ts.isIdentifier(chain.root) && !this.rootCapturedMutable(chain.root));
@@ -344,6 +355,63 @@ export class NarrowingStability {
   private constructionOnly(name: string): boolean {
     const program = this.program();
     return !program.wildcard && !program.mutable.has(name) && !program.accessors.has(name);
+  }
+
+  /** A binding whose narrowed reads may observe a narrowing that no longer
+   * holds: another function assigns it, or it inherits a stale narrowing. */
+  private mayHoldStaleNarrowing(symbol: ts.Symbol): boolean {
+    return this.isCapturedMutable(symbol) || this.inheritsStaleNarrowing(symbol);
+  }
+
+  /** The binding is initialized or assigned from a narrowed read that may be
+   * stale, so TypeScript's narrowing of the binding may be stale too. */
+  private inheritsStaleNarrowing(symbol: ts.Symbol): boolean {
+    const cached = this.staleBindings.get(symbol);
+    if (cached !== undefined) return cached;
+    // A cycle of bindings assigned from each other contributes nothing.
+    this.staleBindings.set(symbol, false);
+    let result = false;
+    try {
+      const decl = this.lowerer.checker.valueDeclarationOf(symbol);
+      if (decl !== undefined && ts.isVariableDeclaration(decl)) {
+        if (decl.initializer !== undefined && this.mayBeStale(decl.initializer)) result = true;
+        else {
+          for (const write of this.writesIn(decl.getSourceFile()).get(symbol.name) ?? []) {
+            const assignment = write.parent;
+            if (
+              ts.isBinaryExpression(assignment) &&
+              assignment.left === write &&
+              assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+              this.lowerer.resolveValueSymbol(write) === symbol &&
+              this.mayBeStale(assignment.right)
+            ) {
+              result = true;
+              break;
+            }
+          }
+        }
+      }
+    } finally {
+      this.staleBindings.set(symbol, result);
+    }
+    return result;
+  }
+
+  /** A reference TypeScript narrows below its declared type where the
+   * narrowing may no longer hold. */
+  private mayBeStale(expression: ts.Expression): boolean {
+    let e = expression;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return false;
+    const checker = this.lowerer.checker;
+    let declared: ts.Type | null;
+    if (ts.isPropertyAccessExpression(e)) declared = this.declaredPropertyType(e);
+    else {
+      const symbol = this.bindingOf(e);
+      declared = symbol === null ? null : checker.getTypeOfSymbol(symbol);
+    }
+    if (declared === null || checker.getTypeAtLocation(e) === declared) return false;
+    return !this.trusted(e);
   }
 
   /** A `let`/`var`/parameter binding assigned from a function other than
