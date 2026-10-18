@@ -265,6 +265,10 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
   case SCR_DYN_HANDLE: identity = input->v.handle.ptr; domain = 4; break;
   default: break;
   }
+  if (scr_uncloneable_count && scr_uncloneable_marked(input)) {
+    scr_throw_domex("DataCloneError", "Cannot clone object of unsupported type.");
+    return SIZE_MAX;
+  }
   size_t found = scr_message_find(encoder, identity, domain);
   if (found != SIZE_MAX) return found;
   size_t id = scr_message_node(encoder);
@@ -274,6 +278,7 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
    * capsule over the same object, a dyn graph as itself. */
   if (input->kind == SCR_DYN_TYPED_REF && input->v.typed_ref.ptr &&
       *(const size_t *)input->v.typed_ref.ptr == SIZE_MAX) {
+    scr_sa_thread_shares();
     encoder->visits[id].view = (ScrDyn *)input;
     ScrMessageNode *node = &encoder->message->nodes[id];
     node->kind = SCR_MESSAGE_TYPED_REF;
@@ -291,6 +296,7 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     return id;
   }
   if ((input->kind == SCR_DYN_OBJ || input->kind == SCR_DYN_ARR) && input->rc == SIZE_MAX) {
+    scr_sa_thread_shares();
     encoder->visits[id].view = (ScrDyn *)input;
     ScrMessageNode *node = &encoder->message->nodes[id];
     node->kind = SCR_MESSAGE_PUBLISHED;
@@ -554,6 +560,7 @@ static ScrMessage *scr_message_try_publish(const ScrDyn *value) {
         scr_lsan_immortal(d);
       }
     }
+    scr_sa_thread_shares();
     message = scr_message_alloc(1, sizeof(*message));
     message->nodes = scr_message_alloc(1, sizeof(*message->nodes));
     message->count = message->capacity = 1;

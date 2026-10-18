@@ -200,6 +200,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "os.userHomedir": "scr_os_user_homedir",
   "os.tmpdir": "scr_os_tmpdir",
   "process.argv": "scr_process_argv",
+  "process.execArgv": "scr_process_exec_argv",
   "process.platform": "scr_process_platform",
   "process.cwd": "scr_process_cwd",
   "process.pid": "scr_process_pid",
@@ -945,6 +946,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "worker.getEnvironmentData": "scr_worker_get_environment_data",
   "worker.markUntransferable": "scr_worker_mark_untransferable",
   "worker.isMarkedUntransferable": "scr_worker_is_marked_untransferable",
+  "dyn.markUncloneable": "scr_mark_uncloneable",
   "stream.workerStdio": "scr_stream_worker_stdio",
   "worker.broadcastChannel": "scr_worker_broadcast_channel",
   "event.broadcastInstall": "scr_et_broadcast_install",
@@ -976,6 +978,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.getMax": "scr_emitter_get_max",
   "emitter.setDefaultMax": "scr_emitter_set_default_max",
   "emitter.getDefaultMax": "scr_emitter_get_default_max",
+  "emitter.esmDefaultMax": "scr_emitter_esm_default_max_get",
+  "emitter.esmSync": "scr_emitter_esm_sync",
   "emitter.errorMonitor": "scr_emitter_error_monitor",
   // node:stream (scr_stream.c): receivers borrowed, chunks borrowed,
   // chaining forms answer the receiver +1. The throwing members
@@ -1238,10 +1242,13 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // loop gate already runs) and diagnostics_channel (scr_dc.c): all
   // generic shapes; the throwing members ride the pending check.
   "tp.setTimeout": "scr_tp_set_timeout",
+  "tp.schedulerWait": "scr_tp_set_timeout",
   "tp.setImmediate": "scr_tp_set_immediate",
   "tp.setTimeoutValue": "scr_tp_set_timeout_value",
   "tp.setImmediateValue": "scr_tp_set_immediate_value",
   "tp.setTimeoutSignal": "scr_tp_set_timeout_signal",
+  "tp.schedulerWaitValue": "scr_tp_set_timeout_value",
+  "tp.schedulerWaitSignal": "scr_tp_set_timeout_signal",
   "tp.setImmediateSignal": "scr_tp_set_immediate_signal",
   // stream/promises' finished form (+1 promise; may-throw pending check;
   // the pipeline form needs the stream-array compound and emits below).
@@ -1393,6 +1400,40 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",
 };
+
+/** The mock-aware entry points (scr_test.c) that the timer calls of a
+ * program using mock.timers emit in place of the loop's functions; each
+ * falls back to the loop's function while its API is not mocked. */
+export const MOCK_TIMER_SYMS: Readonly<Record<string, string>> = {
+  "timers.setTimeout": "scr_test_mt_set_timeout",
+  "timers.setTimeoutHandle": "scr_test_mt_set_timeout_handle",
+  "timers.setInterval": "scr_test_mt_set_interval",
+  "timers.clearTimeout": "scr_test_mt_clear_timeout",
+  "timers.clearInterval": "scr_test_mt_clear_interval",
+  "timers.unref": "scr_test_mt_unref",
+  "timers.ref": "scr_test_mt_ref",
+  "timers.refresh": "scr_test_mt_refresh",
+  "timers.hasRef": "scr_test_mt_has_ref",
+  "timers.setImmediate": "scr_test_mt_set_immediate",
+  "timers.clearImmediate": "scr_test_mt_clear_immediate",
+  "timers.immediateUnref": "scr_test_mt_immediate_unref",
+  "timers.immediateRef": "scr_test_mt_immediate_ref",
+  "timers.immediateHasRef": "scr_test_mt_immediate_has_ref",
+  "date.now": "scr_test_mt_date_now",
+  "date.newNow": "scr_test_mt_date_now",
+  "tp.schedulerWait": "scr_test_mt_scheduler_wait",
+  "tp.schedulerWaitValue": "scr_test_mt_scheduler_wait_value",
+  "tp.schedulerWaitSignal": "scr_tp_scheduler_wait_signal",
+};
+
+/** The mock-aware symbol for a timer call of a program that uses
+ * mock.timers, undefined for other calls and for `realTimer` calls. */
+export function mockTimerSym(
+  host: { readonly mockTimers: boolean },
+  e: { fn: string; realTimer?: true },
+): string | undefined {
+  return host.mockTimers && !e.realTimer ? MOCK_TIMER_SYMS[e.fn] : undefined;
+}
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "process.emitWarning",

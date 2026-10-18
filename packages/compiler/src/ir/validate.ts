@@ -4156,9 +4156,12 @@ function validateFunction(
       e.fn === "tp.setTimeoutValue" ||
       e.fn === "tp.setImmediateValue" ||
       e.fn === "tp.setTimeoutSignal" ||
-      e.fn === "tp.setImmediateSignal"
+      e.fn === "tp.setImmediateSignal" ||
+      e.fn === "tp.schedulerWaitValue" ||
+      e.fn === "tp.schedulerWaitSignal"
     ) {
-      const value = e.args[e.fn === "tp.setTimeoutValue" || e.fn === "tp.setTimeoutSignal" ? 1 : 0];
+      const value =
+        e.args[e.fn === "tp.setImmediateValue" || e.fn === "tp.setImmediateSignal" ? 0 : 1];
       if (value?.type.kind !== "promise" || !typeEquals(e.type, value.type)) {
         err(`libCall ${e.fn} must be the value's promise type`, e.loc);
       }
@@ -5732,6 +5735,8 @@ function validateFunction(
       e.fn !== "emitter.setDefaultMax" &&
       e.fn !== "emitter.setDefaultMaxChk" &&
       e.fn !== "emitter.getDefaultMax" &&
+      e.fn !== "emitter.esmDefaultMax" &&
+      e.fn !== "emitter.esmSync" &&
       e.fn !== "emitter.errorMonitor" &&
       e.fn !== "emitter.checkListener"
     ) {

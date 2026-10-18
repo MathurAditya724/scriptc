@@ -367,6 +367,14 @@ ScrPromise *scr_immediate_promise(void);
 void scr_clear_interval(double handle);
 
 double scr_set_timeout_handle(ScrClosure *cb, double ms); /* cb ownership moves in */
+/* Queues `cb` (moved) on the MockTimers that mocks AbortSignal.timeout
+ * (scr_test.c), NULL while it is not mocked. AbortSignal.timeout then
+ * aborts its signal from that queue instead of arming a loop timer. */
+extern SCR_TL void (*scr_mt_abort_timeout_arm)(ScrClosure *cb, double ms);
+/* scheduler.wait's mock.timers state (scr_test.c): 0 real, 1 mocked, 2 the
+ * real one restored after a reset, which throws ERR_INVALID_THIS in Node.
+ * scr_tp_scheduler_wait_signal reads it. */
+extern SCR_TL int scr_mt_wait_state;
 void scr_timers_teardown(void);
 /* Timeout.unref()/ref()/hasRef(): loop-liveness bookkeeping over the timer
  * handle (setTimeout/setInterval's id). unref drops the timer from the

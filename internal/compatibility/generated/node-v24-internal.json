@@ -596,9 +596,9 @@
       "apiEntries": 120,
       "static": {
         "supported": 0,
-        "partial": 50,
+        "partial": 51,
         "refused": 0,
-        "not-implemented": 70,
+        "not-implemented": 69,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 45,
+        "partial": 53,
         "refused": 0,
-        "not-implemented": 72,
+        "not-implemented": 64,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -941,9 +941,9 @@
       "apiEntries": 66,
       "static": {
         "supported": 0,
-        "partial": 43,
+        "partial": 46,
         "refused": 0,
-        "not-implemented": 23,
+        "not-implemented": 20,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -41819,6 +41819,8 @@
           "tests/corpus/5245-event-target-subclass-signals.ts",
           "tests/corpus/5247-event-target-subclass-lifetimes.ts",
           "tests/corpus/5248-event-target-subclass-warnings.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs",
           "tests/corpus/5885-events-max-listener-helpers.ts"
         ]
       },
@@ -43739,7 +43741,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.getEventListeners",
         "tests": [
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -43765,7 +43769,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.getMaxListeners",
         "tests": [
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -43841,7 +43847,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.listenerCount",
         "tests": [
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -43890,7 +43898,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.setMaxListeners",
         "tests": [
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -43942,7 +43952,9 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.defaultMaxListeners",
         "tests": [
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/5847-events-cjs-default-max.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -69416,6 +69428,7 @@
           "tests/corpus/2637-create-require-bare/main.ts",
           "tests/corpus/2675-create-require-nested-esm.js",
           "tests/corpus/2932-create-require-program/main.ts",
+          "tests/corpus/5846-events-esm-default-max.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -69503,7 +69516,8 @@
         "status": "partial",
         "evidence": "compiler-feature:module.module.isBuiltin",
         "tests": [
-          "tests/corpus/2932-create-require-program/main.ts"
+          "tests/corpus/2932-create-require-program/main.ts",
+          "tests/corpus/5846-events-esm-default-max.ts"
         ]
       },
       "anchorSource": "exact"
@@ -69593,7 +69607,8 @@
         "status": "partial",
         "evidence": "compiler-feature:module.module.syncBuiltinESMExports",
         "tests": [
-          "tests/corpus/2932-create-require-program/main.ts"
+          "tests/corpus/2932-create-require-program/main.ts",
+          "tests/corpus/5846-events-esm-default-max.ts"
         ]
       },
       "anchorSource": "exact"
@@ -80949,8 +80964,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.execArgv",
+        "tests": [
+          "tests/corpus/990-process-basics.ts",
+          "tests/corpus/2314-process-introspection.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -90942,11 +90961,16 @@
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
           "tests/fixtures/node-test/cases/todo-suites.ts",
           "tests/harness/node-test.test.ts"
@@ -92576,8 +92600,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers.enable",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92599,8 +92630,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers.reset",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92622,8 +92660,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92645,8 +92687,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers.tick",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92714,8 +92763,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers.runAll",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92737,8 +92793,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers.setTime",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93559,8 +93622,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.assert.fileSnapshot",
+        "tests": [
+          "tests/fixtures/node-test/cases/snapshot.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93582,8 +93649,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.assert.snapshot",
+        "tests": [
+          "tests/fixtures/node-test/cases/snapshot.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113045,6 +113116,8 @@
           "tests/corpus/5874-worker-stdio-streams.ts",
           "tests/corpus/5875-worker-stdout-pipe.cjs",
           "tests/corpus/5879-worker-stdin.ts",
+          "tests/corpus/5990-worker-uncloneable.mjs",
+          "tests/corpus/5991-worker-async-dispose.mjs",
           "tests/corpus/native-worker-clone-errors.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-delayed-messages.ts",
@@ -113936,8 +114009,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker",
+        "tests": [
+          "tests/corpus/5991-worker-async-dispose.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114394,8 +114470,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker_threads.markAsUncloneable",
+        "tests": [
+          "tests/corpus/5990-worker-uncloneable.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114519,8 +114598,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.isInternalThread",
+        "tests": [
+          "tests/corpus/5990-worker-uncloneable.mjs"
+        ]
       },
       "anchorSource": "chapter"
     },

@@ -7864,7 +7864,6 @@ export function superCallStmt(
   args: IrExpr[],
   loc: SrcLoc,
 ): IrStmt {
-  const base = superBaseOf(info)!;
   const thisRef: IrExpr = {
     kind: "varRef",
     localId: thisLocal.id,
@@ -7909,6 +7908,8 @@ export function superCallStmt(
       },
       loc,
     };
+  // A callable base has no class info, so the base is read after that case.
+  const base = superBaseOf(info)!;
   if (base.builtinError) {
     // super(message) into the runtime-provided Error constructor: stamps
     // name/message on the (already-allocated) object. Receiver + message

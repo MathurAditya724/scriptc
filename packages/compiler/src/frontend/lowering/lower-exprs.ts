@@ -8,6 +8,7 @@ import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
+import { esmImportBindingKind } from "./builtins/module-bindings.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
@@ -649,6 +650,30 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // have non-stdlib symbols and keep the ordinary path.
     let tested = expr.expression;
     while (ts.isParenthesizedExpression(tested)) tested = tested.expression;
+    // `typeof zlib.Inflate` / `typeof zlib.createGzip`: an export of a
+    // Node builtin module read through a plain binding (an import or
+    // require result). The read has no side effects, and Node's answer for
+    // every exported function and class is "function".
+    if (
+      ts.isPropertyAccessExpression(tested) &&
+      ts.isIdentifier(tested.expression) &&
+      lowerer.isStdlibMember(tested)
+    ) {
+      const sym = lowerer.checker.getSymbolAtLocation(tested.name);
+      const decls = sym ? lowerer.checker.declarationsOf(sym) : [];
+      if (
+        decls.some(isBuiltinModuleValueDecl) &&
+        decls.every((decl) => builtinModuleExportParent(decl) !== undefined)
+      ) {
+        const t = lowerer.typeOf(tested);
+        if (
+          lowerer.checker.getCallSignatures(t).length > 0 ||
+          lowerer.checker.getConstructSignatures(t).length > 0
+        ) {
+          return { kind: "strLit", value: "function", type: STRING, loc };
+        }
+      }
+    }
     if (ts.isIdentifier(tested)) {
       const sym = lowerer.checker.getSymbolAtLocation(tested);
       if (!sym) {
@@ -1156,6 +1181,20 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         if (bi.module === "worker_threads") {
           const value = lowerWorkerMetadata(bi.member, loc);
           if (value) return value;
+        }
+        // A named import of defaultMaxListeners reads the ES module
+        // namespace's copy. A CommonJS destructured or member binding holds
+        // the value read when its declaration ran, which these bindings do
+        // not store.
+        if (bi.module === "events" && bi.member === "defaultMaxListeners") {
+          if (esmImportBindingKind(lowerer, expr) === "named") {
+            return { kind: "libCall", fn: "emitter.esmDefaultMax", args: [], type: F64, loc };
+          }
+          lowerer.noLowering(
+            "events.defaultMaxListeners through a CommonJS destructured or member binding",
+            expr,
+            "read require('events').defaultMaxListeners or EventEmitter.defaultMaxListeners where the value is needed",
+          );
         }
         const c = builtinModuleConstOf(lowerer, bi.module, bi.member);
         if (c !== undefined) return builtinConstLit(c, loc);
@@ -10584,7 +10623,14 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       if (bothStr) return { kind: "strCmp", op: cmpOp, left, right, type: BOOL, loc };
-      if (lowerer.dynConvertible(left.type) && lowerer.dynConvertible(right.type)) {
+      // A Date converts to a new checked-dynamic Date on each crossing, so
+      // comparisons keep their Date fence instead of comparing copies.
+      if (
+        left.type.kind !== "date" &&
+        right.type.kind !== "date" &&
+        lowerer.dynConvertible(left.type) &&
+        lowerer.dynConvertible(right.type)
+      ) {
         return {
           kind: "libCall",
           fn: "dyn.compare",
@@ -10834,7 +10880,14 @@ export function lowerStrictEquality(
       loc,
     };
   }
-  if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
+  // A Date converts to a new checked-dynamic Date on each crossing; its
+  // identity has no representation, so equality keeps the fence.
+  if (
+    idLeft.type.kind !== "date" &&
+    idRight.type.kind !== "date" &&
+    lowerer.dynConvertible(idLeft.type) &&
+    lowerer.dynConvertible(idRight.type)
+  ) {
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),
@@ -15818,4 +15871,21 @@ function checkedIteratorPack(lowerer: Lowerer, source: IrExpr, loc: SrcLoc): IrE
     });
   }
   return { kind: "call", callee: name, args: [source], type: DYN, loc };
+}
+
+/** The `declare module "..."` body (or nested namespace body) a module
+ * export's declaration sits directly in, or undefined. */
+function builtinModuleExportParent(decl: ts.Node): ts.ModuleBlock | undefined {
+  const parent = ts.isVariableDeclaration(decl) ? decl.parent?.parent?.parent : decl.parent;
+  return parent !== undefined && ts.isModuleBlock(parent) ? parent : undefined;
+}
+
+/** A function, class or variable exported by a builtin module's body. */
+function isBuiltinModuleValueDecl(decl: ts.Node): boolean {
+  return (
+    builtinModuleExportParent(decl) !== undefined &&
+    (ts.isFunctionDeclaration(decl) ||
+      ts.isClassDeclaration(decl) ||
+      ts.isVariableDeclaration(decl))
+  );
 }

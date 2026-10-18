@@ -162,9 +162,16 @@ void scr_jb_put_number(ScrJsonBuf *b, double v);
 void scr_jb_put_json_str(ScrJsonBuf *b, const ScrStr *s);
 
 /* JSON-serialize a dyn value into the buffer — the sc_jw_* walker for the
- * dyn leaves the compiler cannot type: object members holding undefined
- * DROP, array slots holding undefined print null (exactly Node). */
+ * dyn leaves the compiler cannot type: undefined prints null (an array
+ * slot's rule); containers follow JSON.stringify (toJSON, accessors,
+ * circular structures). May leave an exception pending. */
 void scr_jb_put_dyn(ScrJsonBuf *b, const ScrDyn *d);
+/* The entries of record `rec`'s `unknown` index signature (its overflow
+ * map) after the record's earlier members: separators, keys and values in
+ * JS own-key order with JSON.stringify's member rules (toJSON called with
+ * the key, undefined, function and symbol results dropped). `first` is the
+ * record's first-member flag. May leave an exception pending. */
+void scr_jb_put_dyn_entries(ScrJsonBuf *b, void *rec, ScrMap *map, bool *first);
 /* Typed JSON for a record that kept a source: the kept key order, declared
  * fields through the compiled per-field writer. `try` writes nothing and
  * answers false for a record without one. */

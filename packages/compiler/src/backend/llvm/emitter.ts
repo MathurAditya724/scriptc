@@ -50,7 +50,7 @@ import {
   STRING,
   VOID,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
+import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
@@ -200,7 +200,12 @@ import {
   type LocalArrayRead,
 } from "./local-array-reads.js";
 import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
-import { emitDenseArrayGet, emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
+import {
+  emitDenseArrayGet,
+  emitDenseArrayPop,
+  emitDenseArraySet,
+  emitDenseSlotUnlink,
+} from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
@@ -885,6 +890,9 @@ export class LlEmitter {
   /** setTimeout and friends appeared somewhere: main must run the event
    * loop even in programs with no async functions. */
   usesTimers = false;
+  /** The program calls mock.timers members (moduleUsesMockTimers): timer
+   * calls emit scr_test.c's mock-aware entry points. */
+  readonly mockTimers: boolean;
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();
@@ -1111,6 +1119,7 @@ export class LlEmitter {
         }),
     );
     this.nullableUnions = new NullableUnions(mod);
+    this.mockTimers = moduleUsesMockTimers(mod);
     this.debug =
       options.debugSources === undefined
         ? null
@@ -2065,7 +2074,10 @@ export class LlEmitter {
     if (usesHttp) this.declare(`declare void @scr_http_dyn_install()`);
     if (usesFetch) this.declare(`declare void @scr_fetch_install()`);
 
-    if (usesNodeTest) this.declare(`declare i32 @scr_test_exit_code()`);
+    if (usesNodeTest) {
+      this.declare(`declare i32 @scr_test_exit_code()`);
+      this.declare(`declare void @scr_test_init()`);
+    }
     if (snapshotsTlsCa) {
       this.declare(`declare void @scr_tls_ca_install()`);
     }
@@ -2666,6 +2678,8 @@ export class LlEmitter {
       ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
       ...(usesStream ? [`  call void @scr_stream_install()`] : []),
       `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
+      // node:test takes Node's --test-update-snapshots out of argv first.
+      ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
       ...(asyncEntry
         ? [`  %top = call ptr @${mangleAsyncSpawn(this.mod.entry)}()`]
         : [`  call void @${mangleFunction(this.mod.entry)}()`]),
@@ -8125,6 +8139,28 @@ export class LlEmitter {
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
         B.startBlock(resize);
+        if (s.pop === true) {
+          // A discarded pop's `length - 1` on a packed array removes the
+          // last element inline, then releases it.
+          const call = B.newLabel("arr.len.call"),
+            pop = B.newLabel("arr.len.pop");
+          const lastNumber = B.tmp(),
+            dropsLast = B.tmp();
+          B.line(`${lastNumber} = fsub double ${lenNumber}, 1.0`);
+          B.line(`${dropsLast} = fcmp oeq double ${length.name}, ${lastNumber}`);
+          B.condBr(dropsLast, pop, call);
+          B.startBlock(pop);
+          const elem = s.arr.type.elem;
+          const acc = elemAccess(elem);
+          const raw = emitDenseArrayPop(this, arr.name, acc, call, call);
+          if (acc === "ref" && isRefCounted(elem)) {
+            const old = B.tmp();
+            B.line(`${old} = inttoptr i64 ${raw} to ptr`);
+            this.releaseValue(old, elem);
+          }
+          B.br(done);
+          B.startBlock(call);
+        }
         B.line(`call void @scr_arr_set_len(ptr ${arr.name}, double ${length.name})`);
         this.emitPendingCheck();
         B.br(done);

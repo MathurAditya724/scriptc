@@ -428,11 +428,13 @@ static const ScrITableEntry *scr_itable_insert_bytes(ScrITable *t, uint64_t hash
 
 const ScrITableEntry *scr_itable_insert_str(ScrITable *t, const ScrStr *key, uint64_t value) {
   scr_itable_enter();
+  scr_sa_thread_shares(); /* the stored value graph is read by every thread */
   return scr_itable_insert_bytes(t, scr_itable_str_hash(key), key->data, key->len, value);
 }
 
 const ScrITableEntry *scr_itable_insert_f64(ScrITable *t, double key, uint64_t value) {
   scr_itable_enter();
+  scr_sa_thread_shares(); /* the stored value graph is read by every thread */
   uint64_t stored = scr_itable_f64_bits(key) ^ SCR_ITABLE_F64_FLIP;
   uint64_t hash = scr_itable_f64_hash(stored);
   ScrITableSegment *seg = scr_itable_segment(t, hash);
@@ -588,6 +590,7 @@ const ScrITableEntry *scr_itable_find_arr(ScrITable *t, const ScrArr *key) {
 
 const ScrITableEntry *scr_itable_insert_arr(ScrITable *t, const ScrArr *key, uint64_t value) {
   scr_itable_enter();
+  scr_sa_thread_shares(); /* the stored value graph is read by every thread */
   char stack[SCR_ITABLE_STACK_KEY];
   size_t len;
   char *bytes = scr_itable_encoded(t, key, stack, sizeof stack, &len);

@@ -3338,7 +3338,12 @@ declare module "node:test" {
     beforeEach(fn: HookFn): void;
     afterEach(fn: HookFn): void;
   }
+  interface AssertSnapshotOptions {
+    readonly serializers?: ReadonlyArray<(value: any) => any> | undefined;
+  }
   interface TestContextAssert {
+    snapshot(value: any, options?: AssertSnapshotOptions): void;
+    fileSnapshot(value: any, path: string, options?: AssertSnapshotOptions): void;
     ok(value: unknown, message?: string): void;
     strictEqual(actual: unknown, expected: unknown, message?: string): void;
     notStrictEqual(actual: unknown, expected: unknown, message?: string): void;
@@ -3429,6 +3434,19 @@ declare module "node:test" {
       : never;
     reset(): void;
     restoreAll(): void;
+    readonly timers: MockTimers;
+  }
+  interface MockTimersOptions {
+    apis: ReadonlyArray<"setInterval" | "setTimeout" | "setImmediate" | "Date">;
+    now?: number | Date | undefined;
+  }
+  interface MockTimers {
+    enable(options?: MockTimersOptions): void;
+    setTime(milliseconds?: number): void;
+    reset(): void;
+    tick(milliseconds?: number): void;
+    runAll(): void;
+    [Symbol.dispose](): void;
   }
   const mock: MockTracker;
   /* Declared for typechecking only — every use fences (no lowering).
@@ -3456,6 +3474,8 @@ declare module "node:test" {
     MockFunctionContext,
     MockFunctionCall,
     MockTracker,
+    MockTimers,
+    MockTimersOptions,
   };
   export default test;
 }
@@ -5857,6 +5877,8 @@ declare module "worker_threads" {
     readonly stderr: import("stream").Readable;
     /* with the stdin option: what the worker reads from process.stdin */
     readonly stdin: import("stream").Writable | null;
+    /* terminate(), resolving with undefined once the worker exited */
+    [Symbol.asyncDispose](): Promise<void>;
     on(event: "online", listener: () => void): this;
     on(event: "message", listener: (value: any) => void): this;
     on(event: "error", listener: (error: any) => void): this;
@@ -5906,6 +5928,9 @@ declare module "worker_threads" {
   export function getEnvironmentData(key: any): any;
   /* A marked object cannot be listed in a transfer list. */
   export function markAsUntransferable(object: any): void;
+  /* structuredClone and postMessage throw DataCloneError for a marked
+   * object, error or class instance */
+  export function markAsUncloneable(object: any): void;
   export function isMarkedAsUntransferable(object: any): boolean;
   /* Delivers each message to every other open channel with the name, in
    * any thread, as a 'message' MessageEvent. */
