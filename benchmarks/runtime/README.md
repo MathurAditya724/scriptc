@@ -20,6 +20,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `thread-slots`, `thread-slots-cache` | cpu | worker threads reading one published type graph from an `InternTable` and keeping per-thread state for each type they visit: a `ThreadSlots` family, or a direct-mapped cache by id in front of a `Map` by id (the `-cache` entry); under Node.js both are per thread |
 | `atomics-contended` | cpu | four worker threads updating `SharedArrayBuffer` counters with `Atomics`: one shared counter, one counter per worker, a `compareExchange` loop, and `Atomics.wait`/`notify` handoffs |
 | `value-objects` | cpu | small immutable records and class instances: vector helpers, method chains, particle updates |
+| `value-records` | cpu | records that hold strings, spread state updates and destructured tuples: token helpers, an immutable reducer, tuple returns |
 | `region-builds` | cpu | a watch-mode build loop over `LifetimeRegion`: each build binds a program in a new region and releases the previous one, which a cache keeps referenced for two builds |
 | `optional-fields` | cpu | records and class instances with `number \| undefined` and other scalar-union fields |
 | `record-boundaries` | cpu | records built from unchecked array reads passed to and returned from annotated functions |

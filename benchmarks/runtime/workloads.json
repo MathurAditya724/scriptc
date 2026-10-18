@@ -162,6 +162,13 @@
       ]
     },
     {
+      "name": "value-records",
+      "entry": "workloads/value-records.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
       "name": "region-builds",
       "entry": "workloads/region-builds.ts",
       "args": [
