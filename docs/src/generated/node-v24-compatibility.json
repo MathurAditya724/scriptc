@@ -569,9 +569,9 @@
       "apiEntries": 120,
       "static": {
         "supported": 0,
-        "partial": 50,
+        "partial": 51,
         "refused": 0,
-        "not-implemented": 70,
+        "not-implemented": 69,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -57593,9 +57593,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {

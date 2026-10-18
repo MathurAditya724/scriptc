@@ -388,6 +388,7 @@ import {
   createRequireProgramModuleOf,
   createRequireSpecOf,
   fencedBuiltinImportOf,
+  esmImportBindingKind,
 } from "./builtins/module-bindings.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
@@ -11462,9 +11463,19 @@ export class Lowerer {
       return pathModuleValue(this, `path/${bi.member}`, loc);
     }
     // events.defaultMaxListeners READS the process-wide default (its
-    // write twin routes through emitter.setDefaultMaxChk).
+    // write twin routes through emitter.setDefaultMaxChk). Through an ES
+    // module namespace it reads the namespace's copy instead.
     if (bi.module === "events" && bi.member === "defaultMaxListeners") {
-      return { kind: "libCall", fn: "emitter.getDefaultMax", args: [], type: F64, loc };
+      const esm =
+        ts.isIdentifier(expr.expression) &&
+        esmImportBindingKind(this, expr.expression) === "namespace";
+      return {
+        kind: "libCall",
+        fn: esm ? "emitter.esmDefaultMax" : "emitter.getDefaultMax",
+        args: [],
+        type: F64,
+        loc,
+      };
     }
     if (bi.module === "worker_threads") {
       const value = lowerWorkerMetadata(bi.member, loc);

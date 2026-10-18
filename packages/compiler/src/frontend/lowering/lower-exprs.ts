@@ -8,6 +8,7 @@ import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
+import { esmImportBindingKind } from "./builtins/module-bindings.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
@@ -1173,6 +1174,20 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         if (bi.module === "worker_threads") {
           const value = lowerWorkerMetadata(bi.member, loc);
           if (value) return value;
+        }
+        // A named import of defaultMaxListeners reads the ES module
+        // namespace's copy. A CommonJS destructured or member binding holds
+        // the value read when its declaration ran, which these bindings do
+        // not store.
+        if (bi.module === "events" && bi.member === "defaultMaxListeners") {
+          if (esmImportBindingKind(lowerer, expr) === "named") {
+            return { kind: "libCall", fn: "emitter.esmDefaultMax", args: [], type: F64, loc };
+          }
+          lowerer.noLowering(
+            "events.defaultMaxListeners through a CommonJS destructured or member binding",
+            expr,
+            "read require('events').defaultMaxListeners or EventEmitter.defaultMaxListeners where the value is needed",
+          );
         }
         const c = builtinModuleConstOf(lowerer, bi.module, bi.member);
         if (c !== undefined) return builtinConstLit(c, loc);
