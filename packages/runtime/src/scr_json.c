@@ -5947,11 +5947,28 @@ void scr_errdyn_put(ScrError *e, ScrDyn *d) { scr_errdyn_append(e, d); }
 static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key) {
   bool cause = key->len == 5 && memcmp(key->data, "cause", 5) == 0;
   bool stack = key->len == 5 && memcmp(key->data, "stack", 5) == 0;
-  if (!cause && !stack) return;
+  bool name = key->len == 4 && memcmp(key->data, "name", 4) == 0;
+  bool message = key->len == 7 && memcmp(key->data, "message", 7) == 0;
+  if (!cause && !stack && !name && !message) return;
   size_t hit = scr_errdyn_find(view, false);
   if (hit == SIZE_MAX) return;
   ScrDynEntry *entry = scr_dyn_entry(view, key);
   ScrError *e = scr_errdyn_cache[hit].err;
+  if (name || message) {
+    /* The native error's toString and inspect read these fields. */
+    if (!entry || entry->accessor || entry->value->kind != SCR_DYN_STR) return;
+    ScrStr **field = name ? &e->name : &e->message;
+    scr_str_release(*field);
+    *field = scr_str_retain(entry->value->v.str);
+    if (name) {
+      e->name_present = true;
+      e->name_enumerable = entry->enumerable;
+    } else {
+      e->message_present = true;
+      e->message_enumerable = entry->enumerable;
+    }
+    return;
+  }
   if (stack) {
     if (entry && entry->value->kind == SCR_DYN_STR) {
       scr_str_release(e->stack);
@@ -5965,6 +5982,46 @@ static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key) {
   scr_dyn_release(e->error_cause);
   e->error_cause = replacement;
   e->cause_enumerable = entry && entry->enumerable;
+}
+
+/* Error.prototype.toString over the checked-dynamic error encoding (an
+ * object carrying the reserved "%error" marker): `name` defaults to "Error"
+ * and `message` to "", both read through the prototype; either empty leaves
+ * the other alone, otherwise "name: message". NULL with a pending exception
+ * when a member's string conversion throws. */
+ScrStr *scr_dyn_error_string(const ScrDyn *d) {
+  ScrStr *parts[2] = { NULL, NULL };
+  static const char *const keys[2] = { "name", "message" };
+  for (int i = 0; i < 2; i++) {
+    ScrDyn *member = scr_dyn_obj_read(d, keys[i], strlen(keys[i]));
+    if (!member || member->kind == SCR_DYN_UNDEF) {
+      parts[i] = i == 0 ? scr_str_new("Error", 5) : scr_str_new("", 0);
+    } else {
+      parts[i] = scr_dyn_string_coerce_js(member);
+    }
+    scr_dyn_release(member);
+    if (!parts[i]) {
+      scr_str_release(parts[0]);
+      return NULL;
+    }
+  }
+  if (parts[0]->len == 0 || parts[1]->len == 0) {
+    ScrStr *out = parts[0]->len == 0 ? parts[1] : parts[0];
+    scr_str_release(out == parts[0] ? parts[1] : parts[0]);
+    return out;
+  }
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_put_str(&b, parts[0]);
+  scr_jb_puts(&b, ": ");
+  scr_jb_put_str(&b, parts[1]);
+  scr_str_release(parts[0]);
+  scr_str_release(parts[1]);
+  return scr_jb_finish(&b);
+}
+
+static bool scr_dyn_error_encoding(const ScrDyn *d) {
+  return d->kind == SCR_DYN_OBJ && scr_dyn_obj_get(d, "%error", 6) != NULL;
 }
 
 /* Receiver-kind-dispatched toString() on a checked-dynamic value (the
@@ -6002,6 +6059,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
   case SCR_DYN_BOOL:
     return d->v.b ? scr_str_new("true", 4) : scr_str_new("false", 5);
   case SCR_DYN_OBJ:
+    if (scr_dyn_error_encoding(d) && !scr_dyn_property_owner(d, "toString", 8)) return scr_dyn_error_string(d);
     return scr_str_new("[object Object]", 15);
   case SCR_DYN_HANDLE:
     if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL) {
@@ -6396,6 +6454,13 @@ bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out) {
            * number-hint protocol advances to toString. */
           continue;
         }
+        if (i == 1 && scr_dyn_error_encoding(d)) {
+          ScrStr *text = scr_dyn_error_string(d);
+          if (!text) return false;
+          *out = scr_string_to_number(text);
+          scr_str_release(text);
+          return true;
+        }
         if (scr_dyn_has_object_prototype(d) && i == 1) {
           *out = NAN; /* Number("[object Object]") */
           return true;
@@ -6511,6 +6576,13 @@ static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d) {
       const ScrDyn *owner = scr_dyn_property_owner(d, methods[i], strlen(methods[i]));
       ScrDyn *method = owner ? scr_dyn_obj_read(d, methods[i], strlen(methods[i])) : NULL;
       if (!method) {
+        if (i == 1 && scr_dyn_error_encoding(d)) {
+          ScrStr *str = scr_dyn_error_string(d);
+          if (!str) return NULL;
+          ScrDyn *out = scr_dyn_new_str(str);
+          scr_str_release(str);
+          return out;
+        }
         if (i == 1 && scr_dyn_has_object_prototype(d)) {
           ScrStr *str = scr_str_new("[object Object]", 15);
           ScrDyn *out = scr_dyn_new_str(str);

@@ -82,13 +82,10 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d) {
   case SCR_DYN_OBJ: {
     const ScrDyn *marker = scr_dyn_obj_get(d, "%error", 6);
     if (marker) {
-      const ScrDyn *en = scr_dyn_obj_get(d, "name", 4);
-      const ScrDyn *em = scr_dyn_obj_get(d, "message", 7);
-      const ScrStr *ens = (en && en->kind == SCR_DYN_STR) ? en->v.str : NULL;
-      const ScrStr *ems = (em && em->kind == SCR_DYN_STR) ? em->v.str : NULL;
-      if (ens) scr_jb_write(b, ens->data, ens->len);
-      if (ens && ens->len && ems && ems->len) scr_jb_puts(b, ": ");
-      if (ems) scr_jb_write(b, ems->data, ems->len);
+      ScrStr *text = scr_dyn_error_string(d);
+      if (!text) return;
+      scr_jb_write(b, text->data, text->len);
+      scr_str_release(text);
       return;
     }
     scr_jb_puts(b, "[object Object]");
