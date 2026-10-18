@@ -16,6 +16,7 @@ import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
 import { lowerInternTableProperty } from "./intern-tables.js";
+import { concatStrings } from "./containers/dynamic-receivers.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import { SYMBOL_T } from "../../ir/ir.js";
@@ -7077,6 +7078,194 @@ export function lowerRecordKeyRead(
   // The receiver lowers FIRST (both branches below read it, and JS
   // evaluates the receiver before the key).
   const obj = lowerer.lowerExpr(expr.expression);
+  const optional = optionalRecordReceiver(lowerer, obj);
+  if (optional) {
+    // A runtime-optional binding read with a computed key reaches here as
+    // its `record | undefined` storage. JavaScript evaluates the receiver,
+    // then the key, and only then throws for an undefined receiver, naming
+    // the key. Hold both in temporaries so that order and message survive.
+    const receiver = lowerer.declareHiddenLocal("%optionalRecord", obj.type);
+    const stmts: IrStmt[] = [{ kind: "varDecl", localId: receiver.id, init: obj, loc }];
+    let keyRef: IrExpr | null =
+      litKey !== null ? { kind: "strLit", value: litKey, type: STRING, loc } : null;
+    const read = lowerRecordKeyReadFrom(
+      lowerer,
+      expr,
+      shapeId,
+      shape,
+      includeUndefined,
+      litKey,
+      optionalRecordPresent(optional, receiver, loc),
+      (key) => {
+        if (keyRef !== null) return key;
+        const held = lowerer.declareHiddenLocal("%optionalRecordKey", STRING);
+        stmts.push({ kind: "varDecl", localId: held.id, init: key, loc });
+        keyRef = varRef(held.id, STRING, loc);
+        return keyRef;
+      },
+    );
+    if (keyRef === null) {
+      lowerer.unsupported(
+        "SC1090",
+        keyNode,
+        "this computed key through a binding that may hold a missing record (narrow the binding or the key first)",
+      );
+    }
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: optionalRecordGuard(optional, receiver, keyRef, "reading", read, loc),
+      type: read.type,
+      loc,
+    };
+  }
+  return lowerRecordKeyReadFrom(lowerer, expr, shapeId, shape, includeUndefined, litKey, obj, null);
+}
+
+/** The `record | undefined` storage of a runtime-optional binding whose
+ * only value arm is a record (the get-or-create local after its presence
+ * guard). Null for every other receiver. */
+function optionalRecordReceiver(
+  lowerer: Lowerer,
+  obj: IrExpr,
+): { unionId: string; undefinedTag: number; presentTag: number; record: IrType } | null {
+  if (obj.type.kind !== "union") return null;
+  const def = lowerer.unions.get(obj.type.unionId);
+  if (!def || def.arms.length !== 2) return null;
+  const undefinedTag = lowerer.armTag(obj.type.unionId, UNDEFINED_T);
+  if (undefinedTag < 0) return null;
+  const presentTag = undefinedTag === 0 ? 1 : 0;
+  const record = def.arms[presentTag]!;
+  if (record.kind !== "record" || lowerer.shapes.get(record.shapeId)?.tuple) return null;
+  return { unionId: obj.type.unionId, undefinedTag, presentTag, record };
+}
+
+function optionalRecordPresent(
+  optional: NonNullable<ReturnType<typeof optionalRecordReceiver>>,
+  receiver: IrLocal,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "unionNarrow",
+    unionId: optional.unionId,
+    tag: optional.presentTag,
+    value: varRef(receiver.id, receiver.type, loc),
+    type: optional.record,
+    loc,
+  };
+}
+
+/** Node's TypeError for a keyed access on undefined ("Cannot read
+ * properties of undefined (reading 'k')", or "Cannot set ... (setting
+ * 'k')" for a write), naming the already-evaluated property key. */
+function optionalRecordThrow(
+  key: IrExpr,
+  verb: "reading" | "setting",
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const message = concatStrings(
+    [
+      strLit(
+        `Cannot ${verb === "reading" ? "read" : "set"} properties of undefined (${verb} '`,
+        loc,
+      ),
+      key,
+      strLit("')", loc),
+    ],
+    loc,
+  );
+  return {
+    kind: "libCall",
+    fn: "error.nodeThrow",
+    args: [numLit(1, loc), strLit("", loc), message],
+    type,
+    loc,
+  };
+}
+
+function optionalRecordIsUndefined(
+  optional: NonNullable<ReturnType<typeof optionalRecordReceiver>>,
+  receiver: IrLocal,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "unionIsTag",
+    unionId: optional.unionId,
+    tag: optional.undefinedTag,
+    negated: false,
+    value: varRef(receiver.id, receiver.type, loc),
+    type: BOOL,
+    loc,
+  };
+}
+
+/** `present` when the held receiver is a record, otherwise the TypeError. */
+function optionalRecordGuard(
+  optional: NonNullable<ReturnType<typeof optionalRecordReceiver>>,
+  receiver: IrLocal,
+  key: IrExpr,
+  verb: "reading" | "setting",
+  present: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "ternary",
+    cond: optionalRecordIsUndefined(optional, receiver, loc),
+    then: optionalRecordThrow(key, verb, present.type, loc),
+    else_: present,
+    type: present.type,
+    loc,
+  };
+}
+
+/** A keyed write whose receiver may be the `record | undefined` storage of
+ * a runtime-optional binding: JavaScript evaluates the receiver, the key
+ * and the value, then throws for an undefined receiver. Other receivers
+ * build the write directly. */
+function optionalRecordWrite(
+  lowerer: Lowerer,
+  obj: IrExpr,
+  key: IrExpr,
+  value: IrExpr,
+  loc: SrcLoc,
+  build: (receiver: IrExpr, key: IrExpr, value: IrExpr) => IrStmt,
+): IrStmt {
+  const optional = optionalRecordReceiver(lowerer, obj);
+  if (!optional) return build(obj, key, value);
+  const receiver = lowerer.declareHiddenLocal("%optionalRecord", obj.type);
+  const body: IrStmt[] = [{ kind: "varDecl", localId: receiver.id, init: obj, loc }];
+  const hold = (e: IrExpr, name: string): IrExpr => {
+    if (e.kind === "strLit" || e.kind === "numLit") return e;
+    const held = lowerer.declareHiddenLocal(name, e.type);
+    body.push({ kind: "varDecl", localId: held.id, init: e, loc });
+    return varRef(held.id, e.type, loc);
+  };
+  const heldKey = hold(key, "%optionalRecordKey");
+  const heldValue = hold(value, "%optionalRecordValue");
+  body.push({
+    kind: "if",
+    cond: optionalRecordIsUndefined(optional, receiver, loc),
+    then: [{ kind: "exprStmt", expr: optionalRecordThrow(heldKey, "setting", VOID, loc), loc }],
+    else_: null,
+    loc,
+  });
+  body.push(build(optionalRecordPresent(optional, receiver, loc), heldKey, heldValue));
+  return { kind: "block", body, loc };
+}
+
+function lowerRecordKeyReadFrom(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+  shapeId: string,
+  shape: IrRecordShape,
+  includeUndefined: boolean,
+  litKey: string | null,
+  obj: IrExpr,
+  holdKey: ((key: IrExpr) => IrExpr) | null,
+): IrExpr {
+  const loc = locOf(expr);
+  const keyNode = expr.argumentExpression;
   // A record-mapped CHECKER type over a VALUE living in the checked-dynamic tree (a JS
   // file-scope object-literal global): the checked-dynamic keyed read —
   // dynKeyGet against the runtime keys (a missing key answers the checked-dynamic tree
@@ -7177,6 +7366,7 @@ export function lowerRecordKeyRead(
   if (key.type.kind !== "string") {
     lowerer.unsupported("SC1090", keyNode, "indexing records with non-string or non-number keys");
   }
+  if (holdKey) key = holdKey(key);
   if (shape.fields.length === 0 && shape.indexValue === undefined) {
     const result = dynUndefinedExpr(loc);
     return {
@@ -8161,14 +8351,21 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         if (field) {
           const obj = lowerer.lowerExpr(target.expression);
           const value = lowerer.lowerExprExpecting(expr.right, field.type);
-          return {
-            kind: "recordSet",
+          return optionalRecordWrite(
+            lowerer,
             obj,
-            shapeId: receiverIr.shapeId,
-            field: litKey,
+            strLit(litKey, locOf(target.argumentExpression)),
             value,
-            loc: locOf(expr),
-          };
+            locOf(expr),
+            (receiver, _key, held) => ({
+              kind: "recordSet",
+              obj: receiver,
+              shapeId: receiverIr.shapeId,
+              field: litKey,
+              value: held,
+              loc: locOf(expr),
+            }),
+          );
         }
       }
       if (!shape.indexValue) {
@@ -8211,14 +8408,14 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         const value = lowerer.coerceInto(expr.right, lowerer.lowerExpr(expr.right), common);
         if (!typeEquals(value.type, common))
           lowerer.badType(expr.right, lowerer.typeOf(expr.right));
-        return {
+        return optionalRecordWrite(lowerer, obj, key, value, locOf(expr), (receiver, k, v) => ({
           kind: "recordKeySet",
-          obj,
+          obj: receiver,
           shapeId: receiverIr.shapeId,
-          key,
-          value,
+          key: k,
+          value: v,
           loc: locOf(expr),
-        };
+        }));
       }
       // A LITERAL key naming no declared field is a pure overflow insert
       // — no collision to validate. Runtime keys must be able to collide
@@ -8264,15 +8461,15 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         shape.indexValue,
         expr.right,
       );
-      return {
+      return optionalRecordWrite(lowerer, obj, key, value, locOf(expr), (receiver, k, v) => ({
         kind: "recordKeySet",
-        obj,
+        obj: receiver,
         shapeId: receiverIr.shapeId,
-        key,
-        value,
+        key: k,
+        value: v,
         ...(overflowOnly ? { overflowOnly: true as const } : {}),
         loc: locOf(expr),
-      };
+      }));
     }
   }
   // Keyed write `d[k] = v` on a CHECKED-DYNAMIC receiver (a JS `any`
