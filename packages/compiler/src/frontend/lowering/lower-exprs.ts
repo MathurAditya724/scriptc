@@ -678,6 +678,30 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       if (!sym) {
         return { kind: "strLit", value: "undefined", type: STRING, loc };
       }
+      // `const { inspect } = require("util")` / `import { inspect } from
+      // "node:util"`: a binding of a builtin module's exported function,
+      // class or object. JavaScript sources represent such a value without
+      // its own lowering as an identity token (a string), so the operand's
+      // representation cannot answer. Node's answer follows the export's
+      // kind, and the binding read has no effects.
+      const imported = isJsSourceFile(tested.getSourceFile())
+        ? lowerer.builtinImportOf(tested)
+        : null;
+      if (
+        imported &&
+        builtinModuleConstOf(lowerer, imported.module, imported.member) === undefined
+      ) {
+        const t = lowerer.typeOf(tested);
+        if (
+          lowerer.checker.getCallSignatures(t).length > 0 ||
+          lowerer.checker.getConstructSignatures(t).length > 0
+        ) {
+          return { kind: "strLit", value: "function", type: STRING, loc };
+        }
+        if ((t.flags & ts.TypeFlags.Object) !== 0) {
+          return { kind: "strLit", value: "object", type: STRING, loc };
+        }
+      }
       if (lowerer.isStdlibSymbol(sym)) {
         const t = lowerer.typeOf(expr.expression);
         if (
