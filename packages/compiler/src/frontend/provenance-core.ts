@@ -424,6 +424,7 @@ export async function resolveProvenanceSourcesWithParser(
         repo,
         commit,
         dir,
+        installedDir: installed.dir,
         entries,
       };
       if (pkg.sourceVersion !== undefined) {

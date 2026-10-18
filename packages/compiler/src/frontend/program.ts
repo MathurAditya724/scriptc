@@ -59,6 +59,8 @@ import {
   projectDtsRuntimeSibling,
   resolveBareModule,
   resolveProjectModule,
+  resolveSourceOverlayModule,
+  sourceOverlayPaths,
   resolveTypeDirective,
   setProjectPathMappings,
   setProjectRealm,
@@ -87,7 +89,6 @@ import type {
   NpmStaticDeclarationProperties,
   NpmStaticOverloadSignature,
 } from "./npm-static-declaration-syntax.js";
-import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import {
   ambientDtsPath,
@@ -693,13 +694,15 @@ function loadProgram7(
   // so tsgo's OWN resolution of the bare specifiers lands on the same
   // source files the preflight resolver answers — the checker types the
   // driver against the package's real TypeScript, not its shipped .d.ts.
-  const provenance = provenancePaths();
-  if (provenance !== null || externalTypes.size > 0) {
+  // --sources: the active overlays' exported specifiers map to their
+  // source files (resolveSourceOverlayModule answers the same files).
+  const overlays = sourceOverlayPaths();
+  if (overlays !== null || externalTypes.size > 0) {
     const paths: Record<string, string[]> = {
       ...(configuredPaths as Record<string, string[]> | undefined),
-      // Keep an index-signature source for native lowering when provenance is absent.
+      // Keep an index-signature source for native lowering when no overlay is active.
       // oxlint-disable-next-line unicorn/no-useless-fallback-in-spread
-      ...(provenance ?? {}),
+      ...(overlays ?? {}),
     };
     for (const [specifier, declarationPath] of externalTypes) {
       paths[specifier] = [declarationPath];
@@ -3251,10 +3254,10 @@ function resolveNpmImport7(
   if (isRelativeSpecifier(specifier) || specifier.startsWith("node:")) {
     return null;
   }
-  // --provenance-sources: a registered specifier is NOT an npm import —
-  // its attested source compiles as program modules (resolveProjectModule
-
-  if (provenanceEntryFor(specifier) !== null) return null;
+  // --sources: an import landing in an augmented instance is NOT an npm
+  // import — its source compiles as program modules (resolveProjectModule
+  // answers it).
+  if (resolveSourceOverlayModule(fromFileName, specifier, resolutionKind) !== null) return null;
   const resolved = resolveBareModule(fromFileName, specifier, undefined, resolutionKind);
   if (!resolved) return null;
   if (!isNodeModulesPath(resolved.typesFile)) {

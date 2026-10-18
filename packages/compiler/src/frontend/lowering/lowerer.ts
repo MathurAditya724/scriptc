@@ -189,7 +189,7 @@ import {
   UNDEFINED_T,
   VOID,
 } from "../../ir/ir.js";
-import { provenanceActive } from "../provenance-registry.js";
+import { sourceOverlaysActive } from "../source-overlays.js";
 import {
   ambientDtsPath,
   canonicalBuiltinModule,
@@ -2714,7 +2714,7 @@ export class Lowerer {
    * active and this is the emit/discovery lane — mirror the CALLER's
    * suppressStats guard, this method only gates remainder). */
   bumpFileStat(file: string, kind: "total" | "failed"): void {
-    if (this.remainder || !provenanceActive()) return;
+    if (this.remainder || !sourceOverlaysActive()) return;
     let s = this.statsByFile.get(file);
     if (!s) this.statsByFile.set(file, (s = { total: 0, failed: 0 }));
     if (kind === "total") s.total += 1;

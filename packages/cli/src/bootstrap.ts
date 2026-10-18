@@ -66,6 +66,7 @@ async function tryFastPath(): Promise<number | null> {
     values["emit-ir"] ||
     values.lib ||
     values["provenance-sources"] ||
+    process.argv.some((arg) => arg === "--sources" || arg.startsWith("--sources=")) ||
     (values["external-types"] ?? []).length > 0
   )
     return null;
@@ -191,6 +192,7 @@ async function coverageFastPath(
     values.optimization !== undefined ||
     values["windows-subsystem"] !== undefined ||
     values["provenance-sources"] ||
+    process.argv.some((arg) => arg === "--sources" || arg.startsWith("--sources=")) ||
     values["emit-ir"] ||
     (values["npm-static"] ?? []).length > 0 ||
     (values["external-types"] ?? []).length > 0

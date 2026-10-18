@@ -109,7 +109,7 @@ import { writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
 import { loadProgram } from "./frontend/program-node.js";
 import { runFrontend, type FrontendFactory } from "./frontend/pipeline.js";
-import { provenanceSources } from "./frontend/provenance-registry.js";
+import { sourceOverlayCacheIdentity } from "./frontend/source-overlays.js";
 import { clearResolveCaches } from "./frontend/resolve.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
 import { executableLinkFeatures } from "./backend/executable-features.js";
@@ -290,6 +290,13 @@ export {
   type ProvenancePackageSource,
   type ProvenanceSources,
 } from "./frontend/provenance-registry.js";
+export {
+  findSourceManifest,
+  installSourceOverlays,
+  loadSourceManifest,
+  sourceOverlayFallbacks,
+  type SourceOverlaySet,
+} from "./frontend/source-overlays.js";
 export * as ir from "./ir/api.js";
 
 /** Clang may print every warning from the generated/runtime translation
@@ -336,7 +343,7 @@ export async function analyzeCached(
 ): Promise<AnalyzeResult> {
   entryPath = resolve(entryPath);
   const root = await prepareBuildCacheRoot(buildCacheRoot());
-  if (root === null || provenanceSources() !== null) return analyze(entryPath, opts);
+  if (root === null) return analyze(entryPath, opts);
   const directory = join(root, "coverage-v1");
   const implementation = await coverageCompilerIdentity(directory);
   if (implementation === null) return analyze(entryPath, opts);
@@ -1001,9 +1008,10 @@ async function compileTracked(
     };
   }
   const cacheRoot =
-    outputKind === "exe" && provenanceSources() === null
+    outputKind === "exe" && sourceOverlayCacheIdentity() !== null
       ? await prepareBuildCacheRoot(buildCacheRoot())
       : null;
+  const sourcesIdentity = sourceOverlayCacheIdentity() ?? undefined;
   let earlyCacheOptions: EarlyExecutableCacheOptions | null = null;
   if (outputKind === "exe") {
     const helperObjectRoute =
@@ -1049,6 +1057,7 @@ async function compileTracked(
       nodeVersion: process.version,
       implementation: implementation.digest,
       implementationDependencies: implementation.dependencies,
+      ...(sourcesIdentity !== undefined ? { sources: sourcesIdentity } : {}),
     };
   }
   const earlyHit =
@@ -1650,7 +1659,8 @@ async function compileLibraryTracked(
   }
 
   const cacheRoot =
-    provenanceSources() === null ? await prepareBuildCacheRoot(buildCacheRoot()) : null;
+    sourceOverlayCacheIdentity() !== null ? await prepareBuildCacheRoot(buildCacheRoot()) : null;
+  const sourcesIdentity = sourceOverlayCacheIdentity() ?? undefined;
   const earlyCacheOptions: EarlyLibraryCacheOptions = {
     profilePath: opts.profilePath,
     profileBytes: profile.profileBytes,
@@ -1663,6 +1673,7 @@ async function compileLibraryTracked(
     compiler: [process.env["SCRIPTC_CC"] ?? "clang"],
     nodeVersion: process.version,
     implementation: await libraryFrontendImplementationFingerprint(),
+    ...(sourcesIdentity !== undefined ? { sources: sourcesIdentity } : {}),
   };
   const earlyHit = await readEarlyLibraryCache(
     cacheRoot,

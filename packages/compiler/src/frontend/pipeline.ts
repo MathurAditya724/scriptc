@@ -19,8 +19,28 @@ import {
   npmStaticOffenders,
   npmStaticPackageOfPath,
 } from "./npm-static.js";
-import { clearResolveCaches, resolveBareModule, resolveWorkspaceSourceModule } from "./resolve.js";
-import { provenanceEntryFor } from "./provenance-registry.js";
+import {
+  clearResolveCaches,
+  resolveBareModule,
+  resolveSourceOverlayModule,
+  resolveWorkspaceSourceModule,
+} from "./resolve.js";
+import {
+  activeSourceOverlays,
+  beginSourceOverlayCompile,
+  dropSourceOverlay,
+  isSourceOverlayFile,
+  restoreSourceOverlayDrops,
+  snapshotSourceOverlayDrops,
+  sourceOverlayDropReason,
+  sourceOverlayOfFile,
+  sourceOverlayReport,
+  sourceOverlaySet,
+  sourceOverlaysActive,
+  takeSourceOverlayProblems,
+  type SourceOverlayReport,
+} from "./source-overlays.js";
+import { npmStaticRefusalDiag } from "../diagnostics/diagnostic.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "./workspace-registry.js";
 import { lowerToIr, type LowerOptions, type LowerResult } from "./lowering/lowerer.js";
@@ -72,6 +92,9 @@ export interface Frontend {
   npmStatic: NpmStaticStatus[];
   /** Each judged npm package's first import site, used to anchor refusals. */
   npmImportSites: ReadonlyMap<string, SrcLoc>;
+  /** --sources: the overlay instances the final program compiles from
+   * source, and every instance that fell back to published JS. */
+  sourceOverlays: () => SourceOverlayReport | null;
   /** Releases the frontend's resources (the spawned tsgo server). Call
    * exactly once, after the last lower(). */
   dispose: () => void;
@@ -122,9 +145,9 @@ function detectAutoPackages(
       // experimental-import.ts), typed by their declarations.
       if (spec === CONTRACT_TYPES_MODULE || spec === THREADS_MODULE || spec === EXPERIMENTAL_MODULE)
         continue;
-      // Attested entries already resolve to program sources, so the
-      // published package's declaration eligibility does not apply.
-      if (provenanceEntryFor(spec) !== null) continue;
+      // Augmented instances resolve to program sources, so the published
+      // package's declaration eligibility does not apply.
+      if (resolveSourceOverlayModule(sf.fileName, spec) !== null) continue;
       if (resolveWorkspaceSourceModule(sf.fileName, spec) !== null) continue;
       if (isRelativeSpecifier(spec) || spec.startsWith("node:") || spec.startsWith("#")) continue;
       // Bare builtin names ("fs", "path") are the builtin machinery's
@@ -198,6 +221,209 @@ function packagesNamedByDiag(message: string, optedIn: ReadonlySet<string>): Set
   return hits;
 }
 
+/** Where a diagnostic sits, relative to its overlay ("src/x.ts:12"). */
+function overlaySite(
+  file: string,
+  overlayDir: string,
+  text: string | undefined,
+  start: number,
+): string {
+  const rel = file.slice(overlayDir.length + 1);
+  if (text === undefined) return rel;
+  let line = 1;
+  for (let i = 0; i < start && i < text.length; i++) if (text.charCodeAt(i) === 10) line++;
+  return `${rel}:${line}`;
+}
+
+/** --sources: the active overlay instances a load implicates, each with the
+ * first reason. An instance falls back to published JS when its source
+ * fails preflight (any diagnostic anchored in an overlay file — module-form
+ * refusals and type errors alike), when a program type error names its
+ * specifier or files, when a top-level require() edge targets it (the
+ * CommonJS shape of a published package is not synthesized for source),
+ * or when the resolver noted a checker disagreement. */
+function sourceOverlayCulprits(
+  load: LoadResult,
+  preflight: readonly ScrDiagnostic[],
+): Map<string, string> {
+  const culprits = takeSourceOverlayProblems();
+  if (!sourceOverlaysActive()) return culprits;
+  const add = (key: string, reason: string): void => {
+    if (!culprits.has(key)) culprits.set(key, reason);
+  };
+  const texts = new Map<string, string>();
+  for (const sf of [load.entry, ...load.moduleOrder]) texts.set(sf.fileName, sf.text);
+  const active = activeSourceOverlays();
+  for (const d of preflight) {
+    const owner = sourceOverlayOfFile(d.loc.file);
+    if (owner !== null && isSourceOverlayFile(d.loc.file)) {
+      const site = overlaySite(d.loc.file, owner.overlayDir, texts.get(d.loc.file), d.loc.start);
+      add(owner.key, `${d.code} at ${site}: ${d.message}`);
+      continue;
+    }
+    if (d.code !== "SC0001") continue;
+    for (const instance of active) {
+      const named =
+        d.message.includes(`'"${instance.name}"'`) ||
+        d.message.includes(`'"${instance.name}/`) ||
+        d.message.includes(`${instance.overlayDir}/`);
+      if (named)
+        add(instance.key, `the program does not typecheck against its source: ${d.message}`);
+    }
+  }
+  for (const sf of [load.entry, ...load.moduleOrder]) {
+    for (const stmt of sf.statements) {
+      for (const req of requiresOf(stmt)) {
+        const target = resolveSourceOverlayModule(sf.fileName, req.spec, "require");
+        const owner = target === null ? null : sourceOverlayOfFile(target);
+        if (owner === null) continue;
+        add(
+          owner.key,
+          `require() of '${req.spec}' from ${sf.fileName} (CommonJS interop for source overlays is not implemented)`,
+        );
+      }
+    }
+  }
+  for (const [key, reason] of takeSourceOverlayProblems()) add(key, reason);
+  return culprits;
+}
+
+function dropSourceOverlays(culprits: ReadonlyMap<string, string>): void {
+  for (const [key, reason] of culprits) dropSourceOverlay(key, reason);
+}
+
+/** The first diagnostic outside every overlay, as a one-line reason. */
+function surfaceReason(verb: string, diagnostics: readonly ScrDiagnostic[]): string {
+  const d = diagnostics.find((x) => sourceOverlayOfFile(x.loc.file) === null) ?? diagnostics[0]!;
+  return `the program does not ${verb} against its source surface (${d.code} in ${d.loc.file}: ${d.message.split("\n")[0]})`;
+}
+
+/** The keys of the overlays a frontend compiles from source. */
+function frontendOverlayKeys(fe: Frontend): string[] {
+  return (fe.sourceOverlays()?.packages ?? []).filter((p) => p.fallback === null).map((p) => p.key);
+}
+
+/** The keys of active instances with files in the program. */
+function usedSourceOverlays(load: LoadResult): Set<string> {
+  const used = new Set<string>();
+  if (!sourceOverlaysActive()) return used;
+  for (const sf of load.program.getImplementationSourceFiles()) {
+    const owner = sourceOverlayOfFile(sf.fileName);
+    if (owner !== null && isSourceOverlayFile(sf.fileName)) used.add(owner.key);
+  }
+  return used;
+}
+
+/** True when a reloaded frontend can be lowered at all: a clean preflight
+ * and no refused package (executable and library builds stop on both). */
+function frontendLowerable(fe: Frontend, coverage: boolean): boolean {
+  return (
+    fe.preflight.length === 0 &&
+    (coverage || !fe.npmStatic.some((entry) => entry.status === "refused"))
+  );
+}
+
+/** --sources: lowering can still refuse a statement after preflight
+ * passed. A refusal inside an overlay drops that instance; a failure
+ * outside every overlay probes the published surface with every used
+ * overlay dropped (the program may only fail against a declared source
+ * type the published JS's inferred surface avoids) and keeps the probe
+ * only when it lowers cleanly. Each fallback reloads the frontend, so the
+ * dropped packages resolve to their published JS. The arrays and maps
+ * callers read are refreshed in place, so copies of the wrapper observe
+ * the reload too. */
+function withSourceOverlayLoweringFallback(
+  first: Frontend,
+  reload: () => Frontend,
+  entryPath: string,
+): Frontend {
+  let current = first;
+  const adopt = (next: Frontend): void => {
+    current.dispose();
+    current = next;
+    fe.preflight.splice(0, fe.preflight.length, ...next.preflight);
+    fe.npmStatic.splice(0, fe.npmStatic.length, ...next.npmStatic);
+    const sites = fe.npmImportSites as Map<string, SrcLoc>;
+    sites.clear();
+    for (const [k, v] of next.npmImportSites) sites.set(k, v);
+  };
+  /** The failure a reload that cannot be lowered reports, shaped like the
+   * checks executable and library builds run before lowering. */
+  const unlowerable = (stats: LowerResult["stats"], coverage: boolean): LowerResult => ({
+    module: null,
+    diagnostics: [
+      ...current.preflight,
+      ...(coverage ? [] : current.npmStatic)
+        .filter((entry) => entry.status === "refused")
+        .map((entry) =>
+          npmStaticRefusalDiag(
+            entry.package,
+            entry.detail ?? "its static compilation was refused",
+            current.npmImportSites.get(entry.package) ?? { file: entryPath, start: 0, end: 0 },
+          ),
+        ),
+    ],
+    runtimeFences: [],
+    stats,
+  });
+  const fe: Frontend = {
+    preflight: [...first.preflight],
+    npmStatic: [...first.npmStatic],
+    npmImportSites: new Map(first.npmImportSites),
+    entryText: () => current.entryText(),
+    entryExports: () => current.entryExports(),
+    entryContract: () => current.entryContract(),
+    sourceTexts: () => current.sourceTexts(),
+    sourceOverlays: () => current.sourceOverlays(),
+    dispose: () => current.dispose(),
+    lower: (opts) => {
+      const coverage = opts.coverage === true;
+      for (;;) {
+        const result = current.lower(opts);
+        const culprits = new Map<string, string>();
+        let texts: Map<string, string> | null = null;
+        for (const d of result.diagnostics) {
+          const owner = sourceOverlayOfFile(d.loc.file);
+          if (owner === null || !isSourceOverlayFile(d.loc.file) || culprits.has(owner.key))
+            continue;
+          texts ??= current.sourceTexts();
+          const site = overlaySite(
+            d.loc.file,
+            owner.overlayDir,
+            texts.get(d.loc.file),
+            d.loc.start,
+          );
+          culprits.set(owner.key, `${d.code} at ${site}: ${d.message}`);
+        }
+        if (culprits.size > 0) {
+          dropSourceOverlays(culprits);
+          adopt(reload());
+          if (!frontendLowerable(current, coverage)) return unlowerable(result.stats, coverage);
+          continue;
+        }
+        // Coverage keeps its blockers rather than probing.
+        const used = frontendOverlayKeys(current);
+        if (coverage || result.diagnostics.length === 0 || used.length === 0) return result;
+        const snapshot = snapshotSourceOverlayDrops();
+        const reason = surfaceReason("compile", result.diagnostics);
+        for (const key of used) dropSourceOverlay(key, reason);
+        const probe = reload();
+        if (frontendLowerable(probe, false)) {
+          const lowered = probe.lower(opts);
+          if (lowered.diagnostics.length === 0) {
+            adopt(probe);
+            return lowered;
+          }
+        }
+        probe.dispose();
+        restoreSourceOverlayDrops(snapshot);
+        return result;
+      }
+    },
+  };
+  return fe;
+}
+
 export function runFrontend(
   entryPath: string,
   loadProgram: ProgramLoader,
@@ -227,9 +453,15 @@ export function runFrontend(
     // selections bypass eligibility heuristics, but never compilation checks.
     const explicit: readonly string[] =
       npmStatic !== undefined && typeof npmStatic !== "string" ? npmStatic : [];
-    return loadFrontend(entryPath, trackedLoader, "lib", externalTypes, [
-      ...new Set([...libraryNpmStatic, ...explicit]),
-    ]);
+    const load = (): Frontend =>
+      loadFrontend(entryPath, trackedLoader, "lib", externalTypes, [
+        ...new Set([...libraryNpmStatic, ...explicit]),
+      ]);
+    beginSourceOverlayCompile();
+    const first = load();
+    return sourceOverlaysActive()
+      ? withSourceOverlayLoweringFallback(first, load, entryPath)
+      : first;
   } catch (error) {
     for (const load of active) {
       // Preserve the original failure and attempt every remaining cleanup.
@@ -266,23 +498,33 @@ function loadFrontend(
   if (npmStatic === "auto" || npmStatic === "lib") {
     const scout = loadProgram(entryPath, { externalTypes });
     let retained = false;
+    let overlayCulprits = new Map<string, string>();
     try {
       const scoutPreflight = checkPreflight(scout);
-      requested =
-        npmStatic === "lib"
-          ? [...libraryNpmStatic, ...detectAutoPackages(scout, statuses, "lib", judged, npmSites)]
-          : detectAutoPackages(scout, statuses);
-      // With no package to opt in, the scout already IS the final frontend:
-      // same roots, resolution posture, preflight, and module order. Retain it
-      // instead of spawning a second tsgo server and checking the whole graph
-      // again — the common library-mode path has no bare npm imports.
-      if (requested.length === 0) {
-        reusableScout = scout;
-        reusablePreflight = scoutPreflight;
-        retained = true;
+      // --sources: overlays that already fail here fall back before any
+      // package selection depends on them.
+      overlayCulprits = sourceOverlayCulprits(scout, scoutPreflight);
+      if (overlayCulprits.size === 0) {
+        requested =
+          npmStatic === "lib"
+            ? [...libraryNpmStatic, ...detectAutoPackages(scout, statuses, "lib", judged, npmSites)]
+            : detectAutoPackages(scout, statuses);
+        // With no package to opt in, the scout already IS the final frontend:
+        // same roots, resolution posture, preflight, and module order. Retain it
+        // instead of spawning a second tsgo server and checking the whole graph
+        // again — the common library-mode path has no bare npm imports.
+        if (requested.length === 0) {
+          reusableScout = scout;
+          reusablePreflight = scoutPreflight;
+          retained = true;
+        }
       }
     } finally {
       if (!retained) scout.dispose();
+    }
+    if (overlayCulprits.size > 0) {
+      dropSourceOverlays(overlayCulprits);
+      return loadFrontend(entryPath, loadProgram, npmStatic, externalTypes, libraryNpmStatic);
     }
   } else if (npmStatic !== undefined) {
     requested = [...new Set(npmStatic)];
@@ -434,6 +676,49 @@ function loadFrontend(
     }
   }
 
+  // --sources: npm packages joining the program can expose new overlay
+  // failures (a published CommonJS dependency's require() of an augmented
+  // package, a preflight error only the full graph reaches). Drop those
+  // instances and restart the whole selection without them.
+  const lateCulprits = sourceOverlayCulprits(load, preflight);
+  if (lateCulprits.size > 0) {
+    dropSourceOverlays(lateCulprits);
+    load.dispose();
+    return loadFrontend(entryPath, loadProgram, npmStatic, externalTypes, libraryNpmStatic);
+  }
+  const overlaysUsed = usedSourceOverlays(load);
+  // The preflight last resort: errors no overlay is blamed for may still
+  // come from typing the program against the overlays' source surface.
+  // Probe with every used overlay dropped and keep the probe only when it
+  // preflights cleanly.
+  if (overlaysUsed.size > 0 && preflight.length > 0) {
+    const snapshot = snapshotSourceOverlayDrops();
+    const reason = surfaceReason("typecheck", preflight);
+    for (const key of overlaysUsed) dropSourceOverlay(key, reason);
+    const probe = loadFrontend(entryPath, loadProgram, npmStatic, externalTypes, libraryNpmStatic);
+    if (
+      probe.preflight.length === 0 &&
+      !probe.npmStatic.some((entry) => entry.status === "refused")
+    ) {
+      load.dispose();
+      return probe;
+    }
+    probe.dispose();
+    restoreSourceOverlayDrops(snapshot);
+  }
+  for (const instance of sourceOverlaySet()?.instances ?? []) {
+    const dropped = sourceOverlayDropReason(instance.key);
+    if (dropped !== null) {
+      statuses.push({
+        package: `${instance.name}@${instance.version}`,
+        status: "source-fallback",
+        detail: `source overlay: ${dropped}`,
+      });
+    } else if (overlaysUsed.has(instance.key)) {
+      statuses.push({ package: `${instance.name}@${instance.version}`, status: "source" });
+    }
+  }
+
   const finalLoad = load;
   return {
     preflight,
@@ -482,6 +767,7 @@ function loadFrontend(
       }),
     npmStatic: statuses,
     npmImportSites: npmSites,
+    sourceOverlays: () => sourceOverlayReport(overlaysUsed),
     dispose: finalLoad.dispose,
   };
 }

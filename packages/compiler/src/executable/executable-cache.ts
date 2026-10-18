@@ -121,6 +121,9 @@ export interface EarlyExecutableCacheOptions {
   nodeVersion: string;
   implementation: string;
   implementationDependencies: CompilerImplementationDependency[];
+  /** --sources: the overlay set's identity (manifest lock digest and
+   * bytes). Omitted without --sources, preserving existing keys. */
+  sources?: string;
 }
 
 export type EarlyExecutableRouteOptions = Omit<
@@ -232,6 +235,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     options.nodeVersion,
     options.implementation,
     ...ffiParts,
+    ...(options.sources !== undefined ? [`sources:${options.sources}`] : []),
   ]);
 }
 
@@ -280,6 +284,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   } else {
     hash.update(resolve(options.ffiProfile.path)).update("\0").update(options.ffiProfile.bytes);
   }
+  if (options.sources !== undefined) hash.update(`\0sources:${options.sources}`);
   return hash.digest("hex");
 }
 

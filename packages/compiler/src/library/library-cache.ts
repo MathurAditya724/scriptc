@@ -91,6 +91,8 @@ export interface EarlyLibraryCacheOptions {
    * frontend classification. */
   nodeVersion: string;
   implementation: string;
+  /** --sources: the overlay set's identity. Omitted without --sources. */
+  sources?: string;
 }
 
 export interface EarlyLibraryCacheHit {
@@ -154,6 +156,7 @@ function cacheKey(options: EarlyLibraryCacheOptions): string {
     options.compiler.join("\x1f"),
     options.nodeVersion,
     options.implementation,
+    ...(options.sources !== undefined ? [`sources:${options.sources}`] : []),
   ]);
 }
 

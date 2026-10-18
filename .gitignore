@@ -13,6 +13,8 @@ node_modules/
 !tests/fixtures/npm/cases/*/node_modules/
 !tests/library-mode/*/node_modules/
 !tests/fixtures/provenance/node_modules/
+!tests/fixtures/source-overlays/project/node_modules/
+!tests/fixtures/source-overlays/project/node_modules/.pnpm/*/node_modules/
 !tests/fixtures/fetch/node_modules/
 !tests/fixtures/gateway-e2e/node_modules/
 !tests/fixtures/node-types/node_modules/
@@ -32,6 +34,7 @@ output/
 !tests/fixtures/npm/cases/workspace-copied/members/*/dist/
 !tests/fixtures/npm/cases/workspace-copied/node_modules/*/dist/
 !tests/fixtures/provenance/node_modules/*/dist/
+!tests/fixtures/source-overlays/project/node_modules/.pnpm/**/dist/
 .scriptc/
 *.log
 .DS_Store

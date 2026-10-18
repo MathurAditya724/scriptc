@@ -20,7 +20,7 @@ import {
 } from "../diagnostics/envelope.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
-import type { ProvenanceSources } from "../frontend/provenance-registry.js";
+import type { SourceOverlayReport } from "../frontend/source-overlays.js";
 
 export interface CoverageInput {
   file: string;
@@ -41,11 +41,12 @@ export interface CoverageInput {
   /** Each dependency's native compilation outcome, with the first refusal
    * reason for a refused package. */
   npmStatic?: NpmStaticStatus[];
-  /** --provenance-sources: the resolved source-mapped packages and the
-   * fallback notes — the report renders per-package attribution from
-   * statsByFile (statements inside each package's source dir). */
-  provenance?: ProvenanceSources;
-  /** --provenance-sources: per-file statement attribution from the emit
+  /** --sources / --provenance-sources: the packages compiled from source
+   * overlays, the ones that fell back, and the producer's notes — the
+   * report renders per-package attribution from statsByFile (statements
+   * inside each package's overlay dir). */
+  sourceOverlays?: SourceOverlayReport;
+  /** --sources / --provenance-sources: per-file statement attribution from the emit
    * pass (LowerResult.statsByFile). */
   statsByFile?: Map<string, { total: number; failed: number }>;
   /** --provenance-sources: diagnostics of elided pure-annotated dead
@@ -55,11 +56,15 @@ export interface CoverageInput {
   preflightFailed: boolean;
 }
 
-/** One dependency's native compilation outcome. */
+/** One dependency's native compilation outcome. "source" compiles the
+ * package instance (`name@version`) from its --sources overlay;
+ * "source-fallback" dropped the overlay and the package compiles from its
+ * published JS (its own row says how that went). */
 export interface NpmStaticStatus {
   package: string;
-  status: "static" | "refused";
-  /** The first refusal reason for a refused package. */
+  status: "static" | "refused" | "source" | "source-fallback";
+  /** The first refusal reason for a refused package; the drop reason for a
+   * source fallback. */
   detail?: string;
 }
 
@@ -194,29 +199,40 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     out.push(`  ${c(DIM, "npm package compilation:")}`);
     const widestP = Math.max(...npmStatic.map((s) => s.package.length));
     for (const s of npmStatic) {
+      const detail = s.detail !== undefined ? ` ${c(DIM, `(${s.detail})`)}` : "";
       const status =
         s.status === "static"
           ? c(GREEN, "static")
-          : c(RED, "refused") + (s.detail !== undefined ? ` ${c(DIM, `(${s.detail})`)}` : "");
+          : s.status === "source"
+            ? c(GREEN, "static from source")
+            : s.status === "source-fallback"
+              ? c(YELLOW, "published JS") + detail
+              : c(RED, "refused") + detail;
       out.push(`    ${s.package.padEnd(widestP)}  ${status}`);
     }
     out.push("");
   }
 
-  // --provenance-sources: per-package attribution — the answer to "did
-  // the DEPENDENCY's statements compile static?", computed by summing
-  // statsByFile entries under each package's source dir. Elided
-  // pure-annotated dead consts and fallback notes render here too, so
-  // the provenance story is complete in one place.
-  if (input.provenance !== undefined) {
-    const prov = input.provenance;
-    out.push(
-      `  ${c(BOLD, "provenance sources")}   ${c(DIM, "(attested source compiled as program modules)")}`,
-    );
-    for (const pkg of prov.packages) {
+  // --sources / --provenance-sources: per-package attribution — the
+  // answer to "did the DEPENDENCY's statements compile static?", computed
+  // by summing statsByFile entries under each overlay dir. Elided
+  // pure-annotated dead consts, fallbacks, and producer notes render here
+  // too, so the source story is complete in one place.
+  if (input.sourceOverlays !== undefined) {
+    const overlays = input.sourceOverlays;
+    out.push(`  ${c(BOLD, "source overlays")}   ${c(DIM, `(${overlays.origin})`)}`);
+    for (const pkg of overlays.packages) {
+      const origin = pkg.origin !== null ? `  ${c(DIM, pkg.origin)}` : "";
+      out.push(`    ${pkg.name}@${pkg.version}${origin}`);
+      if (pkg.fallback !== null) {
+        out.push(
+          `      ${c(YELLOW, "published JS")} ${c(DIM, `(source overlay dropped: ${pkg.fallback})`)}`,
+        );
+        continue;
+      }
       let pTotal = 0;
       let pFailed = 0;
-      const dir = pkg.dir.endsWith("/") ? pkg.dir : `${pkg.dir}/`;
+      const dir = `${pkg.dir}/`;
       for (const [file, s] of input.statsByFile ??
         new Map<string, { total: number; failed: number }>()) {
         if (!file.startsWith(dir)) continue;
@@ -229,13 +245,6 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       const pOk = pTotal - pFailed;
       const pPct = pTotal === 0 ? 100 : Math.floor((pOk / pTotal) * 100);
       const pColor = pPct === 100 ? GREEN : pPct >= 75 ? YELLOW : RED;
-      const shortRepo = pkg.repo
-        .replace(/^git\+/, "")
-        .replace(/^https:\/\//, "")
-        .replace(/@refs\/.*$/, "");
-      out.push(
-        `    ${pkg.name}@${pkg.version}  ${c(DIM, `${shortRepo} @ ${pkg.commit.slice(0, 12)}`)}`,
-      );
       out.push(
         `      ${pTotal} statements: ${pOk} static ${c(pColor, c(BOLD, `(${pPct}%)`))}, ${pFailed} fenced` +
           (elided > 0
@@ -243,7 +252,7 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
             : ""),
       );
     }
-    for (const note of prov.notes) out.push(`    ${c(YELLOW, "note")}  ${note}`);
+    for (const note of overlays.notes) out.push(`    ${c(YELLOW, "note")}  ${note}`);
     out.push("");
   }
 
