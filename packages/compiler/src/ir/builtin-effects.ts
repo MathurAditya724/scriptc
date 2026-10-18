@@ -39,6 +39,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.reflectGet",
   "dyn.usingMethod",
   "dyn.usingDispose",
+  "disposable.stackUseCallback",
   "dyn.reflectSet",
   "dyn.reflectDefine",
   "dyn.abstractEq",

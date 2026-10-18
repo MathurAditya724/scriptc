@@ -3840,7 +3840,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
   d->v.handle.ptr = scr_dyn_handle_ops(tag)->retain(h);
   d->v.handle.tag = tag;
   d->v.handle.traced = tag == SCR_DYNH_WEAK_MAP || tag == SCR_DYNH_WEAK_SET ||
-      tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT ||
+      tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT || tag == SCR_DYNH_DISPOSABLE_STACK ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
        ((ScrMap *)h)->traced != 0);
   return d;
@@ -4820,6 +4820,11 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
   }
   bool builtin = scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value && scr_builtin_iterable(value);
   if (builtin && value->kind != SCR_DYN_ARR) return scr_builtin_iterator_method(value);
+  if (value->kind == SCR_DYN_HANDLE) {
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops(value->v.handle.tag);
+    ScrDyn *member = ops->symbol_get ? ops->symbol_get(value->v.handle.ptr, key) : NULL;
+    if (member || scr_exc_pending()) return member;
+  }
   ScrDyn *receiver = scr_dyn_symbol_receiver(value);
   if (!receiver) return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
   ScrDynEntry *entry = scr_dyn_symbol_entry(receiver, key, false);
@@ -5343,7 +5348,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
         d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_REGEXP ||
         d->v.handle.tag == SCR_DYNH_DATE || d->v.handle.tag == SCR_DYNH_BLOB ||
-        d->v.handle.tag == SCR_DYNH_FILE) {
+        d->v.handle.tag == SCR_DYNH_FILE || d->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
@@ -5928,7 +5933,8 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP ||
-        d->v.handle.tag == SCR_DYNH_BLOB || d->v.handle.tag == SCR_DYNH_FILE) {
+        d->v.handle.tag == SCR_DYNH_BLOB || d->v.handle.tag == SCR_DYNH_FILE ||
+        d->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
