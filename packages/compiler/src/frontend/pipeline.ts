@@ -214,7 +214,9 @@ function detectAutoPackages(
         continue;
       }
       if (judged?.has(npm.packageName)) continue;
-      if (viaTransitive) {
+      // An @types twin with no runtime package installed has nothing to
+      // compile (Node cannot load it either).
+      if (viaTransitive && !npm.packageName.startsWith("@types/")) {
         judged!.add(npm.packageName);
         sites!.set(npm.packageName, loc);
         transitive.add(npm.packageName);
