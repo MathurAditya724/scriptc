@@ -234,6 +234,10 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
       return finishRuntimeCall(host, e, "scr_dns_lookup_dyn", a);
     case "dns.lookupService":
       return finishRuntimeCall(host, e, "scr_dns_lookup_service", a);
+    case "dns.lookupPromise":
+      return finishRuntimeCall(host, e, "scr_dns_lookup_promise", a);
+    case "dns.lookupServicePromise":
+      return finishRuntimeCall(host, e, "scr_dns_lookup_service_promise", a);
     case "dns.getServers":
       return finishRuntimeCall(host, e, "scr_dns_get_servers", a);
     case "dns.getDefaultResultOrder":

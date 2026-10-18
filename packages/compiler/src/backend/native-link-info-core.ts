@@ -40,6 +40,8 @@ export interface NativeLinkFeatures {
   http: boolean;
   http2: boolean;
   dgram: boolean;
+  /** node:dns/promises: scr_dns_promises.c. */
+  dnsPromises: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;

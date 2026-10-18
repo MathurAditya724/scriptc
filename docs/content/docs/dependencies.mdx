@@ -55,6 +55,8 @@ scriptc compiles a package automatically when it:
 
 A package that doesn't meet these requirements, or that uses something scriptc can't compile, gets a package-specific diagnostic that explains why. The usual fixes are to switch to a version or alternative package that compiles, or to replace the call with code you write yourself.
 
+`graceful-fs` is the exception: it compiles as `node:fs` instead of from its JavaScript, with one [documented difference](/docs/limitations#graceful-fs).
+
 <span id="value-conversion" />
 <span id="static-package-compilation-experimental" />
 <span id="type-declarations-and-boundary-restrictions" />

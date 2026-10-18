@@ -38,6 +38,8 @@ export interface RuntimeFeatures {
    * scr_test.c's mock-aware entry points. */
   mockTimers: boolean;
   dgram: boolean;
+  /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
+  dnsPromises: boolean;
   http: boolean;
   http2: boolean;
   tls: boolean;
@@ -210,6 +212,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     nodeTest: false,
     mockTimers: false,
     dgram: false,
+    dnsPromises: false,
     http: false,
     http2: false,
     tls: false,
@@ -421,6 +424,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         }
       }
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
+      if (fn === "dns.lookupPromise" || fn === "dns.lookupServicePromise")
+        features.dnsPromises = true;
       if (fn.startsWith("tlsca.")) features.tlsCa = true;
       // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
       // process-warning unit, and unknown output encodings render through

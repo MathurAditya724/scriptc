@@ -208,6 +208,8 @@ import {
   genericCallInstance,
 } from "./generic-functions.js";
 
+import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
+
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
@@ -227,6 +229,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // require() of a JSON document: the shared parsed object.
   const json = lowerJsonRequireCall(lowerer, expr);
   if (json) return json;
+
+  // eval(...) and Function(...): Node's EvalError under
+  // --disallow-code-generation-from-strings (code-generation.ts).
+  {
+    const codeGeneration = codeGenerationCalleeOf(lowerer, expr.expression);
+    if (codeGeneration !== null) return lowerCodeGenerationCall(lowerer, expr, codeGeneration);
+  }
 
   // A call whose chain ROOTS at an ambient-undefined name (`declare
   // const value: Y | undefined; value?.foo("a")`, `declare function

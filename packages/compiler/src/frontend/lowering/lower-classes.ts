@@ -9,6 +9,8 @@ import { InternalCompilerError } from "../../errors.js";
  * accessor access, upcasts, `new` expressions, and the builtin Error
  * hierarchy registration. */
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
+import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
+import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerZlibStreamNew, zlibStreamModeOf } from "./builtins/compression.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
@@ -128,6 +130,7 @@ import {
   ambientUndefReadType,
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
+  contextualUndefReadType,
   fenceEarlyAliasUse,
   fenceEarlyNsMemberRef,
   nsMemberIdentOf,
@@ -8491,6 +8494,20 @@ function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // new Function(...): Node's EvalError under
+  // --disallow-code-generation-from-strings (code-generation.ts).
+  if (codeGenerationCalleeOf(lowerer, expr.expression) === "Function")
+    return lowerCodeGenerationCall(lowerer, expr, "Function");
+  // `new <temporal>.X(...)`: Node 24 has no such global, so the callee's
+  // root read throws the ReferenceError before any argument evaluates.
+  {
+    const root = ambientUndefVarRootOf(lowerer, expr.expression);
+    if (root !== null && root.text === TEMPORAL_GLOBAL) {
+      const t =
+        ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
+      return nsUndefRead(lowerer, root.text, expr, t);
+    }
+  }
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr);

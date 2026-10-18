@@ -3674,6 +3674,34 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // v8.getHeapStatistics()'s record, in Node's key order (builtins/v8.ts).
+  if (isStdlibInterface("HeapInfo")) {
+    const names = [
+      "total_heap_size",
+      "total_heap_size_executable",
+      "total_physical_size",
+      "total_available_size",
+      "used_heap_size",
+      "heap_size_limit",
+      "malloced_memory",
+      "peak_malloced_memory",
+      "does_zap_garbage",
+      "number_of_native_contexts",
+      "number_of_detached_contexts",
+      "total_global_handles_size",
+      "used_global_handles_size",
+      "external_memory",
+    ];
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [...names].sort().map((name) => ({ name, type: F64 })),
+        false,
+        undefined,
+        names,
+      ),
+    };
+  }
   // process.cpuUsage()/threadCpuUsage()'s {user, system} microsecond
   // record and resourceUsage()'s getrusage record — stdlib data
   // interfaces interned explicitly (the RemoteInfo pattern; declared

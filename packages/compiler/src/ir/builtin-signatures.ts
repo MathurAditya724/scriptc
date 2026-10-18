@@ -1406,6 +1406,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * callback) and lookupService(address, port, callback). */
   "dns.lookupDyn": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
   "dns.lookupService": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+  /** node:dns/promises: lookup(hostname, options) and lookupService(address,
+   * port) over the callback forms; the promise fulfills with the dyn
+   * { address, family } (array for all: true) / { hostname, service }.
+   * Argument errors throw synchronously (may-throw). */
+  "dns.lookupPromise": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "dns.lookupServicePromise": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "dns.getServers": { argTypes: [], result: DYN },
   "dns.getDefaultResultOrder": { argTypes: [], result: STRING },
   "dns.setDefaultResultOrder": { argTypes: [DYN], result: VOID },

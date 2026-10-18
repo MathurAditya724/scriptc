@@ -134,7 +134,7 @@ import { strCharsCall } from "./containers/array-construction.js";
 import { lowerOptionalStringIndex } from "./string-index.js";
 import { tryLowerIndexedComparison } from "./indexed-comparison.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
-import { unsupportedModuleFeatureOf } from "../builtin-modules.js";
+import { TEMPORAL_GLOBAL, unsupportedModuleFeatureOf } from "../builtin-modules.js";
 import { fenceEnumObjectValue, lowerEnumAccess } from "./lower-enums.js";
 import {
   ambientNsRootOf,
@@ -144,6 +144,7 @@ import {
   contextualUndefReadType,
   fenceEarlyAliasUse,
   fenceEarlyNsMemberRef,
+  isTemporalGlobalRoot,
   lowerNsIdentifierValue,
   nsMemberIdentOf,
   nsUndefRead,
@@ -674,9 +675,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         }
       }
     }
+    // `typeof globalThis.<temporal>`: the global object has no such
+    // property in Node 24.
+    if (
+      ts.isPropertyAccessExpression(tested) &&
+      tested.name.text === TEMPORAL_GLOBAL &&
+      stdlibGlobalNameOf(lowerer, tested.expression) === "globalThis"
+    ) {
+      return { kind: "strLit", value: "undefined", type: STRING, loc };
+    }
     if (ts.isIdentifier(tested)) {
       const sym = lowerer.checker.getSymbolAtLocation(tested);
       if (!sym) {
+        return { kind: "strLit", value: "undefined", type: STRING, loc };
+      }
+      // Node 24 defines no temporal global: typeof answers "undefined"
+      // without reading it, like any undeclared name.
+      if (isTemporalGlobalRoot(lowerer, tested, sym)) {
         return { kind: "strLit", value: "undefined", type: STRING, loc };
       }
       if (lowerer.isStdlibSymbol(sym)) {
@@ -1223,7 +1238,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         if (isJsSourceFile(expr.getSourceFile())) {
           return {
             kind: "strLit",
-            value: `[builtin ${bi.module}.${bi.member}]`,
+            // node:stream/web exports the web stream globals themselves:
+            // the same identity token as the global spelling.
+            value:
+              bi.module === "stream/web"
+                ? `[builtin ${bi.member}]`
+                : `[builtin ${bi.module}.${bi.member}]`,
             type: STRING,
             loc,
           };
@@ -1402,6 +1422,13 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     }
     {
       const sym = lowerer.checker.getSymbolAtLocation(expr);
+      // The temporal global is typed (TS 7's lib slice) but Node 24 does
+      // not define it: the read throws Node's ReferenceError.
+      if (isTemporalGlobalRoot(lowerer, expr, sym)) {
+        const t =
+          ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
+        return nsUndefRead(lowerer, expr.text, expr, t);
+      }
       if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
         if (isJsSourceFile(expr.getSourceFile())) {
           const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
@@ -2282,6 +2309,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const canonical = stdlibGlobalNameOf(lowerer, expr);
       if (canonical !== null) {
         if (canonical === "globalThis") return lowerGlobalValue(lowerer, expr);
+        // Typed for the programs that name it, absent in Node 24.
+        if (canonical === TEMPORAL_GLOBAL) return dynUndefinedExpr(loc);
         if (canonical === "ArrayBuffer")
           return { kind: "libCall", fn: "arrayBuffer.constructor", args: [], type: DYN, loc };
         if (canonical === "fetch")

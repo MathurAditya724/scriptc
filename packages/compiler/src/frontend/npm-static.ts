@@ -14,6 +14,7 @@ import {
   workspacePackageOfPath,
 } from "./workspace-registry.js";
 import { trackedExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import { npmBuiltinAliasOf } from "./builtin-modules.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -29,7 +30,9 @@ const offenders = new Map<string, string>();
 const rewriteCache = new Map<string, string | null>();
 
 export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): void {
-  activePackages = new Set(packages);
+  // npm packages served as builtins (graceful-fs as fs) never compile
+  // their JavaScript, even when named.
+  activePackages = new Set([...packages].filter((name) => npmBuiltinAliasOf(name) === null));
   declarationOverloads = new Map();
   declarationProperties = new Map();
   offenders.clear();

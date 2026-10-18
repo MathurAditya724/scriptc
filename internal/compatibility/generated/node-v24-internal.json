@@ -251,9 +251,9 @@
       "apiEntries": 51,
       "static": {
         "supported": 0,
-        "partial": 0,
+        "partial": 10,
         "refused": 0,
-        "not-implemented": 51,
+        "not-implemented": 41,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -866,10 +866,10 @@
       "apiEntries": 68,
       "static": {
         "supported": 0,
-        "partial": 3,
+        "partial": 4,
         "refused": 0,
         "not-implemented": 0,
-        "by-design": 65,
+        "by-design": 64,
         "unreviewed": 0,
         "not-applicable": 0
       }
@@ -926,9 +926,9 @@
       "apiEntries": 89,
       "static": {
         "supported": 0,
-        "partial": 7,
+        "partial": 8,
         "refused": 1,
-        "not-implemented": 81,
+        "not-implemented": 80,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -30673,8 +30673,15 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-untyped.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -30788,8 +30795,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dnsPromises.lookup",
+        "tests": [
+          "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30811,8 +30822,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dnsPromises.lookupService",
+        "tests": [
+          "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31202,8 +31217,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dnsPromises.getDefaultResultOrder",
+        "tests": [
+          "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31317,8 +31336,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.lookup",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31432,8 +31456,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.getServers",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31455,8 +31484,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.lookup",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31501,8 +31535,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.lookupService",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31869,8 +31908,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.setDefaultResultOrder",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31892,8 +31936,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.getDefaultResultOrder",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104223,6 +104272,8 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/v8-heap-statistics.ts",
+          "tests/corpus/v8-require-optional.cjs",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -105345,8 +105396,12 @@
       "anchor": "v8getheapstatistics",
       "nodeStability": null,
       "static": {
-        "status": "by-design",
-        "evidence": "compiler-chapter-policy:v8"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.v8.getHeapStatistics",
+        "tests": [
+          "tests/corpus/v8-heap-statistics.ts",
+          "tests/corpus/v8-require-optional.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110875,6 +110930,8 @@
           "tests/corpus/2630-stream-consumers-errors.ts",
           "tests/corpus/2862-web-readable-async-iteration.ts",
           "tests/corpus/4875-stream-consumers-array-buffer.ts",
+          "tests/corpus/stream-web-readable.ts",
+          "tests/corpus/stream-web-require.cjs",
           "tests/harness/fetch-conformance.test.ts"
         ]
       },
@@ -111143,8 +111200,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.ReadableStream",
+        "tests": [
+          "tests/corpus/stream-web-readable.ts",
+          "tests/corpus/stream-web-require.cjs",
+          "tests/corpus/2862-web-readable-async-iteration.ts"
+        ]
       },
       "anchorSource": "exact"
     },

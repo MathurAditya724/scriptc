@@ -574,6 +574,7 @@ export async function compileCInternal(
     ...(http ? [rt(join(rtDir, "scr_http.c"))] : []),
     ...((opts.http2 ?? false) ? [rt(join(rtDir, "scr_http2.c"))] : []),
     ...(opts.dgram ? [rt(join(rtDir, "scr_dgram.c"))] : []),
+    ...(opts.dgram && opts.dnsPromises ? [rt(join(rtDir, "scr_dns_promises.c"))] : []),
     ...(opts.watch ? [rt(join(rtDir, "scr_watch.c"))] : []),
     ...(opts.foreignFfi ? [rt(join(rtDir, "scr_ffi_queue.c"))] : []),
     ...(opts.nodeTest ? [rt(join(rtDir, "scr_test.c"))] : []),

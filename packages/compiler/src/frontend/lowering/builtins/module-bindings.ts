@@ -24,6 +24,17 @@ export function builtinImportOf(
   lowerer: Lowerer,
   ident: ts.Identifier,
 ): { module: string; member: string } | null {
+  const binding = builtinModuleBindingOf(lowerer, ident);
+  // node:stream/web's exports ARE the web stream globals: its bindings
+  // lower through the globals' own paths (stdlibGlobalNameOf resolves the
+  // alias to the same name), not through module-member tables.
+  return binding?.module === "stream/web" ? null : binding;
+}
+
+function builtinModuleBindingOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): { module: string; member: string } | null {
   const symbol =
     ts.isShorthandPropertyAssignment(ident.parent) && ident.parent.name === ident
       ? lowerer.checker.getShorthandAssignmentValueSymbol(ident.parent)
