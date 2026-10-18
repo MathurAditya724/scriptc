@@ -30,6 +30,21 @@ import { CONTRACT_TYPES_MODULE } from "./contract-types.js";
 import { THREADS_MODULE } from "./threads-import.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 
+/** Where a package-anchored preflight diagnostic sits, as
+ * `<package path>:<line>` — the SC2013 refusal that drops the package
+ * reports only at the consumer's import, so its reason carries the inner
+ * location. */
+function packageDiagWhere(load: LoadResult, loc: SrcLoc): string {
+  const file = loc.file.split("\\").join("/");
+  const at = file.lastIndexOf("/node_modules/");
+  const shown = at >= 0 ? file.slice(at + "/node_modules/".length) : file;
+  const text = load.program.getSourceFile(loc.file)?.text;
+  if (text === undefined) return shown;
+  let line = 1;
+  for (let i = 0; i < loc.start && i < text.length; i++) if (text.charCodeAt(i) === 10) line++;
+  return `${shown}:${line}`;
+}
+
 export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   externalTypes?: Readonly<Record<string, string>> | undefined;
@@ -344,7 +359,8 @@ function loadFrontend(
     const reasons = new Map<string, string>(npmStaticOffenders());
     for (const d of preflight) {
       const pkg = npmStaticPackageOfPath(d.loc.file);
-      if (pkg !== null && !reasons.has(pkg)) reasons.set(pkg, `${d.code}: ${d.message}`);
+      if (pkg !== null && !reasons.has(pkg))
+        reasons.set(pkg, `${d.code} at ${packageDiagWhere(load, d.loc)}: ${d.message}`);
     }
     if (![...reasons.keys()].some((p) => effective.has(p))) {
       const named = new Map<string, number>();
