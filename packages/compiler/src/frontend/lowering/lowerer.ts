@@ -5851,24 +5851,60 @@ export class Lowerer {
       addClassFields(recordFlows.bindingClass(symbol), fields);
     for (const [symbol, fields] of returnFields)
       addClassFields(recordFlows.returnClass(symbol), fields);
+    // A record field that flows into other slots (`fill(args, state.parsed)`)
+    // widens with its owner's class: every member takes the field's widened
+    // layout, so the field and the slots it reaches share one record.
+    const nestedFields = new Map<number, Map<string, number>>();
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const { owner, name, classId } of recordFlows.fields()) {
+        if (nestedFields.get(owner)?.has(name)) continue;
+        if (!(classFields.has(classId) || nestedFields.has(classId))) continue;
+        if (!recordFlows.closed(classId)) continue;
+        const byName = nestedFields.get(owner) ?? new Map<string, number>();
+        byName.set(name, classId);
+        nestedFields.set(owner, byName);
+        changed = true;
+      }
+    }
     const settledFields = (
       id: number | null,
       own: ReadonlySet<string> | undefined,
     ): ReadonlySet<string> | undefined =>
       id === null
         ? own
-        : classFields.has(id) && recordFlows.closed(id)
-          ? classFields.get(id)
+        : (classFields.has(id) || nestedFields.has(id)) && recordFlows.closed(id)
+          ? (classFields.get(id) ?? new Set<string>())
           : undefined;
-    const widenRecordFields = (type: IrType, fields: ReadonlySet<string>): IrType => {
+    const widenRecordFields = (
+      type: IrType,
+      fields: ReadonlySet<string>,
+      id: number | null = null,
+      seen: ReadonlySet<number> = new Set(),
+    ): IrType => {
       let promoted = type;
+      const fieldOf = (name: string) =>
+        promoted.kind === "record"
+          ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === name)
+          : undefined;
       for (const field of fields) {
-        const source =
-          promoted.kind === "record"
-            ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === field)
-            : undefined;
+        const source = fieldOf(field);
         if (source)
           promoted = this.runtimeOptionalRecordField(promoted, field, addUndefined(source.type));
+      }
+      if (id === null || seen.has(id)) return promoted;
+      const nested = nestedFields.get(id);
+      if (!nested) return promoted;
+      for (const [field, inner] of nested) {
+        const source = fieldOf(field);
+        if (source?.type.kind !== "record") continue;
+        const widened = widenRecordFields(
+          source.type,
+          classFields.get(inner) ?? new Set<string>(),
+          inner,
+          new Set([...seen, id]),
+        );
+        promoted = this.runtimeOptionalRecordField(promoted, field, widened);
       }
       return promoted;
     };
@@ -5884,9 +5920,10 @@ export class Lowerer {
     for (const [bound, { target, index }] of recordParameterSlots) {
       const shape = signatureBySymbol.get(target)?.params[index];
       if (!shape || shape.type.kind !== "record") continue;
-      const fields = settledFields(recordFlows.bindingClass(bound), optionalFields.get(bound));
+      const id = recordFlows.bindingClass(bound);
+      const fields = settledFields(id, optionalFields.get(bound));
       if (!fields) continue;
-      const promoted = widenRecordFields(shape.type, fields);
+      const promoted = widenRecordFields(shape.type, fields, id);
       if (typeEquals(promoted, shape.type)) continue;
       shape.type = promoted;
       this.runtimeOptionalBindingTypes.set(bound, promoted);
@@ -5895,7 +5932,7 @@ export class Lowerer {
       const id = recordFlows.returnClass(symbol);
       const fields = id === null ? undefined : settledFields(id, undefined);
       if (fields && sig.returnType.kind === "record") {
-        const next = widenRecordFields(sig.returnType, fields);
+        const next = widenRecordFields(sig.returnType, fields, id);
         sig.returnType = next;
         if (sig.top) sig.top.returnType = next;
         if (sig.method) sig.method.ret = next;
@@ -5981,7 +6018,8 @@ export class Lowerer {
             if (global) global.type = promoted;
           }
         }
-        const fields = settledFields(recordFlows.bindingClass(symbol), optionalFields.get(symbol));
+        const flowClass = recordFlows.bindingClass(symbol);
+        const fields = settledFields(flowClass, optionalFields.get(symbol));
         if (!dynamicObjectEntryRows.has(symbol) && !optionalSymbols.has(symbol) && !fields) return;
         const current = this.mapTypeOf(this.typeOf(node.name));
         if (!current) return;
@@ -5998,7 +6036,8 @@ export class Lowerer {
             };
           }
         }
-        if (fields && promoted.kind === "record") promoted = widenRecordFields(promoted, fields);
+        if (fields && promoted.kind === "record")
+          promoted = widenRecordFields(promoted, fields, flowClass);
         if (!typeEquals(promoted, current)) {
           this.runtimeOptionalBindingTypes.set(symbol, promoted);
           const global = ts.isIdentifier(node.name)
