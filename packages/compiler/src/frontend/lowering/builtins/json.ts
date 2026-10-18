@@ -149,9 +149,18 @@ export function lowerJsonMethodCall(
     }
     const optionalString = lowerOptionalStringifyRoot(lowerer, value, indent, loc);
     if (optionalString) return optionalString;
+    // A program class instance whose class (or a base) declares toJSON:
+    // JSON.stringify serializes whatever toJSON(key) returns, so the
+    // instance crosses into the runtime walker, which calls the hook
+    // through the checked-dynamic class view.
+    const toJsonClass =
+      value.type.kind === "object" &&
+      lowerer.findMethodOn(lowerer.classes.get(value.type.className) ?? null, "toJSON") !== null &&
+      lowerer.dynConvertible(value.type);
     if (
       value.type.kind === "url" ||
       value.type.kind === "dyn" ||
+      toJsonClass ||
       isJsonStringifyDynamicType(
         value.type,
         (id) => lowerer.shapes.get(id),
@@ -182,7 +191,7 @@ export function lowerJsonMethodCall(
       // symbol). Where the program can observe that (jsonResultObserved),
       // keep the actual undefined; elsewhere the dyn-root string ABI
       // stays, whose undefined result prints the same text.
-      return value.type.kind === "dyn" && !jsonResultObserved(lowerer, call)
+      return (value.type.kind === "dyn" || toJsonClass) && !jsonResultObserved(lowerer, call)
         ? { kind: "toString", operand: raw, type: STRING, loc }
         : { kind: "dynCheck", value: raw, type: lowerer.withUndefinedArm(STRING), loc };
     }
