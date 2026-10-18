@@ -791,7 +791,7 @@ static bool scr_assert_loose_error(const ScrDyn *a, const ScrDyn *b) {
 }
 
 static bool scr_assert_loose_float_elem(ScrBytesElem elem) {
-  return elem == SCR_BYTES_F32 || elem == SCR_BYTES_F64;
+  return elem == SCR_BYTES_F16 || elem == SCR_BYTES_F32 || elem == SCR_BYTES_F64;
 }
 
 /* Typed arrays and Buffers: the same tag (a Buffer is a Uint8Array here),
@@ -1305,6 +1305,7 @@ static const char *scr_assert_cf_bytes_class(ScrBytesElem elem) {
   switch (elem) {
     case SCR_BYTES_U8: return "Uint8Array";
     case SCR_BYTES_U32: return "Uint32Array";
+    case SCR_BYTES_F16: return "Float16Array";
     case SCR_BYTES_F32: return "Float32Array";
     case SCR_BYTES_I32: return "Int32Array";
     case SCR_BYTES_F64: return "Float64Array";

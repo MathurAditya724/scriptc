@@ -648,6 +648,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "math.sign": { argTypes: [F64], result: F64 },
   "math.exp": { argTypes: [F64], result: F64 },
   "math.expm1": { argTypes: [F64], result: F64 },
+  "math.f16round": { argTypes: [F64], result: F64 },
   "math.fround": { argTypes: [F64], result: F64 },
   "math.sqrt": { argTypes: [F64], result: F64 },
   "math.log": { argTypes: [F64], result: F64 },
@@ -1113,10 +1114,33 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "worker.root": { argTypes: [], result: F64 },
   "worker.data": { argTypes: [], result: DYN },
   "worker.parentPort": { argTypes: [], result: DYN },
+  /** worker_threads.resourceLimits: {} in the main thread; a refusal in a
+   * worker (scr_worker_events.c). */
+  "worker.resourceLimits": { argTypes: [], result: DYN },
+  /** worker_threads.threadName: the Worker's name in a worker, "" in the
+   * main thread (scr_worker.c). */
+  "worker.threadName": { argTypes: [], result: DYN },
   /** new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
    * (scr_worker_events.c; the latter may throw). */
   "worker.channel": { argTypes: [], result: DYN },
   "worker.receiveMessageOnPort": { argTypes: [DYN], result: DYN },
+  /** setEnvironmentData(key, value) and getEnvironmentData(key)
+   * (scr_worker_events.c; arguments borrowed). */
+  "worker.setEnvironmentData": { argTypes: [DYN, DYN], result: VOID },
+  "worker.getEnvironmentData": { argTypes: [DYN], result: DYN },
+  /** markAsUntransferable(value) and isMarkedAsUntransferable(value)
+   * (scr_worker_events.c; the value borrowed). */
+  "worker.markUntransferable": { argTypes: [DYN], result: VOID },
+  "worker.isMarkedUntransferable": { argTypes: [DYN], result: BOOL },
+  /** markAsUncloneable(value) (scr_json.c; the value borrowed). */
+  "dyn.markUncloneable": { argTypes: [DYN], result: VOID },
+  /** before new Worker() with the stdout or stderr option: links the stream
+   * unit that worker.stdout and worker.stderr read through (scr_stream.c). */
+  "stream.workerStdio": { argTypes: [], result: VOID },
+  /** new BroadcastChannel(...args) (scr_worker_events.c; may throw), after
+   * event.broadcastInstall, which installs its EventTarget side. */
+  "worker.broadcastChannel": { argTypes: [DYN], result: DYN },
+  "event.broadcastInstall": { argTypes: [], result: VOID },
   /** child_process.spawnSync (scr_child.c): posix_spawn + waitpid + piped
    * utf8 capture — cmd borrowed, args one borrowed string[] (the frontend
    * completes an omitted list to an empty literal), result an owned (+1)
@@ -1447,6 +1471,20 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "test.ctxMockRestoreAll": { argTypes: [TESTCTX_T], result: VOID },
   "test.ctxMockReset": { argTypes: [TESTCTX_T], result: VOID },
+  // mock.timers on the module's `mock` and on t.mock. enable takes one
+  // code per listed API ('T' setTimeout, 'I' setInterval), the `now`
+  // value and its flags (1 given, 2 from a Date). enable, tick, runAll and
+  // setTime throw Node's errors; tick and runAll run timer callbacks.
+  "test.mockTimersEnable": { argTypes: [STRING, F64, F64], result: VOID },
+  "test.mockTimersTick": { argTypes: [F64], result: VOID },
+  "test.mockTimersRunAll": { argTypes: [], result: VOID },
+  "test.mockTimersReset": { argTypes: [], result: VOID },
+  "test.mockTimersSetTime": { argTypes: [F64], result: VOID },
+  "test.ctxMockTimersEnable": { argTypes: [TESTCTX_T, STRING, F64, F64], result: VOID },
+  "test.ctxMockTimersTick": { argTypes: [TESTCTX_T, F64], result: VOID },
+  "test.ctxMockTimersRunAll": { argTypes: [TESTCTX_T], result: VOID },
+  "test.ctxMockTimersReset": { argTypes: [TESTCTX_T], result: VOID },
+  "test.ctxMockTimersSetTime": { argTypes: [TESTCTX_T, F64], result: VOID },
   // node:http (scr_http.c over scr_net.c). The handler and the data
   // listeners are program-dependent closures (null slots, checked in the
   // libCall case); reqHeader's result is the interned string|undefined
@@ -3163,6 +3201,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "arrayBuffer.viewU8": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
   "arrayBuffer.viewU32": { argTypes: [DYN, DYN, DYN], result: bytesOf("u32") },
   "arrayBuffer.viewI32": { argTypes: [DYN, DYN, DYN], result: bytesOf("i32") },
+  "arrayBuffer.viewF16": { argTypes: [DYN, DYN, DYN], result: bytesOf("f16") },
   "arrayBuffer.viewF32": { argTypes: [DYN, DYN, DYN], result: bytesOf("f32") },
   "arrayBuffer.viewF64": { argTypes: [DYN, DYN, DYN], result: bytesOf("f64") },
   "arrayBuffer.viewDV": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
@@ -3910,6 +3949,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * through the immediate queue (fires before due timers of later loop
    * turns, Node's check phase). Neither throws. */
   "tp.setTimeout": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
+  // scheduler.wait(delay): tp.setTimeout's promise. It throws Node's
+  // ERR_INVALID_THIS once mock.timers has restored the real scheduler.wait.
+  "tp.schedulerWait": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
   "tp.setImmediate": { argTypes: [], result: { kind: "promise", inner: VOID } },
   /** events.once (scr_events_emitter.c): [emitter, name, boxer,
    * errorBoxer, listenForError] → a pending promise of any[]; the boxers
@@ -3926,6 +3968,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * AbortError (scr_event_target.c). */
   "tp.setTimeoutSignal": { argTypes: [F64, null, BOOL, DYN], result: VOID },
   "tp.setImmediateSignal": { argTypes: [null, BOOL, DYN], result: VOID },
+  /** scheduler.wait(delay, options): tp.setTimeoutValue's and
+   * tp.setTimeoutSignal's shapes, with tp.schedulerWait's throws. */
+  "tp.schedulerWaitValue": { argTypes: [F64, null, BOOL], result: VOID },
+  "tp.schedulerWaitSignal": { argTypes: [F64, null, BOOL, DYN], result: VOID },
   /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
    * the zlib gating precedent): a process-global name→channel registry;
    * channel values are f64 handles (type-mapper.ts maps Channel to F64, the

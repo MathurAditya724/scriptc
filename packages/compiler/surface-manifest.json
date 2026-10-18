@@ -192,7 +192,7 @@
       "name": "this regex feature",
       "status": "unsupported",
       "code": "SC1120",
-      "note": "supported: literal regexes with the g/i/m/s/u/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \\k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates"
+      "note": "supported: literal regexes with the g/i/m/s/u/v/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \\k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates"
     },
     {
       "id": "diagnostic.sc2001",
@@ -4599,6 +4599,13 @@
       "id": "stdlib.math.expm1",
       "kind": "stdlib",
       "name": "Math.expm1",
+      "status": "static",
+      "note": "compiles statically at arity 1; other declared call shapes are refused with SC2012"
+    },
+    {
+      "id": "stdlib.math.f16round",
+      "kind": "stdlib",
+      "name": "Math.f16round",
       "status": "static",
       "note": "compiles statically at arity 1; other declared call shapes are refused with SC2012"
     },

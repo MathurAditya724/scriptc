@@ -84,8 +84,8 @@ const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   child: 16,
   fileHandle: 17,
   dir: 44,
-  cryptoHash: 50,
-  cryptoHmac: 51,
+  cryptoHash: 52,
+  cryptoHmac: 53,
 };
 
 /** Handle kinds whose runtime unit boxes them through its own function,
@@ -3227,82 +3227,19 @@ export class LlDyn {
         this.puts(B, "%b", "[object Object]");
         B.br(done);
         B.startBlock(lErr);
-        const en = this.objGetLit(B, "%d", "name");
-        const em = this.objGetLit(B, "%d", "message");
-        // ens/ems: the member's ScrStr when it is a string, else null.
-        const strOf = (m: string, hint: string): string => {
-          const slot = B.slot();
-          B.entryAllocas.push(`${slot} = alloca ptr`);
-          B.line(`store ptr null, ptr ${slot}`);
-          const nn = B.tmp();
-          B.line(`${nn} = icmp ne ptr ${m}, null`);
-          const lt = B.newLabel(`${hint}.t`);
-          const lj = B.newLabel(`${hint}.j`);
-          B.condBr(nn, lt, lj);
-          B.startBlock(lt);
-          const k = this.kindOf(B, m);
-          const isStr = B.tmp();
-          B.line(`${isStr} = icmp eq i32 ${k}, ${DYN_KIND.STR}`);
-          const ls = B.newLabel(`${hint}.s`);
-          B.condBr(isStr, ls, lj);
-          B.startBlock(ls);
-          const sv = this.payloadOf(B, m, "ptr");
-          B.line(`store ptr ${sv}, ptr ${slot}`);
-          B.br(lj);
-          B.startBlock(lj);
-          const out = B.tmp();
-          B.line(`${out} = load ptr, ptr ${slot}`);
-          return out;
-        };
-        const ens = strOf(en, "ds.en");
-        const ems = strOf(em, "ds.em");
-        const putIf = (s: string, hint: string): void => {
-          const nn = B.tmp();
-          B.line(`${nn} = icmp ne ptr ${s}, null`);
-          const lt = B.newLabel(`${hint}.t`);
-          const lj = B.newLabel(`${hint}.j`);
-          B.condBr(nn, lt, lj);
-          B.startBlock(lt);
-          this.putScrStr(B, "%b", s);
-          B.br(lj);
-          B.startBlock(lj);
-        };
-        putIf(ens, "ds.pn");
-        {
-          // if (ens && ens->len && ems && ems->len) ": "
-          const lenNz = (s: string, hint: string): string => {
-            const slot = B.slot();
-            B.entryAllocas.push(`${slot} = alloca i1`);
-            B.line(`store i1 false, ptr ${slot}`);
-            const nn = B.tmp();
-            B.line(`${nn} = icmp ne ptr ${s}, null`);
-            const lt = B.newLabel(`${hint}.t`);
-            const lj = B.newLabel(`${hint}.j`);
-            B.condBr(nn, lt, lj);
-            B.startBlock(lt);
-            const { len } = this.strParts(B, s);
-            const nz = B.tmp();
-            B.line(`${nz} = icmp ne ${this.S} ${len}, 0`);
-            B.line(`store i1 ${nz}, ptr ${slot}`);
-            B.br(lj);
-            B.startBlock(lj);
-            const out = B.tmp();
-            B.line(`${out} = load i1, ptr ${slot}`);
-            return out;
-          };
-          const a = lenNz(ens, "ds.ln");
-          const b2 = lenNz(ems, "ds.lm");
-          const both = B.tmp();
-          B.line(`${both} = and i1 ${a}, ${b2}`);
-          const lt = B.newLabel("ds.cl");
-          const lj = B.newLabel("ds.cj");
-          B.condBr(both, lt, lj);
-          B.startBlock(lt);
-          this.puts(B, "%b", ": ");
-          B.br(lj);
-          B.startBlock(lj);
-        }
-        putIf(ems, "ds.pm");
+        // Error.prototype.toString, reading name and message through the
+        // prototype. Null leaves the exception its conversion threw pending.
+        host.declare(`declare ptr @scr_dyn_error_string(ptr)`);
+        host.declare(`declare void @scr_str_release(ptr)`);
+        const text = B.tmp();
+        B.line(`${text} = call ptr @scr_dyn_error_string(ptr %d)`);
+        const written = B.tmp();
+        B.line(`${written} = icmp ne ptr ${text}, null`);
+        const lPut = B.newLabel("ds.ep");
+        B.condBr(written, lPut, done);
+        B.startBlock(lPut);
+        this.putScrStr(B, "%b", text);
+        B.line(`call void @scr_str_release(ptr ${text})`);
         B.br(done);
       }
       B.startBlock(labels.get(DYN_KIND.BYTES)!);

@@ -32,12 +32,13 @@ import {
   lowerMockContextProperty,
   lowerMockFn,
   lowerMockMethod,
+  lowerMockTimersCall,
   lowerMockTrackerCall,
   type MockTracker,
 } from "./lower-mock.js";
 
 const MOCK_HINT =
-  "mock.fn, mock.method, mock.restoreAll and mock.reset are the supported mock members";
+  "mock.fn, mock.method, mock.restoreAll, mock.reset and mock.timers are the supported mock members";
 
 /** The mock tracker members that lower, for the module's `mock` (tracker
  * null) and t.mock. Null for other members. */
@@ -556,6 +557,65 @@ export function lowerTestDirectCall(
   return lowerRegistration(lowerer, expr, "test(...)", loc, 0, null);
 }
 
+/** `mock.timers` (tracker null) or `t.mock.timers` on a TestContext;
+ * null for other expressions. */
+function mockTimersReceiver(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): { what: string; tracker: () => MockTracker } | null {
+  if (
+    !ts.isPropertyAccessExpression(expr) ||
+    expr.questionDotToken ||
+    expr.name.text !== "timers" ||
+    !lowerer.isStdlibMember(expr)
+  ) {
+    return null;
+  }
+  const owner = expr.expression;
+  if (ts.isIdentifier(owner)) {
+    const bi = lowerer.builtinImportOf(owner);
+    return bi && bi.module === "test" && bi.member === "mock"
+      ? { what: "mock.timers", tracker: () => null }
+      : null;
+  }
+  if (
+    ts.isPropertyAccessExpression(owner) &&
+    !owner.questionDotToken &&
+    owner.name.text === "mock" &&
+    lowerer.mapTypeOf(lowerer.typeOf(owner.expression))?.kind === "testCtx" &&
+    lowerer.isStdlibMember(owner)
+  ) {
+    const testCtx = owner.expression;
+    return { what: "t.mock.timers", tracker: () => lowerer.lowerExpr(testCtx) };
+  }
+  return null;
+}
+
+/** `mock.timers[Symbol.dispose]()` and its t.mock twin: an alias of
+ * reset(), as in Node. Null for other element-access calls. */
+export function lowerMockTimersElementCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (call.questionDotToken || access.questionDotToken) return null;
+  const timers = mockTimersReceiver(lowerer, access.expression);
+  if (!timers) return null;
+  const key = access.argumentExpression;
+  const isDispose =
+    ts.isPropertyAccessExpression(key) &&
+    key.name.text === "dispose" &&
+    lowerer.stdlibGlobalMember(key, "Symbol") === "dispose";
+  if (!isDispose) {
+    lowerer.noLowering(
+      `${timers.what} computed member calls`,
+      call,
+      "call timers[Symbol.dispose]()",
+    );
+  }
+  return lowerMockTimersCall(lowerer, call, "reset", timers.what, timers.tracker, null);
+}
+
 /** Method-position node:test calls — one entry in lower-calls.ts's
  * intrinsic chain: skip/todo/only twins on NAMED import bindings
  * (`test.skip(...)` where `test` came from `{ test }`), the TestContext
@@ -633,6 +693,13 @@ export function lowerTestMethodCall(
       lowerer.lowerExpr(testCtx),
     );
     if (served) return served;
+  }
+  // mock.timers.enable(...) and the other MockTimers members, on the
+  // module's `mock` and on t.mock.
+  const timers = mockTimersReceiver(lowerer, access.expression);
+  if (timers) {
+    const sym = lowerer.checker.getSymbolAtLocation(access.name) ?? null;
+    return lowerMockTimersCall(lowerer, call, member, timers.what, timers.tracker, sym);
   }
   // t.assert.strictEqual(...) — the callee's receiver is `t.assert` on a
   // TestContext: Node's t.assert methods ARE the assert functions (bound

@@ -34,6 +34,9 @@ export interface RuntimeFeatures {
   parseArgs: boolean;
   fsWatch: boolean;
   nodeTest: boolean;
+  /** The program calls mock.timers members: its timer calls go through
+   * scr_test.c's mock-aware entry points. */
+  mockTimers: boolean;
   dgram: boolean;
   http: boolean;
   http2: boolean;
@@ -205,6 +208,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     parseArgs: false,
     fsWatch: false,
     nodeTest: false,
+    mockTimers: false,
     dgram: false,
     http: false,
     http2: false,
@@ -252,6 +256,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "rl.questionAsyncSignal" ||
         fn === "http.clientSignal" ||
         fn === "tp.setTimeoutSignal" ||
+        fn === "tp.schedulerWaitSignal" ||
         fn === "tp.setImmediateSignal" ||
         fn === "stream.addAbortSignal" ||
         fn === "stream.addAbortSignalFn" ||
@@ -288,6 +293,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "stream.destroy" ||
         fn === "stream.destroyErr" ||
         fn === "stream.prop" ||
+        fn === "stream.workerStdio" ||
         fn === "stream.errored" ||
         fn === "sp.finished" ||
         fn === "sp.pipeline" ||
@@ -410,6 +416,9 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (fn.startsWith("test.")) {
         features.nodeTest = true;
         features.inspect = true;
+        if (fn.startsWith("test.mockTimers") || fn.startsWith("test.ctxMockTimers")) {
+          features.mockTimers = true;
+        }
       }
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
       if (fn.startsWith("tlsca.")) features.tlsCa = true;
@@ -792,6 +801,14 @@ export function moduleUsesFsWatch(mod: IrModule): boolean {
  * zero bytes and keep their exact link line. */
 export function moduleUsesNodeTest(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "nodeTest").nodeTest;
+}
+
+/** True when the module calls a mock.timers member (a test.mockTimers* or
+ * test.ctxMockTimers* libCall). The emitter then routes the timer calls
+ * through scr_test.c's mock-aware entry points; other programs keep the
+ * loop's timer functions. */
+export function moduleUsesMockTimers(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "mockTimers").mockTimers;
 }
 
 /** True when the module contains any dgram.* or dns.* libCall — the

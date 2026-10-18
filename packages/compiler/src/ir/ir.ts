@@ -26,9 +26,19 @@ export interface SrcLoc {
 
 /* ── types ─────────────────────────────────────────────────────────────── */
 
-/** Numeric typed-array element kinds with a native representation. Float16
- * and BigInt typed arrays remain frontend-fenced. */
-export type IrBytesElem = "u8" | "u8c" | "i8" | "u16" | "i16" | "u32" | "i32" | "f32" | "f64";
+/** Numeric typed-array element kinds with a native representation. BigInt
+ * typed arrays remain frontend-fenced. */
+export type IrBytesElem =
+  | "u8"
+  | "u8c"
+  | "i8"
+  | "u16"
+  | "i16"
+  | "u32"
+  | "i32"
+  | "f16"
+  | "f32"
+  | "f64";
 
 export const BYTES_ELEMENT_SIZE: Record<IrBytesElem, number> = {
   u8: 1,
@@ -38,13 +48,14 @@ export const BYTES_ELEMENT_SIZE: Record<IrBytesElem, number> = {
   i16: 2,
   u32: 4,
   i32: 4,
+  f16: 2,
   f32: 4,
   f64: 8,
 };
 
 /** Integer element kinds: a valid element read is never NaN. */
 export function isIntegerBytesElem(elem: IrBytesElem): boolean {
-  return elem !== "f32" && elem !== "f64";
+  return elem !== "f16" && elem !== "f32" && elem !== "f64";
 }
 
 export const BYTES_ELEMENT_NAME: Record<IrBytesElem, string> = {
@@ -55,6 +66,7 @@ export const BYTES_ELEMENT_NAME: Record<IrBytesElem, string> = {
   i16: "Int16Array",
   u32: "Uint32Array",
   i32: "Int32Array",
+  f16: "Float16Array",
   f32: "Float32Array",
   f64: "Float64Array",
 };
@@ -2242,6 +2254,7 @@ export type IrBytesIntrinsicMethod =
   | "dvGetInt16"
   | "dvGetUint32"
   | "dvGetInt32"
+  | "dvGetFloat16"
   | "dvGetFloat32"
   | "dvGetFloat64"
   | "dvGetBigUint64Number"
@@ -2252,6 +2265,7 @@ export type IrBytesIntrinsicMethod =
   | "dvSetInt16"
   | "dvSetUint32"
   | "dvSetInt32"
+  | "dvSetFloat16"
   | "dvSetFloat32"
   | "dvSetFloat64";
 
@@ -2283,6 +2297,7 @@ export const MAY_THROW_BYTES_METHODS: ReadonlySet<IrBytesIntrinsicMethod> = new 
   "dvGetInt16",
   "dvGetUint32",
   "dvGetInt32",
+  "dvGetFloat16",
   "dvGetFloat32",
   "dvGetFloat64",
   "dvGetBigUint64Number",
@@ -2293,6 +2308,7 @@ export const MAY_THROW_BYTES_METHODS: ReadonlySet<IrBytesIntrinsicMethod> = new 
   "dvSetInt16",
   "dvSetUint32",
   "dvSetInt32",
+  "dvSetFloat16",
   "dvSetFloat32",
   "dvSetFloat64",
 ]);
@@ -2548,7 +2564,7 @@ export type IrExpr =
     }
   /** A regex literal `/ab+c/gi`. `pattern` is the text between the slashes
    * exactly as written (escapes UNprocessed — the regex engine parses them),
-   * `flags` the trailing flags in source order (alphabet fenced to gimsuy by
+   * `flags` the trailing flags in getter order (alphabet fenced to gimsuvy by
    * the frontend). Backends intern ONE immortal static per (pattern, flags)
    * pair — like string literals, so repeated evaluation is free and
    * `re === re` would hold — and compile the pattern lazily at first use
@@ -3571,6 +3587,11 @@ export type IrExpr =
       type: IrType;
       loc: SrcLoc;
       prototypeIdentityOnly?: true;
+      /** A timer call through an ESM named or namespace import of
+       * node:timers. Node's mock.timers replaces the globals and the
+       * module object's properties, which these bindings do not follow,
+       * so the call keeps the loop's timer. */
+      realTimer?: true;
       /** An assertion call made through a node:assert Assert instance: the
        * instance options the runtime applies to this call. Backends set
        * them right before the runtime call, after its arguments are
