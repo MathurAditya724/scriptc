@@ -112,6 +112,10 @@ export interface CcOptions {
    * native fetch AbortSignal built on the same engine: compiles
    * scr_event_target.c. */
   eventTarget?: boolean;
+  /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
+  warningReplace?: boolean;
+  /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
+  stdioExtended?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep

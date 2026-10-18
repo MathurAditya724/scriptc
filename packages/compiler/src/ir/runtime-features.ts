@@ -16,6 +16,10 @@ export interface RuntimeFeatures {
   fileHandle: boolean;
   fetch: boolean;
   eventTarget: boolean;
+  /** process.emitWarning is assigned (process.setEmitWarning). */
+  warningReplace: boolean;
+  /** stdin setEncoding / string data listeners / stdio 'resize' events. */
+  stdioExtended: boolean;
   processEvents: boolean;
   emitter: boolean;
   stream: boolean;
@@ -201,6 +205,10 @@ function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean
   }
 }
 
+/** Names that reach the extended process-stream surface (the
+ * SCR_STDIO_EXTENDED events unit): stdin.setEncoding and 'resize'. */
+const STDIO_EXTENDED_NAMES: ReadonlySet<string> = new Set(["setEncoding", "resize"]);
+
 function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): RuntimeFeatures {
   const features: RuntimeFeatures = {
     regex: false,
@@ -214,6 +222,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
     ),
     processEvents: false,
+    warningReplace: false,
+    stdioExtended: false,
     emitter:
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
     stream: (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
@@ -279,6 +289,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       )
         features.legacyTextDecoder = true;
       if (fn.startsWith("fetch.")) features.fetch = true;
+      if (fn === "process.setEmitWarning") features.warningReplace = true;
+      // A typed string 'data' listener takes setEncoding-decoded chunks.
+      if (
+        fn === "stdin.onData" &&
+        node.args[0]?.type.kind === "func" &&
+        node.args[0].type.params[0]?.kind === "string"
+      )
+        features.stdioExtended = true;
       if (fn.startsWith("event.") || fn === "events.addAbortListener") features.eventTarget = true;
       // Signal-taking readline, stream and timers/promises entry points
       // register abort listeners.
@@ -495,6 +513,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
           break;
         case "dynInvoke":
           features.dynInvoke = true;
+          if (STDIO_EXTENDED_NAMES.has(node.method)) features.stdioExtended = true;
+          break;
+        // The process stream object's setEncoding and 'resize' members are
+        // reached by name (dynamic member calls and event-name strings).
+        case "strLit":
+          if (STDIO_EXTENDED_NAMES.has(node.value)) features.stdioExtended = true;
           break;
         case "awaitExpr":
           if (node.type.kind === "dyn") features.dynAsync = true;

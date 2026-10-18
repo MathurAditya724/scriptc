@@ -860,8 +860,11 @@ ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code) {
   return w;
 }
 
+#ifdef SCR_WARNING_REPLACE
 /* The program's process.emitWarning replacement, or NULL while the
- * property holds Node's own function. */
+ * property holds Node's own function. Compiled only into the
+ * SCR_WARNING_REPLACE variant, which programs assigning process.emitWarning
+ * link: every other executable keeps the plain warning paths. */
 static SCR_TL ScrDyn *scr_emit_warning_override = NULL;
 
 static void scr_emit_warning_override_teardown(void) {
@@ -894,11 +897,13 @@ static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *cod
   scr_dyn_release(r);
   for (size_t i = 0; i < argc; i++) scr_dyn_release(args[i]);
 }
+#endif /* SCR_WARNING_REPLACE */
 
 /* A warning built from C parts (the runtime deprecation sites): name
  * defaults to "Warning"; code/detail optional. Reported synchronously.
  * Borrows message. */
 void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+#ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
     ScrStr *type_text = scr_str_new(name ? name : "Warning", strlen(name ? name : "Warning"));
     ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
@@ -907,6 +912,7 @@ void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
     scr_str_release(code_text);
     return;
   }
+#endif
   ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
   ScrDyn *w = scr_warning_new(message, name ? name : "Warning", code_text);
   scr_str_release(code_text);
@@ -937,6 +943,7 @@ static void scr_warning_defer(ScrDyn *w, void (*fire)(ScrClosure *)) {
 }
 
 void scr_warning_emit_deferred(ScrDyn *w) {
+#ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
     const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
     const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
@@ -947,6 +954,7 @@ void scr_warning_emit_deferred(ScrDyn *w) {
     scr_str_release(name);
     return;
   }
+#endif
   if (scr_warning_is_deprecation(w)) {
     if (scr_process_deprecation_flag_on(0)) return;
     if (scr_process_deprecation_flag_on(1)) {
@@ -1033,11 +1041,13 @@ static void scr_warn_bad_arg(const char *arg, const char *want) {
  * ERR_INVALID_ARG_TYPE TypeErrors at the call; non-string details are
  * ignored. The warning itself is emitted on the next tick. */
 void scr_process_emit_warning(ScrDyn *args) {
+#ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
     ScrDyn *r = scr_dyn_apply(scr_emit_warning_override, args, "process.emitWarning");
     scr_dyn_release(r);
     return;
   }
+#endif
   size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
   ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
   ScrDyn *warning = argc >= 1 ? items[0] : NULL;
