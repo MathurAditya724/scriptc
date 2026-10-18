@@ -1,35 +1,17 @@
-collection-iterator-helpers.ts:5:1 - error SC2020: 'collection iterator .map()' is part of the standard library types but has no scriptc lowering yet
+collection-iterator-helpers.ts:5:22 - error SC2020: '.flatMap over a callback returning 'Set<number>'' is part of the standard library types but has no scriptc lowering yet
 
-  4 | const values = map.values();
-  5 | values.map(value => value + 1);
-    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  6 | map.keys().toArray();
+  4 | // flatMap callbacks return arrays or generators.
+  5 | set.values().flatMap((value) => new Set([value, value + 1]));
+    |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  6 | // return() on a helper object.
 
-  hint: stored Map/Set iterators support .next() and iteration; iterator helper methods have no lowering
+  hint: callbacks returning an array or a generator are the supported forms
 
-collection-iterator-helpers.ts:6:1 - error SC2020: 'collection iterator .toArray()' is part of the standard library types but has no scriptc lowering yet
+collection-iterator-helpers.ts:8:1 - error SC2020: 'IteratorObject<number, undefined, unknown>.return' is part of the standard library types but has no scriptc lowering yet
 
-  5 | values.map(value => value + 1);
-  6 | map.keys().toArray();
-    | ^~~~~~~~~~~~~~~~~~~~
-  7 | const set = new Set<number>();
+  7 | const mapped = set.values().map((value) => value * 2);
+  8 | mapped.return!();
+    | ^~~~~~~~~~~~~
+  9 | // Each helper call must produce a diagnostic.
 
-  hint: stored Map/Set iterators support .next() and iteration; iterator helper methods have no lowering
-
-collection-iterator-helpers.ts:8:1 - error SC2020: 'collection iterator .filter()' is part of the standard library types but has no scriptc lowering yet
-
-  7 | const set = new Set<number>();
-  8 | set.values().filter(value => value > 0);
-    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  9 | set.entries().take(1);
-
-  hint: stored Map/Set iterators support .next() and iteration; iterator helper methods have no lowering
-
-collection-iterator-helpers.ts:9:1 - error SC2020: 'collection iterator .take()' is part of the standard library types but has no scriptc lowering yet
-
-   8 | set.values().filter(value => value > 0);
-   9 | set.entries().take(1);
-     | ^~~~~~~~~~~~~~~~~~~~~
-  10 | // Each helper call must produce a diagnostic.
-
-  hint: stored Map/Set iterators support .next() and iteration; iterator helper methods have no lowering
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)

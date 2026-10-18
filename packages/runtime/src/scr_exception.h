@@ -172,6 +172,10 @@ void scr_caught_trace_v(void *c, ScrTraceVisit visit, void *ctx);
  * when scr_json.c builds its dyn view, and scr_exc_suppressed_forget
  * releases them. */
 void scr_exc_suppress(ScrCaught *suppressed);
+/* An iterator close that threw while `first` was propagating: the close's
+ * error is dropped and `first` is raised again (consumed). A generator
+ * .return() in flight is replaced by the close's error instead. */
+void scr_exc_keep_first(ScrCaught *first);
 bool scr_exc_suppressed_values(const void *error_object, const ScrCaught **error,
                                const ScrCaught **suppressed);
 void scr_exc_suppressed_forget(const void *error_object);

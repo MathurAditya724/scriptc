@@ -3224,7 +3224,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("IterableIterator") ||
     // An Iterator<T> annotation holds a single-pass iterator object: a
     // generator, or a native iterator adapted into one.
-    isStdlibInterface("Iterator")
+    isStdlibInterface("Iterator") ||
+    // IteratorObject<T> is what the iterator helpers return: a helper
+    // generator over its source (containers/iterator-helpers.ts).
+    isStdlibInterface("IteratorObject")
   ) {
     const args = checker.getTypeArguments(widened as ts.TypeReference);
     const channels = genChannels(args[0], args[1], args[2], ctx);

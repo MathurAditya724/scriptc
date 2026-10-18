@@ -83,7 +83,10 @@ import {
 import { lowerArrayFromAsyncCall } from "./containers/array-from-async.js";
 import { lowerDynArrayFilterCall, lowerDynArrayFlatMapCall } from "./containers/array-callbacks.js";
 import { lowerGroupByStaticCall } from "./containers/collection-grouping.js";
-import { lowerIteratorHelperCall } from "./containers/iterator-helpers.js";
+import {
+  lowerGeneratorHelperCall,
+  lowerIteratorHelperCall,
+} from "./containers/iterator-helpers.js";
 import {
   lowerObjectAssignIndexShape,
   lowerObjectConstructor,
@@ -1425,6 +1428,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // array method paths (the terminal names collide with array
       // methods, but only iterator-typed receivers reach this).
       lowerIteratorHelperCall(lowerer, expr, expr.expression) ??
+      // Helper calls on generators and other iterator objects.
+      lowerGeneratorHelperCall(lowerer, expr, expr.expression) ??
       lowerIteratorStaticFence(lowerer, expr, expr.expression) ??
       lowerObjectStaticCall(lowerer, expr, expr.expression) ??
       lowerObjectFromEntriesCall(lowerer, expr, expr.expression) ??
@@ -3078,8 +3083,9 @@ function lowerOptionalStringNumber(
   return { kind: "call", callee: helper, args: [arg], type: F64, loc };
 }
 
-/** Iterator types whose helper calls have no lowering on any path (the
- * array iterator's chains lower in lowerIteratorHelperCall). */
+/** Iterator types with checked runtime receivers: Map/Set iterators'
+ * helper calls lower in lowerGeneratorHelperCall; the string iterator's
+ * have no lowering. */
 const UNLOWERED_ITERATOR_TYPES = new Set(["MapIterator", "SetIterator", "StringIterator"]);
 const ITERATOR_HELPER_METHODS = new Set([
   "map",
@@ -3146,6 +3152,8 @@ function lowerDynReceiverMethodCall(
     lowerer.isStdlibMember(access)
   ) {
     if (recvSymbol.name === "MapIterator" || recvSymbol.name === "SetIterator") {
+      const helper = lowerGeneratorHelperCall(lowerer, call, access);
+      if (helper) return helper;
       lowerer.noLowering(
         `collection iterator .${access.name.text}()`,
         call,
@@ -3156,7 +3164,7 @@ function lowerDynReceiverMethodCall(
     lowerer.noLowering(
       `${recvSymbol.name}.${access.name.text}`,
       call,
-      "iterator helpers lower on chains from arr.values() or arr.entries() that end in a terminal (toArray, forEach, reduce, some, every, find) — spread the string first: [...s].values()",
+      "iterator helpers lower on generators and on array, Map and Set iterators — spread the string first: [...s].values()",
     );
   }
   const arrayReceiver = lowerer.checker.isArrayType(recvTs);
@@ -6546,9 +6554,9 @@ function recordAssignHelper(
 }
 
 /** The `Iterator` global's statics (ES2025 — Iterator.from, and the
- * abstract constructor as a value): no first-class iterator objects
- * exist here, so every member fences with the working spelling named
- * instead of the generic-method fence's monomorphization wording. */
+ * abstract constructor as a value) have no lowering: every member fences
+ * with the working spelling named instead of the generic-method fence's
+ * monomorphization wording. */
 function lowerIteratorStaticFence(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -6559,8 +6567,8 @@ function lowerIteratorStaticFence(
   lowerer.noLowering(
     `Iterator.${access.name.text}`,
     call,
-    "first-class iterator objects have no lowering — iterator helpers compile as one chain on an " +
-      "array iterator, consumed in place: arr.values().map(f).take(n).toArray()",
+    "iterator helpers apply directly to generators and to array, Map and Set iterators: " +
+      "arr.values().map(f).take(n).toArray()",
   );
 }
 
