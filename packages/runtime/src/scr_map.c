@@ -77,7 +77,8 @@ static inline uint64_t scr_map_hash_str(const ScrStr *k) {
   uint32_t h = k->hash;
   if (__builtin_expect(h != 0, 1)) return scr_map_hash_widen(h);
   h = scr_map_hash_fold(k->data, k->len);
-  if (k->rc != SIZE_MAX) ((ScrStr *)k)->hash = h;
+  /* A scratch slice is a writable stack copy (scr_str_is_scratch). */
+  if (k->rc != SIZE_MAX || scr_str_is_scratch(k)) ((ScrStr *)k)->hash = h;
   return scr_map_hash_widen(h);
 #else
   return scr_map_hash_bytes(k->data, k->len);
@@ -696,7 +697,7 @@ static void scr_map_trace(void *o, ScrTraceVisit visit, void *ctx) {
 static void scr_map_gcfree(void *o) {
   ScrMap *m = (ScrMap *)o;
   bool keys = m->traced & SCR_MAP_TRACED_KEY, vals = m->traced & SCR_MAP_TRACED_VAL;
-  scr_weak_dispose(m);
+  scr_weak_dispose_inline(m);
   for (size_t e = 0; e < m->nentries; e++) {
     if (!m->entries[e].hash) continue;
     if (!keys) scr_map_release_key(m, m->entries[e].key);
@@ -751,7 +752,7 @@ ScrMap *scr_map_retain(ScrMap *m) {
 
 static void scr_map_destroy(void *object) {
   ScrMap *m = object;
-  scr_weak_dispose(m);
+  scr_weak_dispose_inline(m);
   for (size_t e = 0; e < m->nentries; e++) {
     if (!m->entries[e].hash) continue;
     scr_map_release_key(m, m->entries[e].key);
@@ -931,7 +932,11 @@ static void scr_map_append(ScrMap *m, uint64_t hash, uint64_t key, uint64_t val,
   m->filter |= scr_map_filter_bits(hash);
   m->nlive++;
   if (m->key_kind == SCR_MAP_KEY_STR) {
-    scr_str_retain((ScrStr *)scr_map_slot_to_ptr(key)); /* key is borrowed */
+    ScrStr *k = scr_map_slot_to_ptr(key); /* key is borrowed */
+    if (__builtin_expect(scr_str_is_scratch(k), 0))
+      m->entries[idx].key = scr_map_slot_from_ptr(scr_str_scratch_keep(k));
+    else
+      scr_str_retain(k);
   } else if (m->key_kind == SCR_MAP_KEY_DYN) {
     const ScrDyn *d = (ScrDyn *)scr_map_slot_to_ptr(key);
     if (d->kind == SCR_DYN_NUM && d->v.num == 0) {

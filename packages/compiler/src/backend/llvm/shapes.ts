@@ -32,7 +32,16 @@ import {
 import { cycTypeDescriptor, emitObjectAlloc, emitObjectFree } from "./alloc.js";
 import type { BlockBuilder } from "./blocks.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
-import type { NullableUnions } from "./nullable-unions.js";
+import {
+  NULLABLE_NULL,
+  SHAPE_WORD_INDEX,
+  shapeReleaseFn,
+  shapeTagFn,
+  shapeTraceFn,
+  shapeWordHeader,
+  type NullableUnions,
+  type ShapeUnion,
+} from "./nullable-unions.js";
 import {
   INLINE_UNION_FIELD,
   loadInlineUnion,
@@ -40,6 +49,7 @@ import {
   type InlineUnionFields,
 } from "./inline-unions.js";
 import { JS_BITS, JS_TAGS } from "./jsval-encoding.js";
+import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
 /** What the tables need from the emitter: the extern-declaration ledger
@@ -131,6 +141,7 @@ export { computeTraced } from "../cycle-analysis.js";
  * `_v`-shaped. */
 export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release: string } {
   const nullable = host.nullableUnions.of(t);
+  if (nullable?.repr === "shapes") return shapeUnionRc(nullable);
   if (nullable) {
     const arm = vAdapters(host, nullable.arm);
     return { retain: nullableRetainSym(host, nullable.arm), release: arm.release };
@@ -187,6 +198,7 @@ export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release
 export function retainSym(host: ShapeHost, t: IrType): string {
   if (t.kind === "jsval") return jsvalRcSym(host, "retain");
   const nullable = host.nullableUnions.of(t);
+  if (nullable?.repr === "shapes") return shapeUnionRc(nullable).retain;
   if (nullable) return nullableRetainSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "retain") !== null) {
@@ -196,6 +208,99 @@ export function retainSym(host: ShapeHost, t: IrType): string {
   // are for capsule and container entry points).
   if (t.kind === "object" && stem === null) return `@${mangleClassRetain(t.className)}`;
   return vAdapters(host, t).retain;
+}
+
+/** A shape union's RC entry points: every record retain is the same
+ * NULL- and immortal-skipping increment (the null sentinel is immortal),
+ * so the first arm's serves; release dispatches on the arm. */
+function shapeUnionRc(union: ShapeUnion): { retain: string; release: string } {
+  return {
+    retain: `@${mangleRecordRetain(union.arms[0]!.shapeId)}`,
+    release: shapeReleaseFn(union.unionId),
+  };
+}
+
+/** The tag, release and trace helpers of every shape union
+ * (nullable-unions.ts). The tag helper maps a value to its arm: NULL and
+ * the null sentinel are the unit arms, anything else a tagged record whose
+ * shape word names its arm (the switch folds to a lookup table). */
+export function emitShapeUnionHelpers(host: ShapeHost): string[] {
+  const out: string[] = [];
+  const S = host.sizeType;
+  for (const union of host.nullableUnions.allShapeUnions()) {
+    const header = shapeWordHeader(S);
+    const tagFn = shapeTagFn(union.unionId);
+    const cases = union.arms
+      .map((arm) => `i32 ${host.nullableUnions.shapeNumber(arm.shapeId)}, label %a${arm.tag}`)
+      .join(" ");
+    out.push(
+      `define internal i32 ${tagFn}(ptr %u) alwaysinline ${FN_ATTRS} { ; shape union tag`,
+      `entry:`,
+      `  %isnull = icmp eq ptr %u, null`,
+      `  br i1 %isnull, label %unit, label %ref`,
+      `unit:`,
+      `  ret i32 ${union.unitTag}`,
+      `ref:`,
+    );
+    if (union.nullTag >= 0)
+      out.push(
+        `  %isnullarm = icmp eq ptr %u, ${NULLABLE_NULL}`,
+        `  br i1 %isnullarm, label %nullarm, label %rec`,
+        `nullarm:`,
+        `  ret i32 ${union.nullTag}`,
+        `rec:`,
+      );
+    out.push(
+      `  %wp = getelementptr inbounds ${header}, ptr %u, i32 0, i32 ${SHAPE_WORD_INDEX}`,
+      `  %w = load i32, ptr %wp`,
+      `  switch i32 %w, label %bad [ ${cases} ]`,
+      ...union.arms.flatMap((arm) => [`a${arm.tag}:`, `  ret i32 ${arm.tag}`]),
+      `bad:`,
+      `  ret i32 -1`,
+      `}`,
+      ``,
+    );
+    // release: unit encodings are NULL or immortal; each arm releases
+    // through its own (NULL- and immortal-tolerant) helper.
+    out.push(
+      `define internal void ${shapeReleaseFn(union.unionId)}(ptr %u) ${FN_ATTRS} { ; shape union release`,
+      `entry:`,
+      `  %t = call i32 ${tagFn}(ptr %u)`,
+      `  switch i32 %t, label %done [ ${union.arms.map((arm) => `i32 ${arm.tag}, label %a${arm.tag}`).join(" ")} ]`,
+      ...union.arms.flatMap((arm) => [
+        `a${arm.tag}:`,
+        `  call void @${mangleRecordRelease(arm.shapeId)}(ptr %u)`,
+        `  br label %done`,
+      ]),
+      `done:`,
+      `  ret void`,
+      `}`,
+      ``,
+    );
+    if (shapeUnionTraced(host, union))
+      out.push(
+        `define internal void ${shapeTraceFn(union.unionId)}(ptr %u, ptr %visit, ptr %ctx) ${FN_ATTRS} { ; shape union trace`,
+        `entry:`,
+        `  %t = call i32 ${tagFn}(ptr %u)`,
+        `  switch i32 %t, label %done [ ${union.arms.map((arm) => `i32 ${arm.tag}, label %a${arm.tag}`).join(" ")} ]`,
+        ...union.arms.flatMap((arm) => [
+          `a${arm.tag}:`,
+          `  call void @${mangleRecordTrace(arm.shapeId)}(ptr %u, ptr %visit, ptr %ctx)`,
+          `  br label %done`,
+        ]),
+        `done:`,
+        `  ret void`,
+        `}`,
+        ``,
+      );
+  }
+  return out;
+}
+
+/** A shape union's arms carry collector headers (all or none: the emitter
+ * traces every arm of a union with one traced arm). */
+function shapeUnionTraced(host: ShapeHost, union: ShapeUnion): boolean {
+  return union.arms.some((arm) => host.tracedShapes.has(`record:${arm.shapeId}`));
 }
 
 /** The retain entry point of a nullable union's value: the arm's own when
@@ -237,6 +342,7 @@ export function emitNullableRetainWrappers(host: ShapeHost): string[] {
 export function releaseSym(host: ShapeHost, t: IrType): string {
   if (t.kind === "jsval") return jsvalRcSym(host, "release");
   const nullable = host.nullableUnions.of(t);
+  if (nullable?.repr === "shapes") return shapeUnionRc(nullable).release;
   if (nullable) return releaseSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "release") !== null) {
@@ -728,6 +834,8 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
       return "@scr_promise_trace_v";
     case "union": {
       const nullable = host.nullableUnions.get(t.unionId);
+      if (nullable?.repr === "shapes")
+        return shapeUnionTraced(host, nullable) ? shapeTraceFn(nullable.unionId) : null;
       if (nullable) return traceAdapter(host, nullable.arm);
       if (!host.tracedUnions.has(t.unionId)) return null;
       host.declare(`declare void @scr_union_trace_v(ptr, ptr, ptr)`);
@@ -1030,15 +1138,17 @@ export function mapValKindNum(value: IrType): number {
 export function rcMembers(
   shape: IrRecordShape,
   inline: InlineUnionFields,
+  /** The struct index of the first field (2 on tagged shapes). */
+  base = 1,
 ): { index: number; type: IrType; name: string }[] {
   return [
     ...shape.fields.flatMap((f, i) =>
-      inline.record(f.type) ? [] : [{ index: i + 1, type: f.type, name: f.name }],
+      inline.record(f.type) ? [] : [{ index: i + base, type: f.type, name: f.name }],
     ),
     ...(shape.indexValue
       ? [
           {
-            index: shape.fields.length + 1,
+            index: shape.fields.length + base,
             type: mapOf(STRING, shape.indexValue),
             name: "[key: string] overflow",
           },
@@ -1192,7 +1302,12 @@ export function directDestroyTarget(
 }
 
 function directDestroyKey(host: ShapeHost, type: IrType): string | null {
-  const t = host.nullableUnions.of(type)?.arm ?? type;
+  const nullable = host.nullableUnions.of(type);
+  let t = type;
+  if (nullable !== null) {
+    if (nullable.repr === "shapes") return null;
+    t = nullable.arm;
+  }
   if (t.kind === "record") return `record:${t.shapeId}`;
   return t.kind === "object" ? `object:${t.className}` : null;
 }
@@ -1423,8 +1538,12 @@ export function emitRecordShapes(
 
   for (const shape of records) {
     const struct = mangleRecordStruct(shape.id);
-    const fieldTys = shape.fields.map((f) => llFieldType(f.type, host.inlineUnions.record(f.type)));
+    const fieldTys: string[] = shape.fields.map((f) =>
+      llFieldType(f.type, host.inlineUnions.record(f.type)),
+    );
     if (shape.indexValue) fieldTys.push("ptr"); // the overflow ScrMap *
+    // A tagged shape (an arm of a shape union) carries its shape number.
+    if (host.nullableUnions.shapeNumber(shape.id) !== 0) fieldTys.unshift("i32");
     typeDefs.push(
       `%${struct} = type { ${host.sizeType}${fieldTys.length ? ", " + fieldTys.join(", ") : ""} } ` +
         `; record ${shape.id} { ${shape.fields.map((f) => llvmCommentText(f.name)).join("; ")}${shape.indexValue ? "; [key: string]" : ""} }`,
@@ -1437,7 +1556,7 @@ export function emitRecordShapes(
   const candidates: [string, DirectDestroy][] = [];
   const memberTypes: IrType[] = [];
   for (const shape of records) {
-    const members = rcMembers(shape, host.inlineUnions);
+    const members = rcMembers(shape, host.inlineUnions, host.nullableUnions.fieldBase(shape.id));
     for (const m of members) memberTypes.push(m.type);
     if (!members.some((m) => isRefCounted(m.type) && needsBoundedRelease(m.type))) continue;
     const release = mangleRecordRelease(shape.id);
@@ -1455,7 +1574,9 @@ export function emitRecordShapes(
   for (const shape of records) {
     const struct = mangleRecordStruct(shape.id);
     const traced = host.tracedShapes.has(`record:${shape.id}`);
-    const members = rcMembers(shape, host.inlineUnions);
+    const base = host.nullableUnions.fieldBase(shape.id);
+    const shapeNumber = host.nullableUnions.shapeNumber(shape.id);
+    const members = rcMembers(shape, host.inlineUnions, base);
     const refMembers = members.filter((m) => isRefCounted(m.type));
     const sizeOf = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to ${host.sizeType})`;
 
@@ -1489,7 +1610,9 @@ export function emitRecordShapes(
       }
       t++;
     }
-    freeBody.push(...emitObjectFree(host, traced));
+    // Closed layouts can carry a kept record source (record-sources.ts).
+    const observers = recordMayKeepSource(shape) ? "weak-or-source" : "weak";
+    freeBody.push(...emitObjectFree(host, traced, observers));
     defs.push(
       ...releaseBody(
         host,
@@ -1524,6 +1647,11 @@ export function emitRecordShapes(
       );
     nw.push(...emitObjectAlloc(host, sizeOf, traced ? { type: cycType } : null));
     nw.push(`  store ${host.sizeType} 1, ptr %o`);
+    if (shapeNumber !== 0)
+      nw.push(
+        `  %shp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${SHAPE_WORD_INDEX}`,
+        `  store i32 ${shapeNumber}, ptr %shp ; shape number`,
+      );
     if (shape.indexValue) {
       // The overflow map (string-keyed): value handling is type-directed
       // exactly like shapes.ts's overflowNewC.
@@ -1534,7 +1662,7 @@ export function emitRecordShapes(
       const trace = valKind === 2 ? traceArg(host, v) : "null";
       nw.push(
         `  %ovf = call ptr @scr_map_new(i32 1, i32 ${valKind}, ptr ${host.mapOps(["null", "null", "null", rc.retain, rc.release, trace, "null"])})`,
-        `  %ovfp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${shape.fields.length + 1}`,
+        `  %ovfp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${shape.fields.length + base}`,
         `  store ptr %ovf, ptr %ovfp`,
       );
     }
@@ -1550,7 +1678,7 @@ export function emitRecordShapes(
       ];
       let i = 0;
       for (const field of shape.fields) {
-        const index = i + 1;
+        const index = i + base;
         const inline = host.inlineUnions.record(field.type);
         const fieldTy = llFieldType(field.type, inline);
         clone.push(
@@ -1599,7 +1727,7 @@ export function emitRecordShapes(
           `  call void ${releaseSym(host, m.type)}(ptr %v${i}) ; ${llvmCommentText(m.name)} (acyclic)`,
         );
       });
-      gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
+      gf.push(...emitObjectFree(host, true, observers), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
   }

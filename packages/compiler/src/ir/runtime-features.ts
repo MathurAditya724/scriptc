@@ -49,6 +49,8 @@ export interface RuntimeFeatures {
 }
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // DEP0040 rides the dyn-async unit's warning machinery.
+  "punycode.warn",
   "fs.callbackValue",
   "fs.callbackCall",
   "fs.callbackGlob",

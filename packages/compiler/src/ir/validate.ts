@@ -61,6 +61,18 @@ import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
 import { LIB_FN_SIGS } from "./builtin-signatures.js";
+
+/** The promisified crypto calls' value kinds besides checked-dynamic. */
+const CRYPTO_PROMISE_VALUES: Readonly<Record<string, "buffer" | "view" | "number" | "dyn">> = {
+  "crypto.randomBytesPromise": "buffer",
+  "crypto.pbkdf2Promise": "buffer",
+  "crypto.scryptPromise": "buffer",
+  "crypto.hkdfPromise": "dyn",
+  "crypto.randomFillPromise": "view",
+  "crypto.randomFillPromiseDyn": "dyn",
+  "crypto.randomIntPromise": "number",
+  "crypto.generateKeyPromise": "dyn",
+};
 import { REGEX_INTRINSIC_SIGS, STR_INTRINSIC_SIGS } from "./intrinsic-signatures.js";
 
 /** True for an object type naming a runtime-provided error class. */
@@ -2919,7 +2931,7 @@ function validateFunction(
       case "downcast": {
         // A pointer reinterpret is sound exactly between hierarchy
         // relatives: upcast widens a STRICT descendant to an ancestor,
-        // downcast (checker-trusted) narrows an ancestor to a STRICT
+        // downcast (verified at run time) narrows an ancestor to a STRICT
         // descendant. Upcast additionally widens CLASS VALUES
         // (classval:D → classval:C): the same pointer, type-only — legal
         // exactly when D strictly descends from C AND the two completed
@@ -4109,6 +4121,19 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    const cryptoPromise = CRYPTO_PROMISE_VALUES[e.fn];
+    if (cryptoPromise) {
+      const inner = e.type.kind === "promise" ? e.type.inner : undefined;
+      const view = e.fn === "crypto.randomFillPromise" ? e.args[0]?.type : undefined;
+      const ok =
+        inner !== undefined &&
+        (inner.kind === "dyn" ||
+          (cryptoPromise === "buffer" && inner.kind === "bytes" && inner.elem === "u8") ||
+          (cryptoPromise === "view" && view !== undefined && typeEquals(inner, view)) ||
+          (cryptoPromise === "number" && inner.kind === "f64"));
+      if (!ok) err(`libCall ${e.fn} must be a promise of its ${cryptoPromise} value`, e.loc);
+      return true;
+    }
     if (e.fn === "events.once") {
       const [recv, , boxer, errorBoxer] = e.args;
       const arrayT = e.type.kind === "promise" ? e.type.inner : null;

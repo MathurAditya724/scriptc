@@ -32,7 +32,6 @@ import {
   mangleVtStruct,
 } from "../mangle.js";
 import {
-  classMembershipIntervals,
   classEnvironmentIndex,
   classStructSym,
   vtEntriesFor,
@@ -52,6 +51,7 @@ import {
   inputSuffixWrites,
 } from "./borrowed-inputs.js";
 import type { Writes } from "./reference-writes.js";
+import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
 
 export function emitCallExpr(
   host: LlvmEmitterContext,
@@ -1129,8 +1129,11 @@ export function emitCallExpr(
       // Prefix layout: both directions are reinterprets of the SAME
       // pointer — no RC traffic, ownership transfers from the operand
       // temp to the result temp (struck so the one +1 releases exactly
-      // once, under the RESULT type's release).
+      // once, under the RESULT type's release). A downcast verifies the
+      // class tsc's narrowing proved (narrow-guards.ts).
       const v = host.emitExpr(e.value);
+      if (e.kind === "downcast" && e.type.kind === "object" && v.type.kind === "object")
+        emitDowncastGuard(host, v.name, v.type.className, e.type.className);
       if (isRefCounted(v.type)) host.moveTemp(v);
       return host.own({ name: v.name, type: e.type });
     }
@@ -1142,24 +1145,14 @@ export function emitCallExpr(
       // The test only reads the vtable word: a borrowable operand needs no
       // retain/release pair around it.
       const v = emitBorrowedInputs(host, [e.value])[0]!;
-      const target = host.classMetaOf(e.className);
-      const pre = host.loadVtPre(v.name, e.value.type.className);
-      let result: string | undefined;
-      for (const interval of classMembershipIntervals(host.classMeta, target.def.name)) {
-        const ge = B.tmp(),
-          le = B.tmp(),
-          test = B.tmp();
-        B.line(`${ge} = icmp uge ${host.sizeType} ${pre}, ${interval.pre}`);
-        B.line(`${le} = icmp ule ${host.sizeType} ${pre}, ${interval.post}`);
-        B.line(`${test} = and i1 ${ge}, ${le} ; instanceof ${e.className}`);
-        if (result === undefined) result = test;
-        else {
-          const combined = B.tmp();
-          B.line(`${combined} = or i1 ${result}, ${test}`);
-          result = combined;
-        }
-      }
-      return { name: result!, type: e.type };
+      const result = emitClassMembership(
+        host,
+        v.name,
+        e.value.type.className,
+        e.className,
+        `instanceof ${e.className}`,
+      );
+      return { name: result, type: e.type };
     }
     case "virtualCall": {
       // Dispatch through the receiver's vtable: the slot lives on the

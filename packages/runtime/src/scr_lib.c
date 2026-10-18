@@ -824,6 +824,26 @@ static void scr_node_debug_capture(const ScrStr *name) {
   if (name->len == 10 && memcmp(name->data, "NODE_DEBUG", 10) == 0) (void)scr_node_debug_initial();
 }
 
+/* Counts writes and deletes of process.env.TZ. The local-time getters keep
+ * their last conversion for the generation it was made in. */
+#ifdef SCR_WORKERS
+static atomic_uint scr_date_tz_generation;
+#else
+static unsigned scr_date_tz_generation;
+#endif
+
+/* After a write or delete of the process's TZ, local time follows the new
+ * value, as in Node: tzset(3) rereads it for later localtime calls. */
+static void scr_env_tz_changed(const ScrStr *name) {
+  /* Compared by character: a string literal would join the merged
+   * read-only strings of every program that links this file. */
+  if (name->len != 2 || name->data[0] != 'T' || name->data[1] != 'Z') return;
+#if !defined(_WIN32) && !defined(__wasi__)
+  tzset();
+#endif
+  scr_date_tz_generation++;
+}
+
 /* process.env.NAME = v — setenv(3): later scr_env_get reads and spawned
  * children (posix_spawn inherits environ) observe the write, like Node.
  * Both args borrowed (NUL-terminated ScrStr data); setenv copies. */
@@ -842,6 +862,7 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
 #else
   setenv(k, v, 1);
 #endif
+  scr_env_tz_changed(name);
 #ifdef SCR_WORKERS
 done:
 #endif
@@ -861,6 +882,7 @@ void scr_env_unset(const ScrStr *name) {
 #else
   unsetenv(name->data);
 #endif
+  scr_env_tz_changed(name);
 }
 
 static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii);
@@ -10475,9 +10497,14 @@ typedef struct ScrDateParts {
  * endpoint. The checked wrapper is the public UTC-getter gate; the inner
  * walk accepts those bounded local-time values too. */
 static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
-  double dayd = floor(t / 86400000.0);
-  long long msday = (long long)(t - dayd * 86400000.0);
-  long long z = (long long)dayd + 719468;
+  /* t is an integral number of milliseconds within about 2^53. */
+  long long tms = (long long)t;
+  long long day = tms / 86400000, msday = tms % 86400000;
+  if (msday < 0) {
+    msday += 86400000;
+    day--;
+  }
+  long long z = day + 719468;
   long long era = (z >= 0 ? z : z - 146096) / 146097;
   unsigned long long doe = (unsigned long long)(z - era * 146097);
   unsigned long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
@@ -10487,7 +10514,7 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
   unsigned long long m = mp < 10 ? mp + 3 : mp - 9;
   if (m <= 2) y++;
-  long long wday = ((long long)dayd + 4) % 7;
+  long long wday = (day + 4) % 7;
   if (wday < 0) wday += 7;
   out->year = y;
   out->month = (int)m - 1;
@@ -10516,10 +10543,39 @@ static bool scr_date_localtime(double secd, struct tm *out) {
 #endif
 }
 
+/* The thread's last local conversion: reading several local fields of one
+ * Date (getFullYear, getMonth, getDate, getHours, ...) converts it once.
+ * A change of process.env.TZ starts a new generation. */
+typedef struct {
+  bool valid;
+  unsigned generation;
+  double ms;
+  ScrDateParts parts;
+} ScrDateLocalCache;
+static SCR_TL ScrDateLocalCache scr_date_local_cache;
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out);
+
 static bool scr_date_local_parts(double ms, ScrDateParts *out) {
   if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
   double clipped = trunc(ms);
-  double secd = floor(clipped / 1000.0);
+  ScrDateLocalCache *c = &scr_date_local_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (c->valid && c->ms == clipped && c->generation == generation) {
+    *out = c->parts;
+    return true;
+  }
+  if (!scr_date_local_parts_uncached(clipped, out)) return false;
+  c->valid = true;
+  c->generation = generation;
+  c->ms = clipped;
+  c->parts = *out;
+  return true;
+}
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out) {
+  long long cms = (long long)clipped;
+  double secd = (double)(cms / 1000 - (cms % 1000 < 0));
   struct tm tmv;
   double basis_secd = secd;
   if (!scr_date_localtime(basis_secd, &tmv)) {
@@ -10660,6 +10716,64 @@ ScrStr *scr_num_to_fixed0(double x) {
  * the receiver's non-finite arm, as ECMA-262 requires. Invalid precision
  * raises V8's catchable RangeError text; otherwise the result is +1. The
  * exact-binary-value digits come from scr_f64_to_fixed (scr_number.c). */
+/* Number.prototype.toString(radix) with a number radix, which
+ * ToIntegerOrInfinity truncates (NaN to 0). Radix digit generation follows
+ * V8's DoubleToRadixStringView algorithm. Copyright 2012 the V8 project
+ * authors. BSD license in ../vendor/v8-number-radix/LICENSE. The decimal
+ * path retains Ryū. */
+ScrStr *scr_num_to_string_radix_f64(double value, double requested) {
+  requested = isnan(requested) ? 0 : trunc(requested);
+  if (requested < 2 || requested > 36 || !isfinite(requested)) {
+    static const char message[] = "toString() radix argument must be between 2 and 36";
+    scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+    return NULL;
+  }
+  int radix = (int)requested;
+  if (radix == 10 || !isfinite(value) || value == 0) return scr_f64_to_scrstr(value);
+  static const char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+  char buffer[2200];
+  const size_t middle = sizeof buffer / 2;
+  size_t begin = middle, end = middle;
+  bool negative = value < 0;
+  value = fabs(value);
+  double integer = floor(value), fraction = value - integer;
+  double tolerance = 0.5 * (nextafter(value, INFINITY) - value);
+  if (tolerance <= 0) tolerance = nextafter(0, INFINITY);
+  if (fraction >= tolerance) {
+    buffer[end++] = '.';
+    do {
+      fraction *= radix;
+      tolerance *= radix;
+      int digit = (int)fraction;
+      buffer[end++] = digits[digit];
+      fraction -= digit;
+      if ((fraction > 0.5 || (fraction == 0.5 && (digit & 1))) && fraction + tolerance > 1) {
+        for (;;) {
+          end--;
+          if (end == middle) { integer += 1; break; }
+          char last = buffer[end];
+          digit = last > '9' ? last - 'a' + 10 : last - '0';
+          if (digit + 1 < radix) { buffer[end++] = digits[digit + 1]; break; }
+        }
+        break;
+      }
+    } while (fraction >= tolerance);
+  }
+  /* V8's Double::Exponent is the unbiased exponent minus 52. Beyond
+   * that precision boundary, trailing digits are unrepresented zeros. */
+  while (integer / radix >= 0x1p53) {
+    integer /= radix;
+    buffer[--begin] = '0';
+  }
+  do {
+    double remainder = fmod(integer, radix);
+    buffer[--begin] = digits[(int)remainder];
+    integer = (integer - remainder) / radix;
+  } while (integer > 0);
+  if (negative) buffer[--begin] = '-';
+  return scr_str_new(buffer + begin, end - begin);
+}
+
 ScrStr *scr_num_to_fixed(double x, double fraction_digits) {
   double fd = isnan(fraction_digits) ? 0 : trunc(fraction_digits);
   if (!(fd >= 0 && fd <= 100)) {

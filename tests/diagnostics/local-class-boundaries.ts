@@ -7,8 +7,4 @@ privateBrand();
 selfName();
 derived();
 generic();
-function genericFactory<T>(value: T) {
-  return class Stored { read(): T { return value; } };
-}
-genericFactory<number>(7);
 // End of unsupported local-class forms.

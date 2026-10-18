@@ -467,6 +467,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.constants",
+      "kind": "node-builtin",
+      "name": "constants",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
       "id": "node-builtin.crypto",
       "kind": "node-builtin",
       "name": "crypto",
@@ -2108,6 +2115,56 @@
       "note": "shared version dictionary containing node and openssl; other components are absent unless defined by the program"
     },
     {
+      "id": "node-builtin.punycode",
+      "kind": "node-builtin",
+      "name": "punycode",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.punycode.decode",
+      "kind": "node-builtin",
+      "name": "punycode.decode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.encode",
+      "kind": "node-builtin",
+      "name": "punycode.encode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.toASCII",
+      "kind": "node-builtin",
+      "name": "punycode.toASCII",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.toUnicode",
+      "kind": "node-builtin",
+      "name": "punycode.toUnicode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.ucs2.decode",
+      "kind": "node-builtin",
+      "name": "punycode.ucs2.decode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.ucs2.encode",
+      "kind": "node-builtin",
+      "name": "punycode.ucs2.encode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.version",
+      "kind": "node-builtin",
+      "name": "punycode.version",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
       "id": "node-builtin.querystring",
       "kind": "node-builtin",
       "name": "querystring",
@@ -2462,7 +2519,7 @@
       "name": "util.promisify",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots and the fs callback functions with an fs/promises counterpart; call the bound function directly"
+      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart; call the bound function directly"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",
