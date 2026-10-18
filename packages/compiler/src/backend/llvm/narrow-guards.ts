@@ -4,22 +4,26 @@
  * class or kind TypeScript's control-flow narrowing proved. Emitted code
  * verifies that proof once at the narrowing site: the tag, class interval or
  * caught kind is compared and a mismatch stops the program through the
- * runtime trap funnel instead of reading the payload as the wrong type. A
- * correct program never takes the failing branch: the frontend lowers every
- * narrowing it cannot prove through checked extraction, which throws the
- * catchable TypeError. A failing guard is therefore a compiler bug, so it
- * aborts rather than unwinding through code that assumed the extraction
- * could not throw. The guards are cheap: one load and compare per site,
- * which LLVM folds where an identical test already dominates. */
+ * runtime trap funnel instead of reading the payload as the wrong type. The
+ * frontend lowers every narrowing it knows it cannot prove through checked
+ * extraction, which throws the catchable TypeError, so a failing guard means
+ * either a compiler bug or a program whose hand-written type predicate or
+ * assertion function (`x is T`, `asserts x is T`) lied about a value's type:
+ * TypeScript trusts those claims without checking them. The guard aborts
+ * rather than unwinding through code that assumed the extraction could not
+ * throw. The guards are cheap: one load and compare per site, which LLVM
+ * folds where an identical test already dominates. */
 import { InternalCompilerError } from "../../errors.js";
 import { classMembershipIntervals } from "./classes.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { vAdapters } from "./shapes.js";
 
+const NARROW_GUARD_HINT = " (a type predicate or assertion may be wrong)\n";
+
 export const NARROW_GUARD_MESSAGES = {
-  union: "scriptc: internal error: a narrowed union value holds a different arm\n",
-  downcast: "scriptc: internal error: a downcast object is not an instance of its target class\n",
-  caught: "scriptc: internal error: a narrowed catch binding holds a different value\n",
+  union: `scriptc: a narrowed value does not have the type its narrowing proved${NARROW_GUARD_HINT}`,
+  downcast: `scriptc: a narrowed object is not an instance of the class its narrowing proved${NARROW_GUARD_HINT}`,
+  caught: `scriptc: a narrowed catch binding does not have the type its narrowing proved${NARROW_GUARD_HINT}`,
 } as const;
 
 /** Continues in a fresh block where `ok` holds; otherwise traps with the

@@ -2957,8 +2957,8 @@ export type IrExpr =
    * subclass). The frontend emits this only where tsc's control-flow
    * narrowing has already proven the dynamic class (an `instanceof` guard),
    * like unionNarrow. Backends verify the class once and trap on a mismatch
-   * a correct program never reaches, then reinterpret the pointer with
-   * ownership transferring like upcast. */
+   * (a compiler bug or a lying type predicate or assertion function), then
+   * reinterpret the pointer with ownership transferring like upcast. */
   | { kind: "downcast"; value: IrExpr; type: IrType; loc: SrcLoc }
   /** `x instanceof C` where x's static class and C are both in extends-
    * hierarchies: an O(1) preorder-interval check against the vtable the
@@ -3391,8 +3391,8 @@ export type IrExpr =
    * analog of unionNarrow: the frontend emits this only where tsc's
    * control-flow narrowing has already proven the matching test
    * (`e instanceof C` / `typeof e === "string"`). Backends verify the kind
-   * or class once and trap on a mismatch a correct program never reaches.
-   * `type` is f64, bool, string, or a class object; refcounted results come
+   * or class once and trap on a mismatch (a compiler bug or a lying type
+   * predicate or assertion function). `type` is f64, bool, string, or a class object; refcounted results come
    * out retained (+1). */
   | { kind: "caughtNarrow"; value: IrExpr; type: IrType; loc: SrcLoc }
   /** CHECKED extraction of a catch binding's payload as a hierarchy-class
@@ -3422,8 +3422,9 @@ export type IrExpr =
   /** Union payload extraction: `value` is union-typed and `type` is
    * arms[tag]. The frontend emits this only where tsc's control-flow
    * narrowing has already narrowed the expression to that arm; backends
-   * verify the tag once and trap on a mismatch a correct program never
-   * reaches, so a wrong proof cannot read the payload as another arm.
+   * verify the tag once and trap on a mismatch (a compiler bug or a lying
+   * type predicate or assertion function), so a wrong proof cannot read the
+   * payload as another arm.
    * Refcounted payloads come out retained (+1). */
   | { kind: "unionNarrow"; unionId: string; tag: number; value: IrExpr; type: IrType; loc: SrcLoc }
   /** Discriminant read `r.kind` on a union receiver: every arm is a

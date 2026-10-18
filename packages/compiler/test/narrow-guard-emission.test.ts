@@ -35,7 +35,7 @@ function width(v: string | number): number {
 }
 console.log(width("abc") + width(4));
 `);
-  expect(guardCount(llvm, "scriptc: internal error: a narrowed union value")).toBeGreaterThan(0);
+  expect(guardCount(llvm, "scriptc: a narrowed value does not")).toBeGreaterThan(0);
 });
 
 /** The tag compares that feed narrowing guards, as `eq K` / `ne K`. */
@@ -87,7 +87,7 @@ function count(value: Base): number {
 }
 console.log(count(new Child()), count(new Base()));
 `);
-  expect(guardCount(llvm, "scriptc: internal error: a downcast object")).toBeGreaterThan(0);
+  expect(guardCount(llvm, "scriptc: a narrowed object is not")).toBeGreaterThan(0);
 });
 
 test("catch-binding narrowing verifies the caught kind and class", async () => {
@@ -105,7 +105,7 @@ function run(which: number): string {
 }
 console.log(run(0), run(1));
 `);
-  expect(guardCount(llvm, "scriptc: internal error: a narrowed catch binding")).toBeGreaterThan(1);
+  expect(guardCount(llvm, "scriptc: a narrowed catch binding")).toBeGreaterThan(1);
 });
 
 test("programs without narrowings carry no guards", async () => {
@@ -114,6 +114,5 @@ let total = 0;
 for (let i = 0; i < 10; i++) total += i;
 console.log(total);
 `);
-  expect(llvm).not.toContain("scriptc: internal error: a narrowed");
-  expect(llvm).not.toContain("scriptc: internal error: a downcast");
+  expect(llvm).not.toContain("scriptc: a narrowed");
 });
