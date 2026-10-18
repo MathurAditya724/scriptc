@@ -141,6 +141,97 @@ function declareGlobal(host: AllocHost, decl: string): void {
   if (host.threadLocalAlloc !== true) host.declare(decl);
 }
 
+/** `scr_cyc_buffers` (scr_rc.h ScrCycBuffers): the three candidate buffers
+ * `{ v, n, cap, used }`, the inline buffering window and the allocation
+ * trigger. */
+const CYC_BUFFERS_TYPE = "{ [3 x { ptr, i64, i64, i64 }], i64, i64 }";
+/** Byte offsets in it (asserted in scr_rc.h). */
+const CYC_NURSERY_COUNT = 8;
+const CYC_WINDOW = 96;
+const CYC_ALLOC_TRIGGER = 104;
+
+/** Whether emitted release paths can append nursery candidates to the
+ * collector's buffer themselves (through {@link cycleAppendHelper}): where
+ * the runtime keeps that state in ordinary globals (executables without
+ * workers and classic libraries, on the 64-bit targets with inline
+ * allocation). */
+export function inlineBufferingSupported(host: AllocHost): boolean {
+  return host.inlineAlloc === true && host.threadLocalAlloc !== true && host.sizeType === "i64";
+}
+
+/** The emitted symbol of {@link cycleAppendHelper}. */
+export const CYC_APPEND = "sc_cyc_append";
+
+/** The runtime symbols {@link cycleAppendHelper} uses. The helper is
+ * defined after the module's extern block, so its caller declares them. */
+export function cycleAppendDecls(): string[] {
+  return [
+    `@scr_cyc_buffers = external global ${CYC_BUFFERS_TYPE}`,
+    `@scr_cyc_live = external global i64`,
+    `declare void @scr_cyc_on_release(ptr)`,
+  ];
+}
+
+/** The candidate-buffering step of every emitted release that leaves a
+ * headered object alive and unbuffered: scr_rc.h's scr_cyc_append, then
+ * scr_cyc_on_release when it declines. A nursery object goes onto the
+ * nursery buffer while the buffer holds fewer entries than the runtime's
+ * window and the live count is below the allocation trigger.
+ *
+ * One out-of-line definition per module keeps the release fast paths, which
+ * LLVM inlines into their callers, as small as the plain call they had. It
+ * uses preserve_mostcc, so the call clobbers almost no caller registers:
+ * the callers' code around a release stays what it was, and the append
+ * itself saves only the few registers it uses. Its slow path enters the
+ * runtime through a second preserve_mostcc function, which saves the rest. */
+export function cycleAppendHelper(): string[] {
+  return [
+    `define internal preserve_mostcc void @${CYC_APPEND}(ptr %o) noinline #0 { ; scr_cyc_append, else scr_cyc_on_release`,
+    `entry:`,
+    `  %genp = getelementptr i8, ptr %o, i64 -${CYC_HDR - CYC_GEN}`,
+    `  %gen = load i8, ptr %genp ; ScrCycHdr.gen`,
+    `  %young = icmp eq i8 %gen, 0`,
+    `  br i1 %young, label %window, label %call`,
+    `window:`,
+    `  %np = getelementptr inbounds i8, ptr @scr_cyc_buffers, i64 ${CYC_NURSERY_COUNT}`,
+    `  %n = load i64, ptr %np ; nursery buffer entries`,
+    `  %wp = getelementptr inbounds i8, ptr @scr_cyc_buffers, i64 ${CYC_WINDOW}`,
+    `  %w = load i64, ptr %wp ; window`,
+    `  %room = icmp ult i64 %n, %w`,
+    `  br i1 %room, label %live, label %call`,
+    `live:`,
+    `  %lv = load i64, ptr @scr_cyc_live`,
+    `  %tp = getelementptr inbounds i8, ptr @scr_cyc_buffers, i64 ${CYC_ALLOC_TRIGGER}`,
+    `  %t = load i64, ptr %tp ; allocation trigger`,
+    `  %due = icmp uge i64 %lv, %t`,
+    `  br i1 %due, label %call, label %append`,
+    `append:`,
+    `  %v = load ptr, ptr @scr_cyc_buffers`,
+    `  %slot = getelementptr inbounds ptr, ptr %v, i64 %n`,
+    `  store ptr %o, ptr %slot`,
+    `  %n1 = add i64 %n, 1`,
+    `  store i64 %n1, ptr %np`,
+    `  %i = trunc i64 %n to i32`,
+    `  %b = or i32 %i, -2147483648 ; SCR_CYC_BUFFERED_BIT | position`,
+    `  %bufp = getelementptr i8, ptr %o, i64 -${CYC_HDR - CYC_BUF}`,
+    `  store i32 %b, ptr %bufp`,
+    `  ret void`,
+    `call:`,
+    `  tail call preserve_mostcc void @${CYC_APPEND}_call(ptr %o)`,
+    `  ret void`,
+    `}`,
+    // The runtime call clobbers every caller-saved register, which this
+    // preserve_mostcc function must restore: saving them here keeps those
+    // saves out of the append path above.
+    `define internal preserve_mostcc void @${CYC_APPEND}_call(ptr %o) noinline #0 {`,
+    `entry:`,
+    `  call void @scr_cyc_on_release(ptr %o) ; buffer the candidate; may collect`,
+    `  ret void`,
+    `}`,
+    ``,
+  ];
+}
+
 /** A collector header to install: the object type's constant ScrCycType
  * descriptor (its trace and teardown; see cycTypeDescriptor). */
 export interface CycHeader {
