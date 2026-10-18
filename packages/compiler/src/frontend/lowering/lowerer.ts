@@ -1849,6 +1849,8 @@ export class Lowerer {
    * and erased instances). */
   erasingDepth = 0;
   localClassInstantiations: { owner: ts.FunctionLikeDeclaration; name: string }[] = [];
+  /** Class declarations some program class extends (programExtends). */
+  extendedClasses: { decls: Set<ts.Node>; unresolved: boolean } | null = null;
   /** The ts-level twin of typeParamBindings, non-null while a CALL-keyed
    * instance body lowers: type-parameter symbol → the bound CHECKER type,
    * consulted where the mapped IrType has already widened away information
@@ -4150,6 +4152,18 @@ export class Lowerer {
       if (!s) return null;
       return s.flags & ts.SymbolFlags.Alias ? this.checker.getAliasedSymbol(s) : s;
     };
+    // Fields that can be read before their assignment hold undefined then;
+    // their reads are runtime-optional values like missing array reads.
+    for (const info of this.classes.values()) {
+      if (!info.earlyReadFields || !info.decl?.name) continue;
+      const classSymbol = symbolOf(info.decl.name);
+      if (!classSymbol) continue;
+      const instance = this.checker.getDeclaredTypeOfSymbol(classSymbol);
+      for (const name of info.earlyReadFields) {
+        const property = this.checker.getPropertyOfType(instance, name);
+        if (property) optionalSymbols.add(property);
+      }
+    }
     const signatureOf = (node: ts.Identifier): FnSig | null => {
       const symbol = symbolOf(node);
       if (!symbol) return null;
