@@ -8076,6 +8076,16 @@ void scr_crypto_hash_release(ScrCryptoHash *hash) {
 void *scr_crypto_hash_retain_v(void *p) { return scr_crypto_hash_retain(p); }
 void scr_crypto_hash_release_v(void *p) { scr_crypto_hash_release(p); }
 
+/* Node's TypeError for calling a missing member: "<what> is not a
+ * function", where `what` is the callee's source text, of any length. */
+static void scr_lib_throw_not_a_function(const char *what) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, what);
+  scr_jb_puts(&b, " is not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
 /* Hash and Hmac values seen as 'unknown' are native handles. update(),
  * digest() and Hash's copy() dispatch through the handle, called or read
  * as values; the other members Node defines on a Hash or Hmac (the
@@ -8213,9 +8223,7 @@ static ScrDyn *scr_crypto_hash_dyn_invoke(void *h, ScrDyn *self, const char *met
     scr_crypto_hash_dyn_unsupported(hash);
     return NULL;
   }
-  char message[160];
-  int n = snprintf(message, sizeof message, "%s is not a function", what);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  scr_lib_throw_not_a_function(what);
   return NULL;
 }
 
@@ -9501,9 +9509,7 @@ static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, 
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
-  char message[160];
-  int n = snprintf(message, sizeof message, "%s is not a function", what);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  scr_lib_throw_not_a_function(what);
   return NULL;
 }
 
