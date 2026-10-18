@@ -1,0 +1,13 @@
+json-class-fields.ts:14:28 - error SC1090: JSON.stringify of 'Schedule' values (field 'next' of class 'Schedule' has type 'Date', which the runtime JSON traversal cannot read) are not supported yet
+
+  13 | 
+  14 | console.log(JSON.stringify(new Schedule()));
+     |                            ^~~~~~~~~~~~~~
+  15 | console.log(JSON.stringify({ calendar: new Calendar() }));
+
+json-class-fields.ts:15:28 - error SC1090: JSON.stringify of '{ calendar: Calendar }' values (field 'next' of class 'Schedule' has type 'Date', which the runtime JSON traversal cannot read) are not supported yet
+
+  14 | console.log(JSON.stringify(new Schedule()));
+  15 | console.log(JSON.stringify({ calendar: new Calendar() }));
+     |                            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 | 

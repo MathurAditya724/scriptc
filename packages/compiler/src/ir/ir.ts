@@ -3717,9 +3717,10 @@ export function isJsonStringifySafeType(
   return isJsonSafeAt(t, getRecord, getUnion, true, false, new Set());
 }
 
-/** A JSON-shaped container with unknown payloads needs the runtime JSON
- * traversal. Its declared structure can be boxed, but payloads may carry
- * omitted values, toJSON methods, or cycles. This predicate does not widen
+/** A JSON-shaped container with unknown payloads, or a class instance at
+ * any position, needs the runtime JSON traversal. Its declared structure can
+ * be boxed, but payloads may carry omitted values, toJSON methods, added
+ * properties, or cycles. This predicate does not widen
  * the type-directed serializer, checked-value boundary, or root-undefined
  * contract; callers must select the checked runtime traversal explicitly. */
 export function isJsonStringifyDynamicType(
@@ -3728,7 +3729,7 @@ export function isJsonStringifyDynamicType(
   getUnion: (unionId: string) => IrUnionDef | undefined,
 ): boolean {
   return (
-    (t.kind === "record" || t.kind === "array" || t.kind === "union") &&
+    (t.kind === "record" || t.kind === "array" || t.kind === "union" || isDynTypedRefType(t)) &&
     isJsonSafeAt(t, getRecord, getUnion, true, false, new Set(), true) &&
     !isJsonStringifySafeType(t, getRecord, getUnion)
   );
@@ -3838,8 +3839,12 @@ function isJsonSafeAt(
       return nativeFields && !stringify;
     case "bytes":
       return nativeFields;
-    case "func":
+    // Class instances stringify through the runtime JSON traversal, which
+    // reads their own enumerable properties and calls toJSON.
     case "object":
+      if (nativeFields && stringify && isDynTypedRefType(t)) return true;
+      return false;
+    case "func":
     // Class values stringify as "{}" husks in Node (own enumerable statics
     // aside — not representable type-directedly); rejected like Maps.
     case "classval":
