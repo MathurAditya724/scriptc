@@ -4464,7 +4464,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.entries",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.map.forEach",
@@ -4489,7 +4489,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.keys",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.map.set",
@@ -4502,7 +4502,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.values",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.math.E",
@@ -5371,7 +5371,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.entries",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.set.forEach",
@@ -5418,7 +5418,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.keys",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.set.symmetricDifference",
@@ -5439,7 +5439,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.values",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.sharedArrayBuffer",

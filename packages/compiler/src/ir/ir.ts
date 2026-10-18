@@ -1651,7 +1651,15 @@ export interface IrFunction {
    * out, `nextT` what `.next(v)` sends in (the yield expression's result
    * type). `async` alongside this field marks an async generator: its
    * resume methods queue requests and return promises. */
-  generator?: { yieldT: IrType; nextT: IrType; resultType: IrType & { kind: "record" } };
+  generator?: {
+    yieldT: IrType;
+    nextT: IrType;
+    resultType: IrType & { kind: "record" };
+    /** The first parameter is a generator this one reads from (an
+     * iterator helper's source): `.return()` before the first `.next()`
+     * closes it. */
+    closesSource?: true;
+  };
   /** Source function name for native error stack frames. */
   sourceName?: string;
   /** Ordinary authored function declarations/expressions own a prototype. */
@@ -1924,6 +1932,11 @@ export type IrStmt =
       /** Resource-management cleanup: if the guarded body and cleanup both
        * throw, raise a SuppressedError instead of replacing the first error. */
       suppressFinallyErrors?: true;
+      /** Iterator closing: if the guarded body threw and the cleanup throws
+       * too, the cleanup's error is dropped and the first one propagates.
+       * After a generator .return() the cleanup's error replaces it, and on
+       * normal exits it propagates. */
+      dropFinallyErrors?: true;
       loc: SrcLoc;
     };
 

@@ -111,6 +111,7 @@ import {
   lowerForOfSearchParams,
   lowerForOfSet,
 } from "./containers/for-of.js";
+import { lowerForOfHelperChain } from "./containers/iterator-helpers.js";
 import { objectIterOverIndexShape } from "./containers/indexed-objects.js";
 import { strCharsCall } from "./containers/array-construction.js";
 import {
@@ -8545,6 +8546,12 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         return lowerForOfStoredNumericIterator(lowerer, stmt, state, labels);
       }
     }
+  }
+  // A head that is a chain of iterator-helper stages runs as one loop
+  // over the chain's source.
+  {
+    const fused = lowerForOfHelperChain(lowerer, stmt, labels);
+    if (fused) return fused;
   }
   // `for (const k of m.keys())` / `.values()` / `.entries()`: the
   // iterator methods consumed DIRECTLY by a for-of head ride the

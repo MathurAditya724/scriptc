@@ -166,6 +166,7 @@ import {
   mangleFnClosure,
   mangleFunction,
   mangleGenDrop,
+  mangleGenSourceClose,
   mangleGenSpawn,
   mangleGlobal,
   mangleLocal,
@@ -4623,6 +4624,25 @@ export class LlEmitter {
       dr.push(`  call void @free(ptr %ap)`, `  ret void`, `}`, ``);
       for (const line of dr) out.push(line);
 
+      // An iterator helper's return() before its first next() closes the
+      // source generator in its first argument slot.
+      const closesSource = fn.generator.closesSource === true;
+      if (closesSource) {
+        const field = lifted ? 1 : 0;
+        this.declare(`declare void @scr_gen_close(ptr)`);
+        this.declare(`declare void @scr_gen_set_unstarted_return(ptr, ptr)`);
+        out.push(
+          `define internal void @${mangleGenSourceClose(fn.name)}(ptr %ap) ${FN_ATTRS} {`,
+          `entry:`,
+          `  %sp = getelementptr inbounds %${pack}, ptr %ap, i64 0, i32 ${field}`,
+          `  %sv = load ptr, ptr %sp`,
+          `  call void @scr_gen_close(ptr %sv)`,
+          `  ret void`,
+          `}`,
+          ``,
+        );
+      }
+
       // Spawn wrapper: pack the args (+1 moves in), allocate the
       // SUSPENDED fiber — nothing runs until the first .next().
       if (lifted) {
@@ -4639,6 +4659,11 @@ export class LlEmitter {
         settleAsync === null
           ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
           : `  %gg = call ptr @scr_async_gen_new(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+        ...(closesSource
+          ? [
+              `  call void @scr_gen_set_unstarted_return(ptr %gg, ptr @${mangleGenSourceClose(fn.name)})`,
+            ]
+          : []),
         `  ret ptr %gg`,
         `}`,
         ``,
@@ -9543,14 +9568,15 @@ export class LlEmitter {
         B.line(`${stash} = call ptr @scr_exc_take() ; stash across finally`);
         B.line(`store ptr ${stash}, ptr ${stashSlot}`);
         this.scopes.push([{ slot: stashSlot, type: CAUGHT }]);
-        const suppressHandler = s.suppressFinallyErrors
-          ? {
-              label: B.newLabel("try.fs"),
-              used: false,
-              frameDepth: this.frames.length,
-              scopeDepth: this.scopes.length,
-            }
-          : null;
+        const suppressHandler =
+          s.suppressFinallyErrors || s.dropFinallyErrors
+            ? {
+                label: B.newLabel("try.fs"),
+                used: false,
+                frameDepth: this.frames.length,
+                scopeDepth: this.scopes.length,
+              }
+            : null;
         if (suppressHandler) this.tryStack.push(suppressHandler);
         this.emitBlock(s.finallyBody!);
         if (suppressHandler) this.tryStack.pop();
@@ -9560,8 +9586,9 @@ export class LlEmitter {
         this.emitUnwind();
         if (suppressHandler?.used) {
           B.startBlock(suppressHandler.label);
-          this.declare(`declare void @scr_exc_suppress(ptr)`);
-          B.line(`call void @scr_exc_suppress(ptr ${stash}) ; consumes stash`);
+          const cleanup = s.dropFinallyErrors ? "scr_exc_keep_first" : "scr_exc_suppress";
+          this.declare(`declare void @${cleanup}(ptr)`);
+          B.line(`call void @${cleanup}(ptr ${stash}) ; consumes stash`);
           this.emitUnwind();
         }
       }

@@ -275,7 +275,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
       status: "static",
       ...(COLLECTION_ITERATOR_METHODS.has(name)
         ? {
-            note: "live native iterators support next(), for...of, and drains; iterator helper methods are refused",
+            note: "live native iterators support next(), for...of, drains, and the iterator helper methods",
           }
         : {}),
     });
@@ -288,7 +288,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
       status: "static",
       ...(COLLECTION_ITERATOR_METHODS.has(name)
         ? {
-            note: "live native iterators support next(), for...of, and drains; iterator helper methods are refused",
+            note: "live native iterators support next(), for...of, drains, and the iterator helper methods",
           }
         : {}),
     });
