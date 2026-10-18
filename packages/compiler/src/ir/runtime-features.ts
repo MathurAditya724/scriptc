@@ -377,7 +377,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn.startsWith("sym.") ||
         fn === "util.isDeepStrictEqual" ||
         fn === "dyn.usingMethod" ||
-        fn === "dyn.usingDispose"
+        fn === "dyn.usingDispose" ||
+        fn.startsWith("disposable.")
       )
         features.symbol = true;
       if (fn === "process.hrtimeValue") features.bigint = true;
