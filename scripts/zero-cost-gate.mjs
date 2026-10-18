@@ -97,9 +97,10 @@ symbols under DYNAMIC_TIER_PREFIXES (scripts/zero-cost-compare.mjs) unless
 it matches --allow, and fully typed bench workloads (all but
 DYNAMIC_WORKLOADS in this script) may define none.
 
---cachegrind (Linux, valgrind on PATH) runs differing bench executables under
-cachegrind and compares instruction counts per function of the executable's
-own symbols, excluding the allocator's prefault thread.
+--cachegrind (Linux, valgrind on PATH) runs differing executables under
+cachegrind (bench workloads with their arguments, corpus programs without)
+and compares instruction counts per function of the executable's own
+symbols, excluding the allocator's prefault thread.
 
 Exit status: 0 when the gate passes, 1 when it fails.`);
   process.exit(values.help ? 0 : 2);
@@ -414,7 +415,8 @@ async function instructionCounts(binary, args, out) {
     binary,
     ...args,
   ]);
-  if (result.status !== 0) return null;
+  // Corpus programs may exit non-zero on purpose (`// @exit: 1`).
+  if (result.signal !== null || !existsSync(out)) return null;
   return cachegrindCounts(readFileSync(out, "utf8"), new Set(definedFunctions(binary)));
 }
 
@@ -492,8 +494,10 @@ await pool(
       for (const failure of symbols?.failures ?? [])
         report.failures.push(`${program.id}: ${failure}`);
       if (fails || entry.sizeFailure || symbols?.failures.length) failed = true;
-      if (values.cachegrind && program.workload && artifacts.exe && !artifacts.exe.identical) {
-        const w = program.workload;
+      if (values.cachegrind && artifacts.exe && !artifacts.exe.identical) {
+        // Bench workloads run with their benchmark arguments; corpus
+        // programs take none.
+        const w = program.workload ?? { args: [] };
         if (w.kind === "server" || w.args.includes("{input}"))
           entry.cachegrind = { skipped: "needs a server client or generated input" };
         else {
