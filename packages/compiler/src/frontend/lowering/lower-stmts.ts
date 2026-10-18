@@ -5792,6 +5792,28 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     };
   }
   let obj = lowerer.lowerExpr(target.expression);
+  // `delete this.stack` in an Error subclass that declares a `stack`
+  // accessor (quickjs-wasi's JSException): V8 gives each error an own
+  // `stack` that shadows the accessor, and the delete removes it so reads
+  // reach the accessor. Compiled errors keep the trace internally and
+  // class dispatch already reads the accessor, so only the receiver's
+  // evaluation remains.
+  if (
+    obj.type.kind === "object" &&
+    ts.isPropertyAccessExpression(target) &&
+    target.name.text === "stack"
+  ) {
+    let accessor = false;
+    let errorBase = false;
+    for (let c = lowerer.classes.get(obj.type.className); c; c = c.base ?? undefined) {
+      if (c.builtinError) {
+        errorBase = true;
+        break;
+      }
+      if (c.methods.has("get:stack")) accessor = true;
+    }
+    if (accessor && errorBase) return { kind: "exprStmt", expr: obj, loc };
+  }
   if (isJsSourceFile(expr.getSourceFile()) && obj.type.kind === "object") {
     const info = lowerer.classes.get(obj.type.className);
     const keyType = ts.isElementAccessExpression(target)
