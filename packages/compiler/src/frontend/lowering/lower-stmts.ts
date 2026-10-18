@@ -60,6 +60,7 @@ import {
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
 import {
   cjsExportAssignmentOf,
+  cjsVoidInitPreambleReals,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   isCjsJsFile,
@@ -6006,47 +6007,7 @@ function lowerCjsExportStatement(
     // the real assignment's position already orders. Preambles with no
     // later real assignment keep the ordinary path (the export IS
     // undefined then).
-    if (ts.isIdentifier(cjs.name)) {
-      const isExportsMember = (e: ts.Expression): e is ts.PropertyAccessExpression =>
-        ts.isPropertyAccessExpression(e) &&
-        ts.isIdentifier(e.name) &&
-        ((ts.isIdentifier(e.expression) && e.expression.text === "exports") ||
-          (ts.isPropertyAccessExpression(e.expression) &&
-            ts.isIdentifier(e.expression.expression) &&
-            e.expression.expression.text === "module" &&
-            ts.isIdentifier(e.expression.name) &&
-            e.expression.name.text === "exports"));
-      const isVoid = (e: ts.Expression): boolean => {
-        while (ts.isParenthesizedExpression(e)) e = e.expression;
-        return (
-          e.kind === ts.SyntaxKind.VoidExpression || (ts.isIdentifier(e) && e.text === "undefined")
-        );
-      };
-      // chains: `exports.a = exports.b = void 0;` collects every name
-      const names: string[] = [cjs.name.text];
-      let tail: ts.Expression = cjs.value;
-      while (
-        ts.isBinaryExpression(tail) &&
-        tail.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        isExportsMember(tail.left)
-      ) {
-        names.push((tail.left.name as ts.Identifier).text);
-        tail = tail.right;
-      }
-      if (isVoid(tail)) {
-        const sfHere = cjs.expr.getSourceFile();
-        const myPos = cjs.expr.getStart(sfHere);
-        const laterRealOf = (name: string): boolean =>
-          sfHere.statements.some((s) => {
-            const other = cjsExportAssignmentOf(s);
-            if (other?.kind !== "member" || !ts.isIdentifier(other.name)) return false;
-            if (other.name.text !== name) return false;
-            if (other.expr.getStart(sfHere) <= myPos) return false;
-            return !isVoid(other.value);
-          });
-        if (names.every(laterRealOf)) return { kind: "block", body: [], loc };
-      }
-    }
+    if (cjsVoidInitPreambleReals(cjs) !== null) return { kind: "block", body: [], loc };
     const sf = cjs.expr.getSourceFile();
     let root: IrGlobal | undefined;
     for (const stmt of sf.statements) {

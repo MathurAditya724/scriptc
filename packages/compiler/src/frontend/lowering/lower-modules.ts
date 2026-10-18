@@ -18,6 +18,7 @@ import { isRelativeSpecifier } from "../workspace-registry.js";
 import {
   canonicalBuiltinModule,
   cjsExportAssignmentOf,
+  cjsVoidInitPreambleReals,
   cjsExportDiscardReason,
   entryPackageFilePredicate,
   isCjsJsFile,
@@ -1398,6 +1399,11 @@ export function collectGlobals(
         // symbol (cjsMemberExportClassSymbol) and the class registry
         // applies unchanged.
         if (lowerer.cjsMemberExportClassSymbol(cjs.expr) !== null) continue;
+        // A dropped tsc void-init preamble whose real assignment is such a
+        // class alias registers nothing either: storage here would never
+        // be assigned, and importers would read it instead of the class.
+        const real = cjsVoidInitPreambleReals(cjs)?.get(cjs.name.text);
+        if (real && lowerer.cjsMemberExportClassSymbol(real.expr) !== null) continue;
         registerExport(cjs.name, cjs.name.text, cjs.value);
         continue;
       }
