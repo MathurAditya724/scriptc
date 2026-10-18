@@ -1106,6 +1106,10 @@ export class LlDyn {
   private readonly jsonSchemas = new Map<string, string>();
   private readonly jsonParsers = new Map<string, string>();
   private readonly recordNameTables = new Map<string, { names: string; lens: string }>();
+  /** Some emitted helper can keep a record's undeclared source: a checked
+   * record builder that notes it, or a JSON schema of a closed record
+   * (alloc.ts RECORD_SOURCES_GATE). */
+  keepsRecordSources = false;
 
   /** Targets the one-pass parser (scr_json_parse_schema) can build
    * directly: number, boolean and string leaves inside arrays and records
@@ -1217,12 +1221,14 @@ export class LlDyn {
             `llvm emitter bug: JSON schema of unknown shape ${t.shapeId}`,
           );
         const struct = mangleRecordStruct(t.shapeId);
-        const index = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+        const base = host.nullableUnions.fieldBase(t.shapeId);
+        const index = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         // The runtime names kept-source keys by this index (record-sources.ts).
         const order = recordSourceFieldOrder(shape);
+        if (recordMayKeepSource(shape)) this.keepsRecordSources = true;
         const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
         const entries = order.map((fieldName) => {
-          const field = shape.fields[index.get(fieldName)! - 1]!;
+          const field = shape.fields[index.get(fieldName)! - base]!;
           const sub = this.jsonSchema(field.type);
           const offset = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${index.get(fieldName)}) to ${S})`;
           return `${fieldTy} { ptr ${host.cstr(fieldName)}, ${S} ${Buffer.byteLength(fieldName, "utf8")}, ${S} ${offset}, ptr @${sub} }`;
@@ -1240,7 +1246,7 @@ export class LlDyn {
         const overflow = shape.indexValue
           ? {
               elem: `@${this.jsonSchema(shape.indexValue)}`,
-              offset: `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${shape.fields.length + 1}) to ${S})`,
+              offset: `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${shape.fields.length + base}) to ${S})`,
             }
           : { elem: "null", offset: "0" };
         body = `${S} 3, ${S} ${entries.length}, ptr ${fields}, ptr ${overflow.elem}, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}, ptr null, ${S} ${overflow.offset}`;
@@ -1547,18 +1553,19 @@ export class LlDyn {
             B.line(`call void @scr_arr_outline(ptr ${cached})`);
             B.line(`call void @scr_arr_outline(ptr ${checked})`);
           }
+          const base = t.kind === "record" ? host.nullableUnions.fieldBase(t.shapeId) : 1;
           const members =
             t.kind === "record"
               ? [
                   ...shape!.fields.map((field, index) => ({
-                    index: index + 1,
+                    index: index + base,
                     type: llFieldType(field.type, host.inlineUnions.record(field.type)),
                     name: field.name,
                   })),
                   ...(shape!.indexValue
                     ? [
                         {
-                          index: shape!.fields.length + 1,
+                          index: shape!.fields.length + base,
                           type: "ptr" as const,
                           name: "[key: string] overflow",
                         },
@@ -1819,7 +1826,8 @@ export class LlDyn {
             `llvm emitter bug: dynCheck of unknown shape ${t.shapeId}`,
           );
         const struct = mangleRecordStruct(t.shapeId);
-        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+        const base = host.nullableUnions.fieldBase(t.shapeId);
+        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         const releaseR = (): void => {
           B.line(`call void ${releaseSym(host, t)}(ptr %r0)`);
         };
@@ -1978,6 +1986,7 @@ export class LlDyn {
         // that has them stays beside the record so its reflective
         // surfaces still observe them (scr_record_source_note).
         if (recordMayKeepSource(shape)) {
+          this.keepsRecordSources = true;
           const names = this.recordNameTable(t.shapeId, shape);
           host.declare(
             `declare void @scr_record_source_note(ptr, ptr, ptr, ptr, ${host.sizeType})`,
@@ -1996,7 +2005,7 @@ export class LlDyn {
           const ovfp = B.tmp();
           const ovf = B.tmp();
           B.line(
-            `${ovfp} = getelementptr inbounds %${struct}, ptr %r0, i64 0, i32 ${shape.fields.length + 1}`,
+            `${ovfp} = getelementptr inbounds %${struct}, ptr %r0, i64 0, i32 ${shape.fields.length + base}`,
           );
           B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
           if (shape.fields.length === 0) {
@@ -2578,7 +2587,8 @@ export class LlDyn {
         if (!shape)
           throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
         const struct = mangleRecordStruct(t.shapeId);
-        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+        const base = host.nullableUnions.fieldBase(t.shapeId);
+        const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         const loadFieldOf = (fname: string, ft: IrType): string => {
           const p = B.tmp();
           B.line(
@@ -2702,7 +2712,7 @@ export class LlDyn {
           const ovfp = B.tmp();
           const ovf = B.tmp();
           B.line(
-            `${ovfp} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 ${shape.fields.length + 1}`,
+            `${ovfp} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 ${shape.fields.length + base}`,
           );
           B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
           const ks = B.tmp();

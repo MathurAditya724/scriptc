@@ -960,3 +960,136 @@ for (const input of [ciphertext, Buffer.from("forged data"), Buffer.alloc(0)]) {
     expect(r.stderr).toBe("");
   });
 });
+
+// Function expressions the frontend lowers speculatively (the receiver of
+// `.call`/`.apply`, a computed class base) keep their refused statements as
+// runtime fences. They used to vanish: the capture buffer held the refusal,
+// the candidate was kept, and the statement was simply missing from it.
+describe("refused statements in speculatively lowered JavaScript functions", () => {
+  test.each([
+    [
+      "speculative-call-this",
+      `(function () {
+  var root = this;
+  console.log("before");
+  console.log(root === eval("this"));
+  console.log("after");
+}).call(this);
+`,
+      "before\n",
+      4,
+    ],
+    [
+      "speculative-apply",
+      `(function () {
+  console.log("before");
+  console.log(typeof eval("1"));
+}).apply(null, []);
+`,
+      "before\n",
+      3,
+    ],
+    [
+      "speculative-class-base",
+      `class Base {}
+class Derived extends (function () {
+  console.log("before");
+  console.log(typeof eval("1"));
+  return Base;
+})() {}
+console.log(typeof Derived);
+`,
+      "before\n",
+      4,
+    ],
+  ] as const)("%s", async (name, source, stdout, line) => {
+    const r = await compileAndRun(name, source, "cjs");
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(stdout);
+    expect(r.stderr).toMatch(
+      new RegExp(
+        `^Uncaught Error: values of type '\\(x: string\\) => any' cannot be compiled: .* \\[SC2009 at .*${name}\\.cjs:${line}\\]\\n$`,
+      ),
+    );
+  });
+});
+
+// CommonJS forms around the module's exports that keep a refusal name the
+// construct itself (they used to report an unlowerable `require` value, a
+// "binding form with no lowering", or the ES-module `module` message).
+describe("CommonJS export-object and inline require refusals", () => {
+  test.each([
+    [
+      "exports-as-argument",
+      `exports.x = 1;
+function keys(o) {
+  return Object.keys(o);
+}
+console.log("before");
+console.log(keys(exports));
+`,
+      {},
+      "before\n",
+      6,
+      "'exports' as a value other than a member access, comparison, typeof or truthiness test \\(the compiled exports are a static table, not an object: read exports\\.<name>\\)",
+    ],
+    [
+      "exports-rebinding",
+      `console.log("before");
+exports = module.exports = function hash(x) {
+  return x;
+};
+exports.extra = 1;
+`,
+      {},
+      "before\n",
+      2,
+      "rebinding 'exports' \\(exports = module\\.exports = value\\)",
+    ],
+    [
+      "require-computed",
+      `const name = "./lib.cjs";
+console.log("before");
+console.log(require(name).x);
+`,
+      { "lib.cjs": "exports.x = 1;\n" },
+      "before\n",
+      3,
+      "require\\(\\) with a computed specifier",
+    ],
+    [
+      "exports-call-reads-this",
+      `exports.timeouts = function (n) {
+  return this.scale * n;
+};
+exports.scale = 2;
+console.log("before");
+console.log(exports.timeouts(3));
+`,
+      {},
+      "before\n",
+      6,
+      "calling 'exports\\.timeouts' through the module's exports object when the function may read 'this'",
+    ],
+    [
+      "require-table-as-value",
+      `function count(o) {
+  return Object.keys(o).length;
+}
+console.log("before");
+console.log(count(require("./lib.cjs")));
+`,
+      { "lib.cjs": "exports.x = 1;\n" },
+      "before\n",
+      5,
+      "the exports object of '\\./lib\\.cjs' as a value",
+    ],
+  ] as const)("%s", async (name, source, extra, stdout, line, message) => {
+    const r = await compileAndRun(name, source, "cjs", extra);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(stdout);
+    expect(r.stderr).toMatch(
+      new RegExp(`^Uncaught Error: ${message}.*\\[SC1090 at .*${name}\\.cjs:${line}\\]\\n$`),
+    );
+  });
+});

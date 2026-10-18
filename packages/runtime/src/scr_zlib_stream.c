@@ -431,6 +431,13 @@ static const char *scr_zs_class_name(int mode) {
 }
 
 ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
+  /* A typed options object is read through its materialized view. */
+  if (opts != NULL && opts->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(opts);
+    ScrStream *stream = scr_exc_pending() ? NULL : scr_zlib_stream_new(mode_d, view);
+    scr_dyn_release(view);
+    return stream;
+  }
   int mode = (int)mode_d;
   const ScrDyn *o = opts != NULL && scr_dyn_truthy(opts) ? opts : NULL;
   ScrZlibOptions zo;

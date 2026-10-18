@@ -1656,6 +1656,14 @@ export interface IrFunction {
   sourceName?: string;
   /** Ordinary authored function declarations/expressions own a prototype. */
   ownsPrototype?: true;
+  /** The function's execution tier (ir/tiers.ts). Absent means static: the
+   * function may use dynamic values only through boundary operations
+   * (dynFrom, dynCheck, kind tests) and moves, which the validator enforces
+   * (invariant I1). "dynamic" admits the dynamic operation vocabulary
+   * (dynKeyGet, dynCall, dyn.* builtins, ...). Lowering assigns the field
+   * from the body (assignLegacyTiers); stage S2 of the two-tier design
+   * keeps it out of serialized IR, so loaders derive it again. */
+  tier?: "dynamic";
   body: IrStmt[];
   loc: SrcLoc;
 }
