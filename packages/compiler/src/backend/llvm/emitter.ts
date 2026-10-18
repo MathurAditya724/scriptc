@@ -5756,6 +5756,8 @@ export class LlEmitter {
       // Process streams use a numeric descriptor internally, including zero
       // for stdin. They remain JavaScript objects in boolean contexts.
       case "procStream":
+      // A module namespace object is always present.
+      case "moduleNs":
         return "true";
       case "array":
       case "record":

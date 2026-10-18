@@ -11569,6 +11569,18 @@ export class Lowerer {
     if (mapped?.kind === "moduleNs" && mapped.moduleId.startsWith("builtin:")) {
       return mapped.moduleId.slice("builtin:".length);
     }
+    // A nullable namespace binding (`const os: typeof NodeOs | null`, a
+    // probed process.getBuiltinModule result) read where the checker
+    // narrowed it present: its members key the same tables.
+    if (stored?.kind === "union") {
+      const present = this.unions.get(stored.unionId)?.arms.filter((arm) => !isUnitType(arm));
+      const only = present?.length === 1 ? present[0] : undefined;
+      if (only?.kind === "moduleNs" && only.moduleId.startsWith("builtin:")) {
+        const narrowed = this.mapTypeOf(this.typeOf(expr));
+        if (narrowed?.kind === "moduleNs" && narrowed.moduleId === only.moduleId)
+          return only.moduleId.slice("builtin:".length);
+      }
+    }
     if (ts.isIdentifier(expr)) {
       const symbol = this.checker.getSymbolAtLocation(expr);
       const decl = symbol ? this.checker.declarationsOf(symbol)[0] : undefined;

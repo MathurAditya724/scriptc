@@ -26,6 +26,7 @@ import {
   funcOf,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
+import { canonicalBuiltinModule } from "../../builtin-modules.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
 
@@ -363,6 +364,11 @@ export function lowerProcessProperty(
   const loc = locOf(expr);
   if (member === "versions") {
     return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
+  }
+  // process.features as a value (`"sea" in process.features`): an object
+  // holding none of the flags, consistent with the member reads above.
+  if (member === "features") {
+    return { kind: "dynObjLit", type: DYN, loc };
   }
   // process.noDeprecation / process.throwDeprecation: the values the
   // program assigned (undefined before that — no Node flags reach a
@@ -1520,4 +1526,37 @@ function processCredentialCall(member: string, loc: SrcLoc): IrExpr {
     type: member === "getgroups" ? arrayOf(F64) : F64,
     loc,
   };
+}
+
+/** `process.getBuiltinModule("node:os")`: a string-literal id naming a
+ * supported builtin whose call the checker types as that module's
+ * namespace (@types/node's BuiltInModule map) answers the namespace value
+ * `import * as ns` binds, so its members key the builtin tables at their
+ * use sites. The receiver may be cast (`(process as P)`) and the call
+ * optional: Node 24's process always has the member, and the cast changes
+ * no runtime value. Other ids keep the dynamic loader (undefined for
+ * unknown ids, Node's argument errors). */
+export function lowerProcessBuiltinModuleNamespace(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "getBuiltinModule")
+    return null;
+  const id = call.arguments[0];
+  if (call.arguments.length !== 1 || !id || !ts.isStringLiteralLike(id)) return null;
+  let receiver: ts.Expression = callee.expression;
+  while (
+    ts.isParenthesizedExpression(receiver) ||
+    ts.isAsExpression(receiver) ||
+    ts.isSatisfiesExpression(receiver) ||
+    ts.isNonNullExpression(receiver)
+  )
+    receiver = receiver.expression;
+  if (!lowerer.isStdlibGlobal(receiver, "process")) return null;
+  const module = canonicalBuiltinModule(id.text);
+  if (module === null) return null;
+  const type = lowerer.mapTypeOf(lowerer.checker.getNonNullableType(lowerer.typeOf(call)));
+  if (type?.kind !== "moduleNs" || type.moduleId !== `builtin:${module}`) return null;
+  return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc: locOf(call) };
 }

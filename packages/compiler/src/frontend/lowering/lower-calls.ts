@@ -126,7 +126,10 @@ import {
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
-import { lowerProcStreamMethodCall } from "./builtins/process.js";
+import {
+  lowerProcStreamMethodCall,
+  lowerProcessBuiltinModuleNamespace,
+} from "./builtins/process.js";
 import { recordMayKeepSource, throughRecordSource } from "./record-sources.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
@@ -361,6 +364,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       };
     }
     return { kind: "libCall", fn: "http2.streamNoop", args: [], type: VOID, loc };
+  }
+
+  // `process.getBuiltinModule("node:os")` typed as the module namespace,
+  // including pi's cast-and-probe spelling
+  // `(process as P).getBuiltinModule?.("node:os")` (the member always
+  // exists on Node 24's process object).
+  {
+    const namespace = lowerProcessBuiltinModuleNamespace(lowerer, expr);
+    if (namespace) return namespace;
   }
 
   // Optional-chain call forms: `f?.()` (the token on the call) and
