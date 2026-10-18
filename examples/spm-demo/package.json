@@ -1,0 +1,22 @@
+{
+  "name": "spm-demo",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@openfeature/core": "1.9.2",
+    "@openfeature/server-sdk": "1.18.0",
+    "@typescript-eslint/typescript-estree": "8.20.0",
+    "async-sema": "3.1.1",
+    "fast-glob": "3.3.3",
+    "path-to-regexp": "6.3.0",
+    "semver": "7.6.2",
+    "smol-toml": "1.9.0",
+    "ts-api-utils": "2.1.0",
+    "typescript": "5.7.3",
+    "undici": "5.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "@types/semver": "7.5.8"
+  }
+}

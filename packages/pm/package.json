@@ -1,0 +1,23 @@
+{
+  "name": "@scriptc/pm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "scriptc-pm (spm): a pnpm wrapper that augments installed npm packages with their verified upstream TypeScript source for scriptc (proof of concept)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "scriptc-pm": "dist/main.js",
+    "spm": "dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "build:native": "node ../cli/dist/bootstrap.js build src/main.ts -o bin/spm",
+    "smoke": "sh scripts/smoke.sh"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

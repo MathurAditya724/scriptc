@@ -188,6 +188,8 @@ importers:
 
   packages/llvm-win32-x64-msvc: {}
 
+  packages/pm: {}
+
   packages/runtime: {}
 
   packages/runtime-android-arm64: {}
