@@ -2386,6 +2386,50 @@ static ScrStr **sf_headers_sorted_names(SfHeaders *h, size_t *count_out) {
   return names;
 }
 
+static bool sf_headers_is_set_cookie(const ScrStr *name) {
+  return name->len == 10 && memcmp(name->data, "set-cookie", 10) == 0;
+}
+
+/* The `index`th entry of Fetch's "sort and combine" list: names in
+ * byte order, each with its combined value, except that every set-cookie
+ * value is its own entry (in insertion order), as Node's Headers
+ * iterator yields them. False past the end. Outputs are +1. */
+static bool sf_headers_sorted_entry(SfHeaders *h, size_t index,
+                                    ScrStr **name_out,
+                                    ScrStr **value_out) {
+  size_t count = 0;
+  ScrStr **names = sf_headers_sorted_names(h, &count);
+  bool found = false;
+  size_t at = 0;
+  for (size_t i = 0; i < count && !found; i++) {
+    if (!sf_headers_is_set_cookie(names[i])) {
+      if (at == index) {
+        *name_out = scr_str_retain(names[i]);
+        *value_out = sf_headers_get_value(h, names[i]);
+        found = true;
+      }
+      at++;
+      continue;
+    }
+    size_t n = (size_t)scr_arr_len(h->pairs);
+    for (size_t j = 0; j + 1 < n && !found; j += 2) {
+      ScrStr *key = scr_arr_get_ref(h->pairs, (double)j);
+      bool match = sf_headers_is_set_cookie(key);
+      scr_str_release(key);
+      if (!match) continue;
+      if (at == index) {
+        *name_out = scr_str_retain(names[i]);
+        *value_out = scr_arr_get_ref(h->pairs, (double)(j + 1));
+        found = true;
+      }
+      at++;
+    }
+  }
+  for (size_t j = 0; j < count; j++) scr_str_release(names[j]);
+  free(names);
+  return found;
+}
+
 static ScrDyn *sf_headers_invoke(void *ptr, ScrDyn *self,
                                  const char *method,
                                  ScrDyn *const *args, size_t argc,
@@ -2438,20 +2482,15 @@ static ScrDyn *sf_headers_invoke(void *ptr, ScrDyn *self,
      * a future name skips it, inserting a later name visits it, and
      * inserting before the current index can make the current name appear
      * again. The old one-time snapshot was only safe while every native
-     * Headers handle was immutable. */
+     * Headers handle was immutable. Set-Cookie values are visited one by
+     * one (sf_headers_sorted_entry). */
     for (size_t i = 0;; i++) {
-      size_t count = 0;
-      ScrStr **names = sf_headers_sorted_names(h, &count);
-      if (i >= count) {
-        for (size_t j = 0; j < count; j++) scr_str_release(names[j]);
-        free(names);
-        break;
-      }
-      ScrStr *value = sf_headers_get_value(h, names[i]);
+      ScrStr *name = NULL;
+      ScrStr *value = NULL;
+      if (!sf_headers_sorted_entry(h, i, &name, &value)) break;
       ScrDyn *boxed_value = scr_dyn_new_str(value);
-      ScrDyn *boxed_name = scr_dyn_new_str(names[i]);
-      for (size_t j = 0; j < count; j++) scr_str_release(names[j]);
-      free(names);
+      ScrDyn *boxed_name = scr_dyn_new_str(name);
+      scr_str_release(name);
       ScrDyn *call_args[3] = {boxed_value, boxed_name, self};
       scr_dyn_this_push_dyn(this_arg);
       ScrDyn *result =
