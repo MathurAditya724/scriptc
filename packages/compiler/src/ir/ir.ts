@@ -2564,7 +2564,7 @@ export type IrExpr =
     }
   /** A regex literal `/ab+c/gi`. `pattern` is the text between the slashes
    * exactly as written (escapes UNprocessed — the regex engine parses them),
-   * `flags` the trailing flags in source order (alphabet fenced to gimsuy by
+   * `flags` the trailing flags in getter order (alphabet fenced to gimsuvy by
    * the frontend). Backends intern ONE immortal static per (pattern, flags)
    * pair — like string literals, so repeated evaluation is free and
    * `re === re` would hold — and compile the pattern lazily at first use
