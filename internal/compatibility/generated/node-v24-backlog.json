@@ -6736,6 +6736,8 @@
           "source": "compiler-dedicated:crypto.createHash",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -6774,6 +6776,8 @@
           "source": "compiler-dedicated:crypto.createHmac",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -7396,6 +7400,8 @@
           "source": "compiler-dedicated:crypto.hash",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -7519,6 +7525,8 @@
           "source": "compiler-dedicated:crypto.pbkdf2",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -7557,6 +7565,8 @@
           "source": "compiler-dedicated:crypto.pbkdf2Sync",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9037,6 +9047,8 @@
           "source": "compiler-dedicated:Hash",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9075,6 +9087,8 @@
           "source": "compiler-dedicated:hash.copy",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9113,6 +9127,8 @@
           "source": "compiler-dedicated:hash.digest",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9151,6 +9167,8 @@
           "source": "compiler-dedicated:hash.update",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9189,6 +9207,8 @@
           "source": "compiler-dedicated:Hmac",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9227,6 +9247,8 @@
           "source": "compiler-dedicated:hmac.digest",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9265,6 +9287,8 @@
           "source": "compiler-dedicated:hmac.update",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",

@@ -41,6 +41,7 @@ import {
   BOOL,
   CAUGHT,
   DYN,
+  DYN_HANDLE_KINDS,
   F64,
   type IrExpr,
   type IrFunction,
@@ -3351,6 +3352,11 @@ function lowerDynReceiverMethodCall(
       lowerStringMethodCall(lowerer, call, access, () => recv)
     );
   }
+  // A native handle read through `as any` (`(hash as any).update(x)`)
+  // dispatches through the handle, as the same value held in an
+  // 'unknown' slot does.
+  if (checkerUntyped && DYN_HANDLE_KINDS.has(recv.type.kind))
+    recv = lowerer.coerceToExpected(recv, DYN);
   if (recv.type.kind !== "dyn") return null;
   if (
     access.name.text === "normalize" &&
