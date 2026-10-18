@@ -48,6 +48,12 @@ Corpus programs are differential tests against Node: every program runs under No
 
 Before opening a PR that adds or changes corpus, diagnostic, or frontend fixtures, run `pnpm test:ts7 --baselines-only`. This fast completeness check uses the same fixture discovery as the parity suite; it does not type-check or replace behavioral parity. Generate missing preflight/order baselines, review their diagnostics and module order, and run the affected `order-parity.test.ts` batches before pushing. Keep existing baseline entries unchanged unless the corresponding behavior intentionally changes. The full `pnpm test:ts7` command also checks completeness before starting its sweep.
 
+A change that must not cost good code anything, such as a compatibility fix that replaces a refusal, proves it with the zero-cost gate. The gate compiles the benchmark workloads, the self-hosted compiler, and the TypeScript corpus with two built checkouts. It requires byte-identical IR, LLVM, and release executables, and compile time within tolerance. `--allow=<regex>` names the change's pattern signature: programs whose sources match may differ, and the PR lists them. Any other difference fails the gate, which names the first differing function. `--quick` checks only the benchmarks; `--cachegrind` adds per-function instruction counts for executables that differ. Run it in a Sandbox with both checkouts prepared:
+
+```bash
+node scripts/zero-cost-gate.mjs --baseline=/vercel/sandbox/prev --candidate=. --allow='\barguments\b'
+```
+
 Test location follows scope:
 
 - Co-locate white-box unit tests with implementation files under
