@@ -2,6 +2,7 @@ import { guardNullProto, nullProtoRecordShape, recordNullProtoTest } from "./nul
 import { lowerProtocolPropertyRead } from "./class-protocol-dispatch.js";
 import { generatorDrain } from "./iterator-adapters.js";
 import { lowerEventObjectProperty, lowerEventObjectPropertyWrite } from "./lower-event-target.js";
+import { lowerDisposableStackInstanceOf } from "./builtins/disposable-stack.js";
 import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
@@ -11977,6 +11978,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   ) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "dyn.nativeUrlIs", args: [value], type: BOOL, loc };
+  }
+  {
+    const stack = lowerDisposableStackInstanceOf(lowerer, expr);
+    if (stack) return stack;
   }
   if (lowerer.isStdlibGlobal(expr.right, "DataView")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
