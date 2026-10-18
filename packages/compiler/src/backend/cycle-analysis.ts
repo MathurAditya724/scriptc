@@ -40,7 +40,7 @@ export function computeTraced(mod: IrModule): { shapes: Set<string>; unions: Set
 }
 
 /** Values that can reference any object. */
-export type IntrinsicKind = "func" | "dyn" | "classval" | "promise" | "caught";
+export type IntrinsicKind = "func" | "dyn" | "jsval" | "classval" | "promise" | "caught";
 
 /** Why an edge of the cycle graph exists (explanations only). */
 export type CycleEdgeLabel =
@@ -218,6 +218,7 @@ function analyzeCycles(
     switch (t.kind) {
       case "func":
       case "dyn":
+      case "jsval":
       case "classval":
       case "promise":
       case "caught":

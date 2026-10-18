@@ -311,7 +311,7 @@ export class Int32Slots {
   }
 }
 
-const DYN_KINDS = new Set<IrType["kind"]>(["dyn", "caught"]);
+const DYN_KINDS = new Set<IrType["kind"]>(["dyn", "jsval", "caught"]);
 /** Expressions that hand their operands (or produce results) to runtime
  * helpers, reflection, promises or other code the IR does not show. */
 const BOUNDARY_KINDS = new Set<IrExpr["kind"]>([
@@ -402,6 +402,19 @@ const DYN_READ_ONLY = new Set<string>([
   "fs.utimesSync",
   "insp.dyn",
   "insp.dynS",
+  // The dynamic-tier operators run their dyn twins (scr_js_value.c); the
+  // conversions move a value between dyn and jsval, and js.toF64 is
+  // dynCheck's number check.
+  "js.add",
+  "js.arithmetic",
+  "js.bitwise",
+  "js.compare",
+  "js.fromDyn",
+  "js.increment",
+  "js.toDyn",
+  "js.toF64",
+  "js.toNumberCoerce",
+  "js.toNumeric",
   "json.stringifyReplacer",
   "json.stringifyValue",
   "num.toStringRadix",

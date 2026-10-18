@@ -67,6 +67,9 @@ const optional = [
   ["scr_console_native.c", "inspect"],
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch")],
   ["scr_dc.c", "dc"],
+  // The dynamic tier's jsval values (two-tier design I3): linked only into
+  // programs whose IR has dynamic-tier operations.
+  ["scr_js_value.c", "dynTier"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch")],
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.

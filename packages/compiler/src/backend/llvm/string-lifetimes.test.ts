@@ -73,7 +73,7 @@ function fn(name: string, names: string[], value: IrExpr): IrFunction {
 }
 function mod(...functions: IrFunction[]): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [

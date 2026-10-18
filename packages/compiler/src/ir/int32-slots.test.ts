@@ -105,7 +105,7 @@ const newOf = (className: string, args: IrExpr[]): IrExpr => ({
   type: obj(className),
 });
 const mod = (classes: IrClassDef[], functions: IrFunction[]): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: "test.ts",
   entry: "%main",
   classes,

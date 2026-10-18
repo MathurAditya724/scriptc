@@ -52,6 +52,7 @@ export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): 
     case "record":
     case "union":
     case "dyn":
+    case "jsval":
     case "caught":
     case "undefinedT":
     case "nullT":

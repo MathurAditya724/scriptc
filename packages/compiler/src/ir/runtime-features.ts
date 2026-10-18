@@ -24,6 +24,9 @@ export interface RuntimeFeatures {
   assert: boolean;
   dynInvoke: boolean;
   dynAsync: boolean;
+  /** The program has dynamic-tier jsval operations (js.* builtins, the
+   * jsval pass): links the scr_js_* units (two-tier design I3). */
+  dynTier: boolean;
   inspect: boolean;
   childProcess: boolean;
   net: boolean;
@@ -196,6 +199,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       mod.functions.some(
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
+    dynTier: false,
     inspect: false,
     childProcess: false,
     net: false,
@@ -226,6 +230,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
   const expr = (node: IrExpr): boolean => {
     if (node.kind === "libCall") {
       const fn = node.fn;
+      if (fn.startsWith("js.")) features.dynTier = true;
       if (
         fn === "regexp.escape" ||
         fn === "dyn.nativeRegexIs" ||
@@ -861,4 +866,11 @@ export function moduleUsesTls(mod: IrModule): boolean {
  * the unit's default-set override for its trust anchors. */
 export function moduleUsesTlsCa(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "tlsCa").tlsCa;
+}
+
+/** True when the module has dynamic-tier jsval operations: the link switch
+ * for the scr_js_* runtime units (two-tier design I3). Programs without
+ * them never link a scr_js_ symbol. */
+export function moduleUsesDynTier(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "dynTier").dynTier;
 }
