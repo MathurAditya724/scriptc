@@ -91,6 +91,10 @@ import type {
 } from "./npm-static-declaration-syntax.js";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import {
+  activeSourceOverlayAmbientRoots,
+  sourceOverlayAssignsClassFields,
+} from "./source-overlays.js";
+import {
   ambientDtsPath,
   fallbackDtsPath,
   isNodeTypesPath,
@@ -709,7 +713,15 @@ function loadProgram7(
     }
     options = { ...options, paths };
   }
-  const coreRoots = [entryPath, ambientDtsPath(), nodeTypes ?? fallbackDtsPath()];
+  // --sources: an active overlay's own ambient declarations (module
+  // augmentations its build includes without importing them) type its
+  // files as the package's build did. Empty without --sources.
+  const coreRoots = [
+    entryPath,
+    ambientDtsPath(),
+    nodeTypes ?? fallbackDtsPath(),
+    ...activeSourceOverlayAmbientRoots(),
+  ];
   const programRoots = [...coreRoots];
   let program = host.createProgram([...programRoots, overridesDtsPath()], options);
   try {
@@ -4229,6 +4241,53 @@ function preflight7(load: LoadResult): {
       : spec.split("/")[0]!;
     return isWorkspacePackageName(prefix);
   };
+  /* --sources: a package built with `useDefineForClassFields: false` runs
+   * its parameter-property assignments BEFORE its field initializers (the
+   * class-field lowering follows the package's semantics), so a field
+   * initializer that reads a parameter property is not a use before
+   * initialization there — the package's own build accepts it. The
+   * checker runs with the program's define semantics, so TS2729 at exactly
+   * those reads (`this.p` where `p` is a parameter property of the
+   * enclosing class's constructor) is the define-semantics verdict and is
+   * suppressed. Every other TS2729 keeps tsc's voice. */
+  const assignFieldsSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (d.code !== 2729 || d.fileName === undefined || d.pos === undefined) return false;
+    if (!sourceOverlayAssignsClassFields(d.fileName)) return false;
+    const sf = p.getSourceFile(d.fileName);
+    if (!sf) return false;
+    const name = sf.text.slice(d.pos, d.end);
+    const start = d.pos;
+    const end = d.end ?? d.pos;
+    let found = false;
+    const visit = (node: ts.Node): void => {
+      if (node.pos > start || node.end < end) return;
+      if (ts.isClassLikeDeclaration(node)) {
+        const ctor = node.members.find(
+          (m): m is ts.ConstructorDeclaration => ts.isConstructorDeclaration(m) && !!m.body,
+        );
+        const paramProp = ctor?.parameters.some(
+          (param) =>
+            ts.isIdentifier(param.name) &&
+            param.name.text === name &&
+            ts
+              .getModifiers(param)
+              ?.some(
+                (m) =>
+                  m.kind === ts.SyntaxKind.PublicKeyword ||
+                  m.kind === ts.SyntaxKind.PrivateKeyword ||
+                  m.kind === ts.SyntaxKind.ProtectedKeyword ||
+                  m.kind === ts.SyntaxKind.ReadonlyKeyword,
+              ),
+        );
+        // The innermost class decides; a read inside a nested class
+        // refers to that class's members.
+        found = paramProp === true;
+      }
+      node.forEachChild(visit);
+    };
+    sf.forEachChild(visit);
+    return found;
+  };
   // A JavaScript file that TypeScript checks keeps the type errors that
   // protect its JSDoc types: a value of another type reaching a typed slot,
   // a call with the wrong arity, and a subclass member that does not
@@ -4262,6 +4321,7 @@ function preflight7(load: LoadResult): {
         !inferredJsDiagnosticSuppressed(p, d) &&
         !isNpmStaticSubclassArgument(p, d) &&
         !workspaceImplicitAnySuppressed(p, d) &&
+        !assignFieldsSuppressed(p, d) &&
         !jsdocTypeSuppressed(p, d, commentDup),
     );
   };

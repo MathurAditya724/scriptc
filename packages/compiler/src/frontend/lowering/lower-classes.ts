@@ -144,6 +144,7 @@ import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { constructionEscape, mentionsReceiver } from "./construction-escapes.js";
+import { sourceOverlayAssignsClassFields } from "../source-overlays.js";
 import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
 import { initializeRuntimeStatics, hasRuntimeStatics } from "./class-runtime-statics.js";
 import { reflectedClassStaticMethodValue } from "./class-method-values.js";
@@ -523,6 +524,13 @@ export interface ClassInfo {
    * body local AFTER the field initializers run (Node's order: super() →
    * field initializers → parameter-property assignments → ctor body). */
   paramProps?: { name: string; type: IrType; param: ts.ParameterDeclaration }[];
+  /** --sources: the class belongs to a package built with
+   * `useDefineForClassFields: false`, so its field initializers are
+   * assignments that run AFTER the parameter-property assignments (the
+   * package's emitted order), and initializer-less fields are no own
+   * properties until assigned (collection admits only the shapes where
+   * that is unobservable — checkAssignSemanticsFields). */
+  assignFields?: true;
   /** EFFECTIVE constructor params: the own constructor's, or (constructor
    * omitted) the base's — `new Derived(...)` is typed by tsc against the
    * inherited signature, and the synthesized constructor forwards to it
@@ -3526,6 +3534,13 @@ export function collectClassShapeInner(
             return isPrivate ? declaration.body : null;
           },
         });
+    // --sources: assign-semantics class fields (useDefineForClassFields:
+    // false in the package's build). A generic family defers to its
+    // instances, which analyze their own construction.
+    const assignFields = sourceOverlayAssignsClassFields(decl.getSourceFile().fileName);
+    if (assignFields && escape.assigned !== null) {
+      checkAssignSemanticsFields(lowerer, decl, ctor, escape.assigned);
+    }
     // The deferred definite-assignment check: a field on the unguarded
     // list passes only with an unconditional `this.x = ...` at the
     // constructor's TOP LEVEL — the same standard the JS-class path
@@ -4087,6 +4102,7 @@ export function collectClassShapeInner(
       ...(deferredInitFields.size > 0 ? { deferredInitFields } : {}),
       ...(earlyReadFields.size > 0 ? { earlyReadFields } : {}),
       ...(escape.escapes ? { constructionEscapes: true as const } : {}),
+      ...(assignFields ? { assignFields: true as const } : {}),
     };
     // GENERIC members get their declaring-class backlink now that the
     // info exists (instance lowering reads it for `this` typing and the
@@ -6969,9 +6985,8 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
         // Node's base-class order: field initializers run at the start
         // of construction, the parameter-property assignments open the
         // constructor body (probed — a field initializer reading a
-        // parameter property sees undefined).
-        body.push(...lowerer.fieldInitStmts(info, thisLocal));
-        body.push(...paramPropInitStmts(lowerer, info, thisLocal));
+        // parameter property sees undefined). Assign semantics swaps them.
+        body.push(...ownFieldInitStmts(lowerer, info, thisLocal));
         if (info.ctor.body) body.push(...lowerer.lowerStmts(info.ctor.body.statements));
       } else if (info.ctor.body) {
         body.push(...lowerer.lowerDerivedCtorBody(info, thisLocal));
@@ -7691,6 +7706,94 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
   return out;
 }
 
+/** The class's own construction prologue: field initializers, then the
+ * parameter-property assignments (define semantics, Node's order for
+ * TypeScript it runs); a package built with `useDefineForClassFields:
+ * false` emits the parameter-property assignments first, then its field
+ * initializers as assignments (`assignFields`). */
+function ownFieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrLocal): IrStmt[] {
+  return info.assignFields
+    ? [...paramPropInitStmts(lowerer, info, thisLocal), ...lowerer.fieldInitStmts(info, thisLocal)]
+    : [...lowerer.fieldInitStmts(info, thisLocal), ...paramPropInitStmts(lowerer, info, thisLocal)];
+}
+
+/** --sources, assign-semantics classes: an initializer-less instance field
+ * is no own property until the constructor assigns it, where define
+ * semantics (this layout) defines it as undefined up front and orders it
+ * by declaration. The two agree exactly when every such field is assigned
+ * before construction can expose the instance (`assigned`, the
+ * construction-escape analysis, which already runs parameter properties
+ * before initializers), the assignments run in declaration order, and no
+ * field with an initializer is declared after one without. Other shapes
+ * keep a named fence (the overlay falls back to the published JS). */
+function checkAssignSemanticsFields(
+  lowerer: Lowerer,
+  decl: ts.ClassLikeDeclaration,
+  ctor: ts.ConstructorDeclaration | null,
+  assigned: ReadonlySet<string>,
+): void {
+  const why = "(useDefineForClassFields: false, the package's class-field semantics)";
+  const pending: string[] = [];
+  let firstPending: ts.Identifier | null = null;
+  for (const member of decl.members) {
+    if (!ts.isPropertyDeclaration(member) || !ts.isIdentifier(member.name)) continue;
+    const modifiers = ts.getModifiers(member) ?? [];
+    if (
+      modifiers.some(
+        (m) =>
+          m.kind === ts.SyntaxKind.StaticKeyword ||
+          m.kind === ts.SyntaxKind.DeclareKeyword ||
+          m.kind === ts.SyntaxKind.AbstractKeyword,
+      )
+    )
+      continue;
+    if (member.initializer) {
+      if (firstPending !== null) {
+        lowerer.unsupported(
+          "SC1090",
+          member.name,
+          `field initializers declared after an initializer-less field ${why}`,
+          `'${member.name.text}' is assigned before the constructor assigns '${firstPending.text}', so the instance's property order differs from the declaration order`,
+        );
+      }
+      continue;
+    }
+    if (!assigned.has(member.name.text)) {
+      lowerer.unsupported(
+        "SC1090",
+        member.name,
+        `initializer-less fields the constructor does not assign before the instance can be observed ${why}`,
+        `'${member.name.text}' is no own property until it is assigned`,
+      );
+    }
+    firstPending ??= member.name;
+    pending.push(member.name.text);
+  }
+  if (pending.length < 2) return;
+  const order: string[] = [];
+  for (const stmt of ctor?.body?.statements ?? []) {
+    if (
+      ts.isExpressionStatement(stmt) &&
+      ts.isBinaryExpression(stmt.expression) &&
+      stmt.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(stmt.expression.left) &&
+      stmt.expression.left.expression.kind === ts.SyntaxKind.ThisKeyword
+    ) {
+      const name = stmt.expression.left.name.text;
+      if (pending.includes(name) && !order.includes(name)) order.push(name);
+    }
+  }
+  const mismatch = pending.findIndex((name, i) => order[i] !== name);
+  if (mismatch >= 0) {
+    lowerer.unsupported(
+      "SC1090",
+      firstPending!,
+      `initializer-less fields assigned out of declaration order ${why}`,
+      "the instance's property order follows the constructor's assignments",
+    );
+  }
+}
+
 /** PARAMETER-PROPERTY assignments (`this.x = x`, synthesized): run AFTER
  * the field initializers — Node's transform defines the fields at the
  * top of the class body (undefined until assigned) and injects the
@@ -7867,10 +7970,7 @@ export function lowerDerivedCtorBody(
     });
     delete context.superInitialized;
     try {
-      statements.push(
-        ...lowerer.fieldInitStmts(info, thisLocal),
-        ...paramPropInitStmts(lowerer, info, thisLocal),
-      );
+      statements.push(...ownFieldInitStmts(lowerer, info, thisLocal));
     } finally {
       context.superInitialized = initialized;
     }

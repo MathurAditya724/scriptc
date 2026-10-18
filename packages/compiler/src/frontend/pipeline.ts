@@ -42,7 +42,11 @@ import {
 } from "./source-overlays.js";
 import { npmStaticRefusalDiag } from "../diagnostics/diagnostic.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
-import { isRelativeSpecifier, packageNameOfSpecifier } from "./workspace-registry.js";
+import {
+  isRelativeSpecifier,
+  npmPackageNameOf,
+  packageNameOfSpecifier,
+} from "./workspace-registry.js";
 import { lowerToIr, type LowerOptions, type LowerResult } from "./lowering/lowerer.js";
 import type { FrontendServices } from "./services.js";
 import { isImportDeclaration, isExportDeclaration, isStringLiteral } from "./ts7/adapter.js";
@@ -114,6 +118,7 @@ function detectAutoPackages(
   mode: "auto" | "lib" = "auto",
   judged?: Set<string>,
   sites?: Map<string, SrcLoc>,
+  overlayDeps?: Map<string, Set<string>>,
 ): string[] {
   // package → the resolved types file AND the file whose import found it:
   // the runtime-JS probe below must resolve from the SAME importing file,
@@ -174,6 +179,15 @@ function detectAutoPackages(
         continue;
       }
       if (judged?.has(npm.packageName)) continue;
+      // --sources: an overlay's untyped dependency compiles from its
+      // published JS (overlayUntypedImport).
+      const overlayKey = overlayUntypedImport(sf.fileName, npm.typesFile);
+      if (overlayKey !== null) {
+        const keys = overlayDeps?.get(npm.packageName) ?? new Set<string>();
+        keys.add(overlayKey);
+        overlayDeps?.set(npm.packageName, keys);
+        continue;
+      }
       if (!seen.has(npm.packageName)) {
         seen.set(npm.packageName, { typesFile: npm.typesFile, fromFile: sf.fileName, spec });
         sites?.set(npm.packageName, loc);
@@ -181,6 +195,13 @@ function detectAutoPackages(
     }
   }
   const chosen: string[] = [];
+  if (overlayDeps !== undefined) {
+    for (const pkg of overlayDeps.keys()) {
+      if (judged?.has(pkg)) continue;
+      judged?.add(pkg);
+      chosen.push(pkg);
+    }
+  }
   for (const [pkg, { typesFile, fromFile, spec }] of seen) {
     judged?.add(pkg);
     // A package without a root entry (no "main", "exports" or index file)
@@ -221,6 +242,74 @@ function packagesNamedByDiag(message: string, optedIn: ReadonlySet<string>): Set
   return hits;
 }
 
+/** --sources: the overlay key when `fromFile` is an active overlay file
+ * whose bare import resolves to a package's JavaScript (no declarations
+ * anywhere: upstream's @types package is a devDependency, never
+ * installed). The package compiles from its published JS, typed by
+ * inference, exactly as it does under the overlay package's own published
+ * JS — the declaration-surface eligibility of auto selection does not
+ * apply, the compilation checks do. Null otherwise and without --sources. */
+function overlayUntypedImport(fromFile: string, typesFile: string): string | null {
+  if (!isJsSourceFileName(typesFile) || !isSourceOverlayFile(fromFile)) return null;
+  return sourceOverlayOfFile(fromFile)!.key;
+}
+
+/** --sources: the JavaScript packages an overlay's untyped dependencies
+ * import in turn (import declarations and top-level requires in their
+ * files the checker loaded — the module order may stop short when the
+ * program has preflight errors), not yet requested. They compile from
+ * their published JS with the dependency, as they do under the overlay
+ * package's published JS; each is attributed to the same overlays. */
+function overlayDependencyClosure(
+  load: LoadResult,
+  overlayDeps: Map<string, Set<string>>,
+  requested: readonly string[],
+  judged: Set<string>,
+): string[] {
+  const grown: string[] = [];
+  for (const sf of load.program.getImplementationSourceFiles()) {
+    const owner = npmPackageNameOf(sf.fileName);
+    const keys = owner === null ? undefined : overlayDeps.get(owner);
+    if (keys === undefined) continue;
+    const specs: string[] = [];
+    for (const stmt of sf.statements) {
+      if (
+        (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
+        stmt.moduleSpecifier &&
+        isStringLiteral(stmt.moduleSpecifier)
+      ) {
+        specs.push(stmt.moduleSpecifier.text);
+      }
+      for (const req of requiresOf(stmt)) specs.push(req.spec);
+    }
+    for (const spec of specs) {
+      if (isRelativeSpecifier(spec) || spec.startsWith("node:") || spec.startsWith("#")) continue;
+      if (canonicalBuiltinModule(spec) !== null) continue;
+      const js = resolveBareModule(sf.fileName, spec, "js-only");
+      if (js === null || !isJsSourceFileName(js.typesFile)) continue;
+      const pkg = js.packageName;
+      if (pkg === owner || requested.includes(pkg) || grown.includes(pkg)) continue;
+      const deps = overlayDeps.get(pkg) ?? new Set<string>();
+      for (const key of keys) deps.add(key);
+      overlayDeps.set(pkg, deps);
+      judged.add(pkg);
+      grown.push(pkg);
+    }
+  }
+  return grown;
+}
+
+/** True for the checker's implicit-any diagnostic (TS7016) at an overlay's
+ * untyped import: the scout program runs before the dependency's JS joins
+ * the checked program. */
+function untypedOverlayImportDiag(d: ScrDiagnostic, text: string | undefined): boolean {
+  if (text === undefined || !d.message.startsWith("Could not find a declaration file for module"))
+    return false;
+  const spec = text.slice(d.loc.start, d.loc.end).replace(/^['"]|['"]$/g, "");
+  const npm = resolveNpmImport(d.loc.file, spec);
+  return npm !== null && overlayUntypedImport(d.loc.file, npm.typesFile) !== null;
+}
+
 /** Where a diagnostic sits, relative to its overlay ("src/x.ts:12"). */
 function overlaySite(
   file: string,
@@ -245,6 +334,7 @@ function overlaySite(
 function sourceOverlayCulprits(
   load: LoadResult,
   preflight: readonly ScrDiagnostic[],
+  scout = false,
 ): Map<string, string> {
   const culprits = takeSourceOverlayProblems();
   if (!sourceOverlaysActive()) return culprits;
@@ -257,6 +347,7 @@ function sourceOverlayCulprits(
   for (const d of preflight) {
     const owner = sourceOverlayOfFile(d.loc.file);
     if (owner !== null && isSourceOverlayFile(d.loc.file)) {
+      if (scout && untypedOverlayImportDiag(d, texts.get(d.loc.file))) continue;
       const site = overlaySite(d.loc.file, owner.overlayDir, texts.get(d.loc.file), d.loc.start);
       add(owner.key, `${d.code} at ${site}: ${d.message}`);
       continue;
@@ -492,6 +583,8 @@ function loadFrontend(
   // Explicit library attempts bypass only the auto-selection heuristics.
   // The shared preflight/lowering refusal and dependency-closure checks remain.
   const judged = new Set<string>(libraryNpmStatic);
+  // --sources: overlays' untyped dependencies → the overlays importing them.
+  const overlayDeps = new Map<string, Set<string>>();
   let requested: string[] = [];
   let reusableScout: ReturnType<typeof loadProgram> | null = null;
   let reusablePreflight: ScrDiagnostic[] | null = null;
@@ -503,12 +596,15 @@ function loadFrontend(
       const scoutPreflight = checkPreflight(scout);
       // --sources: overlays that already fail here fall back before any
       // package selection depends on them.
-      overlayCulprits = sourceOverlayCulprits(scout, scoutPreflight);
+      overlayCulprits = sourceOverlayCulprits(scout, scoutPreflight, true);
       if (overlayCulprits.size === 0) {
         requested =
           npmStatic === "lib"
-            ? [...libraryNpmStatic, ...detectAutoPackages(scout, statuses, "lib", judged, npmSites)]
-            : detectAutoPackages(scout, statuses);
+            ? [
+                ...libraryNpmStatic,
+                ...detectAutoPackages(scout, statuses, "lib", judged, npmSites, overlayDeps),
+              ]
+            : detectAutoPackages(scout, statuses, "auto", undefined, undefined, overlayDeps);
         // With no package to opt in, the scout already IS the final frontend:
         // same roots, resolution posture, preflight, and module order. Retain it
         // instead of spawning a second tsgo server and checking the whole graph
@@ -561,6 +657,18 @@ function loadFrontend(
   // and library builds with a package-specific diagnostic.
   let load = reusableScout ?? loadProgram(entryPath, { npmStatic: requested, externalTypes });
   let preflight = reusablePreflight ?? checkPreflight(load);
+  // --sources: an overlay's untyped dependencies bring their own JS
+  // dependencies along (bounded: every round adds at least one package).
+  if (overlayDeps.size > 0) {
+    for (;;) {
+      const grown = overlayDependencyClosure(load, overlayDeps, requested, judged);
+      if (grown.length === 0) break;
+      requested = [...requested, ...grown];
+      load.dispose();
+      load = loadProgram(entryPath, { npmStatic: requested, externalTypes });
+      preflight = checkPreflight(load);
+    }
+  }
   // Library mode's fixpoint: the opted-in packages' files joined the
   // program just now, and THEIR bare edges (import statements and
   // top-level requires) name packages the scout could not see. Judge each
@@ -570,7 +678,7 @@ function loadFrontend(
   // at least one new package for good).
   if (npmStatic === "lib") {
     for (;;) {
-      const grown = detectAutoPackages(load, statuses, "lib", judged, npmSites);
+      const grown = detectAutoPackages(load, statuses, "lib", judged, npmSites, overlayDeps);
       if (grown.length === 0) break;
       requested = [...requested, ...grown];
       load.dispose();
@@ -680,7 +788,25 @@ function loadFrontend(
   // failures (a published CommonJS dependency's require() of an augmented
   // package, a preflight error only the full graph reaches). Drop those
   // instances and restart the whole selection without them.
-  const lateCulprits = sourceOverlayCulprits(load, preflight);
+  // An overlay's untyped dependency that does not compile from its
+  // published JS would fail the build the published package passes. That
+  // reason comes first: the checker's TS7016 at the import is its symptom.
+  const lateCulprits = new Map<string, string>();
+  for (const status of statuses) {
+    const keys = status.status === "refused" ? overlayDeps.get(status.package) : undefined;
+    if (keys === undefined) continue;
+    for (const key of keys) {
+      if (!lateCulprits.has(key)) {
+        lateCulprits.set(
+          key,
+          `its untyped dependency ${status.package} does not compile from its published JS (${status.detail ?? "refused"})`,
+        );
+      }
+    }
+  }
+  for (const [key, reason] of sourceOverlayCulprits(load, preflight)) {
+    if (!lateCulprits.has(key)) lateCulprits.set(key, reason);
+  }
   if (lateCulprits.size > 0) {
     dropSourceOverlays(lateCulprits);
     load.dispose();

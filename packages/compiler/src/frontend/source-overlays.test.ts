@@ -5,12 +5,14 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { normalizeCliArgs } from "../cli/usage.js";
 import { clearResolveCaches, resolveSourceOverlayModule, sourceOverlayPaths } from "./resolve.js";
 import {
+  activeSourceOverlayAmbientRoots,
   activeSourceOverlays,
   beginSourceOverlayCompile,
   dropSourceOverlay,
   findSourceManifest,
   installSourceOverlays,
   loadSourceManifest,
+  sourceOverlayAssignsClassFields,
   sourceOverlayFallbacks,
   takeSourceOverlayProblems,
 } from "./source-overlays.js";
@@ -112,6 +114,44 @@ test("names with several augmented instances start dropped", () => {
     "ambiguous-name: 2 augmented instances of a (only single-instance names are redirected)",
     "ambiguous-name: 2 augmented instances of a (only single-instance names are redirected)",
   ]);
+});
+
+test("reads the additive semantic fields: ambient declarations and assign-semantics class fields", () => {
+  const a = instance("a", "1.0.0");
+  const overlay = a["overlayDir"] as string;
+  mkdirSync(join(overlay, "typings"));
+  writeFileSync(join(overlay, "typings/extra.d.ts"), "type Extra = string;\n");
+  const b = instance("b", "1.0.0");
+  const path = writeManifest([
+    {
+      ...a,
+      ambientDeclarations: ["typings/extra.d.ts"],
+      semanticOptions: { useDefineForClassFields: false },
+    },
+    { ...b, semanticOptions: { useDefineForClassFields: true } },
+  ]);
+  installSourceOverlays(loadSourceManifest(path));
+  beginSourceOverlayCompile();
+  expect(activeSourceOverlayAmbientRoots()).toEqual([join(overlay, "typings/extra.d.ts")]);
+  expect(sourceOverlayAssignsClassFields(join(overlay, "src/index.ts"))).toBe(true);
+  expect(sourceOverlayAssignsClassFields(join(b["overlayDir"] as string, "src/index.ts"))).toBe(
+    false,
+  );
+  dropSourceOverlay(a["installedDir"] as string, "test");
+  expect(activeSourceOverlayAmbientRoots()).toEqual([]);
+  expect(sourceOverlayAssignsClassFields(join(overlay, "src/index.ts"))).toBe(false);
+
+  // Paths must be relative declaration files inside the overlay; a missing
+  // file skips the instance with a note.
+  const bad = (ambientDeclarations: unknown): string =>
+    writeManifest([{ ...a, ambientDeclarations }]);
+  expect(() => loadSourceManifest(bad(["/abs.d.ts"]))).toThrow(/relative paths/);
+  expect(() => loadSourceManifest(bad(["src/index.ts"]))).toThrow(/not a declaration file/);
+  writeFileSync(join(root, "outside.d.ts"), "");
+  expect(() => loadSourceManifest(bad(["../../../../outside.d.ts"]))).toThrow(/leaves the overlay/);
+  const missing = loadSourceManifest(bad(["typings/gone.d.ts"]));
+  expect(missing.instances).toEqual([]);
+  expect(missing.notes[0]).toMatch(/ambient declaration typings\/gone\.d\.ts does not exist/);
 });
 
 test("--sources takes an optional inline value", () => {

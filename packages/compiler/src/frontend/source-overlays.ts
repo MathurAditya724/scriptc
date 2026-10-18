@@ -35,6 +35,15 @@ export interface SourceOverlayInstance {
   /** Human-readable source origin for reports ("github.com/o/r @ abc123"),
    * or null when the producer did not say. */
   origin: string | null;
+  /** The package's own ambient declaration files (realpaths inside
+   * overlayDir) that its build includes without importing them, e.g.
+   * module augmentations under `typings/`. They join the checker's roots
+   * while the instance is active. */
+  ambientDeclarations?: string[];
+  /** "assign" when the package was built with `useDefineForClassFields:
+   * false`: its class field initializers are assignments that run after
+   * the parameter properties (class-field lowering, preflight). */
+  classFields?: "assign";
 }
 
 /** A complete overlay set, ready to install for a compile. */
@@ -171,6 +180,26 @@ export function isSourceOverlayFile(file: string): boolean {
   return instance !== null && !state!.drops.has(instance.key);
 }
 
+/** True when `file` belongs to an active overlay built with
+ * `useDefineForClassFields: false` — the gate for assign-semantics class
+ * fields. False without --sources. */
+export function sourceOverlayAssignsClassFields(file: string): boolean {
+  if (state === null) return false;
+  const instance = sourceOverlayOfFile(file);
+  return instance?.classFields === "assign" && !state.drops.has(instance.key);
+}
+
+/** The active instances' ambient declaration files, for the checker's
+ * roots; empty without --sources. */
+export function activeSourceOverlayAmbientRoots(): string[] {
+  if (state === null) return [];
+  const roots: string[] = [];
+  for (const instance of activeSourceOverlays()) {
+    for (const file of instance.ambientDeclarations ?? []) roots.push(file);
+  }
+  return roots;
+}
+
 export function dropSourceOverlay(key: string, reason: string): void {
   if (state === null || !state.byKey.has(key) || state.drops.has(key)) return;
   state.drops.set(key, reason);
@@ -279,6 +308,34 @@ function originOf(source: unknown): string | null {
   return `${s.repo}${commit}${subdir}`;
 }
 
+/** An instance's `ambientDeclarations`: declaration files relative to its
+ * overlay directory, which must stay inside it. Returns realpaths, or the
+ * first entry that does not exist. */
+function ambientDeclarationsOf(
+  raw: unknown,
+  overlayDir: string,
+  bad: (what: string) => Error,
+): string[] | { missing: string } {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw bad("must be an array of relative paths");
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string" || entry === "" || isAbsolute(entry)) {
+      throw bad("must be an array of relative paths");
+    }
+    if (!/\.d\.(?:ts|mts|cts)$/.test(entry)) throw bad(`entry ${entry} is not a declaration file`);
+    let real: string;
+    try {
+      real = realpathSync(join(overlayDir, entry)).split("\\").join("/");
+    } catch {
+      return { missing: entry };
+    }
+    if (!real.startsWith(`${overlayDir}/`)) throw bad(`entry ${entry} leaves the overlay`);
+    if (!out.includes(real)) out.push(real);
+  }
+  return out;
+}
+
 /** Reads and validates a schema-1 manifest. Throws an Error naming the
  * first problem for an unreadable or malformed manifest; instances whose
  * directories are missing are skipped with a note (they compile from
@@ -353,6 +410,26 @@ export function loadSourceManifest(manifestPath: string): SourceOverlaySet {
     }
     if (seen.has(key)) throw bad(`instances[${index}] repeats installed directory ${key}`);
     seen.add(key);
+    // Additive schema-1 fields: absent means the historical behavior.
+    const semantic = e["semanticOptions"];
+    if (semantic !== undefined && (semantic === null || typeof semantic !== "object")) {
+      throw bad(`instances[${index}].semanticOptions must be an object`);
+    }
+    const useDefine = (semantic as Record<string, unknown> | undefined)?.[
+      "useDefineForClassFields"
+    ];
+    if (useDefine !== undefined && typeof useDefine !== "boolean") {
+      throw bad(`instances[${index}].semanticOptions.useDefineForClassFields must be a boolean`);
+    }
+    const ambient = ambientDeclarationsOf(e["ambientDeclarations"], realOverlay, (what) =>
+      bad(`instances[${index}].ambientDeclarations ${what}`),
+    );
+    if (!Array.isArray(ambient)) {
+      notes.push(
+        `${name}@${version}: ambient declaration ${ambient.missing} does not exist in the overlay; skipped`,
+      );
+      continue;
+    }
     instances.push({
       key,
       name,
@@ -360,6 +437,8 @@ export function loadSourceManifest(manifestPath: string): SourceOverlaySet {
       overlayDir: realOverlay,
       exports: exportsField,
       origin: originOf(e["source"]),
+      ...(ambient.length > 0 ? { ambientDeclarations: ambient } : {}),
+      ...(useDefine === false ? { classFields: "assign" as const } : {}),
     });
   }
   const fallbacks = doc["fallbacks"];
