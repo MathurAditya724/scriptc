@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5944-js-fields-read-before-assignment.js"
+ ],
+ "diags": []
+}
