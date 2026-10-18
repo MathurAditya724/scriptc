@@ -79,6 +79,11 @@ Options:
                      values and the bindings, fields, functions, classes and
                      modules the dynamic tier would take over, with the
                      refusal behind each; a name shows only that unit's chain
+      --wasm <file.wasm>
+                     coverage only: report a WebAssembly module the program
+                     loads whose path its sources do not spell (repeatable;
+                     modules the sources name, inline modules and packaged
+                     .wasm files are found without it)
   -h, --help         show this help
   -v, --version      print the version
 `;
@@ -102,6 +107,7 @@ export const CLI_OPTIONS = {
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },
   "explain-dynamic": { type: "string" },
+  wasm: { type: "string", multiple: true },
   lib: { type: "boolean", default: false },
   profile: { type: "string" },
   help: { type: "boolean", short: "h", default: false },

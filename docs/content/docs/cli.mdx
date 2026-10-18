@@ -133,6 +133,9 @@ Verifies and loads the installed precompiled runtime objects and vendored librar
   <dt><code>--explain-dynamic[=&lt;name&gt;]</code></dt>
   <dd>Coverage only. After the report, list the functions that already operate on values typed only at runtime and the bindings, fields, functions, classes and modules that unsupported constructs would move to the dynamic tier, each with the diagnostic behind it. With a name such as <code>x</code>, <code>Point</code>, or <code>Point.x</code>, show only the matching units. See <a href="/docs/coverage#dynamic-tier">Dynamic tier</a>.</dd>
 
+  <dt><code>--wasm &lt;file.wasm&gt;</code></dt>
+  <dd>Coverage only. Report a WebAssembly module the program loads from a path its sources do not spell out. The report already lists modules whose paths the compiler resolves, modules inlined as base64 literals, and <code>.wasm</code> files shipped by packages that use WebAssembly; a <code>scriptc.wasm</code> array in <code>package.json</code> adds files the same way as this flag. Each module is listed with its size, whether it validates, and the WebAssembly proposals it uses. scriptc does not compile WebAssembly modules to native code yet. Repeatable.</dd>
+
   <dt><code>--sanitize</code></dt>
   <dd>Build an executable with AddressSanitizer and a reference-count audit at exit, the same checks scriptc's own test suite uses. Requires a C compiler and is available only for host builds. Not supported with <code>--emit=asm</code> or <code>--emit=obj</code>.</dd>
 
