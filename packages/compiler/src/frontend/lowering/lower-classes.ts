@@ -2644,9 +2644,15 @@ export function collectClassShapeInner(
               ? String(Number(member.name.text))
               : member.name.text;
           const fieldName = symbolKey?.fieldName ?? stringKey;
+          // A TypeScript field without an initializer takes its declared
+          // type and the identifier fields' definite-assignment rule (an
+          // unconditional `this[key] = ...` at the constructor's top
+          // level), checked with the unguarded fields below.
+          const declaredOnly =
+            !member.initializer && !isJsSourceFile(member.getSourceFile()) && !!member.type;
           if (
             fieldName === null ||
-            (!member.initializer && !isJsSourceFile(member.getSourceFile()))
+            (!member.initializer && !isJsSourceFile(member.getSourceFile()) && !declaredOnly)
           ) {
             lowerer.unsupported(
               "SC1090",
@@ -2659,9 +2665,10 @@ export function collectClassShapeInner(
             member.type || !member.initializer
               ? declared
               : lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(member.initializer));
-          const mapped = member.initializer
-            ? (lowerer.mapTypeOf(inferred) ?? dynFallbackType(lowerer, member, inferred))
-            : DYN;
+          const mapped =
+            member.initializer || declaredOnly
+              ? (lowerer.mapTypeOf(inferred) ?? dynFallbackType(lowerer, member, inferred))
+              : DYN;
           let type =
             mapped?.kind === "record" && isJsSourceFile(member.getSourceFile()) && !member.type
               ? DYN
@@ -2681,7 +2688,24 @@ export function collectClassShapeInner(
             if (base?.fields.get(fieldName)?.kind === "dyn") type = DYN;
             if (base && !fields.has(fieldName) && lowerer.dynConvertible(type)) type = DYN;
           }
-          const undefinedInitializer = !member.initializer ? locOf(member) : undefined;
+          const undefinedInitializer =
+            !member.initializer && (!declaredOnly || type.kind === "dyn")
+              ? locOf(member)
+              : undefined;
+          if (
+            declaredOnly &&
+            type.kind !== "dyn" &&
+            !(
+              type.kind === "union" &&
+              lowerer.unions.get(type.unionId)?.arms.some((a) => a.kind === "undefinedT")
+            )
+          ) {
+            unguardedFields.push({
+              node: member.name,
+              name: fieldName,
+              why: `initializer-less computed fields not assigned at the constructor's top level (nothing guarantees '${symbolKey ? symbolFieldDisplayName(fieldName) : fieldName}' is assigned before a read — assign it unconditionally at the top of the constructor, give it an initializer, or include undefined in its type)`,
+            });
+          }
           const previous = fields.get(fieldName);
           if (previous) {
             if (symbolKey && !symbolFields.has(symbolKey.identity)) {
@@ -3588,6 +3612,16 @@ export function collectClassShapeInner(
           stmt.expression.left.expression.kind === ts.SyntaxKind.ThisKeyword
         ) {
           topAssigned.add(stmt.expression.left.name.text);
+        } else if (
+          ts.isExpressionStatement(stmt) &&
+          ts.isBinaryExpression(stmt.expression) &&
+          stmt.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isElementAccessExpression(stmt.expression.left) &&
+          stmt.expression.left.expression.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+          const key = stmt.expression.left.argumentExpression;
+          const name = classSymbolKeyOf(lowerer, key)?.fieldName ?? lowerer.foldedStringKeyOf(key);
+          if (name !== null) topAssigned.add(name);
         }
       }
       for (const f of unguardedFields) {
