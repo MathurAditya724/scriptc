@@ -3387,6 +3387,18 @@ function lowerDynReceiverMethodCall(
       loc: locOf(call),
     };
   }
+  // Every dyn kind's prototype chain declares valueOf, and the runtime
+  // answers each kind's own: primitives and plain objects themselves, a
+  // Date its time value, an own or inherited valueOf member its result.
+  if (access.name.text === "valueOf" && call.arguments.length === 0) {
+    return {
+      kind: "libCall",
+      fn: "dyn.valueOf",
+      args: [recv, { kind: "strLit", value: access.getText(), type: STRING, loc: locOf(call) }],
+      type: DYN,
+      loc: locOf(call),
+    };
+  }
   // SHARED prototype names with a runtime dispatch (scr_dyn_invoke):
   // push/slice/join/forEach/map/apply/... dispatch on the receiver's
   // RUNTIME kind — the honest answer for names more than one dyn-
