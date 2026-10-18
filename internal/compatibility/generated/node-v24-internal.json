@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 53,
+        "partial": 64,
         "refused": 0,
-        "not-implemented": 64,
+        "not-implemented": 53,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -91021,6 +91021,7 @@
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
@@ -91028,6 +91029,7 @@
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
           "tests/fixtures/node-test/cases/snapshot.ts",
+          "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
           "tests/fixtures/node-test/cases/todo-suites.ts",
           "tests/harness/node-test.test.ts"
@@ -93733,8 +93735,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.filePath",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93810,8 +93816,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.passed",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -93856,8 +93866,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.attempt",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -93879,8 +93893,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.tags",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -93902,8 +93920,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.workerId",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -93971,8 +93993,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.diagnostic",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-context.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -94017,8 +94043,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.filePath",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-context.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -94040,8 +94070,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.fullName",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-context.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -94063,8 +94097,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.name",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-context.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -94109,8 +94147,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.passed",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-context.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -94132,8 +94174,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.attempt",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-context.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -101058,6 +101104,8 @@
           "tests/corpus/5628-promisify-timers.ts",
           "tests/corpus/5629-promisify-stream.ts",
           "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5631-promisify-crypto.ts",
+          "tests/corpus/5632-promisify-dns.ts",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
@@ -101088,6 +101136,8 @@
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/deep-equality.ts",
           "tests/fixtures/node-types/env-files.ts",
+          "tests/fixtures/node-types/promisify-crypto.ts",
+          "tests/fixtures/node-types/promisify-dns.ts",
           "tests/fixtures/node-types/promisify-fs.ts",
           "tests/fixtures/node-types/promisify-timers.ts",
           "tests/fixtures/node-types/promisify-zlib.ts",
@@ -102740,6 +102790,10 @@
           "tests/corpus/5629-promisify-stream.ts",
           "tests/corpus/5630-promisify-zlib.ts",
           "tests/fixtures/node-types/promisify-zlib.ts",
+          "tests/corpus/5631-promisify-crypto.ts",
+          "tests/fixtures/node-types/promisify-crypto.ts",
+          "tests/corpus/5632-promisify-dns.ts",
+          "tests/fixtures/node-types/promisify-dns.ts",
           "tests/harness/project-config.test.ts"
         ]
       },

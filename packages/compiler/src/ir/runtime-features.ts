@@ -424,7 +424,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         }
       }
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
-      if (fn === "dns.lookupPromise" || fn === "dns.lookupServicePromise")
+      if (fn === "dns.promisesLookup" || fn === "dns.promisesLookupService")
         features.dnsPromises = true;
       if (fn.startsWith("tlsca.")) features.tlsCa = true;
       // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the

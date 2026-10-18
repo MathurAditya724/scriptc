@@ -9,7 +9,7 @@
  * V8's CreateDynamicFunction does; eval refuses without converting. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import { locOf } from "../program.js";
+import { isJsSourceFile, locOf } from "../program.js";
 import { DYN, F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
 import { nodeThrowExpr } from "../../ir/build.js";
 import { ambientUndefReadType, contextualUndefReadType } from "./lower-namespaces.js";
@@ -121,7 +121,15 @@ function isPrimitiveIrType(t: IrType): boolean {
 }
 
 function useSiteType(lowerer: Lowerer, expr: ts.Expression): IrType {
-  const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  // The Function interface has no mapping (mapping it would fence): the
+  // constructed value is checked-dynamic in JavaScript, and a typed dummy
+  // elsewhere — the throw always fires first.
+  const type = lowerer.typeOf(expr);
+  const symbol = type.getSymbol();
+  if (symbol?.name === "Function" && lowerer.isStdlibSymbol(symbol)) {
+    return isJsSourceFile(expr.getSourceFile()) ? DYN : F64;
+  }
+  const mapped = lowerer.mapTypeOf(type);
   if (
     mapped &&
     mapped.kind !== "void" &&

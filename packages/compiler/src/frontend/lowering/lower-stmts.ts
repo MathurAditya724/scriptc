@@ -10,6 +10,7 @@ import { InternalCompilerError } from "../../errors.js";
  * flow (if/while/for/for-of/do, switch, try/catch, abrupt completions),
  * explicit resource management, and blocked-binding poisoning. */
 import * as ts from "../ts7/adapter.js";
+import { processDataMemberValue } from "./builtins/process.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
 import { bindingSource } from "../binding-source.js";
@@ -147,6 +148,7 @@ import {
 } from "./builtins/module-bindings.js";
 import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
 import { registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
+import { registerZlibClassAlias } from "./builtins/compression.js";
 import { lowerEnumDeclaration } from "./lower-enums.js";
 import {
   abstractPropertyDeclOf,
@@ -2717,6 +2719,14 @@ export function lowerBindingPattern(
     }
     return;
   }
+  if (
+    srcType.kind === "array" &&
+    isMatchSliceType(lowerer, srcType) &&
+    isRegexMatchResultPattern(lowerer, pattern)
+  ) {
+    lowerMatchResultObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
+    return;
+  }
   if (srcType.kind !== "record") {
     lowerer.unsupported(
       "SC1031",
@@ -2816,18 +2826,20 @@ export function lowerBindingPattern(
       // An UNDECLARED key of an INDEX-SIGNATURE shape (`const { m, n, p }
       // = ....groups` over `{ [key: string]: string }` — the groups
       // record, `Record<string, T>` tables generally): the overflow-map
-      // read, exactly the dot access's recordKeyGet — a missing key
-      // traps when the value type carries no undefined arm (the checker
-      // claimed V), or binds the undefined arm (where a default applies
-      // like any field's).
+      // read, exactly the dot access's recordKeyGet — a missing key binds
+      // the undefined arm (where a default applies like any field's).
       const loc = locOf(el);
+      const readType =
+        shape.indexValue.kind === "dyn"
+          ? shape.indexValue
+          : (lowerer.withUndefinedArmOf(shape.indexValue) ?? shape.indexValue);
       let value: IrExpr = {
         kind: "recordKeyGet",
         obj: srcRef(),
         shapeId: srcType.shapeId,
         key: { kind: "strLit", value: propName, type: STRING, loc },
         overflowOnly: true,
-        type: shape.indexValue,
+        type: readType,
         loc,
       };
       if (el.initializer) value = applyBindingDefault(lowerer, el, value);
@@ -2983,6 +2995,124 @@ function patternKeyNameOf(lowerer: Lowerer, prop: ts.PropertyName): string | nul
     return lowerer.foldedStringKeyOf(prop);
   }
   return null;
+}
+
+/** True when an object pattern destructures a regex match result: the
+ * checker types its source as the standard library's RegExpExecArray or
+ * RegExpMatchArray. */
+function isRegexMatchResultPattern(lowerer: Lowerer, pattern: ts.ObjectBindingPattern): boolean {
+  const parent = pattern.parent;
+  const source =
+    ts.isVariableDeclaration(parent) && parent.initializer !== undefined
+      ? lowerer.typeOf(parent.initializer)
+      : lowerer.typeOf(pattern);
+  const type = lowerer.checker.getNonNullableType(source);
+  const symbol = type.getAliasSymbol() ?? type.getSymbol();
+  return (
+    symbol !== undefined &&
+    (symbol.name === "RegExpExecArray" || symbol.name === "RegExpMatchArray") &&
+    lowerer.isStdlibSymbol(symbol)
+  );
+}
+
+/** `const { 0: whole, 1: first, index, input, groups } = re.exec(s)!`: an
+ * object pattern over a regex match result. The result is an honest
+ * string[] slice whose `index` and `input` are the special-form reads that
+ * `m.index` and `m.input` lower to; numeric keys are the positional reads
+ * of the equivalent array pattern, and `groups` is the projection `m.groups`
+ * builds when the regex is statically known. Rest elements, defaults on
+ * the special properties, and every other key keep a named fence. */
+function lowerMatchResultObjectPattern(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  srcRef: () => IrExpr,
+  srcType: IrType & { kind: "array" },
+  isLet: boolean,
+  out: IrStmt[],
+): void {
+  let groups: { name: string; index: number }[] | null | undefined;
+  for (const el of pattern.elements) {
+    if (el.name === undefined) continue;
+    const loc = locOf(el);
+    if (el.dotDotDotToken) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings over regex match results (the rest copies the positions and the index, input and groups properties — destructure them by name)",
+      );
+    }
+    const prop = el.propertyName ?? el.name;
+    const propName =
+      ts.isIdentifier(prop) ||
+      ts.isComputedPropertyName(prop) ||
+      ts.isStringLiteralLike(prop) ||
+      ts.isNumericLiteral(prop)
+        ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
+        : null;
+    if (propName === null) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "destructuring with computed keys that do not fold to one property name",
+      );
+    }
+    let value: IrExpr;
+    if (/^(?:0|[1-9]\d{0,8})$/.test(propName)) {
+      const index = Number(propName);
+      const position: IrExpr = { kind: "numLit", value: index, type: F64, loc };
+      value = lowerSafeIndexRead(lowerer, srcRef(), position, loc) ?? {
+        kind: "arrayGet",
+        arr: srcRef(),
+        index: position,
+        type: srcType.elem,
+        loc,
+      };
+      if (el.initializer) {
+        value = arrayPositionDefault(lowerer, el, value, srcRef, index, srcType.elem, out);
+      }
+    } else if (propName === "index" || propName === "input") {
+      if (el.initializer) {
+        lowerer.unsupported(
+          "SC1031",
+          el,
+          `binding defaults on the '${propName}' of a regex match result`,
+        );
+      }
+      value = lowerer.maybeNarrow(
+        {
+          kind: "dynKeyGet",
+          value: lowerer.coerceToExpected(srcRef(), DYN),
+          key: { kind: "strLit", value: propName, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+        el.name,
+      );
+    } else if (propName === "groups") {
+      if (groups === undefined) {
+        const parent = pattern.parent;
+        groups =
+          ts.isVariableDeclaration(parent) && parent.initializer !== undefined
+            ? matchResultNamedGroupsOf(lowerer, parent.initializer)
+            : null;
+      }
+      if (groups === null || groups.length === 0 || el.initializer) {
+        lowerer.unsupported(
+          "SC1031",
+          el,
+          "destructuring 'groups' from this regex match result (it lowers when the regex is statically known and has named groups, without a default)",
+        );
+      }
+      value = lowerGroupsProjection(lowerer, srcRef(), groups, loc);
+    } else {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        `destructuring the property '${propName}' of a regex match result (numeric positions, index, input and groups compile)`,
+      );
+    }
+    lowerer.bindPatternTarget(el.name, value, isLet, out);
+  }
 }
 
 /** Decode one non-rest object-assignment property into its static source
@@ -3148,6 +3278,9 @@ function stdlibGlobalTokenDestructure(
     token: string;
     alias: string | null;
     g: IrGlobal | undefined;
+    /** A data member's value (`const { env } = process`), bound instead
+     * of a token. */
+    value?: IrExpr;
   }[] = [];
   for (const el of decl.name.elements) {
     if (el.name === undefined) continue;
@@ -3183,8 +3316,9 @@ function stdlibGlobalTokenDestructure(
         "destructuring with computed keys that do not fold to one property name",
       );
     }
-    let token: string;
+    let token = "";
     let alias: string | null = null;
+    let value: IrExpr | null = null;
     if (globalName === "globalThis") {
       // The member must BE a stdlib global (user script vars are
       // properties of `typeof globalThis` too — their values are real
@@ -3204,6 +3338,13 @@ function stdlibGlobalTokenDestructure(
       token = `[builtin console.${propName}]`;
     } else if (TOKEN_OPAQUE_GLOBALS.has(globalName)) {
       token = `[builtin ${globalName}.${propName}]`;
+    } else if (
+      globalName === "process" &&
+      ts.isIdentifier(el.name) &&
+      (value = processDataMemberValue(lowerer, propName, el.name, locOf(el))) !== null
+    ) {
+      // A data member reads its value once, exactly like the spelled
+      // `process.<member>` read the destructuring performs.
     } else {
       lowerer.unsupported(
         "SC1031",
@@ -3220,6 +3361,10 @@ function stdlibGlobalTokenDestructure(
       );
     }
     const g = lowerer.globalsBySymbol.get(symbol);
+    if (value !== null) {
+      binds.push({ name: el.name, token, alias, g, value });
+      continue;
+    }
     if (g !== undefined && g.type.kind !== "string" && g.type.kind !== "dyn") {
       lowerer.unsupported(
         "SC1031",
@@ -3232,6 +3377,21 @@ function stdlibGlobalTokenDestructure(
   const out: IrStmt[] = [];
   for (const b of binds) {
     const loc = locOf(b.name);
+    if (b.value !== undefined) {
+      if (b.g !== undefined) {
+        out.push({
+          kind: "assign",
+          localId: b.g.id,
+          value: lowerer.coerceInto(b.name, b.value, b.g.type),
+          ...(b.g.tdz ? { initializes: true as const } : {}),
+          loc,
+        });
+      } else {
+        const local = lowerer.declareLocal(b.name, b.name.text, b.value.type, isLet);
+        out.push({ kind: "varDecl", localId: local.id, init: b.value, loc });
+      }
+      continue;
+    }
     const token: IrExpr = { kind: "strLit", value: b.token, type: STRING, loc };
     if (b.alias !== null) {
       const symbol = lowerer.checker.getSymbolAtLocation(b.name);
@@ -4263,6 +4423,7 @@ export function lowerVarDecl(
   // reads reuse its interned closure identity.
   if (!isLet && registerOverloadedCallableAlias(lowerer, decl)) return null;
   if (!isLet && registerBuiltinCallableAlias(lowerer, decl.name, decl.initializer)) return null;
+  if (registerZlibClassAlias(lowerer, decl.name, decl.initializer)) return null;
 
   // `const knownBy = (cmd) => ...` — an IMPLICIT-ANY function-value
   // binding in npm-static JS (function-scope bindings register here, in
@@ -4351,16 +4512,21 @@ export function lowerVarDecl(
       if (wrapped) return { kind: "assign", localId: g.id, value: wrapped, loc: locOf(decl) };
       return null;
     }
-    const raw = lowerVariableInitializer(
-      lowerer,
-      decl.initializer,
-      g.type.kind === "dyn" &&
-        (isNativeBuiltinValueInitializer(lowerer, decl.initializer) ||
-          ts.isArrayLiteralExpression(decl.initializer) ||
-          ts.isObjectLiteralExpression(decl.initializer))
-        ? DYN
-        : undefined,
-    );
+    const guardedRead = isGuardedRecordRead(lowerer, decl)
+      ? lowerAbsenceProbe(lowerer, decl.initializer)
+      : null;
+    const raw =
+      guardedRead ??
+      lowerVariableInitializer(
+        lowerer,
+        decl.initializer,
+        g.type.kind === "dyn" &&
+          (isNativeBuiltinValueInitializer(lowerer, decl.initializer) ||
+            ts.isArrayLiteralExpression(decl.initializer) ||
+            ts.isObjectLiteralExpression(decl.initializer))
+          ? DYN
+          : undefined,
+      );
     if (
       isJsSourceFile(decl.getSourceFile()) &&
       !decl.type &&
@@ -5156,29 +5322,111 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
 }
 
 function immediatelyGuardedAbsenceProbe(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
-  if (decl.type || !ts.isIdentifier(decl.name) || !decl.initializer) return false;
+  const guard = immediateAbsenceGuard(lowerer, decl);
+  // `if (!x)`: the falsy test sees a missing value.
+  if (guard === "falsy") return true;
+  // `if (x === undefined)` and its spellings compare the binding with the
+  // missing value itself, so the read must be able to produce it. Only
+  // index-signature record reads take this form: array reads already
+  // carry their undefined arm, and their ordinary lowering keeps its
+  // bounds proofs.
+  return guard === "compare" && isIndexSignatureRecordRead(lowerer, decl);
+}
+
+/** A file-scope or block-scope `let e = map[k]` over an index-signature
+ * record whose next statement guards `e` for absence (`if (e ===
+ * undefined)`, `if (!e)`, ...): the get-or-create idiom. Its read keeps the
+ * missing key as undefined even without noUncheckedIndexedAccess. */
+export function isGuardedRecordRead(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  return immediateAbsenceGuard(lowerer, decl) !== null && isIndexSignatureRecordRead(lowerer, decl);
+}
+
+function isIndexSignatureRecordRead(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (!decl.initializer) return false;
+  let init = decl.initializer;
+  while (ts.isParenthesizedExpression(init)) init = init.expression;
+  if (!ts.isElementAccessExpression(init)) return false;
+  // Under noUncheckedIndexedAccess the checker already spells the missing
+  // arm, and the ordinary read carries it.
+  const read = lowerer.typeOf(init);
+  if (
+    (read.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+    (read.isUnionType() &&
+      ts.constituentTypes(read).some((t) => (t.flags & ts.TypeFlags.Undefined) !== 0))
+  )
+    return false;
+  const receiver = lowerer.mapTypeOf(lowerer.typeOf(init.expression));
+  const shape = receiver?.kind === "record" ? lowerer.shapes.get(receiver.shapeId) : undefined;
+  return !!shape && !shape.tuple && !!shape.indexValue && shape.indexValue.kind !== "dyn";
+}
+
+/** How the statement right after an unannotated declaration tests the
+ * declared binding for absence: `if (!x)` ("falsy"), or a comparison with
+ * the missing value — `x === undefined`, `x == null`, `x !== void 0`,
+ * `typeof x === "undefined"` and their mirrored and negated spellings
+ * ("compare"). Null for anything else. */
+function immediateAbsenceGuard(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): "falsy" | "compare" | null {
+  if (decl.type || !ts.isIdentifier(decl.name) || !decl.initializer) return null;
   const statement = decl.parent?.parent;
-  if (!statement || !ts.isVariableStatement(statement)) return false;
+  if (!statement || !ts.isVariableStatement(statement)) return null;
   const container = statement.parent;
   const statements =
     ts.isBlock(container) || ts.isSourceFile(container) ? container.statements : null;
-  if (!statements) return false;
+  if (!statements) return null;
   const index = statements.indexOf(statement);
   const next = index >= 0 ? statements[index + 1] : undefined;
-  if (!next || !ts.isIfStatement(next)) return false;
-  let condition = next.expression;
-  while (ts.isParenthesizedExpression(condition)) condition = condition.expression;
-  if (
-    !ts.isPrefixUnaryExpression(condition) ||
-    condition.operator !== ts.SyntaxKind.ExclamationToken
-  )
-    return false;
-  let operand = condition.operand;
-  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
-  return (
-    ts.isIdentifier(operand) &&
-    lowerer.resolveValueSymbol(operand) === lowerer.resolveValueSymbol(decl.name)
-  );
+  if (!next || !ts.isIfStatement(next)) return null;
+  const binding = lowerer.resolveValueSymbol(decl.name);
+  const peel = (node: ts.Expression): ts.Expression => {
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    return node;
+  };
+  const isBinding = (node: ts.Expression): boolean => {
+    const operand = peel(node);
+    return ts.isIdentifier(operand) && lowerer.resolveValueSymbol(operand) === binding;
+  };
+  const condition = peel(next.expression);
+  if (ts.isPrefixUnaryExpression(condition))
+    return condition.operator === ts.SyntaxKind.ExclamationToken && isBinding(condition.operand)
+      ? "falsy"
+      : null;
+  if (!ts.isBinaryExpression(condition)) return null;
+  const op = condition.operatorToken.kind;
+  const strict =
+    op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  const loose =
+    op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken;
+  if (!strict && !loose) return null;
+  const isUndefined = (node: ts.Expression): boolean => {
+    const operand = peel(node);
+    if (ts.isVoidExpression(operand)) return true;
+    return (
+      ts.isIdentifier(operand) &&
+      operand.text === "undefined" &&
+      (lowerer.typeOf(operand).flags & ts.TypeFlags.Undefined) !== 0
+    );
+  };
+  const isNull = (node: ts.Expression): boolean => peel(node).kind === ts.SyntaxKind.NullKeyword;
+  const missing = (node: ts.Expression): boolean => isUndefined(node) || (loose && isNull(node));
+  const isTypeofBinding = (node: ts.Expression): boolean => {
+    const operand = peel(node);
+    return ts.isTypeOfExpression(operand) && isBinding(operand.expression);
+  };
+  const isUndefinedTag = (node: ts.Expression): boolean => {
+    const operand = peel(node);
+    return ts.isStringLiteralLike(operand) && operand.text === "undefined";
+  };
+  const { left, right } = condition;
+  return (isBinding(left) && missing(right)) ||
+    (missing(left) && isBinding(right)) ||
+    (isTypeofBinding(left) && isUndefinedTag(right)) ||
+    (isUndefinedTag(left) && isTypeofBinding(right))
+    ? "compare"
+    : null;
 }
 
 function falsyExitRuntimeOptionalLocals(lowerer: Lowerer, stmt: ts.IfStatement): IrLocal[] {
@@ -5405,7 +5653,7 @@ function lowerBranchSwitch(
  *   cell, deliberately narrower than dyn: the supported uses are the
  *   narrowing tests (`e instanceof C` over hierarchy classes, `typeof e
  *   === "string"/"number"/"boolean"`), reads under a proven narrow
- *   (caughtRead bridges them with caughtNarrow, trust-the-checker like
+ *   (caughtRead bridges them with caughtNarrow, verified at run time like
  *   unionNarrow), and rethrow (`throw e`). Unsupported raw uses and
  *   assignments are fenced (SC1063 and friends); destructuring patterns
  *   are SC1062. Captures retain the snapshot beyond the catch scope.

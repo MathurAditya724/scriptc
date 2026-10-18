@@ -1,11 +1,12 @@
 import { lowerBuiltinByteInput, errorFirstBytesCallback } from "./arguments.js";
-import { dynUndefinedExpr, numLit } from "../../../ir/build.js";
+import { dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { isNodeTypesPath } from "../../dts-paths.js";
 import {
+  BOOL,
   BYTES_U8,
   DYN,
   F64,
@@ -39,7 +40,8 @@ const ZLIB_CALLBACK_FNS: Readonly<Record<string, IrLibFn | undefined>> = {
   unzip: "zlib.unzipCb",
 };
 
-const ZLIB_STREAM_T: IrType = { kind: "object", className: "%Transform" };
+const ZLIB_STREAM_CLASS = "%Transform";
+const ZLIB_STREAM_T: IrType = { kind: "object", className: ZLIB_STREAM_CLASS };
 
 /** A zlib data argument, lowered once: Buffer/Uint8Array bytes, a string
  * (UTF-8 encoded here), or a checked-dynamic value (the JS lane's untyped
@@ -130,6 +132,8 @@ export function zlibStreamModeOf(
   symbol: ts.Symbol | null | undefined,
 ): number | null {
   if (!symbol) return null;
+  const aliasMode = zlibClassAliasModeOf(lowerer, symbol, 0);
+  if (aliasMode !== undefined) return aliasMode;
   const target =
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
   const mode = ZLIB_STREAM_MODES.get(target.name);
@@ -493,4 +497,146 @@ export function lowerZlibModuleCall(
     };
   }
   throw new InternalCompilerError(`unhandled lowered zlib member ${bi.member}`);
+}
+
+/** The zlib stream class an expression names (`zlib.Gzip`, an imported
+ * `Gzip`, a `const C = zlib.Gzip` alias), as its node_zlib_mode, or null. */
+export function zlibClassModeOfExpr(lowerer: Lowerer, expr: ts.Expression): number | null {
+  let e = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isIdentifier(e)) return zlibStreamModeOf(lowerer, lowerer.checker.getSymbolAtLocation(e));
+  if (ts.isPropertyAccessExpression(e) && !e.questionDotToken) {
+    return zlibStreamModeOf(lowerer, lowerer.checker.getSymbolAtLocation(e.name));
+  }
+  return null;
+}
+
+/** The class name of a zlib stream mode (Node's constructor name). */
+export function zlibClassName(mode: number): string {
+  for (const [name, m] of ZLIB_STREAM_MODES) if (m === mode) return name;
+  return "Zlib";
+}
+
+/** The mode of a `const C = zlib.Gzip` binding (or an alias of such a
+ * binding), null when the symbol is a const binding of something else,
+ * undefined when it is not a const binding. Resolved from the declaration,
+ * so uses lowered before the declaration statement see the same answer. */
+function zlibClassAliasModeOf(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+  depth: number,
+): number | null | undefined {
+  const cached = lowerer.zlibClassAliases.get(symbol);
+  if (cached !== undefined) return cached;
+  if ((symbol.flags & ts.SymbolFlags.BlockScopedVariable) === 0) return undefined;
+  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  if (decl === undefined || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) {
+    return undefined;
+  }
+  // const only: a var or let binding could be reassigned
+  const list = decl.parent;
+  if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0) {
+    return undefined;
+  }
+  let init = decl.initializer;
+  while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
+  if (init === undefined || depth > 16) return null;
+  let mode: number | null = null;
+  if (ts.isIdentifier(init)) {
+    const next = lowerer.checker.getSymbolAtLocation(init);
+    if (next !== undefined) {
+      const nested = zlibClassAliasModeOf(lowerer, next, depth + 1);
+      mode = nested === undefined ? zlibStreamModeOf(lowerer, next) : nested;
+    }
+  } else if (ts.isPropertyAccessExpression(init) && !init.questionDotToken) {
+    mode = zlibStreamModeOf(lowerer, lowerer.checker.getSymbolAtLocation(init.name));
+  }
+  if (mode !== null) lowerer.zlibClassAliases.set(symbol, mode);
+  return mode;
+}
+
+/** True for `const C = zlib.Gzip` (or an alias of an alias): a
+ * compile-time zlib class alias that owns no runtime slot, so the
+ * statement lowering skips it. */
+export function registerZlibClassAlias(
+  lowerer: Lowerer,
+  nameNode: ts.Node,
+  init: ts.Expression | undefined,
+): boolean {
+  if (!ts.isIdentifier(nameNode) || init === undefined) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+  return symbol !== undefined && zlibClassAliasOf(lowerer, symbol) !== null;
+}
+
+/** The mode of a `const C = zlib.Gzip` alias symbol, or null. */
+export function zlibClassAliasOf(lowerer: Lowerer, symbol: ts.Symbol): number | null {
+  return zlibClassAliasModeOf(lowerer, symbol, 0) ?? null;
+}
+
+/** `value instanceof zlib.Gzip` (any spelling of the class, aliases
+ * included). zlib streams are runtime Transforms: a Transform operand asks
+ * the runtime for the stream's mode, and an operand typed as one of
+ * Transform's bases (Duplex, Readable, EventEmitter) is first tested for a
+ * Transform. Any other static type answers false after the operand
+ * evaluates. */
+export function lowerZlibInstanceOf(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  mode: number,
+  loc: SrcLoc,
+): IrExpr {
+  const value = lowerer.lowerExpr(expr.left);
+  const type = value.type;
+  const holdsStream = (className: string): boolean =>
+    className === ZLIB_STREAM_CLASS || lowerer.isSubclassOf(ZLIB_STREAM_CLASS, className);
+  const arms = type.kind === "union" ? lowerer.unions.get(type.unionId)?.arms : undefined;
+  if (
+    type.kind === "dyn" ||
+    arms?.some((arm) => arm.kind === "object" && holdsStream(arm.className))
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'instanceof zlib.${zlibClassName(mode)}' on an untyped or union value (give the operand a stream type first)`,
+    );
+  }
+  if (type.kind === "object" && holdsStream(type.className)) {
+    const isMode = (stream: IrExpr): IrExpr => ({
+      kind: "libCall",
+      fn: "zlib.streamIs",
+      args: [stream, numLit(mode, loc)],
+      type: BOOL,
+      loc,
+    });
+    if (type.className === ZLIB_STREAM_CLASS) return isMode(value);
+    const local = lowerer.declareHiddenLocal("%zlibTest", type);
+    const ref = varRef(local.id, type, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+      result: {
+        kind: "logical",
+        op: "&&",
+        left: {
+          kind: "instanceOf",
+          value: ref,
+          className: ZLIB_STREAM_CLASS,
+          type: BOOL,
+          loc,
+        },
+        right: isMode({ kind: "downcast", value: ref, type: ZLIB_STREAM_T, loc }),
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: { kind: "boolLit", value: false, type: BOOL, loc },
+    type: BOOL,
+    loc,
+  };
 }

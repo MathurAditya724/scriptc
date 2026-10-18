@@ -21,6 +21,7 @@ import type { CallLifetimes } from "./call-lifetimes.js";
 import { emitCallExpr, emitConstruction } from "./expr-calls.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { emitRecordLitFields } from "./expr-primitives.js";
+import { SHAPE_WORD_INDEX } from "./nullable-unions.js";
 import { llFieldType } from "./shapes.js";
 
 export type StackObjectSource = IrExpr & { kind: "recordLit" | "recordClone" | "new" | "call" };
@@ -196,12 +197,13 @@ export function stackObjectFields(
   const cached = host.stackObjectFieldPtrs.get(slot);
   if (cached) return cached;
   const struct = stackObjectStruct(type);
+  const base = host.nullableUnions.fieldBase(type.shapeId);
   const fields: StackObjectField[] = [];
   host.recordShape(type.shapeId).fields.forEach((field, index) => {
     if (!isRefCounted(field.type) || host.inlineUnions.record(field.type)) return;
     const ptr = host.B.slot();
     host.B.entryAllocas.push(
-      `${ptr} = getelementptr inbounds ${struct}, ptr ${slot}, i64 0, i32 ${index + 1}`,
+      `${ptr} = getelementptr inbounds ${struct}, ptr ${slot}, i64 0, i32 ${index + base}`,
     );
     fields.push({ name: field.name, ptr, type: field.type });
   });
@@ -296,6 +298,17 @@ export function emitStackObject(
     }
   }
   B.line(`store ${host.sizeType} -1, ptr ${slot}`);
+  if (type.kind === "record") {
+    // A tagged shape's word names it to every shape union's tag read.
+    const shapeNumber = host.nullableUnions.shapeNumber(type.shapeId);
+    if (shapeNumber !== 0) {
+      const p = B.tmp();
+      B.line(
+        `${p} = getelementptr inbounds ${struct}, ptr ${slot}, i64 0, i32 ${SHAPE_WORD_INDEX}`,
+      );
+      B.line(`store i32 ${shapeNumber}, ptr ${p}`);
+    }
+  }
   if (e.kind === "call") {
     // The entry writes the result into the slot it receives last.
     emitCallExpr(

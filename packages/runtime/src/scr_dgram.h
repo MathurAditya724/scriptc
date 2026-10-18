@@ -83,11 +83,17 @@ void scr_dns_lookup_dyn(const ScrDyn *hostname, const ScrDyn *options, const Scr
                         bool typed);
 void scr_dns_lookup_service(const ScrDyn *address, const ScrDyn *port, const ScrDyn *callback,
                             bool typed);
-/* node:dns/promises (scr_dns_promises.c, linked only for the promise
- * forms): the promise (+1), or NULL with the argument error pending.
- * Arguments borrowed. */
+/* util.promisify(dns.lookup) and util.promisify(dns.lookupService): a +1
+ * promise of the checked-dynamic result; never throws. */
+typedef struct ScrPromise ScrPromise;
 ScrPromise *scr_dns_lookup_promise(const ScrDyn *hostname, const ScrDyn *options);
 ScrPromise *scr_dns_lookup_service_promise(const ScrDyn *address, const ScrDyn *port);
+/* node:dns/promises (scr_dns_promises.c, linked only for the module's
+ * promise forms): lib/internal/dns/promises.js's stricter argument checks
+ * throw synchronously; the promise (+1), or NULL with the argument error
+ * pending. Arguments borrowed. */
+ScrPromise *scr_dns_promises_lookup(const ScrDyn *hostname, const ScrDyn *options);
+ScrPromise *scr_dns_promises_lookup_service(const ScrDyn *address, const ScrDyn *port);
 ScrDyn *scr_dns_get_servers(void);                  /* +1 */
 ScrStr *scr_dns_get_default_result_order(void);     /* +1 */
 void scr_dns_set_default_result_order(const ScrDyn *order);

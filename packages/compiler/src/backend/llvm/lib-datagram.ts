@@ -29,7 +29,7 @@ function messageAdapter(host: LlvmEmitterContext, type: IrType): string {
     const isString = field === "address" || field === "family";
     if (isString) lines.push(`  %${field}.owned = call ptr @scr_str_retain_v(ptr %${field})`);
     lines.push(
-      `  %${field}.slot = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr %record, i64 0, i32 ${index + 1}`,
+      `  %${field}.slot = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr %record, i64 0, i32 ${index + host.nullableUnions.fieldBase(type.shapeId)}`,
       `  store ${isString ? "ptr" : "double"} %${field}${isString ? ".owned" : ""}, ptr %${field}.slot`,
     );
   }
@@ -121,6 +121,8 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
     "dgram.getSendQueueSize": "scr_dgram_get_send_queue_size",
     "dgram.getSendQueueCount": "scr_dgram_get_send_queue_count",
     "dgram.disconnect": "scr_dgram_disconnect",
+    "dns.lookupPromise": "scr_dns_lookup_promise",
+    "dns.lookupServicePromise": "scr_dns_lookup_service_promise",
   };
   const symbol = direct[e.fn];
   if (symbol !== undefined) return finishRuntimeCall(host, e, symbol, a);
@@ -167,7 +169,7 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
               );
         const slot = host.B.tmp();
         host.B.line(
-          `${slot} = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr ${record}, i64 0, i32 ${index + 1}`,
+          `${slot} = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr ${record}, i64 0, i32 ${index + host.nullableUnions.fieldBase(type.shapeId)}`,
         );
         host.B.line(`store ${ty} ${value}, ptr ${slot}`);
       }
@@ -234,10 +236,10 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
       return finishRuntimeCall(host, e, "scr_dns_lookup_dyn", a);
     case "dns.lookupService":
       return finishRuntimeCall(host, e, "scr_dns_lookup_service", a);
-    case "dns.lookupPromise":
-      return finishRuntimeCall(host, e, "scr_dns_lookup_promise", a);
-    case "dns.lookupServicePromise":
-      return finishRuntimeCall(host, e, "scr_dns_lookup_service_promise", a);
+    case "dns.promisesLookup":
+      return finishRuntimeCall(host, e, "scr_dns_promises_lookup", a);
+    case "dns.promisesLookupService":
+      return finishRuntimeCall(host, e, "scr_dns_promises_lookup_service", a);
     case "dns.getServers":
       return finishRuntimeCall(host, e, "scr_dns_get_servers", a);
     case "dns.getDefaultResultOrder":

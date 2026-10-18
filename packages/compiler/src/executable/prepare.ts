@@ -69,6 +69,7 @@ export function prepareExecutableModule(
       lowered = fe.lower({
         targetPlatform: buildPlatform,
         ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
+        ...(opts.tier !== undefined ? { tierMode: opts.tier } : {}),
       });
       timing("lower");
     } catch (e) {

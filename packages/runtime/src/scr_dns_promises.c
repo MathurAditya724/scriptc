@@ -290,7 +290,7 @@ static ScrPromise *scr_dnsp_lookup(const ScrDyn *hostname, const ScrDyn *opts) {
   return p;
 }
 
-ScrPromise *scr_dns_lookup_promise(const ScrDyn *hostname, const ScrDyn *options) {
+ScrPromise *scr_dns_promises_lookup(const ScrDyn *hostname, const ScrDyn *options) {
   if (options->kind != SCR_DYN_TYPED_REF) return scr_dnsp_lookup(hostname, options);
   /* a typed options record arrives by reference */
   ScrDyn *view = scr_dyn_typed_ref_materialize(options);
@@ -299,7 +299,7 @@ ScrPromise *scr_dns_lookup_promise(const ScrDyn *hostname, const ScrDyn *options
   return p;
 }
 
-ScrPromise *scr_dns_lookup_service_promise(const ScrDyn *address, const ScrDyn *port) {
+ScrPromise *scr_dns_promises_lookup_service(const ScrDyn *address, const ScrDyn *port) {
   ScrPromise *p = scr_promise_new();
   ScrDyn *cb = scr_dnsp_callback(p, scr_dnsp_service_settle, 3);
   scr_dns_lookup_service(address, port, cb, false);
