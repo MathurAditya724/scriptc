@@ -85,7 +85,7 @@ import {
   isNodeTypesPath,
   locOf,
 } from "../program.js";
-import { PoisonError, dynFallbackType, newFnCtx, own } from "./lowerer.js";
+import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
@@ -9715,7 +9715,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       ((callee.type.kind === "func" || callee.type.kind === "classval") &&
         lowerer.dynConvertible(callee.type)))
   ) {
-    return lowerCheckedConstructor(lowerer, expr, lowerer.coerceToExpected(callee, DYN));
+    let boxed = lowerer.coerceToExpected(callee, DYN);
+    // A plain function's box carries its name: the construction's
+    // prototype records it as `constructor`, which util.inspect prints
+    // (`F { a: 2 }`).
+    if (boxed.kind === "dynFrom" && boxed.fnName === undefined && callee.type.kind === "func") {
+      const name = jsFuncNameOf(expr.expression, lowerer);
+      if (name !== null) boxed = { ...boxed, fnName: name };
+    }
+    return lowerCheckedConstructor(lowerer, expr, boxed);
   }
   lowerer.unsupported(
     "SC1090",
