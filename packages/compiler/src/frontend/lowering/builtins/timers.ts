@@ -308,12 +308,15 @@ function lowerSchedulerCall(
   const promiseVoid: IrType = { kind: "promise", inner: VOID };
   if (member === "scheduler.yield")
     return { kind: "libCall", fn: "tp.setImmediate", args: [], type: promiseVoid, loc };
+  // The scheduler.wait libCalls emit timers/promises setTimeout's runtime
+  // calls; mock.timers mocks scheduler.wait and leaves setTimeout's named
+  // and namespace imports real. An omitted delay is NaN, Node's undefined.
   const [delayNode, optionsNode] = expr.arguments;
   const ms: IrExpr = delayNode
     ? lowerer.lowerExprExpecting(delayNode, F64)
-    : { kind: "numLit", value: 1, type: F64, loc };
+    : { kind: "numLit", value: NaN, type: F64, loc };
   if (optionsNode === undefined)
-    return { kind: "libCall", fn: "tp.setTimeout", args: [ms], type: promiseVoid, loc };
+    return { kind: "libCall", fn: "tp.schedulerWait", args: [ms], type: promiseVoid, loc };
   const { ref, signal } = timersPromisesOptions(lowerer, member, optionsNode, loc);
   const value: IrExpr = {
     kind: "intrinsic",
@@ -324,7 +327,7 @@ function lowerSchedulerCall(
   };
   return {
     kind: "libCall",
-    fn: signal === null ? "tp.setTimeoutValue" : "tp.setTimeoutSignal",
+    fn: signal === null ? "tp.schedulerWaitValue" : "tp.schedulerWaitSignal",
     args: signal === null ? [ms, value, ref] : [ms, value, ref, signal],
     type: promiseVoid,
     loc,

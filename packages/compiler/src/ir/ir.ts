@@ -3587,6 +3587,11 @@ export type IrExpr =
       type: IrType;
       loc: SrcLoc;
       prototypeIdentityOnly?: true;
+      /** A timer call through an ESM named or namespace import of
+       * node:timers. Node's mock.timers replaces the globals and the
+       * module object's properties, which these bindings do not follow,
+       * so the call keeps the loop's timer. */
+      realTimer?: true;
       /** An assertion call made through a node:assert Assert instance: the
        * instance options the runtime applies to this call. Backends set
        * them right before the runtime call, after its arguments are

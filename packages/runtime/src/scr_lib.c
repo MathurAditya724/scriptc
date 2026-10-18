@@ -10183,6 +10183,8 @@ ScrStr *scr_str_from_code_point_bytes(ScrBytes *codes) {
  * frontend-fenced; construction, storage, getters, and ISO formatting
  * observe exactly this payload. */
 
+SCR_TL const double *scr_date_mock_now = NULL;
+
 double scr_date_now(void) {
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
@@ -10873,7 +10875,7 @@ static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *metho
 
 ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
   double ms;
-  if (arguments->v.arr.len == 0) ms = scr_date_now();
+  if (arguments->v.arr.len == 0) ms = scr_date_mock_now ? *scr_date_mock_now : scr_date_now();
   else {
     ScrDyn *value = arguments->v.arr.items[0];
     if (scr_dyn_native_date_is(value)) ms = scr_dyn_native_date_value(value);

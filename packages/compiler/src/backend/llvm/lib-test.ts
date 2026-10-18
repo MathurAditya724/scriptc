@@ -66,6 +66,26 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_ctx_mock_restore_all", a);
     case "test.ctxMockReset":
       return finishRuntimeCall(host, e, "scr_test_ctx_mock_reset", a);
+    case "test.mockTimersEnable":
+      return finishRuntimeCall(host, e, "scr_test_mock_timers_enable", a);
+    case "test.mockTimersTick":
+      return finishRuntimeCall(host, e, "scr_test_mock_timers_tick", a);
+    case "test.mockTimersRunAll":
+      return finishRuntimeCall(host, e, "scr_test_mock_timers_run_all", a);
+    case "test.mockTimersReset":
+      return finishRuntimeCall(host, e, "scr_test_mock_timers_reset", a);
+    case "test.mockTimersSetTime":
+      return finishRuntimeCall(host, e, "scr_test_mock_timers_set_time", a);
+    case "test.ctxMockTimersEnable":
+      return finishRuntimeCall(host, e, "scr_test_ctx_mock_timers_enable", a);
+    case "test.ctxMockTimersTick":
+      return finishRuntimeCall(host, e, "scr_test_ctx_mock_timers_tick", a);
+    case "test.ctxMockTimersRunAll":
+      return finishRuntimeCall(host, e, "scr_test_ctx_mock_timers_run_all", a);
+    case "test.ctxMockTimersReset":
+      return finishRuntimeCall(host, e, "scr_test_ctx_mock_timers_reset", a);
+    case "test.ctxMockTimersSetTime":
+      return finishRuntimeCall(host, e, "scr_test_ctx_mock_timers_set_time", a);
     default:
       throw new InternalCompilerError(`unhandled test call ${e.fn}`);
   }
