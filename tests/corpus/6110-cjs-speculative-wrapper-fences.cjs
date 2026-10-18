@@ -1,3 +1,4 @@
+// @deferred-fences: 9
 // Function expressions lowered speculatively — the `.call(this)` and
 // `.apply` receivers of CommonJS wrappers, and a computed class base — keep
 // every statement of their bodies. A statement with no static lowering
