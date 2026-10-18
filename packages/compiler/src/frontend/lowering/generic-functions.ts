@@ -292,11 +292,16 @@ export function genericCallInstance(
     (_param, i) => expr.arguments[i] ?? expr,
   );
   const retTs = lowerer.checker.getReturnTypeOfSignature(rsig);
-  const returnType = lowerer.mapTypeOf(retTs);
-  if (!returnType) {
+  const mappedReturn = lowerer.mapTypeOf(retTs);
+  if (!mappedReturn) {
     fenceGenericSignatureResult(lowerer, expr, retTs);
     lowerer.badType(expr, retTs);
   }
+  // A body that can return an indexed read that misses returns undefined
+  // there, as in JavaScript, whatever the declared result says.
+  const returnType = lowerer.runtimeOptionalGenericReturns.has(info.decl)
+    ? lowerer.runtimeOptionalType(mappedReturn)
+    : mappedReturn;
 
   // keyof-constrained type parameters (`K extends keyof T`): the bound
   // LITERAL is semantic — the instance body reads the named field — so
