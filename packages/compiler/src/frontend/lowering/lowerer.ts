@@ -341,6 +341,7 @@ import {
 } from "./call-signatures.js";
 import {
   implicitAnyParamSymbolsOf,
+  implicitLocalFnNodeOf,
   type GenericFnInfo,
   type GenericInstance,
   implicitMonoFile,
@@ -1523,6 +1524,28 @@ function panicSafe<T>(query: () => T, fallback: T): T {
     if (isCheckerPanic(e)) return fallback;
     throw e;
   }
+}
+
+/** The function's class expressions lower once per implicit-any instance.
+ * A function whose only implicit slots are destructured options and that
+ * is bound to a variable the implicit-instance probe rejects runs as one
+ * shared body, so its classes keep a single name. */
+function monomorphizedImplicit(
+  lowerer: Lowerer,
+  fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration,
+): boolean {
+  const slots = implicitAnyParamSymbolsOf(lowerer, fn);
+  if (!slots) return false;
+  if (slots.some((slot) => slot !== null)) return true;
+  let binding: ts.Node | undefined = fn.parent;
+  while (binding && ts.isParenthesizedExpression(binding)) binding = binding.parent;
+  if (
+    (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) &&
+    binding &&
+    ts.isVariableDeclaration(binding)
+  )
+    return implicitLocalFnNodeOf(lowerer, binding) !== null;
+  return true;
 }
 
 export class Lowerer {
@@ -2791,7 +2814,7 @@ export class Lowerer {
           if (this.localClassInstantiations.some((entry) => entry.owner === parent)) break;
           if (
             parent.typeParameters?.length ||
-            (implicitMonoFile(parent.getSourceFile()) && implicitAnyParamSymbolsOf(this, parent))
+            (implicitMonoFile(parent.getSourceFile()) && monomorphizedImplicit(this, parent))
           )
             return null;
         }
