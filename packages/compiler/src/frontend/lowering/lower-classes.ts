@@ -4419,6 +4419,7 @@ export function lowerStaticFieldInits(lowerer: Lowerer, info: ClassInfo): IrStmt
   // instantiation's bindings/context (a no-op for everything else —
   // generic FAMILIES own their statics and carry no genericInstance).
   const diagsBefore = lowerer.diags.length;
+  const sinkMark = lowerer.diagSinkMark();
   try {
     return withInstanceBindings(lowerer, info, () => lowerStaticFieldInitsInner(lowerer, info));
   } catch (error) {
@@ -4426,8 +4427,11 @@ export function lowerStaticFieldInits(lowerer: Lowerer, info: ClassInfo): IrStmt
     // Keep their refusal attached to the class declaration instead of
     // letting a poisoned initializer escape the module lowering pass.
     if (!(error instanceof PoisonError)) throw error;
-    if (info.decl && isJsSourceFile(info.decl.getSourceFile()) && lowerer.diagSink === null) {
-      const fence = lowerer.deferToRuntimeFence(diagsBefore, info.decl, { kind: "statement" });
+    if (info.decl && isJsSourceFile(info.decl.getSourceFile())) {
+      const fence =
+        lowerer.diagSink === null
+          ? lowerer.deferToRuntimeFence(diagsBefore, info.decl, { kind: "statement" })
+          : lowerer.capturedRuntimeFence(sinkMark, info.decl);
       if (fence) return [fence];
     }
     return [];
@@ -4564,6 +4568,7 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
     lowerer.stats.statementsTotal++;
     lowerer.bumpFileStat(locOf(f.initializer).file, "total");
     const diagsBefore = lowerer.diags.length;
+    const sinkMark = lowerer.diagSinkMark();
     try {
       const previousThis = lowerer.ctx.thisLocal;
       const receiver =
@@ -4599,10 +4604,11 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
       if (!(e instanceof PoisonError)) throw e;
       lowerer.stats.statementsFailed++;
       lowerer.bumpFileStat(locOf(f.initializer).file, "failed");
-      if (isJsSourceFile(f.initializer.getSourceFile()) && lowerer.diagSink === null) {
-        const fence = lowerer.deferToRuntimeFence(diagsBefore, f.initializer, {
-          kind: "statement",
-        });
+      if (isJsSourceFile(f.initializer.getSourceFile())) {
+        const fence =
+          lowerer.diagSink === null
+            ? lowerer.deferToRuntimeFence(diagsBefore, f.initializer, { kind: "statement" })
+            : lowerer.capturedRuntimeFence(sinkMark, f.initializer);
         if (fence) out.push(fence);
       }
     }
@@ -7703,6 +7709,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
     lowerer.stats.statementsTotal++;
     lowerer.bumpFileStat(locOf(f.initializer).file, "total");
     const diagsBefore = lowerer.diags.length;
+    const sinkMark = lowerer.diagSinkMark();
     try {
       const value = lowerer.lowerExprExpecting(f.initializer, f.type);
       out.push({
@@ -7717,10 +7724,11 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
       if (!(e instanceof PoisonError)) throw e;
       lowerer.stats.statementsFailed++;
       lowerer.bumpFileStat(locOf(f.initializer).file, "failed");
-      if (isJsSourceFile(f.initializer.getSourceFile()) && lowerer.diagSink === null) {
-        const fence = lowerer.deferToRuntimeFence(diagsBefore, f.initializer, {
-          kind: "statement",
-        });
+      if (isJsSourceFile(f.initializer.getSourceFile())) {
+        const fence =
+          lowerer.diagSink === null
+            ? lowerer.deferToRuntimeFence(diagsBefore, f.initializer, { kind: "statement" })
+            : lowerer.capturedRuntimeFence(sinkMark, f.initializer);
         if (fence) out.push(fence);
       }
     }

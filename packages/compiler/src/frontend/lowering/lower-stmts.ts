@@ -671,6 +671,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
         if (sf !== undefined) lowerer.bumpFileStat(sf.fileName, "total");
       }
       const diagsBefore = lowerer.diags.length;
+      const sinkMark = lowerer.diagSinkMark();
       try {
         let lowered: IrStmt | IrStmt[] | null;
         let appended = false;
@@ -754,6 +755,11 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
               message: "this statement uses a construct with no static lowering",
             },
           });
+          if (fence) out.push(fence);
+        } else if (deferFences) {
+          // Inside a capture buffer the owner keeps the diagnostics, but
+          // the statement still must not vanish from a result it keeps.
+          const fence = lowerer.capturedRuntimeFence(sinkMark, stmt);
           if (fence) out.push(fence);
         }
       }
