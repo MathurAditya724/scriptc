@@ -417,6 +417,7 @@ import {
   lowerTracingChannelMethodCall,
   lowerTracingChannelProperty,
 } from "./builtins/async-context.js";
+import { lowerDisposableStackNew } from "./builtins/disposable-stack.js";
 import { lowerErrorCodeProperty } from "./builtins/errors.js";
 import {
   lowerProcessProperty,
@@ -11063,6 +11064,7 @@ export class Lowerer {
       lowerLifetimeRegionNew(this, expr) ??
       lowerInternTableNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
+      lowerDisposableStackNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??
