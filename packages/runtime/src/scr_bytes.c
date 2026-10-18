@@ -17,6 +17,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#elif defined(__ARM_NEON) && defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 static bool scr_td_label_space(unsigned char c) {
   return c == 9 || c == 10 || c == 12 || c == 13 || c == 32;
@@ -82,10 +87,60 @@ static void scr_bytes_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
 
+uint16_t scr_f16_from_f64(double value) {
+  uint64_t bits;
+  memcpy(&bits, &value, sizeof bits);
+  uint16_t sign = (uint16_t)((bits >> 48) & 0x8000);
+  uint64_t magnitude = bits & UINT64_C(0x7fffffffffffffff);
+  if (magnitude >= UINT64_C(0x7ff0000000000000)) {
+    if (magnitude == UINT64_C(0x7ff0000000000000)) return sign | 0x7c00;
+    return sign | 0x7e00 | (uint16_t)((magnitude >> 42) & 0x3ff);
+  }
+  int exponent = (int)(magnitude >> 52) - 1023;
+  if (exponent > 15) return sign | 0x7c00;
+  uint64_t fraction = magnitude & ((UINT64_C(1) << 52) - 1);
+  uint64_t significand = exponent == -1023 ? fraction : fraction | (UINT64_C(1) << 52);
+  if (exponent == -1023) exponent = -1022;
+  int biased = exponent + 15;
+  /* Normal results keep 10 of the 52 fraction bits; subnormal results
+   * shift further, by how far the exponent is below the normal range. */
+  int shift = biased >= 1 ? 42 : 42 + (1 - biased);
+  if (shift >= 54) return sign;
+  uint64_t q = significand >> shift;
+  uint64_t rest = significand & ((UINT64_C(1) << shift) - 1);
+  uint64_t half = UINT64_C(1) << (shift - 1);
+  if (rest > half || (rest == half && (q & 1))) q++;
+  if (biased < 1) return sign | (uint16_t)q; /* a carry into 0x400 is the smallest normal */
+  if (q == 2048) {
+    q = 1024;
+    biased++;
+  }
+  if (biased >= 31) return sign | 0x7c00;
+  return sign | (uint16_t)(biased << 10) | (uint16_t)(q & 0x3ff);
+}
+
+double scr_f16_to_f64(uint16_t h) {
+  uint64_t sign = (uint64_t)(h >> 15) << 63;
+  unsigned exponent = (h >> 10) & 0x1f, fraction = h & 0x3ff;
+  uint64_t bits;
+  if (exponent == 0) {
+    double v = (double)fraction * 5.9604644775390625e-8; /* fraction * 2^-24, exact */
+    memcpy(&bits, &v, sizeof bits);
+    bits |= sign;
+  } else if (exponent == 31) {
+    bits = sign | UINT64_C(0x7ff0000000000000) | ((uint64_t)fraction << 42);
+  } else {
+    bits = sign | ((uint64_t)(exponent - 15 + 1023) << 52) | ((uint64_t)fraction << 42);
+  }
+  double out;
+  memcpy(&out, &bits, sizeof out);
+  return out;
+}
+
 size_t scr_bytes_elem_size(ScrBytesElem elem) {
   switch (elem) {
     case SCR_BYTES_U8: case SCR_BYTES_U8C: case SCR_BYTES_I8: return 1;
-    case SCR_BYTES_U16: case SCR_BYTES_I16: return 2;
+    case SCR_BYTES_U16: case SCR_BYTES_I16: case SCR_BYTES_F16: return 2;
     case SCR_BYTES_U32: case SCR_BYTES_I32: case SCR_BYTES_F32: return 4;
     case SCR_BYTES_F64: return 8;
   }
@@ -101,6 +156,7 @@ const char *scr_bytes_elem_name(ScrBytesElem elem) {
     case SCR_BYTES_I16: return "Int16Array";
     case SCR_BYTES_U32: return "Uint32Array";
     case SCR_BYTES_I32: return "Int32Array";
+    case SCR_BYTES_F16: return "Float16Array";
     case SCR_BYTES_F32: return "Float32Array";
     case SCR_BYTES_F64: return "Float64Array";
   }
@@ -324,6 +380,11 @@ static double scr_bytes_decode(ScrBytesElem elem, const uint8_t *p) {
       memcpy(&v, p, 4);
       return (double)v;
     }
+    case SCR_BYTES_F16: {
+      uint16_t v;
+      memcpy(&v, p, 2);
+      return scr_f16_to_f64(v);
+    }
     case SCR_BYTES_F32: {
       float v;
       memcpy(&v, p, 4);
@@ -361,6 +422,11 @@ static void scr_bytes_encode(ScrBytesElem elem, uint8_t *p, double v) {
       /* ToInt32 is ToUint32 reinterpreted signed (same 2^32 residue). */
       uint32_t u = scr_bytes_to_u32(v);
       memcpy(p, &u, 4);
+      break;
+    }
+    case SCR_BYTES_F16: {
+      uint16_t h = scr_f16_from_f64(v);
+      memcpy(p, &h, 2);
       break;
     }
     case SCR_BYTES_F32: {
@@ -506,6 +572,13 @@ static void scr_bytes_read_numbers(double *out, const uint8_t *src, ScrBytesElem
     SCR_READ_NUMBERS(SCR_BYTES_I32, int32_t);
     SCR_READ_NUMBERS(SCR_BYTES_F32, float);
     SCR_READ_NUMBERS(SCR_BYTES_F64, double);
+    case SCR_BYTES_F16:
+      for (size_t i = 0; i < count; i++) {
+        uint16_t value;
+        memcpy(&value, src + i * sizeof value, sizeof value);
+        out[i] = scr_f16_to_f64(value);
+      }
+      return;
   }
 #undef SCR_READ_NUMBERS
 }
@@ -529,6 +602,9 @@ static void scr_bytes_write_numbers(uint8_t *dst, ScrBytesElem elem, const doubl
     }
     case SCR_BYTES_U32: case SCR_BYTES_I32: {
       SCR_WRITE_NUMBERS(uint32_t, scr_numeric_to_u32(src[i]));
+    }
+    case SCR_BYTES_F16: {
+      SCR_WRITE_NUMBERS(uint16_t, scr_f16_from_f64(src[i]));
     }
     case SCR_BYTES_F32: {
       SCR_WRITE_NUMBERS(float, (float)src[i]);
@@ -931,6 +1007,7 @@ static size_t scr_dataview_get_size(ScrDataViewGet kind) {
       return 1;
     case SCR_DV_U16:
     case SCR_DV_I16:
+    case SCR_DV_F16:
       return 2;
     case SCR_DV_U32:
     case SCR_DV_I32:
@@ -969,6 +1046,8 @@ double scr_dataview_get(const ScrBytes *b, double byte_off, ScrDataViewGet kind,
       return (double)(int16_t)u;
     case SCR_DV_I32:
       return (double)(int32_t)u;
+    case SCR_DV_F16:
+      return scr_f16_to_f64((uint16_t)u);
     case SCR_DV_F32: {
       uint32_t bits = (uint32_t)u;
       float f;
@@ -1012,6 +1091,9 @@ void scr_dataview_set(ScrBytes *b, double byte_off, double value, ScrDataViewGet
     case SCR_DV_U32:
     case SCR_DV_I32:
       u = (uint64_t)scr_bytes_to_u32(value);
+      break;
+    case SCR_DV_F16:
+      u = scr_f16_from_f64(value);
       break;
     case SCR_DV_F32: {
       float f = (float)value;
@@ -2457,6 +2539,22 @@ static ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
   return NULL;
 }
 
+/* new StringDecoder(encoding) with an encoding known only at run time:
+ * Node's normalizeEncoding. undefined, null and "" are utf8; a Buffer
+ * encoding name in any ASCII case answers its canonical name (+1); any
+ * other string throws ERR_UNKNOWN_ENCODING (NULL). Encodings that are not
+ * strings have no lowering. */
+ScrStr *scr_strdec_encoding(const ScrDyn *enc) {
+  if (enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL) return scr_str_new("utf8", 4);
+  if (enc->kind != SCR_DYN_STR) {
+    static const char message[] = "new StringDecoder with an encoding that is not a string has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  if (enc->v.str->len == 0) return scr_str_new("utf8", 4);
+  return scr_bytes_normalize_encoding(enc->v.str);
+}
+
 ScrStr *scr_bytes_to_str_checked(const ScrBytes *b, const ScrStr *enc) {
   /* Node returns before resolving the encoding when there are no bytes
    * to decode, so even an unknown runtime name answers the empty string. */
@@ -3302,13 +3400,30 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
     while (i < s->len && budget - written >= width) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
       /* utf16le of an ASCII run: zero-extend each byte to a little-endian
-       * unit, eight per step with two word stores (the generic loop below
-       * stores byte by byte, because the source and destination may alias
-       * as far as the compiler knows). */
+       * unit, sixteen per step with vector unpacks where the target has them
+       * and eight per step with two word stores otherwise (the generic loop
+       * below stores byte by byte, because the source and destination may
+       * alias as far as the compiler knows). */
       if (utf16) {
         uint8_t *d = b->data + o + written;
         size_t n = 0, room = (budget - written) / 16, left = (s->len - i) / 8;
         size_t steps = room < left ? room : left;
+#if defined(__SSE2__)
+        const __m128i zero = _mm_setzero_si128();
+        for (; n + 2 <= steps; n += 2) {
+          __m128i v = _mm_loadu_si128((const __m128i *)(s->data + i + 8 * n));
+          if (_mm_movemask_epi8(v)) break;
+          _mm_storeu_si128((__m128i *)(d + 16 * n), _mm_unpacklo_epi8(v, zero));
+          _mm_storeu_si128((__m128i *)(d + 16 * n + 16), _mm_unpackhi_epi8(v, zero));
+        }
+#elif defined(__ARM_NEON) && defined(__aarch64__)
+        for (; n + 2 <= steps; n += 2) {
+          uint8x16_t v = vld1q_u8((const uint8_t *)s->data + i + 8 * n);
+          if (vmaxvq_u8(v) & 0x80) break;
+          vst1q_u8(d + 16 * n, vreinterpretq_u8_u16(vmovl_u8(vget_low_u8(v))));
+          vst1q_u8(d + 16 * n + 16, vreinterpretq_u8_u16(vmovl_high_u8(v)));
+        }
+#endif
         for (; n < steps; n++) {
           uint64_t w;
           memcpy(&w, s->data + i + 8 * n, 8);

@@ -3111,6 +3111,11 @@ static double scr_bytes_sort_load(const ScrBytes *b, size_t i) {
     memcpy(&v, at, sizeof v);
     return v;
   }
+  case SCR_BYTES_F16: {
+    uint16_t v;
+    memcpy(&v, at, sizeof v);
+    return scr_f16_to_f64(v);
+  }
   case SCR_BYTES_F32: {
     float v;
     memcpy(&v, at, sizeof v);
@@ -3148,6 +3153,11 @@ static void scr_bytes_sort_store(ScrBytes *b, size_t i, double value) {
   }
   case SCR_BYTES_I32: {
     int32_t v = (int32_t)value;
+    memcpy(at, &v, sizeof v);
+    break;
+  }
+  case SCR_BYTES_F16: {
+    uint16_t v = scr_f16_from_f64(value);
     memcpy(at, &v, sizeof v);
     break;
   }
@@ -3263,6 +3273,18 @@ static int scr_bytes_f32_key(const uint8_t *at, int32_t order, uint32_t *key) {
   return 0;
 }
 
+/* Float16 keys use the low 16 bits of a 32-bit key; a descending order
+ * complements all 32, which keeps the order of keys. */
+static int scr_bytes_f16_key(const uint8_t *at, int32_t order, uint32_t *key) {
+  uint16_t bits;
+  memcpy(&bits, at, sizeof bits);
+  if ((bits & 0x7fff) > 0x7c00) return order ? 2 : 1;
+  if (order && bits == 0x8000) return 2;
+  uint32_t k = (bits & 0x8000) ? (uint16_t)~bits : (uint32_t)bits | 0x8000;
+  *key = k ^ (order < 0 ? ~UINT32_C(0) : 0);
+  return 0;
+}
+
 static int scr_bytes_f64_key(const uint8_t *at, int32_t order, uint64_t *key) {
   double v;
   uint64_t bits;
@@ -3323,6 +3345,9 @@ static bool scr_bytes_sort_refused(const ScrBytes *b, int32_t order) {
     if (b->elem == SCR_BYTES_F32) {
       uint32_t key;
       if (scr_bytes_f32_key(data + i * 4, order, &key)) return true;
+    } else if (b->elem == SCR_BYTES_F16) {
+      uint32_t key;
+      if (scr_bytes_f16_key(data + i * 2, order, &key)) return true;
     } else if (b->elem == SCR_BYTES_F64) {
       uint64_t key;
       if (scr_bytes_f64_key(data + i * 8, order, &key)) return true;
@@ -3353,7 +3378,7 @@ bool scr_bytes_sort_numeric(ScrBytes *b, int32_t order) {
   size_t width = scr_bytes_elem_size(b->elem);
   uint8_t *data = b->data;
   /* Integer elements have no NaN or -0: every order is a value order. */
-  if (width == 1 || (width == 2 && n >= SCR_BYTES_COUNT_SORT)) {
+  if (width == 1 || (width == 2 && b->elem != SCR_BYTES_F16 && n >= SCR_BYTES_COUNT_SORT)) {
     scr_bytes_count_sort(b, order < 0);
     return true;
   }
@@ -3392,13 +3417,23 @@ bool scr_bytes_sort_numeric(ScrBytes *b, int32_t order) {
     uint32_t bits_ = (k_ & SCR_SORT_SIGN32) ? k_ & ~SCR_SORT_SIGN32 : ~k_;           \
     memcpy(data + (i) * 4, &bits_, 4);                                               \
   } while (0)
+#define SCR_BYTES_READ32_F16(i, key) scr_bytes_f16_key(data + (i) * 2, order, (key))
+#define SCR_BYTES_WRITE32_F16(i, key)                                                \
+  do {                                                                               \
+    uint16_t k_ = (uint16_t)((key) ^ flip32);                                        \
+    uint16_t bits_ = (k_ & 0x8000) ? (uint16_t)(k_ & 0x7fff) : (uint16_t)~k_;        \
+    memcpy(data + (i) * 2, &bits_, 2);                                               \
+  } while (0)
   if (b->elem == SCR_BYTES_F32) SCR_BYTES_KEYS32(F32);
+  else if (b->elem == SCR_BYTES_F16) SCR_BYTES_KEYS32(F16);
   else SCR_BYTES_KEYS32(INT);
 #undef SCR_BYTES_KEYS32
 #undef SCR_BYTES_READ32_INT
 #undef SCR_BYTES_WRITE32_INT
 #undef SCR_BYTES_READ32_F32
 #undef SCR_BYTES_WRITE32_F32
+#undef SCR_BYTES_READ32_F16
+#undef SCR_BYTES_WRITE32_F16
   free(keys);
   return true;
 }

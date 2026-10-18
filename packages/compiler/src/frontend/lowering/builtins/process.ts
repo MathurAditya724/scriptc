@@ -362,10 +362,10 @@ export function lowerProcessProperty(
   if (member === "connected") {
     return { kind: "libCall", fn: "process.connected", args: [], type: BOOL, loc };
   }
-  // process.execArgv: the extra CLI arguments Node itself consumed — a
-  // compiled binary consumed none, so the honest answer is a fresh [].
+  // process.execArgv: the Node runtime flags kept out of process.argv —
+  // a leading --test-update-snapshots in node:test programs, else [].
   if (member === "execArgv") {
-    return { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
+    return { kind: "libCall", fn: "process.execArgv", args: [], type: arrayOf(STRING), loc };
   }
   // process._exiting — the runtime's exit-sequence flag (true while
   // 'exit' listeners run), Node's own undocumented member.

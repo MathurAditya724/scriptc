@@ -337,6 +337,9 @@ function loadFrontend(
     }
   }
   const effective = new Set(requested);
+  // Packages refused only because the program does not typecheck against
+  // their inferred surface (no offender, no package-anchored diagnostic).
+  const typecheckRefused = new Set<string>();
   while (effective.size > 0) {
     const reasons = new Map<string, string>(npmStaticOffenders());
     for (const d of preflight) {
@@ -352,6 +355,7 @@ function loadFrontend(
         }
       }
       for (const [pkg, count] of named) {
+        typecheckRefused.add(pkg);
         reasons.set(
           pkg,
           `its inferred export surface breaks ${count} import site${count === 1 ? "" : "s"} in program files (bundler-emitted surfaces type only as far as inference reaches)`,
@@ -384,6 +388,7 @@ function loadFrontend(
   if (effective.size > 0 && preflight.some((d) => d.code === "SC0001")) {
     const dropWithNote = (p: string): void => {
       effective.delete(p);
+      typecheckRefused.add(p);
       statuses.push({
         package: p,
         status: "refused",
@@ -417,6 +422,16 @@ function loadFrontend(
   }
   for (const p of requested) {
     if (effective.has(p)) statuses.push({ package: p, status: "static" });
+  }
+  // The final program types the refused packages by their own
+  // declarations. If it still fails to typecheck, the type errors are the
+  // program's, not the packages': report them at their own locations
+  // instead of a package refusal that hides them.
+  if (typecheckRefused.size > 0 && preflight.some((d) => d.code === "SC0001")) {
+    for (let i = statuses.length - 1; i >= 0; i--) {
+      const s = statuses[i]!;
+      if (s.status === "refused" && typecheckRefused.has(s.package)) statuses.splice(i, 1);
+    }
   }
 
   const finalLoad = load;
@@ -461,6 +476,7 @@ function loadFrontend(
         ...opts,
         frontendServices: finalLoad.services,
         startupCrash: finalLoad.startupCrash ?? null,
+        projectCheckJs: finalLoad.typeWorld?.projectCheckJs ?? false,
         externalTypes: finalLoad.externalTypes,
         externalTypeSpecifiersByFile: finalLoad.externalTypeSpecifiersByFile,
       }),

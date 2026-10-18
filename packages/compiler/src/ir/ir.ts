@@ -26,9 +26,19 @@ export interface SrcLoc {
 
 /* ── types ─────────────────────────────────────────────────────────────── */
 
-/** Numeric typed-array element kinds with a native representation. Float16
- * and BigInt typed arrays remain frontend-fenced. */
-export type IrBytesElem = "u8" | "u8c" | "i8" | "u16" | "i16" | "u32" | "i32" | "f32" | "f64";
+/** Numeric typed-array element kinds with a native representation. BigInt
+ * typed arrays remain frontend-fenced. */
+export type IrBytesElem =
+  | "u8"
+  | "u8c"
+  | "i8"
+  | "u16"
+  | "i16"
+  | "u32"
+  | "i32"
+  | "f16"
+  | "f32"
+  | "f64";
 
 export const BYTES_ELEMENT_SIZE: Record<IrBytesElem, number> = {
   u8: 1,
@@ -38,13 +48,14 @@ export const BYTES_ELEMENT_SIZE: Record<IrBytesElem, number> = {
   i16: 2,
   u32: 4,
   i32: 4,
+  f16: 2,
   f32: 4,
   f64: 8,
 };
 
 /** Integer element kinds: a valid element read is never NaN. */
 export function isIntegerBytesElem(elem: IrBytesElem): boolean {
-  return elem !== "f32" && elem !== "f64";
+  return elem !== "f16" && elem !== "f32" && elem !== "f64";
 }
 
 export const BYTES_ELEMENT_NAME: Record<IrBytesElem, string> = {
@@ -55,6 +66,7 @@ export const BYTES_ELEMENT_NAME: Record<IrBytesElem, string> = {
   i16: "Int16Array",
   u32: "Uint32Array",
   i32: "Int32Array",
+  f16: "Float16Array",
   f32: "Float32Array",
   f64: "Float64Array",
 };
@@ -1176,8 +1188,19 @@ export interface IrLibExport {
   /** i64/u64 (ask 4): int64_t/uint64_t at the C edge — inbound values
    * range-check in the wrapper (`inboundIntTrap`), internal call sites
    * and returns are compile-time proven before this lands on the IR. */
-  params: ("f64" | "bool" | "string" | "bytes" | "u8" | "u32" | "i32" | "i64" | "u64")[];
-  returns: "f64" | "bool" | "string" | "bytes" | "void" | "i64" | "u64";
+  params: (
+    | "f64"
+    | "bool"
+    | "string"
+    | "cstring"
+    | "bytes"
+    | "u8"
+    | "u32"
+    | "i32"
+    | "i64"
+    | "u64"
+  )[];
+  returns: "f64" | "bool" | "string" | "cstring" | "bytes" | "void" | "i64" | "u64";
   /** The exact sink-message bytes this wrapper passes to the inbound-bytes
    * marshalling helper's trap — present exactly when a parameter is
    * bytes-classed. Already the assembled structured trap-teaching form
@@ -1192,6 +1215,10 @@ export interface IrLibExport {
    * value cannot ride f64 exactly (|v| past 2^53−1). Same assembled
    * structured form and the same SC4012 code — one host-contract story. */
   inboundIntTrap?: string;
+  /** The sibling message for a NULL cstring parameter: present exactly
+   * when a parameter is cstring-classed, passed to scr_library_cstr_in.
+   * Same assembled structured form and the same SC4012 code. */
+  inboundCstringTrap?: string;
 }
 
 /** One runtime-trap overlay row: the profile's teaching (replaces the
@@ -1218,7 +1245,7 @@ export interface IrLibCallback {
   name: string;
   /** The runtime channel slot (profile declaration order). */
   slot: number;
-  params: ("f64" | "bool" | "string" | "bytes" | "u8" | "u32" | "i32")[];
+  params: ("f64" | "bool" | "string" | "cstring" | "bytes" | "u8" | "u32" | "i32")[];
   returns: "f64" | "bool" | "u8" | "u32" | "i32" | "i64" | "u64" | "pointer" | "void";
   /** The unregistered-call trap text (a DETECTED trap: plain bytes the
    * library funnel classifies SC4025 and assembles with the current
@@ -2227,6 +2254,7 @@ export type IrBytesIntrinsicMethod =
   | "dvGetInt16"
   | "dvGetUint32"
   | "dvGetInt32"
+  | "dvGetFloat16"
   | "dvGetFloat32"
   | "dvGetFloat64"
   | "dvGetBigUint64Number"
@@ -2237,6 +2265,7 @@ export type IrBytesIntrinsicMethod =
   | "dvSetInt16"
   | "dvSetUint32"
   | "dvSetInt32"
+  | "dvSetFloat16"
   | "dvSetFloat32"
   | "dvSetFloat64";
 
@@ -2268,6 +2297,7 @@ export const MAY_THROW_BYTES_METHODS: ReadonlySet<IrBytesIntrinsicMethod> = new 
   "dvGetInt16",
   "dvGetUint32",
   "dvGetInt32",
+  "dvGetFloat16",
   "dvGetFloat32",
   "dvGetFloat64",
   "dvGetBigUint64Number",
@@ -2278,6 +2308,7 @@ export const MAY_THROW_BYTES_METHODS: ReadonlySet<IrBytesIntrinsicMethod> = new 
   "dvSetInt16",
   "dvSetUint32",
   "dvSetInt32",
+  "dvSetFloat16",
   "dvSetFloat32",
   "dvSetFloat64",
 ]);
@@ -2533,7 +2564,7 @@ export type IrExpr =
     }
   /** A regex literal `/ab+c/gi`. `pattern` is the text between the slashes
    * exactly as written (escapes UNprocessed — the regex engine parses them),
-   * `flags` the trailing flags in source order (alphabet fenced to gimsuy by
+   * `flags` the trailing flags in getter order (alphabet fenced to gimsuvy by
    * the frontend). Backends intern ONE immortal static per (pattern, flags)
    * pair — like string literals, so repeated evaluation is free and
    * `re === re` would hold — and compile the pattern lazily at first use
@@ -3556,6 +3587,11 @@ export type IrExpr =
       type: IrType;
       loc: SrcLoc;
       prototypeIdentityOnly?: true;
+      /** A timer call through an ESM named or namespace import of
+       * node:timers. Node's mock.timers replaces the globals and the
+       * module object's properties, which these bindings do not follow,
+       * so the call keeps the loop's timer. */
+      realTimer?: true;
       /** An assertion call made through a node:assert Assert instance: the
        * instance options the runtime applies to this call. Backends set
        * them right before the runtime call, after its arguments are
@@ -3573,8 +3609,17 @@ export type IrExpr =
    * `null` and -0 as `0`, exactly like JS; a record field holding the
    * undefined arm of its union (an optional field) is DROPPED from the
    * output — Node's rule for undefined-valued properties. The value is
-   * BORROWED; the result string is owned (+1). Never throws. */
-  | { kind: "jsonStringify"; value: IrExpr; indent?: string; type: IrType; loc: SrcLoc }
+   * BORROWED; the result string is owned (+1). Never throws. `circular`
+   * is util.format's %j (Node's tryStringify): a circular structure gives
+   * the text "[Circular]" instead of the TypeError. */
+  | {
+      kind: "jsonStringify";
+      value: IrExpr;
+      indent?: string;
+      circular?: true;
+      type: IrType;
+      loc: SrcLoc;
+    }
   /** The dynamic-boundary check — a CHECKED cast `dynValue as T`: validate
    * the dyn value's JSON dyn against `type` (a non-dyn, JSON-representable
    * IR type) and BUILD the typed value (+1), or THROW a catchable
@@ -3713,6 +3758,8 @@ function isJsonSafeAt(
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);
       for (const field of shape.fields) {
+        // Stringification omits a function-valued property of an object.
+        if (stringify && !shape.tuple && field.type.kind === "func") continue;
         if (
           !isJsonSafeAt(
             field.type,
@@ -4008,6 +4055,7 @@ function canBoxDynCompositeAt(
     case "regex":
     case "url":
     case "searchParams":
+    case "date":
       return true;
     case "func":
       return canBoxFuncIntoDyn(t, getRecord, getUnion, visiting);

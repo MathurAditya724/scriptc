@@ -14,12 +14,14 @@ import { isJsSourceFile, locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import { findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
-import { classPrototypeData } from "./class-prototypes.js";
+import { observedPrototypeMethod } from "./class-prototypes.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 
 /** Unmodified typed methods retain direct or virtual native dispatch.
- * JavaScript notification methods keep their checked property fallback. */
+ * JavaScript notification methods keep their checked property fallback,
+ * except in files TypeScript checks, whose methods join the method census
+ * like TypeScript methods. */
 export function isClassCallback(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
   if (!isClassOwnEnumerableFieldName(name) || name.startsWith("get:") || name.startsWith("set:"))
     return false;
@@ -38,9 +40,20 @@ export function isClassCallback(lowerer: Lowerer, info: ClassInfo, name: string)
     (lowerer.prototypeMethodAccesses.has(name) ||
       (info.decl !== null &&
         isJsSourceFile(info.decl.getSourceFile()) &&
+        !lowerer.checkedJsFile(info.decl.getSourceFile()) &&
         found.sig.params.length === 0 &&
         found.sig.ret.kind === "void"))
   );
+}
+
+/** The census marked `name` and the receiver's class keeps the method in
+ * its prototype data, so the property bag answers every read. */
+function observedSlot(lowerer: Lowerer, receiver: IrExpr, name: string, loc: SrcLoc): boolean {
+  const info =
+    receiver.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : undefined;
+  return info
+    ? observedPrototypeMethod(lowerer, info, name, loc, receiver)
+    : lowerer.prototypeMethodAccesses.has(name);
 }
 
 function callbackBag(
@@ -50,9 +63,8 @@ function callbackBag(
   name: string,
   readOnly = false,
 ): IrExpr {
-  const info =
-    receiver.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : null;
-  if (info && lowerer.prototypeMethodAccesses.has(name)) classPrototypeData(lowerer, info, loc);
+  // Builds the prototype data that an observed read falls back to.
+  observedSlot(lowerer, receiver, name, loc);
   return {
     kind: "call",
     callee: classPropertiesHelper(lowerer, loc, readOnly).name,
@@ -116,7 +128,7 @@ export function classCallbackValue(
   const bag = lowerer.declareHiddenLocal("%callbackBag", DYN);
   const value = varRef(bag.id, DYN, loc);
   const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
-  const result: IrExpr = lowerer.prototypeMethodAccesses.has(name)
+  const result: IrExpr = observedSlot(lowerer, receiver, name, loc)
     ? { kind: "dynKeyGet", value, key, type: DYN, loc }
     : {
         kind: "ternary",
@@ -173,7 +185,8 @@ export function classCallbackCall(
     type: DYN,
     loc,
   };
-  const result: IrExpr = lowerer.prototypeMethodAccesses.has(name)
+  const observed = observedSlot(lowerer, receiver, name, loc);
+  const result: IrExpr = observed
     ? call
     : {
         kind: "ternary",
@@ -206,7 +219,7 @@ export function classCallbackCall(
       {
         kind: "varDecl",
         localId: present.id,
-        init: lowerer.prototypeMethodAccesses.has(name)
+        init: observed
           ? { kind: "boolLit", value: true, type: BOOL, loc }
           : callbackPresent(value, key, loc),
         loc,

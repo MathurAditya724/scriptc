@@ -1,3 +1,4 @@
+import { dateJsonType, isDateJsonSource } from "../builtins/dates.js";
 import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { pathModuleValue } from "../lower-builtin-values.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -32,7 +33,7 @@ import { isSafeToRepeat } from "./evaluation-safety.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceSymbolFieldCopy } from "../symbol-fields.js";
 import { planUnionRetag } from "../union-retag.js";
-import { runtimeOptionalStorageOperand } from "../lower-exprs.js";
+import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -732,6 +733,10 @@ export function lowerObjectLiteral(
           ? prop.name
           : null;
       while (value && ts.isParenthesizedExpression(value)) value = value.expression;
+      // A nested literal holding such a binding: building it as a static
+      // record would copy the binding's object.
+      if (value && (ts.isArrayLiteralExpression(value) || ts.isObjectLiteralExpression(value)))
+        return jsHoldsDynObject(lowerer, value);
       if (!value || !ts.isIdentifier(value)) return false;
       const stored = lowerer.peekLocal(value)?.type ?? lowerer.globalOf(value)?.type;
       const inferred = lowerer.mapTypeOf(lowerer.typeOf(value));
@@ -1149,6 +1154,30 @@ export function lowerObjectLiteral(
       own.fields.every((field) => target.fields.some((candidate) => candidate.name === field.name))
     ) {
       type = { kind: "record", shapeId: expected.shapeId };
+    }
+  }
+  // A Date's toJSON() result keeps its null in a field with no declared
+  // destination: the lib types say string.
+  if (!expected) {
+    for (const property of expr.properties) {
+      const value = ts.isPropertyAssignment(property)
+        ? property.initializer
+        : ts.isShorthandPropertyAssignment(property)
+          ? property.name
+          : null;
+      if (
+        value &&
+        property.name &&
+        (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+        isDateJsonSource(lowerer, value)
+      ) {
+        const widened = lowerer.runtimeOptionalRecordField(
+          type,
+          property.name.text,
+          dateJsonType(lowerer),
+        );
+        if (widened.kind === "record") type = { kind: "record", shapeId: widened.shapeId };
+      }
     }
   }
   let shape = lowerer.shapes.get(type.shapeId)!;

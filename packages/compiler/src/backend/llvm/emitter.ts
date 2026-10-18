@@ -49,7 +49,7 @@ import {
   STRING,
   VOID,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
+import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
@@ -206,7 +206,12 @@ import {
   type LocalArrayRead,
 } from "./local-array-reads.js";
 import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
-import { emitDenseArrayGet, emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
+import {
+  emitDenseArrayGet,
+  emitDenseArrayPop,
+  emitDenseArraySet,
+  emitDenseSlotUnlink,
+} from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
@@ -904,6 +909,9 @@ export class LlEmitter {
   /** setTimeout and friends appeared somewhere: main must run the event
    * loop even in programs with no async functions. */
   usesTimers = false;
+  /** The program calls mock.timers members (moduleUsesMockTimers): timer
+   * calls emit scr_test.c's mock-aware entry points. */
+  readonly mockTimers: boolean;
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();
@@ -1138,6 +1146,7 @@ export class LlEmitter {
         }),
     );
     this.nullableUnions = new NullableUnions(mod);
+    this.mockTimers = moduleUsesMockTimers(mod);
     this.debug =
       options.debugSources === undefined
         ? null
@@ -2058,12 +2067,28 @@ export class LlEmitter {
             this.dyn.toDynHelper({ kind: "object", className: "%Writable" }),
           ]
         : null;
-    if (childStreamBoxes) {
+    // worker.stdout and worker.stderr box the stream unit's Readable the
+    // same way, and worker.stdin its Writable when the program has one
+    // (scr_worker_stdio_install, scr_worker_events.c).
+    const workerStdioBox =
+      this.mod.workers === true && usesStream && this.classMeta.has("%Readable")
+        ? (childStreamBoxes?.[0] ??
+          this.dyn.toDynHelper({ kind: "object", className: "%Readable" }))
+        : null;
+    const workerStdinBox =
+      this.mod.workers === true && usesStream && this.classMeta.has("%Writable")
+        ? (childStreamBoxes?.[1] ??
+          this.dyn.toDynHelper({ kind: "object", className: "%Writable" }))
+        : null;
+    if (childStreamBoxes || workerStdioBox || workerStdinBox) {
       this.declare(
         `@scr_stream_child_ops = external constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr }`,
       );
-      this.declare(`declare void @scr_child_dyn_streams_install(ptr, ptr, ptr)`);
     }
+    if (childStreamBoxes)
+      this.declare(`declare void @scr_child_dyn_streams_install(ptr, ptr, ptr)`);
+    if (workerStdioBox || workerStdinBox)
+      this.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
     if (usesFsWatch) this.declare(`declare void @scr_watch_install()`);
     if (this.ffiHasForeignCallback) this.declare(`declare void @scr_ffi_install()`);
     if (usesStream) this.declare(`declare void @scr_stream_install()`);
@@ -2076,7 +2101,10 @@ export class LlEmitter {
     if (usesHttp) this.declare(`declare void @scr_http_dyn_install()`);
     if (usesFetch) this.declare(`declare void @scr_fetch_install()`);
 
-    if (usesNodeTest) this.declare(`declare i32 @scr_test_exit_code()`);
+    if (usesNodeTest) {
+      this.declare(`declare i32 @scr_test_exit_code()`);
+      this.declare(`declare void @scr_test_init()`);
+    }
     if (snapshotsTlsCa) {
       this.declare(`declare void @scr_tls_ca_install()`);
     }
@@ -2219,6 +2247,12 @@ export class LlEmitter {
       }
       if (this.mod.lib.exports.some((e) => e.returns === "bytes")) {
         this.declare(`declare void @scr_library_bytes_out(ptr, ptr, ptr)`);
+      }
+      if (this.mod.lib.exports.some((e) => e.params.includes("cstring"))) {
+        this.declare(`declare ptr @scr_library_cstr_in(ptr, ptr)`);
+      }
+      if (this.mod.lib.exports.some((e) => e.returns === "cstring")) {
+        this.declare(`declare ptr @scr_library_cstr_out(ptr)`);
       }
     }
     // Helpers assemble BEFORE the declaration table flushes (they add
@@ -2653,6 +2687,11 @@ export class LlEmitter {
             `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,
           ]
         : []),
+      ...(workerStdioBox || workerStdinBox
+        ? [
+            `  call void @scr_worker_stdio_install(ptr @scr_stream_child_ops, ptr ${workerStdioBox ? `@${workerStdioBox}` : "null"}, ptr ${workerStdinBox ? `@${workerStdinBox}` : "null"})`,
+          ]
+        : []),
       // fs.watch programs fill the loop's watch hooks the same way —
       // scr_watch.c links only when this line is emitted.
       ...(usesFsWatch ? [`  call void @scr_watch_install()`] : []),
@@ -2665,6 +2704,8 @@ export class LlEmitter {
       ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
       ...(usesStream ? [`  call void @scr_stream_install()`] : []),
       `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
+      // node:test takes Node's --test-update-snapshots out of argv first.
+      ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
       ...(asyncEntry
         ? [`  %top = call ptr @${mangleAsyncSpawn(this.mod.entry)}()`]
         : [`  call void @${mangleFunction(this.mod.entry)}()`]),
@@ -2996,6 +3037,15 @@ export class LlEmitter {
           ``,
         );
       }
+      if (e.inboundCstringTrap !== undefined) {
+        // The cstring-in helper's host-contract trap message (a NULL
+        // `const char *`): same assembled structured form and SC4012 code.
+        const trapBytes = Buffer.byteLength(e.inboundCstringTrap, "utf8");
+        out.push(
+          `@sc_lib_cstr_trap_${e.symbol} = internal constant [${trapBytes + 1} x i8] c"${llStrBytes(e.inboundCstringTrap)}"`,
+          ``,
+        );
+      }
       e.params.forEach((cls, i) => {
         switch (cls) {
           case "f64":
@@ -3050,6 +3100,13 @@ export class LlEmitter {
             params.push(`ptr %a${i}_ptr`, `${this.sizeType} %a${i}_len`);
             body.push(
               `  %c${i} = call ptr @scr_library_bytes_in(ptr %a${i}_ptr, ${this.sizeType} %a${i}_len, ptr @sc_lib_bytes_trap_${e.symbol})`,
+            );
+            args.push(`ptr %c${i}`);
+            break;
+          case "cstring":
+            params.push(`ptr %a${i}`);
+            body.push(
+              `  %c${i} = call ptr @scr_library_cstr_in(ptr %a${i}, ptr @sc_lib_cstr_trap_${e.symbol})`,
             );
             args.push(`ptr %c${i}`);
             break;
@@ -3115,6 +3172,16 @@ export class LlEmitter {
             `  call void @scr_library_check_exc()`,
             `  call void @scr_library_bytes_out(ptr %r, ptr %out, ptr %out_len)`,
             `  ret void`,
+          );
+          break;
+        case "cstring":
+          // The result's arena copy, returned as `const char *`.
+          retType = "ptr";
+          body.push(
+            `  %r = call ptr ${target}(${callArgs})`,
+            `  call void @scr_library_check_exc()`,
+            `  %z = call ptr @scr_library_cstr_out(ptr %r)`,
+            `  ret ptr %z`,
           );
           break;
       }
@@ -8114,6 +8181,28 @@ export class LlEmitter {
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
         B.startBlock(resize);
+        if (s.pop === true) {
+          // A discarded pop's `length - 1` on a packed array removes the
+          // last element inline, then releases it.
+          const call = B.newLabel("arr.len.call"),
+            pop = B.newLabel("arr.len.pop");
+          const lastNumber = B.tmp(),
+            dropsLast = B.tmp();
+          B.line(`${lastNumber} = fsub double ${lenNumber}, 1.0`);
+          B.line(`${dropsLast} = fcmp oeq double ${length.name}, ${lastNumber}`);
+          B.condBr(dropsLast, pop, call);
+          B.startBlock(pop);
+          const elem = s.arr.type.elem;
+          const acc = elemAccess(elem);
+          const raw = emitDenseArrayPop(this, arr.name, acc, call, call);
+          if (acc === "ref" && isRefCounted(elem)) {
+            const old = B.tmp();
+            B.line(`${old} = inttoptr i64 ${raw} to ptr`);
+            this.releaseValue(old, elem);
+          }
+          B.br(done);
+          B.startBlock(call);
+        }
         B.line(`call void @scr_arr_set_len(ptr ${arr.name}, double ${length.name})`);
         this.emitPendingCheck();
         B.br(done);
@@ -9019,6 +9108,12 @@ export class LlEmitter {
         // own turn is the await (nothing runs in between).
         const genSettles =
           this.currentAsyncGenerator && (s.awaited === true || this.finallyStack.length > 0);
+        // A completion turn that awaits x replaces a return() request's
+        // already-taken await.
+        if (this.currentAsyncGenerator && !genSettles) {
+          this.declare(`declare void @scr_async_gen_return_awaits()`);
+          B.line(`call void @scr_async_gen_return_awaits()`);
+        }
         if (this.currentAsyncGenerator && s.awaited !== true && this.finallyStack.length > 0) {
           if (this.wasi) this.emitWasiSuspend(null);
           else {

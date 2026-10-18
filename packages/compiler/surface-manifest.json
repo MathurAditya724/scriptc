@@ -192,7 +192,7 @@
       "name": "this regex feature",
       "status": "unsupported",
       "code": "SC1120",
-      "note": "supported: literal regexes with the g/i/m/s/u/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \\k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates"
+      "note": "supported: literal regexes with the g/i/m/s/u/v/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \\k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates"
     },
     {
       "id": "diagnostic.sc2001",
@@ -1513,6 +1513,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.os.setPriority",
+      "kind": "node-builtin",
+      "name": "os.setPriority",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.os.tmpdir",
       "kind": "node-builtin",
       "name": "os.tmpdir",
@@ -1939,6 +1945,12 @@
       "note": "reads, writes, deletes, and enumeration of the process environment (the process global)"
     },
     {
+      "id": "node-builtin.process.execArgv",
+      "kind": "node-builtin",
+      "name": "process.execArgv",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.process.execPath",
       "kind": "node-builtin",
       "name": "process.execPath",
@@ -2222,6 +2234,18 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.timers.promises.scheduler.wait",
+      "kind": "node-builtin",
+      "name": "timers/promises.scheduler.wait",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.timers.promises.scheduler.yield",
+      "kind": "node-builtin",
+      "name": "timers/promises.scheduler.yield",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.timers.promises.setImmediate",
       "kind": "node-builtin",
       "name": "timers/promises.setImmediate",
@@ -2490,9 +2514,63 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.types.isBigInt64Array",
+      "kind": "node-builtin",
+      "name": "util/types.isBigInt64Array",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isBigIntObject",
+      "kind": "node-builtin",
+      "name": "util/types.isBigIntObject",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isBigUint64Array",
+      "kind": "node-builtin",
+      "name": "util/types.isBigUint64Array",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isBooleanObject",
+      "kind": "node-builtin",
+      "name": "util/types.isBooleanObject",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isBoxedPrimitive",
+      "kind": "node-builtin",
+      "name": "util/types.isBoxedPrimitive",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isCryptoKey",
+      "kind": "node-builtin",
+      "name": "util/types.isCryptoKey",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types.isDataView",
       "kind": "node-builtin",
       "name": "util/types.isDataView",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isDate",
+      "kind": "node-builtin",
+      "name": "util/types.isDate",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isExternal",
+      "kind": "node-builtin",
+      "name": "util/types.isExternal",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isFloat16Array",
+      "kind": "node-builtin",
+      "name": "util/types.isFloat16Array",
       "status": "static"
     },
     {
@@ -2538,15 +2616,33 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.types.isKeyObject",
+      "kind": "node-builtin",
+      "name": "util/types.isKeyObject",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types.isMap",
       "kind": "node-builtin",
       "name": "util/types.isMap",
       "status": "static"
     },
     {
+      "id": "node-builtin.util.types.isMapIterator",
+      "kind": "node-builtin",
+      "name": "util/types.isMapIterator",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types.isNativeError",
       "kind": "node-builtin",
       "name": "util/types.isNativeError",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isNumberObject",
+      "kind": "node-builtin",
+      "name": "util/types.isNumberObject",
       "status": "static"
     },
     {
@@ -2571,6 +2667,30 @@
       "id": "node-builtin.util.types.isSet",
       "kind": "node-builtin",
       "name": "util/types.isSet",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isSetIterator",
+      "kind": "node-builtin",
+      "name": "util/types.isSetIterator",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isSharedArrayBuffer",
+      "kind": "node-builtin",
+      "name": "util/types.isSharedArrayBuffer",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isStringObject",
+      "kind": "node-builtin",
+      "name": "util/types.isStringObject",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isSymbolObject",
+      "kind": "node-builtin",
+      "name": "util/types.isSymbolObject",
       "status": "static"
     },
     {
@@ -4485,6 +4605,13 @@
       "id": "stdlib.math.expm1",
       "kind": "stdlib",
       "name": "Math.expm1",
+      "status": "static",
+      "note": "compiles statically at arity 1; other declared call shapes are refused with SC2012"
+    },
+    {
+      "id": "stdlib.math.f16round",
+      "kind": "stdlib",
+      "name": "Math.f16round",
       "status": "static",
       "note": "compiles statically at arity 1; other declared call shapes are refused with SC2012"
     },

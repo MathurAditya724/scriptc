@@ -65,6 +65,7 @@ export const programs = [
   "nullish-long-chain.ts",
   "class-array-optional-return.ts",
   "contextual-array-union-write.ts",
+  "6020-class-extends-function-constructor.js",
 ];
 
 interface LowerRequest {

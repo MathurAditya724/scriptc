@@ -341,6 +341,18 @@ typedef struct ScrNetTransportOps {
   void (*free)(void *tctx);
 } ScrNetTransportOps;
 void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, void *tctx);
+/* Routes a client socket through an HTTP CONNECT proxy. Call it right
+ * after the dial (scr_net_connect to the proxy) and before any transport
+ * is set: once TCP is up, `request` (the CONNECT head, copied) is sent
+ * and the proxy's response head is read. A 200 status starts the
+ * transport handshake, or fires 'connect'; any other status fails the
+ * socket with "Proxy response (<status>) !== 200 when HTTP Tunneling". */
+void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len);
+/* The status code of a CONNECT response head (head[0..len) ends with the
+ * blank line), or -1 when it does not start with an HTTP/1.x status
+ * line; and undici's message for a status other than 200 (or -1). */
+int scr_net_tunnel_status(const char *head, size_t len);
+void scr_net_tunnel_failure(int status, char *msg, size_t cap);
 int scr_net_sock_fd(ScrNetSocket *s);
 /* Drain up to n bytes of the socket's receive buffer (peeked/unshifted
  * bytes — the demux path); consumers call it before the fd. */

@@ -4,6 +4,7 @@ import { locOf } from "../../program.js";
 import { generatorMeta } from "../call-signatures.js";
 import {
   BOOL,
+  DYN,
   F64,
   type IrExpr,
   type IrFunction,
@@ -223,8 +224,8 @@ export function lowerTimeoutMethodCall(
 // (scr_timer_coerce_ms clamps anyway; the literal keeps the emitted call
 // self-describing). A resolve value travels as an already-resolved promise
 // of its own type, whose settlement the result copies when it fires. The
-// options object takes `ref`; `signal` fences — a promise that ignored its
-// cancellation signal would hold the loop open where Node exits.
+// options object takes `ref` and `signal`; with a signal the runtime
+// clears the timer and rejects with an AbortError when it aborts.
 export function lowerTimersPromisesCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -232,6 +233,8 @@ export function lowerTimersPromisesCall(
   loc: SrcLoc,
 ): IrExpr | null {
   const promiseVoid: IrType = { kind: "promise", inner: VOID };
+  if (bi.member === "scheduler.wait" || bi.member === "scheduler.yield")
+    return lowerSchedulerCall(lowerer, expr, bi.member, loc);
   if (bi.member !== "setTimeout" && bi.member !== "setImmediate") return null;
   const timeout = bi.member === "setTimeout";
   const [valueNode, optionsNode] = timeout ? expr.arguments.slice(1) : expr.arguments;
@@ -273,7 +276,16 @@ export function lowerTimersPromisesCall(
         type: resultT!,
         loc,
       };
-  const ref = timersPromisesRef(lowerer, bi.member, optionsNode, loc);
+  const { ref, signal } = timersPromisesOptions(lowerer, bi.member, optionsNode, loc);
+  if (signal !== null) {
+    return {
+      kind: "libCall",
+      fn: timeout ? "tp.setTimeoutSignal" : "tp.setImmediateSignal",
+      args: timeout ? [ms!, value, ref, signal] : [value, ref, signal],
+      type: voidValue ? promiseVoid : resultT!,
+      loc,
+    };
+  }
   return {
     kind: "libCall",
     fn: timeout ? "tp.setTimeoutValue" : "tp.setImmediateValue",
@@ -283,42 +295,85 @@ export function lowerTimersPromisesCall(
   };
 }
 
-/** The `ref` option of a timers/promises options object literal (true when
- * absent). `signal` and options that are not an object literal fence. */
-function timersPromisesRef(
+/** scheduler.wait(delay[, options]) and scheduler.yield(): Node's Scheduler
+ * methods return setTimeout(delay, undefined, options) and setImmediate(),
+ * so both settle a void promise from the same timer heap and immediate
+ * queue. The options object takes `ref` and `signal` as setTimeout's does. */
+function lowerSchedulerCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: "scheduler.wait" | "scheduler.yield",
+  loc: SrcLoc,
+): IrExpr {
+  const promiseVoid: IrType = { kind: "promise", inner: VOID };
+  if (member === "scheduler.yield")
+    return { kind: "libCall", fn: "tp.setImmediate", args: [], type: promiseVoid, loc };
+  // The scheduler.wait libCalls emit timers/promises setTimeout's runtime
+  // calls; mock.timers mocks scheduler.wait and leaves setTimeout's named
+  // and namespace imports real. An omitted delay is NaN, Node's undefined.
+  const [delayNode, optionsNode] = expr.arguments;
+  const ms: IrExpr = delayNode
+    ? lowerer.lowerExprExpecting(delayNode, F64)
+    : { kind: "numLit", value: NaN, type: F64, loc };
+  if (optionsNode === undefined)
+    return { kind: "libCall", fn: "tp.schedulerWait", args: [ms], type: promiseVoid, loc };
+  const { ref, signal } = timersPromisesOptions(lowerer, member, optionsNode, loc);
+  const value: IrExpr = {
+    kind: "intrinsic",
+    name: "promise.resolve",
+    args: [],
+    type: promiseVoid,
+    loc,
+  };
+  return {
+    kind: "libCall",
+    fn: signal === null ? "tp.schedulerWaitValue" : "tp.schedulerWaitSignal",
+    args: signal === null ? [ms, value, ref] : [ms, value, ref, signal],
+    type: promiseVoid,
+    loc,
+  };
+}
+
+/** The `ref` (true when absent) and `signal` (null when absent) options of
+ * a timers/promises options object literal, in source order. Options that
+ * are not an object literal fence. */
+function timersPromisesOptions(
   lowerer: Lowerer,
   member: string,
   optionsNode: ts.Expression | undefined,
   loc: SrcLoc,
-): IrExpr {
+): { ref: IrExpr; signal: IrExpr | null } {
   const absent: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
-  if (optionsNode === undefined) return absent;
+  if (optionsNode === undefined) return { ref: absent, signal: null };
   if (!ts.isObjectLiteralExpression(optionsNode)) {
     lowerer.noLowering(
       `timers/promises ${member} options that are not an object literal`,
       optionsNode,
-      "pass the options as an object literal: { ref }",
+      "pass the options as an object literal: { ref, signal }",
     );
-    return absent;
+    return { ref: absent, signal: null };
   }
   let ref: IrExpr = absent;
+  let signal: IrExpr | null = null;
   for (const prop of optionsNode.properties) {
     const name = prop.name && ts.isIdentifier(prop.name) ? prop.name.text : null;
-    if (name === "signal") {
-      lowerer.noLowering(
-        `timers/promises ${member} with an AbortSignal`,
-        prop,
-        "a promise that ignored its cancellation signal would keep the process alive where Node exits",
+    if (
+      name === "signal" &&
+      (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop))
+    ) {
+      signal = lowerer.lowerExprExpecting(
+        ts.isPropertyAssignment(prop) ? prop.initializer : (prop.name as ts.Identifier),
+        DYN,
       );
     } else if (name === "ref" && ts.isPropertyAssignment(prop)) {
       ref = lowerer.lowerExprExpecting(prop.initializer, BOOL);
     } else {
       lowerer.noLowering(
-        `timers/promises ${member} options other than ref`,
+        `timers/promises ${member} options other than ref and signal`,
         prop,
-        "the lowered options object takes ref: boolean",
+        "the lowered options object takes ref: boolean and signal: AbortSignal",
       );
     }
   }
-  return ref;
+  return { ref, signal };
 }
