@@ -89,6 +89,11 @@ ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
  * `value` is the already-resolved promise of the resolve value, borrowed.
  * Never throw; +1. */
 ScrPromise *scr_tp_set_timeout_signal(double ms, ScrPromise *value, bool ref, ScrDyn *signal);
+/* scheduler.wait(delay, { signal }) in a program that uses mock.timers:
+ * scr_tp_set_timeout_signal, except that it throws Node's ERR_INVALID_THIS
+ * once a reset restored the real scheduler.wait, and SC2020 while
+ * mock.timers mocks it. NULL after a throw. */
+ScrPromise *scr_tp_scheduler_wait_signal(double ms, ScrPromise *value, bool ref, ScrDyn *signal);
 ScrPromise *scr_tp_set_immediate_signal(ScrPromise *value, bool ref, ScrDyn *signal);
 
 /* Compiled subclasses (`class Bus extends EventTarget`, `class Ping

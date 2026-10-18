@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 45,
+        "partial": 51,
         "refused": 0,
-        "not-implemented": 72,
+        "not-implemented": 66,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -90928,10 +90928,14 @@
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
           "tests/fixtures/node-test/cases/todo-suites.ts",
@@ -92562,8 +92566,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers.enable",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92585,8 +92596,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers.reset",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92608,8 +92626,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92631,8 +92653,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers.tick",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92700,8 +92729,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers.runAll",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92723,8 +92759,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.timers.setTime",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/corpus/5813-mock-timers-module.ts",
+          "tests/corpus/5814-mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

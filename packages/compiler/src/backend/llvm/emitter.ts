@@ -49,7 +49,7 @@ import {
   STRING,
   VOID,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
+import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
@@ -882,6 +882,9 @@ export class LlEmitter {
   /** setTimeout and friends appeared somewhere: main must run the event
    * loop even in programs with no async functions. */
   usesTimers = false;
+  /** The program calls mock.timers members (moduleUsesMockTimers): timer
+   * calls emit scr_test.c's mock-aware entry points. */
+  readonly mockTimers: boolean;
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();
@@ -1108,6 +1111,7 @@ export class LlEmitter {
         }),
     );
     this.nullableUnions = new NullableUnions(mod);
+    this.mockTimers = moduleUsesMockTimers(mod);
     this.debug =
       options.debugSources === undefined
         ? null

@@ -120,6 +120,7 @@ struct ScrTestCtx {
   bool on_fiber;       /* started on its own fiber by a concurrent parent */
   ScrPromise *done;    /* owned; settles when a concurrent subtest finishes */
   ScrPromise *slot;    /* owned; the parent waiting for its next subtest to finish */
+  struct ScrMockTimers *mock_timers; /* t.mock.timers, made on first use; freed at exit */
 };
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
@@ -443,6 +444,8 @@ static bool scr_test_any_only(ScrTestCtx *parent) {
 }
 
 static void scr_test_run_node(ScrTestCtx *t);
+typedef struct ScrMockTimers ScrMockTimers;
+static void scr_mt_reset(ScrMockTimers *m);
 
 /* ── concurrency ─────────────────────────────────────────────────────── */
 
@@ -679,8 +682,9 @@ static void scr_test_run_node(ScrTestCtx *t) {
       scr_exc_clear();
     }
   }
-  /* Then t.mock is reset: its mocks are restored. */
+  /* Then t.mock is reset: its mocks are restored and its timers reset. */
   scr_test_mocks_restore(&t->mocks, true);
+  scr_mt_reset(t->mock_timers);
   scr_test_parent_set(prev_parent);
   t->dur_ms = scr_now_ms() - start;
   if (t->mode == SCR_TEST_SKIP) {
@@ -1042,16 +1046,525 @@ static void scr_test_mocks_add(ScrTestHooks *h, ScrClosure *restore /*moves*/) {
   h->n++;
 }
 
+/* ── mock.timers ──────────────────────────────────────────────────────
+ * Node's MockTimers (lib/internal/test_runner/mock/mock_timers.js). The
+ * module's `mock` and every t.mock own one. enable() makes it the owner
+ * of the APIs it lists: setTimeout, setInterval, setImmediate and their
+ * clear functions then queue entries on it instead of arming loop timers,
+ * AbortSignal.timeout aborts from its queue, timers/promises
+ * scheduler.wait settles from it, Date.now() and new Date() read its
+ * clock, and tick() runs the due entries synchronously. enable() saves the owner each API had and reset() restores it, as Node
+ * saves and restores the functions it replaces. The queue is Node's
+ * binary heap (internal/priority_queue.js) with Node's comparator, so
+ * entries with equal, negative or NaN run times fire in Node's order.
+ * Mock handles are negative, which the loop's timer functions ignore.
+ *
+ * The scr_test_mt_* entry points replace the timer calls of programs
+ * that use mock.timers (the moduleUsesMockTimers switch), so other
+ * programs call the loop's timer functions directly. */
+
+/* The APIs enable() mocks, in Node's SUPPORTED_APIS order. */
+enum {
+  SCR_MT_TIMEOUT,
+  SCR_MT_INTERVAL,
+  SCR_MT_IMMEDIATE,
+  SCR_MT_DATE,
+  SCR_MT_WAIT,
+  SCR_MT_ABORT,
+  SCR_MT_NAPIS
+};
+
+typedef struct {
+  double run_at;
+  double id;         /* Node's #currentTimer: the tie-break between equal run times */
+  double interval;   /* the period of a setInterval entry */
+  bool has_interval; /* false for timeouts and cleared intervals (Node's undefined) */
+  ScrClosure *cb;    /* owned */
+  size_t pos;        /* heap slot, 0 when unset (Node's priorityQueuePosition) */
+  double handle;     /* the negative handle the program holds */
+  ScrMockTimers *owner;
+  int refs;          /* heap slots holding the entry, plus a running callback */
+} ScrMockTimer;
+
+struct ScrMockTimers {
+  bool enabled;
+  char apis[16]; /* the APIs enable() listed, in order (Node's #timersInContext) */
+  size_t napis;
+  double now;
+  double next_id;
+  ScrMockTimer **heap; /* 1-based, as Node's #heap */
+  size_t size, cap;
+  ScrMockTimers *saved[SCR_MT_NAPIS]; /* each API's owner before enable() */
+  ScrMockTimers *next_all;
+};
+
+/* The owner of each API: the MockTimers its calls queue on, NULL for the
+ * loop's timers. */
+static SCR_TL ScrMockTimers *scr_mt_owner[SCR_MT_NAPIS];
+static SCR_TL ScrMockTimers *scr_mt_module = NULL;
+/* Every MockTimers, freed at exit: an owner or saved slot can still name
+ * one after its test ended, as Node keeps the replaced functions. */
+static SCR_TL ScrMockTimers *scr_mt_all = NULL;
+static SCR_TL double scr_mt_next_handle = -1;
+/* Set once a MockTimers that mocked scheduler.wait gives the real one
+ * back: Node restores it bound to the MockTimers, so every later call
+ * throws ERR_INVALID_THIS. */
+static SCR_TL bool scr_mt_wait_unbound = false;
+/* Entries the program can still reach through a handle. */
+static SCR_TL ScrMockTimer **scr_mt_live = NULL;
+static SCR_TL size_t scr_mt_nlive = 0, scr_mt_live_cap = 0;
+
+static ScrMockTimers *scr_mt_new(void) {
+  ScrMockTimers *m = calloc(1, sizeof *m);
+  if (!m) scr_test_oom();
+  m->next_id = 1;
+  m->next_all = scr_mt_all;
+  scr_mt_all = m;
+  return m;
+}
+
+static ScrMockTimers *scr_mt_of(ScrTestCtx *t) {
+  ScrMockTimers **slot = t ? &t->mock_timers : &scr_mt_module;
+  if (!*slot) *slot = scr_mt_new();
+  return *slot;
+}
+
+static void scr_mt_unref(ScrMockTimer *e) {
+  if (--e->refs > 0) return;
+  for (size_t i = 0; i < scr_mt_nlive; i++) {
+    if (scr_mt_live[i] == e) {
+      scr_mt_live[i] = scr_mt_live[--scr_mt_nlive];
+      break;
+    }
+  }
+  scr_closure_release(e->cb);
+  free(e);
+}
+
+static ScrMockTimer *scr_mt_find(double handle) {
+  if (!(handle < 0)) return NULL;
+  for (size_t i = 0; i < scr_mt_nlive; i++) {
+    if (scr_mt_live[i]->handle == handle) return scr_mt_live[i];
+  }
+  return NULL;
+}
+
+/* Node's compareTimersLists: (a.runAt - b.runAt) || (a.id - b.id). */
+static double scr_mt_compare(const ScrMockTimer *a, const ScrMockTimer *b) {
+  double d = a->run_at - b->run_at;
+  if (d != 0 && !isnan(d)) return d;
+  return a->id - b->id;
+}
+
+static void scr_mt_percolate_down(ScrMockTimers *m, size_t pos) {
+  ScrMockTimer **heap = m->heap;
+  size_t size = m->size, hsize = size >> 1;
+  ScrMockTimer *item = heap[pos];
+  while (pos <= hsize) {
+    size_t child = pos << 1, next = child + 1;
+    ScrMockTimer *child_item = heap[child];
+    if (next <= size && scr_mt_compare(heap[next], child_item) < 0) {
+      child = next;
+      child_item = heap[next];
+    }
+    if (scr_mt_compare(item, child_item) <= 0) break;
+    child_item->pos = pos;
+    heap[pos] = child_item;
+    pos = child;
+  }
+  heap[pos] = item;
+  item->pos = pos;
+}
+
+static void scr_mt_percolate_up(ScrMockTimers *m, size_t pos) {
+  ScrMockTimer **heap = m->heap;
+  ScrMockTimer *item = heap[pos];
+  while (pos > 1) {
+    size_t parent = pos >> 1;
+    ScrMockTimer *parent_item = heap[parent];
+    if (scr_mt_compare(parent_item, item) <= 0) break;
+    heap[pos] = parent_item;
+    parent_item->pos = pos;
+    pos = parent;
+  }
+  heap[pos] = item;
+  item->pos = pos;
+}
+
+static void scr_mt_insert(ScrMockTimers *m, ScrMockTimer *e) {
+  if (m->size + 2 > m->cap) {
+    m->cap = m->cap ? m->cap * 2 : 8;
+    m->heap = realloc(m->heap, m->cap * sizeof *m->heap);
+    if (!m->heap) scr_test_oom();
+  }
+  e->refs++;
+  m->heap[++m->size] = e;
+  scr_mt_percolate_up(m, m->size);
+}
+
+static void scr_mt_remove_at(ScrMockTimers *m, size_t pos) {
+  ScrMockTimer **heap = m->heap;
+  ScrMockTimer *removed = heap[pos];
+  heap[pos] = heap[m->size];
+  heap[m->size] = NULL;
+  size_t size = --m->size;
+  if (size > 0 && pos <= size) {
+    if (pos > 1 && scr_mt_compare(heap[pos >> 1], heap[pos]) > 0) scr_mt_percolate_up(m, pos);
+    else scr_mt_percolate_down(m, pos);
+  }
+  scr_mt_unref(removed);
+}
+
+static ScrMockTimer *scr_mt_peek(ScrMockTimers *m) { return m->size > 0 ? m->heap[1] : NULL; }
+
+static void scr_mt_throw_state(const char *what) {
+  char msg[160];
+  int len = snprintf(msg, sizeof msg, "Invalid state: %s", what);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, "ERR_INVALID_STATE");
+}
+
+/* Node's #assertTimeArg: ERR_INVALID_ARG_VALUE('time', 'positive integer', time). */
+static bool scr_mt_time_ok(double time) {
+  if (!(time < 0)) return true;
+  char num[32];
+  size_t n = scr_f64_to_str(time, num);
+  char msg[96];
+  int len = snprintf(msg, sizeof msg, "The argument 'time' %.*s. Received 'positive integer'",
+                     (int)n, num);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+  return false;
+}
+
+static int scr_mt_api(char code) {
+  switch (code) {
+  case 'I':
+    return SCR_MT_INTERVAL;
+  case 'M':
+    return SCR_MT_IMMEDIATE;
+  case 'D':
+    return SCR_MT_DATE;
+  case 'W':
+    return SCR_MT_WAIT;
+  case 'A':
+    return SCR_MT_ABORT;
+  default:
+    return SCR_MT_TIMEOUT;
+  }
+}
+
+/* Node's #createTimer: the delay is used as given, except that one past
+ * TIMEOUT_MAX becomes 1; an omitted delay arrives as NaN (Node's
+ * undefined). */
+static ScrMockTimer *scr_mt_create(ScrMockTimers *m, bool is_interval, ScrClosure *cb /*moves*/,
+                                   double delay) {
+  if (delay > 2147483647.0) delay = 1;
+  ScrMockTimer *e = calloc(1, sizeof *e);
+  if (!e) scr_test_oom();
+  e->id = m->next_id++;
+  e->cb = cb;
+  e->run_at = m->now + delay;
+  e->has_interval = is_interval && !isnan(delay);
+  e->interval = delay;
+  e->handle = scr_mt_next_handle--;
+  e->owner = m;
+  if (scr_mt_nlive == scr_mt_live_cap) {
+    scr_mt_live_cap = scr_mt_live_cap ? scr_mt_live_cap * 2 : 8;
+    scr_mt_live = realloc(scr_mt_live, scr_mt_live_cap * sizeof *scr_mt_live);
+    if (!scr_mt_live) scr_test_oom();
+  }
+  scr_mt_live[scr_mt_nlive++] = e;
+  scr_mt_insert(m, e);
+  return e;
+}
+
+/* Node's #clearTimer on the API's owner. A handle the owner did not
+ * create is left alone. */
+static void scr_mt_clear(ScrMockTimers *m, double handle) {
+  ScrMockTimer *e = scr_mt_find(handle);
+  if (!e || e->owner != m || e->pos == 0) return;
+  size_t pos = e->pos;
+  e->pos = 0;
+  e->has_interval = false;
+  scr_mt_remove_at(m, pos);
+}
+
+static void scr_mt_tick(ScrMockTimers *m, double time) {
+  if (!m->enabled) {
+    scr_mt_throw_state("You should enable MockTimers first by calling the .enable function");
+    return;
+  }
+  if (!scr_mt_time_ok(time)) return;
+  m->now += time;
+  ScrMockTimer *timer = scr_mt_peek(m);
+  while (timer) {
+    if (timer->run_at > m->now) break;
+    timer->refs++;
+    ((void (*)(ScrClosure *))timer->cb->fn)(timer->cb);
+    if (scr_exc_pending()) {
+      /* The throw leaves the entry queued, as in Node. */
+      scr_mt_unref(timer);
+      return;
+    }
+    /* A callback that cleared its own timer already removed it. */
+    ScrMockTimer *after = scr_mt_peek(m);
+    if (after && after->id == timer->id) {
+      timer->pos = 0;
+      scr_mt_remove_at(m, 1);
+    }
+    if (timer->has_interval) {
+      timer->run_at += timer->interval;
+      scr_mt_insert(m, timer);
+    }
+    scr_mt_unref(timer);
+    timer = scr_mt_peek(m);
+  }
+}
+
+static void scr_mt_abort_arm(ScrClosure *cb /*moves*/, double ms) {
+  (void)scr_mt_create(scr_mt_owner[SCR_MT_ABORT], false, cb, ms);
+}
+
+/* Points the Date, AbortSignal.timeout and scheduler.wait hooks at their
+ * owners. */
+static void scr_mt_hooks(void) {
+  ScrMockTimers *date = scr_mt_owner[SCR_MT_DATE];
+  scr_date_mock_now = date ? &date->now : NULL;
+  scr_mt_abort_timeout_arm = scr_mt_owner[SCR_MT_ABORT] ? &scr_mt_abort_arm : NULL;
+  scr_mt_wait_state = scr_mt_owner[SCR_MT_WAIT] ? 1 : scr_mt_wait_unbound ? 2 : 0;
+}
+
+/* Node's #toggleEnableTimers. Mocking Date while another MockTimers mocks
+ * it throws ERR_INVALID_STATE; the APIs listed before Date stay mocked,
+ * and the MockTimers stays disabled, as in Node. */
+static bool scr_mt_toggle(ScrMockTimers *m, bool activate) {
+  for (size_t i = 0; i < m->napis; i++) {
+    int api = scr_mt_api(m->apis[i]);
+    if (activate) {
+      if (api == SCR_MT_DATE && scr_mt_owner[api] != NULL) {
+        scr_mt_hooks();
+        scr_mt_throw_state("Date is already being mocked!");
+        return false;
+      }
+      m->saved[api] = scr_mt_owner[api];
+      scr_mt_owner[api] = m;
+    } else {
+      scr_mt_owner[api] = m->saved[api];
+      if (api == SCR_MT_WAIT && scr_mt_owner[api] == NULL) scr_mt_wait_unbound = true;
+    }
+  }
+  scr_mt_hooks();
+  m->enabled = activate;
+  return true;
+}
+
+static void scr_mt_reset(ScrMockTimers *m) {
+  if (!m || !m->enabled) return;
+  scr_mt_toggle(m, false);
+  m->napis = 0;
+  m->now = 0;
+  while (m->size > 0) scr_mt_remove_at(m, 1);
+}
+
+/* enable({ apis, now }): `apis` holds one code per listed API, in order
+ * ('T' setTimeout, 'I' setInterval, 'M' setImmediate, 'D' Date, 'W'
+ * scheduler.wait, 'A' AbortSignal.timeout). flags: 1 = `now` is given, 2 = it
+ * came from a Date (Node then takes its time without checks). */
+static void scr_mt_enable(ScrMockTimers *m, ScrStr *apis, double now, double flags) {
+  if (m->enabled) {
+    scr_mt_throw_state("MockTimers is already enabled!");
+    return;
+  }
+  bool given = ((int)flags & 1) != 0, from_date = ((int)flags & 2) != 0;
+  if (given && !from_date && isnan(now)) {
+    static const char msg[] =
+        "The argument 'now' epoch must be a positive integer received NaN. Received NaN";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
+    return;
+  }
+  if (!given || (!from_date && now == 0)) now = 0;
+  m->napis = apis->len < sizeof m->apis ? apis->len : sizeof m->apis;
+  memcpy(m->apis, apis->data, m->napis);
+  if (!from_date && !scr_mt_time_ok(now)) return;
+  m->now = now;
+  (void)scr_mt_toggle(m, true);
+}
+
+void scr_test_mock_timers_enable(ScrStr *apis, double now, double flags) {
+  scr_mt_enable(scr_mt_of(NULL), apis, now, flags);
+}
+void scr_test_ctx_mock_timers_enable(ScrTestCtx *t, ScrStr *apis, double now, double flags) {
+  scr_mt_enable(scr_mt_of(t), apis, now, flags);
+}
+void scr_test_mock_timers_tick(double time) { scr_mt_tick(scr_mt_of(NULL), time); }
+void scr_test_ctx_mock_timers_tick(ScrTestCtx *t, double time) { scr_mt_tick(scr_mt_of(t), time); }
+
+static void scr_mt_run_all(ScrMockTimers *m) {
+  if (!m->enabled) {
+    scr_mt_throw_state("You should enable MockTimers first by calling the .enable function");
+    return;
+  }
+  /* Node ticks to the entry in the heap's last slot. */
+  if (m->size == 0) return;
+  scr_mt_tick(m, m->heap[m->size]->run_at - m->now);
+}
+void scr_test_mock_timers_run_all(void) { scr_mt_run_all(scr_mt_of(NULL)); }
+void scr_test_ctx_mock_timers_run_all(ScrTestCtx *t) { scr_mt_run_all(scr_mt_of(t)); }
+void scr_test_mock_timers_reset(void) { scr_mt_reset(scr_mt_module); }
+void scr_test_ctx_mock_timers_reset(ScrTestCtx *t) { scr_mt_reset(t->mock_timers); }
+
+/* setTime(time): Node checks the time before whether timers are enabled. */
+static void scr_mt_set_time(ScrMockTimers *m, double time) {
+  if (!scr_mt_time_ok(time)) return;
+  if (!m->enabled) {
+    scr_mt_throw_state("You should enable MockTimers first by calling the .enable function");
+    return;
+  }
+  m->now = time;
+}
+void scr_test_mock_timers_set_time(double time) { scr_mt_set_time(scr_mt_of(NULL), time); }
+void scr_test_ctx_mock_timers_set_time(ScrTestCtx *t, double time) {
+  scr_mt_set_time(scr_mt_of(t), time);
+}
+
+/* The timer calls of a program that uses mock.timers: an owned API
+ * queues on its owner, else the loop's timer functions run. */
+void scr_test_mt_set_timeout(ScrClosure *cb /*moves*/, double ms) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_TIMEOUT];
+  if (m) (void)scr_mt_create(m, false, cb, ms);
+  else scr_set_timeout(cb, ms);
+}
+double scr_test_mt_set_timeout_handle(ScrClosure *cb /*moves*/, double ms) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_TIMEOUT];
+  return m ? scr_mt_create(m, false, cb, ms)->handle : scr_set_timeout_handle(cb, ms);
+}
+double scr_test_mt_set_interval(ScrClosure *cb /*moves*/, double ms) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_INTERVAL];
+  return m ? scr_mt_create(m, true, cb, ms)->handle : scr_set_interval(cb, ms);
+}
+void scr_test_mt_clear_timeout(double handle) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_TIMEOUT];
+  if (m) scr_mt_clear(m, handle);
+  else scr_clear_interval(handle);
+}
+void scr_test_mt_clear_interval(double handle) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_INTERVAL];
+  if (m) scr_mt_clear(m, handle);
+  else scr_clear_interval(handle);
+}
+/* A mock Timeout's ref() and unref() return it unchanged, refresh() does
+ * nothing, and hasRef() is true. */
+void scr_test_mt_unref(double handle) {
+  if (!(handle < 0)) scr_timer_unref(handle);
+}
+void scr_test_mt_ref(double handle) {
+  if (!(handle < 0)) scr_timer_ref(handle);
+}
+void scr_test_mt_refresh(double handle) {
+  if (!(handle < 0)) scr_timer_refresh(handle);
+}
+bool scr_test_mt_has_ref(double handle) { return handle < 0 || scr_timer_has_ref(handle); }
+/* Node's mocked setImmediate queues a timer with delay -1, so it runs
+ * before timers due at the same tick; its handle is a mock Timeout. */
+double scr_test_mt_set_immediate(ScrClosure *cb /*moves*/) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_IMMEDIATE];
+  return m ? scr_mt_create(m, false, cb, -1)->handle : scr_set_immediate(cb);
+}
+void scr_test_mt_clear_immediate(double handle) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_IMMEDIATE];
+  if (m) scr_mt_clear(m, handle);
+  else scr_clear_immediate(handle);
+}
+void scr_test_mt_immediate_unref(double handle) {
+  if (!(handle < 0)) scr_immediate_unref(handle);
+}
+void scr_test_mt_immediate_ref(double handle) {
+  if (!(handle < 0)) scr_immediate_ref(handle);
+}
+bool scr_test_mt_immediate_has_ref(double handle) {
+  return handle < 0 || scr_immediate_has_ref(handle);
+}
+/* timers/promises scheduler.wait(delay). Node's mock settles the result
+ * from an async function that awaits an inner promise the entry
+ * resolves, so the result settles one microtask after the entry fires.
+ * The entry's closure holds the result promise until it first fires. */
+static void scr_mt_wait_fire(ScrClosure *self) {
+  ScrPromise *p = (ScrPromise *)scr_box_get_ref(self->caps[0]);
+  if (!p) return;
+  scr_box_set_ref(self->caps[0], NULL);
+  scr_queue_microtask(scr_make_resolve(p, 3 /* void */));
+  scr_promise_release(p);
+}
+
+static bool scr_mt_wait_bound(void) {
+  if (!scr_mt_wait_unbound) return true;
+  static const char msg[] = "Value of \"this\" must be of type Scheduler";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_THIS");
+  return false;
+}
+
+static ScrPromise *scr_mt_wait(ScrMockTimers *m, double ms) {
+  ScrPromise *p = scr_promise_new();
+  ScrClosure *c = scr_closure_new((void *)&scr_mt_wait_fire, 1);
+  ScrBox *b = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+  scr_box_set_ref(b, scr_promise_retain(p));
+  c->caps[0] = b;
+  (void)scr_mt_create(m, false, c, ms);
+  return p;
+}
+
+ScrPromise *scr_test_mt_scheduler_wait(double ms) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_WAIT];
+  if (m) return scr_mt_wait(m, ms);
+  return scr_mt_wait_bound() ? scr_tp_set_timeout(ms) : NULL;
+}
+
+/* scheduler.wait(delay, { ref }): Node's mock ignores ref. */
+ScrPromise *scr_test_mt_scheduler_wait_value(double ms, ScrPromise *value, bool ref) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_WAIT];
+  if (m) return scr_mt_wait(m, ms);
+  return scr_mt_wait_bound() ? scr_tp_set_timeout_value(ms, value, ref) : NULL;
+}
+
+/* Date.now() and new Date() under a mocked Date read its clock. */
+double scr_test_mt_date_now(void) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_DATE];
+  return m ? m->now : scr_date_now();
+}
+
+/* Releases every MockTimers and its queued entries at exit. */
+static void scr_mt_free_all(void) {
+  while (scr_mt_all) {
+    ScrMockTimers *m = scr_mt_all;
+    scr_mt_all = m->next_all;
+    while (m->size > 0) scr_mt_remove_at(m, 1);
+    free(m->heap);
+    free(m);
+  }
+  free(scr_mt_live);
+  scr_mt_live = NULL;
+  scr_mt_nlive = scr_mt_live_cap = 0;
+  for (int i = 0; i < SCR_MT_NAPIS; i++) scr_mt_owner[i] = NULL;
+  scr_mt_hooks();
+  scr_mt_module = NULL;
+}
+
 void scr_test_mock_track(ScrClosure *restore /*moves*/) {
   scr_test_mocks_add(&scr_test_mocks, restore);
 }
 void scr_test_mock_restore_all(void) { scr_test_mocks_restore(&scr_test_mocks, false); }
-void scr_test_mock_reset(void) { scr_test_mocks_restore(&scr_test_mocks, true); }
+/* reset() restores the tracker's mocks and resets its timers. */
+void scr_test_mock_reset(void) {
+  scr_test_mocks_restore(&scr_test_mocks, true);
+  scr_mt_reset(scr_mt_module);
+}
 void scr_test_ctx_mock_track(ScrTestCtx *t, ScrClosure *restore /*moves*/) {
   scr_test_mocks_add(&t->mocks, restore);
 }
 void scr_test_ctx_mock_restore_all(ScrTestCtx *t) { scr_test_mocks_restore(&t->mocks, false); }
-void scr_test_ctx_mock_reset(ScrTestCtx *t) { scr_test_mocks_restore(&t->mocks, true); }
+void scr_test_ctx_mock_reset(ScrTestCtx *t) {
+  scr_test_mocks_restore(&t->mocks, true);
+  scr_mt_reset(t->mock_timers);
+}
 
 void scr_test_ctx_plan(ScrTestCtx *t, double count) { t->plan = (int)count; }
 
@@ -1098,7 +1611,10 @@ ScrStr *scr_test_ctx_full_name(ScrTestCtx *t) {
 
 int scr_test_exit_code(void) {
   /* The program is done: the module tracker's restore closures go. */
-  if (scr_exit_frees()) scr_test_hooks_free(&scr_test_mocks);
+  if (scr_exit_frees()) {
+    scr_test_hooks_free(&scr_test_mocks);
+    scr_mt_free_all();
+  }
   /* The runner never finished: a test awaited a promise nobody settles
    * and the loop exhausted (Node cancels the test and exits 1 — the
    * summary it prints there is not reproduced; SEMANTICS.md). The run
