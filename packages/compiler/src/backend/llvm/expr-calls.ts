@@ -333,6 +333,16 @@ export function emitCallExpr(
               natArgs.push(`ptr ${data}`, `${host.sizeType} ${len}`);
               break;
             }
+            case "cstring": {
+              // The string's own NUL-terminated data, after the check that
+              // it holds no U+0000 (a C string cannot carry one).
+              host.declare(`declare ptr @scr_library_cstr_arg(ptr)`);
+              const data = B.tmp();
+              B.line(`${data} = call ptr @scr_library_cstr_arg(ptr ${arg.name})`);
+              natTypes.push("ptr");
+              natArgs.push(`ptr ${data}`);
+              break;
+            }
             case "bytes": {
               const lenPtr = B.tmp();
               const len = B.tmp();

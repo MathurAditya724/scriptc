@@ -1487,6 +1487,9 @@ export const BUILTIN_MODULE_FNS: Record<
       result: F64,
       valueParams: [{ mode: "optional", type: F64, defaultValue: 0 }],
     },
+    // A one-argument call is setPriority(0, priority)
+    // (lowerOsSetPriorityCall completes it).
+    setPriority: { fn: "os.setPriority", params: [F64, F64], result: VOID },
     // Special-cased (lowerOsCpusCall): the call site's CpuInfo[] assembles
     // from one uv_cpu_info snapshot.
     cpus: { fn: "os.cpusTake", params: [], result: VOID },

@@ -129,6 +129,7 @@ double scr_bytes_to_u8_clamp(double value);
 ScrStr *scr_strdec_write(const ScrStr *enc, double pending, const ScrBytes *chunk);
 double scr_strdec_next(const ScrStr *enc, double pending, const ScrBytes *chunk);
 ScrStr *scr_strdec_end(const ScrStr *enc, double pending);
+ScrStr *scr_strdec_encoding(const ScrDyn *enc); /* +1, or NULL with ERR_UNKNOWN_ENCODING pending */
 
 /* `new Uint8Array(n)` / Buffer.alloc(n): zero-filled. n goes through
  * ToIndex like JS (NaN → 0, truncate toward zero; negative or > 2^53-1
