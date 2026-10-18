@@ -61,7 +61,11 @@ import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
 import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
-import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
+import {
+  isGenericCallableMemberType,
+  isOverloadedCallableMemberType,
+  typeKey,
+} from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
 import {
   NARROW_FIRST,
@@ -8207,6 +8211,30 @@ function lowerObjectAssignHybrid(lowerer: Lowerer, call: ts.CallExpression): IrE
   return { kind: "recordLit", fields, type: mapped, loc };
 }
 
+/** The accessed member is an overload set (isOverloadedCallableMemberType),
+ * also under an optional chain whose access still spells `| undefined`. */
+function isOverloadedMemberAccess(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  return isOverloadedCallableMemberType(
+    lowerer.checker.getNonNullableType(lowerer.typeOf(access)),
+    lowerer.checker,
+  );
+}
+
+/** The result type of the overload a call through an overloaded member
+ * resolved to: the erased slot's result converts to it. A non-generic
+ * overload answers through its declaration, because the resolved signature
+ * of an optional-chain call (`api?.m(x)`) also carries the chain's
+ * undefined; a generic one answers through its instantiation. */
+function resolvedOverloadResultType(lowerer: Lowerer, call: ts.CallExpression): IrType {
+  const { checker } = lowerer;
+  const signature = checker.getResolvedSignature(call);
+  const decl = signature ? checker.signatureDeclaration(signature) : undefined;
+  const declared = decl ? checker.getSignatureFromDeclaration(decl) : undefined;
+  const source = declared && declared.getTypeParameters().length === 0 ? declared : signature;
+  const result = source ? lowerer.mapTypeOf(checker.getReturnTypeOfSignature(source)) : null;
+  return result ?? lowerer.irTypeOf(call);
+}
+
 export function lowerRecordFieldCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -8238,7 +8266,18 @@ export function lowerRecordFieldCall(
     const callee = lowerer.lowerUnionProperty(access);
     if (callee?.type.kind !== "func") return null;
     const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
-    return { kind: "callValue", callee, args, type: callee.type.ret, loc: locOf(call) };
+    const value: IrExpr = {
+      kind: "callValue",
+      callee,
+      args,
+      type: callee.type.ret,
+      loc: locOf(call),
+    };
+    // An overloaded member's erased result converts to the resolved
+    // overload's type, as on a single record receiver below.
+    return isOverloadedMemberAccess(lowerer, access)
+      ? lowerer.coerceInto(call, value, resolvedOverloadResultType(lowerer, call))
+      : value;
   }
   const target = lowerer.fieldTarget(access);
   const loc = locOf(call);
@@ -8313,10 +8352,14 @@ export function lowerRecordFieldCall(
     type: callee.type.ret,
     loc,
   };
-  // A generic member's field holds its erased instance: the result
-  // converts to this call's instantiated return type at the call.
-  if (isGenericCallableMemberType(lowerer.typeOf(access), lowerer.checker))
+  // A generic member's field holds its erased instance, and an overloaded
+  // member's field its erased function (the overloads joined): the result
+  // converts to this call's instantiated or resolved return type.
+  const memberType = lowerer.typeOf(access);
+  if (isGenericCallableMemberType(memberType, lowerer.checker))
     result = lowerer.coerceInto(call, result, lowerer.irTypeOf(call));
+  else if (isOverloadedMemberAccess(lowerer, access))
+    result = lowerer.coerceInto(call, result, resolvedOverloadResultType(lowerer, call));
   return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
 }
 

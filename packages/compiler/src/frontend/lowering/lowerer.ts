@@ -231,9 +231,11 @@ import {
   containsUnion,
   describeComponentBlocker,
   describeRecordMemberBlocker,
+  erasedOverloadMemberType,
   formatIrType,
   FETCH_AMBIENT_TYPES,
   isOsConstantsSymbol,
+  isOverloadedCallableMemberType,
   isUnitOnlyTsType,
   isWorkerHandleType,
   jsOpenObjectType,
@@ -7776,6 +7778,15 @@ export class Lowerer {
     return mapped === null || mapped.kind === "func"
       ? (jsArgumentsFunctionType(this, t) ?? mapped)
       : mapped;
+  }
+
+  /** The runtime type of a record member slot typed `t`: an overloaded
+   * member's erased function (erasedOverloadMemberType — the type a record
+   * shape stores for it), otherwise mapTypeOf. */
+  memberSlotTypeOf(t: ts.Type): IrType | null {
+    if (isOverloadedCallableMemberType(t, this.checker))
+      return erasedOverloadMemberType(t, this.typeCtx) ?? null;
+    return this.mapTypeOf(t);
   }
 
   /** The one position where a contextual UNION must not be adopted over the
