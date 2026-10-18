@@ -10883,9 +10883,69 @@ ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
     else if (!scr_dyn_number_coerce_js(value, &ms)) return NULL;
     ms = scr_date_new_ms(ms);
   }
+  return scr_dyn_native_date_from_ms(ms);
+}
+
+/* The Date.prototype methods scr_native_date_invoke answers. */
+static const char *const scr_native_date_methods[] = {
+  "getTime", "valueOf", "toISOString", "toJSON", "getFullYear", "getUTCFullYear", "getMonth",
+  "getUTCMonth", "getDate", "getUTCDate", "getDay", "getUTCDay", "getHours", "getUTCHours",
+  "getMinutes", "getUTCMinutes", "getSeconds", "getUTCSeconds", "getMilliseconds",
+  "getUTCMilliseconds", "getTimezoneOffset",
+};
+#define SCR_NATIVE_DATE_METHODS (sizeof scr_native_date_methods / sizeof scr_native_date_methods[0])
+static SCR_TL ScrDyn *scr_native_date_method_values[SCR_NATIVE_DATE_METHODS];
+static SCR_TL bool scr_native_date_methods_registered;
+
+static void scr_native_date_methods_cleanup(void) {
+  for (size_t i = 0; i < SCR_NATIVE_DATE_METHODS; i++) {
+    ScrDyn *function = scr_native_date_method_values[i];
+    scr_native_date_method_values[i] = NULL;
+    scr_dyn_release(function);
+  }
+}
+
+/* A Date method read as a value and called later: the closure's function
+ * slot holds the method's name, and the receiver must be a Date. */
+static ScrDyn *scr_native_date_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  const char *method = closure->fn;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *result = NULL;
+  if (scr_dyn_native_date_is(self)) {
+    result = scr_native_date_invoke(self->v.handle.ptr, self, method, args, argc, method);
+  } else {
+    static const char message[] = "this is not a Date object.";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+/* Property reads of a Date: its methods as function values, one per name
+ * and thread, and NULL (undefined) for other names. */
+static ScrDyn *scr_native_date_get(void *ptr, const char *key, size_t key_len) {
+  (void)ptr;
+  for (size_t i = 0; i < SCR_NATIVE_DATE_METHODS; i++) {
+    const char *name = scr_native_date_methods[i];
+    if (strlen(name) != key_len || memcmp(name, key, key_len) != 0) continue;
+    if (!scr_native_date_methods_registered) {
+      scr_native_date_methods_registered = true;
+      scr_atexit(scr_native_date_methods_cleanup);
+    }
+    if (!scr_native_date_method_values[i]) {
+      scr_native_date_method_values[i] = scr_dyn_new_func(
+          scr_closure_new((void *)name, 0), scr_native_date_method_call, 0, "native:Date", name);
+    }
+    return scr_dyn_retain(scr_native_date_method_values[i]);
+  }
+  return NULL;
+}
+
+/* A Date handle holding the time value `ms` (already TimeClip'd). */
+ScrDyn *scr_dyn_native_date_from_ms(double ms) {
   static const ScrDynHandleOps ops = {
     "Date", &scr_native_date_retain, &scr_native_date_release, &scr_native_date_invoke,
-    NULL, NULL, NULL, NULL,
+    &scr_native_date_get, NULL, NULL, NULL,
   };
   scr_dyn_handle_install(SCR_DYNH_DATE, &ops);
   ScrNativeDate *date = malloc(sizeof *date);

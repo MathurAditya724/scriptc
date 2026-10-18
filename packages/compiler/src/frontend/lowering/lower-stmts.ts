@@ -5302,7 +5302,7 @@ function lowerDynSwitch(
         loc: locOf(expression),
       };
     }
-    if (!lowerer.dynConvertible(test.type)) {
+    if (test.type.kind === "date" || !lowerer.dynConvertible(test.type)) {
       lowerer.unsupported(
         "SC1100",
         expression,

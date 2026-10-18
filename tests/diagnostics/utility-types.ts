@@ -7,9 +7,9 @@
 // differential corpus); what stays rejected:
 // - symbol-keyed index signatures (no lowering for symbol keys);
 // - index-signature value types outside the overflow-map slice (Dates and
-//   other lib API objects, even when the value itself has a representation);
-// - utility types over LIB interfaces stay a type world, not data shapes.
-// (Dot access/writes to index-signature keys compile now — the overflow
+//   other lib API objects, even when the value itself has a representation).
+// (Readonly<Date> bindings compile, holding the Date as a checked value.
+// Dot access/writes to index-signature keys compile now — the overflow
 // path in dot spelling — and self-referential mapped types intern as
 // named recursive shapes; differential corpus covers both.)
 const bySymbol: { [s: symbol]: string } = {};
