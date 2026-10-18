@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1143,
-        "verify-gap": 2186,
+        "audit-partial": 1144,
+        "verify-gap": 2185,
         "replace-refusal": 40,
         "classify": 2,
         "implement": 85
@@ -3941,12 +3941,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:child_process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:child_process.child_process.exec",
+          "tests": [
+            "tests/corpus/5627-exec-callback.ts",
+            "tests/fixtures/node-types/child-exec.ts",
+            "tests/harness/project-config.test.ts"
+          ]
         }
       }
     },
