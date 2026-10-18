@@ -21,7 +21,8 @@ import type { Token } from "./tokens.js";
 import { exportsOf, firstDifference, normalizeEmit, tokenize } from "./tokens.js";
 import type { TsOptions } from "./tree.js";
 import { optionString } from "./tree.js";
-import { baseEnv, isFile, readText, run, walkFiles } from "./util.js";
+import { cacheRoot } from "./registry.js";
+import { baseEnv, isFile, readText, run, sha256Hex, walkFiles } from "./util.js";
 
 export interface ContentResult {
   level: ContentLevel;
@@ -116,7 +117,61 @@ const PASSTHROUGH = [
   "noEmitHelpers",
 ];
 
-const FALLBACK_TARGETS = ["es2019", "es2017", "es2015", "es5", "es2020", "es2022", "esnext"];
+const TARGETS = [
+  "es5",
+  "es2015",
+  "es2016",
+  "es2017",
+  "es2018",
+  "es2019",
+  "es2020",
+  "es2021",
+  "es2022",
+  "esnext",
+];
+
+/** Candidate targets for a build whose tsconfig could not be read, bounded
+ * by syntax the published JS uses (lower bound) and downlevel helpers it
+ * contains (upper bound), lowest first. */
+export function plausibleTargets(js: string): string[] {
+  let lo = 0;
+  let hi = TARGETS.length - 1;
+  const raise = (target: string): void => {
+    lo = Math.max(lo, TARGETS.indexOf(target));
+  };
+  const cap = (target: string): void => {
+    hi = Math.min(hi, TARGETS.indexOf(target));
+  };
+  const tokens = tokenize(js);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i] as Token;
+    const v = t.value;
+    if (
+      t.kind === "tpl" ||
+      v === "=>" ||
+      (t.kind === "id" && (v === "const" || v === "let" || v === "class"))
+    ) {
+      raise("es2015");
+    } else if (v === "**" || v === "**=") raise("es2016");
+    else if (
+      t.kind === "id" &&
+      (v === "await" || (v === "async" && tokens[i + 1]?.kind !== "punct"))
+    ) {
+      raise("es2017");
+    } else if (v === "??" || v === "?." || v === "??=") raise("es2020");
+    else if (t.kind === "id" && v.startsWith("#")) raise("es2022");
+    else if (v === "__awaiter") cap("es2016");
+    else if (v === "__classPrivateFieldGet" || v === "__classPrivateFieldSet") cap("es2021");
+    else if (v === "__assign" || v === "__rest") cap("es2017");
+    else if (v === "__spreadArray") cap("es5");
+  }
+  // No ES2015 syntax at all in emitted TS output means an ES5 target.
+  if (lo === 0 && tokens.length > 0) cap("es5");
+  // Conflicting evidence: trust the helpers (unambiguous identifiers) and
+  // try downward from the cap.
+  if (hi < lo) return TARGETS.slice(0, hi + 1).reverse();
+  return TARGETS.slice(lo, hi + 1);
+}
 
 interface EmitRun {
   files: Map<string, string>;
@@ -216,8 +271,24 @@ interface Pairing {
   firstDiff: string;
 }
 
-function comparePairs(emitted: Map<string, string>, pub: Published, bundles: Set<string>): Pairing {
-  const candidates = pub.jsFiles.filter((f) => !bundles.has(f));
+/** "esm" when the file has top-level import/export statements. */
+function jsFormat(text: string): string {
+  return /^(import|export)[\s{*]/m.test(text) ? "esm" : "cjs";
+}
+
+/** Pair emitted modules with published files of the same module format,
+ * choosing the directory prefixes that pair the most files. */
+function comparePairs(
+  emitted: Map<string, string>,
+  pub: Published,
+  bundles: Set<string>,
+  pubFormats: Map<string, string>,
+): Pairing {
+  const emittedFormats = new Set<string>();
+  for (const text of emitted.values()) emittedFormats.add(jsFormat(text));
+  const candidates = pub.jsFiles.filter(
+    (f) => !bundles.has(f) && emittedFormats.has(pubFormats.get(f) ?? ""),
+  );
   const pubIndex = prefixIndex(candidates, 3);
   const emitIndex = prefixIndex([...emitted.keys()], 2);
   let best: Pairing = { pairs: [], equal: 0, firstDiff: "" };
@@ -418,20 +489,49 @@ export async function reemitCheck(
   modules.push(rootIsCjs ? "commonjs" : "esnext");
   modules.push(rootIsCjs ? "esnext" : "commonjs");
   const configuredTarget = optionString(ts, "target");
-  const targets = configuredTarget !== "" && !ts.partial ? [configuredTarget] : FALLBACK_TARGETS;
+  const known = configuredTarget !== "" && !ts.partial;
+  const publishedText = new Map<string, string>([
+    ["cjs", ""],
+    ["esm", ""],
+  ]);
+  if (!known) {
+    for (const file of pub.jsFiles) {
+      const text = readText(join(pub.dir, file)) ?? "";
+      const format = jsFormat(text);
+      publishedText.set(format, `${publishedText.get(format) ?? ""}\n;${text}`);
+    }
+  }
+  const targetsFor = (moduleKind: string): string[] => {
+    if (known) return [configuredTarget];
+    if (moduleKind === "commonjs") return plausibleTargets(publishedText.get("cjs") ?? "");
+    if (moduleKind === "esnext") return plausibleTargets(publishedText.get("esm") ?? "");
+    return TARGETS.slice();
+  };
   let best: Pairing = { pairs: [], equal: 0, firstDiff: "" };
   let bestEmit = new Map<string, string>();
   let bestDesc = "";
   let emitError = "";
+  const pubFormats = new Map<string, string>();
+  for (const file of pub.jsFiles)
+    pubFormats.set(file, jsFormat(readText(join(pub.dir, file)) ?? ""));
+  const rootTargets = pub.targets.filter((t) => t.subpath === ".").map((t) => t.target);
+  let rootSeen = false;
   for (const moduleKind of modules) {
-    for (const target of targets) {
+    for (const target of targetsFor(moduleKind)) {
       const result = await emit(tsc, srcDir, files, ts, moduleKind, target);
       if (result.error !== "") {
         emitError = result.error;
         continue;
       }
       if (bestEmit.size === 0) bestEmit = result.files;
-      const pairing = comparePairs(result.files, pub, bundles);
+      const pairing = comparePairs(result.files, pub, bundles, pubFormats);
+      // Pairing depends on file names and module format, not on the target:
+      // with nothing paired (or the entry unpaired), other targets cannot help.
+      if (!pairing.pairs.some((p) => rootTargets.includes(p[0]))) {
+        if (best.pairs.length === 0 && pairing.pairs.length > 0) best = pairing;
+        break;
+      }
+      rootSeen = true;
       if (DEBUG) {
         process.stderr.write(
           `spm-debug ${pub.dir} ${moduleFamily(moduleKind)}/${target}: ${pairing.equal}/${pairing.pairs.length} ${pairing.firstDiff}\n`,
@@ -459,9 +559,7 @@ export async function reemitCheck(
     const src = srcOf(emittedPath);
     if (src !== "") pubToSrc.set(pubPath, src);
   }
-  const rootTargets = pub.targets.filter((t) => t.subpath === ".").map((t) => t.target);
-  const rootCovered = best.pairs.some((p) => rootTargets.includes(p[0]));
-  if (best.pairs.length > 0 && !rootCovered && !bundles.has(rootTarget)) {
+  if (best.pairs.length > 0 && !rootSeen && !bundles.has(rootTarget)) {
     const detail = `published entry ${rootTarget} has no counterpart among ${files.length} TypeScript files (JS upstream?)`;
     return { level: "unverified", checks: [], detail: detail, pubToSrc: pubToSrc };
   }
@@ -561,4 +659,43 @@ export function materializeFiles(dir: string, files: Map<string, string>): void 
     mkdirSync(dest.slice(0, dest.lastIndexOf("/")), { recursive: true });
     writeFileSync(dest, content);
   }
+}
+
+// ── verification cache ───────────────────────────────────────────────────
+
+interface CachedContent {
+  level: ContentLevel;
+  checks: string[];
+  detail: string;
+  pubToSrc: { from: string; to: string }[];
+}
+
+function contentCacheFile(key: string): string {
+  return join(cacheRoot(), "meta", "verify", `${sha256Hex(key)}.json`);
+}
+
+/** A verification result is a pure function of the integrity-pinned
+ * published package and the commit-pinned tree, so it is cached under
+ * `<cache>/meta/verify/` (DESIGN.md §4.5). */
+export function loadCachedContent(key: string): ContentResult | null {
+  const text = readText(contentCacheFile(key));
+  if (text === null) return null;
+  const cached = JSON.parse(text) as CachedContent;
+  const pubToSrc = new Map<string, string>();
+  for (const pair of cached.pubToSrc) pubToSrc.set(pair.from, pair.to);
+  return { level: cached.level, checks: cached.checks, detail: cached.detail, pubToSrc: pubToSrc };
+}
+
+export function storeCachedContent(key: string, result: ContentResult): void {
+  const pairs: { from: string; to: string }[] = [];
+  for (const [from, to] of result.pubToSrc) pairs.push({ from: from, to: to });
+  const cached: CachedContent = {
+    level: result.level,
+    checks: result.checks,
+    detail: result.detail,
+    pubToSrc: pairs,
+  };
+  const file = contentCacheFile(key);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(cached)}\n`);
 }

@@ -1,3 +1,4 @@
-import { isTsVersionAtLeast } from "ts-api-utils";
+import { isCompilerOptionEnabled } from "ts-api-utils";
 
-console.log(isTsVersionAtLeast(4, 0));
+console.log(isCompilerOptionEnabled({ strict: true }, "strictNullChecks"));
+console.log(isCompilerOptionEnabled({ strict: true, noImplicitAny: false }, "noImplicitAny"));

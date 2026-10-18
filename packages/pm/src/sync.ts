@@ -19,7 +19,7 @@ import type {
   ManifestInstance,
   Strategy,
 } from "./manifest.js";
-import { GENERATOR, writeLock, writeManifest } from "./manifest.js";
+import { GENERATOR, POLICY_VERSION, writeLock, writeManifest } from "./manifest.js";
 import { buildExportMap, closureProblems, materializeOverlay, resolveSource } from "./overlay.js";
 import type { Instance } from "./pnpm.js";
 import { enumerateInstances } from "./pnpm.js";
@@ -39,7 +39,15 @@ import {
 } from "./tree.js";
 import { errorMessage, isFile, pool, readText, walkFiles } from "./util.js";
 import type { ContentResult, Emitter } from "./verify.js";
-import { exactCheck, findTsc, materializeFiles, reemitCheck, surfaceCheck } from "./verify.js";
+import {
+  exactCheck,
+  findTsc,
+  loadCachedContent,
+  materializeFiles,
+  reemitCheck,
+  storeCachedContent,
+  surfaceCheck,
+} from "./verify.js";
 
 export interface SyncOptions {
   projectDir: string;
@@ -329,12 +337,28 @@ async function verifyAndMaterialize(
   const where = loc.commit === "" ? loc.strategy : `${loc.repo}@${short(loc.commit)}`;
   if (sourceFiles.length === 0)
     return fallback(instance, `upstream-js: no .ts sources at ${where}`);
-  let content: ContentResult | null =
-    loc.strategy === "tarball" ? null : exactCheck(pub, loc.srcDir);
+  // Overrides point at mutable local checkouts and are never cached.
+  const cacheKey =
+    loc.strategy === "override" || loc.integrity === ""
+      ? ""
+      : [
+          POLICY_VERSION,
+          instance.name,
+          instance.version,
+          loc.integrity,
+          loc.strategy,
+          loc.commit,
+          loc.subdir,
+        ].join("|");
+  let content: ContentResult | null = cacheKey === "" ? null : loadCachedContent(cacheKey);
   if (content === null) {
-    if (ctx.tsc === null)
-      return fallback(instance, "no-emitter: no TypeScript compiler found for the content check");
-    content = await reemitCheck(ctx.tsc, pub, loc.srcDir, sourceFiles, ts);
+    content = loc.strategy === "tarball" ? null : exactCheck(pub, loc.srcDir);
+    if (content === null) {
+      if (ctx.tsc === null)
+        return fallback(instance, "no-emitter: no TypeScript compiler found for the content check");
+      content = await reemitCheck(ctx.tsc, pub, loc.srcDir, sourceFiles, ts);
+    }
+    if (cacheKey !== "") storeCachedContent(cacheKey, content);
   }
   const level = content.level;
   if (level === "unverified" && content.checks.length === 0) {
@@ -438,6 +462,17 @@ async function verifyAndMaterialize(
 }
 
 async function processInstance(ctx: Context, instance: Instance): Promise<Outcome> {
+  const started = Date.now();
+  const outcome = await processInstanceUntimed(ctx, instance);
+  if (process.env["SPM_DEBUG"] === "1" && outcome.kind !== "skipped") {
+    process.stderr.write(
+      `spm-debug time ${instance.name}@${instance.version} ${Date.now() - started}ms\n`,
+    );
+  }
+  return outcome;
+}
+
+async function processInstanceUntimed(ctx: Context, instance: Instance): Promise<Outcome> {
   const pub = readPublished(instance.installedDir);
   const skip = prefilter(instance, pub, ctx.options.config);
   if (skip !== "") return skipped(instance, skip);
