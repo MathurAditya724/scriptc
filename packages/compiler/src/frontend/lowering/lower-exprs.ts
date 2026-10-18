@@ -31,7 +31,14 @@ import { literalUnionArm } from "../union-discriminants.js";
  * (FieldTarget). */
 import { isFsStreamMember, lowerFsStreamProperty } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
-import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "./builtins/compression.js";
+import {
+  isZlibStreamMember,
+  lowerZlibInstanceOf,
+  lowerZlibStreamBytesWritten,
+  zlibClassAliasOf,
+  zlibClassModeOfExpr,
+  zlibClassName,
+} from "./builtins/compression.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { dirname } from "node:path";
 import * as posix from "node:path/posix";
@@ -608,6 +615,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (isNodeModuleValue(lowerer, expr.expression)) {
       return { kind: "strLit", value: "object", type: STRING, loc };
     }
+    // `typeof zlib.Gzip`, `typeof C` over a zlib class alias.
+    if (zlibClassModeOfExpr(lowerer, expr.expression) !== null) {
+      return { kind: "strLit", value: "function", type: STRING, loc };
+    }
     if (ts.isPropertyAccessExpression(expr.expression)) {
       const member = expr.expression;
       const prototype = member.expression;
@@ -864,6 +875,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           "SC1090",
           expr,
           `a builtin function alias as an escaping value (call '${expr.text}' directly)`,
+        );
+      }
+      // `const C = zlib.Gzip` owns no runtime slot: construction,
+      // instanceof, typeof and .name lower at their use sites.
+      if (sym && zlibClassAliasOf(lowerer, sym) !== null) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `a zlib class alias as an escaping value (use '${expr.text}' with new, instanceof, typeof or .name)`,
         );
       }
     }
@@ -1800,6 +1820,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     {
       const table = lowerInternTableProperty(lowerer, expr);
       if (table) return table;
+    }
+    // `zlib.Gzip.name`, `C.name` over a zlib class alias.
+    if (expr.name.text === "name" && !expr.questionDotToken) {
+      const mode = zlibClassModeOfExpr(lowerer, expr.expression);
+      if (mode !== null) return { kind: "strLit", value: zlibClassName(mode), type: STRING, loc };
     }
     // Expando statics may still be absent even when JS inference sees
     // the eventual assignment's scalar type. Preserve the checked value.
@@ -10019,6 +10044,19 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       lowerUnionTypeofTest(lowerer, expr, loc);
     if (test) return test;
   }
+  // `C === zlib.Gzip` between two zlib class references: the classes
+  // are compile-time values, so the answer folds.
+  if (
+    op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    op === ts.SyntaxKind.ExclamationEqualsEqualsToken
+  ) {
+    const leftClass = zlibClassModeOfExpr(lowerer, expr.left);
+    const rightClass = leftClass === null ? null : zlibClassModeOfExpr(lowerer, expr.right);
+    if (leftClass !== null && rightClass !== null) {
+      const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+      return { kind: "boolLit", value: (leftClass === rightClass) !== negated, type: BOOL, loc };
+    }
+  }
 
   const strictEquality =
     op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
@@ -12064,6 +12102,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
   const sockTest = lowerSocketInstanceOf(lowerer, expr, loc);
   if (sockTest !== null) return sockTest;
+  const zlibMode = zlibClassModeOfExpr(lowerer, expr.right);
+  if (zlibMode !== null) return lowerZlibInstanceOf(lowerer, expr, zlibMode, loc);
 
   if (lowerer.isStdlibGlobal(expr.right, "Set") || lowerer.isStdlibGlobal(expr.right, "Map")) {
     const collection = lowerer.isStdlibGlobal(expr.right, "Map") ? "map" : "set";

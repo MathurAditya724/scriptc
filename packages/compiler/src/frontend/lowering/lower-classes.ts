@@ -10,7 +10,7 @@ import { InternalCompilerError } from "../../errors.js";
  * hierarchy registration. */
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
-import { lowerZlibStreamNew, zlibStreamModeOf } from "./builtins/compression.js";
+import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
 import {
   BOOL,
@@ -8664,7 +8664,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // `new zlib.Gzip(options?)` — the zlib stream classes.
     const zlibModeNs = zlibStreamModeOf(lowerer, resolved);
     if (zlibModeNs !== null) {
-      const what = `new zlib.${expr.expression.name.text}`;
+      const what = `new zlib.${zlibClassName(zlibModeNs)}`;
       return lowerZlibStreamNew(lowerer, expr.arguments ?? [], zlibModeNs, what, expr, loc);
     }
     // `new N.C(...)` / `new a.Point(...)` — construction through a
@@ -8922,7 +8922,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (streamInfo) return lowerStreamNew(lowerer, expr, streamInfo);
     const zlibMode = zlibStreamModeOf(lowerer, symbol);
     if (zlibMode !== null) {
-      const what = `new zlib.${symbol!.name}`;
+      const what = `new zlib.${zlibClassName(zlibMode)}`;
       return lowerZlibStreamNew(lowerer, expr.arguments ?? [], zlibMode, what, expr, loc);
     }
     // `new URL(input)`: the WHATWG URL class (stdlib/@types provenance —

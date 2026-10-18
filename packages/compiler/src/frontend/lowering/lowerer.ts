@@ -1804,6 +1804,11 @@ export class Lowerer {
    * typeParamBindings — the checker has no `T` to substitute, so the
    * binding rides the node-type accessor instead of mapType. */
   implicitParamTypes: Map<ts.Symbol, ts.Type> | null = null;
+  /** Immutable bindings that name a zlib stream class (`const C =
+   * zlib.Gzip`), keyed by the binding's symbol: the class's
+   * node_zlib_mode. No runtime slot exists: new, typeof, .name and ===
+   * resolve at compile time, and instanceof checks the stream's mode. */
+  readonly zlibClassAliases = new Map<ts.Symbol, number>();
   /** Whether some net.Socket in this program may get an encoding: a
    * setEncoding call whose receiver is a socket or an untyped value.
    * Computed once on first use (null until then). */
