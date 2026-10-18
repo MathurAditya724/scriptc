@@ -130,7 +130,7 @@ import {
   lowerSafeBytesRead,
 } from "./array-values.js";
 import { strCharsCall } from "./containers/array-construction.js";
-import { lowerOptionalStringIndex } from "./string-index.js";
+import { lowerOptionalStringIndex, lowerUnionStringIndex } from "./string-index.js";
 import { tryLowerIndexedComparison } from "./indexed-comparison.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { unsupportedModuleFeatureOf } from "../builtin-modules.js";
@@ -6878,6 +6878,19 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           lowerer.withUndefinedArm(STRING),
           locOf(expr),
         );
+      }
+      // The checker narrowed the receiver to string, but its stored value
+      // is still the union (an array-derived binding, a typeof guard).
+      if (index.type.kind === "f64") {
+        const read = lowerUnionStringIndex(
+          lowerer,
+          recv,
+          index,
+          expr.argumentExpression,
+          lowerer.withUndefinedArm(STRING),
+          locOf(expr),
+        );
+        if (read) return read;
       }
       lowerer.unsupported(
         "SC1090",
