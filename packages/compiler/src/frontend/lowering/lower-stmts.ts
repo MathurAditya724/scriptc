@@ -6758,6 +6758,32 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
               loc,
             };
           }
+          // process.emitWarning = fn: an ordinary writable property. Later
+          // process.emitWarning(...) calls, and the warnings Node's own
+          // modules emit through process.emitWarning, call the replacement
+          // instead (silencing them when it does nothing).
+          if (flag === "emitWarning") {
+            const loc = locOf(expr);
+            let rhs: ts.Expression = expr.right;
+            while (
+              ts.isParenthesizedExpression(rhs) ||
+              ts.isAsExpression(rhs) ||
+              ts.isSatisfiesExpression(rhs)
+            )
+              rhs = rhs.expression;
+            const value = lowerer.lowerExprExpecting(rhs, DYN);
+            return {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "process.setEmitWarning",
+                args: [value],
+                type: VOID,
+                loc,
+              },
+              loc,
+            };
+          }
           // process.title = name: libuv's uv_set_process_title (the
           // runtime truncates to the original argument area on POSIX).
           if (flag === "title") {

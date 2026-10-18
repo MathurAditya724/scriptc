@@ -67,6 +67,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.emitWarningText",
   "process.deprecationFlag",
   "process.setDeprecationFlag",
+  "process.setEmitWarning",
   // The performance timeline (scr_perf.c, linked with this unit for its
   // MaxPerformanceEntryBufferExceededWarning).
   "perf.mark",
