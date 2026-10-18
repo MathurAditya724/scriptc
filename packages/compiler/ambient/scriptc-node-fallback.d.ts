@@ -708,6 +708,7 @@ interface MessageEvent<T = unknown> extends Event {
   readonly data: T;
   readonly origin: string;
   readonly lastEventId: string;
+  readonly source: unknown;
   readonly ports: readonly MessagePort[];
 }
 declare var MessageEvent: {
@@ -2109,6 +2110,8 @@ declare module "os" {
   export function version(): string;
   export function endianness(): "BE" | "LE";
   export function getPriority(pid?: number): number;
+  export function setPriority(priority: number): void;
+  export function setPriority(pid: number, priority: number): void;
   /* The TARGET platform's null device ("\\\\.\\nul" under a win32 triple). */
   export const devNull: string;
   /* The platform's constants: null-prototype objects with read-only
@@ -3030,10 +3033,10 @@ declare module "child_process" {
     args?: string[] | null,
     options?: ExecSyncOptions,
   ): unknown;
-  /* The async shell form — declared surface without full lowering (the
-   * type-level tolerance story): harness code on paths tests don't reach
-   * must typecheck; a reached call fences at its site. util.promisify
-   * recognizes it statically, as it does execFile. */
+  /* The async shell form. The callback forms lower like execFile's, with
+   * the command line run by /bin/sh -c, and util.promisify recognizes it
+   * statically, as it does execFile; reached calls without a callback
+   * fence at their site. */
   export function exec(
     command: string,
     options?: ExecSyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
@@ -3171,6 +3174,69 @@ declare module "util" {
   export function promisify(
     fn: typeof import("node:stream").finished,
   ): typeof import("node:stream/promises").finished;
+  /* The crypto callback functions: the promise settles with the callback's
+   * value. */
+  export function promisify(
+    fn: typeof import("node:crypto").randomBytes,
+  ): (size: number) => Promise<Buffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").pbkdf2,
+  ): (
+    password: string | Uint8Array,
+    salt: string | Uint8Array,
+    iterations: number,
+    keylen: number,
+    digest: string,
+  ) => Promise<Buffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").scrypt,
+  ): (
+    password: import("node:crypto").BinaryLike,
+    salt: import("node:crypto").BinaryLike,
+    keylen: number,
+    options?: import("node:crypto").ScryptOptions,
+  ) => Promise<Buffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").hkdf,
+  ): (
+    digest: string,
+    ikm: import("node:crypto").BinaryLike | import("node:crypto").KeyObject,
+    salt: import("node:crypto").BinaryLike,
+    info: import("node:crypto").BinaryLike,
+    keylen: number,
+  ) => Promise<ArrayBuffer>;
+  export function promisify(
+    fn: typeof import("node:crypto").randomFill,
+  ): <T extends ArrayBufferView | ArrayBufferLike>(
+    buffer: T,
+    offset?: number,
+    size?: number,
+  ) => Promise<T>;
+  export function promisify(fn: typeof import("node:crypto").randomInt): {
+    (max: number): Promise<number>;
+    (min: number, max: number): Promise<number>;
+  };
+  export function promisify(
+    fn: typeof import("node:crypto").generateKey,
+  ): (
+    type: "hmac" | "aes",
+    options: { length: number },
+  ) => Promise<import("node:crypto").KeyObject>;
+  /* dns.lookup's promise settles with { address, family } (the address
+   * array with options.all), and lookupService's with { hostname, service }. */
+  export function promisify(fn: typeof import("node:dns").lookup): {
+    (
+      hostname: string,
+      options: import("node:dns").LookupAllOptions,
+    ): Promise<import("node:dns").LookupAddress[]>;
+    (
+      hostname: string,
+      options?: number | import("node:dns").LookupOneOptions,
+    ): Promise<import("node:dns").LookupAddress>;
+  };
+  export function promisify(
+    fn: typeof import("node:dns").lookupService,
+  ): (address: string, port: number) => Promise<{ hostname: string; service: string }>;
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
    * without a lowering fences at its site). inspect's options carry the
@@ -3250,6 +3316,7 @@ declare module "util/types" {
   export function isInt8Array(value: unknown): value is Int8Array;
   export function isInt16Array(value: unknown): value is Int16Array;
   export function isInt32Array(value: unknown): value is Int32Array;
+  export function isFloat16Array(value: unknown): value is Float16Array;
   export function isFloat32Array(value: unknown): value is Float32Array;
   export function isFloat64Array(value: unknown): value is Float64Array;
   export function isMap(value: unknown): value is Map<unknown, unknown>;
@@ -3264,6 +3331,21 @@ declare module "util/types" {
   export function isGeneratorFunction(value: unknown): boolean;
   export function isGeneratorObject(value: unknown): boolean;
   export function isModuleNamespaceObject(value: unknown): boolean;
+  export function isDate(value: unknown): value is Date;
+  export function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer;
+  export function isMapIterator(value: unknown): boolean;
+  export function isSetIterator(value: unknown): boolean;
+  export function isKeyObject(value: unknown): boolean;
+  export function isNumberObject(value: unknown): boolean;
+  export function isStringObject(value: unknown): boolean;
+  export function isBooleanObject(value: unknown): boolean;
+  export function isBigIntObject(value: unknown): boolean;
+  export function isSymbolObject(value: unknown): boolean;
+  export function isBoxedPrimitive(value: unknown): boolean;
+  export function isBigInt64Array(value: unknown): value is BigInt64Array;
+  export function isBigUint64Array(value: unknown): value is BigUint64Array;
+  export function isCryptoKey(value: unknown): boolean;
+  export function isExternal(value: unknown): boolean;
 }
 declare module "node:util/types" {
   export * from "util/types";
@@ -3306,6 +3388,11 @@ declare module "node:test" {
   interface TestContext {
     readonly name: string;
     readonly fullName: string;
+    readonly filePath: string | undefined;
+    readonly attempt: number;
+    readonly passed: boolean;
+    readonly workerId: number | undefined;
+    readonly tags: readonly string[];
     readonly assert: TestContextAssert;
     readonly mock: MockTracker;
     test(name: string, fn?: TestFn): Promise<void>;
@@ -3319,7 +3406,12 @@ declare module "node:test" {
     beforeEach(fn: HookFn): void;
     afterEach(fn: HookFn): void;
   }
+  interface AssertSnapshotOptions {
+    readonly serializers?: ReadonlyArray<(value: any) => any> | undefined;
+  }
   interface TestContextAssert {
+    snapshot(value: any, options?: AssertSnapshotOptions): void;
+    fileSnapshot(value: any, path: string, options?: AssertSnapshotOptions): void;
     ok(value: unknown, message?: string): void;
     strictEqual(actual: unknown, expected: unknown, message?: string): void;
     notStrictEqual(actual: unknown, expected: unknown, message?: string): void;
@@ -3410,6 +3502,19 @@ declare module "node:test" {
       : never;
     reset(): void;
     restoreAll(): void;
+    readonly timers: MockTimers;
+  }
+  interface MockTimersOptions {
+    apis: ReadonlyArray<"setInterval" | "setTimeout" | "setImmediate" | "Date">;
+    now?: number | Date | undefined;
+  }
+  interface MockTimers {
+    enable(options?: MockTimersOptions): void;
+    setTime(milliseconds?: number): void;
+    reset(): void;
+    tick(milliseconds?: number): void;
+    runAll(): void;
+    [Symbol.dispose](): void;
   }
   const mock: MockTracker;
   /* Declared for typechecking only — every use fences (no lowering).
@@ -3437,6 +3542,8 @@ declare module "node:test" {
     MockFunctionContext,
     MockFunctionCall,
     MockTracker,
+    MockTimers,
+    MockTimersOptions,
   };
   export default test;
 }
@@ -3618,7 +3725,8 @@ declare module "querystring" {
       | string
       | number
       | boolean
-      | ReadonlyArray<string | number | boolean>
+      | bigint
+      | ReadonlyArray<string | number | boolean | bigint>
       | null
       | undefined;
   }
@@ -5808,19 +5916,42 @@ declare module "worker_threads" {
   export const isMainThread: boolean;
   export const isInternalThread: boolean;
   export const threadId: number;
+  export interface ResourceLimits {
+    maxYoungGenerationSizeMb?: number;
+    maxOldGenerationSizeMb?: number;
+    codeRangeSizeMb?: number;
+    stackSizeMb?: number;
+  }
+  /* {} in the main thread */
+  export const resourceLimits: ResourceLimits;
+  /* the Worker's name option, trimmed ("WorkerThread" by default); "" in the main thread */
+  export const threadName: string | null;
   export interface WorkerOptions {
     workerData?: unknown;
     transferList?: readonly unknown[];
     argv?: readonly unknown[];
     name?: string;
+    resourceLimits?: ResourceLimits;
+    stdout?: boolean;
+    stderr?: boolean;
+    stdin?: boolean;
     [option: string]: unknown;
   }
   export class Worker {
     constructor(filename: string | URL, options?: WorkerOptions);
     readonly threadId: number;
+    readonly resourceLimits?: ResourceLimits;
+    readonly threadName: string | null;
+    /* with the stdout/stderr options: the worker's writes to those streams */
+    readonly stdout: import("stream").Readable;
+    readonly stderr: import("stream").Readable;
+    /* with the stdin option: what the worker reads from process.stdin */
+    readonly stdin: import("stream").Writable | null;
+    /* terminate(), resolving with undefined once the worker exited */
+    [Symbol.asyncDispose](): Promise<void>;
     on(event: "online", listener: () => void): this;
     on(event: "message", listener: (value: any) => void): this;
-    on(event: "error", listener: (error: Error) => void): this;
+    on(event: "error", listener: (error: any) => void): this;
     on(event: "exit", listener: (code: number) => void): this;
     on(event: string, listener: (...args: any[]) => void): this;
     once(event: string, listener: (...args: any[]) => void): this;
@@ -5862,6 +5993,27 @@ declare module "worker_threads" {
     readonly port2: MessagePort;
   }
   export function receiveMessageOnPort(port: MessagePort): { message: any } | undefined;
+  /* This thread's environment data; each new Worker starts from a clone. */
+  export function setEnvironmentData(key: any, value?: any): void;
+  export function getEnvironmentData(key: any): any;
+  /* A marked object cannot be listed in a transfer list. */
+  export function markAsUntransferable(object: any): void;
+  /* structuredClone and postMessage throw DataCloneError for a marked
+   * object, error or class instance */
+  export function markAsUncloneable(object: any): void;
+  export function isMarkedAsUntransferable(object: any): boolean;
+  /* Delivers each message to every other open channel with the name, in
+   * any thread, as a 'message' MessageEvent. */
+  export class BroadcastChannel extends EventTarget {
+    constructor(name: string);
+    readonly name: string;
+    onmessage: ((event: MessageEvent) => void) | null;
+    onmessageerror: ((event: MessageEvent) => void) | null;
+    postMessage(message: unknown): void;
+    close(): void;
+    ref(): this;
+    unref(): this;
+  }
   export const parentPort: MessagePort | null;
   export const workerData: any;
 }

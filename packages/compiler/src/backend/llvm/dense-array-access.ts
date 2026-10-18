@@ -508,6 +508,75 @@ export function emitDenseArraySet(
   B.startBlock(join);
 }
 
+/** The dense half of `pop`. An empty array branches to `empty` (the
+ * runtime's pop returns a hole state there and changes nothing). When the
+ * hole-free prefix bound equals the length, the last element is a present
+ * value in dense storage, and the runtime's pop is exactly: clear its slot
+ * and state, lower the bound and the length to its index, and move the
+ * slot out. That block is left open and its slot bits are returned as an
+ * i64 (a boolean's 0 or 1, zero-extended); every other array branches to
+ * `slow`, which keeps the runtime call. */
+export function emitDenseArrayPop(
+  host: LlvmEmitterContext,
+  array: string,
+  acc: ArrayAccess,
+  empty: string,
+  slow: string,
+): string {
+  const B = host.B;
+  const size = host.sizeType;
+  const header = (field: number): string => {
+    const ptr = B.tmp();
+    B.line(`${ptr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${field}`);
+    host.markMemoryPointer(ptr, "array:header");
+    return ptr;
+  };
+  const lenPtr = header(SCR_ARR_FIELD.len),
+    len = B.tmp(),
+    none = B.tmp();
+  B.line(`${len} = load ${size}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
+  B.line(`${none} = icmp eq ${size} ${len}, 0`);
+  const check = B.newLabel("arr.pop.check"),
+    dense = B.newLabel("arr.pop.dense");
+  B.condBr(none, empty, check);
+  B.startBlock(check);
+  const filledPtr = header(SCR_ARR_FIELD.filled),
+    filled = B.tmp(),
+    packed = B.tmp();
+  B.line(`${filled} = load i32, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
+  B.line(`${packed} = icmp eq ${size} ${sizedFilled(host, filled)}, ${len}`);
+  B.condBr(packed, dense, slow);
+  B.startBlock(dense);
+  const last = B.tmp();
+  B.line(`${last} = sub nuw ${size} ${len}, 1`);
+  const dataPtr = header(SCR_ARR_FIELD.data),
+    data = B.tmp(),
+    statesPtr = header(SCR_ARR_FIELD.present),
+    states = B.tmp();
+  B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
+  B.line(`${states} = load ptr, ptr ${statesPtr}${host.fieldAliasAttachment(statesPtr)}`);
+  const valuePtr = valuePointer(host, { offset: last, data }, acc);
+  const statePtr = statePointer(host, { offset: last, states });
+  const slotTy = slotType(acc);
+  let raw = B.tmp();
+  B.line(`${raw} = load ${slotTy}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  if (slotTy === "i8") {
+    const wide = B.tmp();
+    B.line(`${wide} = zext i8 ${raw} to i64`);
+    raw = wide;
+  }
+  B.line(`store ${slotTy} 0, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  B.line(`store i8 0, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
+  let last32 = last;
+  if (size === "i64") {
+    last32 = B.tmp();
+    B.line(`${last32} = trunc i64 ${last} to i32`);
+  }
+  B.line(`store i32 ${last32}, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
+  B.line(`store ${size} ${last}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
+  return raw;
+}
+
 /** `scr_arr_push_*` (the array takes the value's reference) returning the
  * new length as a double. When `len < cap` the runtime's append is exactly
  * a dense store at `len` plus `len + 1`: no sparse entry can exist past the

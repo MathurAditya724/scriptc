@@ -951,6 +951,7 @@ test("library callbacks retain child, specialized, and generic result diagnostic
       { kind: "strLit", value: "tool", type: STRING, loc },
       { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
       { kind: "boolLit", value: true, type: F64, loc },
+      { kind: "boolLit", value: false, type: BOOL, loc },
     ],
   };
   expect(validateModule(expressionModule(expr, [])).map((error) => error.message)).toEqual([

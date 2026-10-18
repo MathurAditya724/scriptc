@@ -168,6 +168,9 @@ typedef enum {
   SCR_DYNH_DECIPHER,       /* node:crypto Decipheriv (scr_cipher.c) */
   SCR_DYNH_NET_SOCKET_ADDRESS, /* net.SocketAddress (scr_net.c) */
   SCR_DYNH_NET_BLOCK_LIST, /* net.BlockList (scr_net.c) */
+  SCR_DYNH_DISPOSABLE_STACK, /* DisposableStack (scr_symbol.c) */
+  SCR_DYNH_MESSAGE_EVENT,  /* ScrEvent with data — BroadcastChannel's 'message' */
+  SCR_DYNH_BROADCAST_CHANNEL, /* worker_threads BroadcastChannel (scr_worker_events.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -597,6 +600,7 @@ ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);
 bool scr_dyn_native_search_params_is(const ScrDyn *value);
 bool scr_dyn_native_date_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments);
+ScrDyn *scr_dyn_native_date_from_ms(double ms);
 double scr_dyn_native_date_value(const ScrDyn *value);
 ScrDyn *scr_dyn_native_regex(ScrRegex *value);
 bool scr_dyn_native_regex_is(const ScrDyn *value);
@@ -619,6 +623,19 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
  * and return NULL with the exception pending. */
 ScrDyn *scr_dyn_using_method(const ScrDyn *value, bool async);
 ScrDyn *scr_dyn_using_dispose(const ScrDyn *method, const ScrDyn *value);
+/* DisposableStack (scr_symbol.c). scr_disposable_stack_new answers a new
+ * stack (+1). The use, adopt and defer calls borrow their operands, throw
+ * Node's ReferenceError on a disposed stack and Node's TypeError on an
+ * invalid resource or callback, and return false with the exception
+ * pending. scr_disposable_stack_use_callback registers `dispose(value)`
+ * with the error texts of use(); the compiler passes it the disposal of a
+ * class instance, whose dyn view has no methods. The stack's other members
+ * are function values and getters of its dyn handle. */
+ScrDyn *scr_disposable_stack_new(void);
+bool scr_disposable_stack_is(const ScrDyn *value);
+bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
+bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
+bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key);
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key);
@@ -653,6 +670,10 @@ ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind);
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
+void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
+/* True when key is Symbol.asyncDispose (registered by the symbol unit when
+ * the program names it); handle symbol_get ops outside that unit use it. */
+bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
 ScrDyn *scr_dyn_array_values_function(void);
 ScrDyn *scr_dyn_array_from_iterator(const ScrDyn *value);
 ScrDyn *scr_dyn_iterator_result(ScrDyn *value);
@@ -874,6 +895,7 @@ bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
 ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, const ScrStr *what);
 ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what);
+ScrStr *scr_dyn_error_string(const ScrDyn *d);
 ScrStr *scr_num_to_string_radix(double value, const ScrDyn *radix);
 /* JS String() over the dyn kind (units render "null"/"undefined" where
  * scr_dyn_to_string throws) — the web globals' WebIDL ToString. +1. */
@@ -940,6 +962,13 @@ ScrDyn *scr_structured_clone_transfer_fail_with(const ScrDyn *first);
 /* Validates a structuredClone options dyn value (throws on failure —
  * callers must check scr_exc_pending). Borrowed, NULL-tolerant. */
 void scr_sc_validate_options(const ScrDyn *options);
+/* markAsUncloneable(value) and the check structuredClone and postMessage
+ * make (scr_json.c); both borrow the value. scr_uncloneable_count is the
+ * number of marked values, so the clone paths test it inline and call
+ * scr_uncloneable_marked only once something is marked. */
+void scr_mark_uncloneable(ScrDyn *value);
+bool scr_uncloneable_marked(const ScrDyn *value);
+extern SCR_TL size_t scr_uncloneable_count;
 /* An %Error as the boundary's dyn shape ({name, message[, code]}).
  * Borrows; +1. */
 ScrDyn *scr_dyn_from_error(const ScrError *e);
@@ -1129,6 +1158,10 @@ typedef struct ScrDynHandleOps {
   /* The view has no properties, so util.inspect prints it in full at any
    * depth, as Node prints `{}`. */
   bool inspect_view_empty;
+  /* A symbol-keyed READ (`stack[Symbol.dispose]`, the `using` method
+   * lookup): +1 value, or NULL when the class has no member for `key`
+   * (the read answers undefined). NULL hook = no symbol-keyed members. */
+  ScrDyn *(*symbol_get)(void *h, const ScrDyn *key);
 } ScrDynHandleOps;
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection);
 
@@ -1218,11 +1251,18 @@ ScrDyn *scr_gen_receiver(void);
 void scr_dyn_chunk_enc(bool utf8);
 ScrDyn *scr_dyn_new_chunk(const ScrBytes *b);
 
-/* util.format's %j over a dyn value: the JSON.stringify text (+1),
+/* The JSON text of a dyn value: the JSON.stringify text (+1),
  * "undefined" when the root drops (undefined/function), or NULL with a
  * pending exception (a runtime handle inside the tree throws the "not
  * supported yet" Error). */
 ScrStr *scr_dyn_format_j(const ScrDyn *d);
+/* util.format's %j (Node's tryStringify), +1: over a dyn value, the
+ * JSON.stringify(d) text, or "undefined" when it returns undefined; over
+ * the text of a typed serializer that may have thrown, the text itself.
+ * A circular-structure TypeError becomes "[Circular]"; any other
+ * exception stays pending and the result is NULL. */
+ScrStr *scr_util_format_j(const ScrDyn *d);
+ScrStr *scr_util_format_j_text(ScrStr *text); /* borrows text */
 /* Node's ERR_INVALID_ARG_TYPE listener gate over a dyn value — shared by
  * the emitter unit's checked-dynamic registrations and the handle
  * dispatchers' .on(...) paths (both render errors.js's

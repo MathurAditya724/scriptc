@@ -49,7 +49,7 @@ import {
   STRING,
   VOID,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
+import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
@@ -88,7 +88,7 @@ import {
   type StringSplit,
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
-import { RESULT_ENTRY_PREFIX, addRecordResultEntries } from "./record-results.js";
+import { RESULT_DST_ID, RESULT_ENTRY_PREFIX, addRecordResultEntries } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
@@ -166,7 +166,9 @@ import {
   emitStackObject,
   findLocalStackObjects,
   findReassignedStackObjects,
+  stackObjectFields,
   stackObjectStruct,
+  type StackObjectField,
   type StackObjectSource,
 } from "./stack-objects.js";
 import {
@@ -199,7 +201,12 @@ import {
   type LocalArrayRead,
 } from "./local-array-reads.js";
 import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
-import { emitDenseArrayGet, emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
+import {
+  emitDenseArrayGet,
+  emitDenseArrayPop,
+  emitDenseArraySet,
+  emitDenseSlotUnlink,
+} from "./dense-array-access.js";
 import {
   emitStackMapRead,
   findMapReadLifetimes,
@@ -391,6 +398,7 @@ import {
 } from "./shapes.js";
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
 import { INLINE_LITERAL_BYTES, literalEqualityDefinition } from "./string-literal-equality.js";
+import { emitDowncastGuard, emitUnionNarrowGuard } from "./narrow-guards.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -548,9 +556,34 @@ const AWAIT_SUSPENSIONS = /@(?:scr_await_(?:void|f64|bool|str|ref|hop)\b|sc_a[wd
  * own fiber and promise. */
 const COROUTINE_SUSPENDS =
   /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_(?!self\b|promise\b))|sc_a[wd]_)/;
+/** Captured bindings (boxes a body declares or receives) from which a
+ * function compiles without LLVM optimization (see boxSlotCount). */
+const UNOPTIMIZED_BOX_SLOTS = 512;
 /** ScrExcKind tags of a generator slot holding a number or a boolean. */
 const SCR_EXC_F64 = 1;
 const SCR_EXC_BOOL = 2;
+
+/** The capture boxes `fn` holds: its boxed bindings and the bindings its
+ * environment brings in. Each box pointer is a value from its binding (or
+ * function entry) to its last use, and every one of them crosses the calls
+ * in between. With thousands of them in one body, as in a factory whose
+ * returned methods share a large environment, LLVM's inliner, instruction
+ * selection and register allocation grow quadratically and take minutes.
+ * Past UNOPTIMIZED_BOX_SLOTS, which ordinary functions stay far below, the
+ * body is compiled `optnone` (nothing inlines into it and code generation
+ * takes its fast paths) and its box slots are accessed volatile, so no
+ * pass promotes them to values even where a pipeline runs IR passes over
+ * optnone bodies, as the native helper's does. Each use reloads its box
+ * pointer and code generation stays linear. Semantics, boxes and
+ * environments are unchanged; only that body's machine code is slower. */
+function boxSlotCount(fn: IrFunction): number {
+  const captured = new Set<string>();
+  for (const capture of fn.captures ?? []) captured.add(capture.localId);
+  for (const capture of fn.classCaptures ?? []) captured.add(capture.localId);
+  let count = 0;
+  for (const local of fn.locals) if (local.boxed === true || captured.has(local.id)) count++;
+  return count;
+}
 
 /** Whether any node of `e` names the local (reads, writes, declarations,
  * captures). */
@@ -595,6 +628,9 @@ export class LlEmitter {
   private reassignedStackObjects = new Set<string>();
   /** The binding slot of each reassigned stack-object local. */
   private stackObjectSlots = new Map<string, string>();
+  /** Entry-block pointers to the reference fields of each frame object
+   * slot (stack-objects.ts stackObjectFields). */
+  stackObjectFieldPtrs = new Map<string, readonly StackObjectField[]>();
   private localUnionStorageProofs = new Map<string, LocalUnionStorageProof>();
   private localUnionStorage = new Map<string, LocalUnionStorage>();
   integerArrayBindings = new Set<string>();
@@ -882,6 +918,9 @@ export class LlEmitter {
   /** setTimeout and friends appeared somewhere: main must run the event
    * loop even in programs with no async functions. */
   usesTimers = false;
+  /** The program calls mock.timers members (moduleUsesMockTimers): timer
+   * calls emit scr_test.c's mock-aware entry points. */
+  readonly mockTimers: boolean;
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();
@@ -1108,6 +1147,7 @@ export class LlEmitter {
         }),
     );
     this.nullableUnions = new NullableUnions(mod);
+    this.mockTimers = moduleUsesMockTimers(mod);
     this.debug =
       options.debugSources === undefined
         ? null
@@ -2028,12 +2068,28 @@ export class LlEmitter {
             this.dyn.toDynHelper({ kind: "object", className: "%Writable" }),
           ]
         : null;
-    if (childStreamBoxes) {
+    // worker.stdout and worker.stderr box the stream unit's Readable the
+    // same way, and worker.stdin its Writable when the program has one
+    // (scr_worker_stdio_install, scr_worker_events.c).
+    const workerStdioBox =
+      this.mod.workers === true && usesStream && this.classMeta.has("%Readable")
+        ? (childStreamBoxes?.[0] ??
+          this.dyn.toDynHelper({ kind: "object", className: "%Readable" }))
+        : null;
+    const workerStdinBox =
+      this.mod.workers === true && usesStream && this.classMeta.has("%Writable")
+        ? (childStreamBoxes?.[1] ??
+          this.dyn.toDynHelper({ kind: "object", className: "%Writable" }))
+        : null;
+    if (childStreamBoxes || workerStdioBox || workerStdinBox) {
       this.declare(
         `@scr_stream_child_ops = external constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr }`,
       );
-      this.declare(`declare void @scr_child_dyn_streams_install(ptr, ptr, ptr)`);
     }
+    if (childStreamBoxes)
+      this.declare(`declare void @scr_child_dyn_streams_install(ptr, ptr, ptr)`);
+    if (workerStdioBox || workerStdinBox)
+      this.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
     if (usesFsWatch) this.declare(`declare void @scr_watch_install()`);
     if (this.ffiHasForeignCallback) this.declare(`declare void @scr_ffi_install()`);
     if (usesStream) this.declare(`declare void @scr_stream_install()`);
@@ -2046,7 +2102,10 @@ export class LlEmitter {
     if (usesHttp) this.declare(`declare void @scr_http_dyn_install()`);
     if (usesFetch) this.declare(`declare void @scr_fetch_install()`);
 
-    if (usesNodeTest) this.declare(`declare i32 @scr_test_exit_code()`);
+    if (usesNodeTest) {
+      this.declare(`declare i32 @scr_test_exit_code()`);
+      this.declare(`declare void @scr_test_init()`);
+    }
     if (snapshotsTlsCa) {
       this.declare(`declare void @scr_tls_ca_install()`);
     }
@@ -2189,6 +2248,12 @@ export class LlEmitter {
       }
       if (this.mod.lib.exports.some((e) => e.returns === "bytes")) {
         this.declare(`declare void @scr_library_bytes_out(ptr, ptr, ptr)`);
+      }
+      if (this.mod.lib.exports.some((e) => e.params.includes("cstring"))) {
+        this.declare(`declare ptr @scr_library_cstr_in(ptr, ptr)`);
+      }
+      if (this.mod.lib.exports.some((e) => e.returns === "cstring")) {
+        this.declare(`declare ptr @scr_library_cstr_out(ptr)`);
       }
     }
     // Helpers assemble BEFORE the declaration table flushes (they add
@@ -2623,6 +2688,11 @@ export class LlEmitter {
             `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,
           ]
         : []),
+      ...(workerStdioBox || workerStdinBox
+        ? [
+            `  call void @scr_worker_stdio_install(ptr @scr_stream_child_ops, ptr ${workerStdioBox ? `@${workerStdioBox}` : "null"}, ptr ${workerStdinBox ? `@${workerStdinBox}` : "null"})`,
+          ]
+        : []),
       // fs.watch programs fill the loop's watch hooks the same way —
       // scr_watch.c links only when this line is emitted.
       ...(usesFsWatch ? [`  call void @scr_watch_install()`] : []),
@@ -2635,6 +2705,8 @@ export class LlEmitter {
       ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
       ...(usesStream ? [`  call void @scr_stream_install()`] : []),
       `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
+      // node:test takes Node's --test-update-snapshots out of argv first.
+      ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
       ...(asyncEntry
         ? [`  %top = call ptr @${mangleAsyncSpawn(this.mod.entry)}()`]
         : [`  call void @${mangleFunction(this.mod.entry)}()`]),
@@ -2966,6 +3038,15 @@ export class LlEmitter {
           ``,
         );
       }
+      if (e.inboundCstringTrap !== undefined) {
+        // The cstring-in helper's host-contract trap message (a NULL
+        // `const char *`): same assembled structured form and SC4012 code.
+        const trapBytes = Buffer.byteLength(e.inboundCstringTrap, "utf8");
+        out.push(
+          `@sc_lib_cstr_trap_${e.symbol} = internal constant [${trapBytes + 1} x i8] c"${llStrBytes(e.inboundCstringTrap)}"`,
+          ``,
+        );
+      }
       e.params.forEach((cls, i) => {
         switch (cls) {
           case "f64":
@@ -3020,6 +3101,13 @@ export class LlEmitter {
             params.push(`ptr %a${i}_ptr`, `${this.sizeType} %a${i}_len`);
             body.push(
               `  %c${i} = call ptr @scr_library_bytes_in(ptr %a${i}_ptr, ${this.sizeType} %a${i}_len, ptr @sc_lib_bytes_trap_${e.symbol})`,
+            );
+            args.push(`ptr %c${i}`);
+            break;
+          case "cstring":
+            params.push(`ptr %a${i}`);
+            body.push(
+              `  %c${i} = call ptr @scr_library_cstr_in(ptr %a${i}, ptr @sc_lib_cstr_trap_${e.symbol})`,
             );
             args.push(`ptr %c${i}`);
             break;
@@ -3085,6 +3173,16 @@ export class LlEmitter {
             `  call void @scr_library_check_exc()`,
             `  call void @scr_library_bytes_out(ptr %r, ptr %out, ptr %out_len)`,
             `  ret void`,
+          );
+          break;
+        case "cstring":
+          // The result's arena copy, returned as `const char *`.
+          retType = "ptr";
+          body.push(
+            `  %r = call ptr ${target}(${callArgs})`,
+            `  call void @scr_library_check_exc()`,
+            `  %z = call ptr @scr_library_cstr_out(ptr %r)`,
+            `  ret ptr %z`,
           );
           break;
       }
@@ -4697,6 +4795,30 @@ export class LlEmitter {
    * results: optional chains, branch joins that park ownership). */
   ownSlot(slot: string, type: IrType): void {
     if (isRefCounted(type)) this.currentFrame().push({ name: slot, type, slot: true });
+  }
+
+  /** The innermost lexical scope releases a frame object's reference
+   * fields when it exits, as it releases its bindings. */
+  ownScopeFields(fields: readonly StackObjectField[]): void {
+    const scope = this.scopes[this.scopes.length - 1]!;
+    for (const field of fields) scope.push({ slot: field.ptr, type: field.type });
+  }
+
+  /** Strike frame-owned slots (ownSlot) from their statement frames: their
+   * contents are moving to another owner. */
+  disownSlots(slots: readonly { ptr: string }[]): void {
+    for (const { ptr } of slots) {
+      let found = false;
+      for (let i = this.frames.length - 1; i >= 0 && !found; i--) {
+        const idx = this.frames[i]!.findIndex((e) => e.slot === true && e.name === ptr);
+        if (idx >= 0) {
+          this.frames[i]!.splice(idx, 1);
+          found = true;
+        }
+      }
+      if (!found)
+        throw new InternalCompilerError(`llvm emitter bug: disowned slot ${ptr} not in a frame`);
+    }
   }
 
   /** Strike a refcounted temp from its frame: ownership is being moved. */
@@ -6639,6 +6761,7 @@ export class LlEmitter {
       ? findReassignedStackObjects(this, fn, this.callLifetimes)
       : new Set();
     this.stackObjectSlots = new Map();
+    this.stackObjectFieldPtrs = new Map();
     this.localUnionStorageProofs = findLocalUnionStorage(fn, this.callLifetimes, this.unionSources);
     this.localUnionStorage = new Map();
     this.walkBorrows = this.walkBorrowsByFunction.get(fn.name) ?? new Set();
@@ -6816,6 +6939,15 @@ export class LlEmitter {
       if (local.boxed || isRefCounted(local.type)) {
         B.line(`store ptr null, ptr %${mangleLocal(local.id)}`);
       }
+    }
+    // A body holding thousands of capture boxes compiles unoptimized, its
+    // box pointers kept in their slots (see boxSlotCount).
+    const unoptimized = this.currentCoro === null && boxSlotCount(fn) >= UNOPTIMIZED_BOX_SLOTS;
+    if (unoptimized) {
+      const slots = new Set<string>();
+      for (const local of this.currentLocals.values())
+        if (local.boxed || this.captureIds.has(local.id)) slots.add(`%${mangleLocal(local.id)}`);
+      B.volatileSlots = slots;
     }
     // Captured bindings come in through the environment — borrowed for the
     // whole call (the closure owns them): bound here, never released here.
@@ -7020,6 +7152,7 @@ export class LlEmitter {
     if (fn.name.startsWith("%dyn.class.protocol.fallback.")) attrs = `noinline ${attrs}`;
     else if (fn.name.startsWith("%dyn.class.protocol.")) attrs = `inlinehint ${attrs}`;
     if (fn.name.startsWith(RESULT_ENTRY_PREFIX)) attrs = `inlinehint ${attrs}`;
+    if (unoptimized && attrs === FN_ATTRS) attrs = `noinline optnone ${attrs}`;
     const debug = this.debugScope === null ? "" : ` !dbg ${this.debugScope}`;
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
     this.privateGlobalSlots.clear();
@@ -7764,12 +7897,18 @@ export class LlEmitter {
         }
         const stackObject = this.localStackObjects.get(s.localId);
         if (stackObject) {
-          B.line(`store ptr ${emitStackObject(this, stackObject).name}, ptr ${b.slot}`);
+          const value = emitStackObject(this, stackObject, (fields) => this.ownScopeFields(fields));
+          B.line(`store ptr ${value.name}, ptr ${b.slot}`);
           break;
         }
         if (s.init && this.reassignedStackObjects.has(s.localId)) {
           const slot = this.stackObjectSlot(s.localId, s.init.type);
-          emitStackObject(this, s.init as StackObjectSource, slot);
+          emitStackObject(
+            this,
+            s.init as StackObjectSource,
+            (fields) => this.ownScopeFields(fields),
+            slot,
+          );
           B.line(`store ptr ${slot}, ptr ${b.slot}`);
           break;
         }
@@ -7942,12 +8081,28 @@ export class LlEmitter {
           break;
         }
         if (this.reassignedStackObjects.has(s.localId)) {
-          // The new value may read the old one: build it apart, then copy.
+          // The new value may read the old one: build it apart (its
+          // reference fields owned by this statement until it completes),
+          // then copy it over the binding's slot. The binding takes over the
+          // new fields; the old ones are released after the slot no longer
+          // holds them.
           const struct = stackObjectStruct(s.value.type);
-          const value = emitStackObject(this, s.value as StackObjectSource);
+          let owned: readonly StackObjectField[] = [];
+          const value = emitStackObject(this, s.value as StackObjectSource, (fields) => {
+            owned = fields;
+            for (const field of fields) this.ownSlot(field.ptr, field.type);
+          });
+          const target = this.stackObjectSlot(s.localId, s.value.type);
+          const old = stackObjectFields(this, s.value.type, target).map((field) => {
+            const t = B.tmp();
+            B.line(`${t} = load ptr, ptr ${field.ptr}`);
+            return { name: t, type: field.type };
+          });
           const bits = B.tmp();
           B.line(`${bits} = load ${struct}, ptr ${value.name}`);
-          B.line(`store ${struct} ${bits}, ptr ${this.stackObjectSlot(s.localId, s.value.type)}`);
+          B.line(`store ${struct} ${bits}, ptr ${target}`);
+          this.disownSlots(owned);
+          for (const field of old) this.releaseValue(field.name, field.type);
           break;
         }
         const localStorage = this.localUnionStorage.get(s.localId);
@@ -8068,6 +8223,28 @@ export class LlEmitter {
         B.line(`${same} = fcmp oeq double ${length.name}, ${lenNumber}`);
         B.condBr(same, done, resize);
         B.startBlock(resize);
+        if (s.pop === true) {
+          // A discarded pop's `length - 1` on a packed array removes the
+          // last element inline, then releases it.
+          const call = B.newLabel("arr.len.call"),
+            pop = B.newLabel("arr.len.pop");
+          const lastNumber = B.tmp(),
+            dropsLast = B.tmp();
+          B.line(`${lastNumber} = fsub double ${lenNumber}, 1.0`);
+          B.line(`${dropsLast} = fcmp oeq double ${length.name}, ${lastNumber}`);
+          B.condBr(dropsLast, pop, call);
+          B.startBlock(pop);
+          const elem = s.arr.type.elem;
+          const acc = elemAccess(elem);
+          const raw = emitDenseArrayPop(this, arr.name, acc, call, call);
+          if (acc === "ref" && isRefCounted(elem)) {
+            const old = B.tmp();
+            B.line(`${old} = inttoptr i64 ${raw} to ptr`);
+            this.releaseValue(old, elem);
+          }
+          B.br(done);
+          B.startBlock(call);
+        }
         B.line(`call void @scr_arr_set_len(ptr ${arr.name}, double ${length.name})`);
         this.emitPendingCheck();
         B.br(done);
@@ -8157,7 +8334,15 @@ export class LlEmitter {
           s.kind === "fieldSet"
             ? this.classFieldPtr(obj.name, s.className, s.field)
             : this.recordFieldPtr(obj.name, s.shapeId, s.field);
-        this.replaceField(ptr, type, inline, v);
+        // A result-slot entry fills zeroed caller storage, each field once.
+        if (
+          s.kind === "recordSet" &&
+          s.obj.kind === "varRef" &&
+          s.obj.localId === RESULT_DST_ID &&
+          this.currentFunctionName.startsWith(RESULT_ENTRY_PREFIX)
+        )
+          this.initField(ptr, type, inline, v);
+        else this.replaceField(ptr, type, inline, v);
         if (
           s.kind === "fieldSet" &&
           s.field === "name" &&
@@ -8919,6 +9104,12 @@ export class LlEmitter {
         // own turn is the await (nothing runs in between).
         const genSettles =
           this.currentAsyncGenerator && (s.awaited === true || this.finallyStack.length > 0);
+        // A completion turn that awaits x replaces a return() request's
+        // already-taken await.
+        if (this.currentAsyncGenerator && !genSettles) {
+          this.declare(`declare void @scr_async_gen_return_awaits()`);
+          B.line(`call void @scr_async_gen_return_awaits()`);
+        }
         if (this.currentAsyncGenerator && s.awaited !== true && this.finallyStack.length > 0) {
           if (this.wasi) this.emitWasiSuspend(null);
           else {
@@ -10166,11 +10357,16 @@ export class LlEmitter {
     if (canStackUnion(e, this.boxedUnionsById)) return emitStackUnion(this, e).value;
     if (e.kind === "unionNarrow") {
       const union = this.emitUnionProjection(e.value);
+      emitUnionNarrowGuard(this, union.name, e.unionId, e.tag);
       return { name: this.unionPeek(union.name, e.unionId), type: e.type };
     }
     if ((e.kind === "downcast" || e.kind === "upcast") && e.value.type.kind === "object") {
-      // Prefix layouts: a class cast reads the operand's own pointer.
-      return { name: this.emitReadReceiver(e.value).name, type: e.type };
+      // Prefix layouts: a class cast reads the operand's own pointer; a
+      // downcast verifies its target class (narrow-guards.ts).
+      const receiver = this.emitReadReceiver(e.value);
+      if (e.kind === "downcast" && e.type.kind === "object")
+        emitDowncastGuard(this, receiver.name, e.value.type.className, e.type.className);
+      return { name: receiver.name, type: e.type };
     }
     // A nullable-pointer field has no box to borrow. Projections use
     // emitUnionProjection; other borrowers get an owned heap box.
