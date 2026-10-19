@@ -5442,6 +5442,54 @@ function namedEvaluationName(expr: ts.ClassLikeDeclaration): string {
   return "";
 }
 
+/** Each evaluation of a function-local class creates fresh private names,
+ * while the compiled class shares one layout across evaluations. They agree
+ * when every private name is used only on `this` inside the class's own
+ * instance members (`this.#x`, `#x in this`), outside nested classes and
+ * non-arrow functions, and the class has no static members that could hand
+ * instances across evaluations: each instance then meets only the methods
+ * of its own evaluation (undici's webidl FastIterableIterator). */
+function privateNamesOnlyOnThis(expr: ts.ClassLikeDeclaration): boolean {
+  let ok = true;
+  for (const member of expr.members.nodes) {
+    if (ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword)) return false;
+    ts.walkPreorder(member, (node) => {
+      if (!ok) return "stop";
+      // A nested class or non-arrow function rebinds `this`: any private
+      // name inside it disqualifies.
+      if (
+        node !== member &&
+        (ts.isClassDeclaration(node) ||
+          ts.isClassExpression(node) ||
+          ts.isFunctionExpression(node) ||
+          ts.isFunctionDeclaration(node))
+      ) {
+        ts.walkPreorder(node, (inner) => {
+          if (ts.isPrivateIdentifier(inner)) ok = false;
+          return ok ? undefined : "stop";
+        });
+        return "skip";
+      }
+      if (ts.isPrivateIdentifier(node)) {
+        const parent = node.parent;
+        const onThis =
+          parent === member ||
+          (ts.isPropertyAccessExpression(parent) &&
+            parent.name === node &&
+            parent.expression.kind === ts.SyntaxKind.ThisKeyword) ||
+          (ts.isBinaryExpression(parent) &&
+            parent.left === node &&
+            parent.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+            parent.right.kind === ts.SyntaxKind.ThisKeyword);
+        if (!onThis) ok = false;
+      }
+      return undefined;
+    });
+    if (!ok) return false;
+  }
+  return true;
+}
+
 /** Collect a class expression once per enclosing specialization. Function-local
  * evaluations allocate fresh constructor objects; top-level expressions use
  * immortal templates. Static initialization remains limited to whole top-level
@@ -5479,7 +5527,8 @@ export function lowerClassExpressionInfo(
   }
   if (
     local &&
-    expr.members.nodes.some((member) => member.name && ts.isPrivateIdentifier(member.name))
+    expr.members.nodes.some((member) => member.name && ts.isPrivateIdentifier(member.name)) &&
+    !privateNamesOnlyOnThis(expr)
   ) {
     lowerer.unsupported("SC1090", expr, "function-local classes with private brands");
   }
