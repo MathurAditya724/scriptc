@@ -58,6 +58,11 @@ import {
   isCjsExportsIdentifier,
   lowerCjsExportsObjectValue,
 } from "./cjs-exports-object.js";
+import {
+  lowerMaybePromiseAwait,
+  maybePromiseInstanceOf,
+  maybePromiseUnionOf,
+} from "./maybe-promise.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "./class-assertions.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import { narrowClassUnion, narrowStoredClassValue } from "./class-unions.js";
@@ -1788,6 +1793,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         }
         return { kind: "awaitUnionExpr", value, promiseTag, type, loc };
       }
+      const maybePromise = maybePromiseUnionOf(lowerer, value.type);
+      if (maybePromise) return lowerMaybePromiseAwait(lowerer, expr, value, maybePromise, loc);
     }
     if (value.type.kind !== "promise") {
       // A CHECKED-DYNAMIC operand (`await v` where v rode an untyped
@@ -4801,12 +4808,61 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   );
 }
 
+/** `typeof (u as any).then` / `if ((u as Promise<T>).then)` over a
+ * maybe-promise union `u` (the cast is erasure in JS): a promise arm has
+ * the prototype's `then` function, and no data arm is thenable (the type
+ * mapper's rule), so the union tag answers. Null for every other shape. */
+function maybePromiseThenPresence(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  result: IrExpr,
+): IrExpr | null {
+  let receiver: ts.Expression = access.expression;
+  let cast = false;
+  for (;;) {
+    if (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+    else if (ts.isAsExpression(receiver) || ts.isTypeAssertion(receiver)) {
+      receiver = receiver.expression;
+      cast = true;
+    } else break;
+  }
+  if (!cast) return null;
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(receiver));
+  if (!mapped || !maybePromiseUnionOf(lowerer, mapped)) return null;
+  const value = lowerer.lowerExpr(receiver);
+  const mp = maybePromiseUnionOf(lowerer, value.type);
+  if (!mp) return null;
+  const loc = locOf(access);
+  const absent: IrExpr =
+    result.type.kind === "bool"
+      ? { kind: "boolLit", value: false, type: BOOL, loc }
+      : { kind: "strLit", value: "undefined", type: STRING, loc };
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "unionIsTag",
+      unionId: mp.def.id,
+      tag: mp.promiseTag,
+      negated: false,
+      value,
+      type: BOOL,
+      loc,
+    },
+    then: result,
+    else_: absent,
+    type: result.type,
+    loc,
+  };
+}
+
 function lowerPromiseThenPresence(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
   result: IrExpr,
 ): IrExpr | null {
   if (access.name.text !== "then") return null;
+  const maybePromise = maybePromiseThenPresence(lowerer, access, result);
+  if (maybePromise !== null) return maybePromise;
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   const promiseType =
     mapped?.kind === "promise"
@@ -5990,6 +6046,11 @@ export function lowerArrayLiteral(
     const elem = mapped.elem;
     const arms = elem.kind === "union" ? lowerer.unions.get(elem.unionId)?.arms : [elem];
     if (arms?.length && arms.every((arm) => arm.kind === "classval")) mapped = DYN;
+    // Inferred JavaScript literals mixing promises and plain values
+    // (`[Promise.resolve(1), 2]`) keep the checked-dynamic array: their
+    // consumers (Readable.from, Promise.all over iterators) inspect each
+    // element at run time.
+    if (maybePromiseUnionOf(lowerer, elem)) mapped = DYN;
   }
   if (
     !expected &&
@@ -12765,6 +12826,38 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         };
       }
     }
+    // `x instanceof Promise` over a promise-armed union (the maybe-promise
+    // `T | Promise<T>` dispatch): a union tag test — the data arms are
+    // never promises (scriptc promises are all native, and no data arm
+    // can hold one). A promise-typed operand answers true after its
+    // evaluation; a checked-dynamic one asks the runtime.
+    if (
+      ts.isIdentifier(expr.right) &&
+      lowerer.isStdlibGlobal(expr.right, "Promise") &&
+      !lowerer.caughtLocalOf(expr.left)
+    ) {
+      const left = lowerer.lowerExpr(expr.left);
+      const tagTest = maybePromiseInstanceOf(lowerer, left, loc);
+      if (tagTest) return tagTest;
+      if (left.type.kind === "dyn")
+        return { kind: "dynTest", test: "promise", value: left, type: BOOL, loc };
+      if (left.type.kind === "promise") {
+        const yes: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+        if (isSafeToDiscard(left)) return yes;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: left, loc }],
+          result: yes,
+          type: BOOL,
+          loc,
+        };
+      }
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `'instanceof Promise' on '${lowerer.fmt(left.type)}' values (only promises, promise-armed unions, and checked-dynamic values have a lowering)`,
+      );
+    }
     // `x instanceof RegExp` over a union with a regex arm (the
     // skip-utility `string | RegExp` dispatch): a union tag test — the
     // socket-narrowing shape; the checker types the branches and
@@ -16017,7 +16110,11 @@ export function lowerPromiseRejectCall(
     );
   }
   const ctxT = lowerer.checker.getContextualType(call);
-  const type = ctxT ? lowerer.mapTypeOf(ctxT) : null;
+  const contextual = ctxT ? lowerer.mapTypeOf(ctxT) : null;
+  // A maybe-promise context (`return Promise.reject(e)` from a function
+  // returning `T | Promise<T>`) names its one promise arm.
+  const maybePromise = contextual ? maybePromiseUnionOf(lowerer, contextual) : null;
+  const type = maybePromise ? maybePromise.promise : contextual;
   const reasonNode = call.arguments[0]!;
   // A CHECKED-DYNAMIC reason (`Promise.reject(value)` where value rode
   // an untyped binding — the tracingChannel suite's shape): the checked-dynamic tree
