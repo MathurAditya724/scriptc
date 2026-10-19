@@ -671,12 +671,23 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     };
     // The declared result is the value's own type (the generic's T):
     // validate the dyn copy back into it when the type can be checked;
-    // dyn-typed and unmappable results stay dyn values (JS files).
+    // dyn-typed and unmappable results stay dyn values (JS files). An
+    // empty record (`{}` inferred from a JavaScript `payload = {}`
+    // default) is the checker's supertype of whatever arrives, not a
+    // layout: checking into it would drop every member of the copy.
     const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    const resultShape =
+      resultT?.kind === "record" ? lowerer.shapes.get(resultT.shapeId) : undefined;
+    const emptyRecord =
+      resultShape !== undefined &&
+      !resultShape.tuple &&
+      resultShape.indexValue === undefined &&
+      resultShape.fields.length === 0;
     if (
       resultT !== null &&
       resultT.kind !== "dyn" &&
       resultT.kind !== "void" &&
+      !emptyRecord &&
       canDynCheckTo(
         resultT,
         (id) => lowerer.shapes.get(id),

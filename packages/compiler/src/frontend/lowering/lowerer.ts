@@ -30,6 +30,7 @@ import { refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { discoverWasmModules, type WasmModuleReport } from "../../wasm/discover.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
+import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
 import { hashStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
@@ -4872,13 +4873,42 @@ export class Lowerer {
       return out;
     };
     const scanPattern = (name: ts.BindingName, init: ts.Expression): boolean => {
-      if (ts.isObjectBindingPattern(name)) return scanRecordPattern(name, init);
+      if (ts.isObjectBindingPattern(name)) {
+        // `const { 0: a, 1: b, length } = parts` reads positions like the
+        // equivalent array pattern: each may sit past the end.
+        // Regex match results keep their own pattern lowering.
+        const arrayType = this.mapTypeOf(this.typeOf(init));
+        const initType = this.checker.getNonNullableType(this.typeOf(init));
+        const initSymbol = initType.getAliasSymbol() ?? initType.getSymbol();
+        const matchResult =
+          initSymbol !== undefined &&
+          (initSymbol.name === "RegExpExecArray" || initSymbol.name === "RegExpMatchArray");
+        if (arrayType?.kind !== "array" || matchResult) return scanRecordPattern(name, init);
+        const positions = name.elements.filter((el) => {
+          const key = el.propertyName;
+          return (
+            key !== undefined && ts.isNumericLiteral(key) && /^(?:0|[1-9]\d{0,8})$/.test(key.text)
+          );
+        });
+        return scanPositions(positions, init, arrayType);
+      }
       if (!ts.isArrayBindingPattern(name)) return false;
       const sourceType = this.mapTypeOf(this.typeOf(init));
       if (sourceType?.kind !== "array") return false;
+      return scanPositions(
+        name.elements.filter((el): el is ts.BindingElement => !ts.isOmittedExpression(el)),
+        init,
+        sourceType,
+      );
+    };
+    const scanPositions = (
+      elements: readonly ts.BindingElement[],
+      init: ts.Expression,
+      sourceType: IrType & { kind: "array" },
+    ): boolean => {
       let changed = false;
-      name.elements.forEach((el) => {
-        if (ts.isOmittedExpression(el) || el.name === undefined || el.dotDotDotToken) return;
+      elements.forEach((el) => {
+        if (el.name === undefined || el.dotDotDotToken) return;
         if (ts.isIdentifier(el.name)) {
           const symbol = symbolOf(el.name);
           if (symbol && !el.initializer && !optionalSymbols.has(symbol)) {
@@ -7729,7 +7759,11 @@ export class Lowerer {
     access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     use: "read" | "call",
   ): IrExpr | null {
-    return fenceStaticResponseMember(this, access, use) ?? fenceStaticBlobMember(this, access, use);
+    return (
+      fenceStaticResponseMember(this, access, use) ??
+      fenceStaticBlobMember(this, access, use) ??
+      fenceWebCryptoMember(this, access, use)
+    );
   }
 
   fenceUnsupportedFetchConstructorMember(
@@ -11523,6 +11557,7 @@ export class Lowerer {
       lowerStaticReadableStreamReaderCall(this, expr) ??
       lowerStaticResponseCall(this, expr) ??
       lowerStaticBlobCall(this, expr) ??
+      lowerWebCryptoCall(this, expr) ??
       lowerKeyObjectCall(this, expr) ??
       lowerNetAddressCall(this, expr) ??
       lowerFetchElementMethodCall(this, expr) ??

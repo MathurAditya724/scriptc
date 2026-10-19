@@ -341,9 +341,9 @@
       "apiEntries": 92,
       "static": {
         "supported": 0,
-        "partial": 12,
+        "partial": 14,
         "refused": 1,
-        "not-implemented": 79,
+        "not-implemented": 77,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -911,9 +911,9 @@
       "apiEntries": 156,
       "static": {
         "supported": 1,
-        "partial": 10,
+        "partial": 21,
         "refused": 0,
-        "not-implemented": 145,
+        "not-implemented": 134,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -52217,6 +52217,11 @@
           "tests/corpus/5288-blob-validation.js",
           "tests/corpus/5290-blob-dynamic.js",
           "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
           "tests/corpus/text-codec-values/main.ts",
           "tests/harness/fetch-conformance.test.ts"
         ]
@@ -52639,8 +52644,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.CryptoKey",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53313,8 +53325,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.SubtleCrypto",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106838,10 +106857,16 @@
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
+          "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -110373,8 +110398,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110396,8 +110428,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.CryptoKey",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110419,8 +110456,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.cryptoKey.algorithm",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110442,8 +110484,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.extractable",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110465,8 +110512,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.type",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110488,8 +110540,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.usages",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110580,8 +110637,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.SubtleCrypto",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110718,8 +110782,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.digest",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110879,8 +110951,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.importKey",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110902,8 +110982,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.sign",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110948,8 +111036,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.verify",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },

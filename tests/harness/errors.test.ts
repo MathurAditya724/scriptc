@@ -1130,3 +1130,65 @@ console.log(count(require("./lib.cjs")));
     );
   });
 });
+
+// WebCrypto's native slice is HMAC importKey('raw'), sign and verify, and
+// the SHA-1/SHA-2 digests. Algorithms Node recognizes outside that slice
+// reject with a coded SC2020 Error instead of a Node-shaped success, and a
+// JavaScript call with the 'jwk' format meets its named fence when it runs.
+// Node's own rejections (unknown names, bad usages) are corpus-pinned
+// (6292, 6294); these refusals have no Node twin, so they live here.
+describe("WebCrypto refusals (JS lane)", () => {
+  test("recognized algorithms outside the HMAC slice reject with SC2020", async () => {
+    const r = await compileAndRun(
+      "webcrypto-unsupported-algorithms",
+      `const bytes = new TextEncoder().encode("secret");
+async function attempt(label, run) {
+  try {
+    await run();
+    console.log(label, "resolved");
+  } catch (e) {
+    console.log(label, e.name, e.code, e.message);
+  }
+}
+await attempt("rsa", () =>
+  crypto.subtle.importKey("raw", bytes, { name: "RSA-PSS", hash: "SHA-256" }, false, ["verify"]),
+);
+const key = await crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+await attempt("ecdsa", () => crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, bytes));
+await attempt("sha3", () => crypto.subtle.digest("SHA3-256", bytes));
+await attempt("sha3 hmac", () =>
+  crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA3-256" }, false, ["sign"]),
+);
+const format = JSON.parse('"jwk"');
+await attempt("computed jwk", () =>
+  crypto.subtle.importKey(format, { kty: "oct", k: "c2VjcmV0" }, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
+);
+`,
+      "mjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "rsa Error SC2020 crypto.subtle.importKey with the RSA-PSS algorithm is not supported yet\n" +
+        "ecdsa Error SC2020 crypto.subtle.sign with the ECDSA algorithm is not supported yet\n" +
+        "sha3 Error SC2020 crypto.subtle.digest with the SHA3-256 algorithm is not supported yet\n" +
+        "sha3 hmac Error SC2020 crypto.subtle.importKey with the SHA3-256 algorithm is not supported yet\n" +
+        "computed jwk Error SC2020 crypto.subtle.importKey with the 'jwk' key format is not supported yet\n",
+    );
+  });
+
+  test("a literal 'jwk' import is a named fence where it runs", async () => {
+    const r = await compileAndRun(
+      "webcrypto-jwk-literal",
+      `console.log("before");
+await crypto.subtle.importKey("jwk", { kty: "oct", k: "c2VjcmV0" }, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+`,
+      "mjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("before\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'crypto\.subtle\.importKey with the 'jwk' key format' is part of the standard library types but has no scriptc lowering yet.*\n$/,
+    );
+  });
+});

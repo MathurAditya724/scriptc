@@ -7,8 +7,8 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1162,
-        "verify-gap": 2166,
+        "audit-partial": 1175,
+        "verify-gap": 2153,
         "replace-refusal": 41,
         "classify": 2,
         "implement": 85
@@ -33213,12 +33213,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:globals",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:globals.CryptoKey",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6292-webcrypto-hmac-errors.ts",
+            "tests/corpus/6293-webcrypto-digest.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs"
+          ]
         }
       }
     },
@@ -33944,12 +33950,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:globals",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:globals.SubtleCrypto",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6292-webcrypto-hmac-errors.ts",
+            "tests/corpus/6293-webcrypto-digest.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs"
+          ]
         }
       }
     },
@@ -81057,12 +81069,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.subtle",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6292-webcrypto-hmac-errors.ts",
+            "tests/corpus/6293-webcrypto-digest.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs"
+          ]
         }
       }
     },
@@ -81082,12 +81100,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.CryptoKey",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs"
+          ]
         }
       }
     },
@@ -81107,12 +81129,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.cryptoKey.algorithm",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs"
+          ]
         }
       }
     },
@@ -81132,12 +81158,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.extractable",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs"
+          ]
         }
       }
     },
@@ -81157,12 +81187,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.type",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs"
+          ]
         }
       }
     },
@@ -81182,12 +81216,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.usages",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs"
+          ]
         }
       }
     },
@@ -81282,12 +81320,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.SubtleCrypto",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6292-webcrypto-hmac-errors.ts",
+            "tests/corpus/6293-webcrypto-digest.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs"
+          ]
         }
       }
     },
@@ -81432,12 +81476,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.subtle.digest",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6292-webcrypto-hmac-errors.ts",
+            "tests/corpus/6293-webcrypto-digest.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs",
+            "tests/fixtures/node-types/webcrypto-hmac.ts"
+          ]
         }
       }
     },
@@ -81607,12 +81658,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.subtle.importKey",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6292-webcrypto-hmac-errors.ts",
+            "tests/corpus/6293-webcrypto-digest.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs",
+            "tests/fixtures/node-types/webcrypto-hmac.ts"
+          ]
         }
       }
     },
@@ -81632,12 +81690,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.subtle.sign",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6292-webcrypto-hmac-errors.ts",
+            "tests/corpus/6293-webcrypto-digest.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs",
+            "tests/fixtures/node-types/webcrypto-hmac.ts"
+          ]
         }
       }
     },
@@ -81682,12 +81747,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webcrypto.subtle.verify",
+          "tests": [
+            "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+            "tests/corpus/6292-webcrypto-hmac-errors.ts",
+            "tests/corpus/6293-webcrypto-digest.ts",
+            "tests/corpus/6294-webcrypto-js-values.mjs",
+            "tests/corpus/6295-jose-hs256/main.mjs",
+            "tests/fixtures/node-types/webcrypto-hmac.ts"
+          ]
         }
       }
     },

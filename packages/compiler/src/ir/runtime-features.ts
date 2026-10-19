@@ -43,6 +43,8 @@ export interface RuntimeFeatures {
   tls: boolean;
   tlsCa: boolean;
   cipher: boolean;
+  /** crypto.subtle importKey/sign/verify/digest: scr_webcrypto.c. */
+  webcrypto: boolean;
 }
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -217,6 +219,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     tls: false,
     tlsCa: false,
     cipher: false,
+    webcrypto: false,
   };
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   let tables: TypeTables | undefined;
@@ -432,6 +435,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.dynAsync = true;
         features.inspect = true;
       }
+      // crypto.subtle and CryptoKey: scr_webcrypto.c.
+      if (fn.startsWith("webcrypto.")) features.webcrypto = true;
     } else {
       switch (node.kind) {
         case "regexLit":

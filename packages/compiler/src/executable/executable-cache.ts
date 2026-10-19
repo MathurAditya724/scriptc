@@ -79,6 +79,7 @@ export interface EarlyExecutableNativeFeatures {
   tls: boolean;
   cipher: boolean;
   tlsCa: boolean;
+  webcrypto: boolean;
 }
 
 interface EarlyExecutableCacheStamp {
@@ -190,6 +191,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "tls",
   "tlsCa",
   "cipher",
+  "webcrypto",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {

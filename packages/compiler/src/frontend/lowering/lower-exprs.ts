@@ -13,6 +13,7 @@ import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerWebAssemblyTypeof, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
+import { lowerCryptoKeyInstanceof } from "./builtins/webcrypto.js";
 import { lowerNetAddressInstanceof, lowerNetAddressStaticRead } from "./builtins/net-address.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "./builtins/errors.js";
 import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
@@ -349,6 +350,26 @@ export function abstractPropertyDeclOf(
  * Narrowing a ParseArgsToken exposes one anonymous union arm, so its alias
  * identity no longer reaches mapType; declaration ancestry is the stable
  * provenance check. */
+/** The Uint8Array base64/hex prototype methods (ES2026) Node 24 lacks. */
+const UINT8ARRAY_BASE64_METHODS: ReadonlySet<string> = new Set([
+  "toBase64",
+  "toHex",
+  "setFromBase64",
+  "setFromHex",
+]);
+
+/** `Uint8Array.prototype.<base64/hex method>` read off the global. */
+function isUint8ArrayBase64Probe(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  if (!UINT8ARRAY_BASE64_METHODS.has(expr.name.text)) return false;
+  const proto = expr.expression;
+  return (
+    ts.isPropertyAccessExpression(proto) &&
+    !proto.questionDotToken &&
+    proto.name.text === "prototype" &&
+    stdlibGlobalNameOf(lowerer, proto.expression) === "Uint8Array"
+  );
+}
+
 function isParseArgsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
   const sym = lowerer.checker.getSymbolAtLocation(expr.name);
   if (!sym) return false;
@@ -2078,6 +2099,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     ) {
       return dynUndefinedExpr(loc);
     }
+    // `Uint8Array.prototype.toBase64` and its siblings, the base64/hex
+    // feature probes libraries such as jose make: the methods are newer
+    // than Node 24, whose Uint8Array prototype answers undefined for them.
+    if (isUint8ArrayBase64Probe(lowerer, expr)) return dynUndefinedExpr(loc);
     if (expr.questionDotToken && expr.name.text === "electron") {
       const processProperty = lowerer.lowerProcessProperty(expr);
       if (processProperty) return processProperty;
@@ -12637,6 +12662,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (blob) return blob;
     const keyObject = lowerKeyObjectInstanceof(lowerer, expr);
     if (keyObject) return keyObject;
+    const cryptoKey = lowerCryptoKeyInstanceof(lowerer, expr);
+    if (cryptoKey) return cryptoKey;
     const netAddress = lowerNetAddressInstanceof(lowerer, expr);
     if (netAddress) return netAddress;
   }

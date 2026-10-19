@@ -197,6 +197,8 @@ export interface CcOptions {
   /** crypto.createCipheriv/createDecipheriv: compiles scr_cipher.c and links
    * the mbedTLS archive (shared with tls). */
   cipher?: boolean;
+  /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
+  webcrypto?: boolean;
   /** Internal compiler hook: called only after a strict native artifact hit
    * or a successful stable build has installed `outPath`. The executable
    * frontend cache uses it to publish its stamp after native dependencies

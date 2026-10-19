@@ -2859,6 +2859,10 @@ export function lowerBindingPattern(
     lowerMatchResultObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
     return;
   }
+  if (srcType.kind === "array" && isArrayPositionPattern(lowerer, pattern)) {
+    lowerArrayPositionObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
+    return;
+  }
   if (srcType.kind !== "record") {
     lowerer.unsupported(
       "SC1031",
@@ -3189,19 +3193,8 @@ function lowerMatchResultObjectPattern(
       );
     }
     let value: IrExpr;
-    if (/^(?:0|[1-9]\d{0,8})$/.test(propName)) {
-      const index = Number(propName);
-      const position: IrExpr = { kind: "numLit", value: index, type: F64, loc };
-      value = lowerSafeIndexRead(lowerer, srcRef(), position, loc) ?? {
-        kind: "arrayGet",
-        arr: srcRef(),
-        index: position,
-        type: srcType.elem,
-        loc,
-      };
-      if (el.initializer) {
-        value = arrayPositionDefault(lowerer, el, value, srcRef, index, srcType.elem, out);
-      }
+    if (ARRAY_POSITION_KEY.test(propName)) {
+      value = arrayPositionBinding(lowerer, el, srcRef, srcType, Number(propName), out);
     } else if (propName === "index" || propName === "input") {
       if (el.initializer) {
         lowerer.unsupported(
@@ -3243,6 +3236,83 @@ function lowerMatchResultObjectPattern(
         `destructuring the property '${propName}' of a regex match result (numeric positions, index, input and groups compile)`,
       );
     }
+    lowerer.bindPatternTarget(el.name, value, isLet, out);
+  }
+}
+
+/** A canonical array index key (the numeric positions an object pattern
+ * reads off an array). */
+const ARRAY_POSITION_KEY = /^(?:0|[1-9]\d{0,8})$/;
+
+/** The positional read `{ <index>: x }` takes off an array: the element,
+ * undefined past the end, with the binding default applied. */
+function arrayPositionBinding(
+  lowerer: Lowerer,
+  el: ts.BindingElement,
+  srcRef: () => IrExpr,
+  srcType: IrType & { kind: "array" },
+  index: number,
+  out: IrStmt[],
+): IrExpr {
+  const loc = locOf(el);
+  const position: IrExpr = { kind: "numLit", value: index, type: F64, loc };
+  const value = lowerSafeIndexRead(lowerer, srcRef(), position, loc) ?? {
+    kind: "arrayGet",
+    arr: srcRef(),
+    index: position,
+    type: srcType.elem,
+    loc,
+  };
+  return el.initializer
+    ? arrayPositionDefault(lowerer, el, value, srcRef, index, srcType.elem, out)
+    : value;
+}
+
+/** Whether every element of an object pattern over an array names a
+ * numeric position or `length` (`const { 0: a, 1: b, length } =
+ * s.split(".")`), with no rest element. */
+function isArrayPositionPattern(lowerer: Lowerer, pattern: ts.ObjectBindingPattern): boolean {
+  return pattern.elements.every((el) => {
+    if (el.name === undefined) return true;
+    if (el.dotDotDotToken) return false;
+    const prop = el.propertyName ?? el.name;
+    if (
+      !ts.isIdentifier(prop) &&
+      !ts.isComputedPropertyName(prop) &&
+      !ts.isStringLiteralLike(prop) &&
+      !ts.isNumericLiteral(prop)
+    )
+      return false;
+    const name = patternKeyNameOf(lowerer, prop as ts.PropertyName);
+    return name !== null && (name === "length" || ARRAY_POSITION_KEY.test(name));
+  });
+}
+
+/** An object pattern of positions and `length` over an array: each
+ * position is the read the equivalent array pattern makes, and `length`
+ * the array's length (always present, so its default never runs). */
+function lowerArrayPositionObjectPattern(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  srcRef: () => IrExpr,
+  srcType: IrType & { kind: "array" },
+  isLet: boolean,
+  out: IrStmt[],
+): void {
+  for (const el of pattern.elements) {
+    if (el.name === undefined) continue;
+    const name = patternKeyNameOf(lowerer, (el.propertyName ?? el.name) as ts.PropertyName)!;
+    const value: IrExpr =
+      name === "length"
+        ? {
+            kind: "arrIntrinsic",
+            method: "length",
+            receiver: srcRef(),
+            args: [],
+            type: F64,
+            loc: locOf(el),
+          }
+        : arrayPositionBinding(lowerer, el, srcRef, srcType, Number(name), out);
     lowerer.bindPatternTarget(el.name, value, isLet, out);
   }
 }

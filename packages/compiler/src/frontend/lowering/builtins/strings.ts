@@ -4,7 +4,19 @@ import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { lowerOptionalArgument, lowerStringSearchArgument } from "../optional-arguments.js";
 import { lowerToNumberArgument } from "../lower-exprs.js";
-import { F64, type IrExpr, STRING, arrayOf, isUnitType, typeEquals } from "../../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  type IrExpr,
+  type IrStmt,
+  NULL_T,
+  STRING,
+  arrayOf,
+  bytesOf,
+  isUnitType,
+  typeEquals,
+} from "../../../ir/ir.js";
 
 /** `String.fromCharCode/fromCodePoint(...codes)` on THE String global: every argument
  * lowers as a number and packs into ONE f64[] array-literal argument
@@ -17,6 +29,8 @@ export function lowerStringStaticCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken) return null;
+  const applied = lowerFromCharCodeApply(lowerer, call, access);
+  if (applied) return applied;
   const member = lowerer.stdlibGlobalMember(access, "String");
   if (member !== "fromCharCode" && member !== "fromCodePoint" && member !== "raw") return null;
   const loc = locOf(call);
@@ -103,6 +117,98 @@ export function lowerStringStaticCall(
   const elems = call.arguments.map((a) => lowerToNumberArgument(lowerer, a));
   const packed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(F64), loc };
   return { kind: "libCall", fn: `string.${member}`, args: [packed], type: STRING, loc };
+}
+
+/** `String.fromCharCode.apply(thisArg, codes)`, the btoa chunking idiom
+ * (`String.fromCharCode.apply(null, bytes.subarray(i, j))`): the receiver
+ * is ignored, and a typed array or number array forwards to the packed
+ * fromCharCode like a spread. An untyped list reads a Uint8Array the same
+ * way at run time; any other value keeps Function.prototype.apply's
+ * generic array-like call. Null for every other call. */
+function lowerFromCharCodeApply(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.name.text !== "apply" || access.questionDotToken) return null;
+  const target = access.expression;
+  if (
+    !ts.isPropertyAccessExpression(target) ||
+    lowerer.stdlibGlobalMember(target, "String") !== "fromCharCode"
+  ) {
+    return null;
+  }
+  if (call.arguments.length !== 2 || call.arguments.some(ts.isSpreadElement)) return null;
+  const listNode = call.arguments[1]!;
+  const checkerT = lowerer.typeOf(listNode);
+  const untyped = (checkerT.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+  const listT = untyped ? DYN : lowerer.mapTypeOf(checkerT);
+  if (
+    listT === null ||
+    (listT.kind !== "bytes" && listT.kind !== "dyn" && !typeEquals(listT, arrayOf(F64)))
+  ) {
+    return null;
+  }
+  const loc = locOf(call);
+  const thisArg = lowerer.lowerExprExpecting(call.arguments[0]!, DYN);
+  const stmts: IrStmt[] = [{ kind: "exprStmt", expr: thisArg, loc: thisArg.loc }];
+  if (listT.kind !== "dyn") {
+    const list = lowerer.lowerExprExpecting(listNode, listT);
+    const result: IrExpr = {
+      kind: "libCall",
+      fn: "string.fromCharCode",
+      args: [list],
+      type: STRING,
+      loc,
+    };
+    return { kind: "seqExpr", stmts, result, type: STRING, loc };
+  }
+  const listLocal = lowerer.declareHiddenLocal("%charCodes", DYN);
+  stmts.push({
+    kind: "varDecl",
+    localId: listLocal.id,
+    init: lowerer.lowerExprExpecting(listNode, DYN),
+    loc,
+  });
+  const list = (): IrExpr => ({ kind: "varRef", localId: listLocal.id, type: DYN, loc });
+  const bytes = bytesOf("u8");
+  const generic: IrExpr = {
+    kind: "dynCheck",
+    value: {
+      kind: "dynInvoke",
+      recv: lowerer.lowerExprExpecting(target, DYN),
+      method: "apply",
+      calleeName: "String.fromCharCode.apply",
+      args: [
+        {
+          kind: "dynFrom",
+          value: { kind: "unitLit", unit: "null", type: NULL_T, loc },
+          type: DYN,
+          loc,
+        },
+        list(),
+      ],
+      type: DYN,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
+  const result: IrExpr = {
+    kind: "ternary",
+    cond: { kind: "dynTest", test: "bytes", bytesElem: "u8", value: list(), type: BOOL, loc },
+    then: {
+      kind: "libCall",
+      fn: "string.fromCharCode",
+      args: [{ kind: "dynCheck", value: list(), type: bytes, loc }],
+      type: STRING,
+      loc,
+    },
+    else_: generic,
+    type: STRING,
+    loc,
+  };
+  return { kind: "seqExpr", stmts, result, type: STRING, loc };
 }
 
 /** `s.lastIndexOf(searchValue?, position?)` on string receivers, using UTF-16
