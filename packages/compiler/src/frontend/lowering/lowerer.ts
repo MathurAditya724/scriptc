@@ -845,7 +845,25 @@ type RuntimeFenceTarget =
 
 /** The Lowerer's pass configuration (see lowerToIr). */
 export interface LowererMode {
+  /** Symbols whose deferred diagnostics reachable emit already flushed —
+   * the remainder must not report them a second time. */
+  alreadyFlushed?: ReadonlySet<ts.Symbol>;
+  /** LowerOptions.externalTypes, threaded through every lowering pass. */
+  externalTypes?: ReadonlyMap<string, string>;
+  /** LowerOptions.externalTypeSpecifiersByFile, shared by every pass. */
+  externalTypeSpecifiersByFile?: ReadonlyMap<string, readonly string[]>;
+  /** Program-validated ambient declaration symbols for each FFI name.
+   * Undefined in discovery's legacy call-local validation path. */
+  ffiBindingSymbols?: ReadonlyMap<string, ReadonlySet<ts.Symbol>>;
+  /** The build's outbound native FFI declarations. */
+  ffiImports?: readonly IrFfiImport[];
+  /** Statically resolved child_process.fork program roots, in stable target-id order. */
+  forkTargets?: readonly ts.SourceFile[];
   frontendServices?: FrontendServices | undefined;
+  /** LoadResult.inlineRequireCycleCalls. */
+  inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
+  /** LowerOptions.libraryCallbacks (see there). */
+  libraryCallbacks?: boolean;
   projectCheckJs?: boolean;
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
   reachable?: ReadonlySet<string> | null;
@@ -853,35 +871,17 @@ export interface LowererMode {
    * always-reachable init bodies and module building, and report deferred
    * collection diagnostics nothing flushed. */
   remainder?: boolean;
-  /** Symbols whose deferred diagnostics reachable emit already flushed —
-   * the remainder must not report them a second time. */
-  alreadyFlushed?: ReadonlySet<ts.Symbol>;
-  /** The build's target platform (LowerOptions.targetPlatform — lowerToIr
-   * passes it to every pass). Defaults to the host. */
-  targetPlatform?: string;
   /** Node's startup refusal (preflight's resolution walk / named-import
    * link checks): %main opens with exactly this throw, before any
    * module init — Node refuses the whole graph before anything evaluates,
    * so nothing runs. */
   startupCrash?: StartupCrash | null;
-  /** LoadResult.inlineRequireCycleCalls. */
-  inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
-  /** The build's outbound native FFI declarations. */
-  ffiImports?: readonly IrFfiImport[];
-  /** LowerOptions.libraryCallbacks (see there). */
-  libraryCallbacks?: boolean;
-  /** Statically resolved child_process.fork program roots, in stable target-id order. */
-  forkTargets?: readonly ts.SourceFile[];
-  workerTargets?: readonly ts.SourceFile[];
-  /** Program-validated ambient declaration symbols for each FFI name.
-   * Undefined in discovery's legacy call-local validation path. */
-  ffiBindingSymbols?: ReadonlyMap<string, ReadonlySet<ts.Symbol>>;
-  /** LowerOptions.externalTypes, threaded through every lowering pass. */
-  externalTypes?: ReadonlyMap<string, string>;
-  /** LowerOptions.externalTypeSpecifiersByFile, shared by every pass. */
-  externalTypeSpecifiersByFile?: ReadonlyMap<string, readonly string[]>;
+  /** The build's target platform (LowerOptions.targetPlatform — lowerToIr
+   * passes it to every pass). Defaults to the host. */
+  targetPlatform?: string;
   /** LowerOptions.tierMode, shared by every pass. */
   tierMode?: TierMode;
+  workerTargets?: readonly ts.SourceFile[];
 }
 
 function directExternalTypeSpecifiersByFile(
@@ -2968,28 +2968,29 @@ export class Lowerer {
     readonly moduleOrder: ts.SourceFile[],
     mode: LowererMode = {},
   ) {
+    // The mode's options, sorted by name; the values derived from them follow.
+    this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
+    this.externalTypes = mode.externalTypes ?? new Map();
+    this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
+    this.ffiImports = mode.ffiImports ?? [];
+    this.forkTargets = mode.forkTargets ?? [];
     this.frontendServices = mode.frontendServices;
+    this.inlineRequireCycleCalls = mode.inlineRequireCycleCalls ?? new Set();
+    this.libraryCallbacks = mode.libraryCallbacks ?? false;
+    this.projectCheckJs = mode.projectCheckJs ?? false;
     this.reachable = mode.reachable ?? null;
     this.remainder = mode.remainder ?? false;
-    this.tierMode = mode.tierMode ?? "auto";
-    this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
-    this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.startupCrash = mode.startupCrash ?? null;
-    this.inlineRequireCycleCalls = mode.inlineRequireCycleCalls ?? new Set();
-    this.projectCheckJs = mode.projectCheckJs ?? false;
-    this.ffiImports = mode.ffiImports ?? [];
-    this.libraryCallbacks = mode.libraryCallbacks ?? false;
+    this.targetPlatform = mode.targetPlatform ?? process.platform;
+    this.tierMode = mode.tierMode ?? "auto";
     this.workerTargets = mode.workerTargets ?? [];
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
     });
-    this.forkTargets = mode.forkTargets ?? [];
     this.forkTargets.forEach((sf, id) => {
       this.forkTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
     });
     this.ffiImportsByName = new Map(this.ffiImports.map((entry) => [entry.name, entry]));
-    this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
-    this.externalTypes = mode.externalTypes ?? new Map();
     this.externalTypeSpecifiersByFile =
       mode.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(this.externalTypes);
     this.checker = program.getTypeChecker();
