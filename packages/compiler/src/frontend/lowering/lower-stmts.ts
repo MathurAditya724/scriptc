@@ -198,6 +198,7 @@ import {
   lowerNativeFunctionAssignment,
   lowerStrictEquality,
 } from "./lower-exprs.js";
+import { keptIdentityAssertion } from "./assertion-identity.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerUnionFieldWrite } from "./expressions/union-fields.js";
@@ -5054,9 +5055,16 @@ export function lowerVarDecl(
             lowerer.unions.get(inferredObjectType.unionId)?.arms.every(isUnitType))))) &&
     !decl.type &&
     !hasJsTypeAnnotation(decl);
+  // The binding of an assertion of the global object holds that object,
+  // whatever its asserted type (assertion-identity.ts).
+  const keepsAssertedObject =
+    init.type.kind === "dyn" &&
+    !decl.type &&
+    keptIdentityAssertion(lowerer, decl.initializer) !== undefined;
   if (
     expandsObject ||
     preservesObjectIdentity ||
+    keepsAssertedObject ||
     (isJsSourceFile(decl.getSourceFile()) &&
       !decl.type &&
       isNativeBuiltinValueInitializer(lowerer, decl.initializer))
@@ -5269,7 +5277,7 @@ export function lowerVarDecl(
     ? npmStaticOptionalSelfWriteType(lowerer, decl, settledType)
     : null;
   settledType =
-    expandsObject || preservesObjectIdentity
+    expandsObject || preservesObjectIdentity || keepsAssertedObject
       ? DYN
       : lowerer.runtimeOptionalBindingType(decl.name, settledType);
   if (optionalSelfWriteType !== null) settledType = optionalSelfWriteType;

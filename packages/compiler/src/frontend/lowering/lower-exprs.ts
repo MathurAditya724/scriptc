@@ -148,6 +148,7 @@ import {
   unsupportedDiag,
 } from "../../diagnostics/diagnostic.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, neverTaintedJsType, own } from "./lowerer.js";
+import { assertsGlobalObject, extractionCopiesReference } from "./assertion-identity.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerHelperReturnCall } from "./containers/iterator-helpers.js";
 import {
@@ -9624,6 +9625,11 @@ export function lowerAsExpression(
       return inner;
     }
   }
+  // The global object: the checked extraction would build a separate
+  // value, so the assertion keeps the object and its member operations
+  // reach it (assertion-identity.ts).
+  if (extractionCopiesReference(lowerer, target) && assertsGlobalObject(lowerer, expr))
+    return inner;
   if (
     target.kind === "void" ||
     !canDynCheckTo(
