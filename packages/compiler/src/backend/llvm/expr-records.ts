@@ -41,7 +41,7 @@ export function emitUnionWiden(
     B.br(join);
   });
   B.startBlock(join);
-  if (owned) host.releaseValue(value, { kind: "union", unionId: fromId });
+  if (owned) host.releaseFrame(value, { kind: "union", unionId: fromId });
   const result = B.tmp();
   B.line(`${result} = load ptr, ptr ${slot}`);
   return result;
@@ -58,7 +58,7 @@ export function emitUnionRetype(
   e: IrExpr & { kind: "unionRetype" },
 ): LlValue {
   const value = host.emitExpr(e.value);
-  host.moveTemp(value);
+  host.toFrame(value);
   const from = host.nullableUnions.get(e.fromId);
   const to = host.nullableUnions.get(e.unionId);
   if (from && to) {
@@ -131,7 +131,7 @@ function rebuildRetype(
     B.br(join);
   });
   B.startBlock(join);
-  host.releaseValue(value, { kind: "union", unionId: e.fromId });
+  host.releaseFrame(value, { kind: "union", unionId: e.fromId });
   const result = B.tmp();
   B.line(`${result} = load ptr, ptr ${slot}`);
   return result;
@@ -486,10 +486,10 @@ export function keyedRecordReadInto(
       if (!typeEquals(vt, resultType)) {
         throw new LlvmUnsupportedError(`recordKeyGet:narrow:${vt.kind}`, loc);
       }
-      return owned || !isRefCounted(vt) ? expr : host.retainValue(expr, vt);
+      return owned || !isRefCounted(vt) ? expr : host.retainFrame(expr, vt);
     }
     if (typeEquals(vt, resultType)) {
-      return owned ? expr : host.retainValue(expr, vt);
+      return owned ? expr : host.retainFrame(expr, vt);
     }
     if (vt.kind === "union" && resultType.kind === "union") {
       return emitUnionWiden(host, expr, vt.unionId, resultType.unionId, owned);
@@ -500,7 +500,7 @@ export function keyedRecordReadInto(
     if (vt.kind === "f64" || vt.kind === "bool") {
       return host.unionNewOwned(def.id, tag, { name: expr, type: vt });
     }
-    const payload = owned ? expr : host.retainValue(expr, vt);
+    const payload = owned ? expr : host.retainHeap(expr, vt);
     return host.unionNewOwned(def.id, tag, { name: payload, type: vt });
   };
   for (const f of overflowOnly ? [] : shape.fields) {

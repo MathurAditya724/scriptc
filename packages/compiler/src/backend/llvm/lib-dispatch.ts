@@ -92,7 +92,7 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: rl.question callback not a func");
     const args = e.args.map((a) => host.emitExpr(a));
-    host.moveTemp(args[2]!);
+    host.toHeap(args[2]!);
     const adapter =
       cbT.params.length === 0
         ? "scr_rl_answer_thunk0"
@@ -165,7 +165,7 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     const ev = host.emitExpr(evArg);
     const cb = host.emitExpr(e.args[2]!);
     const once = host.emitExpr(e.args[3]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     let adapter = "null";
     if (evArg.value === 0 || evArg.value === 4) {
       const param = cbT.params[0];
@@ -287,7 +287,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const cbT = e.args[4]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: randomFill callback not a func");
-    host.moveTemp(args[4]!);
+    host.toHeap(args[4]!);
     const dyn = e.fn === "crypto.randomFillCbDyn";
     const adapter = host.cryptoBytesThunkFor(cbT, false, dyn ? "dyn" : "view");
     const symbol = dyn ? "scr_crypto_random_fill_async_dyn" : "scr_crypto_random_fill_async";
@@ -305,7 +305,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const cbT = e.args[2]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: generateKey callback not a func");
-    host.moveTemp(args[2]!);
+    host.toHeap(args[2]!);
     const adapter = host.cryptoBytesThunkFor(cbT, false, "dyn");
     host.declare(`declare void @scr_crypto_generate_key_async(ptr, ptr, ptr, ptr)`);
     B.line(
@@ -320,7 +320,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const cbT = e.args[3]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: randomInt callback not a func");
-    host.moveTemp(args[3]!);
+    host.toHeap(args[3]!);
     const adapter = host.cryptoIntThunkFor(cbT);
     host.declare(`declare void @scr_crypto_random_int_async(double, double, double, ptr, ptr)`);
     B.line(
@@ -429,7 +429,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const cbT = e.args[cbIndex]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: crypto callback not a func");
-    host.moveTemp(args[cbIndex]!);
+    host.toHeap(args[cbIndex]!);
     const adapter = host.cryptoBytesThunkFor(cbT, e.fn === "crypto.hkdfCb");
     if (e.fn === "crypto.randomBytesCb") {
       host.declare(`declare void @scr_crypto_random_bytes_async(double, ptr, ptr)`);
@@ -486,7 +486,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       const cbT = e.args[cbIdx]!.type;
       if (cbT.kind !== "func")
         throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
-      host.moveTemp(args[cbIdx]!);
+      host.toHeap(args[cbIdx]!);
       cb = args[cbIdx]!.name;
       const sym = cbT.params.length === 0 ? "scr_http_resp_thunk0" : "scr_http_resp_thunk_res";
       host.declare(`declare void @${sym}(ptr, ptr)`);
@@ -722,7 +722,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     // Literals (`123n`) and constant BigInt("...") texts are immortal
     // statics instead of a parse at every evaluation.
     const sym = host.internBigIntLiteral(e.args[0].value);
-    if (sym) return host.own({ name: host.retainValue(sym, e.type), type: e.type });
+    if (sym) return host.own({ name: host.retainFrame(sym, e.type), type: e.type });
   }
   if (e.fn.startsWith("bigint.")) {
     // Small-value operator trees run in 64-bit registers (bigint-wrap.ts).
