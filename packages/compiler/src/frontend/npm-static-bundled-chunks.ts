@@ -157,7 +157,8 @@ function isWritten(id: ts.Identifier): boolean {
  *   keyed: `(CB, MOD) => function [name]() { return <keyed>; }` — the
  *     factory is the only method of an object literal;
  *   arrow: `(CB, MOD) => () => (<arrow>)` — the factory itself. */
-const KEYED_RETURN = "MOD || (0, CB[KEYS(CB)[0]])((MOD = { exports: {} }).exports, MOD), MOD.exports";
+const KEYED_RETURN =
+  "MOD || (0, CB[KEYS(CB)[0]])((MOD = { exports: {} }).exports, MOD), MOD.exports";
 const ARROW_BODY = "(MOD || CB((MOD = { exports: {} }).exports, MOD), MOD.exports)";
 
 function template(text: string, cb: string, mod: string, keys: string): string | null {
@@ -255,7 +256,7 @@ export function splitBundledChunks(
   if (!source.includes("__commonJS")) return null;
   // ES-module bundles have no require: their chunks keep the existing
   // treatment (the Bun factory recognizer, or the ESM interop refusal).
-  if (!/\.cjs$/.test(filePath) && ts.isExternalModule(sf)) return null;
+  if (!filePath.endsWith(".cjs") && ts.isExternalModule(sf)) return null;
 
   const top = new Map<string, TopLevel>();
   const duplicate = new Set<string>();
@@ -280,7 +281,8 @@ export function splitBundledChunks(
   const written = new Set<string>();
   for (const r of allRefs) if (isWritten(r)) written.add(r.text);
   const declaredAnywhere = declaredNames(sf);
-  if (declaredAnywhere.has("Object") || written.has("Object")) return { degrade: CHUNK_SHAPE_DEGRADE };
+  if (declaredAnywhere.has("Object") || written.has("Object"))
+    return { degrade: CHUNK_SHAPE_DEGRADE };
   const stable = (name: string): boolean => !duplicate.has(name) && !written.has(name);
   const ownNames = (name: string): boolean => {
     const t = top.get(name);
@@ -440,9 +442,7 @@ function applyEdits(source: string, from: number, to: number, edits: Edit[]): st
     const replaced = source.slice(e.start, e.end);
     // A respelled span keeps its line breaks after the replacement.
     text +=
-      e.text === ""
-        ? replaced.replace(/[^\r\n]/g, " ")
-        : e.text + replaced.replace(/[^\n]/g, "");
+      e.text === "" ? replaced.replace(/[^\r\n]/g, " ") : e.text + replaced.replace(/[^\n]/g, "");
     at = e.end;
   }
   return text + source.slice(at, to);
@@ -469,7 +469,11 @@ function chunkSource(
   const body = chunk.body;
   const local = declaredNames(body);
   for (const p of chunk.params) {
-    if (local.has(p) || (p !== "exports" && local.has("exports")) || (p !== "module" && local.has("module")))
+    if (
+      local.has(p) ||
+      (p !== "exports" && local.has("exports")) ||
+      (p !== "module" && local.has("module"))
+    )
       return why(
         "rebinds its module parameters inside its body (an identifier-minified bundle the recognizer cannot respell)",
       );

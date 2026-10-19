@@ -539,7 +539,7 @@ export function rewriteBundlerCjsSyntax(
   // TypeScript forces every `.cjs` file to be an external module
   // (isFileForcedToBeModuleByFormat), yet Node always loads one as
   // CommonJS: the extension, not that flag, decides the format there.
-  if (!/\.cjs$/.test(filePath) && ts.isExternalModule(sf)) {
+  if (!filePath.endsWith(".cjs") && ts.isExternalModule(sf)) {
     const bundled = rewriteBundledFunctionImports(source, sf);
     if (bundled !== null) return bundled;
     return source.includes("__toESM(")

@@ -76,8 +76,8 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2557)
-    ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,json}")).sort(),
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2561)
+    ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
@@ -1385,6 +1385,63 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         package: "gtdrift",
         status: "refused",
         detail: expect.stringContaining("__toESM") as string,
+      },
+    ]);
+  }, 120_000);
+
+  /* ── 2558-2561: esbuild's bundled CommonJS chunks and per-file CommonJS
+   * cycles ─ every __commonJS chunk compiles as its own CommonJS module
+   * (evaluated once, at its first require); a require cycle between
+   * esbuild outputs whose live getter tables install before their first
+   * require initializes exactly like Node, and a cycle that reads a
+   * binding in its temporal dead zone stays refused. */
+  async function expectNodeParity(entry: string, packages: string[]): Promise<void> {
+    const { coverage } = analyze(entry, { npmStatic: packages });
+    expect(coverage.npmStatic).toEqual(packages.map((pkg) => ({ package: pkg, status: "static" })));
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toHaveLength(0);
+    const binary = await buildStatic(entry, packages);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    nativeRes.stderr = comparableStderr(nativeRes.stderr);
+    expect(nativeRes).toEqual(nodeRes);
+    expect(nativeRes.exitCode).toBe(0);
+  }
+
+  // 2558: esbuild 0.25 (plain and whitespace/syntax minified) and 0.17
+  // CommonJS bundles of one source, plus a .cjs bundle in a type-module
+  // package with the node-mode interop.
+  test("bundled CommonJS chunks 2558-bundled-chunks compile statically and byte-match Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2558-bundled-chunks/main.ts"), [
+      "gtchunk",
+      "gtchunkws",
+      "gtchunk17",
+      "gtcjsdist",
+      "gtcore",
+    ]);
+  }, 180_000);
+
+  test.each(["2559-cjs-cycle", "2560-cjs-cycle-partner-first"])(
+    "the esbuild CommonJS cycle %s compiles statically and byte-matches Node",
+    async (name) => {
+      await expectNodeParity(join(fixturesRoot, `npm/cases/${name}/main.ts`), ["gtcycle"]);
+    },
+    180_000,
+  );
+
+  // 2561: Node throws a ReferenceError there; the cycle keeps SC1016.
+  test("a CommonJS cycle that reads a binding before its declaration stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2561-cjs-cycle-early-read/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcyclebad"] });
+    expect(coverage.npmStatic).toEqual([
+      {
+        package: "gtcyclebad",
+        status: "refused",
+        detail: expect.stringMatching(
+          /circular imports .*can use its binding 'import_index' of a module of the cycle/,
+        ) as string,
       },
     ]);
   }, 120_000);
