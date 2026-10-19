@@ -4598,8 +4598,7 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
       continue;
     }
     const f = item.f;
-    lowerer.stats.statementsTotal++;
-    lowerer.bumpFileStat(locOf(f.initializer).file, "total");
+    lowerer.countStatement(f.initializer, locOf(f.initializer).file);
     const diagsBefore = lowerer.diags.length;
     const sinkMark = lowerer.diagSinkMark();
     try {
@@ -4635,8 +4634,7 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
       out.push({ kind: "assign", localId: f.globalId, value, loc: locOf(f.initializer) });
     } catch (e) {
       if (!(e instanceof PoisonError)) throw e;
-      lowerer.stats.statementsFailed++;
-      lowerer.bumpFileStat(locOf(f.initializer).file, "failed");
+      lowerer.countStatementFailed(f.initializer, locOf(f.initializer).file);
       if (isJsSourceFile(f.initializer.getSourceFile())) {
         const fence =
           lowerer.diagSink === null
@@ -7764,8 +7762,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
       });
     }
     if (!f.initializer) continue;
-    lowerer.stats.statementsTotal++;
-    lowerer.bumpFileStat(locOf(f.initializer).file, "total");
+    lowerer.countStatement(f.initializer, locOf(f.initializer).file);
     const diagsBefore = lowerer.diags.length;
     const sinkMark = lowerer.diagSinkMark();
     try {
@@ -7780,8 +7777,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
       });
     } catch (e) {
       if (!(e instanceof PoisonError)) throw e;
-      lowerer.stats.statementsFailed++;
-      lowerer.bumpFileStat(locOf(f.initializer).file, "failed");
+      lowerer.countStatementFailed(f.initializer, locOf(f.initializer).file);
       if (isJsSourceFile(f.initializer.getSourceFile())) {
         const fence =
           lowerer.diagSink === null

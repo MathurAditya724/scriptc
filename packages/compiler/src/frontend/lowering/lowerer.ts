@@ -2925,6 +2925,32 @@ export class Lowerer {
    * pass skips it (attribution describes the build). */
   readonly statsByFile = new Map<string, { total: number; failed: number }>();
 
+  /** Statements and field initializers already in the coverage totals, and
+   * those already counted as failed. Speculative lowering can lower one
+   * function body several times: each receiver probe of
+   * `(function () { ... }).call(this)` lowers it. A source statement counts
+   * once however many times it lowers. */
+  private readonly countedStatements = new Set<ts.Node>();
+  private readonly failedStatements = new Set<ts.Node>();
+
+  /** Adds `node` to the coverage totals unless it is already counted (the
+   * caller checks suppressStats). */
+  countStatement(node: ts.Node, file: string | undefined): void {
+    if (this.countedStatements.has(node)) return;
+    this.countedStatements.add(node);
+    this.stats.statementsTotal++;
+    if (file !== undefined) this.bumpFileStat(file, "total");
+  }
+
+  /** Counts `node` as failed unless it already is (the caller checks
+   * suppressStats). */
+  countStatementFailed(node: ts.Node, file: string | undefined): void {
+    if (this.failedStatements.has(node)) return;
+    this.failedStatements.add(node);
+    this.stats.statementsFailed++;
+    if (file !== undefined) this.bumpFileStat(file, "failed");
+  }
+
   /** Bumps the per-file attribution counter (no-op unless provenance is
    * active and this is the emit/discovery lane — mirror the CALLER's
    * suppressStats guard, this method only gates remainder). */
