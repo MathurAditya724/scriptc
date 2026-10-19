@@ -4673,6 +4673,21 @@ bool scr_dyn_iterator_step_done(const ScrDyn *value) {
   return ((ScrNativeIterator *)value->v.handle.ptr)->step_done;
 }
 
+double scr_dyn_collection_iterator_index(const ScrDyn *value) {
+  ScrNativeIterator *iterator = value->v.handle.ptr;
+  ScrDyn *source = iterator->source;
+  if (!source) return -1;
+  ScrMap *map = source->v.handle.ptr;
+  iterator->index = scr_map_iter_skip(map, iterator->index);
+  if (iterator->index >= scr_map_iter_count(map)) {
+    iterator->source = NULL;
+    scr_map_iter_exit(map);
+    scr_dyn_release(source);
+    return -1;
+  }
+  return iterator->index++;
+}
+
 static int scr_ih_method_index(const char *name, size_t len);
 static ScrDyn *scr_iterator_helper_method(ScrDyn *self, int index, ScrDyn *const *args, size_t argc);
 static ScrDyn *scr_ih_method_function(int index);

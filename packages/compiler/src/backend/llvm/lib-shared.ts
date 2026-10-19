@@ -889,6 +889,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.iteratorCanStep": "scr_dyn_iterator_can_step",
   "dyn.iteratorStep": "scr_dyn_iterator_step",
   "dyn.iteratorStepDone": "scr_dyn_iterator_step_done",
+  "dyn.collectionIteratorIndex": "scr_dyn_collection_iterator_index",
   "dyn.mapSeedEntries": "scr_dyn_map_seed_entries",
   "dyn.mapSeedEntry": "scr_dyn_map_seed_entry",
   "dyn.arrLen": "scr_dyn_arr_len",

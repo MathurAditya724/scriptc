@@ -182,6 +182,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
   "dyn.iteratorStepDone": { argTypes: [DYN], result: BOOL },
+  "dyn.collectionIteratorIndex": { argTypes: [DYN], result: F64 },
   "dyn.mapSeedEntries": { argTypes: [DYN], result: DYN },
   "dyn.mapSeedEntry": { argTypes: [DYN], result: DYN },
   /** The for-of-over-dyn pack accessors — the emitted index loop drives

@@ -265,6 +265,122 @@ function dynIteratorAdapter(
   return { kind: "call", callee: name, args: [expr], type: expected, loc };
 }
 
+/** `m.keys()`, `m.values()` or `m.entries()` (or a Set's) as a source
+ * generator for an iterator helper object: an interned generator over the
+ * typed collection that steps the runtime's native iterator by entry
+ * index and reads each key or value with the typed intrinsics, so values
+ * keep their types without a checked conversion per step. The native
+ * iterator owns the live-walk bracket: it ends the iteration when the
+ * collection is exhausted or when the generator, done or abandoned,
+ * releases it. `type` yields the key, the value, or the interned [key,
+ * value] pair. Null when `type` does not match. */
+export function lowerCollectionIteratorValue(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  method: "keys" | "values" | "entries",
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  const collT = receiver.type;
+  if ((collT.kind !== "map" && collT.kind !== "set") || type.kind !== "generator") return null;
+  if (type.retT.kind !== "void" || type.nextT.kind !== "undefinedT") return null;
+  const keyT = collT.kind === "map" ? collT.key : collT.elem;
+  const valueT = collT.kind === "map" ? collT.value : collT.elem;
+  const resultType = genResultRecord(type.yieldT, type.retT, lowerer.shapes, lowerer.unions);
+  if (!resultType) return null;
+  const key = `collIter:${method}:${typeKey(collT)}:${typeKey(type)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    const coll = varRef("coll.0", collT, loc);
+    const index = varRef("index.0", F64, loc);
+    const native = varRef("native.0", DYN, loc);
+    const read = (m: "iterKey" | "iterValue", t: IrType): IrExpr =>
+      collT.kind === "map"
+        ? { kind: "mapIntrinsic", method: m, receiver: coll, args: [index], type: t, loc }
+        : { kind: "setIntrinsic", method: "iterKey", receiver: coll, args: [index], type: t, loc };
+    let yielded: IrExpr;
+    if (method === "keys" || (collT.kind === "set" && method === "values"))
+      yielded = read("iterKey", keyT);
+    else if (method === "values") yielded = read("iterValue", valueT);
+    else
+      yielded = {
+        kind: "recordLit",
+        fields: [
+          { name: "0", value: read("iterKey", keyT) },
+          { name: "1", value: read("iterValue", valueT) },
+        ],
+        type: type.yieldT,
+        loc,
+      };
+    if (!typeEquals(yielded.type, type.yieldT)) return null;
+    name = `%coll.iter.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, name);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "coll.0", name: "coll", type: collT }],
+      returnType: VOID,
+      locals: [
+        { id: "coll.0", name: "coll", type: collT, mutable: false },
+        { id: "native.0", name: "native", type: DYN, mutable: false },
+        { id: "index.0", name: "index", type: F64, mutable: true },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "native.0",
+          init: {
+            kind: "dynInvoke",
+            recv: lowerer.coerceToExpected(coll, DYN),
+            method: "values",
+            calleeName: collT.kind === "map" ? "map.values" : "set.values",
+            args: [],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "while",
+          cond: { kind: "boolLit", value: true, type: BOOL, loc },
+          body: [
+            {
+              kind: "varDecl",
+              localId: "index.0",
+              init: {
+                kind: "libCall",
+                fn: "dyn.collectionIteratorIndex",
+                args: [native],
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+            {
+              kind: "if",
+              cond: {
+                kind: "bin",
+                op: "<",
+                left: index,
+                right: { kind: "numLit", value: 0, type: F64, loc },
+                type: BOOL,
+                loc,
+              },
+              then: [{ kind: "return", value: null, loc }],
+              else_: null,
+              loc,
+            },
+            { kind: "exprStmt", expr: { kind: "yieldExpr", value: yielded, type: VOID, loc }, loc },
+          ],
+          loc,
+        },
+      ],
+      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType },
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [receiver], type, loc };
+}
+
 /** `ta.values()`, `ta.keys()` or `ta.entries()` on a typed array as a
  * value: an interned generator over the indices, reading the length and
  * the element at each step, as the typed array iterator does. Null when
