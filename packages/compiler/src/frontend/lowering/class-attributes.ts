@@ -24,7 +24,7 @@ import {
 import { numLit, strLit, varRef } from "../../ir/build.js";
 import { transformStmtList } from "../../ir/traverse.js";
 import { locOf } from "../program.js";
-import type { Lowerer } from "./lowerer.js";
+import { type Lowerer, PoisonError } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { runtimeRooted } from "./class-descriptors.js";
@@ -132,10 +132,26 @@ export function lowerClassIntegrity(
   };
 }
 
+/** An object literal with a get or set property. */
+function literalAccessorDescriptor(node: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  return (
+    ts.isObjectLiteralExpression(node) &&
+    node.properties.some(
+      (property) =>
+        property.name !== undefined &&
+        (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+        (property.name.text === "get" || property.name.text === "set"),
+    )
+  );
+}
+
 /** Object.defineProperty with a string-literal key naming a declared field
  * of a class instance: a data descriptor changes the field's value and
  * attributes, validated as Node validates ordinary objects. Answers the
- * instance, or null when the call is not of that form. */
+ * instance, or null when the call is not of that form. An object-literal
+ * accessor descriptor is refused at compile time; other accessor
+ * descriptors throw SC2020 when the call runs. */
 export function lowerClassFieldDefine(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -152,6 +168,14 @@ export function lowerClassFieldDefine(
     [...(info.symbolFields?.values() ?? [])].includes(field)
   )
     return null;
+  if (literalAccessorDescriptor(call.arguments[2]!)) {
+    lowerer.pushDiag({
+      code: "SC2020",
+      message: `Object.defineProperty with an accessor descriptor for the declared field '${field}' is not supported yet`,
+      loc: locOf(call),
+    });
+    throw new PoisonError();
+  }
   const getRecord = (id: string) => lowerer.shapes.get(id);
   const getUnion = (id: string) => lowerer.unions.get(id);
   if (
