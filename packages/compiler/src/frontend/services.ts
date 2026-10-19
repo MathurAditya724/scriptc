@@ -1,6 +1,6 @@
 import { Ts7SourceParser, type Ts7SourceKind } from "./ts7/source-parser.js";
 import { Ts7Host, type Ts7ApiFactory, type Ts7HostOptions } from "./ts7/program-host.js";
-import { rewriteBundlerCjsWithParser } from "./npm-static-rewrite-host.js";
+import { lowerEsmInitsWithParser, rewriteBundlerCjsWithParser } from "./npm-static-rewrite-host.js";
 import { isBundlerCjsCandidate } from "./npm-static-rewrite-syntax.js";
 import {
   mayBundleChunks,
@@ -75,6 +75,14 @@ export class FrontendServices {
     this.ensureOpen();
     if (!mayBundleChunks(source)) return null;
     return splitBundledChunks(this.parse(path, source, "js"), path);
+  }
+  /** A CommonJS bundle's lazily initialized ES modules (__esm) lowered to
+   * run-once closures (null: none; a degrade reason: shapes the rewrite
+   * cannot lower). */
+  lowerEsmInits(source: string, path: string): string | { degrade: string } | null {
+    this.ensureOpen();
+    if (!source.includes("__esm")) return null;
+    return lowerEsmInitsWithParser(this.sourceParser(), source, path);
   }
   nullableClassFields(path: string, source: string): syntax.NpmStaticOverloadRewrite | null {
     return syntax.applyNpmStaticNullableClassFields(this.parse(path, source, "js"), source);

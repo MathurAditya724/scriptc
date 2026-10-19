@@ -1,0 +1,582 @@
+/* Lazily initialized ES modules in a CommonJS bundle. esbuild scope-hoists
+ * every ES module it bundles into the bundle's own scope; one that some
+ * code require()s instead of importing runs from a lazy initializer,
+ *
+ *   var COUNT, import_fs;
+ *   var init_x = __esm({ "src/x.ts"() { import_fs = __toESM(require("fs")); COUNT = 0; } });
+ *
+ * and the requiring site reads its namespace as
+ * `(init_x(), __toCommonJS(x_exports))`. `init_x()` runs the body once (a
+ * call during the body answers immediately). The pass below keeps that
+ * shape in the bundle's scope and respells only what has no static
+ * representation:
+ *
+ *   - the initializer becomes a run-once closure over the same body;
+ *   - an interop binding the body assigns once from require() (`import_fs`
+ *     above) becomes that require at the assignment's position, and its
+ *     member reads become member reads of the required module, exactly
+ *     like the top-level interop erasure (npm-static-rewrite-syntax.ts);
+ *   - a namespace read only through member reads becomes an object
+ *     literal of getters over the module's live bindings (what
+ *     __toCommonJS copies, minus the non-enumerable __esModule mark no
+ *     member read can reach).
+ *
+ * The respelled interop reads resolve the required module even if they
+ * ran before the initializer, where Node would read a member of
+ * undefined and throw; esbuild only reaches them through the module's
+ * own code, which runs after its initializer. Shapes outside the
+ * recognized forms answer a degrade reason. */
+import * as ts from "./ts7/syntax.js";
+import { bareRequireSpecOf } from "./cjs-syntax.js";
+import { helperTokens } from "./helper-tokens.js";
+import {
+  applyEdits,
+  countDeclarations,
+  declaredNames,
+  factoryFrameUse,
+  helperBase,
+  isWritten,
+  references,
+  unparen,
+  type Edit,
+} from "./npm-static-bundled-chunks.js";
+
+export interface EsmInitHost {
+  requireTargetEsModuleStamped(fromFile: string, specifier: string): boolean;
+}
+
+const ESM_SHAPE_DEGRADE =
+  "its shipped JS initializes bundled ES modules through the __esm helper in a shape the " +
+  "recognizer cannot verify";
+
+/* The recognized __esm forms over its parameter names (FN, RES) and the
+ * own-key reader (KEYS): keyed `(FN, RES) => function [name]() { return
+ * <keyed>; }` with a one-method object argument, and arrow
+ * `(FN, RES) => () => (<arrow>)` with a function argument. */
+const KEYED_RETURN = "FN && (RES = (0, FN[KEYS(FN)[0]])(FN = 0)), RES";
+const ARROW_BODY = "(FN && (RES = FN(FN = 0)), RES)";
+
+function template(text: string, fn: string, res: string, keys: string): string | null {
+  return helperTokens(
+    text
+      .replace(/\bFN\b/g, fn)
+      .replace(/\bRES\b/g, res)
+      .replace(/\bKEYS\b/g, keys),
+  );
+}
+
+function esmHelperForm(
+  init: ts.Expression,
+  sf: ts.SourceFile,
+  ownNames: (name: string) => boolean,
+): "keyed" | "arrow" | null {
+  const fn = unparen(init);
+  if (!ts.isArrowFunction(fn) || fn.parameters.nodes.length !== 2 || ts.isBlock(fn.body))
+    return null;
+  const [p0, p1] = fn.parameters.nodes;
+  if (
+    !p0 ||
+    !p1 ||
+    !ts.isIdentifier(p0.name) ||
+    !ts.isIdentifier(p1.name) ||
+    p0.initializer ||
+    p1.initializer ||
+    p0.name.text === p1.name.text
+  )
+    return null;
+  const [f, r] = [p0.name.text, p1.name.text];
+  const body = unparen(fn.body);
+  if (ts.isFunctionExpression(body)) {
+    if (body.parameters.nodes.length !== 0 || body.asteriskToken || body.modifiers?.nodes.length)
+      return null;
+    const stmts = body.body.statements.nodes;
+    const ret = stmts[0];
+    if (stmts.length !== 1 || !ret || !ts.isReturnStatement(ret) || !ret.expression) return null;
+    const text = ret.expression.getText(sf);
+    const keys = /\[\s*([A-Za-z_$][\w$]*(?:\.keys)?)\s*\(/.exec(text)?.[1];
+    if (keys === undefined || (keys !== "Object.keys" && !ownNames(keys))) return null;
+    return helperTokens(text) === template(KEYED_RETURN, f, r, keys) ? "keyed" : null;
+  }
+  if (ts.isArrowFunction(body) && body.parameters.nodes.length === 0 && !ts.isBlock(body.body)) {
+    const actual = helperTokens(body.body.getText(sf));
+    return actual !== null && actual === template(ARROW_BODY, f, r, "") ? "arrow" : null;
+  }
+  return null;
+}
+
+/** Pads the given declarators out of their statements (separating commas
+ * included; a statement whose declarators all go pads whole). */
+function removeDeclarators(sf: ts.SourceFile, dead: ReadonlySet<ts.VariableDeclaration>): Edit[] {
+  const edits: Edit[] = [];
+  const stmts = new Set<ts.VariableStatement>();
+  for (const d of dead) {
+    const stmt = d.parent?.parent;
+    if (stmt !== undefined && ts.isVariableStatement(stmt)) stmts.add(stmt);
+  }
+  for (const stmt of stmts) {
+    const decls = stmt.declarationList.declarations.nodes;
+    const deadAt = decls.map((d) => dead.has(d));
+    if (deadAt.every((x) => x)) {
+      edits.push({ start: stmt.getStart(sf), end: stmt.getEnd(), text: "" });
+      continue;
+    }
+    const lastLive = deadAt.lastIndexOf(false);
+    for (let i = 0; i < decls.length; i++) {
+      if (!deadAt[i]) continue;
+      edits.push(
+        i < lastLive
+          ? { start: decls[i]!.getStart(sf), end: decls[i + 1]!.getStart(sf), text: "" }
+          : { start: decls[lastLive]!.getEnd(), end: decls[i]!.getEnd(), text: "" },
+      );
+    }
+  }
+  return edits;
+}
+
+/** The elements of an expression statement's comma chain, in order. */
+function commaElements(e: ts.Expression): ts.Expression[] {
+  const out: ts.Expression[] = [];
+  const visit = (x: ts.Expression): void => {
+    if (ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      visit(x.left);
+      visit(x.right);
+    } else out.push(x);
+  };
+  visit(e);
+  return out;
+}
+
+/** True when a call's result is discarded: an expression statement or a
+ * non-final comma operand (parentheses included). */
+function resultUnused(call: ts.Expression): boolean {
+  let child: ts.Node = call;
+  let p = call.parent;
+  while (p !== undefined && ts.isParenthesizedExpression(p)) {
+    child = p;
+    p = p.parent;
+  }
+  if (p === undefined) return false;
+  if (ts.isExpressionStatement(p)) return true;
+  if (ts.isBinaryExpression(p) && p.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+    if (p.left === child) return true;
+    return resultUnused(p);
+  }
+  return false;
+}
+
+/** True when a member access is a plain read (not written, deleted or
+ * updated). */
+function plainRead(access: ts.Expression): boolean {
+  const p = access.parent;
+  if (p === undefined) return true;
+  if (ts.isDeleteExpression(p)) return false;
+  if (
+    ts.isBinaryExpression(p) &&
+    p.left === access &&
+    p.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    p.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+  )
+    return false;
+  if (
+    (ts.isPrefixUnaryExpression(p) || ts.isPostfixUnaryExpression(p)) &&
+    (p.operator === ts.SyntaxKind.PlusPlusToken || p.operator === ts.SyntaxKind.MinusMinusToken)
+  )
+    return false;
+  return true;
+}
+
+/** The `__export(T, { name: () => value, … })` getter table of T, or null. */
+function exportTableOf(
+  call: ts.CallExpression,
+): { target: string; entries: [string, ts.Expression][] } | null {
+  if (!ts.isIdentifier(call.expression) || helperBase(call.expression.text) !== "__export")
+    return null;
+  const [target, table] = call.arguments.nodes;
+  if (
+    call.arguments.nodes.length !== 2 ||
+    !target ||
+    !table ||
+    !ts.isIdentifier(target) ||
+    !ts.isObjectLiteralExpression(table)
+  )
+    return null;
+  const entries: [string, ts.Expression][] = [];
+  for (const prop of table.properties.nodes) {
+    if (!ts.isPropertyAssignment(prop)) return null;
+    if (!ts.isIdentifier(prop.name) && !ts.isStringLiteral(prop.name)) return null;
+    const getter = unparen(prop.initializer);
+    if (!ts.isArrowFunction(getter) || getter.parameters.nodes.length !== 0) return null;
+    if (ts.isBlock(getter.body)) return null;
+    entries.push([prop.name.text, getter.body]);
+  }
+  return { target: target.text, entries };
+}
+
+/** Lowers a CommonJS bundle's __esm initializers (see the header). Null:
+ * nothing to lower. */
+export function lowerBundledEsmInits(
+  sf: ts.SourceFile,
+  filePath: string,
+  host: EsmInitHost,
+): string | { degrade: string } | null {
+  const source = sf.text;
+  if (!source.includes("__esm")) return null;
+  if (!filePath.endsWith(".cjs") && ts.isExternalModule(sf)) return null;
+
+  interface Top {
+    stmt: ts.Statement;
+    node: ts.VariableDeclaration | ts.FunctionDeclaration;
+  }
+  const top = new Map<string, Top>();
+  const duplicate = new Set<string>();
+  for (const stmt of sf.statements.nodes) {
+    const add = (name: string, node: Top["node"]): void => {
+      if (top.has(name)) duplicate.add(name);
+      else top.set(name, { stmt, node });
+    };
+    if (ts.isFunctionDeclaration(stmt) && stmt.name !== undefined) add(stmt.name.text, stmt);
+    else if (ts.isVariableStatement(stmt)) {
+      for (const d of stmt.declarationList.declarations.nodes) {
+        if (ts.isIdentifier(d.name)) add(d.name.text, d);
+      }
+    }
+  }
+  const helpers = [...top.keys()].filter((n) => helperBase(n) === "__esm");
+  if (helpers.length === 0) return null;
+
+  const allRefs = references(sf);
+  const writes = new Map<string, number>();
+  for (const r of allRefs) if (isWritten(r)) writes.set(r.text, (writes.get(r.text) ?? 0) + 1);
+  const declaredAnywhere = declaredNames(sf);
+  if (declaredAnywhere.has("Object") || writes.has("Object")) return { degrade: ESM_SHAPE_DEGRADE };
+  const stable = (name: string): boolean => !duplicate.has(name) && !writes.has(name);
+  const ownNames = (name: string): boolean => {
+    const t = top.get(name);
+    const init = t !== undefined && ts.isVariableDeclaration(t.node) ? t.node.initializer : undefined;
+    return (
+      init !== undefined &&
+      stable(name) &&
+      helperTokens(init.getText(sf)) === helperTokens("Object.getOwnPropertyNames")
+    );
+  };
+  const forms = new Map<string, "keyed" | "arrow">();
+  for (const name of helpers) {
+    const t = top.get(name)!;
+    const init = ts.isVariableDeclaration(t.node) ? t.node.initializer : undefined;
+    const form = init !== undefined && stable(name) ? esmHelperForm(init, sf, ownNames) : null;
+    if (form === null) return { degrade: ESM_SHAPE_DEGRADE };
+    forms.set(name, form);
+  }
+
+  // The initializers: `NAME = HELPER(factory)` declarators.
+  interface Init {
+    name: string;
+    call: ts.CallExpression;
+    body: ts.Block;
+  }
+  const inits = new Map<string, Init>();
+  for (const [name, t] of top) {
+    if (!ts.isVariableDeclaration(t.node) || t.node.initializer === undefined) continue;
+    const call = unparen(t.node.initializer);
+    if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression)) continue;
+    const form = forms.get(call.expression.text);
+    if (form === undefined) continue;
+    if (call.arguments.nodes.length !== 1 || !stable(name)) return { degrade: ESM_SHAPE_DEGRADE };
+    let factory: ts.Node = call.arguments.nodes[0]!;
+    if (form === "keyed") {
+      if (!ts.isObjectLiteralExpression(factory) || factory.properties.nodes.length !== 1)
+        return { degrade: ESM_SHAPE_DEGRADE };
+      factory = factory.properties.nodes[0]!;
+      if (!ts.isMethodDeclaration(factory) || ts.isComputedPropertyName(factory.name))
+        return { degrade: ESM_SHAPE_DEGRADE };
+    } else {
+      factory = unparen(factory as ts.Expression);
+      if (!ts.isArrowFunction(factory) && !ts.isFunctionExpression(factory))
+        return { degrade: ESM_SHAPE_DEGRADE };
+    }
+    const fn = factory as ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression;
+    if (fn.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))
+      return {
+        degrade: `its bundled ES module initializer '${name}' is asynchronous (top-level await), which the lazy initialization rewrite does not cover`,
+      };
+    if (
+      fn.body === undefined ||
+      !ts.isBlock(fn.body) ||
+      fn.asteriskToken !== undefined ||
+      (fn.modifiers?.nodes.length ?? 0) > 0 ||
+      fn.parameters.nodes.length > 0
+    )
+      return { degrade: ESM_SHAPE_DEGRADE };
+    const frame = factoryFrameUse(fn.body, false);
+    if (frame !== null)
+      return { degrade: `its bundled ES module initializer '${name}' ${frame}` };
+    inits.set(name, { name, call, body: fn.body });
+  }
+  if (inits.size === 0) return null;
+
+  const edits: Edit[] = [];
+  // Every initializer reference is a direct call whose result is unused.
+  for (const r of allRefs) {
+    if (!inits.has(r.text)) continue;
+    const call = r.parent;
+    if (
+      call === undefined ||
+      !ts.isCallExpression(call) ||
+      call.expression !== r ||
+      call.arguments.nodes.length !== 0 ||
+      !resultUnused(call)
+    )
+      return {
+        degrade: `its bundled ES module initializer '${r.text}' is used other than as a statement call`,
+      };
+  }
+  for (const name of inits.keys()) {
+    if (countDeclarations(sf, name) !== 1) return { degrade: ESM_SHAPE_DEGRADE };
+  }
+
+  /* Interop bindings an initializer assigns once from require(). */
+  const refsByName = new Map<string, ts.Identifier[]>();
+  for (const r of allRefs) {
+    const list = refsByName.get(r.text);
+    if (list === undefined) refsByName.set(r.text, [r]);
+    else list.push(r);
+  }
+  const deadDeclarators = new Set<ts.VariableDeclaration>();
+  for (const init of inits.values()) {
+    for (const stmt of init.body.statements.nodes) {
+      if (!ts.isExpressionStatement(stmt)) continue;
+      for (const el of commaElements(stmt.expression)) {
+        if (
+          !ts.isBinaryExpression(el) ||
+          el.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+          !ts.isIdentifier(el.left)
+        )
+          continue;
+        const name = el.left.text;
+        const decl = top.get(name)?.node;
+        if (
+          decl === undefined ||
+          !ts.isVariableDeclaration(decl) ||
+          decl.initializer !== undefined ||
+          duplicate.has(name) ||
+          writes.get(name) !== 1 ||
+          countDeclarations(sf, name) !== 1
+        )
+          continue;
+        let rhs = unparen(el.right);
+        let isNodeMode = false;
+        let interop = false;
+        if (
+          ts.isCallExpression(rhs) &&
+          ts.isIdentifier(rhs.expression) &&
+          helperBase(rhs.expression.text) === "__toESM"
+        ) {
+          const [arg, mode] = rhs.arguments.nodes;
+          if (!arg || rhs.arguments.nodes.length > 2) continue;
+          if (mode !== undefined) {
+            if (ts.isNumericLiteral(mode)) isNodeMode = Number(mode.text) !== 0;
+            else if (mode.kind === ts.SyntaxKind.TrueKeyword) isNodeMode = true;
+            else if (mode.kind !== ts.SyntaxKind.FalseKeyword) continue;
+          }
+          rhs = unparen(arg);
+          interop = true;
+        }
+        const spec = bareRequireSpecOf(rhs);
+        if (spec === null) continue;
+        const req = rhs.getText(sf);
+        const defaultIsModule =
+          interop && (isNodeMode || !host.requireTargetEsModuleStamped(filePath, spec));
+        // Every other reference must be a plain member read.
+        const uses: Edit[] = [];
+        let ok = true;
+        for (const r of refsByName.get(name) ?? []) {
+          if (r === el.left) continue;
+          const access = r.parent;
+          if (
+            access === undefined ||
+            !ts.isPropertyAccessExpression(access) ||
+            access.expression !== r ||
+            !plainRead(access)
+          ) {
+            ok = false;
+            break;
+          }
+          if (defaultIsModule && access.name.text === "default")
+            uses.push({ start: access.getStart(sf), end: access.getEnd(), text: `(${req})` });
+          else uses.push({ start: r.getStart(sf), end: r.getEnd(), text: req });
+        }
+        if (!ok) continue;
+        edits.push({ start: el.getStart(sf), end: el.getEnd(), text: req }, ...uses);
+        deadDeclarators.add(decl);
+      }
+    }
+  }
+  edits.push(...removeDeclarators(sf, deadDeclarators));
+
+  /* Namespaces of lazily initialized modules read through members. */
+  let mainTarget: string | null = null;
+  for (const stmt of sf.statements.nodes) {
+    if (!ts.isExpressionStatement(stmt) || !ts.isBinaryExpression(stmt.expression)) continue;
+    const e = stmt.expression;
+    const rhs = e.right;
+    if (
+      e.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(e.left) &&
+      ts.isIdentifier(e.left.expression) &&
+      e.left.expression.text === "module" &&
+      e.left.name.text === "exports" &&
+      ts.isCallExpression(rhs) &&
+      ts.isIdentifier(rhs.expression) &&
+      helperBase(rhs.expression.text) === "__toCommonJS" &&
+      rhs.arguments.nodes.length === 1 &&
+      ts.isIdentifier(rhs.arguments.nodes[0]!)
+    )
+      mainTarget = (rhs.arguments.nodes[0] as ts.Identifier).text;
+  }
+  const tables = new Map<string, { stmt: ts.Statement; entries: [string, ts.Expression][] }>();
+  for (const stmt of sf.statements.nodes) {
+    if (!ts.isExpressionStatement(stmt) || !ts.isCallExpression(stmt.expression)) continue;
+    const table = exportTableOf(stmt.expression);
+    if (table !== null && table.target !== mainTarget) {
+      if (tables.has(table.target)) return { degrade: ESM_SHAPE_DEGRADE };
+      tables.set(table.target, { stmt, entries: table.entries });
+    }
+  }
+  const lowered = new Set<string>();
+  for (const r of allRefs) {
+    const table = tables.get(r.text);
+    if (table === undefined) continue;
+    const p = r.parent;
+    // The table's own declaration and __export call are handled below.
+    if (p !== undefined && ts.isVariableDeclaration(p) && p.name === r) continue;
+    if (
+      p !== undefined &&
+      ts.isCallExpression(p) &&
+      p.arguments.nodes[0] === r &&
+      ts.isExpressionStatement(p.parent) &&
+      p.parent === table.stmt
+    )
+      continue;
+    const why = `reads the namespace of a bundled ES module ('${r.text}') in a way the static rewrite cannot follow (only member reads of its exports compile)`;
+    if (
+      p === undefined ||
+      !ts.isCallExpression(p) ||
+      !ts.isIdentifier(p.expression) ||
+      helperBase(p.expression.text) !== "__toCommonJS" ||
+      p.arguments.nodes.length !== 1
+    )
+      return { degrade: `its shipped JS ${why}` };
+    // The namespace expression: `(init_x(), __toCommonJS(T))` or the call.
+    let ns: ts.Expression = p;
+    for (;;) {
+      const up = ns.parent;
+      if (up !== undefined && ts.isParenthesizedExpression(up)) ns = up;
+      else if (
+        up !== undefined &&
+        ts.isBinaryExpression(up) &&
+        up.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+        up.right === ns
+      )
+        ns = up;
+      else break;
+    }
+    const names = new Set(table.entries.map(([n]) => n));
+    const memberRead = (access: ts.Node | undefined, of: ts.Node): boolean =>
+      access !== undefined &&
+      ts.isPropertyAccessExpression(access) &&
+      access.expression === of &&
+      names.has(access.name.text) &&
+      plainRead(access);
+    const holder = ns.parent;
+    let readable = memberRead(holder, ns);
+    if (
+      !readable &&
+      holder !== undefined &&
+      ts.isVariableDeclaration(holder) &&
+      holder.initializer === ns &&
+      ts.isIdentifier(holder.name)
+    ) {
+      const local = holder.name.text;
+      const localRefs = (refsByName.get(local) ?? []).filter((x) => x !== holder.name);
+      readable =
+        countDeclarations(sf, local) === 1 &&
+        !writes.has(local) &&
+        localRefs.every((x) => memberRead(x.parent, x));
+    }
+    if (!readable) {
+      // A namespace kept for later (`x ??= __toESM(ns)`, a hand-rolled
+      // lazy loader) is a value with no static representation.
+      let outer: ts.Node | undefined = holder;
+      while (
+        outer !== undefined &&
+        (ts.isParenthesizedExpression(outer) ||
+          (ts.isCallExpression(outer) &&
+            ts.isIdentifier(outer.expression) &&
+            helperBase(outer.expression.text) === "__toESM"))
+      )
+        outer = outer.parent;
+      if (
+        outer !== undefined &&
+        ts.isBinaryExpression(outer) &&
+        outer.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        outer.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      )
+        return {
+          degrade: `its shipped JS stores the namespace of a bundled ES module ('${r.text}') in a variable (a memoized lazy loader), a module object the static rewrite cannot represent`,
+        };
+      return { degrade: `its shipped JS ${why}` };
+    }
+    // The getters read top-level bindings: nothing between the use site
+    // and the top level may rebind one of their names.
+    const read = new Set<string>();
+    for (const [, value] of table.entries) for (const x of references(value)) read.add(x.text);
+    for (let a = p.parent; a !== undefined && !ts.isSourceFile(a); a = a.parent) {
+      if (ts.isFunctionLike(a) || ts.isBlock(a) || ts.isClassDeclaration(a) || ts.isClassExpression(a)) {
+        for (const n of declaredNames(a)) {
+          if (read.has(n)) return { degrade: `its shipped JS ${why}` };
+        }
+      }
+    }
+    const getters = table.entries
+      .map(
+        ([n, value]) =>
+          `get ${/^[A-Za-z_$][\w$]*$/.test(n) ? n : JSON.stringify(n)}() { return ${applyEdits(source, value.getStart(sf), value.getEnd(), edits)}; }`,
+      )
+      .join(", ");
+    edits.push({ start: p.getStart(sf), end: p.getEnd(), text: `{ ${getters} }` });
+    lowered.add(r.text);
+  }
+  for (const target of lowered) {
+    const table = tables.get(target)!;
+    const decl = top.get(target)?.node;
+    if (
+      decl === undefined ||
+      !ts.isVariableDeclaration(decl) ||
+      decl.initializer === undefined ||
+      !ts.isObjectLiteralExpression(unparen(decl.initializer)) ||
+      (unparen(decl.initializer) as ts.ObjectLiteralExpression).properties.nodes.length !== 0 ||
+      writes.has(target)
+    )
+      return { degrade: ESM_SHAPE_DEGRADE };
+    edits.push({ start: table.stmt.getStart(sf), end: table.stmt.getEnd(), text: "" });
+    edits.push(...removeDeclarators(sf, new Set([decl])));
+  }
+
+  /* The run-once closures. */
+  for (const init of inits.values()) {
+    const { call, body } = init;
+    edits.push(
+      {
+        start: call.getStart(sf),
+        end: body.getStart(sf) + 1,
+        text: "(() => { let __scriptc_done = false; function __scriptc_init() {",
+      },
+      {
+        start: body.getEnd() - 1,
+        end: call.getEnd(),
+        text: "} return function () { if (__scriptc_done) return; __scriptc_done = true; __scriptc_init(); }; })()",
+      },
+    );
+  }
+  return applyEdits(source, 0, source.length, edits);
+}

@@ -407,6 +407,15 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
             for (const chunk of split.chunks) setVirtualSource(chunk.path, chunk.source);
             original = split.text;
           }
+          // Then its lazily initialized ES modules become run-once closures.
+          const esm = original === null ? null : services.lowerEsmInits(original, path);
+          if (esm !== null && typeof esm === "object") {
+            reportFileDegrade(path, target.pkg, esm.degrade);
+            original = null;
+          } else if (esm !== null) {
+            original = esm;
+          }
+          const respelled = split !== null || esm !== null;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;
@@ -441,7 +450,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 findWidened?.text ??
                 classFields?.text ??
                 namepaths ??
-                (split !== null ? original : null);
+                (respelled ? original : null);
             }
           }
         } catch {
@@ -490,6 +499,48 @@ function namedBundlerHelpers(source: string): boolean {
 
 function hasTransformMarkers(source: string): boolean {
   return TRANSFORM_MARKERS.some((m) => source.includes(m));
+}
+
+/** The installed version of the package owning `file` (the innermost
+ * node_modules segment), or null when no package.json names one. */
+function installedVersionOf(file: string): string | null {
+  const norm = file.split("\\").join("/");
+  const idx = norm.lastIndexOf("/node_modules/");
+  if (idx < 0) return null;
+  const pkg = npmPackageNameOf(norm);
+  if (pkg === null) return null;
+  const text = trackedReadFile(`${norm.slice(0, idx)}/node_modules/${pkg}/package.json`);
+  if (text === null) return null;
+  try {
+    const version = (JSON.parse(text) as { version?: unknown }).version;
+    return typeof version === "string" ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Why a DefinitelyTyped twin cannot vouch for the runtime package `pkg`,
+ * or null when it can. DefinitelyTyped versions an @types package by the
+ * library version it describes (major.minor; 0.x minors break): the twin
+ * must describe the release that is installed, read from both package
+ * manifests next to the resolved declaration and JavaScript files. */
+export function definitelyTypedMismatch(
+  pkg: string,
+  typesFile: string,
+  jsFile: string,
+): string | null {
+  const typesVersion = installedVersionOf(typesFile);
+  const version = installedVersionOf(jsFile);
+  const twin = npmPackageNameOf(typesFile.split("\\").join("/")) ?? "its @types package";
+  if (typesVersion === null || version === null)
+    return `its declared types come from the separate ${twin} package, whose version cannot be matched against the installed ${pkg}`;
+  const line = (v: string): string => {
+    const [major = "", minor = ""] = v.split(".");
+    return major === "0" ? `0.${minor}` : major;
+  };
+  return line(typesVersion) === line(version)
+    ? null
+    : `its declared types come from ${twin}@${typesVersion}, which describes a different release than the installed ${pkg}@${version}`;
 }
 
 /** Auto-mode eligibility for one candidate package: `typesFile` is what

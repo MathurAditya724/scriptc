@@ -893,6 +893,7 @@ export function rewriteBundlerCjsSyntax(
       "__toESM",
       "__toCommonJS",
       "__commonJS",
+      "__esm",
       "__exportStar",
       "__createBinding",
       "__setModuleDefault",

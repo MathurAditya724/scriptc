@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2562)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2563)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
@@ -828,30 +828,44 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
 
   // Types-first resolution answers @types/twinned, but the refusal names the
   // package that has the code and the flag that compiles it.
-  test("an @types-typed package is refused under its runtime name with the opt-in remedy", () => {
-    const { coverage } = analyze(join(pilotRoot, "twinned-cli.ts"));
+  // The default selection compiles a package typed by a DefinitelyTyped
+  // twin that describes its installed release, and the untyped
+  // dependencies of compiled packages.
+  test("an @types-typed package and its untyped dependency compile by default", async () => {
+    const entry = join(pilotRoot, "twinned-cli.ts");
+    const { coverage } = analyze(entry);
+    expect(coverage.npmStatic).toEqual([
+      { package: "twinned", status: "static" },
+      { package: "ms", status: "static" },
+    ]);
+    expect(coverage.preflightFailed).toBe(false);
+    const binary = await buildStatic(entry, "auto");
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
+  test("an @types twin describing another release is refused with the opt-in remedy", () => {
+    const { coverage } = analyze(join(pilotRoot, "twinstale-cli.ts"));
     expect(coverage.npmStatic).toEqual([
       {
-        package: "twinned",
+        package: "twinstale",
         status: "refused",
         detail:
-          "its declared types come from the separate @types/twinned package, not the package itself",
-        hint: "to compile it anyway, name it with --npm-static=twinned (or --npm-static=twinned... to include its dependencies)",
+          "its declared types come from @types/twinstale@2.0.4, which describes a different release than the installed twinstale@3.1.0",
+        hint: "to compile it anyway, name it with --npm-static=twinstale (or --npm-static=twinstale... to include its dependencies)",
       },
     ]);
     const diagnostic = coverage.diagnostics.find((d) => d.code === "SC2013");
-    expect(diagnostic?.message).toContain("'twinned'");
-    expect(diagnostic?.hint).toContain("--npm-static=twinned");
+    expect(diagnostic?.message).toContain("'twinstale'");
   }, 120_000);
 
-  test("a named package's untyped dependency points at the transitive opt-in", () => {
+  test("a named package's untyped dependency compiles with it", () => {
     const { coverage } = analyze(join(pilotRoot, "twinned-cli.ts"), { npmStatic: ["twinned"] });
-    expect(coverage.npmStatic).toContainEqual({
-      package: "ms",
-      status: "refused",
-      detail: "it ships no own .d.ts declaration surface",
-      hint: "to compile it anyway, name it with --npm-static=ms, or use --npm-static=twinned... to include all of twinned's dependencies",
-    });
+    expect(coverage.npmStatic).toContainEqual({ package: "ms", status: "static" });
   }, 120_000);
 
   test("--npm-static=pkg... compiles the package's dependency closure", async () => {
@@ -1456,6 +1470,16 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       },
     ]);
   }, 120_000);
+
+  // 2563: lazily initialized ES modules (__esm) in esbuild 0.25 plain and
+  // whitespace/syntax-minified bundles.
+  test("bundled ES module initializers 2563-bundled-esm-inits compile statically and byte-match Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2563-bundled-esm-inits/main.ts"), [
+      "gtesm",
+      "gtesmws",
+      "gtcore",
+    ]);
+  }, 180_000);
 
   // 2562: a file with unverifiable interop that no compiled code can load
   // (the program imports a leaf data module and only a type from the

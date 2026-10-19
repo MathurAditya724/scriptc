@@ -11,6 +11,7 @@ import {
 import { resolveExports } from "./resolve.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
 import { isBundlerCjsCandidate, rewriteBundlerCjsSyntax } from "./npm-static-rewrite-syntax.js";
+import { lowerBundledEsmInits } from "./npm-static-bundled-esm.js";
 
 const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default"]);
 
@@ -162,6 +163,17 @@ function starTargetNames(parser: Ts7SourceParser, file: string): Set<string> {
   } catch {
     return new Set();
   }
+}
+
+export function lowerEsmInitsWithParser(
+  parser: Ts7SourceParser,
+  source: string,
+  filePath: string,
+): string | { degrade: string } | null {
+  if (!source.includes("__esm")) return null;
+  return lowerBundledEsmInits(parser.parse(filePath, source, "js"), filePath, {
+    requireTargetEsModuleStamped: (from, spec) => requireTargetEsModuleStamped(parser, from, spec),
+  });
 }
 
 export function rewriteBundlerCjsWithParser(

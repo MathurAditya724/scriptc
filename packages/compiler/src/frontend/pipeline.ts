@@ -16,6 +16,7 @@ import {
   type LoadResult,
 } from "./program.js";
 import {
+  definitelyTypedMismatch,
   npmStaticFileDegrades,
   npmStaticIneligibleReason,
   npmStaticOffenders,
@@ -219,13 +220,25 @@ function detectAutoPackages(
           chosen.push(runtimePkg);
           continue;
         }
+        // Both answers compile the JavaScript with inferred types; the
+        // declarations only check the importer. A DefinitelyTyped twin
+        // qualifies when it describes the installed release. A package
+        // without declarations qualifies as a dependency of a compiled
+        // package, whose JavaScript importer has no declarations to check.
+        const refusal =
+          npm === null
+            ? owner === null
+              ? "it ships no own .d.ts declaration surface"
+              : null
+            : definitelyTypedMismatch(runtimePkg, npm.typesFile, js!.typesFile);
+        if (refusal === null) {
+          chosen.push(runtimePkg);
+          continue;
+        }
         statuses.push({
           package: runtimePkg,
           status: "refused",
-          detail:
-            npm === null
-              ? "it ships no own .d.ts declaration surface"
-              : `its declared types come from the separate ${npm.packageName} package, not the package itself`,
+          detail: refusal,
           hint: npmStaticOptInHint(runtimePkg, owner),
         });
         continue;

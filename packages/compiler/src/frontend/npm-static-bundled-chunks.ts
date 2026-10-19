@@ -31,7 +31,7 @@ export interface BundledChunkSplit {
   chunks: { path: string; source: string }[];
 }
 
-interface Edit {
+export interface Edit {
   start: number;
   end: number;
   text: string;
@@ -42,11 +42,11 @@ const CHUNK_SHAPE_DEGRADE =
   "recognizer cannot verify";
 
 /** The helper a counter-suffixed bundler name spells (`__commonJS2`). */
-function helperBase(name: string): string {
+export function helperBase(name: string): string {
   return /^__[A-Za-z]+\d+$/.test(name) ? name.replace(/\d+$/, "") : name;
 }
 
-function unparen(e: ts.Expression): ts.Expression {
+export function unparen(e: ts.Expression): ts.Expression {
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   return e;
 }
@@ -54,7 +54,7 @@ function unparen(e: ts.Expression): ts.Expression {
 /** True for an identifier occurrence that reads or writes a binding (as
  * opposed to a property name, a label, or a declaration's own name).
  * Shorthand property values count: `{ x }` reads x. */
-function isReference(id: ts.Identifier): boolean {
+export function isReference(id: ts.Identifier): boolean {
   const p = id.parent;
   if (p === undefined) return false;
   if (ts.isPropertyAccessExpression(p)) return p.expression === id;
@@ -83,7 +83,7 @@ function isReference(id: ts.Identifier): boolean {
 
 /** Names a subtree declares anywhere inside it: variables (destructuring
  * included), parameters, function and class names, catch bindings. */
-function declaredNames(root: ts.Node): Set<string> {
+export function declaredNames(root: ts.Node): Set<string> {
   const names = new Set<string>();
   // Binding patterns nest BindingElements, which the walk visits too.
   ts.walkPreorder(root, (n) => {
@@ -106,7 +106,7 @@ function declaredNames(root: ts.Node): Set<string> {
 }
 
 /** Every binding reference inside a subtree. */
-function references(root: ts.Node): ts.Identifier[] {
+export function references(root: ts.Node): ts.Identifier[] {
   const out: ts.Identifier[] = [];
   ts.walkPreorder(root, (n) => {
     if (n.kind >= ts.SyntaxKind.FirstJSDocNode && n.kind <= ts.SyntaxKind.LastJSDocNode)
@@ -119,7 +119,7 @@ function references(root: ts.Node): ts.Identifier[] {
 
 /** True when the reference is written (assignment target, update operand,
  * loop target, delete operand). */
-function isWritten(id: ts.Identifier): boolean {
+export function isWritten(id: ts.Identifier): boolean {
   let child: ts.Node = id;
   for (let p = child.parent; p !== undefined; child = p, p = p.parent) {
     if (ts.isBinaryExpression(p)) {
@@ -247,7 +247,7 @@ interface TopLevel {
 }
 
 /** True when the file opens with a "use strict" directive prologue. */
-function strictPrologue(stmts: readonly ts.Statement[]): boolean {
+export function strictPrologue(stmts: readonly ts.Statement[]): boolean {
   for (const s of stmts) {
     if (!ts.isExpressionStatement(s) || !ts.isStringLiteral(s.expression)) return false;
     if (s.expression.text === "use strict") return true;
@@ -430,7 +430,7 @@ export function splitBundledChunks(
   return { text: applyEdits(source, 0, source.length, bundleEdits), chunks: out };
 }
 
-function countDeclarations(sf: ts.SourceFile, name: string): number {
+export function countDeclarations(sf: ts.SourceFile, name: string): number {
   let n = 0;
   ts.walkPreorder(sf, (node) => {
     if (
@@ -454,7 +454,7 @@ function countDeclarations(sf: ts.SourceFile, name: string): number {
 /** Applies non-overlapping edits inside [from, to): replaced spans keep
  * their newlines (blanked text stays line-aligned); edits nested in a
  * blanked span vanish with it. */
-function applyEdits(source: string, from: number, to: number, edits: Edit[]): string {
+export function applyEdits(source: string, from: number, to: number, edits: Edit[]): string {
   const inside = edits
     .filter((e) => e.start >= from && e.end <= to)
     .sort((a, b) => a.start - b.start || b.end - a.end);
@@ -472,37 +472,13 @@ function applyEdits(source: string, from: number, to: number, edits: Edit[]): st
   return text + source.slice(at, to);
 }
 
-/** The virtual module text for one chunk, or a degrade reason. */
-function chunkSource(
-  sf: ts.SourceFile,
-  chunk: Chunk,
-  chunks: ReadonlyMap<string, Chunk>,
-  top: ReadonlyMap<string, TopLevel>,
-  stable: (name: string) => boolean,
-  callEdits: readonly Edit[],
-  bundleStrict: boolean,
-): string | { degrade: string } {
-  const why = (reason: string): { degrade: string } => ({
-    degrade: `its bundled CommonJS module '${chunk.name}' ${reason}`,
-  });
-  const [exportsParam, moduleParam] = chunk.params;
-  const body = chunk.body;
-  const local = declaredNames(body);
-  for (const p of chunk.params) {
-    if (
-      local.has(p) ||
-      (p !== "exports" && local.has("exports")) ||
-      (p !== "module" && local.has("module"))
-    )
-      return why(
-        "rebinds its module parameters inside its body (an identifier-minified bundle the recognizer cannot respell)",
-      );
-  }
-
-  /* The factory's own frame must stay unobservable: its receiver, its
-   * arguments object, and a top-level return have no module equivalent. */
+/** How code in a factory body (a chunk or a lazy ES-module initializer)
+ * observes the factory's own frame, or null: its receiver, its arguments
+ * object, `super`, a meta property, or (when `returns`) a top-level
+ * return have no module-scope equivalent. */
+export function factoryFrameUse(body: ts.Block, returns: boolean): string | null {
   let frameUse: string | null = null;
-  /** The innermost frame boundary between a node and the chunk body. */
+  /** The innermost frame boundary between a node and the factory body. */
   const frameOf = (n: ts.Node): "factory" | "arrow" | "function" => {
     let arrow = false;
     for (let p = n.parent; p !== undefined && p !== body; p = p.parent) {
@@ -532,12 +508,43 @@ function chunkSource(
       use = "reads its factory's arguments object";
     else if (ts.isMetaProperty(n)) use = "reads a meta property at its top level";
     else if (ts.isReturnStatement(n)) {
-      if (frameOf(n) === "factory") frameUse = "returns from its top level";
+      if (returns && frameOf(n) === "factory") frameUse = "returns from its top level";
       return undefined;
     }
     if (use !== null && frameOf(n) !== "function") frameUse = use;
     return undefined;
   });
+  return frameUse;
+}
+
+/** The virtual module text for one chunk, or a degrade reason. */
+function chunkSource(
+  sf: ts.SourceFile,
+  chunk: Chunk,
+  chunks: ReadonlyMap<string, Chunk>,
+  top: ReadonlyMap<string, TopLevel>,
+  stable: (name: string) => boolean,
+  callEdits: readonly Edit[],
+  bundleStrict: boolean,
+): string | { degrade: string } {
+  const why = (reason: string): { degrade: string } => ({
+    degrade: `its bundled CommonJS module '${chunk.name}' ${reason}`,
+  });
+  const [exportsParam, moduleParam] = chunk.params;
+  const body = chunk.body;
+  const local = declaredNames(body);
+  for (const p of chunk.params) {
+    if (
+      local.has(p) ||
+      (p !== "exports" && local.has("exports")) ||
+      (p !== "module" && local.has("module"))
+    )
+      return why(
+        "rebinds its module parameters inside its body (an identifier-minified bundle the recognizer cannot respell)",
+      );
+  }
+
+  const frameUse = factoryFrameUse(body, true);
   if (frameUse !== null) return why(frameUse);
 
   const edits: Edit[] = callEdits.filter((e) => e.start >= body.pos && e.end <= body.end);
