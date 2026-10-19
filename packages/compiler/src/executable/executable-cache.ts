@@ -111,6 +111,9 @@ export interface EarlyExecutableCacheOptions {
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** Omitted for the default tsgo checker; with SCRIPTC_CHECKER=tsc-ts, the
+   * tsc-ts executable's file identity. */
+  checker?: string;
   npmStatic: readonly string[] | "auto" | null;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
@@ -221,6 +224,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.strip ? ["strip"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -260,6 +264,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.strip) hash.update("strip\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   hash
     .update(
       options.npmStatic === null

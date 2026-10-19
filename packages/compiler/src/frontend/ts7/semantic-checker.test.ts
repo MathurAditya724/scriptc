@@ -6,7 +6,7 @@ import { API } from "typescript/unstable/sync";
 import type { Node as SdkNode } from "typescript/unstable/ast";
 import { AstNode } from "./ast-node.js";
 import { Ts7RpcClient } from "./rpc-client.js";
-import { ts7Executable } from "./rpc-api.js";
+import { tsgoExecutable } from "./rpc-api.js";
 import { spawnTs7Wire } from "./rpc-process.js";
 import { Ts7Session } from "./session.js";
 import { SyntaxKind } from "./enums.js";
@@ -45,8 +45,9 @@ beforeAll(() => {
       files: [file],
     }),
   );
+  // Compared with the pinned SDK, which runs tsgo.
   session = new Ts7Session(
-    new Ts7RpcClient(spawnTs7Wire(ts7Executable(), ["--api", "--cwd", directory])),
+    new Ts7RpcClient(spawnTs7Wire(tsgoExecutable(), ["--api", "--cwd", directory])),
   );
   oracle = new API({ cwd: directory });
 });

@@ -11,7 +11,7 @@ import {
   type Ts7FileSystem,
 } from "./rpc-filesystem.js";
 import { spawnTs7Wire } from "./rpc-process.js";
-import { ts7Executable } from "./rpc-api.js";
+import { tsgoExecutable } from "./rpc-api.js";
 import { Ts7Session, Ts7SessionProject, Ts7SessionSnapshot } from "./session.js";
 import { AstNode } from "./ast-node.js";
 
@@ -25,9 +25,10 @@ const fallback: Ts7FileSystem = {
   getAccessibleEntries: () => undefined,
 };
 
+// These tests compare the session with the pinned SDK, which runs tsgo, so the session runs tsgo too.
 function transport(cwd: string, fs: Ts7FileSystem = fallback, timing = false) {
   const rpc = new Ts7RpcClient(
-    spawnTs7Wire(ts7Executable(), [
+    spawnTs7Wire(tsgoExecutable(), [
       "--api",
       "--cwd",
       cwd,
