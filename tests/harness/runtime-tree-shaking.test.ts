@@ -160,12 +160,14 @@ nativeToolchainTest(
     // Symbol absence is the primary reachability contract. Keep a deliberately
     // roomy, platform-specific hello-world ceiling too: it catches losing
     // section GC without pinning an exact linker/SDK byte count. The canonical
-    // Linux build is about 64-68KB and current Mach-O builds are about 70KB.
-    // ELF segments are page aligned, so the Linux size moves in 4 KiB steps
-    // whenever .text crosses a page boundary. These limits leave several
-    // native pages of linker-version slack while remaining far below the
-    // former roughly-400KB always-linked runtime.
-    const helloSizeLimit = process.platform === "linux" ? 80 * 1024 : 96 * 1024;
+    // Linux build is about 84KB and current Mach-O builds are about 70KB. Most
+    // of Linux hello's runtime code is the cycle collector, which its exit
+    // path reaches (scr_lib_cleanup releases an array). ELF segments are page
+    // aligned, so the Linux size moves in 4 KiB steps whenever .text crosses
+    // a page boundary. These limits leave several native pages of
+    // linker-version slack while remaining far below the former roughly-400KB
+    // always-linked runtime.
+    const helloSizeLimit = 96 * 1024;
     expect(statSync(hello.binaryPath).size).toBeLessThan(helloSizeLimit);
   },
 );

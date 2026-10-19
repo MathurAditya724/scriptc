@@ -116,6 +116,7 @@ import {
 } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
 import { copyStableCaptures } from "../../ir/capture-values.js";
+import { resolveSelfCaptures } from "../../ir/self-captures.js";
 import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
@@ -515,7 +516,9 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
               specializeNumericCalls(
                 foldConstantGlobals(
                   copyStableCaptures(
-                    hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                    resolveSelfCaptures(
+                      hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                    ),
                   ),
                 ),
                 mangleFunction,
@@ -543,7 +546,9 @@ export function emitLlvmModuleSource(
               specializeNumericCalls(
                 foldConstantGlobals(
                   copyStableCaptures(
-                    hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                    resolveSelfCaptures(
+                      hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                    ),
                   ),
                 ),
                 mangleFunction,

@@ -173,6 +173,7 @@ typedef enum {
   SCR_DYNH_BROADCAST_CHANNEL, /* worker_threads BroadcastChannel (scr_worker_events.c) */
   SCR_DYNH_HASH,           /* node:crypto Hash (scr_lib.c) */
   SCR_DYNH_HMAC,           /* node:crypto Hmac (scr_lib.c) */
+  SCR_DYNH_ITERATOR_HELPER, /* an iterator helper object over a checked iterator (scr_json.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 

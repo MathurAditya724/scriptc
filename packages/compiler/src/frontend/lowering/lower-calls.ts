@@ -222,6 +222,7 @@ import {
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
+import { maybePromiseReturnStmt, promiseArmedUnionOf } from "./maybe-promise.js";
 import {
   requireObjLitGenericReceiver,
   objLitGenericFnNodeOf,
@@ -5322,6 +5323,8 @@ export function lowerPromiseMethodCall(
         const resultOf = (value: IrExpr, returnsPromise = false): IrStmt[] => {
           if (value.type.kind === "promise")
             return [lowerer.adoptingReturn(value, R, (e) => lowerer.coerceInto(call, e, R))];
+          const flattened = maybePromiseHandlerResult(lowerer, call, value, R);
+          if (flattened) return [flattened];
           if (returnsPromise) {
             // A boxed handler's promise result adopts too: the then job's
             // turn after the call, then the await of the returned value.
@@ -5672,7 +5675,10 @@ export function lowerPromiseMethodCall(
       // The handler's result: promise returns flatten exactly like
       // `return p` in any async body (the spec's thenable adoption);
       // everything else coerces into R.
-      if (handlerCall.type.kind === "promise" && R.kind !== "promise") {
+      const flattened = maybePromiseHandlerResult(lowerer, call, handlerCall, R);
+      if (flattened) {
+        body.push(flattened);
+      } else if (handlerCall.type.kind === "promise" && R.kind !== "promise") {
         body.push(lowerer.adoptingReturn(handlerCall, R, (e) => lowerer.coerceInto(call, e, R)));
       } else if (R.kind === "void") {
         body.push({ kind: "exprStmt", expr: handlerCall, loc });
@@ -9777,4 +9783,27 @@ export function lowerStaticNumberGlobal(
     }
   }
   return null;
+}
+
+/** A then handler's promise-armed result (`.then(() => cached ?? load())`
+ * typed `T | Promise<T>`, or a `Promise<void> | void` callback's result):
+ * the lifted async body adopts the promise arm and fulfills with the
+ * others, like `return u` in an async function. Null for other results. */
+function maybePromiseHandlerResult(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  value: IrExpr,
+  R: IrType,
+): IrStmt | null {
+  const mp = promiseArmedUnionOf(lowerer, value.type);
+  if (!mp || promiseArmedUnionOf(lowerer, R)) return null;
+  const stmt = maybePromiseReturnStmt(lowerer, value, mp, R, (e) => lowerer.coerceInto(call, e, R));
+  if (stmt === null) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `then handlers returning '${lowerer.fmt(value.type)}' into '${lowerer.fmt(R)}' (an arm does not convert to the result)`,
+    );
+  }
+  return stmt;
 }

@@ -345,9 +345,12 @@ export function lowerLambda(
         } else {
           const value = lowerer.lowerExpr(bodyExpr);
           // `async () => p` with a void result still resolves the
-          // function's promise with p (its settlement, rejections included).
-          body =
-            value.kind === "unitLit"
+          // function's promise with p (its settlement, rejections included);
+          // a maybe-promise value adopts only its promise arm.
+          const flattened = isAsync ? lowerer.maybePromiseReturn(bodyExpr, value, VOID) : null;
+          body = flattened
+            ? [flattened]
+            : value.kind === "unitLit"
               ? []
               : isAsync && value.type.kind === "promise"
                 ? [lowerer.adoptingReturn(value, VOID, (e) => e)]
@@ -367,8 +370,13 @@ export function lowerLambda(
         if (isAsync && value.type.kind === "promise" && bodyReturn.kind !== "promise") {
           value = lowerer.returnedPromiseAwait(value);
         }
-        body =
-          value.type.kind === "void" && lowerer.wrappedUndefined(bodyReturn, locOf(node.body!))
+        const flattened =
+          isAsync && !fnCtx.inferReturn
+            ? lowerer.maybePromiseReturn(bodyExpr, value, bodyReturn)
+            : null;
+        body = flattened
+          ? [flattened]
+          : value.type.kind === "void" && lowerer.wrappedUndefined(bodyReturn, locOf(node.body!))
             ? [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }]
             : [
                 {

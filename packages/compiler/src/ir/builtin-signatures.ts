@@ -2644,6 +2644,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * opaque reference inputs retain explicit runtime refusals. */
   "buffer.fromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
   "buffer.concat": { argTypes: [arrayOf(BYTES_U8)], result: BYTES_U8 },
+  "buffer.concatDyn": { argTypes: [DYN], result: BYTES_U8 },
   /** The pooled Buffer factories (Node's allocate/fromStringFast/
    * fromArrayLike): allocUnsafe, Buffer.from of strings, Uint8Arrays,
    * number[] and checked values, and concat return views into the
@@ -2670,6 +2671,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * zero-padded to the total. THROWS Node's 'length' RangeError on a
    * negative/non-integer total (may-throw seed). */
   "buffer.concatLen": { argTypes: [arrayOf(BYTES_U8), F64], result: BYTES_U8 },
+  "buffer.concatLenDyn": { argTypes: [DYN, F64], result: BYTES_U8 },
   // The checked-dynamic compare/equals validators (Node's argument
   // ladders over dyn-boxed invalid-input probes).
   /** The checked-dynamic compare/equals validators (scr_bytes_io.c) —
