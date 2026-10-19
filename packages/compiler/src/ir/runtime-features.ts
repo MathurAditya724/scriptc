@@ -24,6 +24,11 @@ export interface RuntimeFeatures {
   assert: boolean;
   dynInvoke: boolean;
   dynAsync: boolean;
+  /** The program enters AsyncLocalStorage stores (store.run, enterWith,
+   * a diagnostics_channel store binding): its timer, immediate, tick and
+   * queueMicrotask scheduling goes through the runtime's *_als entry
+   * points, which carry the active stores into each callback. */
+  asyncContext: boolean;
   inspect: boolean;
   childProcess: boolean;
   net: boolean;
@@ -105,6 +110,16 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.disable",
   "dc.chanBindStore",
   "dc.chanUnbindStore",
+  "dc.chanRunStores",
+]);
+
+/** The libCalls that enter AsyncLocalStorage stores (RuntimeFeatures
+ * asyncContext). */
+const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "als.run",
+  "als.exitRun",
+  "als.enterWith",
+  "dc.chanBindStore",
   "dc.chanRunStores",
 ]);
 
@@ -203,6 +218,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     dc: false,
     assert: false,
     dynInvoke: mod.workers === true,
+    asyncContext: false,
     dynAsync:
       mod.workers === true ||
       mod.functions.some(
@@ -360,6 +376,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       )
         features.dynInvoke = true;
       if (DYN_ASYNC_LIB_FNS.has(fn)) features.dynAsync = true;
+      if (ASYNC_CONTEXT_LIB_FNS.has(fn)) features.asyncContext = true;
       if (
         fn.startsWith("insp.") ||
         fn.startsWith("console.") ||

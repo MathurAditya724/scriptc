@@ -120,6 +120,7 @@ void scr_als_restore(ScrAlsCtx *prev) {
 void scr_als_enter_with(double id, ScrDyn *value) {
   ScrAlsCtx *prev = scr_als_enter(id, value);
   scr_als_ctx_release(prev); /* no restore point — Node's enterWith */
+  scr_als_entered_with();
 }
 
 void scr_als_disable(double id) {

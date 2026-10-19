@@ -880,7 +880,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:AsyncLocalStorage",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -932,7 +933,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:asyncLocalStorage.disable",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -959,7 +961,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:asyncLocalStorage.getStore",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -986,7 +989,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:asyncLocalStorage.enterWith",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -1013,7 +1017,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:asyncLocalStorage.run",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -1040,7 +1045,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:asyncLocalStorage.exit",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -1771,7 +1777,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:AsyncLocalStorage",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
