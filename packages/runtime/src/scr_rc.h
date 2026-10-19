@@ -92,6 +92,9 @@ typedef struct ScrCycType {
  * SCR_CYC_KIND_EMITTED (llvm/alloc.ts FIRST_EMITTED_CYC_KIND). */
 enum {
   SCR_CYC_KIND_NONE = 0,
+  /* Also how the collector recognizes a cycle-capable ScrArr, whose dense
+   * elements it visits inline (scr_cycle.c SCR_CYC_CHILDREN): reserved for
+   * scr_array.c's descriptor. */
   SCR_CYC_KIND_ARRAY,
   SCR_CYC_KIND_PROMISE,
   SCR_CYC_KIND_BOX,
@@ -420,8 +423,15 @@ static inline void *scr_cyc_alloc_inline(size_t size, ScrCycType *type) {
   scr_cyc_live++;
   return h + 1;
 }
-static inline void scr_cyc_free_inline(void *obj) {
+/* scr_weak_dispose's NULL test inline, for the runtime's hot frees: the
+ * hook stays NULL unless the program creates a weak collection or keeps a
+ * checked record's source, so the free costs one predictable branch, not a
+ * call. */
+static inline void scr_weak_dispose_inline(void *obj) {
   if (scr_weak_dispose_hook) scr_weak_dispose_hook(obj);
+}
+static inline void scr_cyc_free_inline(void *obj) {
+  scr_weak_dispose_inline(obj);
   scr_cyc_live--;
   if (scr_cyc_gen(scr_cyc_hdr(obj)) == SCR_CYC_OLD) scr_cyc_old_freed++;
   scr_mem_free(scr_cyc_hdr(obj));

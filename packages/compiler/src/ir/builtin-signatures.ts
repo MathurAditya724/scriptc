@@ -563,6 +563,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** os.constants: the per-thread null-prototype constants object (dlopen,
    * errno, signals, priority, UV_UDP_REUSEADDR). Never throws. */
   "os.constants": { argTypes: [], result: DYN },
+  /** The deprecated node:constants object (scr_os.c): the os groups and
+   * fs.constants merged with the borrowed baked crypto.constants table,
+   * frozen, one per thread. */
+  "constants.object": { argTypes: [DYN], result: DYN },
   /** umask(2): arg < 0 reads without setting (umask has no read-only form
    * — set 0, restore); otherwise sets and answers the PREVIOUS mask.
    * Never throws. */
@@ -751,6 +755,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "num.toFixed0": { argTypes: [F64], result: STRING },
   "num.toFixed": { argTypes: [F64, F64], result: STRING },
   "num.toStringRadix": { argTypes: [F64, DYN], result: STRING },
+  /** toString(radix) with a number radix (scr_lib.c): truncates it as
+   * ToIntegerOrInfinity does, THROWS RangeError outside 2..36. */
+  "num.toStringRadixF64": { argTypes: [F64, F64], result: STRING },
   /** Object.is over two numbers — the spec's SameValue on doubles: NaN
    * equals NaN, +0 differs from -0, everything else is `===`. Plain bool
    * result; never throws. (Union-armed operands take unionEq's sameValue
@@ -861,6 +868,19 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
   "url.domainToASCII": { argTypes: [DYN, BOOL], result: STRING },
   "url.domainToUnicode": { argTypes: [DYN, BOOL], result: STRING },
+  /** node:punycode (scr_url.c): punycode.js 2.1.0's string conversions;
+   * decode/toUnicode (and, past 32-bit deltas, encode/toASCII) throw the
+   * module's RangeErrors, ucs2Encode String.fromCodePoint's. warn marks the
+   * module's first load (scr_async_dyn.c) and reports DEP0040 then unless
+   * the second argument is false: at once for a static ES import, on the
+   * next tick for a require() call. */
+  "punycode.decode": { argTypes: [STRING], result: STRING },
+  "punycode.encode": { argTypes: [STRING], result: STRING },
+  "punycode.toASCII": { argTypes: [STRING], result: STRING },
+  "punycode.toUnicode": { argTypes: [STRING], result: STRING },
+  "punycode.ucs2Decode": { argTypes: [STRING], result: arrayOf(F64) },
+  "punycode.ucs2Encode": { argTypes: [arrayOf(F64)], result: STRING },
+  "punycode.warn": { argTypes: [BOOL, BOOL], result: VOID },
   "url.fileURLToPathBuffer": { argTypes: [DYN, DYN], result: BYTES_U8 },
   "url.pathToFileURLChecked": { argTypes: [DYN, DYN], result: URL_T },
   "url.fileURLToPathStr": { argTypes: [STRING], result: STRING },
@@ -1438,7 +1458,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   // The suite body takes no parameters or its SuiteContext (flag 2).
   "test.suite": { argTypes: [STRING, F64, STRING, null, STRING, F64, F64], result: VOID },
-  "test.hook": { argTypes: [F64, null, F64], result: VOID },
+  // The trailing string is the hook call's "file:line:col".
+  "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
   "test.sub": {
     argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
     result: { kind: "promise", inner: VOID },
@@ -2623,6 +2644,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * opaque reference inputs retain explicit runtime refusals. */
   "buffer.fromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
   "buffer.concat": { argTypes: [arrayOf(BYTES_U8)], result: BYTES_U8 },
+  "buffer.concatDyn": { argTypes: [DYN], result: BYTES_U8 },
   /** The pooled Buffer factories (Node's allocate/fromStringFast/
    * fromArrayLike): allocUnsafe, Buffer.from of strings, Uint8Arrays,
    * number[] and checked values, and concat return views into the
@@ -2649,6 +2671,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * zero-padded to the total. THROWS Node's 'length' RangeError on a
    * negative/non-integer total (may-throw seed). */
   "buffer.concatLen": { argTypes: [arrayOf(BYTES_U8), F64], result: BYTES_U8 },
+  "buffer.concatLenDyn": { argTypes: [DYN, F64], result: BYTES_U8 },
   // The checked-dynamic compare/equals validators (Node's argument
   // ladders over dyn-boxed invalid-input probes).
   /** The checked-dynamic compare/equals validators (scr_bytes_io.c) —

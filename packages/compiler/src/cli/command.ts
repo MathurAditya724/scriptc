@@ -7,8 +7,10 @@ import {
   coverageEnvelope,
   coveragePasses,
   renderCoverage,
+  renderExplainDynamic,
   type CoverageFailOn,
 } from "../coverage/report.js";
+import { TIER_MODES, type TierMode } from "../frontend/tier-analysis.js";
 import { buildEnvelope } from "../diagnostics/envelope.js";
 import { renderWarnings } from "../diagnostics/render.js";
 import { isNativeOptimization } from "../backend/optimization.js";
@@ -45,8 +47,15 @@ function parseCli(
 ): ReturnType<
   typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
 > {
+  // `--explain-dynamic` takes an optional value: alone it lists every unit.
+  const normalized = args.map((arg) => (arg === "--explain-dynamic" ? "--explain-dynamic=" : arg));
   try {
-    return parseArgs({ args, options: CLI_OPTIONS, allowPositionals: true, allowNegative: true });
+    return parseArgs({
+      args: normalized,
+      options: CLI_OPTIONS,
+      allowPositionals: true,
+      allowNegative: true,
+    });
   } catch (err) {
     // parseArgs appends a paragraph about `--` and positionals to the
     // unknown-option message; the first sentence is the part that names
@@ -91,6 +100,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
       externalTypeArgs.length > 0 ||
       values.out !== undefined ||
       values["emit-ir"] ||
+      values.tier !== undefined ||
+      values["explain-dynamic"] !== undefined ||
       !values["keep-llvm"]
     ) {
       fail(
@@ -152,10 +163,12 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
       (values["npm-static"] ?? []).length > 0 ||
-      externalTypeArgs.length > 0
+      externalTypeArgs.length > 0 ||
+      values.tier !== undefined ||
+      values["explain-dynamic"] !== undefined
     ) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
     }
     const profilePath = resolve(profileArg);
@@ -223,6 +236,15 @@ async function main(args: string[], host: CliHost): Promise<number> {
     fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
   }
   const failOn = failOnRaw as CoverageFailOn | undefined;
+  const tierRaw = values.tier;
+  if (tierRaw !== undefined && !(TIER_MODES as readonly string[]).includes(tierRaw)) {
+    fail(`unknown --tier value "${tierRaw}" (supported: ${TIER_MODES.join(", ")})\n\n${USAGE}`);
+  }
+  const tier = tierRaw as TierMode | undefined;
+  const explainDynamic = values["explain-dynamic"];
+  if (explainDynamic !== undefined && command !== "coverage") {
+    fail(`--explain-dynamic is a coverage option\n\n${USAGE}`);
+  }
   if (printNativeLinkInfo && command !== "build") {
     fail(`--print=native-link-info is a build option\n\n${USAGE}`);
   }
@@ -263,6 +285,11 @@ async function main(args: string[], host: CliHost): Promise<number> {
     }
     externalTypes[specifier] = declarationPath;
   }
+  const wasmArgs = values.wasm ?? [];
+  if (wasmArgs.length > 0 && command !== "coverage") {
+    fail(`--wasm is a coverage-only option\n\n${USAGE}`);
+  }
+  const wasmFiles = wasmArgs.map((file) => resolve(file));
   const ffiProfilePath = values.ffi !== undefined ? resolve(values.ffi) : undefined;
   if (values.backend !== undefined && values.backend !== "llvm") {
     fail(`unknown backend "${values.backend}" (supported: llvm)\n\n${USAGE}`);
@@ -340,6 +367,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(npmStatic !== undefined ? { npmStatic } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(Object.keys(externalTypes).length > 0 ? { externalTypes } : {}),
+      ...(tier !== undefined ? { tier } : {}),
+      ...(explainDynamic !== undefined ? { explainDynamic: true } : {}),
+      ...(wasmFiles.length > 0 ? { wasm: wasmFiles } : {}),
     });
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.
@@ -354,6 +384,18 @@ async function main(args: string[], host: CliHost): Promise<number> {
       process.stdout.write(
         renderCoverage(coverage, { color, sourceTexts, root: process.cwd() }) + "\n",
       );
+      if (explainDynamic !== undefined && coverage.tiers !== undefined) {
+        process.stdout.write(
+          "\n" +
+            renderExplainDynamic(coverage.tiers, {
+              color,
+              sourceTexts,
+              root: process.cwd(),
+              query: explainDynamic,
+            }) +
+            "\n",
+        );
+      }
     }
     return coveragePasses(coverage, failOn) ? 0 : 1;
   }
@@ -386,6 +428,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(npmStatic !== undefined ? { npmStatic } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
+      ...(tier !== undefined ? { tier } : {}),
     });
     if (!result.ok) {
       if (printDiagnostics) {

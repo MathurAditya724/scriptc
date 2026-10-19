@@ -418,7 +418,12 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
 
   // An internal function referenced by exactly one other function, and by
   // no global, is a whole-program inlining candidate; keep it with that
-  // function so its partition can inline it without importing.
+  // function so its partition can inline it without importing. A function
+  // body larger than this is past LLVM's inline cost limit even for the only
+  // call to a local function, so it is placed by its own name. Otherwise a
+  // program's module initializers, which only the entry point calls, would
+  // all share the entry point's partition.
+  constexpr size_t MaxInlinedBodyBytes = 256 * 1024;
   constexpr unsigned Shared = ~1u;
   std::vector<unsigned> Referrer(Symbols.size(), NoPartition);
   for (unsigned I = 0; I < Symbols.size(); ++I) {
@@ -441,7 +446,8 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
     for (unsigned Steps = 0; Steps < 1024; ++Steps) {
       const Symbol &S = Symbols[Root];
       unsigned Parent = Referrer[Root];
-      if (!S.Local || Parent == NoPartition || Parent == Shared ||
+      if (!S.Local || S.Body.size() > MaxInlinedBodyBytes ||
+          Parent == NoPartition || Parent == Shared ||
           Symbols[Parent].Kind != SymbolKind::Function || Parent == I)
         break;
       Root = Parent;

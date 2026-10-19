@@ -28,6 +28,7 @@ import {
   traceAdapter,
   type ShapeHost,
 } from "./shapes.js";
+import { disposeHookLoadLines, RECORD_SOURCES_GATE } from "./alloc.js";
 import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
@@ -284,7 +285,8 @@ export class LlWalkers {
       throw new InternalCompilerError(
         `llvm emitter bug: jsonStringify of unknown shape ${shapeId}`,
       );
-    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+    const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
+    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
     if (recordMayKeepSource(shape)) this.emitRecordSourceWriter(B, shapeId);
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
@@ -396,6 +398,24 @@ export class LlWalkers {
     const writer = this.recordFieldWriter(shapeId);
     const lSource = B.newLabel("jw.source");
     const lNative = B.newLabel("jw.native");
+    // Only a program that can keep record sources looks one up (the gate
+    // folds to a constant), and only once one was kept: keeping a source
+    // installs the dispose hook, so a NULL hook means the table is empty.
+    const lHooked = B.newLabel("jw.hooked");
+    const kept = B.tmp();
+    B.line(`${kept} = load i1, ptr ${RECORD_SOURCES_GATE}`);
+    B.condBr(kept, lHooked, lNative);
+    B.startBlock(lHooked);
+    const hook = B.tmp();
+    const hookLines = disposeHookLoadLines(host, hook);
+    if (hookLines !== null) {
+      const lProbe = B.newLabel("jw.probe");
+      for (const line of hookLines) B.line(line.trimStart());
+      const installed = B.tmp();
+      B.line(`${installed} = icmp ne ptr ${hook}, null`);
+      B.condBr(installed, lProbe, lNative);
+      B.startBlock(lProbe);
+    }
     if (traceAdapter(host, { kind: "record", shapeId }) === null) {
       // One lookup: the runtime writes the record when it kept a source.
       host.declare(`declare zeroext i1 @scr_jb_try_record_source(ptr, ptr, ptr)`);
@@ -437,7 +457,8 @@ export class LlWalkers {
       throw new InternalCompilerError(`llvm emitter bug: field writer of unknown shape ${shapeId}`);
     const name = `sc_jwf_${this.recordFieldWriters.size}`;
     this.recordFieldWriters.set(shapeId, name);
-    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+    const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
+    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
     const byName = new Map(shape.fields.map((f) => [f.name, f]));
     const cyclic = traceAdapter(this.host, { kind: "record", shapeId }) !== null;
     const order = recordSourceFieldOrder(shape);
@@ -534,7 +555,7 @@ export class LlWalkers {
     const ovfp = B.tmp();
     const ovf = B.tmp();
     B.line(
-      `${ovfp} = getelementptr inbounds %${mangleRecordStruct(shape.id)}, ptr %v, i64 0, i32 ${shape.fields.length + 1}`,
+      `${ovfp} = getelementptr inbounds %${mangleRecordStruct(shape.id)}, ptr %v, i64 0, i32 ${shape.fields.length + this.host.nullableUnions.fieldBase(shape.id)}`,
     );
     B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
     if (iv.kind === "dyn") {

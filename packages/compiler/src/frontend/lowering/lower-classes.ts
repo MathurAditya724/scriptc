@@ -1,3 +1,4 @@
+import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { lowerReadlineUiNew } from "./builtins/readline.js";
@@ -11,7 +12,13 @@ import { InternalCompilerError } from "../../errors.js";
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
+import {
+  type BuiltinClassRef,
+  builtinClassAliasOf,
+  builtinClassRefOf,
+} from "./builtins/class-values.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
+import { inlineNamespaceRequireOf, lowerWithInlineRequireInit } from "./cjs-inline-require.js";
 import {
   BOOL,
   DATE_T,
@@ -44,6 +51,7 @@ import {
   implicitAnyParamSymbolsOf,
   implicitCallInstance,
   implicitMonoFile,
+  genericLocalClassResult,
   type GenericFnInfo,
 } from "./generic-functions.js";
 import {
@@ -143,7 +151,7 @@ import { lowerObjectFactoryNew } from "./object-factory-new.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
 import { classPrototypeData } from "./class-prototypes.js";
-import { constructionEscape, mentionsReceiver } from "./construction-escapes.js";
+import { constructionEscape } from "./construction-escapes.js";
 import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
 import { initializeRuntimeStatics, hasRuntimeStatics } from "./class-runtime-statics.js";
 import { reflectedClassStaticMethodValue } from "./class-method-values.js";
@@ -221,6 +229,11 @@ export function storedClassValueType(
       const value = storedClassValueType(lowerer, declaration.initializer, visiting);
       if (value?.kind === "classval") return value;
     }
+  }
+  // A generic factory's own local class has one class per instance.
+  if (ts.isCallExpression(expression)) {
+    const local = genericLocalClassResult(lowerer, expression);
+    if (local?.kind === "classval") return local;
   }
   const type = lowerer.typeOf(expression);
   const mapped = lowerer.mapTypeOf(type);
@@ -468,11 +481,6 @@ export interface ClassInfo {
    * unassigned read throws the catchable TypeError instead of yielding
    * an undefined the declared type cannot hold (SEMANTICS.md). */
   deferredInitFields?: Set<string>;
-  /** Fields (inherited included) that code construction exposes the
-   * instance to can read before their assignment: the slot is the
-   * undefined-armed union, allocation writes undefined, and reads yield the
-   * union value, so an early read sees undefined as in Node. */
-  earlyReadFields?: Set<string>;
   /** True when construction may hand the instance to other code (a method
    * call, an argument, a callback, or a base constructor that does) — a
    * subclass's own fields can then be read before their assignment. */
@@ -928,12 +936,15 @@ export function registerBuiltinStreamClasses(lowerer: Lowerer): void {
  * "stream" ambient module, EXCLUDING @types/node's (whose stream.Readable
  * also types child stdio — under @types/node the childStream mapping
  * keeps priority and the static stream classes stand down; the shipped
- * fallback declarations are the supported surface). */
+ * fallback declarations are the supported surface). A const binding of
+ * one (`const R = Readable`) names the same class (builtinClassAliasOf). */
 export function builtinStreamInfoOf(
   lowerer: Lowerer,
   symbol: ts.Symbol | null | undefined,
 ): ClassInfo | null {
   if (!symbol) return null;
+  const alias = builtinClassAliasOf(lowerer, symbol);
+  if (alias !== null) return alias.kind === "stream" ? alias.info : null;
   if (!lowerer.isStdlibSymbol(symbol)) {
     // A const ALIAS of a namespace member (`const Writable =
     // stream.Writable` — the two-step spelling; the one-step
@@ -1288,12 +1299,16 @@ function undefArmedFieldType(lowerer: Lowerer, p: ts.Symbol): IrType | null {
  * `extends EventEmitter`, `x instanceof EventEmitter`) — any import
  * spelling (named/default/namespace member, CJS require) resolves to
  * the ambient class. Provenance-checked like the error classes: only a
- * stdlib-file declaration inside the "events" ambient module counts. */
+ * stdlib-file declaration inside the "events" ambient module counts. A
+ * const binding of it (`const E = EventEmitter`) names the same class
+ * (builtinClassAliasOf). */
 export function builtinEmitterInfoOf(
   lowerer: Lowerer,
   symbol: ts.Symbol | null | undefined,
 ): ClassInfo | null {
   if (!symbol) return null;
+  const alias = builtinClassAliasOf(lowerer, symbol);
+  if (alias !== null) return alias.kind === "emitter" ? alias.info : null;
   if (!lowerer.isStdlibSymbol(symbol)) {
     // A const ALIAS of the emitter class member (`const EventEmitter =
     // require('node:events').EventEmitter` — commander's spelling; the
@@ -1334,12 +1349,17 @@ export function builtinEmitterInfoOf(
 /** The builtin error ClassInfo a VALUE symbol refers to (`new Error`,
  * `extends TypeError`, `x instanceof RangeError`), or null. Provenance-
  * checked: only the standard library's declarations count — a user's own
- * `class Error` resolves through classBySymbol instead. */
+ * `class Error` resolves through classBySymbol instead. A const binding
+ * of one (`const E = TypeError`) names the same class
+ * (builtinClassAliasOf). */
 export function builtinErrorInfoOf(
   lowerer: Lowerer,
   symbol: ts.Symbol | null | undefined,
 ): ClassInfo | null {
-  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  if (!symbol) return null;
+  const alias = builtinClassAliasOf(lowerer, symbol);
+  if (alias !== null) return alias.kind === "error" ? alias.info : null;
+  if (!lowerer.isStdlibSymbol(symbol)) return null;
   for (const [irName, rec] of RUNTIME_ERROR_CLASSES) {
     if (rec.lib === symbol.name) return lowerer.classes.get(irName) ?? null;
   }
@@ -3507,54 +3527,55 @@ export function collectClassShapeInner(
     const derived =
       decl.heritageClauses?.some((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword) ??
       false;
-    // A generic family is not emitted; its instances and each mixin
-    // application analyze their own construction with their actual base.
-    const escape: { escapes: boolean; assigned: Set<string> | null } = familyMode
-      ? { escapes: derived, assigned: null }
-      : constructionEscape({
-          ctor,
-          fields: fieldOrder.flatMap((f) =>
-            paramProps.some((pp) => pp.name === f.name)
-              ? []
-              : [{ name: f.name, initializer: f.initializer }],
-          ),
-          paramProps: paramProps.map((pp) => pp.name),
-          derived,
-          baseEscapes:
-            base === null ||
-            callableBase !== undefined ||
-            factoryBaseExpression !== undefined ||
-            base.constructionEscapes === true,
-          isField: (name) =>
-            fields.has(name) &&
-            !methods.has(`set:${name}`) &&
-            !lowerer.findMethodOn(base, `set:${name}`),
-          privateMethodBody: (call) => {
-            const callee = call.expression;
-            if (!ts.isPropertyAccessExpression(callee)) return null;
-            const name = callee.name.text;
-            const declaration = decl.members.find(
-              (member): member is ts.MethodDeclaration =>
-                ts.isMethodDeclaration(member) &&
-                member.body !== undefined &&
-                (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
-                member.name.text === name,
-            );
-            if (!declaration?.body || declaration.asteriskToken) return null;
-            const modifiers = ts.getModifiers(declaration) ?? [];
-            if (
-              modifiers.some(
-                (m) =>
-                  m.kind === ts.SyntaxKind.StaticKeyword || m.kind === ts.SyntaxKind.AsyncKeyword,
+    // Generic instances and mixins share layouts across declarations, so
+    // they only report whether construction exposes the instance.
+    const escape: { escapes: boolean; assigned: Set<string> | null } =
+      familyMode || mixin
+        ? { escapes: derived, assigned: null }
+        : constructionEscape({
+            ctor,
+            fields: fieldOrder.flatMap((f) =>
+              paramProps.some((pp) => pp.name === f.name)
+                ? []
+                : [{ name: f.name, initializer: f.initializer }],
+            ),
+            paramProps: paramProps.map((pp) => pp.name),
+            derived,
+            baseEscapes:
+              base === null ||
+              callableBase !== undefined ||
+              factoryBaseExpression !== undefined ||
+              base.constructionEscapes === true,
+            isField: (name) =>
+              fields.has(name) &&
+              !methods.has(`set:${name}`) &&
+              !lowerer.findMethodOn(base, `set:${name}`),
+            privateMethodBody: (call) => {
+              const callee = call.expression;
+              if (!ts.isPropertyAccessExpression(callee)) return null;
+              const name = callee.name.text;
+              const declaration = decl.members.find(
+                (member): member is ts.MethodDeclaration =>
+                  ts.isMethodDeclaration(member) &&
+                  member.body !== undefined &&
+                  (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
+                  member.name.text === name,
+              );
+              if (!declaration?.body || declaration.asteriskToken) return null;
+              const modifiers = ts.getModifiers(declaration) ?? [];
+              if (
+                modifiers.some(
+                  (m) =>
+                    m.kind === ts.SyntaxKind.StaticKeyword || m.kind === ts.SyntaxKind.AsyncKeyword,
+                )
               )
-            )
-              return null;
-            const isPrivate =
-              ts.isPrivateIdentifier(declaration.name) ||
-              modifiers.some((m) => m.kind === ts.SyntaxKind.PrivateKeyword);
-            return isPrivate ? declaration.body : null;
-          },
-        });
+                return null;
+              const isPrivate =
+                ts.isPrivateIdentifier(declaration.name) ||
+                modifiers.some((m) => m.kind === ts.SyntaxKind.PrivateKeyword);
+              return isPrivate ? declaration.body : null;
+            },
+          });
     // The deferred definite-assignment check: a field on the unguarded
     // list passes only with an unconditional `this.x = ...` at the
     // constructor's TOP LEVEL — the same standard the JS-class path
@@ -3610,30 +3631,18 @@ export function collectClassShapeInner(
       }
     }
 
-    // Fields assigned after construction can expose the instance (a method
-    // call, a base constructor that calls an override) can be read while
-    // Node still holds undefined. Their slots admit undefined, allocation
-    // writes it, and reads yield it, as in Node.
-    const earlyReadFields = new Set<string>(base?.earlyReadFields ?? []);
-    if (escape.assigned && escape.escapes) {
+    if (escape.assigned && !inst) {
       for (const f of fieldOrder) {
         if (f.redeclared || escape.assigned.has(f.name) || deferredInitFields.has(f.name)) continue;
+        if (paramProps.some((pp) => pp.name === f.name)) continue;
         const declared = fields.get(f.name);
-        if (declared === undefined || !earlyReadable(lowerer, declared)) continue;
-        // A declared `T | undefined` field already starts undefined.
-        if (declared.kind === "union" && lowerer.armTag(declared.unionId, UNDEFINED_T) >= 0)
+        if (declared?.kind !== "object" || lowerer.classes.get(declared.className)?.def.runtime)
           continue;
-        const armed = lowerer.runtimeOptionalType(declared);
-        if (armed.kind !== "union") continue;
+        const armed = lowerer.withUndefinedArm(declared);
+        if (armed === null || armed.kind !== "union") continue;
         fields.set(f.name, armed);
         f.type = armed;
-        // Primitive and union slots yield the undefined value itself.
-        // Reference slots keep the deferred-init reads: consumers that
-        // observe undefined (printing, equality, typeof, nullish defaults)
-        // see it, and member access on it throws a TypeError, as in Node.
-        if (declared.kind === "union" || PRIMITIVE_EARLY_READS.has(declared.kind))
-          earlyReadFields.add(f.name);
-        else deferredInitFields.add(f.name);
+        deferredInitFields.add(f.name);
       }
     }
 
@@ -3738,43 +3747,6 @@ export function collectClassShapeInner(
             (name) => !hasAccessor(name) && !methods.has(name) && !lowerer.findMethodOn(base, name),
           )
         : null;
-      // Constructor statements that run after the instance may have been
-      // exposed (a method call, `this` passed along, a base constructor
-      // that exposes it): a field they create can be read before its
-      // assignment, while Node holds undefined.
-      const exposedBefore = new Set<ts.Statement>();
-      {
-        let exposed = false;
-        for (const stmt of ctor?.body?.statements ?? []) {
-          const expression = ts.isExpressionStatement(stmt) ? stmt.expression : null;
-          if (
-            expression &&
-            ts.isCallExpression(expression) &&
-            expression.expression.kind === ts.SyntaxKind.SuperKeyword
-          ) {
-            if (base?.constructionEscapes === true || expression.arguments.some(mentionsReceiver))
-              exposed = true;
-            continue;
-          }
-          const assigned =
-            expression &&
-            ts.isBinaryExpression(expression) &&
-            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            ts.isPropertyAccessExpression(expression.left) &&
-            expression.left.expression.kind === ts.SyntaxKind.ThisKeyword
-              ? expression
-              : null;
-          if (exposed || (assigned && mentionsReceiver(assigned.right))) exposedBefore.add(stmt);
-          const plainAssignment =
-            assigned !== null &&
-            ts.isPropertyAccessExpression(assigned.left) &&
-            !mentionsReceiver(assigned.right) &&
-            !hasAccessor(assigned.left.name.text) &&
-            !methods.has(assigned.left.name.text) &&
-            !lowerer.findMethodOn(base, assigned.left.name.text);
-          if (!plainAssignment && mentionsReceiver(stmt)) exposed = true;
-        }
-      }
       if (ctor?.body) {
         for (const stmt of ctor.body.statements) {
           const lhs =
@@ -3845,15 +3817,8 @@ export function collectClassShapeInner(
             type = inheritedJsFieldType(lowerer, decl, name, type);
             // super() can invoke a subclass setter or method before its
             // constructor assignments run. These slots start undefined.
-            const sealed = sealedPrefix?.created.has(name) === true;
-            if (base && lowerer.dynConvertible(type) && !sealed) type = DYN;
-            if (exposedBefore.has(stmt) && !sealed && earlyReadable(lowerer, type)) {
-              const armed = lowerer.runtimeOptionalType(type);
-              if (armed.kind === "union") {
-                type = armed;
-                earlyReadFields.add(name);
-              }
-            }
+            if (base && lowerer.dynConvertible(type) && !sealedPrefix?.created.has(name))
+              type = DYN;
             fields.set(name, type);
             fieldOrder.push({ name, type, initializer: undefined });
             continue;
@@ -4114,7 +4079,6 @@ export function collectClassShapeInner(
         ? { classDecorators: { nodes: classDecoratorNodes } }
         : {}),
       ...(deferredInitFields.size > 0 ? { deferredInitFields } : {}),
-      ...(earlyReadFields.size > 0 ? { earlyReadFields } : {}),
       ...(escape.escapes ? { constructionEscapes: true as const } : {}),
     };
     // GENERIC members get their declaring-class backlink now that the
@@ -4419,6 +4383,7 @@ export function lowerStaticFieldInits(lowerer: Lowerer, info: ClassInfo): IrStmt
   // instantiation's bindings/context (a no-op for everything else —
   // generic FAMILIES own their statics and carry no genericInstance).
   const diagsBefore = lowerer.diags.length;
+  const sinkMark = lowerer.diagSinkMark();
   try {
     return withInstanceBindings(lowerer, info, () => lowerStaticFieldInitsInner(lowerer, info));
   } catch (error) {
@@ -4426,8 +4391,11 @@ export function lowerStaticFieldInits(lowerer: Lowerer, info: ClassInfo): IrStmt
     // Keep their refusal attached to the class declaration instead of
     // letting a poisoned initializer escape the module lowering pass.
     if (!(error instanceof PoisonError)) throw error;
-    if (info.decl && isJsSourceFile(info.decl.getSourceFile()) && lowerer.diagSink === null) {
-      const fence = lowerer.deferToRuntimeFence(diagsBefore, info.decl, { kind: "statement" });
+    if (info.decl && isJsSourceFile(info.decl.getSourceFile())) {
+      const fence =
+        lowerer.diagSink === null
+          ? lowerer.deferToRuntimeFence(diagsBefore, info.decl, { kind: "statement" })
+          : lowerer.capturedRuntimeFence(sinkMark, info.decl);
       if (fence) return [fence];
     }
     return [];
@@ -4564,6 +4532,7 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
     lowerer.stats.statementsTotal++;
     lowerer.bumpFileStat(locOf(f.initializer).file, "total");
     const diagsBefore = lowerer.diags.length;
+    const sinkMark = lowerer.diagSinkMark();
     try {
       const previousThis = lowerer.ctx.thisLocal;
       const receiver =
@@ -4599,10 +4568,11 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
       if (!(e instanceof PoisonError)) throw e;
       lowerer.stats.statementsFailed++;
       lowerer.bumpFileStat(locOf(f.initializer).file, "failed");
-      if (isJsSourceFile(f.initializer.getSourceFile()) && lowerer.diagSink === null) {
-        const fence = lowerer.deferToRuntimeFence(diagsBefore, f.initializer, {
-          kind: "statement",
-        });
+      if (isJsSourceFile(f.initializer.getSourceFile())) {
+        const fence =
+          lowerer.diagSink === null
+            ? lowerer.deferToRuntimeFence(diagsBefore, f.initializer, { kind: "statement" })
+            : lowerer.capturedRuntimeFence(sinkMark, f.initializer);
         if (fence) out.push(fence);
       }
     }
@@ -6289,33 +6259,6 @@ function overrideReturnAbi(
   return declared;
 }
 
-/** Field kinds whose early reads yield the undefined value (earlyReadFields). */
-const PRIMITIVE_EARLY_READS: ReadonlySet<IrType["kind"]> = new Set([
-  "f64",
-  "bool",
-  "string",
-  "bigint",
-]);
-
-/** Field types whose slot can admit undefined for reads before the field's
- * assignment. Date values are scalars, so their unassigned slot is memory
- * safe; checked-dynamic slots already hold undefined. */
-function earlyReadable(lowerer: Lowerer, type: IrType): boolean {
-  if (isUnitType(type)) return false;
-  switch (type.kind) {
-    case "dyn":
-    case "void":
-    case "date":
-    case "generator":
-    case "caught":
-      return false;
-    case "object":
-      return lowerer.classes.get(type.className)?.def.runtime !== true;
-    default:
-      return true;
-  }
-}
-
 /** The nearest declaration of `name` at or above `info` — the method a
  * receiver of that static class runs when nothing below overrides it. */
 export function findMethodOn(
@@ -6502,7 +6445,7 @@ export function collectInheritedJsFieldWrites(
  * hierarchy identifies the original declarations through aliases as well. */
 export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.SourceFile[]): void {
   const families: [ts.MethodDeclaration, ts.MethodDeclaration][] = [];
-  collectClassMethodMutations(lowerer, files);
+  lowerer.speculativeTypeQueries(() => collectClassMethodMutations(lowerer, files));
   const visit = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
       const accessors = node.members.filter(
@@ -7703,6 +7646,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
     lowerer.stats.statementsTotal++;
     lowerer.bumpFileStat(locOf(f.initializer).file, "total");
     const diagsBefore = lowerer.diags.length;
+    const sinkMark = lowerer.diagSinkMark();
     try {
       const value = lowerer.lowerExprExpecting(f.initializer, f.type);
       out.push({
@@ -7717,10 +7661,11 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
       if (!(e instanceof PoisonError)) throw e;
       lowerer.stats.statementsFailed++;
       lowerer.bumpFileStat(locOf(f.initializer).file, "failed");
-      if (isJsSourceFile(f.initializer.getSourceFile()) && lowerer.diagSink === null) {
-        const fence = lowerer.deferToRuntimeFence(diagsBefore, f.initializer, {
-          kind: "statement",
-        });
+      if (isJsSourceFile(f.initializer.getSourceFile())) {
+        const fence =
+          lowerer.diagSink === null
+            ? lowerer.deferToRuntimeFence(diagsBefore, f.initializer, { kind: "statement" })
+            : lowerer.capturedRuntimeFence(sinkMark, f.initializer);
         if (fence) out.push(fence);
       }
     }
@@ -7753,11 +7698,7 @@ function paramPropInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrLoca
       obj: { kind: "varRef", localId: thisLocal.id, type: thisType, loc },
       className: info.def.name,
       field: pp.name,
-      // An early-readable field's slot admits undefined (earlyReadFields).
-      value: lowerer.coerceToExpected(
-        { kind: "varRef", localId: local!.id, type: local!.type, loc },
-        info.fields.get(pp.name) ?? local!.type,
-      ),
+      value: { kind: "varRef", localId: local!.id, type: local!.type, loc },
       loc,
     });
   }
@@ -8526,8 +8467,22 @@ function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType
   return lowerer.currentClass?.fields.get(parent.left.name.text) ?? null;
 }
 
+/** Map, Set and the error classes construct in lowerNew's identifier
+ * branch, which a module member alias of one (`new mod.M()`) also takes. */
+function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
+  return ref?.kind === "collection" || ref?.kind === "error";
+}
+
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // `new (require("./x").C)()`: the module's %init at the require's
+  // position, then construction through the member as for a binding.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const req = inlineNamespaceRequireOf(lowerer, expr.expression.expression);
+    if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
+      return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
+    }
+  }
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr);
@@ -8551,6 +8506,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       undefined,
       lowerer.checker.getSymbolAtLocation(expr.expression),
     );
+  const valueReturning = lowerValueReturningConstructorNew(lowerer, expr);
+  if (valueReturning) return valueReturning;
   const instanceConstructor = lowerInstanceConstructorNew(lowerer, expr);
   if (instanceConstructor) return instanceConstructor;
   const objectFactory = lowerObjectFactoryNew(lowerer, expr);
@@ -8818,7 +8775,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     ts.isIdentifier(expr.expression) ||
     (ts.isPropertyAccessExpression(expr.expression) &&
       ts.isIdentifier(expr.expression.name) &&
-      lowerer.isStdlibGlobal(expr.expression.expression, "globalThis"))
+      (lowerer.isStdlibGlobal(expr.expression.expression, "globalThis") ||
+        // `new mod.M()` over an exported `const M = Map` or `const E =
+        // TypeError`
+        isCollectionOrErrorClass(builtinClassRefOf(lowerer, expr.expression))))
   ) {
     // `import C = N.C; new C()` — the alias's own source-order guards
     // (a no-op for every non-import= binding).
@@ -9183,7 +9143,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (symbol?.name === "Array" && lowerer.isStdlibSymbol(symbol)) {
       return lowerArrayConstructor(lowerer, expr, expr.arguments ?? []);
     }
-    if (symbol?.name === "Map" && lowerer.isStdlibSymbol(symbol)) {
+    // A const alias (`const M = Map`) constructs the same Map.
+    if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Map")) {
       const seedArg = (expr.arguments?.length ?? 0) === 1 ? expr.arguments![0]! : null;
       const isPairLit = (el: ts.Expression): el is ts.ArrayLiteralExpression =>
         ts.isArrayLiteralExpression(el) &&
@@ -9315,7 +9276,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     }
     // `new Set<T>()`: construct + bulk add from supported values,
     // including live collection cursors. Duplicates collapse in insertion order.
-    if (symbol?.name === "Set" && lowerer.isStdlibSymbol(symbol)) {
+    if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Set")) {
       const tsType = lowerer.typeOf(expr);
       let mapped = lowerer.mapTypeOf(tsType);
       const fieldType = assignedThisFieldType(lowerer, expr);

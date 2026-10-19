@@ -436,11 +436,14 @@ export function resolveInferredReturn(
       if (ice.length > 0) lowerer.diags.push(...ice);
       lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
       const first = captured.find((d) => d.code !== "SC9001");
+      // Property writes, not literal element writes: the class method
+      // census reads `x["kind"] = …` as a possible write to every method
+      // named `kind`, which would make those methods dynamic in native builds.
       const mutable = e.stmt as unknown as Record<string, unknown>;
-      delete mutable["value"];
-      mutable["kind"] = "runtimeFence";
-      mutable["code"] = first?.code ?? "SC1090";
-      mutable["message"] = first
+      delete mutable.value;
+      mutable.kind = "runtimeFence";
+      mutable.code = first?.code ?? "SC1090";
+      mutable.message = first
         ? `${first.message} [${first.code}]`
         : "this return value has no lowering onto the instance's settled return type [SC1090]";
     }

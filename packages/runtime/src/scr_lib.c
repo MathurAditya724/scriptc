@@ -824,6 +824,26 @@ static void scr_node_debug_capture(const ScrStr *name) {
   if (name->len == 10 && memcmp(name->data, "NODE_DEBUG", 10) == 0) (void)scr_node_debug_initial();
 }
 
+/* Counts writes and deletes of process.env.TZ. The local-time getters keep
+ * their last conversion for the generation it was made in. */
+#ifdef SCR_WORKERS
+static atomic_uint scr_date_tz_generation;
+#else
+static unsigned scr_date_tz_generation;
+#endif
+
+/* After a write or delete of the process's TZ, local time follows the new
+ * value, as in Node: tzset(3) rereads it for later localtime calls. */
+static void scr_env_tz_changed(const ScrStr *name) {
+  /* Compared by character: a string literal would join the merged
+   * read-only strings of every program that links this file. */
+  if (name->len != 2 || name->data[0] != 'T' || name->data[1] != 'Z') return;
+#if !defined(_WIN32) && !defined(__wasi__)
+  tzset();
+#endif
+  scr_date_tz_generation++;
+}
+
 /* process.env.NAME = v — setenv(3): later scr_env_get reads and spawned
  * children (posix_spawn inherits environ) observe the write, like Node.
  * Both args borrowed (NUL-terminated ScrStr data); setenv copies. */
@@ -842,6 +862,7 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
 #else
   setenv(k, v, 1);
 #endif
+  scr_env_tz_changed(name);
 #ifdef SCR_WORKERS
 done:
 #endif
@@ -861,6 +882,7 @@ void scr_env_unset(const ScrStr *name) {
 #else
   unsetenv(name->data);
 #endif
+  scr_env_tz_changed(name);
 }
 
 static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii);
@@ -8076,6 +8098,201 @@ void scr_crypto_hash_release(ScrCryptoHash *hash) {
 void *scr_crypto_hash_retain_v(void *p) { return scr_crypto_hash_retain(p); }
 void scr_crypto_hash_release_v(void *p) { scr_crypto_hash_release(p); }
 
+/* Node's TypeError for calling a missing member: "<what> is not a
+ * function", where `what` is the callee's source text, of any length. */
+static void scr_lib_throw_not_a_function(const char *what) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, what);
+  scr_jb_puts(&b, " is not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+/* Hash and Hmac values seen as 'unknown' are native handles. update(),
+ * digest() and Hash's copy() dispatch through the handle, called or read
+ * as values; the other members Node defines on a Hash or Hmac (the
+ * Transform and emitter surface) throw a coded SC2020 error, and other
+ * names read as undefined, as they do in Node. The member names are one
+ * NUL-separated char array, which the linker drops from programs that
+ * never box a Hash (an array of string pointers keeps the strings in the
+ * unit's shared string section). */
+static const char scr_crypto_hash_dyn_members[] =
+    "_destroy\0_events\0_eventsCount\0_final\0_flush\0_maxListeners\0_options\0_read\0"
+    "_readableState\0_transform\0_undestroy\0_writableState\0_write\0_writev\0addListener\0"
+    "allowHalfOpen\0closed\0compose\0constructor\0cork\0destroy\0destroyed\0digest\0drop\0"
+    "emit\0end\0errored\0eventNames\0every\0filter\0find\0flatMap\0forEach\0getMaxListeners\0"
+    "isPaused\0iterator\0listenerCount\0listeners\0map\0off\0on\0once\0pause\0pipe\0"
+    "prependListener\0prependOnceListener\0push\0rawListeners\0read\0readable\0"
+    "readableAborted\0readableBuffer\0readableDidRead\0readableEncoding\0readableEnded\0"
+    "readableFlowing\0readableHighWaterMark\0readableLength\0readableObjectMode\0reduce\0"
+    "removeAllListeners\0removeListener\0resume\0setDefaultEncoding\0setEncoding\0"
+    "setMaxListeners\0some\0take\0toArray\0uncork\0unpipe\0unshift\0update\0wrap\0writable\0"
+    "writableBuffer\0writableCorked\0writableEnded\0writableFinished\0writableHighWaterMark\0"
+    "writableLength\0writableNeedDrain\0writableObjectMode\0write\0";
+
+static bool scr_crypto_hash_dyn_member(const ScrCryptoHash *hash, const char *key, size_t len) {
+  if (len == 4 && memcmp(key, "copy", 4) == 0) return !hash->hmac;
+  for (const char *name = scr_crypto_hash_dyn_members; *name; name += strlen(name) + 1)
+    if (strlen(name) == len && memcmp(name, key, len) == 0) return true;
+  return false;
+}
+
+static void scr_crypto_hash_dyn_unsupported(const ScrCryptoHash *hash) {
+  static const char hash_msg[] =
+      "Hash members other than update(), digest() and copy() have no lowering on an 'unknown' "
+      "value; cast the value to Hash first";
+  static const char hmac_msg[] =
+      "Hmac members other than update() and digest() have no lowering on an 'unknown' value; "
+      "cast the value to Hmac first";
+  if (hash->hmac) scr_throw_error_msg_code(SCR_ERR_ERROR, hmac_msg, sizeof hmac_msg - 1, "SC2020");
+  else scr_throw_error_msg_code(SCR_ERR_ERROR, hash_msg, sizeof hash_msg - 1, "SC2020");
+}
+
+/* The method values: update() is one function for Hash and Hmac, as in
+ * Node; digest() is one per class, and copy() is Hash's. */
+enum { SCR_HASH_DYN_UPDATE, SCR_HASH_DYN_HASH_DIGEST, SCR_HASH_DYN_HMAC_DIGEST, SCR_HASH_DYN_COPY };
+static const char *const scr_crypto_hash_dyn_method_names[] = {"update", "digest", "digest", "copy"};
+static SCR_TL ScrDyn *scr_crypto_hash_dyn_methods[4];
+static SCR_TL bool scr_crypto_hash_dyn_methods_registered;
+
+static void scr_crypto_hash_dyn_methods_cleanup(void) {
+  for (size_t i = 0; i < 4; i++) {
+    ScrDyn *method = scr_crypto_hash_dyn_methods[i];
+    scr_crypto_hash_dyn_methods[i] = NULL;
+    scr_dyn_release(method);
+  }
+}
+
+static int scr_crypto_hash_dyn_method_index(const ScrCryptoHash *hash, const char *key, size_t len) {
+  if (len == 6 && memcmp(key, "update", 6) == 0) return SCR_HASH_DYN_UPDATE;
+  if (len == 6 && memcmp(key, "digest", 6) == 0)
+    return hash->hmac ? SCR_HASH_DYN_HMAC_DIGEST : SCR_HASH_DYN_HASH_DIGEST;
+  if (len == 4 && memcmp(key, "copy", 4) == 0 && !hash->hmac) return SCR_HASH_DYN_COPY;
+  return -1;
+}
+
+/* Runs method `index` on `hash`; `self` is the receiving box, which
+ * update() answers. */
+static ScrDyn *scr_crypto_hash_dyn_run(ScrCryptoHash *hash, ScrDyn *self, int index,
+                                       ScrDyn *const *args, size_t argc) {
+  ScrDyn *undefined = scr_dyn_undefined();
+  ScrDyn *first = argc > 0 ? args[0] : undefined;
+  ScrDyn *second = argc > 1 ? args[1] : undefined;
+  ScrDyn *result = NULL;
+  if (index == SCR_HASH_DYN_UPDATE) {
+    ScrCryptoHash *updated = scr_crypto_hash_update_dyn(hash, first, second);
+    if (updated) {
+      scr_crypto_hash_release(updated);
+      result = scr_dyn_retain(self);
+    }
+  } else if (index == SCR_HASH_DYN_COPY) {
+    ScrCryptoHash *copy = scr_crypto_hash_copy_opts(hash, first);
+    if (copy) {
+      result = scr_dyn_new_handle(copy, SCR_DYNH_HASH);
+      scr_crypto_hash_release(copy);
+    }
+  } else {
+    result = scr_crypto_hash_digest_dyn(hash, first);
+  }
+  scr_dyn_release(undefined);
+  return result;
+}
+
+static ScrDyn *scr_crypto_hash_dyn_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  int index = (int)scr_box_get_f64(clo->caps[0]);
+  ScrDyn *self = scr_dyn_this_get();
+  bool hash_this = self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_HASH;
+  bool hmac_this = self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_HMAC;
+  bool valid = index == SCR_HASH_DYN_UPDATE ? hash_this || hmac_this
+               : index == SCR_HASH_DYN_HMAC_DIGEST ? hmac_this
+                                                   : hash_this;
+  ScrDyn *result = NULL;
+  if (valid) {
+    result = scr_crypto_hash_dyn_run(self->v.handle.ptr, self, index, args, argc);
+  } else {
+    static const char msg[] =
+        "Hash and Hmac methods called with a receiver other than their own Hash or Hmac have no "
+        "lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+static ScrDyn *scr_crypto_hash_dyn_method_value(int index) {
+  if (!scr_crypto_hash_dyn_methods_registered) {
+    scr_crypto_hash_dyn_methods_registered = true;
+    scr_atexit(scr_crypto_hash_dyn_methods_cleanup);
+  }
+  if (!scr_crypto_hash_dyn_methods[index]) {
+    ScrClosure *clo = scr_closure_new(NULL, 1);
+    clo->caps[0] = scr_box_new(SCR_BOX_F64);
+    scr_box_set_f64(clo->caps[0], (double)index);
+    uint32_t arity = index == SCR_HASH_DYN_UPDATE ? 2 : 1;
+    scr_crypto_hash_dyn_methods[index] = scr_dyn_new_func(
+        clo, scr_crypto_hash_dyn_method_call, arity, "", scr_crypto_hash_dyn_method_names[index]);
+  }
+  return scr_dyn_retain(scr_crypto_hash_dyn_methods[index]);
+}
+
+static ScrDyn *scr_crypto_hash_dyn_invoke(void *h, ScrDyn *self, const char *method,
+                                          ScrDyn *const *args, size_t argc, const char *what) {
+  ScrCryptoHash *hash = h;
+  size_t len = strlen(method);
+  int index = scr_crypto_hash_dyn_method_index(hash, method, len);
+  if (index >= 0) return scr_crypto_hash_dyn_run(hash, self, index, args, argc);
+  if (scr_crypto_hash_dyn_member(hash, method, len)) {
+    scr_crypto_hash_dyn_unsupported(hash);
+    return NULL;
+  }
+  scr_lib_throw_not_a_function(what);
+  return NULL;
+}
+
+static ScrDyn *scr_crypto_hash_dyn_get(void *h, const char *key, size_t len) {
+  int index = scr_crypto_hash_dyn_method_index(h, key, len);
+  if (index >= 0) return scr_crypto_hash_dyn_method_value(index);
+  if (scr_crypto_hash_dyn_member(h, key, len)) scr_crypto_hash_dyn_unsupported(h);
+  return NULL;
+}
+
+static bool scr_crypto_hash_dyn_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_crypto_hash_dyn_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  static const ScrDynHandleOps hash_ops = {
+      .cls = "Hash",
+      .retain = scr_crypto_hash_retain_v,
+      .release = scr_crypto_hash_release_v,
+      .invoke = scr_crypto_hash_dyn_invoke,
+      .get = scr_crypto_hash_dyn_get,
+      .set = scr_crypto_hash_dyn_set,
+  };
+  static const ScrDynHandleOps hmac_ops = {
+      .cls = "Hmac",
+      .retain = scr_crypto_hash_retain_v,
+      .release = scr_crypto_hash_release_v,
+      .invoke = scr_crypto_hash_dyn_invoke,
+      .get = scr_crypto_hash_dyn_get,
+      .set = scr_crypto_hash_dyn_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_HASH, &hash_ops);
+  scr_dyn_handle_install(SCR_DYNH_HMAC, &hmac_ops);
+}
+
+ScrDyn *scr_crypto_hash_to_dyn(ScrCryptoHash *hash) {
+  scr_crypto_hash_dyn_install();
+  return scr_dyn_new_handle(hash, hash->hmac ? SCR_DYNH_HMAC : SCR_DYNH_HASH);
+}
+
 static ScrCryptoHash *scr_crypto_hash_update_raw(ScrCryptoHash *hash,
                                                  const unsigned char *data, size_t len) {
   if (!scr_crypto_hash_updatable(hash)) return NULL;
@@ -9314,9 +9531,7 @@ static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, 
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
-  char message[160];
-  int n = snprintf(message, sizeof message, "%s is not a function", what);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  scr_lib_throw_not_a_function(what);
   return NULL;
 }
 
@@ -10475,9 +10690,14 @@ typedef struct ScrDateParts {
  * endpoint. The checked wrapper is the public UTC-getter gate; the inner
  * walk accepts those bounded local-time values too. */
 static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
-  double dayd = floor(t / 86400000.0);
-  long long msday = (long long)(t - dayd * 86400000.0);
-  long long z = (long long)dayd + 719468;
+  /* t is an integral number of milliseconds within about 2^53. */
+  long long tms = (long long)t;
+  long long day = tms / 86400000, msday = tms % 86400000;
+  if (msday < 0) {
+    msday += 86400000;
+    day--;
+  }
+  long long z = day + 719468;
   long long era = (z >= 0 ? z : z - 146096) / 146097;
   unsigned long long doe = (unsigned long long)(z - era * 146097);
   unsigned long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
@@ -10487,7 +10707,7 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
   unsigned long long m = mp < 10 ? mp + 3 : mp - 9;
   if (m <= 2) y++;
-  long long wday = ((long long)dayd + 4) % 7;
+  long long wday = (day + 4) % 7;
   if (wday < 0) wday += 7;
   out->year = y;
   out->month = (int)m - 1;
@@ -10516,10 +10736,39 @@ static bool scr_date_localtime(double secd, struct tm *out) {
 #endif
 }
 
+/* The thread's last local conversion: reading several local fields of one
+ * Date (getFullYear, getMonth, getDate, getHours, ...) converts it once.
+ * A change of process.env.TZ starts a new generation. */
+typedef struct {
+  bool valid;
+  unsigned generation;
+  double ms;
+  ScrDateParts parts;
+} ScrDateLocalCache;
+static SCR_TL ScrDateLocalCache scr_date_local_cache;
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out);
+
 static bool scr_date_local_parts(double ms, ScrDateParts *out) {
   if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
   double clipped = trunc(ms);
-  double secd = floor(clipped / 1000.0);
+  ScrDateLocalCache *c = &scr_date_local_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (c->valid && c->ms == clipped && c->generation == generation) {
+    *out = c->parts;
+    return true;
+  }
+  if (!scr_date_local_parts_uncached(clipped, out)) return false;
+  c->valid = true;
+  c->generation = generation;
+  c->ms = clipped;
+  c->parts = *out;
+  return true;
+}
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out) {
+  long long cms = (long long)clipped;
+  double secd = (double)(cms / 1000 - (cms % 1000 < 0));
   struct tm tmv;
   double basis_secd = secd;
   if (!scr_date_localtime(basis_secd, &tmv)) {
@@ -10660,6 +10909,64 @@ ScrStr *scr_num_to_fixed0(double x) {
  * the receiver's non-finite arm, as ECMA-262 requires. Invalid precision
  * raises V8's catchable RangeError text; otherwise the result is +1. The
  * exact-binary-value digits come from scr_f64_to_fixed (scr_number.c). */
+/* Number.prototype.toString(radix) with a number radix, which
+ * ToIntegerOrInfinity truncates (NaN to 0). Radix digit generation follows
+ * V8's DoubleToRadixStringView algorithm. Copyright 2012 the V8 project
+ * authors. BSD license in ../vendor/v8-number-radix/LICENSE. The decimal
+ * path retains Ryū. */
+ScrStr *scr_num_to_string_radix_f64(double value, double requested) {
+  requested = isnan(requested) ? 0 : trunc(requested);
+  if (requested < 2 || requested > 36 || !isfinite(requested)) {
+    static const char message[] = "toString() radix argument must be between 2 and 36";
+    scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+    return NULL;
+  }
+  int radix = (int)requested;
+  if (radix == 10 || !isfinite(value) || value == 0) return scr_f64_to_scrstr(value);
+  static const char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+  char buffer[2200];
+  const size_t middle = sizeof buffer / 2;
+  size_t begin = middle, end = middle;
+  bool negative = value < 0;
+  value = fabs(value);
+  double integer = floor(value), fraction = value - integer;
+  double tolerance = 0.5 * (nextafter(value, INFINITY) - value);
+  if (tolerance <= 0) tolerance = nextafter(0, INFINITY);
+  if (fraction >= tolerance) {
+    buffer[end++] = '.';
+    do {
+      fraction *= radix;
+      tolerance *= radix;
+      int digit = (int)fraction;
+      buffer[end++] = digits[digit];
+      fraction -= digit;
+      if ((fraction > 0.5 || (fraction == 0.5 && (digit & 1))) && fraction + tolerance > 1) {
+        for (;;) {
+          end--;
+          if (end == middle) { integer += 1; break; }
+          char last = buffer[end];
+          digit = last > '9' ? last - 'a' + 10 : last - '0';
+          if (digit + 1 < radix) { buffer[end++] = digits[digit + 1]; break; }
+        }
+        break;
+      }
+    } while (fraction >= tolerance);
+  }
+  /* V8's Double::Exponent is the unbiased exponent minus 52. Beyond
+   * that precision boundary, trailing digits are unrepresented zeros. */
+  while (integer / radix >= 0x1p53) {
+    integer /= radix;
+    buffer[--begin] = '0';
+  }
+  do {
+    double remainder = fmod(integer, radix);
+    buffer[--begin] = digits[(int)remainder];
+    integer = (integer - remainder) / radix;
+  } while (integer > 0);
+  if (negative) buffer[--begin] = '-';
+  return scr_str_new(buffer + begin, end - begin);
+}
+
 ScrStr *scr_num_to_fixed(double x, double fraction_digits) {
   double fd = isnan(fraction_digits) ? 0 : trunc(fraction_digits);
   if (!(fd >= 0 && fd <= 100)) {

@@ -1,10 +1,9 @@
-// Stored collection cursors support next/iteration, but helper methods are
-// refused explicitly instead of dispatching to array helpers at runtime.
-const map = new Map<string, number>();
-const values = map.values();
-values.map(value => value + 1);
-map.keys().toArray();
-const set = new Set<number>();
-set.values().filter(value => value > 0);
-set.entries().take(1);
+// Iterator helpers lower over Map/Set iterators, generators and array
+// iterators. These helper forms are refused explicitly.
+const set = new Set<number>([1, 2]);
+// flatMap callbacks return arrays or generators.
+set.values().flatMap((value) => new Set([value, value + 1]));
+// return() on a helper object.
+const mapped = set.values().map((value) => value * 2);
+mapped.return!();
 // Each helper call must produce a diagnostic.

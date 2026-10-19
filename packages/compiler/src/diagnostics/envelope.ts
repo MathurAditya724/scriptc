@@ -16,6 +16,7 @@
  * bumps it. */
 import { readFileSync } from "node:fs";
 import type { ScrDiagnostic } from "./diagnostic.js";
+import type { WasmModuleReport } from "../wasm/discover.js";
 
 export const DIAGNOSTICS_SCHEMA = "scriptc-diagnostics";
 export const DIAGNOSTICS_SCHEMA_VERSION = 1;
@@ -81,6 +82,34 @@ export interface DiagnosticGroup {
   sites: SourcePosition[];
 }
 
+export interface TierUnitPosition extends SourcePosition {
+  kind: "binding" | "field" | "function" | "class" | "module";
+  name: string;
+  owner?: string;
+}
+
+/** `scriptc coverage --explain-dynamic --print=diagnostics`: the tier
+ * assignment of frontend/tier-analysis.ts with source positions. */
+export interface TiersEnvelope {
+  mode: "auto" | "static-only";
+  statementsDynamic: number;
+  dynamicFunctions: (SourcePosition & {
+    name: string;
+    operation: string;
+    operationAt: SourcePosition;
+    statements: number;
+  })[];
+  requests: (SourcePosition & {
+    unit: TierUnitPosition;
+    enclosing: TierUnitPosition;
+    seed: string;
+    scope: string;
+    code: string;
+    message: string;
+  })[];
+  units: (TierUnitPosition & { requests: number; sites: number })[];
+}
+
 export interface DiagnosticsEnvelope {
   schema: typeof DIAGNOSTICS_SCHEMA;
   schemaVersion: typeof DIAGNOSTICS_SCHEMA_VERSION;
@@ -97,8 +126,10 @@ export interface DiagnosticsEnvelope {
   stats?: {
     statementsTotal: number;
     statementsStatic: number;
-    /** Always 0: every compiled statement is native. Kept so schema
-     * version 1 consumers keep reading the same fields. */
+    /** The compiled statements (counted in statementsStatic, which covers
+     * every statement that compiles to native code) that belong to
+     * dynamic-tier functions: code operating on values whose types are only
+     * known at runtime. */
     statementsDynamic: number;
     statementsFailed: number;
     functionsSkipped: number;
@@ -106,6 +137,11 @@ export interface DiagnosticsEnvelope {
   };
   /** build only: the produced artifact path. */
   artifact?: string;
+  /** coverage --explain-dynamic only: the report-only tier assignment. */
+  tiers?: TiersEnvelope;
+  /** coverage only: the WebAssembly modules the build can see, with their
+   * size, validity, proposals and the sources that found them. */
+  wasmModules?: WasmModuleReport[];
   groups: DiagnosticGroup[];
   diagnostics: LocatedDiagnostic[];
 }

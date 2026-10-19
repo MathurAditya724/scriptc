@@ -22,8 +22,8 @@ struct ProgramPartitions {
 // Divides the LLVM assembly scriptc emits into Count modules without parsing
 // it, so the partitions can be parsed concurrently. Functions are placed by a
 // stable hash of their name; an internal function referenced by exactly one
-// other function stays with that function, and a global stays with the first
-// function that references it. Returns nullopt for any construct outside the
+// other function stays with that function unless its body is too large to
+// inline, and a global stays with the first function that references it. Returns nullopt for any construct outside the
 // emitter's narrow top-level grammar; callers then split a parsed module.
 std::optional<ProgramPartitions> partitionProgramText(llvm::StringRef Text,
                                                       unsigned Count);

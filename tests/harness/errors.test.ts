@@ -928,6 +928,43 @@ hash.end("abc");
   });
 });
 
+// A Hash or Hmac held in an 'unknown' slot answers update(), digest() and
+// Hash's copy(). Its other members throw a coded SC2020 error, and so do
+// those methods called with another receiver.
+describe("Hash and Hmac members through 'unknown'", () => {
+  test("throw SC2020 other than update, digest and copy", async () => {
+    const r = await compileAndRun(
+      "hash-unknown-members",
+      `const crypto = require("node:crypto");
+function attempt(value, run) {
+  try {
+    run(value);
+  } catch (error) {
+    console.log(error.name, error.code, error.message);
+  }
+}
+const hash = [crypto.createHash("sha256")][0];
+attempt(hash, (h) => h.on("data", () => {}));
+attempt(hash, (h) => h.readable);
+attempt([crypto.createHmac("sha256", "k")][0], (m) => m.write("x"));
+attempt(hash, (h) => h.digest.call({}));
+console.log(hash.update("abc").digest("hex").slice(0, 8));
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 Hash members other than update(), digest() and copy() have no lowering on an 'unknown' value; cast the value to Hash first\n".repeat(
+        2,
+      ) +
+        "Error SC2020 Hmac members other than update() and digest() have no lowering on an 'unknown' value; cast the value to Hmac first\n" +
+        "Error SC2020 Hash and Hmac methods called with a receiver other than their own Hash or Hmac have no lowering\n" +
+        "ba7816bf\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
 // Node 24.22 skips the chacha20-poly1305 tag check when neither
 // setAuthTag() nor authTagLength was used, and returns unverified
 // plaintext. scriptc keeps Node 24.15's behavior: final() fails.
@@ -958,5 +995,138 @@ for (const input of [ciphertext, Buffer.from("forged data"), Buffer.alloc(0)]) {
       "Error undefined Unsupported state or unable to authenticate data\n".repeat(3),
     );
     expect(r.stderr).toBe("");
+  });
+});
+
+// Function expressions the frontend lowers speculatively (the receiver of
+// `.call`/`.apply`, a computed class base) keep their refused statements as
+// runtime fences. They used to vanish: the capture buffer held the refusal,
+// the candidate was kept, and the statement was simply missing from it.
+describe("refused statements in speculatively lowered JavaScript functions", () => {
+  test.each([
+    [
+      "speculative-call-this",
+      `(function () {
+  var root = this;
+  console.log("before");
+  console.log(root === eval("this"));
+  console.log("after");
+}).call(this);
+`,
+      "before\n",
+      4,
+    ],
+    [
+      "speculative-apply",
+      `(function () {
+  console.log("before");
+  console.log(typeof eval("1"));
+}).apply(null, []);
+`,
+      "before\n",
+      3,
+    ],
+    [
+      "speculative-class-base",
+      `class Base {}
+class Derived extends (function () {
+  console.log("before");
+  console.log(typeof eval("1"));
+  return Base;
+})() {}
+console.log(typeof Derived);
+`,
+      "before\n",
+      4,
+    ],
+  ] as const)("%s", async (name, source, stdout, line) => {
+    const r = await compileAndRun(name, source, "cjs");
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(stdout);
+    expect(r.stderr).toMatch(
+      new RegExp(
+        `^Uncaught Error: values of type '\\(x: string\\) => any' cannot be compiled: .* \\[SC2009 at .*${name}\\.cjs:${line}\\]\\n$`,
+      ),
+    );
+  });
+});
+
+// CommonJS forms around the module's exports that keep a refusal name the
+// construct itself (they used to report an unlowerable `require` value, a
+// "binding form with no lowering", or the ES-module `module` message).
+describe("CommonJS export-object and inline require refusals", () => {
+  test.each([
+    [
+      "exports-as-argument",
+      `exports.x = 1;
+function keys(o) {
+  return Object.keys(o);
+}
+console.log("before");
+console.log(keys(exports));
+`,
+      {},
+      "before\n",
+      6,
+      "'exports' as a value other than a member access, comparison, typeof or truthiness test \\(the compiled exports are a static table, not an object: read exports\\.<name>\\)",
+    ],
+    [
+      "exports-rebinding",
+      `console.log("before");
+exports = module.exports = function hash(x) {
+  return x;
+};
+exports.extra = 1;
+`,
+      {},
+      "before\n",
+      2,
+      "rebinding 'exports' \\(exports = module\\.exports = value\\)",
+    ],
+    [
+      "require-computed",
+      `const name = "./lib.cjs";
+console.log("before");
+console.log(require(name).x);
+`,
+      { "lib.cjs": "exports.x = 1;\n" },
+      "before\n",
+      3,
+      "require\\(\\) with a computed specifier",
+    ],
+    [
+      "exports-call-reads-this",
+      `exports.timeouts = function (n) {
+  return this.scale * n;
+};
+exports.scale = 2;
+console.log("before");
+console.log(exports.timeouts(3));
+`,
+      {},
+      "before\n",
+      6,
+      "calling 'exports\\.timeouts' through the module's exports object when the function may read 'this'",
+    ],
+    [
+      "require-table-as-value",
+      `function count(o) {
+  return Object.keys(o).length;
+}
+console.log("before");
+console.log(count(require("./lib.cjs")));
+`,
+      { "lib.cjs": "exports.x = 1;\n" },
+      "before\n",
+      5,
+      "the exports object of '\\./lib\\.cjs' as a value",
+    ],
+  ] as const)("%s", async (name, source, extra, stdout, line, message) => {
+    const r = await compileAndRun(name, source, "cjs", extra);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(stdout);
+    expect(r.stderr).toMatch(
+      new RegExp(`^Uncaught Error: ${message}.*\\[SC1090 at .*${name}\\.cjs:${line}\\]\\n$`),
+    );
   });
 });

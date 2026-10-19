@@ -29,7 +29,7 @@ function messageAdapter(host: LlvmEmitterContext, type: IrType): string {
     const isString = field === "address" || field === "family";
     if (isString) lines.push(`  %${field}.owned = call ptr @scr_str_retain_v(ptr %${field})`);
     lines.push(
-      `  %${field}.slot = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr %record, i64 0, i32 ${index + 1}`,
+      `  %${field}.slot = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr %record, i64 0, i32 ${index + host.nullableUnions.fieldBase(type.shapeId)}`,
       `  store ${isString ? "ptr" : "double"} %${field}${isString ? ".owned" : ""}, ptr %${field}.slot`,
     );
   }
@@ -169,7 +169,7 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
               );
         const slot = host.B.tmp();
         host.B.line(
-          `${slot} = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr ${record}, i64 0, i32 ${index + 1}`,
+          `${slot} = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr ${record}, i64 0, i32 ${index + host.nullableUnions.fieldBase(type.shapeId)}`,
         );
         host.B.line(`store ${ty} ${value}, ptr ${slot}`);
       }

@@ -46,6 +46,8 @@ Your callback and the commander implementation both compile to native code. No e
 
 scriptc finds packages in `node_modules` with Node.js's resolution rules, including the export conditions in `package.json`, and compiles their dependencies too. TypeScript workspace packages compile as part of your program, including `.js` import specifiers that resolve to `.ts` sources.
 
+Type-only imports follow Node.js's type stripping. `import type` and `export type … from` statements are erased, so a package or module named only by them supplies types and isn't compiled or loaded; it can even be a package with no JavaScript, such as `type-fest`. A clause whose specifiers are all marked `type`, such as `import { type Options } from "./config.ts"`, still loads its module, as it does under Node.js.
+
 ## Which packages compile
 
 scriptc compiles a package automatically when it:
@@ -53,7 +55,7 @@ scriptc compiles a package automatically when it:
 - ships its own type declarations, and
 - ships readable, unminified JavaScript.
 
-A package that doesn't meet these requirements, or that uses something scriptc can't compile, gets a package-specific diagnostic that explains why. The usual fixes are to switch to a version or alternative package that compiles, or to replace the call with code you write yourself.
+A package that doesn't meet these requirements, or that uses something scriptc can't compile, gets a package-specific diagnostic that explains why. The usual fixes are to switch to a version or alternative package that compiles, or to replace the call with code you write yourself. A package whose declarations come from a separate `@types/` package doesn't ship its own; its diagnostic names the package and the `--npm-static` option that compiles it anyway.
 
 <span id="value-conversion" />
 <span id="static-package-compilation-experimental" />
@@ -67,7 +69,7 @@ Some packages rely on separately installed declarations, such as an `@types/` pa
 $ scriptc build app.ts --npm-static=three -o app >/dev/null
 ```
 
-Naming a package skips the declaration requirement above, but the package still has to compile. `--npm-static=auto` uses the default automatic selection. The option accepts a comma-separated list and can be repeated.
+Naming a package skips the declaration requirement above, but the package still has to compile. The option selects only the packages it names: a dependency of a named package that doesn't ship its own declarations is still refused. Add a trailing `...` to select a package together with every package it depends on, for example `--npm-static=fs-extra...`. `--npm-static=auto` uses the default automatic selection. The option accepts a comma-separated list and can be repeated.
 
 ## CommonJS packages
 

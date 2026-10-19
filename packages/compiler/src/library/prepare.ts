@@ -553,6 +553,8 @@ export function prepareLibrary(
     try {
       lowered = fe.lower({
         targetPlatform: buildPlatform,
+        // Library artifacts are static-tier only (two-tier design I2).
+        tierMode: "static-only",
         ...(cbImports.length > 0 ? { ffiImports: cbImports } : {}),
         ...(cbImports.length > 0 ? { libraryCallbacks: true } : {}),
         // The profile-mapped exports are called from OUTSIDE the graph:

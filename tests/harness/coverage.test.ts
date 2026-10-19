@@ -3,7 +3,13 @@ import { globSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { analyze, coverageEnvelope, coveragePasses, renderCoverage } from "@scriptc/compiler";
+import {
+  analyze,
+  coverageEnvelope,
+  coveragePasses,
+  renderCoverage,
+  renderExplainDynamic,
+} from "@scriptc/compiler";
 import { shardSelect, shardSuffix } from "./shard.js";
 
 const repoRoot = join(import.meta.dirname, "../..");
@@ -35,6 +41,36 @@ test("unreached blockers report in their own group", async () => {
   await expect(report(fixture("unreached.ts"))).toMatchFileSnapshot(
     "__snapshots__/coverage-unreached.txt",
   );
+});
+
+test("WebAssembly modules the build can see report with their sources", async () => {
+  // A resolved path and an inline literal (glue.js), a packaged .wasm
+  // (wasm-fixture-pkg), and package.json's scriptc.wasm list.
+  await expect(report(fixture("wasm/main.ts"))).toMatchFileSnapshot(
+    "__snapshots__/coverage-wasm.txt",
+  );
+  const { coverage } = analyze(fixture("wasm/main.ts"), { wasm: [fixture("wasm/add.wasm")] });
+  const modules = coverage.wasmModules ?? [];
+  expect(
+    modules.map((m) => [
+      m.path?.replace(repoRoot + "/", "") ?? "inline",
+      m.status,
+      m.unsupported,
+      m.sources.map((s) => s.kind),
+    ]),
+  ).toEqual([
+    ["inline", "valid", [], ["inline"]],
+    ["tests/coverage-fixtures/wasm/add.wasm", "valid", [], ["path", "config"]],
+    [
+      "tests/coverage-fixtures/wasm/node_modules/wasm-fixture-pkg/lib/core.wasm",
+      "invalid",
+      [],
+      ["package"],
+    ],
+    ["tests/coverage-fixtures/wasm/build/generated.wasm", "unsupported", ["simd"], ["config"]],
+  ]);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test" });
+  expect(envelope.wasmModules?.map((m) => m.sha256.length)).toEqual([64, 64, 64, 64]);
 });
 
 test("divergences report as warnings, never as blockers", async () => {
@@ -225,6 +261,105 @@ test("CLI: build --print=diagnostics reports failures and divergence warnings as
     expect(human.status).toBe(0);
     expect(human.stderr).toContain("warning SC6001");
     expect(human.stderr).toContain("8 warnings: the program compiled");
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("coverage counts the statements of dynamic-tier functions", async () => {
+  expect(analyze(join(repoRoot, "tests/corpus/400-fib.ts")).coverage.stats.statementsDynamic).toBe(
+    0,
+  );
+  const { coverage, sourceTexts } = analyze(fixture("tier-demotions.ts"));
+  expect(coverage.stats.statementsDynamic).toBe(1);
+  expect(coverage.tiers).toBeUndefined();
+  expect(coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts }).stats).toMatchObject({
+    statementsTotal: 5,
+    statementsStatic: 3,
+    statementsDynamic: 1,
+    statementsFailed: 2,
+  });
+  await expect(report(fixture("tier-demotions.ts"))).toMatchFileSnapshot(
+    "__snapshots__/coverage-tier-demotions.txt",
+  );
+});
+
+test("--explain-dynamic attributes each refusal to the unit the dynamic tier would take", async () => {
+  const { coverage, sourceTexts } = analyze(fixture("tier-demotions.ts"), { explainDynamic: true });
+  const tiers = coverage.tiers!;
+  expect(tiers.mode).toBe("auto");
+  expect(tiers.statementsDynamic).toBe(1);
+  expect(tiers.dynamicFunctions.map((fn) => fn.name)).toContain("readName");
+  const requests = [...tiers.requests].sort((a, b) => a.loc.start - b.loc.start);
+  expect(
+    requests.map((r) => [r.code, r.seed, r.scope, r.unit.kind, r.unit.name, r.enclosing.name]),
+  ).toEqual([
+    ["SC1090", "reflection", "reached", "class", "Point", "<top level>"],
+    ["SC2012", "operation", "reached", "binding", "n", "precise"],
+  ]);
+  expect(tiers.units.map((u) => [u.kind, u.name, u.requests, u.sites])).toEqual([
+    ["class", "Point", 1, 0],
+    ["function", "<top level>", 0, 1],
+    ["function", "precise", 0, 1],
+    ["binding", "n", 1, 0],
+  ]);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope.tiers?.requests[0]).toMatchObject({ unit: { kind: expect.any(String) } });
+  const relative = JSON.parse(JSON.stringify(tiers).replaceAll(repoRoot + "/", "")) as typeof tiers;
+  await expect(renderExplainDynamic(relative)).toMatchFileSnapshot(
+    "__snapshots__/coverage-explain-dynamic.txt",
+  );
+  expect(renderExplainDynamic(relative, { query: "Point" })).toContain("class Point");
+  expect(renderExplainDynamic(relative, { query: "Point" })).not.toContain("binding n");
+  expect(renderExplainDynamic(relative, { query: "nothing" })).toContain(
+    "no demoted unit matches 'nothing'",
+  );
+});
+
+test("CLI: --tier and --explain-dynamic", () => {
+  const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-tier-"));
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, ["--import", "tsx", scriptcCli, ...args], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, SCRIPTC_NO_CACHE: "1" },
+    });
+  try {
+    const explained = run(
+      "coverage",
+      fixture("tier-demotions.ts"),
+      "--explain-dynamic",
+      "--tier=static-only",
+    );
+    expect(explained.status).toBe(0);
+    expect(explained.stdout).toContain("in dynamic tier     1");
+    expect(explained.stdout).toContain("--tier=static-only");
+    expect(explained.stdout).toContain("binding n in precise");
+    const one = run("coverage", fixture("tier-demotions.ts"), "--explain-dynamic=Point");
+    expect(one.stdout).toContain("class Point");
+    expect(one.stdout).not.toContain("binding n in precise");
+    const bad = run("coverage", fixture("tier-demotions.ts"), "--tier=dynamic-only");
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toContain('unknown --tier value "dynamic-only"');
+    const misplaced = run("build", fixture("tier-demotions.ts"), "--explain-dynamic");
+    expect(misplaced.status).toBe(1);
+    expect(misplaced.stderr).toContain("--explain-dynamic is a coverage option");
+    // Until demotion lands, static-only compiles exactly like the default.
+    const ir = (name: string, ...args: string[]) => {
+      const out = join(outDir, name);
+      const built = run(
+        "build",
+        join(repoRoot, "tests/corpus/400-fib.ts"),
+        "--emit=ir",
+        "-o",
+        out,
+        ...args,
+      );
+      expect(built.status).toBe(0);
+      return readFileSync(out, "utf8");
+    };
+    expect(ir("static-only.ir.json", "--tier=static-only")).toBe(ir("auto.ir.json"));
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
