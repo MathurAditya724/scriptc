@@ -31,13 +31,16 @@ timeout((x) => order.push("timeout:" + x), 60, "x");
 assigned(() => order.push("assigned"));
 const cancelled = timeout(() => order.push("cancelled"), 1);
 (pick ? clearImmediate : clearTimeout)(cancelled);
+// The interval counts its runs apart from `order`, and the report waits until
+// it has stopped, so slow machines print the same line.
 let count = 0;
 const handle = every(() => {
   count++;
-  order.push("interval:" + count);
-  if (count === 2) stop(handle);
+  if (count === 2) {
+    stop(handle);
+    timeout(() => console.log(order.join(" "), "interval:" + count, "micro:" + microRan), 120);
+  }
 }, 20);
-timeout(() => console.log(order.join(" "), "micro:" + microRan), 120);
 
 for (const bad of [undefined, 1, "fn"]) {
   try {

@@ -1994,6 +1994,10 @@ static void dyn_builtin_fns_cleanup(void) {
   dyn_builtin_fns = NULL;
 }
 
+/* Library builds have no event loop (a library that schedules timers is
+ * refused at SC4005 before emission), so the calls that schedule are left
+ * out of them. */
+#ifndef SCR_LIB
 static bool dyn_builtin_fn_callback(ScrDyn *const *args, size_t argc) {
   if (argc > 0 && args[0]->kind == SCR_DYN_FUNC) return true;
   static const char message[] = "The \"callback\" argument must be of type function.";
@@ -2022,7 +2026,17 @@ static ScrClosure *dyn_builtin_fn_deferred(ScrDyn *const *args, size_t argc, siz
   return c;
 }
 
+#endif
+
 static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+#ifdef SCR_LIB
+  (void)clo;
+  (void)args;
+  (void)argc;
+  static const char message[] = "Builtin timer functions require an executable event loop";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC4005");
+  return NULL;
+#else
   ScrStr *name = scr_box_get_ref(clo->caps[0]);
   ScrDyn *result = NULL;
   bool timeout = strcmp(name->data, dyn_s16) == 0;
@@ -2059,6 +2073,7 @@ static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t 
   }
   scr_str_release(name);
   return result;
+#endif
 }
 
 ScrDyn *scr_dyn_builtin_function(const ScrStr *name) {
