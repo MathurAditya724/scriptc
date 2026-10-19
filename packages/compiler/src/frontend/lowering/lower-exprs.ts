@@ -68,7 +68,12 @@ import {
 } from "./maybe-promise.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "./class-assertions.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
-import { narrowClassUnion, narrowStoredClassValue } from "./class-unions.js";
+import {
+  narrowClassUnion,
+  narrowStoredClassValue,
+  structuralNarrowing,
+  structuralReadType,
+} from "./class-unions.js";
 import { lowerUnionFieldRead, lowerUnionFieldWrite } from "./expressions/union-fields.js";
 import { captureContextArguments, declareContextLocal } from "./function-context.js";
 import { OBJECT_CALLABLE_VALUES } from "./surfaces.js";
@@ -3534,6 +3539,9 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       narrowed.className !== expr.type.className &&
       lowerer.isSubclassOf(narrowed.className, expr.type.className)
     ) {
+      const reduced = structuralNarrowing(lowerer, node, expr.type.className, narrowed);
+      const union = reduced ? narrowClassUnion(lowerer, expr, reduced) : null;
+      if (union) return union;
       if (lowerer.narrowing.untrusted(node, narrowed)) {
         const checked = checkedClassAssertion(lowerer, expr, narrowed, expr.loc);
         if (checked) return checked;
@@ -15187,7 +15195,9 @@ export function lowerUnionProperty(
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (lowerer.chainBlocked(expr)) return null;
-  const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+  const receiverIr =
+    structuralReadType(lowerer, expr.expression) ??
+    lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverIr?.kind !== "union") return null;
   // Lower the receiver first: its runtime value can still carry the full
   // binding union even when the checker has removed several variants.
