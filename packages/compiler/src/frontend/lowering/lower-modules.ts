@@ -3135,6 +3135,7 @@ function rememberEvaluationError(
 export function buildMain(lowerer: Lowerer): IrFunction {
   const loc: SrcLoc = { file: lowerer.entry.fileName, start: 0, end: 0 };
   const body: IrStmt[] = [
+    ...lowerer.mainPrelude,
     ...cjsModuleRegistryPrelude(lowerer, loc),
     ...handleEventReaderPrelude(lowerer, loc),
   ];

@@ -4704,6 +4704,19 @@ static int scr_ih_method_index(const char *name, size_t len);
 static ScrDyn *scr_iterator_helper_method(ScrDyn *self, int index, ScrDyn *const *args, size_t argc);
 static ScrDyn *scr_ih_method_function(int index);
 
+static bool scr_dyn_sync_generator(const ScrDyn *value);
+extern SCR_TL ScrDyn *(*scr_generator_member_hook)(const ScrDyn *, const char *, size_t);
+
+/* scr_iterator_read of an iterator's own next or return method: a
+ * compiled generator answers through the program's registered getters. */
+static ScrDyn *scr_iterator_member(const ScrDyn *iterator, const char *key, size_t len) {
+  if (scr_generator_member_hook && scr_dyn_sync_generator(iterator)) {
+    ScrDyn *member = scr_generator_member_hook(iterator, key, len);
+    if (member) return member;
+  }
+  return scr_iterator_read(iterator, key, len);
+}
+
 static ScrDyn *scr_native_iterator_get(void *ptr, const char *key, size_t len) {
   if (len != 4 || memcmp(key, "next", 4)) {
     /* The Iterator.prototype helper methods. */
@@ -4893,7 +4906,7 @@ static bool scr_ih_budget(const ScrDyn *limit, double *out) {
  * Node's TypeError. Answers false when an exception is pending after. */
 static bool scr_ih_close(ScrDyn *iterator, bool abrupt) {
   ScrCaught *first = abrupt ? scr_exc_take() : NULL;
-  ScrDyn *method = scr_iterator_read(iterator, "return", 6);
+  ScrDyn *method = scr_iterator_member(iterator, "return", 6);
   bool ok = method != NULL;
   if (ok && method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
     ScrDyn *result = scr_iterator_call(method, iterator, "return");
@@ -4960,7 +4973,7 @@ static ScrDyn *scr_ih_direct(const ScrDyn *self, const char *method) {
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
     return NULL;
   }
-  return scr_iterator_read(self, "next", 4);
+  return scr_iterator_member(self, "next", 4);
 }
 
 static ScrDyn *scr_ih_result(ScrDyn *value, bool done) {
@@ -5017,7 +5030,7 @@ static ScrDyn *scr_ih_flattenable(ScrDyn *value, ScrDyn **next_out) {
   }
   scr_dyn_release(method);
   if (!iterator) return NULL;
-  ScrDyn *next = scr_iterator_read(iterator, "next", 4);
+  ScrDyn *next = scr_iterator_member(iterator, "next", 4);
   if (!next) {
     scr_dyn_release(iterator);
     return NULL;
@@ -13966,4 +13979,116 @@ ScrDyn *scr_caught_to_dyn(const ScrCaught *c) {
   default:
     return scr_dyn_new_obj();
   }
+}
+
+/* ── compiled generators through untyped values ─────────────────────── */
+
+static SCR_TL ScrDyn *scr_generator_next_getter;
+static SCR_TL ScrDyn *scr_generator_return_getter;
+/* Set with the getters, so only programs that register them link the
+ * iterator helpers through these paths. External, so the compiler keeps
+ * the calls through them indirect. */
+SCR_TL ScrDyn *(*scr_generator_member_hook)(const ScrDyn *, const char *, size_t) = NULL;
+SCR_TL bool (*scr_dyn_generator_helper_hook)(ScrDyn *, const char *, ScrDyn *const *, size_t,
+                                             ScrDyn **) = NULL;
+static ScrDyn *scr_generator_member(const ScrDyn *capsule, const char *key, size_t len);
+static bool scr_generator_helper_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                        size_t argc, ScrDyn **out);
+
+static void scr_generator_members_cleanup(void) {
+  scr_dyn_release(scr_generator_next_getter);
+  scr_dyn_release(scr_generator_return_getter);
+  scr_generator_next_getter = NULL;
+  scr_generator_return_getter = NULL;
+  scr_generator_member_hook = NULL;
+  scr_dyn_generator_helper_hook = NULL;
+}
+
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter) {
+  if (!scr_generator_next_getter) scr_atexit(scr_generator_members_cleanup);
+  scr_dyn_release(scr_generator_next_getter);
+  scr_dyn_release(scr_generator_return_getter);
+  scr_generator_next_getter = scr_dyn_retain(next_getter);
+  scr_generator_return_getter = scr_dyn_retain(return_getter);
+  scr_generator_member_hook = &scr_generator_member;
+  scr_dyn_generator_helper_hook = &scr_generator_helper_invoke;
+}
+
+static bool scr_dyn_sync_generator(const ScrDyn *value) {
+  return scr_dyn_generator(value) && value->v.typed_ref.type_key[0] == 'g';
+}
+
+/* A synchronous generator capsule's next or return method (+1), read
+ * through the program's registered getters. NULL for other keys. */
+static ScrDyn *scr_generator_member(const ScrDyn *capsule, const char *key, size_t len) {
+  ScrDyn *getter = len == 4 && !memcmp(key, "next", 4) ? scr_generator_next_getter
+    : len == 6 && !memcmp(key, "return", 6) ? scr_generator_return_getter : NULL;
+  if (!getter) return NULL;
+  ScrDyn *args[1] = { (ScrDyn *)capsule };
+  return scr_dyn_call(getter, args, 1, "next");
+}
+
+static bool scr_generator_helper_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                        size_t argc, ScrDyn **out) {
+  if (!scr_dyn_sync_generator(recv)) return false;
+  int index = scr_ih_method_index(method, strlen(method));
+  if (index < 0) return false;
+  *out = scr_iterator_helper_method(recv, index, args, argc);
+  return true;
+}
+
+ScrDyn *scr_dyn_iterator_helper_method(const ScrStr *name) {
+  int index = scr_ih_method_index(name->data, name->len);
+  return index >= 0 ? scr_ih_method_function(index) : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* Destructuring over an iterable the pack walk cannot list (a compiled
+ * generator, an iterator or iterator helper, a Map or Set): GetIterator,
+ * then the first `n` values through the iterator protocol, or every value
+ * when `all`, into a fresh array. Positions past the end read undefined,
+ * and an iterator with values left closes. `spell` is the compile-time
+ * not-iterable wording, or NULL. +1, or NULL with the error pending. */
+static ScrDyn *scr_dyn_iter_steps(const ScrDyn *src, const ScrStr *spell, size_t n, bool all) {
+  ScrDyn *iterator = scr_dyn_iterator(src, spell);
+  if (!iterator) return NULL;
+  ScrDyn *next = scr_iterator_member(iterator, "next", 4);
+  if (!next) {
+    scr_dyn_release(iterator);
+    return NULL;
+  }
+  ScrDyn *out = scr_dyn_new_arr();
+  bool done = false;
+  for (size_t i = 0; all ? !done : i < n; i++) {
+    ScrDyn *value = done ? scr_dyn_retain(scr_dyn_undefined()) : scr_ih_step(iterator, next, &done);
+    if (!value) goto fail;
+    if (all && done) scr_dyn_release(value);
+    else scr_dyn_arr_push(out, value);
+  }
+  if (!done && !scr_ih_close(iterator, false)) goto fail;
+  scr_dyn_release(next);
+  scr_dyn_release(iterator);
+  return out;
+fail:
+  scr_dyn_release(out);
+  scr_dyn_release(next);
+  scr_dyn_release(iterator);
+  return NULL;
+}
+
+ScrDyn *scr_dyn_destructure_rest(const ScrDyn *src, const ScrStr *msg) {
+  bool packs = src->kind == SCR_DYN_ARR || src->kind == SCR_DYN_STR || src->kind == SCR_DYN_BYTES ||
+    (src->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(src)->iter_pack) ||
+    (src->kind == SCR_DYN_TYPED_REF && !scr_dyn_iterates_by_protocol(src));
+  return packs ? scr_dyn_iter_pack(src, msg) : scr_dyn_iter_steps(src, msg, 0, true);
+}
+
+ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell) {
+  ScrStr *spelling = spell && *spell ? scr_str_new(spell, strlen(spell)) : NULL;
+  ScrDyn *out = scr_dyn_iter_steps(src, spelling, n, false);
+  scr_str_release(spelling);
+  return out;
+}
+
+bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
+  return scr_dyn_sync_generator(value);
 }
