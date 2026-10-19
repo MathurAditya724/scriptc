@@ -162,6 +162,7 @@ typedef enum {
   SCR_DYNH_ITERATOR_HELPER = 54, /* an iterator helper object over a checked iterator (scr_json.c) */
   SCR_DYNH_KEY_OBJECT = 43, /* node:crypto secret KeyObject (scr_lib.c) */
   SCR_DYNH_MAP = 29, /* native Map<unknown, unknown>, shared backing */
+  SCR_DYNH_MATCH_SOURCE = 55, /* a match result's pending metadata (scr_regex.c) */
   SCR_DYNH_MESSAGE_EVENT = 50, /* ScrEvent with data — BroadcastChannel's 'message' */
   SCR_DYNH_MESSAGE_PORT = 36,
   SCR_DYNH_NET_BLOCK_LIST = 48, /* net.BlockList (scr_net.c) */
@@ -702,6 +703,32 @@ ScrDyn *scr_dyn_iterator_result(ScrDyn *value);
 bool scr_dyn_iterator_can_step(const ScrDyn *iterator, const ScrDyn *next);
 ScrDyn *scr_dyn_iterator_step(const ScrDyn *iterator);
 bool scr_dyn_iterator_step_done(const ScrDyn *iterator);
+/* A native Map or Set iterator stepped by the compiler's typed walk: the
+ * next live entry index of its collection, or -1 once the collection is
+ * exhausted (the iterator then ends its iteration). */
+double scr_dyn_collection_iterator_index(const ScrDyn *iterator);
+/* For util.inspect: a native iterator's kind (0 array or typed array,
+ * 1 string, 2 Map, 3 Set, 4 a handle's), its selection (0 values, 1 keys,
+ * 2 entries), its collection (NULL once exhausted, and for kinds other
+ * than 2 and 3) and the index its next step reads from. */
+void scr_dyn_native_iterator_state(const ScrDyn *iterator, unsigned *kind, unsigned *selection,
+                                   ScrMap **collection, double *index);
+/* A compiled program that boxes generators and calls iterator helpers on
+ * untyped values registers the checked functions that read a generator
+ * capsule's next and return methods (each takes the capsule). The
+ * iterator helpers below then drive compiled generators. */
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter);
+/* An iterator helper method called on a synchronous generator capsule:
+ * true with *out set (+1, or NULL with the exception pending) when
+ * `method` is one. NULL until the program registers its generator
+ * members. */
+extern SCR_TL bool (*scr_dyn_generator_helper_hook)(ScrDyn *recv, const char *method,
+                                                    ScrDyn *const *args, size_t argc,
+                                                    ScrDyn **out);
+/* The Iterator.prototype helper method `name` as a function value (+1),
+ * the value a compiled generator's helper property reads; undefined for
+ * other names. */
+ScrDyn *scr_dyn_iterator_helper_method(const ScrStr *name);
 /* The ordinary object snapshot plus a retained typed source. source_access
  * releases that source when materialize=false and returns a fresh snapshot
  * when true. */
@@ -846,6 +873,19 @@ void scr_dyn_arr_push_spread(ScrDyn *arr, const ScrDyn *src, const char *what);
  * compile-time source spelling), else the runtime kind wording. Borrows
  * both; NULL with the exception pending on the throw. */
 ScrDyn *scr_dyn_iter_pack(const ScrDyn *src, const ScrStr *msg);
+/* A rest element's pack (`const [a, ...rest] = d`): scr_dyn_iter_pack's
+ * kinds pack as there, and other iterables step through the iterator
+ * protocol to the end. +1, or NULL with the error pending. */
+ScrDyn *scr_dyn_destructure_rest(const ScrDyn *src, const ScrStr *msg);
+/* Destructuring's first `n` values (`const [a, b] = d`) of a dyn source
+ * other than an array, string or bytes (the emitted walk packs those),
+ * through the iterator protocol: an iterator with values left closes.
+ * `spell` is the compile-time not-iterable wording, or NULL. +1, or NULL
+ * with the error pending. */
+ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell);
+/* True for typed capsules that iterate through the protocol (a compiled
+ * synchronous generator) rather than through their materialized view. */
+bool scr_dyn_iterates_by_protocol(const ScrDyn *value);
 /* Map constructor seeds: retain array inputs for live iteration, accept
  * nullish inputs as empty, and validate each entry before reading 0/1. */
 ScrDyn *scr_dyn_map_seed_entries(const ScrDyn *src);
@@ -881,6 +921,9 @@ ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity 
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* A named (non-index) property of an extensible, unfrozen ARR, stored as
+ * scr_dyn_key_set stores it. Takes ownership of value. */
+void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict);
 ScrDyn *scr_dyn_global_symbol_get(ScrSym *key); /* borrowed key; +1 value */

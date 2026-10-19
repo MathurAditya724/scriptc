@@ -86,7 +86,7 @@ export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlV
     );
   }
   host.usesTimers = true;
-  host.moveTemp(cb);
+  host.toHeap(cb);
   return finishRuntimeCall(host, e, "scr_net_connect_lookup", [
     ...args.map((arg) => abiValue(host, arg)),
     ptr("@" + symbol),

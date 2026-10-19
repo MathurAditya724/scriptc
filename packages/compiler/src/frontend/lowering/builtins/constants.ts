@@ -88,7 +88,7 @@ export function builtinConstantsDestructureDecl(
   const module = builtinConstantsModuleOf(lowerer, init);
   if (module === null) return false;
   const table = BUILTIN_CONSTANTS_TABLES[module]!.table;
-  return nameNode.elements.every(
+  return nameNode.elements.nodes.every(
     (el) =>
       !el.dotDotDotToken &&
       el.initializer === undefined &&

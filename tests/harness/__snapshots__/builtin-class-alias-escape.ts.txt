@@ -1,22 +1,6 @@
-builtin-class-alias-escape.ts:7:16 - error SC1090: a builtin class alias as an escaping value (use 'Emitter' with new, instanceof, typeof or .name) is not supported yet
+builtin-class-alias-escape.ts:6:24 - error SC1090: a builtin class alias as an escaping value (use 'M' with new, instanceof, typeof or .name) is not supported yet
 
-  6 | const Emitter = EventEmitter;
-  7 | const kinds = [Emitter];
-    |                ^~~~~~~
-  8 | console.log(kinds.length);
-
-builtin-class-alias-escape.ts:11:24 - error SC1090: a builtin class alias as an escaping value (use 'M' with new, instanceof, typeof or .name) is not supported yet
-
-  10 | const M = Map;
-  11 | const boxed: unknown = M;
-     |                        ^
-  12 | console.log(boxed !== undefined);
-
-builtin-class-alias-escape.ts:14:15 - error SC2020: 'events.EventEmitter' is part of the standard library types but has no scriptc lowering yet
-
-  13 | 
-  14 | let Mutable = EventEmitter;
-     |               ^~~~~~~~~~~~
-  15 | console.log(typeof Mutable);
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+  5 | const M = Map;
+  6 | const boxed: unknown = M;
+    |                        ^
+  7 | console.log(boxed !== undefined);

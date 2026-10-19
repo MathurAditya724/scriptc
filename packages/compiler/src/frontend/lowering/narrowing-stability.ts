@@ -198,8 +198,8 @@ export class NarrowingStability {
       this.lowerer.isStdlibGlobal(skipOuter(callee.expression), "console")
     )
       return true;
-    const index = call.arguments?.indexOf(argument) ?? -1;
-    const params = declaration.parameters ?? [];
+    const index = call.arguments?.nodes.indexOf(argument) ?? -1;
+    const params = declaration.parameters?.nodes ?? [];
     if (index < 0 || params.length === 0) return false;
     const param = params[Math.min(index, params.length - 1)]!;
     if (index >= params.length && param.dotDotDotToken === undefined) return false;
@@ -665,21 +665,21 @@ export class NarrowingStability {
       );
     }
     if (ts.isClassLikeDeclaration(node)) {
-      if (node.modifiers?.some((m) => m.kind === ts.SyntaxKind.Decorator)) return true;
-      for (const clause of node.heritageClauses ?? []) {
-        for (const heritage of clause.types) {
+      if (node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.Decorator)) return true;
+      for (const clause of node.heritageClauses?.nodes ?? []) {
+        for (const heritage of clause.types.nodes) {
           const e = heritage.expression;
           if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return true;
         }
       }
-      return node.members.some(
+      return node.members.nodes.some(
         (member) =>
           ts.isClassStaticBlockDeclaration(member) ||
           (member.name !== undefined && ts.isComputedPropertyName(member.name)) ||
-          member.modifiers?.some((m) => m.kind === ts.SyntaxKind.Decorator) === true ||
+          member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.Decorator) === true ||
           (ts.isPropertyDeclaration(member) &&
             member.initializer !== undefined &&
-            member.modifiers?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true),
+            member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true),
       );
     }
     return true;
@@ -688,12 +688,12 @@ export class NarrowingStability {
   private isInertLibraryCall(call: ts.CallExpression): boolean {
     if (call.expression.kind === ts.SyntaxKind.SuperKeyword) return false;
     if (call.expression.kind === ts.SyntaxKind.ImportKeyword) return false;
-    if (!this.inertArguments(call.arguments)) return false;
+    if (!this.inertArguments(call.arguments.nodes)) return false;
     const callee = skipOuter(call.expression);
     if (ts.isIdentifier(callee)) {
       if (!INERT_GLOBAL_FUNCTIONS.has(callee.text)) return false;
       if (!this.lowerer.isStdlibGlobal(callee, callee.text)) return false;
-      return call.arguments.every((arg) => this.isPrimitive(arg));
+      return call.arguments.nodes.every((arg) => this.isPrimitive(arg));
     }
     if (!ts.isPropertyAccessExpression(callee)) return false;
     const method = callee.name.text;
@@ -720,7 +720,7 @@ export class NarrowingStability {
     const callee = skipOuter(node.expression);
     if (!ts.isIdentifier(callee) || !INERT_CONSTRUCTORS.has(callee.text)) return false;
     if (!this.lowerer.isStdlibGlobal(callee, callee.text)) return false;
-    const args = node.arguments ?? [];
+    const args = node.arguments?.nodes ?? [];
     if (!this.inertArguments(args)) return false;
     return args.every((arg) => this.isPrimitive(arg) || this.isBuiltinIterable(arg));
   }
@@ -959,7 +959,7 @@ function widePosition(node: ts.Expression): WidePosition | null {
   if (ts.isForStatement(parent) && parent.condition === child) return "test";
   if (
     (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
-    parent.arguments?.some((arg) => arg === child)
+    parent.arguments?.nodes.some((arg) => arg === child)
   )
     return "context";
   // Only slots whose type IS the contextual type: an array or object
@@ -997,7 +997,7 @@ function enclosingArgument(
     parent = parent.parent;
   }
   if (!(ts.isCallExpression(parent) || ts.isNewExpression(parent))) return null;
-  const argument = parent.arguments?.find((arg) => arg === child);
+  const argument = parent.arguments?.nodes.find((arg) => arg === child);
   return argument ? { call: parent, argument } : null;
 }
 
@@ -1016,7 +1016,7 @@ function typedLiteral(
     if (!slot) return false;
     if (ts.isVariableDeclaration(slot)) return slot.initializer === literal && !!slot.type;
     if (ts.isCallExpression(slot) || ts.isNewExpression(slot))
-      return slot.arguments?.some((arg) => arg === literal) ?? false;
+      return slot.arguments?.nodes.some((arg) => arg === literal) ?? false;
     if (ts.isBinaryExpression(slot))
       return slot.operatorToken.kind === ts.SyntaxKind.EqualsToken && slot.right === literal;
     if (ts.isReturnStatement(slot)) {
@@ -1180,13 +1180,13 @@ function forEachWriteTarget(target: ts.Node, visit: (target: ts.Expression) => v
     return;
   }
   if (ts.isArrayLiteralExpression(e)) {
-    for (const element of e.elements) {
+    for (const element of e.elements.nodes) {
       forEachWriteTarget(ts.isSpreadElement(element) ? element.expression : element, visit);
     }
     return;
   }
   if (ts.isObjectLiteralExpression(e)) {
-    for (const property of e.properties) {
+    for (const property of e.properties.nodes) {
       if (ts.isPropertyAssignment(property)) forEachWriteTarget(property.initializer, visit);
       else if (ts.isShorthandPropertyAssignment(property) && ts.isIdentifier(property.name))
         visit(property.name);
@@ -1227,7 +1227,7 @@ function reflectiveStore(call: ts.CallExpression): boolean {
         method === "deleteProperty" ||
         method === "setPrototypeOf"));
   if (!reflective) return false;
-  const target = call.arguments[0];
+  const target = call.arguments.nodes[0];
   return target === undefined || !ts.isObjectLiteralExpression(skipOuter(target));
 }
 

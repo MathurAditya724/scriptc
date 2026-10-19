@@ -657,7 +657,7 @@ export function lowerMockFn(
   const fields = mockContextFields(lowerer, ctxType!)!;
   const { fn } = fields;
   requireUndefinedResultArm(lowerer, fields, call, what);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length === 0 || args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
@@ -717,7 +717,7 @@ export function lowerMockMethod(
   tracker: MockTracker,
 ): IrExpr {
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
@@ -844,8 +844,8 @@ export function lowerMockTrackerCall(
   member: "restoreAll" | "reset",
   tracker: MockTracker,
 ): IrExpr {
-  if (call.arguments.length > 0) {
-    lowerer.noLowering(`MockTracker.${member} with ${call.arguments.length} arguments`, call);
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering(`MockTracker.${member} with ${call.arguments.nodes.length} arguments`, call);
   }
   const fn = tracker
     ? member === "reset"
@@ -893,7 +893,7 @@ export function lowerMockTimersCall(
   sym: ts.Symbol | null,
 ): IrExpr {
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const optionalNumber = (fallback: number): IrExpr[] => {
     if (args.length > 1)
       lowerer.noLowering(`${what}.${member} with ${args.length} arguments`, call);
@@ -935,9 +935,9 @@ export function lowerMockTimersCall(
  * (1 = `now` given, 2 = it is a Date). */
 function lowerMockTimersOptions(lowerer: Lowerer, call: ts.CallExpression, what: string): IrExpr[] {
   const loc = locOf(call);
-  const options = call.arguments[0];
-  if (call.arguments.length > 1) {
-    lowerer.noLowering(`${what}.enable with ${call.arguments.length} arguments`, call);
+  const options = call.arguments.nodes[0];
+  if (call.arguments.nodes.length > 1) {
+    lowerer.noLowering(`${what}.enable with ${call.arguments.nodes.length} arguments`, call);
   }
   if (options === undefined) {
     return [strLit(MOCK_TIMERS_ALL_APIS, loc), numLit(0, loc), numLit(0, loc)];
@@ -953,7 +953,7 @@ function lowerMockTimersOptions(lowerer: Lowerer, call: ts.CallExpression, what:
   let listed = false;
   let now: IrExpr = numLit(0, loc);
   let flags = 0;
-  for (const prop of options.properties) {
+  for (const prop of options.properties.nodes) {
     // `{ apis: [...] }`, `{ "now": n }` and the `{ now }` shorthand.
     const init = ts.isPropertyAssignment(prop)
       ? prop.initializer
@@ -974,7 +974,7 @@ function lowerMockTimersOptions(lowerer: Lowerer, call: ts.CallExpression, what:
         );
       }
       listed = true;
-      for (const el of list.elements) {
+      for (const el of list.elements.nodes) {
         if (!ts.isStringLiteralLike(el)) {
           lowerer.noLowering(
             `${what}.enable with a non-literal API name`,
@@ -1046,7 +1046,7 @@ export function lowerMockContextCall(
   const { fn, calls, once, onceEntry } = mockContextFields(lowerer, ctxType)!;
   const loc = locOf(call);
   const member = access.name.text;
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const arity = (min: number, max: number = min) => {
     if (args.length < min || args.length > max || args.some(ts.isSpreadElement))
       lowerer.noLowering(`MockFunctionContext.${member} with ${args.length} arguments`, call);

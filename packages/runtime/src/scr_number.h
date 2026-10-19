@@ -134,6 +134,15 @@ double scr_date_get_minutes(double ms, bool utc);
 double scr_date_get_seconds(double ms, bool utc);
 double scr_date_get_milliseconds(double ms);
 double scr_date_get_timezone_offset(double ms);
+/* Date.prototype.toString, toDateString and toTimeString with V8's
+ * formats; "Invalid Date" for NaN. +1. */
+ScrStr *scr_date_to_string(double ms);
+ScrStr *scr_date_to_date_string(double ms);
+ScrStr *scr_date_to_time_string(double ms);
+/* The long time zone name Node prints after the GMT offset for the host
+ * zone at time value `ms`; `isdst` is tm_isdst at `ms`, or -1 when not
+ * known. Borrowed; valid until the next call on the same thread. */
+const char *scr_date_zone_name(double ms, int isdst);
 /* One-argument ABI wrappers used by the LLVM lib-call table. */
 double scr_date_get_full_year_local(double ms);
 double scr_date_get_full_year_utc(double ms);

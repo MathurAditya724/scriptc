@@ -77,8 +77,8 @@ export function lifetimeRegionType(lowerer: Lowerer): IrType {
 export function lowerLifetimeRegionNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   if (!ts.isIdentifier(expr.expression)) return null;
   if (experimentalImportOf(lowerer.program, expr.expression) !== "LifetimeRegion") return null;
-  if ((expr.arguments?.length ?? 0) !== 0)
-    lowerer.noLowering(`new LifetimeRegion with ${expr.arguments!.length} arguments`, expr);
+  if ((expr.arguments?.nodes.length ?? 0) !== 0)
+    lowerer.noLowering(`new LifetimeRegion with ${expr.arguments!.nodes.length} arguments`, expr);
   const type = lifetimeRegionType(lowerer);
   return { kind: "new", className: LIFETIME_REGION_CLASS, args: [], type, loc: locOf(expr) };
 }
@@ -102,8 +102,11 @@ export function lowerLifetimeRegionCall(lowerer: Lowerer, expr: ts.CallExpressio
     );
   const region = lowerer.coerceInto(callee.expression, lowerer.lowerExpr(callee.expression), type);
   if (member === "release") {
-    if (expr.arguments.length !== 0)
-      lowerer.noLowering(`LifetimeRegion.release with ${expr.arguments.length} arguments`, expr);
+    if (expr.arguments.nodes.length !== 0)
+      lowerer.noLowering(
+        `LifetimeRegion.release with ${expr.arguments.nodes.length} arguments`,
+        expr,
+      );
     return {
       kind: "intrinsic",
       name: "region.release",
@@ -121,9 +124,9 @@ export function lowerLifetimeRegionCall(lowerer: Lowerer, expr: ts.CallExpressio
       loc,
     };
   }
-  const arg = expr.arguments[0];
-  if (expr.arguments.length !== 1 || arg === undefined || ts.isSpreadElement(arg))
-    lowerer.noLowering(`LifetimeRegion.run with ${expr.arguments.length} arguments`, expr);
+  const arg = expr.arguments.nodes[0];
+  if (expr.arguments.nodes.length !== 1 || arg === undefined || ts.isSpreadElement(arg))
+    lowerer.noLowering(`LifetimeRegion.run with ${expr.arguments.nodes.length} arguments`, expr);
   const resultTs = lowerer.typeOf(expr);
   const mapped = resultTs.flags & ts.TypeFlags.Void ? VOID : lowerer.mapTypeOf(resultTs);
   if (mapped === null) lowerer.badType(expr, resultTs);

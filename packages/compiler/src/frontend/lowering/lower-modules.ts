@@ -244,7 +244,7 @@ export function splitFiles(lowerer: Lowerer): FileParts[] {
   const files = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
   return files.map((sf) => {
     const fp: FileParts = { sf, fnDecls: [], classDecls: [], topStmts: [] };
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (ts.isFunctionDeclaration(stmt)) fp.fnDecls.push(stmt);
       else if (ts.isClassDeclaration(stmt)) fp.classDecls.push(stmt);
       // Namespaces: ambient/type-only ones are zero-runtime and skip;
@@ -294,10 +294,10 @@ function dynamicProgramImportsOf(program: ts.Program, sf: ts.SourceFile): ts.Sou
     if (
       ts.isCallExpression(node) &&
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments[0] !== undefined &&
-      ts.isStringLiteralLike(node.arguments[0])
+      node.arguments.nodes[0] !== undefined &&
+      ts.isStringLiteralLike(node.arguments.nodes[0])
     ) {
-      const dep = dynamicImportProgramTargetOf(program, sf, node.arguments[0].text);
+      const dep = dynamicImportProgramTargetOf(program, sf, node.arguments.nodes[0].text);
       if (dep && !seen.has(dep)) {
         seen.add(dep);
         out.push(dep);
@@ -368,9 +368,9 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
   const computed = new Set<ts.ClassDeclaration>();
   for (const fp of parts)
     for (const decl of fp.classDecls) {
-      const heritage = decl.heritageClauses?.find(
+      const heritage = decl.heritageClauses?.nodes.find(
         (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-      )?.types[0]?.expression;
+      )?.types?.nodes[0]?.expression;
       if (heritage && ts.isCallExpression(heritage)) computed.add(decl);
     }
   // Descendants need the computed ancestor's completed layout before
@@ -386,9 +386,9 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     for (const fp of parts)
       for (const decl of fp.classDecls) {
         if (computed.has(decl)) continue;
-        const heritage = decl.heritageClauses?.find(
+        const heritage = decl.heritageClauses?.nodes.find(
           (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-        )?.types[0]?.expression;
+        )?.types?.nodes[0]?.expression;
         const base =
           heritage && ts.isIdentifier(heritage) ? lowerer.resolveValueSymbol(heritage) : undefined;
         if (!base || !computedSymbols.has(base)) continue;
@@ -441,9 +441,9 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     const previousSink = lowerer.diagSink;
     const deferred: import("../../diagnostics/diagnostic.js").ScrDiagnostic[] = [];
     lowerer.diagSink = deferred;
-    const expression = decl.heritageClauses!.find(
+    const expression = decl.heritageClauses!.nodes.find(
       (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-    )!.types[0]!.expression;
+    )!.types.nodes[0]!.expression;
     const context = newFnCtx(false, null, null, DYN);
     lowerer.fnStack.push(context);
     try {
@@ -516,7 +516,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
 export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
   const entryPackageFile = entryPackageFilePredicate(lowerer.entry.fileName);
   for (const fp of parts) {
-    for (const stmt of fp.sf.statements) {
+    for (const stmt of fp.sf.statements.nodes) {
       // NAMED re-exports from npm packages (`export { isUrl } from
       // "url-or-path"`): use the same package bindings as direct imports.
       const reexport =
@@ -526,7 +526,7 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
         ts.isStringLiteral(stmt.moduleSpecifier) &&
         stmt.exportClause !== undefined &&
         ts.isNamedExports(stmt.exportClause) &&
-        stmt.exportClause.elements.some((e) => !e.isTypeOnly) &&
+        stmt.exportClause.elements.nodes.some((e) => !e.isTypeOnly) &&
         !stmt.moduleSpecifier.text.startsWith("#")
           ? stmt.exportClause
           : null;
@@ -547,7 +547,7 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
         clause?.namedBindings &&
         ts.isNamedImports(clause.namedBindings) &&
         !clause.name &&
-        clause.namedBindings.elements.every((e) => e.isTypeOnly)
+        clause.namedBindings.elements.nodes.every((e) => e.isTypeOnly)
       ) {
         continue;
       }
@@ -634,11 +634,11 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
     if (
       ts.isCallExpression(node) &&
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length >= 1 &&
-      node.arguments[0] !== undefined &&
-      ts.isStringLiteralLike(node.arguments[0])
+      node.arguments.nodes.length >= 1 &&
+      node.arguments.nodes[0] !== undefined &&
+      ts.isStringLiteralLike(node.arguments.nodes[0])
     ) {
-      const spec = node.arguments[0].text;
+      const spec = node.arguments.nodes[0].text;
       if (lowerer.externalTypes.has(spec)) {
         return undefined;
       }
@@ -649,7 +649,7 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
         // module has no runtime namespace object — the per-site fence
         // says so. Only non-declaration source files count; a sibling
         // .d.mts typing shipped JS is the EMBED case, not this one.
-        const modSym = lowerer.checker.getSymbolAtLocation(node.arguments[0]);
+        const modSym = lowerer.checker.getSymbolAtLocation(node.arguments.nodes[0]);
         const ownModule =
           modSym !== undefined &&
           lowerer.checker
@@ -685,7 +685,7 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
  * and kept .json files out of the module order. */
 export function collectJsonImports(lowerer: Lowerer, parts: FileParts[]): void {
   for (const fp of parts) {
-    for (const stmt of fp.sf.statements) {
+    for (const stmt of fp.sf.statements.nodes) {
       if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
       const clause = stmt.importClause;
       if (!clause?.name || clause.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
@@ -1072,8 +1072,8 @@ function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefi
     ts.isPropertyAccessExpression(e.expression) &&
     ["freeze", "seal", "preventExtensions"].includes(e.expression.name.text) &&
     lowerer.stdlibGlobalMember(e.expression, "Object") !== null &&
-    e.arguments[0] &&
-    ts.isArrayLiteralExpression(e.arguments[0])
+    e.arguments.nodes[0] &&
+    ts.isArrayLiteralExpression(e.arguments.nodes[0])
   )
     return true;
   // The built-in Array constructor can create an evolving array whose
@@ -1166,7 +1166,7 @@ function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefi
   }
   if (
     (ts.isFunctionExpression(e) || ts.isArrowFunction(e)) &&
-    !e.typeParameters?.length &&
+    !e.typeParameters?.nodes.length &&
     isJsSourceFile(e.getSourceFile())
   )
     return true;
@@ -1288,7 +1288,7 @@ export function collectGlobals(
           !isJsSourceFile(sf) &&
           inner.typeParameters === undefined &&
           (decoratorNodesOf(inner).length > 0 ||
-            inner.members.some((m) => decoratorNodesOf(m).length > 0)) &&
+            inner.members.nodes.some((m) => decoratorNodesOf(m).length > 0)) &&
           guaranteedDecorationThrow(lowerer, inner) !== null
         ) {
           continue;
@@ -1471,7 +1471,7 @@ export function collectGlobals(
           !(
             requireSpecOf(rhs) !== null &&
             inlineProgramRequireOf(lowerer, rhs) !== null &&
-            !sf.statements.some((s) => cjsExportAssignmentOf(s)?.kind === "member")
+            !sf.statements.nodes.some((s) => cjsExportAssignmentOf(s)?.kind === "member")
           ) &&
           cjsExportTargetLiteral(rhs, sf) === null;
         if (cjsScalarLiteral(rhs) || fnValued || factoryValued) {
@@ -1502,7 +1502,7 @@ export function collectGlobals(
         continue;
       }
       if (cjs?.kind === "table" && cjs.obj) {
-        for (const prop of cjs.obj.properties) {
+        for (const prop of cjs.obj.properties.nodes) {
           if (ts.isShorthandPropertyAssignment(prop)) continue; // alias plumbing
           if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.initializer)) continue;
           if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) {
@@ -1580,8 +1580,8 @@ export function collectGlobals(
     if (
       isJsSourceFile(sf) &&
       (isDeadTscHelperDecl(lowerer, stmt) ||
-        (stmt.declarationList.declarations.length === 1 &&
-          tscInteropBindingOfDecl(lowerer, stmt.declarationList.declarations[0]!) !== null))
+        (stmt.declarationList.declarations.nodes.length === 1 &&
+          tscInteropBindingOfDecl(lowerer, stmt.declarationList.declarations.nodes[0]!) !== null))
     ) {
       continue;
     }
@@ -1596,14 +1596,14 @@ export function collectGlobals(
       isRequireStatement(stmt) &&
       !(
         ts.isVariableStatement(stmt) &&
-        stmt.declarationList.declarations.some(
+        stmt.declarationList.declarations.nodes.some(
           (decl) =>
             isNativeFfiRequire(lowerer, decl.initializer) || isJsonRequireDecl(lowerer, decl),
         )
       )
     ) {
       if (ts.isVariableStatement(stmt) && (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0) {
-        for (const decl of stmt.declarationList.declarations) {
+        for (const decl of stmt.declarationList.declarations.nodes) {
           stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer);
         }
       }
@@ -1615,7 +1615,7 @@ export function collectGlobals(
         const isLetList =
           (stmt.declarationList.flags & ts.NodeFlags.Let) !== 0 ||
           (stmt.declarationList.flags & ts.NodeFlags.BlockScoped) === 0;
-        for (const decl of stmt.declarationList.declarations) {
+        for (const decl of stmt.declarationList.declarations.nodes) {
           for (const element of requireNestedPatternsOf(decl)) {
             for (const nameNode of boundIdentifiersOf(element.name!)) {
               const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
@@ -1647,7 +1647,8 @@ export function collectGlobals(
     // Node's ReferenceError at the access (lower-exprs), and the
     // statement itself lowers to nothing.
     if (
-      ts.getCombinedModifierFlags(stmt.declarationList.declarations[0]!) & ts.ModifierFlags.Ambient
+      ts.getCombinedModifierFlags(stmt.declarationList.declarations.nodes[0]!) &
+      ts.ModifierFlags.Ambient
     )
       continue;
     const list = stmt.declarationList;
@@ -1662,8 +1663,8 @@ export function collectGlobals(
     // (`%g.e.A%B.x`), so `namespace A { export const x }` and a
     // top-level `const x` never collide; non-exported members add the
     // declaring block's position (block-local bindings).
-    const nsPrefix = nsPathPrefix(stmt, list.declarations[0]);
-    for (const decl of list.declarations) {
+    const nsPrefix = nsPathPrefix(stmt, list.declarations.nodes[0]);
+    for (const decl of list.declarations.nodes) {
       // --provenance-sources: an elided pure-annotated dead const in a
       // fetched source module registers no global (the statement
       // lowering emits nothing by the same test — see
@@ -2012,7 +2013,7 @@ export function collectGlobals(
             nameNode === decl.name &&
             decl.initializer &&
             ts.isObjectLiteralExpression(decl.initializer) &&
-            decl.initializer.properties.some(
+            decl.initializer.properties.nodes.some(
               (p) =>
                 !ts.isSpreadAssignment(p) &&
                 (ts.isMethodDeclaration(p) ||
@@ -2059,7 +2060,7 @@ export function collectGlobals(
             nameNode === decl.name &&
             decl.initializer !== undefined &&
             ts.isObjectLiteralExpression(decl.initializer) &&
-            decl.initializer.properties.every((p) => {
+            decl.initializer.properties.nodes.every((p) => {
               if (ts.isSpreadAssignment(p)) {
                 return (
                   ts.isIdentifier(p.expression) &&
@@ -2183,7 +2184,7 @@ export function collectGlobals(
             const generic = member && lowerer.genericFnOf(member);
             const fallback =
               (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) &&
-              !initializer.typeParameters?.length
+              !initializer.typeParameters?.nodes.length
                 ? lowerer.lambdaSignature(initializer).funcType
                 : member && lowerer.globalOf(member)?.type.kind === "dyn"
                   ? DYN
@@ -2276,7 +2277,7 @@ export function collectGlobals(
             !hasJsTypeAnnotation(decl) &&
             decl.initializer &&
             (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer)) &&
-            !decl.initializer.typeParameters?.length
+            !decl.initializer.typeParameters?.nodes.length
           ) {
             type = lowerer.lambdaSignature(decl.initializer).funcType;
           }
@@ -2350,7 +2351,7 @@ export function collectGlobals(
             ts.isCallExpression(decl.initializer) &&
             ts.isPropertyAccessExpression(decl.initializer.expression) &&
             lowerer.stdlibGlobalMember(decl.initializer.expression, "Object") === "assign" &&
-            decl.initializer.arguments.some(
+            decl.initializer.arguments.nodes.some(
               (arg) => ts.isIdentifier(arg) && lowerer.globalOf(arg)?.type.kind === "dyn",
             )
           ) {
@@ -2603,7 +2604,7 @@ function collectNestedVarGlobals(
     return undefined;
   });
   for (const list of lists) {
-    for (const decl of list.declarations) {
+    for (const decl of list.declarations.nodes) {
       for (const nameNode of boundIdentifiersOf(decl.name)) {
         const diagsBefore = lowerer.diags.length;
         try {
@@ -2709,7 +2710,7 @@ export function lowerDefaultExport(lowerer: Lowerer, stmt: ts.ExportAssignment):
         !isJsSourceFile(stmt.getSourceFile()) &&
         inner.typeParameters === undefined &&
         (decoratorNodesOf(inner).length > 0 ||
-          inner.members.some((m) => decoratorNodesOf(m).length > 0)) &&
+          inner.members.nodes.some((m) => decoratorNodesOf(m).length > 0)) &&
         guaranteedDecorationThrow(lowerer, inner) !== null
       ) {
         return { kind: "exprStmt", expr: lowerer.lowerExpr(stmt.expression), loc: locOf(stmt) };
@@ -3134,6 +3135,7 @@ function rememberEvaluationError(
 export function buildMain(lowerer: Lowerer): IrFunction {
   const loc: SrcLoc = { file: lowerer.entry.fileName, start: 0, end: 0 };
   const body: IrStmt[] = [
+    ...lowerer.mainPrelude,
     ...cjsModuleRegistryPrelude(lowerer, loc),
     ...handleEventReaderPrelude(lowerer, loc),
   ];

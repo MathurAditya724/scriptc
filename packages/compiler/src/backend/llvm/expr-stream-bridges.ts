@@ -708,6 +708,10 @@ export function streamTypedRefMaterializeAdapter(
   }
   // Publish both symbols before their bodies: class-array and callback
   // converters can request this same adapter while emitting the commit.
+  // A recursive field type binds capsules of this class there too, so the
+  // class view ops are published first.
+  const opsMeta = isDynTypedRefType(t) ? host.classMeta.get(t.className) : undefined;
+  if (opsMeta && liveClassOpsEligible(opsMeta)) adapter.classOps = `@${snapshot}_cops`;
   adapter.commit = `@${snapshot}_commit`;
   adapter.commit = host.streamTypedRefCommitAdapter(t, snapshot);
   const B = new BlockBuilder();
@@ -719,10 +723,7 @@ export function streamTypedRefMaterializeAdapter(
         `llvm emitter bug: typed-ref materialize of unknown class ${t.className}`,
       );
     }
-    if (liveClassOpsEligible(meta)) {
-      adapter.classOps = `@${snapshot}_cops`;
-      liveClassOps(host, snapshot, meta);
-    }
+    if (adapter.classOps !== undefined) liveClassOps(host, snapshot, meta);
     if (meta.hierarchy && meta.children.length) {
       const vtSlot = B.tmp(),
         vt = B.tmp(),
