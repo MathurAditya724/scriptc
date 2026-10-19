@@ -10892,6 +10892,21 @@ export class Lowerer {
         return;
       }
       const name = (decl.name as ts.Identifier).text;
+      if (shape.entryNarrow) {
+        // A typed override parameter over an inherited checked-value slot:
+        // the body local narrows from the dyn argument at entry.
+        const loc = locOf(decl);
+        const slot = this.declareHiddenLocal(name, shape.type);
+        params.push({ localId: slot.id, name, type: shape.type });
+        const narrowed = this.coerceInto(
+          decl.name,
+          { kind: "varRef", localId: slot.id, type: shape.type, loc },
+          shape.entryNarrow,
+        );
+        const body = this.declareLocal(decl.name, name, shape.entryNarrow, true);
+        prologue.push({ kind: "varDecl", localId: body.id, init: narrowed, loc });
+        return;
+      }
       if (shape.mode === "omittable" && shape.bodyType && decl.initializer) {
         const abi = shape.type;
         if (abi.kind === "dyn") {

@@ -3345,6 +3345,56 @@ export function collectClassShapeInner(
               .map((p): ParamShape => ({ type: p.type, mode: "omittable" })),
           );
         }
+        // A TypeScript override of a JavaScript method (`class T extends
+        // Agent` over an npm-static package) keeps the base's checked-value
+        // ABI: each untyped base slot stays dyn, and the override's typed
+        // parameter narrows from it at entry with a checked conversion. An
+        // untyped base return takes the override's value boxed. Calls on
+        // a statically typed receiver see the same ABI.
+        if (
+          overridden &&
+          !isJsSourceFile(member.getSourceFile()) &&
+          overridden.declarer.decl !== null &&
+          isJsSourceFile(overridden.declarer.decl.getSourceFile()) &&
+          member.asteriskToken === undefined &&
+          !overridden.sig.async &&
+          !overridden.sig.gen &&
+          shapes.length <= overridden.sig.params.length &&
+          shapes.every((p, i) => {
+            const inherited = overridden.sig.params[i]!;
+            return (
+              (p.mode === "required" || p.mode === "omittable") &&
+              p.bodyType === undefined &&
+              (inherited.mode === "required" || inherited.mode === "omittable") &&
+              (typeEquals(p.type, inherited.type) ||
+                (inherited.type.kind === "dyn" && lowerer.dynConvertible(p.type)))
+            );
+          }) &&
+          overridden.sig.params
+            .slice(shapes.length)
+            .every(
+              (p) => p.type.kind === "dyn" && (p.mode === "required" || p.mode === "omittable"),
+            )
+        ) {
+          for (let i = 0; i < shapes.length; i++) {
+            const own = shapes[i]!;
+            if (overridden.sig.params[i]!.type.kind === "dyn" && own.type.kind !== "dyn")
+              shapes[i] = { type: DYN, mode: own.mode, entryNarrow: own.type };
+          }
+          shapes.push(
+            ...overridden.sig.params
+              .slice(shapes.length)
+              .map((p): ParamShape => ({ type: p.type, mode: "omittable" })),
+          );
+          if (
+            overridden.sig.ret.kind === "dyn" &&
+            ft.ret.kind !== "dyn" &&
+            ft.ret.kind !== "void" &&
+            lowerer.dynConvertible(ft.ret)
+          )
+            ft.ret = DYN;
+          ft.params = shapes.map((shape) => shape.type);
+        }
         if (
           overridden &&
           member.asteriskToken === undefined &&

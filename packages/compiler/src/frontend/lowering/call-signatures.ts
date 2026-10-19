@@ -46,12 +46,15 @@ export type ParamMode = "required" | "omittable" | "rest" | "dynRest" | "argumen
  * otherwise. `bodyType` is present exactly for DEFAULTED program params:
  * the plain T the body sees after the prologue applies the default (see
  * declareParams). `callDefault` is the compile-time default value for a
- * table-backed builtin's omittable slot. */
+ * table-backed builtin's omittable slot. `entryNarrow` marks a dyn ABI slot
+ * inherited from a JavaScript base method whose TypeScript override declares
+ * a typed parameter: the prologue narrows the checked value to that type. */
 export interface ParamShape {
   type: IrType;
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
+  entryNarrow?: IrType;
 }
 
 export interface FnSig {
