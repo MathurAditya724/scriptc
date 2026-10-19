@@ -5,9 +5,9 @@
 const byFlag = new Map<boolean, string>();
 console.log(byFlag);
 
-// Map values have no slot for functions.
-const listeners = new Map<string, () => void>();
-console.log(listeners);
+// Map values have no slot for Dates.
+const stamps = new Map<string, Date>();
+console.log(stamps);
 
 // Boolean Set elements remain outside the supported element domain.
 const flags = new Set<boolean>();
