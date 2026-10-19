@@ -20,6 +20,9 @@ import {
   type SrcLoc,
   canConvertToDyn,
   canDynCheckTo,
+  classDynViewSupported,
+  DYN_CLASS_PROPERTIES,
+  isClassOwnEnumerableFieldName,
   isDirentShape,
   isDynTypedRefType,
   recordTextCodecClass,
@@ -220,9 +223,10 @@ function inspectSupport(
           ? null
           : "error subclasses with declared fields have no inspect lowering yet (the extra own properties are runtime-dynamic)";
       }
-      // A class with subclasses renders through its checked-dynamic view,
-      // which names the instance's own class and holds its own fields.
-      if (info.subclasses.length > 0) {
+      // A class with subclasses, or a JavaScript class, renders through its
+      // checked-dynamic view, which names the instance's own class and holds
+      // its own properties.
+      if (classInspectsThroughView(lowerer, info)) {
         if (!isDynTypedRefType(t) || visiting.has(t.className)) return null;
         visiting.add(t.className);
         const hierarchy = (current: ClassInfo): ClassInfo[] => [
@@ -374,7 +378,7 @@ export function inspectExpr(
           loc,
         };
       }
-      if (lowerer.classes.get(t.className)?.subclasses.length) {
+      if (classInspectsThroughView(lowerer, lowerer.classes.get(t.className))) {
         return {
           kind: "libCall",
           fn: "insp.dyn",
@@ -475,6 +479,40 @@ function typeConstituents(lowerer: Lowerer, u: IrType): IrType[] {
   }
 }
 
+/** Whether instances of a class render through its checked-dynamic view
+ * instead of a helper over the declared layout. The view names the
+ * instance's own class, which a base-typed value may not know statically,
+ * and lists own properties in creation order. A JavaScript class needs that
+ * order: its fields can be created conditionally, outside the constructor,
+ * or by writes to the instance after construction. */
+function classInspectsThroughView(lowerer: Lowerer, info: ClassInfo | undefined): boolean {
+  if (info === undefined) return false;
+  if (info.subclasses.length > 0) return true;
+  return (
+    info.decl != null &&
+    isJsSourceFile(info.decl.getSourceFile()) &&
+    classDynViewSupported(
+      info.def.fields,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  );
+}
+
+/** Whether a class holds properties added outside its declared layout, which
+ * only its checked-dynamic view can list. Decided after lowering, when the
+ * class has its final fields. */
+function classInspectsAddedProperties(lowerer: Lowerer, info: ClassInfo): boolean {
+  return (
+    info.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES) &&
+    classDynViewSupported(
+      info.def.fields,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  );
+}
+
 /* ── the interned per-type helper ────────────────────────────────────── */
 
 /** `%util.insp.<n>(v, r, d): string` — formatValue over the static type:
@@ -506,8 +544,8 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   // CYCLE-CAPABLE composites (typeReachesItself) run Node's circular
   // machinery: circCheck first (a value already on the traversal stack
   // renders [Circular *N] — before the empty/depth answers, Node's
-  // order), seen-push after begin, and refWrap around end's result (the
-  // <ref *N> prefix on values the walk found circular). Acyclic types
+  // order), seen-push after begin, and refWrap around end's result (end
+  // adds the <ref *N> prefix on values the walk found circular). Acyclic types
   // keep the zero-cost path.
   const onCycle =
     (t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
@@ -1196,7 +1234,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       // #private fields never render: they are not properties in any
       // observable way — Node's inspect omits them entirely (verified),
       // so a class whose only fields are private prints as `C {}`.
-      const visible = info.def.fields.filter((f) => !f.name.startsWith("#"));
+      const visible = info.def.fields.filter((f) => isClassOwnEnumerableFieldName(f.name));
       if (visible.length === 0) {
         body = [ret(strLit(display === "" ? "{}" : `${display} {}`, loc))];
         break;
@@ -1316,6 +1354,24 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
     body,
     loc,
   };
+  const inspected = t.kind === "object" ? lowerer.classes.get(t.className) : undefined;
+  if (inspected !== undefined) {
+    // Dynamic stores add a property bag to the class after this helper was
+    // built. The checked-dynamic view lists the bag's properties after the
+    // declared fields, so a class that has one renders through the view.
+    lowerer.shapeOrderHelperFinalizers.push(() => {
+      if (!classInspectsAddedProperties(lowerer, inspected)) return;
+      fn.body = [
+        ret({
+          kind: "libCall",
+          fn: "insp.dyn",
+          args: [{ kind: "dynFrom", value: v(), liveRef: true, type: DYN, loc }, r(), d()],
+          type: STRING,
+          loc,
+        }),
+      ];
+    });
+  }
   if (rebuildShapeOrderBody !== null) {
     lowerer.shapeOrderHelperFinalizers.push(() => {
       rebuildShapeOrderBody!();

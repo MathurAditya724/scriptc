@@ -236,6 +236,7 @@ typedef struct {
   size_t len;
   size_t cap;
   bool all_num; /* every entry so far flagged numeric (grouping order) */
+  const void *seen; /* the value this frame pushed on the seen stack, or NULL */
 } InspFrame;
 
 static SCR_TL InspFrame *g_frames;
@@ -264,6 +265,10 @@ static void insp_circ_reset(void); /* circular-reference state, below */
 /* Begin a non-empty composite: formatRaw's `recurseTimes += 1;
  * ctx.currentDepth = recurseTimes` plus the uniform +2 the children
  * format under. `recurse` is the CHILDREN's recursion depth. */
+/* A value whose frame the next scr_insp_begin opens: that frame pushes it
+ * on the seen stack (the runtime inspector's class instances). */
+static SCR_TL const void *g_pending_seen;
+
 void scr_insp_begin(double recurse) {
   if (recurse == 1) insp_circ_reset(); /* a fresh top-level value: Node's per-inspect ctx */
   if (g_nframes == g_frames_cap) {
@@ -276,8 +281,14 @@ void scr_insp_begin(double recurse) {
   f->len = 0;
   f->cap = 0;
   f->all_num = true;
+  f->seen = NULL;
   g_cur_depth = recurse;
   g_indent += 2;
+  if (g_pending_seen) {
+    const void *v = g_pending_seen;
+    g_pending_seen = NULL;
+    scr_insp_seen_push(v);
+  }
 }
 
 /* Append one already-rendered entry (borrowed; retained here). is_num
@@ -352,6 +363,7 @@ void scr_insp_seen_push(const void *v) {
   g_seen[g_nseen].ptr = v;
   g_seen[g_nseen].id = 0;
   g_nseen++;
+  if (g_nframes > 0) insp_top()->seen = v;
 }
 
 ScrStr *scr_insp_circular(double id) {
@@ -360,17 +372,12 @@ ScrStr *scr_insp_circular(double id) {
   return scr_str_new(buf, (size_t)n);
 }
 
+/* Pops the value's seen entry after its frame closed. scr_insp_end already
+ * wrote the `<ref *N>` prefix of a circular target. */
 ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s) {
+  (void)v;
   if (g_nseen > 0) g_nseen--;
-  int id = insp_circ_id(v);
-  if (id == 0) return scr_str_retain(s);
-  char buf[32];
-  int n = snprintf(buf, sizeof buf, "<ref *%d> ", id);
-  ScrStr *out = scr_str_alloc_raw(s->len + (size_t)n, s->len + (size_t)n);
-  memcpy(out->data, buf, (size_t)n);
-  memcpy(out->data + n, s->data, s->len);
-  out->data[out->len] = '\0';
-  return out;
+  return scr_str_retain(s);
 }
 
 /* formatRaw's Date base: toISOString(), or toString()'s "Invalid Date"
@@ -507,6 +514,20 @@ ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse, bool 
    * and Map and Set entries) by their rendered text, in UTF-16 code-unit
    * order; arrays keep their element order. */
   if (g_sorted && !array_extras && f->len > 1) qsort(f->items, f->len, sizeof *f->items, insp_item_cmp);
+  /* Node adds a circular target's `<ref *N>` to the base before it chooses
+   * the layout, so the reference counts toward the line width. */
+  ScrStr *ref_base = NULL;
+  int ref_id = f->seen ? insp_circ_id(f->seen) : 0;
+  if (ref_id) {
+    char buf[32];
+    int n = snprintf(buf, sizeof buf, base->len ? "<ref *%d> " : "<ref *%d>", ref_id);
+    size_t len = (size_t)n + base->len;
+    ref_base = scr_str_alloc_raw(len, len);
+    memcpy(ref_base->data, buf, (size_t)n);
+    memcpy(ref_base->data + n, base->data, base->len);
+    ref_base->data[len] = '\0';
+    base = ref_base;
+  }
   size_t entries = f->len;
   bool compact = g_compact >= 1;
   if (compact && array_extras && entries > 6) insp_group(f, trailing_more);
@@ -553,6 +574,7 @@ done:;
   for (size_t i = 0; i < f->len; i++) scr_str_release(f->items[i]);
   free(f->items);
   g_nframes--;
+  if (ref_base) scr_str_release(ref_base);
   return ib_take(&out);
 }
 
@@ -1464,6 +1486,12 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_str_release(body);
         return ib_take(&out);
       }
+      /* A class instance already on the traversal stack renders as
+       * [Circular *N]. The key is the native instance, the same key the
+       * compiled inspect helpers push, so a cycle through both resolves. */
+      const void *instance = d->v.typed_ref.ptr;
+      double circular = scr_insp_circ_check(instance);
+      if (circular > 0) return scr_insp_circular(circular);
       ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
       /* A class instance prints with its class's name, which the checked
        * view of its fields does not carry. */
@@ -1475,7 +1503,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         if (!cls) scr_trap("scriptc: out of memory\n");
         memcpy(cls, name->data, name->len);
         cls[name->len] = '\0';
+        size_t nseen = g_nseen;
+        g_pending_seen = instance;
         out = scr_insp_obj(materialized, recurse, depth, cls);
+        g_pending_seen = NULL;
+        if (g_nseen > nseen) g_nseen = nseen;
         free(cls);
       } else {
         out = scr_insp_dyn(materialized, recurse, depth);
