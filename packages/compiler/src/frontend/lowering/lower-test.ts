@@ -334,7 +334,7 @@ function staticFunctionName(lowerer: Lowerer, node: ts.Expression): string | nul
   if (!ts.isIdentifier(node)) return null;
   const symbol = lowerer.resolveValueSymbol(node);
   if (!symbol) return null;
-  for (const decl of lowerer.checker.declarationsOf(symbol)) {
+  for (const decl of symbol.declarations) {
     if (ts.isFunctionDeclaration(decl)) return decl.name?.text ?? "default";
     if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) && decl.initializer) {
       let init = decl.initializer;
@@ -728,7 +728,7 @@ export function lowerTestDirectCall(
   if (!ts.isIdentifier(callee)) return null;
   if (lowerer.builtinNamespaceModuleOf(callee) !== "test") return null;
   const calleeSym = lowerer.checker.getSymbolAtLocation(callee);
-  const decl = calleeSym ? lowerer.checker.declarationsOf(calleeSym)[0] : undefined;
+  const decl = calleeSym ? calleeSym.declarations[0] : undefined;
   if (decl && ts.isNamespaceImport(decl)) {
     lowerer.unsupported(
       "SC1013",

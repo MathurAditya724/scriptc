@@ -3047,7 +3047,7 @@ export function lowerShorthandValue(
       return lowerer.maybeNarrow({ kind: "varRef", localId: g.id, type: g.type, loc }, propName);
     }
     const sig = lowerer.fnSigsBySymbol.get(resolved);
-    const decl = lowerer.checker.declarationsOf(resolved)[0];
+    const decl = resolved.declarations[0];
     if (
       sig &&
       decl &&

@@ -114,7 +114,7 @@ export function nullishValueUnitOf(
   const cached = lowerer.nullishBindings.get(sym);
   if (cached !== undefined) return cached;
   lowerer.nullishBindings.set(sym, null); // cycle guard: self-referential probes answer non-qualifying
-  const decl = lowerer.checker.valueDeclarationOf(sym);
+  const decl = sym.valueDeclaration;
   // Statement-position declarators only: a for-loop head (`for (let x =
   // null as any; ...)`) declares a LOCAL with per-iteration semantics —
   // lowerVarDeclList's contract requires a lowered statement for it, so

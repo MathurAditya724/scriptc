@@ -106,7 +106,7 @@ export function builtinConstantsDestructureDecl(
  * its baked literal value. Null for every other binding. */
 export function builtinConstantBindingOf(lowerer: Lowerer, ident: ts.Identifier): IrExpr | null {
   const symbol = lowerer.checker.getSymbolAtLocation(ident);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl || !ts.isBindingElement(decl) || decl.dotDotDotToken || decl.initializer) return null;
   if (!ts.isObjectBindingPattern(decl.parent)) return null;
   const varDecl = decl.parent.parent;

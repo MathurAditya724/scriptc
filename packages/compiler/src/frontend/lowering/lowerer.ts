@@ -1193,9 +1193,9 @@ export function staticImportNamespaceType(
     const symbol = lowerer.checker.getSymbolAtLocation(arg);
     const source =
       symbol &&
-      lowerer.checker
-        .declarationsOf(symbol)
-        .find((decl): decl is ts.SourceFile => ts.isSourceFile(decl) && !decl.isDeclarationFile);
+      symbol.declarations.find(
+        (decl): decl is ts.SourceFile => ts.isSourceFile(decl) && !decl.isDeclarationFile,
+      );
     if (
       source &&
       !source.fileName.endsWith(".cts") &&
@@ -1450,7 +1450,7 @@ function jsFallbackFunctionType(lowerer: Lowerer, node: ts.Node, t: ts.Type): Ir
     // slot. JS inference reports the body type (`boolean` for
     // `enabled = true`) rather than that call-site type, so recover the
     // syntactic optionality from the parameter declaration.
-    const decl = lowerer.checker.valueDeclarationOf(p);
+    const decl = p.valueDeclaration;
     mapped = jsOpenObjectType(decl, mapped, lowerer.shapes, lowerer.unions);
     const optional =
       decl !== undefined &&
@@ -1462,7 +1462,7 @@ function jsFallbackFunctionType(lowerer: Lowerer, node: ts.Node, t: ts.Type): Ir
     return mapped;
   });
   const retT = lowerer.checker.getReturnTypeOfSignature(sig);
-  const sigDecl = lowerer.checker.signatureDeclaration(sig);
+  const sigDecl = sig.declaration;
   const jsUnitReturn =
     sigDecl !== undefined &&
     isJsSourceFile(sigDecl.getSourceFile()) &&
@@ -1491,7 +1491,7 @@ function jsArgumentsFunctionType(lowerer: Lowerer, t: ts.Type): IrType | null {
     lowerer.checker.getPropertiesOfType(t).length !== 0
   )
     return null;
-  const decl = lowerer.checker.signatureDeclaration(sigs[0]!);
+  const decl = sigs[0]!.declaration;
   if (
     decl === undefined ||
     !(
@@ -1537,14 +1537,14 @@ function pureSingleCallSignatureOf(lowerer: Lowerer, t: ts.Type): ts.Signature |
     lowerer.checker.getConstructSignatures(t).length === 0 &&
     sigs[0]!.getTypeParameters().length === 0 &&
     sigs[0]!.getParameters().every((p) => {
-      const pDecl = lowerer.checker.valueDeclarationOf(p);
+      const pDecl = p.valueDeclaration;
       return !pDecl || !ts.isParameter(pDecl) || pDecl.dotDotDotToken === undefined;
     }) &&
     // A SYNTHESIZED rest param (tsc's `arguments` inference — no
     // valueDeclaration to carry the dotDotDot): param-count mismatch
     // against the signature's declaration; the whole value stays dyn.
     (() => {
-      const sigDecl = lowerer.checker.signatureDeclaration(sigs[0]!);
+      const sigDecl = sigs[0]!.declaration;
       const declParams =
         sigDecl !== undefined && ts.isFunctionLike(sigDecl) ? sigDecl.parameters.nodes : undefined;
       if (declParams !== undefined && declParams.length !== sigs[0]!.getParameters().length)
@@ -1600,7 +1600,7 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     const symbol = lowerer.resolveValueSymbol(n);
     if (!symbol || seen.has(symbol)) break;
     seen.add(symbol);
-    const declaration = lowerer.checker.valueDeclarationOf(symbol);
+    const declaration = symbol.valueDeclaration;
     if (declaration && ts.isFunctionDeclaration(declaration)) {
       n = declaration;
       break;
@@ -1718,7 +1718,7 @@ export class Lowerer {
   get stringIndexBounds(): StringIndexBounds {
     this.stringIndexBoundsCache ??= new StringIndexBounds(
       (node) => this.checker.getSymbolAtLocation(node) ?? null,
-      (symbol) => this.checker.valueDeclarationOf(symbol),
+      (symbol) => symbol.valueDeclaration,
       (node) => (this.typeOf(node).flags & ts.TypeFlags.StringLike) !== 0,
     );
     return this.stringIndexBoundsCache;
@@ -2080,7 +2080,7 @@ export class Lowerer {
     // directly from the aliased declaration as a final read-side hook, so
     // the initializer cannot fall back to a narrowing adapter.
     if (ts.isIdentifier(node) && fallback?.kind === "func") {
-      const decl = this.checker.valueDeclarationOf(symbol);
+      const decl = symbol.valueDeclaration;
       if (
         decl &&
         ts.isVariableDeclaration(decl) &&
@@ -3187,7 +3187,7 @@ export class Lowerer {
     let sym = type.getSymbol();
     if (!sym) return null;
     if (sym.flags & ts.SymbolFlags.Alias) sym = this.checker.getAliasedSymbol(sym);
-    for (const decl of this.checker.declarationsOf(sym)) {
+    for (const decl of sym.declarations) {
       if (
         ts.isSourceFile(decl) &&
         !decl.isDeclarationFile &&
@@ -3451,7 +3451,7 @@ export class Lowerer {
    * every project-module spelling. */
   private moduleSourceFileOf(from: ts.SourceFile, spec: ts.StringLiteral): ts.SourceFile | null {
     const moduleSymbol = this.checker.getSymbolAtLocation(spec);
-    for (const decl of moduleSymbol ? this.checker.declarationsOf(moduleSymbol) : []) {
+    for (const decl of moduleSymbol ? moduleSymbol.declarations : []) {
       if (ts.isSourceFile(decl)) return decl;
     }
     return resolveImport(this.program, from, spec.text);
@@ -3496,9 +3496,7 @@ export class Lowerer {
     }
     if (!ts.isIdentifier(value)) return null;
     const symbol = this.checker.getSymbolAtLocation(value);
-    const namespaceDecl = symbol
-      ? this.checker.declarationsOf(symbol).find(ts.isNamespaceImport)
-      : undefined;
+    const namespaceDecl = symbol ? symbol.declarations.find(ts.isNamespaceImport) : undefined;
     if (namespaceDecl === undefined) return null;
     const importDecl = namespaceDecl.parent?.parent;
     if (!ts.isImportDeclaration(importDecl) || !ts.isStringLiteral(importDecl.moduleSpecifier))
@@ -3518,7 +3516,7 @@ export class Lowerer {
   ): string | null {
     if (symbol === undefined || seenSymbols.has(symbol)) return null;
     seenSymbols.add(symbol);
-    const declarations = this.checker.declarationsOf(symbol);
+    const declarations = symbol.declarations;
 
     // Route-aware alias hops run before declaration-file ownership. An
     // exact import must keep the specifier it actually named, rather than
@@ -3587,9 +3585,9 @@ export class Lowerer {
     let sym: ts.Symbol | undefined = alias;
     for (let hop = 0; sym !== undefined && hop < 32; hop++) {
       if (hop > 0 && sym.flags & ts.SymbolFlags.Alias && this.globalsBySymbol.has(sym)) return sym;
-      const d = this.checker
-        .declarationsOf(sym)
-        .find((x) => ts.isImportClause(x) || ts.isImportSpecifier(x) || ts.isExportSpecifier(x));
+      const d = sym.declarations.find(
+        (x) => ts.isImportClause(x) || ts.isImportSpecifier(x) || ts.isExportSpecifier(x),
+      );
       let spec: ts.Expression | undefined;
       let name: string | undefined;
       if (d && ts.isImportClause(d) && ts.isImportDeclaration(d.parent)) {
@@ -3636,7 +3634,7 @@ export class Lowerer {
    * see resolveValueSymbol. Null when `symbol` is not such a property (or
    * the property's value is not a plain identifier reference). */
   private cjsExportValueSymbol(symbol: ts.Symbol): ts.Symbol | null {
-    const d = this.checker.declarationsOf(symbol)[0];
+    const d = symbol.declarations[0];
     if (!d) return null;
     // MEMBER-form class exports (`exports.C = C` — commander's error.js):
     // alias plumbing exactly like a table entry, so importers land on the
@@ -3682,7 +3680,7 @@ export class Lowerer {
     let value = this.checker.getSymbolAtLocation(assign.right);
     if (!value) return null;
     if (value.flags & ts.SymbolFlags.Alias) value = this.checker.getAliasedSymbol(value);
-    const isClass = this.checker.declarationsOf(value).some((decl) => ts.isClassDeclaration(decl));
+    const isClass = value.declarations.some((decl) => ts.isClassDeclaration(decl));
     return isClass ? value : null;
   }
 
@@ -3728,7 +3726,7 @@ export class Lowerer {
    * member-symbol fallback and namespace classification in lockstep. */
   private localModuleBindingDepOf(expr: ts.Identifier): ts.SourceFile | null {
     const sym = this.checker.getSymbolAtLocation(expr);
-    const decls = sym ? this.checker.declarationsOf(sym) : [];
+    const decls = sym ? sym.declarations : [];
     const decl = decls.find(ts.isImportClause) ?? decls[0];
     if (!decl) return null;
     if (ts.isImportClause(decl)) return this.cjsDefaultImportDepOf(decl);
@@ -3756,31 +3754,27 @@ export class Lowerer {
    * static storage or callable/class metadata. */
   private createRequireWholeExportSymbolOf(ident: ts.Identifier): ts.Symbol | null {
     const binding = this.checker.getSymbolAtLocation(ident);
-    const decl = binding
-      ? this.checker.declarationsOf(binding).find(ts.isVariableDeclaration)
-      : undefined;
+    const decl = binding ? binding.declarations.find(ts.isVariableDeclaration) : undefined;
     if (!decl || !ts.isIdentifier(decl.name) || !decl.initializer) return null;
     const target = createRequireProgramModuleOf(this, decl.initializer);
     if (target === null) return null;
     const moduleSym = this.checker.getSymbolAtLocation(target.dep);
     let symbol = moduleSym?.getExports().get("export=" as ts.__String);
     if (!symbol) return null;
-    const wholeAssignment = this.checker
-      .declarationsOf(symbol)
-      .find((d): d is ts.BinaryExpression => {
-        if (
-          !ts.isBinaryExpression(d) ||
-          !ts.isExpressionStatement(d.parent) ||
-          !ts.isSourceFile(d.parent.parent)
-        )
-          return false;
-        const exported = cjsExportAssignmentOf(d.parent);
-        return (
-          exported?.kind === "table" &&
-          exported.obj === null &&
-          cjsExportDiscardReason(d.parent) === null
-        );
-      });
+    const wholeAssignment = symbol.declarations.find((d): d is ts.BinaryExpression => {
+      if (
+        !ts.isBinaryExpression(d) ||
+        !ts.isExpressionStatement(d.parent) ||
+        !ts.isSourceFile(d.parent.parent)
+      )
+        return false;
+      const exported = cjsExportAssignmentOf(d.parent);
+      return (
+        exported?.kind === "table" &&
+        exported.obj === null &&
+        cjsExportDiscardReason(d.parent) === null
+      );
+    });
     if (wholeAssignment === undefined) return null;
     let rhs: ts.Expression = wholeAssignment.right;
     while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
@@ -3807,9 +3801,7 @@ export class Lowerer {
    * target module's real export symbol. */
   private createRequireDestructuredExportSymbolOf(ident: ts.Identifier): ts.Symbol | null {
     const binding = this.checker.getSymbolAtLocation(ident);
-    const element = binding
-      ? this.checker.declarationsOf(binding).find(ts.isBindingElement)
-      : undefined;
+    const element = binding ? binding.declarations.find(ts.isBindingElement) : undefined;
     if (
       !element ||
       element.name === undefined ||
@@ -3857,7 +3849,7 @@ export class Lowerer {
     if (sym && sym.flags & ts.SymbolFlags.Alias) {
       // `module.exports = TypeError`: the binding IS the builtin global.
       if (this.isStdlibSymbol(this.checker.getAliasedSymbol(sym))) return false;
-      const d = this.checker.declarationsOf(this.checker.getAliasedSymbol(sym))[0];
+      const d = this.checker.getAliasedSymbol(sym).declarations[0];
       if (d && (ts.isClassDeclaration(d) || ts.isFunctionDeclaration(d))) return false;
       if (d && ts.isVariableDeclaration(d)) {
         let init = d.initializer;
@@ -3922,7 +3914,7 @@ export class Lowerer {
       if (g.type.kind === "func") g.type = this.runtimeOptionalBindingType(ident, g.type);
       return g;
     }
-    for (const d of this.checker.declarationsOf(symbol)) {
+    for (const d of symbol.declarations) {
       const byDecl = this.globalsByDeclNode.get(d);
       if (byDecl) return byDecl;
     }
@@ -4438,7 +4430,7 @@ export class Lowerer {
     };
     const recordFlows = new RecordFlowClasses(sourceFiles, {
       symbolOf,
-      declarationOf: (symbol) => this.checker.valueDeclarationOf(symbol),
+      declarationOf: (symbol) => symbol.valueDeclaration,
       mayBeRecord: (node) => {
         if (node.parent && ts.isParameter(node.parent))
           return plainRecordShape(parameterType(node)) !== null;
@@ -4469,7 +4461,7 @@ export class Lowerer {
     const nanCoded = new NanCodedReads(
       {
         symbolOf,
-        declarationOf: (symbol) => this.checker.valueDeclarationOf(symbol),
+        declarationOf: (symbol) => symbol.valueDeclaration,
         bytesElemOf: (receiver) => {
           const t = mappedOrNull(receiver);
           return t?.kind === "bytes" ? t.elem : null;
@@ -4521,7 +4513,7 @@ export class Lowerer {
       const seen = new Set<ts.Symbol>();
       while (symbol && !signatureBySymbol.has(symbol) && !seen.has(symbol)) {
         seen.add(symbol);
-        const declaration = this.checker.valueDeclarationOf(symbol);
+        const declaration = symbol.valueDeclaration;
         if (declaration && ts.isMethodDeclaration(declaration)) {
           symbol = symbolOf(declaration.name);
         } else if (
@@ -4666,7 +4658,7 @@ export class Lowerer {
       if (ts.isIdentifier(e)) {
         // A binding initialized from such a read and never reassigned.
         const symbol = symbolOf(e);
-        const decl = symbol ? this.checker.valueDeclarationOf(symbol) : undefined;
+        const decl = symbol ? symbol.valueDeclaration : undefined;
         return (
           symbol !== null &&
           !reassigned.has(symbol) &&
@@ -4707,7 +4699,7 @@ export class Lowerer {
       const read = peel(node);
       if (!ts.isElementAccessExpression(read) || !ts.isIdentifier(read.expression)) return false;
       const source = symbolOf(read.expression);
-      const declaration = source ? this.checker.valueDeclarationOf(source) : undefined;
+      const declaration = source ? source.valueDeclaration : undefined;
       if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer)
         return false;
       const init = peel(declaration.initializer);
@@ -4936,7 +4928,7 @@ export class Lowerer {
      * exactly `T | undefined`: an assignment from a missing read stores the
      * undefined arm while the checker narrows later reads to `T`. */
     const optionalInstanceField = (symbol: ts.Symbol): boolean => {
-      const decl = this.checker.valueDeclarationOf(symbol);
+      const decl = symbol.valueDeclaration;
       if (!decl || !ts.isPropertyDeclaration(decl) || !ts.isIdentifier(decl.name)) return false;
       if (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Static) return false;
       const sf = decl.getSourceFile();
@@ -5275,7 +5267,7 @@ export class Lowerer {
       // monomorphic ABI or poisons valid generic value programs.
       if (this.genericFnsBySymbol.has(symbol)) return false;
       seen.add(symbol);
-      const declaration = this.checker.valueDeclarationOf(symbol);
+      const declaration = symbol.valueDeclaration;
       if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer) {
         if (promoteHofCallback(peel(declaration.initializer), parameterIndices, seen))
           changed = true;
@@ -5409,7 +5401,7 @@ export class Lowerer {
       seen.add(symbol);
       const fn = functionDeclBySymbol.get(symbol);
       if (fn) return bodyReturnsOptional(fn);
-      const decl = this.checker.valueDeclarationOf(symbol);
+      const decl = symbol.valueDeclaration;
       return (
         !!decl &&
         ts.isVariableDeclaration(decl) &&
@@ -5490,7 +5482,7 @@ export class Lowerer {
     };
     const ownership = new ArrayOwnership(sourceFiles, {
       symbolOf,
-      declarationOf: (symbol) => this.checker.valueDeclarationOf(symbol),
+      declarationOf: (symbol) => symbol.valueDeclaration,
       typeOf: typeOrNull,
       instanceAssignableTo: (owner, target) =>
         panicSafe(
@@ -5515,7 +5507,7 @@ export class Lowerer {
         // flow type such as `Array.isArray(x)`'s `any[]` only narrows it.
         const e = peel(node);
         const symbol = ts.isIdentifier(e) ? symbolOf(e) : null;
-        const declaration = symbol ? this.checker.valueDeclarationOf(symbol) : undefined;
+        const declaration = symbol ? symbol.valueDeclaration : undefined;
         const declared =
           declaration &&
           (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) &&
@@ -5837,7 +5829,7 @@ export class Lowerer {
           const assertion = forwardedAssertion(node.right);
           const symbol = assertion ? symbolOf(node.left) : null;
           // Only a variable's storage is promoted (see the final pass).
-          const declaration = symbol ? this.checker.valueDeclarationOf(symbol) : undefined;
+          const declaration = symbol ? symbol.valueDeclaration : undefined;
           if (
             assertion &&
             symbol &&
@@ -5923,9 +5915,7 @@ export class Lowerer {
             let nativeArrayReceiver = receiver?.kind === "array" || tuple;
             if (nativeArrayReceiver && ts.isIdentifier(receiverNode)) {
               const receiverSymbol = symbolOf(receiverNode);
-              const declaration = receiverSymbol
-                ? this.checker.valueDeclarationOf(receiverSymbol)
-                : undefined;
+              const declaration = receiverSymbol ? receiverSymbol.valueDeclaration : undefined;
               if (declaration && ts.isVariableDeclaration(declaration)) {
                 const declared = this.mapTypeOf(this.typeOf(declaration.name));
                 if (
@@ -5985,7 +5975,7 @@ export class Lowerer {
             // number) => ...`): a possibly missing argument widens that
             // parameter, as for a callback the same value is passed as.
             if (!ts.isIdentifier(node.expression) || reassigned.has(symbol)) return;
-            const declaration = this.checker.valueDeclarationOf(symbol);
+            const declaration = symbol.valueDeclaration;
             const value =
               declaration && ts.isVariableDeclaration(declaration) && declaration.initializer
                 ? peel(declaration.initializer)
@@ -6212,7 +6202,7 @@ export class Lowerer {
     // there, whatever its declared type.
     for (const symbol of earlyReadVarSymbols(this, sourceFiles)) {
       // Text codec bindings keep their own presence-checked storage.
-      const declaration = this.checker.valueDeclarationOf(symbol);
+      const declaration = symbol.valueDeclaration;
       const mapped =
         declaration && ts.isVariableDeclaration(declaration)
           ? mappedOrNull(declaration.name)
@@ -7751,13 +7741,11 @@ export class Lowerer {
       const ownSym = widened.getSymbol();
       if (
         ownSym &&
-        this.checker
-          .declarationsOf(ownSym)
-          .some(
-            (d) =>
-              (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-              this.isStdlibFile(d.getSourceFile()),
-          )
+        ownSym.declarations.some(
+          (d) =>
+            (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+            this.isStdlibFile(d.getSourceFile()),
+        )
       ) {
         this.pushDiag(noLoweringDiag(this.checker.typeToString(type), locOf(node)));
         throw new PoisonError();
@@ -7799,13 +7787,11 @@ export class Lowerer {
     const stdlibOwnSym = widened.getSymbol();
     const stdlibNominal =
       stdlibOwnSym !== undefined &&
-      this.checker
-        .declarationsOf(stdlibOwnSym)
-        .some(
-          (d) =>
-            (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-            this.isStdlibFile(d.getSourceFile()),
-        );
+      stdlibOwnSym.declarations.some(
+        (d) =>
+          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+          this.isStdlibFile(d.getSourceFile()),
+      );
     // OVERLOADED call signatures (SC2007) — after the generic branch, so a
     // generic overload set keeps the monomorphization story: a value of a
     // multi-signature type has no single compiled signature to hold.
@@ -8018,7 +8004,7 @@ export class Lowerer {
           // JSDoc and initializer inference are declaration types, not flow
           // proofs. A checked specialization must not reinstate those
           // stale layouts (mutable/null slots and heterogeneous JS arrays).
-          const declaration = sym && this.checker.valueDeclarationOf(sym);
+          const declaration = sym && sym.valueDeclaration;
           const declared =
             declaration && ts.isParameter(declaration)
               ? this.mapTypeOf(this.checker.getTypeAtLocation(declaration.name))
@@ -9341,7 +9327,7 @@ export class Lowerer {
     if (!ts.isIdentifier(n)) return null;
     const sym = this.resolveValueSymbol(n);
     if (!sym) return null;
-    const decls = this.checker.declarationsOf(sym);
+    const decls = sym.declarations;
     if (decls.length === 0) return null;
     const units = new Set<string>();
     let allConst = true;
@@ -10114,7 +10100,7 @@ export class Lowerer {
       // declaration poisons under a source-anchored diagnostic, deferred
       // like any collection fence — never a crashed CLI.
       if (isCheckerPanic(e)) {
-        const decl = symbol ? this.checker.declarationsOf(symbol)[0] : undefined;
+        const decl = symbol ? symbol.declarations[0] : undefined;
         sink.push(
           checkerPanicDiag(
             e.message.split("\n", 1)[0]!,
@@ -11035,7 +11021,7 @@ export class Lowerer {
     // symbol — which is what declareParams registered the local under.
     // On a miss, normalize to the declaration's key and retry (ordinary
     // bindings never reach this — their two sides intern to one symbol).
-    const vd = this.checker.valueDeclarationOf(symbol);
+    const vd = symbol.valueDeclaration;
     if (
       vd &&
       ts.isParameter(vd) &&
@@ -11086,9 +11072,7 @@ export class Lowerer {
     });
     if (resolved.error !== null) {
       const location =
-        blame ??
-        (symbol === undefined ? undefined : this.checker.declarationsOf(symbol)[0]) ??
-        this.entry;
+        blame ?? (symbol === undefined ? undefined : symbol.declarations[0]) ?? this.entry;
       const message = `the binding '${resolved.origin!.name}' captured through a plain nested function (the declaration has no static storage a capture can thread — bind the value through a typed const, or read it in the declaring scope)`;
       this.unsupported("SC1090", location, message);
     }
@@ -11170,7 +11154,7 @@ export class Lowerer {
     // concrete signature — name the shape instead of the generic
     // binding-form text.
     if (symbol) {
-      const d = this.checker.valueDeclarationOf(symbol);
+      const d = symbol.valueDeclaration;
       if (d && ts.isVariableDeclaration(d) && d.initializer === undefined) {
         const t = this.checker.getTypeOfSymbol(symbol);
         const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
@@ -11192,7 +11176,7 @@ export class Lowerer {
     // assignment are `undefined`, and this binding's type has no slot for
     // that value — name the shape instead of the generic no-lowering text.
     if (symbol) {
-      const d = this.checker.valueDeclarationOf(symbol);
+      const d = symbol.valueDeclaration;
       if (
         d &&
         ts.isVariableDeclaration(d) &&
@@ -12053,7 +12037,7 @@ export class Lowerer {
     }
     if (ts.isIdentifier(expr)) {
       const symbol = this.checker.getSymbolAtLocation(expr);
-      const decl = symbol ? this.checker.declarationsOf(symbol)[0] : undefined;
+      const decl = symbol ? symbol.declarations[0] : undefined;
       if (!decl) return null;
       // The CommonJS twin: `const fs = require("fs")` binds the same
       // namespace surface as `import * as fs from "node:fs"` — and the
@@ -12118,7 +12102,7 @@ export class Lowerer {
     }
     if (ts.isIdentifier(expr)) {
       const symbol = this.checker.getSymbolAtLocation(expr);
-      const decl = symbol ? this.checker.declarationsOf(symbol)[0] : undefined;
+      const decl = symbol ? symbol.declarations[0] : undefined;
       if (!decl) return null;
       // The DEFAULT-import twin: Node's default export of a CJS builtin
       // IS the module object, so `import path from "node:path"` exposes

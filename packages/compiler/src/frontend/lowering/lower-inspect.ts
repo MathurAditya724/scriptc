@@ -1768,7 +1768,7 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
     const base = cls.base ? ` extends ${cls.base.def.name.replace(/^%/, "")}` : "";
     return strLit(`[class ${cls.def.name}${base}]`, loc);
   }
-  const decl = lowerer.checker.declarationsOf(sym)[0];
+  const decl = sym.declarations[0];
   if (!decl) return null;
   if (ts.isFunctionDeclaration(decl) && decl.name) {
     return strLit(`[Function: ${decl.name.text}]`, loc);

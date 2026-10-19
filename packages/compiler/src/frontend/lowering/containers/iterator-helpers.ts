@@ -298,7 +298,7 @@ function isHelperObject(lowerer: Lowerer, expr: ts.Expression): boolean {
   if (isStageCall(lowerer, expr)) return true;
   if (!ts.isIdentifier(expr)) return false;
   const symbol = lowerer.resolveValueSymbol(expr);
-  const decl = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+  const decl = symbol ? symbol.valueDeclaration : undefined;
   if (
     !decl ||
     !ts.isVariableDeclaration(decl) ||

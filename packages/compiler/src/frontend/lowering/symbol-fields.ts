@@ -26,7 +26,7 @@ function constantSymbolDescription(
   const symbol = lowerer.resolveValueSymbol(name);
   if (!symbol || seen.has(symbol)) return null;
   seen.add(symbol);
-  const declaration = lowerer.checker.valueDeclarationOf(symbol);
+  const declaration = symbol.valueDeclaration;
   if (
     !declaration ||
     !ts.isVariableDeclaration(declaration) ||
@@ -94,8 +94,8 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
   const cached = cache.get(sym);
   if (cached !== undefined) return cached;
   cache.set(sym, null);
-  const decls = lowerer.checker.declarationsOf(sym);
-  const decl = lowerer.checker.valueDeclarationOf(sym);
+  const decls = sym.declarations;
+  const decl = sym.valueDeclaration;
   if (decls.length !== 1 || !decl || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name))
     return null;
   const list = decl.parent;

@@ -345,13 +345,11 @@ export function abstractPropertyDeclOf(
 ): boolean {
   const sym = lowerer.checker.getSymbolAtLocation(expr.name);
   if (!sym) return false;
-  return lowerer.checker
-    .declarationsOf(sym)
-    .some(
-      (d) =>
-        ts.isPropertyDeclaration(d) &&
-        ts.getModifiers(d)?.some((m) => m.kind === ts.SyntaxKind.AbstractKeyword) === true,
-    );
+  return sym.declarations.some(
+    (d) =>
+      ts.isPropertyDeclaration(d) &&
+      ts.getModifiers(d)?.some((m) => m.kind === ts.SyntaxKind.AbstractKeyword) === true,
+  );
 }
 
 /** A field declared by node:util's parseArgs checked-dynamic type family.
@@ -361,7 +359,7 @@ export function abstractPropertyDeclOf(
 function isParseArgsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
   const sym = lowerer.checker.getSymbolAtLocation(expr.name);
   if (!sym) return false;
-  return lowerer.checker.declarationsOf(sym).some((d) => {
+  return sym.declarations.some((d) => {
     if (!lowerer.isStdlibFile(d.getSourceFile())) return false;
     let inParseArgsType = false;
     for (let node: ts.Node | undefined = d.parent; node; node = node.parent) {
@@ -389,7 +387,7 @@ function isStatFsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression
   const symbol = lowerer.checker.getSymbolAtLocation(expr.name);
   return (
     !!symbol &&
-    lowerer.checker.declarationsOf(symbol).some((declaration) => {
+    symbol.declarations.some((declaration) => {
       if (!lowerer.isStdlibFile(declaration.getSourceFile())) return false;
       const parent = declaration.parent;
       if (!ts.isInterfaceDeclaration(parent)) return false;
@@ -708,7 +706,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       lowerer.isStdlibMember(tested)
     ) {
       const sym = lowerer.checker.getSymbolAtLocation(tested.name);
-      const decls = sym ? lowerer.checker.declarationsOf(sym) : [];
+      const decls = sym ? sym.declarations : [];
       if (
         decls.some(isBuiltinModuleValueDecl) &&
         decls.every((decl) => builtinModuleExportParent(decl) !== undefined)
@@ -972,7 +970,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         recordTextCodecClass(lowerer.shapes.get(local.type.shapeId)!) !== null
       ) {
         const symbol = lowerer.resolveValueSymbol(expr);
-        const decl = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+        const decl = symbol ? symbol.valueDeclaration : undefined;
         if (
           decl &&
           ts.isVariableDeclaration(decl) &&
@@ -1554,7 +1552,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // is above); only user-file declares do.
     {
       const sym = lowerer.resolveValueSymbol(expr);
-      const decl = sym ? lowerer.checker.declarationsOf(sym)[0] : undefined;
+      const decl = sym ? sym.declarations[0] : undefined;
       if (
         decl !== undefined &&
         ts.isVariableDeclaration(decl) &&
@@ -2617,13 +2615,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         (recvSym?.name === "IteratorResult" ||
           recvSym?.name === "IteratorYieldResult" ||
           recvSym?.name === "IteratorReturnResult") &&
-        lowerer.checker
-          .declarationsOf(recvSym)
-          .some(
-            (d) =>
-              (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) &&
-              lowerer.isStdlibFile(d.getSourceFile()),
-          )
+        recvSym.declarations.some(
+          (d) =>
+            (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) &&
+            lowerer.isStdlibFile(d.getSourceFile()),
+        )
       ) {
         const recv = lowerer.lowerExpr(expr.expression);
         if (recv.type.kind === "dyn")
@@ -3317,15 +3313,13 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     const symbol = lowerer.checker.getSymbolAtLocation(node.name);
     if (
       symbol &&
-      lowerer.checker
-        .declarationsOf(symbol)
-        .some(
-          (decl) =>
-            ts.isPropertyDeclaration(decl) &&
-            !decl.initializer &&
-            !decl.type &&
-            isJsSourceFile(decl.getSourceFile()),
-        )
+      symbol.declarations.some(
+        (decl) =>
+          ts.isPropertyDeclaration(decl) &&
+          !decl.initializer &&
+          !decl.type &&
+          isJsSourceFile(decl.getSourceFile()),
+      )
     ) {
       // Inference describes later writes, not the initial undefined.
       // A use that requires the inferred type must validate the value.
@@ -3393,48 +3387,44 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       const symbol = lowerer.resolveValueSymbol(node);
       if (
         symbol &&
-        lowerer.checker
-          .declarationsOf(symbol)
-          .some(
-            (decl) =>
-              ts.isParameter(decl) &&
-              ts.isMethodDeclaration(decl.parent) &&
-              lowerer.checkedVirtualJsMethods.has(decl.parent),
-          )
+        symbol.declarations.some(
+          (decl) =>
+            ts.isParameter(decl) &&
+            ts.isMethodDeclaration(decl.parent) &&
+            lowerer.checkedVirtualJsMethods.has(decl.parent),
+        )
       )
         return expr;
       if (
         symbol &&
-        lowerer.checker
-          .declarationsOf(symbol)
-          .some((decl) => ts.isParameter(decl) && ts.isConstructorDeclaration(decl.parent))
+        symbol.declarations.some(
+          (decl) => ts.isParameter(decl) && ts.isConstructorDeclaration(decl.parent),
+        )
       )
         return expr;
       if (
         symbol &&
-        lowerer.checker
-          .declarationsOf(symbol)
-          .some((decl) => ts.isVariableDeclaration(decl) && jsBindingHasOpenWrites(lowerer, decl))
+        symbol.declarations.some(
+          (decl) => ts.isVariableDeclaration(decl) && jsBindingHasOpenWrites(lowerer, decl),
+        )
       )
         return expr;
       if (
         symbol &&
-        lowerer.checker
-          .declarationsOf(symbol)
-          .some(
-            (decl) =>
-              ts.isParameter(decl) &&
-              decl.initializer &&
-              !decl.type &&
-              !/@(?:param|type)\b/.test(
-                decl.getSourceFile().text.slice(decl.parent?.pos ?? decl.pos, decl.getStart()),
-              ),
-          )
+        symbol.declarations.some(
+          (decl) =>
+            ts.isParameter(decl) &&
+            decl.initializer &&
+            !decl.type &&
+            !/@(?:param|type)\b/.test(
+              decl.getSourceFile().text.slice(decl.parent?.pos ?? decl.pos, decl.getStart()),
+            ),
+        )
       )
         return expr;
       if (
         symbol &&
-        lowerer.checker.declarationsOf(symbol).some((decl) => {
+        symbol.declarations.some((decl) => {
           if (!ts.isParameter(decl) || decl.type) return false;
           const fn = decl.parent;
           if (!ts.isFunctionExpression(fn) && !ts.isArrowFunction(fn)) return false;
@@ -12238,7 +12228,7 @@ function aliasTypeofArmOf(
     const a = strip(a0);
     if (!ts.isIdentifier(a)) continue;
     const aliasSym = lowerer.resolveValueSymbol(a);
-    const aliasDecl = aliasSym ? lowerer.checker.valueDeclarationOf(aliasSym) : undefined;
+    const aliasDecl = aliasSym ? aliasSym.valueDeclaration : undefined;
     if (
       !aliasSym ||
       !aliasDecl ||
@@ -12252,7 +12242,7 @@ function aliasTypeofArmOf(
     if (!ts.isIdentifier(opnd)) continue;
     if (!bindingNeverReassigned(lowerer, aliasSym, aliasDecl)) continue;
     const valSym = lowerer.resolveValueSymbol(opnd);
-    const valDecl = valSym ? lowerer.checker.valueDeclarationOf(valSym) : undefined;
+    const valDecl = valSym ? valSym.valueDeclaration : undefined;
     if (!valSym || !valDecl) continue;
     // v1: identifier PARAMETERS only — initialized at function entry,
     // before any alias can capture their typeof.
@@ -12534,9 +12524,7 @@ function lowerReplacedExportsRead(
  * rare enough to keep fenced). */
 function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr | null {
   const symbol = lowerer.resolveValueSymbol(ident);
-  const getter = symbol
-    ? lowerer.checker.declarationsOf(symbol).find(ts.isGetAccessorDeclaration)
-    : undefined;
+  const getter = symbol ? symbol.declarations.find(ts.isGetAccessorDeclaration) : undefined;
   if (!getter) return null;
   if (!ts.isObjectLiteralExpression(getter.parent) || !isCjsExportTableLiteral(getter.parent)) {
     return null;
@@ -14430,7 +14418,7 @@ function staticRegexPatternOf(lowerer: Lowerer, e: ts.Expression): string | null
  * destructured bindings, and unresolvable names. */
 function constInitializerOf(lowerer: Lowerer, ident: ts.Identifier): ts.Expression | null {
   const sym = lowerer.resolveValueSymbol(ident);
-  const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
+  const decl = sym ? sym.valueDeclaration : undefined;
   if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
     return null;
   if (!ts.isVariableDeclarationList(decl.parent) || (decl.parent.flags & ts.NodeFlags.Const) === 0)
@@ -14546,7 +14534,7 @@ function matchProducerRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression
     // The for-of binding over a matchAll drain: `for (const m of
     // s.matchAll(re))` (or over a stored const rows).
     const sym = lowerer.resolveValueSymbol(expr);
-    const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
+    const decl = sym ? sym.valueDeclaration : undefined;
     if (
       decl !== undefined &&
       ts.isVariableDeclaration(decl) &&
@@ -14993,13 +14981,11 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
       isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(propSym), lowerer.checker) &&
       // CLASS members keep the class-path fences (a poisoned class's own
       // diagnostics, the bound-method fence above).
-      !lowerer.checker
-        .declarationsOf(propSym)
-        .some(
-          (d) =>
-            d.parent !== undefined &&
-            (ts.isClassDeclaration(d.parent) || ts.isClassExpression(d.parent)),
-        )
+      !propSym.declarations.some(
+        (d) =>
+          d.parent !== undefined &&
+          (ts.isClassDeclaration(d.parent) || ts.isClassExpression(d.parent)),
+      )
     ) {
       const found = objLitGenericFnNodeOf(lowerer, propSym);
       if (!found) {
@@ -15521,14 +15507,12 @@ function classFieldTarget(
     );
     if (
       property &&
-      lowerer.checker
-        .declarationsOf(property)
-        .some(
-          (declaration) =>
-            ts.isPropertyAccessExpression(declaration) ||
-            ts.isBinaryExpression(declaration) ||
-            ts.isElementAccessExpression(declaration),
-        )
+      property.declarations.some(
+        (declaration) =>
+          ts.isPropertyAccessExpression(declaration) ||
+          ts.isBinaryExpression(declaration) ||
+          ts.isElementAccessExpression(declaration),
+      )
     ) {
       return {
         container: "dynamic",
@@ -15732,7 +15716,7 @@ export function fieldTarget(
       // fences: JS finds the prototype function, never an overflow miss.
       const canonicalized = (): boolean => {
         if (!nameSym) return false;
-        const nameDecls = lowerer.checker.declarationsOf(nameSym);
+        const nameDecls = nameSym.declarations;
         if (!nameDecls.length) return false;
         if (!nameDecls.every((d) => ts.isPropertySignature(d))) return false;
         const declared = lowerer.mapTypeOf(lowerer.typeOf(access));
@@ -15805,7 +15789,7 @@ export function uniqueSymbolKeyOf(
   // which a runtime-identity symbol value can never satisfy.
   if (!(t.flags & (ts.TypeFlags.UniqueESSymbol | ts.TypeFlags.ESSymbol))) return null;
   const sym = lowerer.resolveValueSymbol(key);
-  const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
+  const decl = sym ? sym.valueDeclaration : undefined;
   if (!sym || !decl || !ts.isVariableDeclaration(decl)) return null;
   if (!(ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const)) return null;
   // Module level only: a unique-symbol const inside a FUNCTION is a
@@ -16882,7 +16866,7 @@ function jsFunctionExpandoMember(lowerer: Lowerer, access: ts.PropertyAccessExpr
   const recvType = lowerer.typeOf(access.expression);
   if (lowerer.checker.getCallSignatures(recvType).length === 0) return false;
   const member = lowerer.checker.getPropertyOfType(recvType, access.name.text);
-  const decls = member ? lowerer.checker.declarationsOf(member) : [];
+  const decls = member ? member.declarations : [];
   return (
     decls.length > 0 &&
     decls.every((d) => {

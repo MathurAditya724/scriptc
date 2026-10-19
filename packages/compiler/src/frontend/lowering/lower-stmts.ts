@@ -346,8 +346,7 @@ function stdlibTypeNamed(lowerer: Lowerer, node: ts.Node, name: string): boolean
     if (t.flags & ts.TypeFlags.Union) return constituentTypes(t).some(visit);
     const sym = t.getAliasSymbol() ?? t.getSymbol();
     return (
-      sym?.name === name &&
-      lowerer.checker.declarationsOf(sym).some((d) => lowerer.isStdlibFile(d.getSourceFile()))
+      sym?.name === name && sym.declarations.some((d) => lowerer.isStdlibFile(d.getSourceFile()))
     );
   };
   return visit(lowerer.typeOf(node));
@@ -910,7 +909,7 @@ const TDZ_KINDS = new Set<IrType["kind"]>([
  * is empty. Mutable bindings also guard writes; only the declaration's
  * initializing assignment may leave the temporal dead zone. */
 export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): boolean {
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (
     !decl ||
     !ts.isVariableDeclaration(decl) ||
@@ -990,7 +989,7 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
  * lower the declaration under the owning statement list's context, then
  * resume the caller and thread its captures normally. */
 export function predeclareForwardFnDecl(lowerer: Lowerer, symbol: ts.Symbol): boolean {
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (!decl || !ts.isFunctionDeclaration(decl) || !decl.body || decl.typeParameters?.nodes)
     return false;
   for (let i = lowerer.activeStmtLists.length - 1; i >= 0; i--) {
@@ -1184,7 +1183,7 @@ function hoistVarBinding(lowerer: Lowerer, symbol: ts.Symbol, nameNode: ts.Ident
 export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boolean {
   // Module-scope vars already have their global storage.
   if (lowerer.globalsBySymbol.has(symbol)) return false;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (!decl || !ts.isVariableDeclaration(decl) || !isVarDeclared(decl)) return false;
   const nameNode = ts.isIdentifier(decl.name) ? decl.name : null;
   if (!nameNode) {
@@ -1925,11 +1924,7 @@ export function isParseArgsDynCheckerType(lowerer: Lowerer, type: ts.Type): bool
     return false;
   };
   const sym = widened.getAliasSymbol() ?? widened.getSymbol();
-  if (
-    sym &&
-    isParseArgsDynTypeName(sym.name) &&
-    lowerer.checker.declarationsOf(sym).some(declarationBelongs)
-  ) {
+  if (sym && isParseArgsDynTypeName(sym.name) && sym.declarations.some(declarationBelongs)) {
     return true;
   }
   // A discriminant check erases the token alias and leaves one anonymous
@@ -1937,7 +1932,7 @@ export function isParseArgsDynCheckerType(lowerer: Lowerer, type: ts.Type): bool
   // is the same stable signal the dotted-member bridge uses.
   return lowerer.checker
     .getPropertiesOfType(widened)
-    .some((p) => lowerer.checker.declarationsOf(p).some(declarationBelongs));
+    .some((p) => p.declarations.some(declarationBelongs));
 }
 
 /** Destructuring declarations, desugared as sugar over indexed/field
@@ -6401,10 +6396,7 @@ function lowerCjsSingleValueExport(
     // own statement already evaluated it), and a builtin global
     // (`module.exports = TypeError`) is the global itself: requirer
     // bindings alias straight through to it, so nothing is stored.
-    if (
-      lowerer.checker.declarationsOf(sym).some((d) => ts.isSourceFile(d)) ||
-      lowerer.isStdlibSymbol(sym)
-    ) {
+    if (sym.declarations.some((d) => ts.isSourceFile(d)) || lowerer.isStdlibSymbol(sym)) {
       return { kind: "block", body: [], loc };
     }
     const g = lowerer.globalsBySymbol.get(sym);
@@ -6523,10 +6515,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
   // positions keep the first-class-namespace fences.
   if (ts.isIdentifier(expr)) {
     const sym = lowerer.checker.getSymbolAtLocation(expr);
-    if (
-      sym !== undefined &&
-      lowerer.checker.declarationsOf(sym).some((d) => ts.isNamespaceImport(d))
-    ) {
+    if (sym !== undefined && sym.declarations.some((d) => ts.isNamespaceImport(d))) {
       return { kind: "block", body: [], loc: locOf(expr) };
     }
   }

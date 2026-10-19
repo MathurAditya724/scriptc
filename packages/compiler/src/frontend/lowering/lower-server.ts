@@ -5051,7 +5051,7 @@ function clientFnRefOf(
  * `const` declaration, or a parameter/let whose enclosing scope contains
  * no assignment or ++/-- targeting it. */
 function neverReassigned(lowerer: Lowerer, sym: ts.Symbol): boolean {
-  const decl = lowerer.checker.declarationsOf(sym)[0];
+  const decl = sym.declarations[0];
   if (!decl) return false;
   if (
     ts.isVariableDeclaration(decl) &&

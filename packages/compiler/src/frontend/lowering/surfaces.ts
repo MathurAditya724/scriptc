@@ -3220,7 +3220,7 @@ export function isChildSurfaceMember(
 ): boolean {
   if (isStdlibMember(lowerer, access)) return true;
   const sym = lowerer.checker.getSymbolAtLocation(access.name);
-  const decl = sym ? lowerer.checker.declarationsOf(sym)[0] : undefined;
+  const decl = sym ? sym.declarations[0] : undefined;
   const iface = decl?.parent;
   if (!decl || !iface || !ts.isInterfaceDeclaration(iface)) return false;
   if (lowerer.isStdlibFile(decl.getSourceFile())) return false;
@@ -3233,10 +3233,7 @@ export function isChildSurfaceMember(
  * with lib interfaces, so a member can carry declarations from both. A
  * user's own declaration is in neither, so shadowing never matches. */
 export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined): boolean {
-  return (
-    !!symbol &&
-    lowerer.checker.declarationsOf(symbol).some((d) => lowerer.isStdlibFile(d.getSourceFile()))
-  );
+  return !!symbol && symbol.declarations.some((d) => lowerer.isStdlibFile(d.getSourceFile()));
 }
 
 /** The canonical stdlib-global name `expr` denotes, or null. Three
@@ -3262,9 +3259,7 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // symbol has no ordinary declarations for the provenance check.
     if (
       expr.text === "globalThis" &&
-      (!symbol ||
-        lowerer.checker.declarationsOf(symbol).length === 0 ||
-        lowerer.isStdlibSymbol(symbol))
+      (!symbol || symbol.declarations.length === 0 || lowerer.isStdlibSymbol(symbol))
     )
       return "globalThis";
     if (!symbol) return null;
@@ -3272,7 +3267,7 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     if (alias !== undefined) return alias;
     const classAlias = lowerer.builtinClassAliasOf(symbol);
     if (classAlias?.kind === "collection") return classAlias.which;
-    const decl = lowerer.checker.declarationsOf(symbol)[0];
+    const decl = symbol.declarations[0];
     if (decl !== undefined && ts.isImportClause(decl) && decl.name !== undefined) {
       const importDecl = decl.parent;
       if (ts.isImportDeclaration(importDecl) && ts.isStringLiteral(importDecl.moduleSpecifier)) {
@@ -3411,7 +3406,7 @@ export function stdlibGlobalAliasDecl(
  * the SC2020 fence's wording: "typed by @types/node", not "standard
  * library". */
 export function nodeTypesOnlySymbol(lowerer: Lowerer, sym: ts.Symbol | null | undefined): boolean {
-  const decls = sym ? lowerer.checker.declarationsOf(sym) : undefined;
+  const decls = sym ? sym.declarations : undefined;
   if (!decls || decls.length === 0) return false;
   let viaNode = false;
   for (const d of decls) {

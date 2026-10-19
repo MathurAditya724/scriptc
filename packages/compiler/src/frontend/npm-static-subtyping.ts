@@ -16,14 +16,12 @@ export function isNpmStaticSubclassArgument(
     const symbol = type.getSymbol();
     return (
       symbol !== undefined &&
-      checker
-        .declarationsOf(symbol)
-        .some(
-          (declaration) =>
-            (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration)) &&
-            /\.[cm]?js$/.test(declaration.getSourceFile().fileName) &&
-            npmStaticPackageOfPath(declaration.getSourceFile().fileName) !== null,
-        )
+      symbol.declarations.some(
+        (declaration) =>
+          (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration)) &&
+          /\.[cm]?js$/.test(declaration.getSourceFile().fileName) &&
+          npmStaticPackageOfPath(declaration.getSourceFile().fileName) !== null,
+      )
     );
   };
   const subtype = (actual: ts.Type, expected: ts.Type): boolean => {

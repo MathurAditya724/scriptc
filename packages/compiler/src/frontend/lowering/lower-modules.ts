@@ -651,9 +651,7 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
         const modSym = lowerer.checker.getSymbolAtLocation(node.arguments.nodes[0]);
         const ownModule =
           modSym !== undefined &&
-          lowerer.checker
-            .declarationsOf(modSym)
-            .some((d) => ts.isSourceFile(d) && !d.isDeclarationFile);
+          modSym.declarations.some((d) => ts.isSourceFile(d) && !d.isDeclarationFile);
         const builtin = canonicalBuiltinModule(spec);
         const res = ownModule
           ? ({ kind: "program-module" } as const)
@@ -691,7 +689,7 @@ export function collectJsonImports(lowerer: Lowerer, parts: FileParts[]): void {
       const nameSym = lowerer.checker.getSymbolAtLocation(clause.name);
       if (!nameSym || !(nameSym.flags & ts.SymbolFlags.Alias)) continue;
       const target = lowerer.checker.getAliasedSymbol(nameSym);
-      const jsonSf = lowerer.checker.declarationsOf(target)[0]?.getSourceFile();
+      const jsonSf = target.declarations[0]?.getSourceFile();
       if (!jsonSf || !jsonSf.fileName.endsWith(".json")) continue;
       try {
         const tsType = lowerer.typeOf(clause.name);
@@ -1053,7 +1051,7 @@ function checkedGlobalReference(lowerer: Lowerer, expression: ts.Expression): bo
   )
     return false;
   const root = lowerer.checker.getSymbolAtLocation(expression.expression);
-  const namespace = root && lowerer.checker.declarationsOf(root).some(ts.isNamespaceImport);
+  const namespace = root && root.declarations.some(ts.isNamespaceImport);
   return (
     (namespace || lowerer.cjsLocalModuleBindingOf(expression.expression)) &&
     lowerer.globalOf(expression.name)?.type.kind === "dyn"
@@ -1261,7 +1259,7 @@ export function collectGlobals(
       if (!symbol) continue;
       if (symbol.flags & ts.SymbolFlags.Alias) {
         const target = lowerer.checker.getAliasedSymbol(symbol);
-        const vd = lowerer.checker.valueDeclarationOf(target);
+        const vd = target.valueDeclaration;
         const mutableVar =
           vd !== undefined &&
           ts.isVariableDeclaration(vd) &&
@@ -1370,8 +1368,7 @@ export function collectGlobals(
               if (vG) {
                 if (!vG.mutable) {
                   lowerer.globalsBySymbol.set(symbol, vG);
-                  for (const d of lowerer.checker.declarationsOf(symbol))
-                    lowerer.globalsByDeclNode.set(d, vG);
+                  for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, vG);
                   return;
                 }
                 const g: IrGlobal = {
@@ -1381,8 +1378,7 @@ export function collectGlobals(
                   mutable: false,
                 };
                 lowerer.globalsBySymbol.set(symbol, g);
-                for (const d of lowerer.checker.declarationsOf(symbol))
-                  lowerer.globalsByDeclNode.set(d, g);
+                for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
                 lowerer.globalsList.push(g);
                 return;
               }
@@ -1392,8 +1388,7 @@ export function collectGlobals(
           lowerer.globalsBySymbol.set(symbol, g);
           // Importer aliases resolve to a DISTINCT late-bound symbol with
           // the same declaration — key the node too (globalOf's fallback).
-          for (const d of lowerer.checker.declarationsOf(symbol))
-            lowerer.globalsByDeclNode.set(d, g);
+          for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
           lowerer.globalsList.push(g);
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
@@ -1536,7 +1531,7 @@ export function collectGlobals(
       )
         continue;
       const target = lowerer.checker.getAliasedSymbol(aliasSym);
-      const vd = lowerer.checker.valueDeclarationOf(target);
+      const vd = target.valueDeclaration;
       const mutableVar =
         vd !== undefined &&
         ts.isVariableDeclaration(vd) &&
@@ -2248,8 +2243,7 @@ export function collectGlobals(
             ts.isCallExpression(decl.initializer)
               ? lowerer.checker.getResolvedSignature(decl.initializer)
               : undefined;
-          const callDeclaration =
-            callSignature && lowerer.checker.signatureDeclaration(callSignature);
+          const callDeclaration = callSignature && callSignature.declaration;
           const callType =
             callDeclaration && isJsSourceFile(callDeclaration.getSourceFile())
               ? lowerer.mapTypeOf(lowerer.typeOf(nameNode))
