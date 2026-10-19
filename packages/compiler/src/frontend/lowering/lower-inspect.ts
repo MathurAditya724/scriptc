@@ -253,6 +253,10 @@ function inspectSupport(
       visiting.delete(t.className);
       return null;
     }
+    // Generator objects print through their checked capsule: Node's
+    // `Object [Generator] {}`, or the tag of the iterator they implement.
+    case "generator":
+      return null;
     default:
       return `'${lowerer.fmt(t)}' values have no inspect lowering`;
   }
@@ -343,6 +347,14 @@ export function inspectExpr(
       return { kind: "libCall", fn: "insp.buffer", args: [value], type: STRING, loc };
     case "dyn":
       return { kind: "libCall", fn: "insp.dyn", args: [value, recurse, depth], type: STRING, loc };
+    case "generator":
+      return {
+        kind: "libCall",
+        fn: "insp.dyn",
+        args: [lowerer.coerceToExpected(value, DYN), recurse, depth],
+        type: STRING,
+        loc,
+      };
     case "object":
       if (eventTargetRootOf(lowerer.classes.get(t.className)) !== null) {
         return {

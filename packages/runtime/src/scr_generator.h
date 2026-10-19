@@ -63,6 +63,16 @@ ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
 /* Runs when return() reaches the generator before its first resume, with
  * the packed arguments still alive: an iterator helper closes its source. */
 void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *));
+/* The @@toStringTag that util.inspect and Object.prototype.toString print
+ * for the generator object: "Generator" (or "AsyncGenerator") unless set,
+ * as the compiler does for iterator helpers ("Iterator Helper") and for
+ * the array and string iterators it builds as generators. A tag that
+ * starts with '!' marks a generator standing in for an object of another
+ * class, which these refuse to print. */
+void scr_gen_set_tag(ScrGen *g, const char *tag);
+/* An adapter generator prints with the tag of the generator it adapts. */
+void scr_gen_copy_tag(ScrGen *g, const ScrGen *from);
+const char *scr_gen_tag(const ScrGen *g);
 ScrGen *scr_gen_retain(ScrGen *g);
 void scr_gen_release(ScrGen *g); /* NULL-tolerant */
 void *scr_gen_retain_v(void *g);

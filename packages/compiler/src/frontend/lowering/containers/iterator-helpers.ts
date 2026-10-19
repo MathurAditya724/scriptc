@@ -2259,6 +2259,7 @@ function buildHelperGenFn(
       yieldT: outT.yieldT,
       nextT: outT.nextT,
       resultType,
+      tag: "Iterator Helper",
       // A native Map or Set iterator has no return() to call.
       ...(source.kind === "generator" ? { closesSource: true as const } : {}),
     },
