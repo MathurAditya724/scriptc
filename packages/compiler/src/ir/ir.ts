@@ -1896,8 +1896,23 @@ export type IrStmt =
   | { kind: "return"; value: IrExpr | null; awaited?: true; loc: SrcLoc }
   /** Field write `obj.f = v` — statement-only, like `assign`/`arraySet`.
    * Evaluation order: obj, then value. The old value is released; ownership
-   * of a refcounted new value MOVES into the object. */
-  | { kind: "fieldSet"; obj: IrExpr; className: string; field: string; value: IrExpr; loc: SrcLoc }
+   * of a refcounted new value MOVES into the object. `sloppy` marks a write
+   * in sloppy-mode code, which skips a read-only field instead of throwing.
+   * `define` marks a class field initializer, which defines the property
+   * (a non-extensible instance rejects it). `attributesChecked` marks a
+   * write that already honors the instance's property attributes
+   * (CLASS_ATTRIBUTES). */
+  | {
+      kind: "fieldSet";
+      obj: IrExpr;
+      className: string;
+      field: string;
+      value: IrExpr;
+      sloppy?: true;
+      define?: true;
+      attributesChecked?: true;
+      loc: SrcLoc;
+    }
   /** Record field write `r.f = v` — mirrors `fieldSet` exactly (evaluation
    * order obj then value; old value released; refcounted new value moved
    * in), with a shape id in place of a class name. */
@@ -4047,6 +4062,27 @@ export function isClassOwnEnumerableFieldName(name: string): boolean {
 
 /** Compiler-owned storage for properties added through untyped references. */
 export const DYN_CLASS_PROPERTIES = "%dynProperties";
+
+/** Compiler-owned integrity state of a class instance whose hierarchy is
+ * passed to Object.freeze, Object.seal, Object.preventExtensions or
+ * Object.defineProperty: an f64 holding CLASS_NOT_EXTENSIBLE, CLASS_SEALED
+ * and CLASS_FROZEN bits. Other hierarchies have no such field. */
+export const CLASS_ATTRIBUTES = "%attributes";
+export const CLASS_NOT_EXTENSIBLE = 1;
+export const CLASS_SEALED = 2;
+export const CLASS_FROZEN = 4;
+
+/** Compiler-owned attributes of one declared field that Object.defineProperty
+ * changes: an f64 holding FIELD_NOT_WRITABLE, FIELD_NOT_ENUMERABLE and
+ * FIELD_NOT_CONFIGURABLE bits (zero is an ordinary data property). */
+export const CLASS_FIELD_ATTRIBUTES_PREFIX = "%attr:";
+export const FIELD_NOT_WRITABLE = 1;
+export const FIELD_NOT_ENUMERABLE = 2;
+export const FIELD_NOT_CONFIGURABLE = 4;
+
+export function classFieldAttributesName(field: string): string {
+  return CLASS_FIELD_ATTRIBUTES_PREFIX + field;
+}
 
 /** A class capsule can always preserve its exact native identity. Its
  * optional property view additionally needs converters in both directions;

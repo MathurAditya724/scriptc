@@ -1585,8 +1585,12 @@ static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn
   }
   if (obj->non_extensible) {
     scr_dyn_release(value);
-    static const char message[] = "Cannot add property, object is not extensible";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    ScrJsonBuf buffer;
+    scr_jb_init(&buffer);
+    scr_jb_puts(&buffer, "Cannot add property ");
+    scr_jb_write(&buffer, key, key_len);
+    scr_jb_puts(&buffer, ", object is not extensible");
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
     return;
   }
   if (obj->v.obj.len == obj->v.obj.cap) {
@@ -1922,9 +1926,40 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
   return scr_dyn_retain(object);
 }
 
+/* A class instance's integrity state lives in its native layout, which only
+ * statically typed calls can reach (the compiler adds the state to the
+ * hierarchies they name). Through an untyped value the operation throws. */
+static bool scr_dyn_class_integrity_fence(const ScrDyn *object, const char *operation) {
+  if (object->kind != SCR_DYN_TYPED_REF) return false;
+  ScrJsonBuf buffer;
+  scr_jb_init(&buffer);
+  scr_jb_puts(&buffer, operation);
+  scr_jb_puts(&buffer, " of a class instance held in an untyped value is not supported yet");
+  ScrStr *message = scr_jb_finish(&buffer);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
+  scr_str_release(message);
+  return true;
+}
+
+/* Integrity queries on a class instance answer from its checked view, which
+ * carries the instance's attributes (scr_dyn_class_view_attributes). */
+static bool scr_dyn_typed_ref_view_answer(ScrDyn *object, bool (*query)(const ScrDyn *),
+                                          bool *answer) {
+  if (object->kind != SCR_DYN_TYPED_REF) return false;
+  ScrDyn *view = scr_dyn_typed_ref_materialize(object);
+  *answer = scr_exc_pending() ? false : query(view);
+  scr_dyn_release(view);
+  return true;
+}
+
+static bool scr_dyn_is_extensible_view(const ScrDyn *view) {
+  return (view->kind == SCR_DYN_OBJ || view->kind == SCR_DYN_ARR) && !view->non_extensible;
+}
+
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return NULL;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.preventExtensions"); return NULL; }
+  if (scr_dyn_class_integrity_fence(object, "Object.preventExtensions")) return NULL;
   if (object->kind == SCR_DYN_OBJ || object->kind == SCR_DYN_ARR) {
     object->non_extensible = true;
     if (object->kind == SCR_DYN_ARR && object->v.arr.properties)
@@ -1936,12 +1971,15 @@ ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
 bool scr_dyn_is_extensible(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return false;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.isExtensible"); return false; }
-  return (object->kind == SCR_DYN_OBJ || object->kind == SCR_DYN_ARR) && !object->non_extensible;
+  bool answer;
+  if (scr_dyn_typed_ref_view_answer(object, scr_dyn_is_extensible_view, &answer)) return answer;
+  return scr_dyn_is_extensible_view(object);
 }
 
 ScrDyn *scr_dyn_seal(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return NULL;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.seal"); return NULL; }
+  if (scr_dyn_class_integrity_fence(object, "Object.seal")) return NULL;
   if (object->symbol_properties) scr_dyn_release(scr_dyn_seal(object->symbol_properties));
   if (object->kind == SCR_DYN_OBJ) {
     object->non_extensible = true;
@@ -1958,6 +1996,8 @@ ScrDyn *scr_dyn_seal(ScrDyn *object) {
 bool scr_dyn_is_sealed(const ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return false;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.isSealed"); return false; }
+  bool answer;
+  if (scr_dyn_typed_ref_view_answer((ScrDyn *)object, scr_dyn_is_sealed, &answer)) return answer;
   if (object->symbol_properties && !scr_dyn_is_sealed(object->symbol_properties)) return false;
   if (object->kind == SCR_DYN_ARR)
     return object->non_extensible && (object->v.arr.len == 0 || object->v.arr.sealed) &&
@@ -4243,6 +4283,25 @@ void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value
   scr_dyn_obj_put(obj, key, key_len, value);
 }
 
+/* A class instance's view takes its native field values whatever the
+ * attributes copied into it (a frozen instance's view is built the same way
+ * as any other). Consumes value. */
+void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value) {
+  ScrDynEntry *existing = obj->v.obj.index ? scr_dyn_find_entry(obj, key, key_len)
+                                           : scr_dyn_find_linear_entry(obj, key, key_len);
+  if (existing && !existing->accessor) {
+    scr_dyn_region_store(obj, value);
+    ScrDyn *old = existing->value;
+    existing->value = value;
+    scr_dyn_release(old);
+    return;
+  }
+  bool non_extensible = obj->non_extensible;
+  obj->non_extensible = false;
+  scr_dyn_obj_put(obj, key, key_len, value);
+  obj->non_extensible = non_extensible;
+}
+
 static ScrStr *scr_dyn_property_key(const ScrDyn *key) {
   return scr_dyn_string_coerce_js(key);
 }
@@ -6036,9 +6095,12 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
        (!accessor && ((!prior->writable && writable) ||
                      (!prior->writable && value && !scr_dyn_property_same_value(prior->value, value)))))) {
     scr_dyn_descriptor_fields_drop(fields);
+    ScrJsonBuf buffer;
+    scr_jb_init(&buffer);
+    scr_jb_puts(&buffer, "Cannot redefine property: ");
+    scr_jb_write(&buffer, name->data, name->len);
     scr_str_release(name);
-    static const char msg[] = "Cannot redefine property";
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
     return NULL;
   }
   if (prior) {
@@ -13864,6 +13926,7 @@ ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrSt
 
 ScrDyn *scr_dyn_freeze(ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value)) return NULL;
+  if (scr_dyn_class_integrity_fence(value, "Object.freeze")) return NULL;
   if (value->symbol_properties) scr_dyn_release(scr_dyn_freeze(value->symbol_properties));
   if (value->kind == SCR_DYN_ARR) {
     value->non_extensible = true;
@@ -13891,6 +13954,8 @@ ScrDyn *scr_dyn_freeze(ScrDyn *value) {
 
 bool scr_dyn_is_frozen(const ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value)) return false;
+  bool answer;
+  if (scr_dyn_typed_ref_view_answer((ScrDyn *)value, scr_dyn_is_frozen, &answer)) return answer;
   if (value->symbol_properties && !scr_dyn_is_frozen(value->symbol_properties)) return false;
   if (value->kind == SCR_DYN_ARR)
     return scr_dyn_is_sealed(value) && (value->v.arr.len == 0 || value->v.arr.frozen) &&
@@ -13943,4 +14008,128 @@ ScrDyn *scr_caught_to_dyn(const ScrCaught *c) {
   default:
     return scr_dyn_new_obj();
   }
+}
+
+/* ── class instance attributes ───────────────────────────────────────────
+ * A hierarchy passed to Object.freeze, Object.seal, Object.preventExtensions
+ * or Object.defineProperty keeps an integrity state per instance and an
+ * attribute word per redefined field (CLASS_* and FIELD_* bits in the
+ * compiler's ir.ts). The checked view of an instance carries them, so
+ * reflection over the view answers as Node does. */
+enum {
+  SCR_CLASS_NOT_EXTENSIBLE = 1,
+  SCR_CLASS_SEALED = 2,
+  SCR_CLASS_FROZEN = 4,
+  SCR_FIELD_NOT_WRITABLE = 1,
+  SCR_FIELD_NOT_ENUMERABLE = 2,
+  SCR_FIELD_NOT_CONFIGURABLE = 4,
+};
+
+void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits) {
+  unsigned b = (unsigned)bits;
+  if (b == 0 || view->kind != SCR_DYN_OBJ) return;
+  ScrDynEntry *entry = scr_dyn_entry(view, name);
+  if (!entry) return;
+  if (b & SCR_FIELD_NOT_WRITABLE) entry->writable = false;
+  if (b & SCR_FIELD_NOT_ENUMERABLE) entry->enumerable = false;
+  if (b & SCR_FIELD_NOT_CONFIGURABLE) entry->configurable = false;
+}
+
+void scr_dyn_class_view_attributes(ScrDyn *view, double bits) {
+  unsigned b = (unsigned)bits;
+  if (b == 0 || view->kind != SCR_DYN_OBJ) return;
+  view->non_extensible = true;
+  for (size_t i = 0; i < view->v.obj.len; i++) {
+    ScrDynEntry *entry = &view->v.obj.entries[i];
+    if (b & (SCR_CLASS_SEALED | SCR_CLASS_FROZEN)) entry->configurable = false;
+    if ((b & SCR_CLASS_FROZEN) && !entry->accessor) entry->writable = false;
+  }
+}
+
+/* Object.defineProperty on a declared class field. The descriptor applies to
+ * a one-property object holding the field's current value and attributes,
+ * so validation and errors match ordinary objects. Answers that object (+1),
+ * or NULL with a pending exception. */
+ScrDyn *scr_class_define_field(ScrDyn *current, double field_bits, double object_bits, ScrStr *name,
+                               ScrDyn *descriptor) {
+  unsigned f = (unsigned)field_bits, o = (unsigned)object_bits;
+  ScrDyn *holder = scr_dyn_new_obj();
+  scr_dyn_obj_set(holder, name->data, name->len, scr_dyn_retain(current));
+  ScrDynEntry *entry = scr_dyn_entry(holder, name);
+  entry->writable = !(f & SCR_FIELD_NOT_WRITABLE) && !(o & SCR_CLASS_FROZEN);
+  entry->enumerable = !(f & SCR_FIELD_NOT_ENUMERABLE);
+  entry->configurable =
+      !(f & SCR_FIELD_NOT_CONFIGURABLE) && !(o & (SCR_CLASS_SEALED | SCR_CLASS_FROZEN));
+  ScrDyn *key = scr_dyn_new_str(name);
+  ScrDyn *defined = scr_dyn_define_property(holder, key, descriptor);
+  scr_dyn_release(key);
+  if (!defined) {
+    scr_dyn_release(holder);
+    return NULL;
+  }
+  scr_dyn_release(defined);
+  entry = scr_dyn_entry(holder, name);
+  if (entry->accessor) {
+    scr_dyn_release(holder);
+    ScrJsonBuf buffer;
+    scr_jb_init(&buffer);
+    scr_jb_puts(&buffer, "Object.defineProperty with an accessor descriptor for the declared field '");
+    scr_jb_write(&buffer, name->data, name->len);
+    scr_jb_puts(&buffer, "' is not supported yet");
+    ScrStr *message = scr_jb_finish(&buffer);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
+    scr_str_release(message);
+    return NULL;
+  }
+  return holder;
+}
+
+/* The field attribute word of a scr_class_define_field result. */
+double scr_class_defined_bits(ScrDyn *holder, ScrStr *name) {
+  const ScrDynEntry *entry = scr_dyn_entry(holder, name);
+  unsigned bits = 0;
+  if (!entry->writable) bits |= SCR_FIELD_NOT_WRITABLE;
+  if (!entry->enumerable) bits |= SCR_FIELD_NOT_ENUMERABLE;
+  if (!entry->configurable) bits |= SCR_FIELD_NOT_CONFIGURABLE;
+  return (double)bits;
+}
+
+/* The value a scr_class_define_field result holds (+1). */
+ScrDyn *scr_class_defined_value(ScrDyn *holder, ScrStr *name) {
+  return scr_dyn_retain(scr_dyn_entry(holder, name)->value);
+}
+
+/* Whether a property descriptor names a value (Node's ToPropertyDescriptor
+ * reads `value` with [[HasProperty]]). */
+bool scr_class_descriptor_has_value(ScrDyn *descriptor) {
+  if (descriptor->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(descriptor);
+    bool has = !scr_exc_pending() && scr_class_descriptor_has_value(view);
+    scr_dyn_release(view);
+    return has;
+  }
+  return descriptor->kind == SCR_DYN_OBJ && scr_dyn_obj_get(descriptor, "value", 5) != NULL;
+}
+
+/* Node's TypeError for a write to a read-only field of a class instance. */
+void scr_class_throw_read_only(ScrStr *field, ScrStr *owner) {
+  ScrJsonBuf buffer;
+  scr_jb_init(&buffer);
+  scr_jb_puts(&buffer, "Cannot assign to read only property '");
+  scr_jb_write(&buffer, field->data, field->len);
+  scr_jb_puts(&buffer, "' of object '#<");
+  scr_jb_write(&buffer, owner->data, owner->len);
+  scr_jb_puts(&buffer, ">'");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+}
+
+/* Node's TypeError for a class field initializer on a non-extensible
+ * instance (a base constructor froze or sealed `this`). */
+void scr_class_throw_not_extensible(ScrStr *field) {
+  ScrJsonBuf buffer;
+  scr_jb_init(&buffer);
+  scr_jb_puts(&buffer, "Cannot define property ");
+  scr_jb_write(&buffer, field->data, field->len);
+  scr_jb_puts(&buffer, ", object is not extensible");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
 }

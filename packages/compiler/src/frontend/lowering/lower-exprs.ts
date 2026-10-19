@@ -64,6 +64,7 @@ import {
   maybePromiseInstanceOf,
   maybePromiseUnionOf,
 } from "./maybe-promise.js";
+import { isStrictCode } from "./strict-mode.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "./class-assertions.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import { narrowClassUnion, narrowStoredClassValue } from "./class-unions.js";
@@ -16149,6 +16150,7 @@ export function fieldSetStmt(
         className: target.className,
         field: target.field,
         value,
+        ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
         loc,
       }
     : {
