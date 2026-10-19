@@ -3267,8 +3267,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Native collection iterators use checked runtime iterator objects.
   if (isStdlibInterface("MapIterator") || isStdlibInterface("SetIterator")) return DYN;
   // Array iterators (`list.values()` and friends) are generators over the
-  // live array: each step reads the current length and element.
-  if (isStdlibInterface("ArrayIterator")) {
+  // live array: each step reads the current length and element. String
+  // iterators (`s[Symbol.iterator]()`) are generators over the code points.
+  if (isStdlibInterface("ArrayIterator") || isStdlibInterface("StringIterator")) {
     const arg = checker.getTypeArguments(widened as ts.TypeReference)[0];
     const yieldT = arg ? mapType(arg, ctx) : null;
     if (!yieldT || yieldT.kind === "void" || isUnitType(yieldT)) return null;
