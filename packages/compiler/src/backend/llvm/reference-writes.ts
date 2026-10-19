@@ -470,11 +470,14 @@ export class ReferenceWrites {
         return;
       case "intrinsic":
         // A TDZ test reads; publication only makes objects immortal; intern
-        // tables store published values and write no script object.
+        // tables store published values and write no script object;
+        // ThreadSlots reads write nothing.
         if (
           e.name !== "module.tdzCheck" &&
           e.name !== "threads.publish" &&
-          !e.name.startsWith("itable.")
+          !e.name.startsWith("itable.") &&
+          e.name !== "slots.get" &&
+          e.name !== "slots.has"
         )
           sink.all();
         return;

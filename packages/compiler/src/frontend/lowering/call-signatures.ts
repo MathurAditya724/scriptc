@@ -13,7 +13,13 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import { isJsSourceFile, isNodeEsmFile } from "../program.js";
-import { genResultRecord, jsOpenObjectType } from "../type-mapper.js";
+import {
+  genResultRecord,
+  isAnyArrayType,
+  isUnitOnlyTsType,
+  jsOpenObjectType,
+  unitOnlyUnion,
+} from "../type-mapper.js";
 import { dynFallbackType } from "./lowerer.js";
 import { builtinModuleFnOf } from "./surfaces.js";
 import { mixinFnShapeOf } from "./lower-mixins.js";
@@ -286,10 +292,17 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
         return { type: DYN, mode: "dynRest" };
       }
     }
+    // `...args: unknown[]` / `...args: any[]` in TypeScript: the binding is
+    // the checked-dynamic array (how `unknown[]` maps everywhere), so the
+    // ABI is the JS variadic dyn form above — the function type marks it
+    // with `rest` and no typed slot (the type mapper agrees).
+    const restTs = lowerer.typeOf(param.name);
+    if (isAnyArrayType(restTs, lowerer.checker)) return { type: DYN, mode: "dynRest" };
     const type = lowerer.runtimeOptionalBindingType(param.name, lowerer.irTypeOf(param.name));
+    if (type.kind === "dyn") return { type: DYN, mode: "dynRest" };
     // Tuple-typed rest params don't map to an array; generic rest is the
     // generic path's business. Anything non-array here is unmappable.
-    if (type.kind !== "array") lowerer.badType(param.name, lowerer.typeOf(param.name));
+    if (type.kind !== "array") lowerer.badType(param.name, restTs);
     return { type, mode: "rest" };
   }
   if (param.initializer) {
@@ -373,7 +386,7 @@ export function paramShapes(
     const tsType = symbol
       ? lowerer.checker.getTypeOfSymbol(symbol)
       : lowerer.typeOf(declParam.name);
-    const mapped = jsOpenObjectType(
+    let mapped = jsOpenObjectType(
       declParam,
       lowerer.runtimeOptionalBindingType(
         declParam.name,
@@ -382,6 +395,11 @@ export function paramShapes(
       lowerer.shapes,
       lowerer.unions,
     );
+    // An instantiation with a literal `undefined` argument (`id(undefined)`
+    // binds T = undefined): standalone undefined maps to VOID (the return
+    // convention), and a parameter is a value position, so it takes the
+    // unit-only slot like a declared `v: undefined` parameter.
+    if (mapped?.kind === "void" && isUnitOnlyTsType(tsType)) mapped = unitOnlyUnion(lowerer.unions);
     if (!mapped || mapped.kind === "void")
       lowerer.badType(blameOf?.(declParam, i) ?? declParam.name, tsType);
     if (declParam.dotDotDotToken) {
@@ -503,6 +521,24 @@ export function requireExactArityValue(
       ? lowerer.mapTypeOf(lowerer.typeOf(contextual))
       : null;
   if (mapped && typeEquals(mapped, funcType)) return;
+  // An object-literal METHOD has no contextual type of its own: the
+  // literal's contextual type names the member slot it fills. An
+  // overloaded member's slot holds its erased function, which spells the
+  // completed parameters of an implementation like `m(a?: string)`.
+  if (
+    contextual === null &&
+    ts.isMethodDeclaration(blame) &&
+    blame.parent !== undefined &&
+    ts.isObjectLiteralExpression(blame.parent) &&
+    (ts.isIdentifier(blame.name) || ts.isStringLiteral(blame.name))
+  ) {
+    const literalType = lowerer.checker.getContextualType(blame.parent);
+    const member = literalType
+      ? lowerer.checker.getPropertyOfType(literalType, blame.name.text)
+      : undefined;
+    const slot = member ? lowerer.memberSlotTypeOf(lowerer.checker.getTypeOfSymbol(member)) : null;
+    if (slot && typeEquals(slot, funcType)) return;
+  }
   // A union-typed slot (`runner || defaultRunner` under a
   // `CommandRunner | undefined` context): the value can only inhabit
   // the union's one func arm — judge by it.
@@ -843,13 +879,34 @@ export function lambdaSignature(
       ctxDecl && !ctxDecl.getSourceFile().isDeclarationFile
         ? lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!))
         : null;
-    const ctxRet = isAsyncLike && ctxRetRaw?.kind === "promise" ? ctxRetRaw.inner : ctxRetRaw;
+    // An async lambda always produces a promise, so a slot returning a
+    // promise-armed union (`Promise<R | void> | R | void`, `Promise<void>
+    // | void`) is met through that promise arm: its payload is the ABI.
+    const ctxPromiseArm =
+      isAsyncLike && ctxRetRaw?.kind === "union"
+        ? lowerer.unions.get(ctxRetRaw.unionId)?.arms.filter((arm) => arm.kind === "promise")
+        : undefined;
+    const ctxRet =
+      isAsyncLike && ctxRetRaw?.kind === "promise"
+        ? ctxRetRaw.inner
+        : ctxPromiseArm?.length === 1 && ctxPromiseArm[0]!.kind === "promise"
+          ? ctxPromiseArm[0]!.inner
+          : ctxRetRaw;
+    // A TypeScript variadic lambda (`(...args) => handler(...args)`) in a
+    // checked-dynamic variadic slot returning `unknown` adopts that result
+    // too: rest closures have no function-value adapter, so the closure
+    // must match the slot's ABI exactly.
+    const dynVariadicSlot =
+      ctxRet?.kind === "dyn" &&
+      !isJsSourceFile(node.getSourceFile()) &&
+      shapes.some((shape) => shape.mode === "dynRest");
     if (
-      (ctxRet?.kind === "union" || ctxRet?.kind === "array" || ctxRet?.kind === "record") &&
-      (innerRet.kind !== "void" ||
-        (ctxRet.kind === "union" && lowerer.armTag(ctxRet.unionId, UNDEFINED_T) >= 0))
+      dynVariadicSlot ||
+      ((ctxRet?.kind === "union" || ctxRet?.kind === "array" || ctxRet?.kind === "record") &&
+        (innerRet.kind !== "void" ||
+          (ctxRet.kind === "union" && lowerer.armTag(ctxRet.unionId, UNDEFINED_T) >= 0)))
     ) {
-      ret = isAsyncLike ? { kind: "promise", inner: ctxRet } : ctxRet;
+      ret = isAsyncLike ? { kind: "promise", inner: ctxRet! } : ctxRet!;
     }
     // A VOID slot discards the callback's result (TS's void-returning
     // assignability rule; JS ignores the value), so an UNANNOTATED

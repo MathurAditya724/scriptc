@@ -4,6 +4,8 @@ import { DYN, STRING, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../..
 import type { IrExpr, IrStmt, SrcLoc } from "../../../ir/ir.js";
 import { isNodeEsmFile, locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
+import { tryLowerExpression } from "./try-lower-expression.js";
+import { constituentTypes } from "../../ts7/checker.js";
 
 /** One optional-chain STEP: `a?.b`, `a?.m(...)`, `a?.[i]` (the token on
  * the member access) and `f?.()` (the token on the call). The receiver
@@ -26,7 +28,8 @@ import type { Lowerer } from "../lowerer.js";
  * deeper — `x?.trim().toLowerCase()` reads nothing past the guard when x
  * is nullish, so the whole tail must lower inside it. Walks
  * property/element accesses and call steps only (parens and `!` break
- * the chain per the grammar: `(a?.b).c` throws on undefined in JS);
+ * the chain per the grammar: `(a?.b).c` throws on undefined in JS, while
+ * an unparenthesized `a?.b!.c` stays one chain, as TypeScript emits it);
  * the node's OWN token — and a call's immediate callee token — are the
  * plain entries' cases, not tails, and handled markers make the chain
  * lowering's re-dispatch walk past its own step. `f?.()` steps stay out
@@ -41,6 +44,10 @@ function chainTailDot(
     // An active chain's bound receiver read is a LEAF — its own token
     // was consumed by the chain that bound it.
     if (lowerer.chainRecvByNode.has(cur)) return null;
+    if (ts.isNonNullExpression(cur)) {
+      cur = cur.expression;
+      continue;
+    }
     if (ts.isCallExpression(cur)) {
       // `f?.()` steps route through their own entry (or are being
       // handled); a deeper token under one is that chain's business.
@@ -91,20 +98,29 @@ export function isOptionalChainTail(lowerer: Lowerer, expr: ts.Expression): bool
   if (!tail) return false;
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(tail.expression));
   if (recvT?.kind === "dyn") return true;
-  if (recvT?.kind !== "union") return false;
-  const def = lowerer.unions.get(recvT.unionId);
-  return !!def && def.arms.some(isUnitType);
+  if (recvT?.kind === "union") {
+    const def = lowerer.unions.get(recvT.unionId);
+    if (def?.arms.some(isUnitType)) return true;
+  }
+  // The checker calls the receiver present, but an unchecked read (`a[0]`
+  // past the end, a missing index-signature key) can still lower to an
+  // undefined-armed value, and `a[0]?.b.c` must then short-circuit `.c`
+  // too. The chain lowering inspects the lowered receiver: a present value
+  // re-dispatches the plain lowering, so only genuinely optional receivers
+  // change shape.
+  return lowerer.isRuntimeOptionalOrigin(tail.expression);
 }
 
 /** True when an EARLIER step of this access chain carries `?.` — JS
  * short-circuits the whole tail (`a?.b.c` reads nothing when a is
  * nullish), so a dyn tail read must answer undefined instead of
  * throwing. Walks the receiver spine only; the argument of the access
- * itself is not part of the guard. */
+ * itself is not part of the guard. Parentheses end the chain
+ * (`(a?.b).c` reads `.c` from undefined); `!` does not. */
 export function hasOptionalChainGuard(expr: ts.Expression): boolean {
   let cur: ts.Expression = expr;
   for (;;) {
-    if (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur)) {
+    if (ts.isNonNullExpression(cur)) {
       cur = cur.expression;
       continue;
     }
@@ -119,6 +135,31 @@ export function hasOptionalChainGuard(expr: ts.Expression): boolean {
     }
     return false;
   }
+}
+
+/** `recv.m` where `m` is a required method the standard library declares
+ * and `recv` itself is a non-optional, never-nullish typed receiver. */
+function alwaysPresentStdlibMethod(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isPropertyAccessExpression(node) || node.questionDotToken) return false;
+  if (hasOptionalChainGuard(node.expression)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(node.name);
+  if (!symbol || !(symbol.flags & ts.SymbolFlags.Method) || symbol.flags & ts.SymbolFlags.Optional)
+    return false;
+  if (!lowerer.isStdlibSymbol(symbol)) return false;
+  const nullable =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Void;
+  const receiverType = lowerer.checker.getTypeAtLocation(node.expression);
+  const calleeType = lowerer.checker.getTypeAtLocation(node);
+  const parts = (type: ts.Type): readonly ts.Type[] =>
+    type.flags & ts.TypeFlags.Union ? constituentTypes(type) : [type];
+  return (
+    parts(receiverType).every((part) => !(part.flags & nullable)) &&
+    parts(calleeType).every((part) => !(part.flags & nullable))
+  );
 }
 
 export function lowerOptionalChain(
@@ -167,7 +208,25 @@ export function lowerOptionalChain(
     dotNode = tail;
     recvNode = tail.expression;
   }
-  const loweredReceiver = lowerer.lowerExpr(recvNode);
+  // `h.getSetCookie?.()`: a required standard-library METHOD on a
+  // never-nullish receiver always exists, so `?.()` is the plain call.
+  // Native handle methods have no first-class value to guard; when the
+  // method read itself has no lowering, re-dispatch the plain call (which
+  // reports its own diagnostics) instead of failing on the value read.
+  let loweredReceiver: IrExpr | null;
+  if (dotNode === expr && alwaysPresentStdlibMethod(lowerer, recvNode)) {
+    loweredReceiver = tryLowerExpression(lowerer, recvNode);
+    if (loweredReceiver === null) {
+      lowerer.chainHandled.add(dotNode);
+      try {
+        return lowerer.lowerExpr(expr);
+      } finally {
+        lowerer.chainHandled.delete(dotNode);
+      }
+    }
+  } else {
+    loweredReceiver = lowerer.lowerExpr(recvNode);
+  }
   const receiver = lowerer.runtimeOptionalSourceValue(recvNode, loweredReceiver) ?? loweredReceiver;
   if (receiver.type.kind === "dyn") {
     if (dotNode === expr && ts.isCallExpression(expr)) {
@@ -393,7 +452,8 @@ export function lowerOptionalChain(
     for (let cur: ts.Expression = expr; cur !== dotNode;) {
       const next: ts.Expression = ts.isCallExpression(cur)
         ? cur.expression
-        : (cur as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression;
+        : (cur as ts.PropertyAccessExpression | ts.ElementAccessExpression | ts.NonNullExpression)
+            .expression;
       if (next === dotNode) break;
       if (!lowerer.chainNarrowedType.has(next)) {
         lowerer.chainNarrowedType.set(

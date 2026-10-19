@@ -694,6 +694,26 @@ static inline void *scr_fiber_region_capture(void) {
   return regions != NULL ? regions->capture() : NULL;
 }
 
+/* enterWith on the main stack lasts until that code returns to the loop,
+ * so the store does not reach callbacks scheduled without it: the loop
+ * clears the main slot when the main module's body returns, and an
+ * enterWith inside a callback the loop runs puts a tick that clears it at
+ * the front of the tick queue, so it runs as soon as that callback
+ * returns. */
+static SCR_TL bool scr_loop_started = false;
+
+static void scr_als_main_clear(void) {
+  scr_als_ctx_release(scr_als_main_slot);
+  scr_als_main_slot = NULL;
+}
+
+static void scr_next_tick_raw_first(void (*fn)(void));
+
+void scr_als_entered_with(void) {
+  if (scr_loop_started && SCR_ALS_SLOT() == &scr_als_main_slot)
+    scr_next_tick_raw_first(scr_als_main_clear);
+}
+
 static SCR_TL ScrCtx scr_loop_ctx; /* the main stack (scheduler home) */
 static SCR_TL ScrFiber *scr_current = NULL;
 /* A finished fiber whose last switch went to the loop (scr_resume_fiber). */
@@ -1166,6 +1186,17 @@ void scr_next_tick_raw(void (*fn)(void)) {
   if (scr_nt_tail) scr_nt_tail->next = t;
   else scr_nt_head = t;
   scr_nt_tail = t;
+}
+
+/* A raw tick at the front of the queue: it runs before the ticks already
+ * queued. */
+static void scr_next_tick_raw_first(void (*fn)(void)) {
+  ScrNtick *t = calloc(1, sizeof *t);
+  if (!t) scr_oom();
+  t->raw = fn;
+  t->next = scr_nt_head;
+  scr_nt_head = t;
+  if (scr_nt_tail == NULL) scr_nt_tail = t;
 }
 
 void scr_nticks_teardown(void) {
@@ -3731,6 +3762,54 @@ void scr_queue_microtask(ScrClosure *cb) {
   scr_ready_push(f);
 }
 
+/* ── scheduling in an AsyncLocalStorage context ───────────────────────
+ * Programs that enter AsyncLocalStorage stores schedule their timer,
+ * interval, setImmediate, process.nextTick and queueMicrotask callbacks
+ * through these entry points (the emitter picks them when the program
+ * uses the store API), so each callback runs with the stores that were
+ * active when it was scheduled, as Node's async resources capture them.
+ * With a snapshot active, the callback is wrapped in a closure that
+ * installs it around the call; other programs keep the plain entry
+ * points. */
+static void *scr_als_ctx_retain_v(void *c) { return scr_als_ctx_retain(c); }
+static void scr_als_ctx_release_v(void *c) { scr_als_ctx_release(c); }
+
+static void scr_als_bound_fire(ScrClosure *self) {
+  ScrClosure *cb = scr_box_get_ref(self->caps[0]);
+  ScrAlsCtx **slot = SCR_ALS_SLOT();
+  ScrAlsCtx *prev = *slot;
+  *slot = scr_box_get_ref(self->caps[1]); /* the slot owns this reference */
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+  /* An enterWith inside the callback replaced the slot's snapshot; either
+   * way the slot's reference is released here. */
+  slot = SCR_ALS_SLOT();
+  scr_als_ctx_release(*slot);
+  *slot = prev;
+  scr_closure_release(cb);
+}
+
+static ScrClosure *scr_als_bind(ScrClosure *cb /*moves*/) {
+  ScrAlsCtx *active = *SCR_ALS_SLOT();
+  if (active == NULL) return cb;
+  ScrClosure *bound = scr_closure_new((void *)scr_als_bound_fire, 2);
+  bound->caps[0] = scr_box_new(SCR_BOX_FUNC);
+  scr_box_set_ref(bound->caps[0], cb);
+  bound->caps[1] = scr_box_new_obj(scr_als_ctx_retain_v, scr_als_ctx_release_v, NULL);
+  scr_box_set_ref(bound->caps[1], scr_als_ctx_retain(active));
+  return bound;
+}
+
+void scr_set_timeout_als(ScrClosure *cb, double ms) { scr_set_timeout(scr_als_bind(cb), ms); }
+double scr_set_interval_als(ScrClosure *cb, double ms) {
+  return scr_set_interval(scr_als_bind(cb), ms);
+}
+double scr_set_timeout_handle_als(ScrClosure *cb, double ms) {
+  return scr_set_timeout_handle(scr_als_bind(cb), ms);
+}
+double scr_set_immediate_als(ScrClosure *cb) { return scr_set_immediate(scr_als_bind(cb)); }
+void scr_next_tick_als(ScrClosure *cb) { scr_next_tick(scr_als_bind(cb)); }
+void scr_queue_microtask_als(ScrClosure *cb) { scr_queue_microtask(scr_als_bind(cb)); }
+
 /* The checked-dynamic argument form (JS files — common.mustCall wrappers
  * and the suite's invalid-input probes): a non-function throws Node's
  * ERR_INVALID_ARG_TYPE synchronously; a function value is called with
@@ -3743,16 +3822,28 @@ static void scr_micro_dyn_fire(ScrClosure *c) {
   scr_dyn_release(fn);
 }
 
-void scr_queue_microtask_dyn(const ScrDyn *cb) {
+/* The closure that calls a dyn function value, or NULL with Node's
+ * ERR_INVALID_ARG_TYPE pending for a non-function. */
+static ScrClosure *scr_micro_dyn_closure(const ScrDyn *cb) {
   if (cb->kind != SCR_DYN_FUNC) {
     static const char msg[] = "The \"callback\" argument must be of type function.";
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
-    return;
+    return NULL;
   }
   ScrClosure *c = scr_closure_new((void *)scr_micro_dyn_fire, 1);
   c->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
   scr_box_set_ref(c->caps[0], scr_dyn_retain((ScrDyn *)cb));
-  scr_queue_microtask(c);
+  return c;
+}
+
+void scr_queue_microtask_dyn(const ScrDyn *cb) {
+  ScrClosure *c = scr_micro_dyn_closure(cb);
+  if (c) scr_queue_microtask(c);
+}
+
+void scr_queue_microtask_dyn_als(const ScrDyn *cb) {
+  ScrClosure *c = scr_micro_dyn_closure(cb);
+  if (c) scr_queue_microtask_als(c);
 }
 
 /* ── the event hooks (scr_events.c) ──────────────────────────────────
@@ -4520,6 +4611,9 @@ static SCR_TL bool scr_loop_cjs_entry = false;
 void scr_loop_commonjs_entry(void) { scr_loop_cjs_entry = true; }
 
 bool scr_loop_run(ScrPromise *top_level) {
+  /* The main module's body has returned: an enterWith it made ends here. */
+  scr_loop_started = true;
+  if (scr_als_main_slot != NULL) scr_als_main_clear();
   bool first_checkpoint = !scr_loop_cjs_entry;
   bool rejection_failed;
   for (;;) {
@@ -4890,6 +4984,8 @@ struct ScrGen {
   /* The never-started teardown: drops the packed (already-retained)
    * arguments the spawn wrapper built. Emitted per generator function. */
   void (*drop_args)(void *);
+  /* scr_gen_set_unstarted_return's hook; NULL for most generators. */
+  void (*unstarted_return)(void *);
   bool is_async;
   void (*settle_async)(ScrGen *, ScrPromise *);
   ScrAsyncGenRequest *requests_head;
@@ -5449,6 +5545,8 @@ void scr_gen_resume(ScrGen *g) {
   }
 }
 
+void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *)) { g->unstarted_return = hook; }
+
 void scr_gen_close(ScrGen *g) {
   scr_gen_slot_reset(&g->ret);
   scr_gen_resume_return(g);
@@ -5483,13 +5581,16 @@ void scr_gen_resume_return(ScrGen *g) {
     return;
   case SCR_GEN_UNSTARTED:
     /* The body never runs: tear the fiber down cleanly (drop the packed
-     * arguments) and complete with the parked value. */
+     * arguments) and complete with the parked value. The generator is
+     * done before the hook runs, so a resume from inside it answers done;
+     * an exception the hook raises stays pending for the caller. */
+    g->state = SCR_GEN_DONE;
+    if (g->unstarted_return != NULL) g->unstarted_return(g->fiber->argpack);
     if (g->drop_args != NULL) g->drop_args(g->fiber->argpack);
     else free(g->fiber->argpack);
     scr_fiber_destroy(g->fiber);
     g->fiber = NULL;
     scr_fibers_live--;
-    g->state = SCR_GEN_DONE;
     scr_gen_ret_to_out(g);
     return;
   default:

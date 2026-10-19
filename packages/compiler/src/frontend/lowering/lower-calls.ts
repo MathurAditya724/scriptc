@@ -1,6 +1,7 @@
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
+import { lowerResponseStaticJson } from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
@@ -24,6 +25,13 @@ import {
   lowerZlibStreamMethodCall,
 } from "./builtins/compression.js";
 import type { Lowerer } from "./lowerer.js";
+import {
+  inlineNamespaceRequireOf,
+  lowerInlineRequireValue,
+  lowerUncompiledRequireCall,
+  lowerWithInlineRequireInit,
+} from "./cjs-inline-require.js";
+import { cjsExportCallIgnoresThis, cjsInFileExportGlobalOf } from "./cjs-exports-object.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
 import { errorToStringCall } from "./error-methods.js";
@@ -34,6 +42,7 @@ import {
   BOOL,
   CAUGHT,
   DYN,
+  DYN_HANDLE_KINDS,
   F64,
   type IrExpr,
   type IrFunction,
@@ -61,7 +70,11 @@ import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
 import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
-import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
+import {
+  isGenericCallableMemberType,
+  isOverloadedCallableMemberType,
+  typeKey,
+} from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
 import {
   NARROW_FIRST,
@@ -79,7 +92,12 @@ import {
 import { lowerArrayFromAsyncCall } from "./containers/array-from-async.js";
 import { lowerDynArrayFilterCall, lowerDynArrayFlatMapCall } from "./containers/array-callbacks.js";
 import { lowerGroupByStaticCall } from "./containers/collection-grouping.js";
-import { lowerIteratorHelperCall } from "./containers/iterator-helpers.js";
+import {
+  lowerGeneratorHelperCall,
+  lowerHelperReturnCall,
+  lowerIteratorFromCall,
+  lowerIteratorHelperCall,
+} from "./containers/iterator-helpers.js";
 import {
   lowerObjectAssignIndexShape,
   lowerObjectConstructor,
@@ -142,6 +160,7 @@ import {
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import {
   httpClientFnBindingOf,
@@ -206,7 +225,9 @@ import {
   completeArgs,
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
+import { lowerStringIteratorValue } from "./iterator-adapters.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
+import { maybePromiseReturnStmt, promiseArmedUnionOf } from "./maybe-promise.js";
 import {
   requireObjLitGenericReceiver,
   objLitGenericFnNodeOf,
@@ -233,6 +254,32 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // require() of a JSON document: the shared parsed object.
   const json = lowerJsonRequireCall(lowerer, expr);
   if (json) return json;
+
+  // Inline require() of a program module (cjs-inline-require.ts): a
+  // member call over its export table resolves like a binding's member
+  // call after the module's %init at this position; the require itself
+  // as a value answers the module's whole-export value.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const req = inlineNamespaceRequireOf(lowerer, expr.expression.expression);
+    if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
+      // Node calls the member with `this` bound to the module's exports.
+      if (
+        ts.isIdentifier(expr.expression.name) &&
+        !cjsExportCallIgnoresThis(lowerer, req.dep, expr.expression.name.text)
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `calling '${expr.expression.name.text}' through require(${JSON.stringify(req.spec)}) when the function may read 'this' (Node binds it to the module's exports object, which compiles to a static table — bind the module and call a local function instead)`,
+        );
+      }
+      return lowerWithInlineRequireInit(lowerer, req, () => lowerCall(lowerer, expr));
+    }
+  }
+  {
+    const inlineValue = lowerInlineRequireValue(lowerer, expr);
+    if (inlineValue) return inlineValue;
+  }
 
   // A call whose chain ROOTS at an ambient-undefined name (`declare
   // const value: Y | undefined; value?.foo("a")`, `declare function
@@ -310,11 +357,20 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerImportMetaResolveCall(lowerer, expr) ?? lowerRequireResolveCall(lowerer, expr);
     if (resolved) return resolved;
   }
+  // Any other require() call of the CommonJS global: MODULE_NOT_FOUND for
+  // packages nothing installed resolves, a named refusal otherwise.
+  {
+    const uncompiled = lowerUncompiledRequireCall(lowerer, expr);
+    if (uncompiled) return uncompiled;
+  }
 
   // `process.getuid?.()` — intercepted BEFORE the optional-chain
   // machinery (the member always exists on a POSIX target, so the
   // optional call IS the call; `process.getuid` itself has no value
   // lowering for the chain to guard).
+  // `h.return!()` / `h.return?.()` on a helper object: the method exists.
+  const helperReturn = lowerHelperReturnCall(lowerer, expr);
+  if (helperReturn) return helperReturn;
   const processOptional = lowerer.lowerProcessOptionalMethodCall(expr);
   if (processOptional) return processOptional;
   const reqStreamOptional = lowerCompatReqStreamOptionalCall(lowerer, expr);
@@ -1274,6 +1330,32 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
     return { kind: "callValue", callee, args, type: callee.type.ret, loc };
   }
+  // `exports.f(x)` / `module.exports.f(x)` inside the module: a call of
+  // the member's export global (cjs-exports-object.ts), the value every
+  // `exports.f =` statement assigns.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.questionDotToken) {
+    const g = cjsInFileExportGlobalOf(lowerer, expr.expression);
+    if (
+      g &&
+      (g.type.kind === "func" || g.type.kind === "dyn") &&
+      !cjsExportCallIgnoresThis(lowerer, expr.getSourceFile(), expr.expression.name.text)
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `calling '${expr.expression.getText()}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`,
+      );
+    }
+    if (g && (g.type.kind === "func" || g.type.kind === "dyn")) {
+      const callee: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
+      const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
+      if (checked) return checked;
+      if (callee.type.kind === "func") {
+        const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
+        return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+      }
+    }
+  }
   if (ts.isPropertyAccessExpression(expr.expression)) {
     const intrinsic =
       fenceNodeModuleMutationCall(lowerer, expr, expr.expression) ??
@@ -1389,6 +1471,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // compile-time-known, so a literal key folds to a constant.
       lowerClassHasOwnPropertyCall(lowerer, expr, expr.expression) ??
       lowerObjectOwnMethodCall(lowerer, expr, expr.expression) ??
+      // Static Response.json(data, init?) builds a native Response.
+      lowerResponseStaticJson(lowerer, expr) ??
       // Refuse Response constructor operations before generic-call
       // fallbacks can report an unrelated SC1090 diagnostic.
       lowerer.fenceUnsupportedFetchConstructorMember(expr.expression) ??
@@ -1421,6 +1505,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // array method paths (the terminal names collide with array
       // methods, but only iterator-typed receivers reach this).
       lowerIteratorHelperCall(lowerer, expr, expr.expression) ??
+      // Helper calls on generators and other iterator objects.
+      lowerGeneratorHelperCall(lowerer, expr, expr.expression) ??
       lowerIteratorStaticFence(lowerer, expr, expr.expression) ??
       lowerObjectStaticCall(lowerer, expr, expr.expression) ??
       lowerObjectFromEntriesCall(lowerer, expr, expr.expression) ??
@@ -1534,6 +1620,17 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       }
     }
     lowerer.unsupported("SC1090", expr, `method calls like '${expr.expression.getText()}'`);
+  }
+
+  // `s[Symbol.iterator]()` on a string: the string iterator as a value.
+  if (
+    ts.isElementAccessExpression(expr.expression) &&
+    !expr.expression.questionDotToken &&
+    !expr.questionDotToken &&
+    expr.arguments.length === 0
+  ) {
+    const iterator = lowerStringIteratorCall(lowerer, expr, expr.expression);
+    if (iterator) return iterator;
   }
 
   // The element spelling of an unsupported native Web method must fence
@@ -2058,6 +2155,9 @@ function lowerNumberConstructorValue(
     };
   const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
   if (optionalNumber) return optionalNumber;
+  // A program class instance converts through its own methods.
+  const classNumber = classToNumberConversion(lowerer, arg, argNode);
+  if (classNumber) return classNumber;
   const scalarUnionNumber = lowerScalarUnionNumber(lowerer, arg, argNode, loc);
   if (scalarUnionNumber) return scalarUnionNumber;
   return lowerer.noLowering(
@@ -3074,9 +3174,32 @@ function lowerOptionalStringNumber(
   return { kind: "call", callee: helper, args: [arg], type: F64, loc };
 }
 
-/** Iterator types whose helper calls have no lowering on any path (the
- * array iterator's chains lower in lowerIteratorHelperCall). */
-const UNLOWERED_ITERATOR_TYPES = new Set(["MapIterator", "SetIterator", "StringIterator"]);
+/** `s[Symbol.iterator]()` on a string-typed receiver: the generator over
+ * its code points. Null for other element calls. */
+function lowerStringIteratorCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.ElementAccessExpression,
+): IrExpr | null {
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (
+    !ts.isPropertyAccessExpression(key) ||
+    lowerer.stdlibGlobalMember(key, "Symbol") !== "iterator"
+  )
+    return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "string") return null;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (type?.kind !== "generator") return null;
+  const receiver = lowerer.lowerExpr(access.expression);
+  const value = lowerStringIteratorValue(lowerer, receiver, type, locOf(call));
+  if (!value) lowerer.unsupported("SC1090", call, "this string iterator type");
+  return value;
+}
+
+/** Iterator types with checked runtime receivers, whose helper calls lower
+ * in lowerGeneratorHelperCall. */
+const CHECKED_ITERATOR_TYPES = new Set(["MapIterator", "SetIterator"]);
 const ITERATOR_HELPER_METHODS = new Set([
   "map",
   "filter",
@@ -3136,23 +3259,17 @@ function lowerDynReceiverMethodCall(
   const recvSymbol = recvTs.getSymbol();
   if (
     recvSymbol &&
-    UNLOWERED_ITERATOR_TYPES.has(recvSymbol.name) &&
+    CHECKED_ITERATOR_TYPES.has(recvSymbol.name) &&
     lowerer.isStdlibSymbol(recvSymbol) &&
     ITERATOR_HELPER_METHODS.has(access.name.text) &&
     lowerer.isStdlibMember(access)
   ) {
-    if (recvSymbol.name === "MapIterator" || recvSymbol.name === "SetIterator") {
-      lowerer.noLowering(
-        `collection iterator .${access.name.text}()`,
-        call,
-        "stored Map/Set iterators support .next() and iteration; iterator helper methods have no lowering",
-      );
-    }
-    // The checked runtime's string iterator has no helper methods.
+    const helper = lowerGeneratorHelperCall(lowerer, call, access);
+    if (helper) return helper;
     lowerer.noLowering(
-      `${recvSymbol.name}.${access.name.text}`,
+      `collection iterator .${access.name.text}()`,
       call,
-      "iterator helpers lower on chains from arr.values() or arr.entries() that end in a terminal (toArray, forEach, reduce, some, every, find) — spread the string first: [...s].values()",
+      "iterator helpers on Map/Set iterators are called directly on the iterator, without optional chaining",
     );
   }
   const arrayReceiver = lowerer.checker.isArrayType(recvTs);
@@ -3274,6 +3391,11 @@ function lowerDynReceiverMethodCall(
       lowerStringMethodCall(lowerer, call, access, () => recv)
     );
   }
+  // A native handle read through `as any` (`(hash as any).update(x)`)
+  // dispatches through the handle, as the same value held in an
+  // 'unknown' slot does.
+  if (checkerUntyped && DYN_HANDLE_KINDS.has(recv.type.kind))
+    recv = lowerer.coerceToExpected(recv, DYN);
   if (recv.type.kind !== "dyn") return null;
   if (
     access.name.text === "normalize" &&
@@ -4170,10 +4292,32 @@ function lowerNumberToStringCall(
   }
   if (call.arguments.length === 1) {
     if (operand.type.kind !== "f64") return null;
+    const arg = call.arguments[0]!;
+    // A number radix needs no box: ToIntegerOrInfinity of a number is a
+    // truncation, which the typed entry point applies itself.
+    if (!ts.isSpreadElement(arg) && lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "f64") {
+      const radix = lowerer.lowerExpr(arg);
+      if (radix.type.kind === "f64") {
+        return {
+          kind: "libCall",
+          fn: "num.toStringRadixF64",
+          args: [operand, radix],
+          type: STRING,
+          loc: locOf(call),
+        };
+      }
+      return {
+        kind: "libCall",
+        fn: "num.toStringRadix",
+        args: [operand, lowerer.coerceToExpected(radix, DYN)],
+        type: STRING,
+        loc: locOf(call),
+      };
+    }
     return {
       kind: "libCall",
       fn: "num.toStringRadix",
-      args: [operand, lowerer.lowerExprExpecting(call.arguments[0]!, DYN)],
+      args: [operand, lowerer.lowerExprExpecting(arg, DYN)],
       type: STRING,
       loc: locOf(call),
     };
@@ -4210,8 +4354,15 @@ function lowerUnionToStringCall(
       (a.kind === "bytes" && a.elem === "u8"),
   );
   if (!stringable) return null;
-  const operand = lowerer.lowerExpr(access.expression);
+  let operand = lowerer.lowerExpr(access.expression);
   if (operand.type.kind !== "union") return null;
+  // A flow-narrowed read keeps its wider storage union (`string | number`
+  // after `!Array.isArray(h.host)` over a `string | number | string[]`
+  // slot): retag it to the proven union before the per-union helper.
+  if (operand.type.unionId !== recvT.unionId) {
+    operand = lowerer.coerceInto(access.expression, operand, recvT);
+    if (operand.type.kind !== "union" || operand.type.unionId !== recvT.unionId) return null;
+  }
   return { kind: "toString", operand, type: STRING, loc: locOf(call) };
 }
 
@@ -5217,6 +5368,8 @@ export function lowerPromiseMethodCall(
         const resultOf = (value: IrExpr, returnsPromise = false): IrStmt[] => {
           if (value.type.kind === "promise")
             return [lowerer.adoptingReturn(value, R, (e) => lowerer.coerceInto(call, e, R))];
+          const flattened = maybePromiseHandlerResult(lowerer, call, value, R);
+          if (flattened) return [flattened];
           if (returnsPromise) {
             // A boxed handler's promise result adopts too: the then job's
             // turn after the call, then the await of the returned value.
@@ -5567,7 +5720,10 @@ export function lowerPromiseMethodCall(
       // The handler's result: promise returns flatten exactly like
       // `return p` in any async body (the spec's thenable adoption);
       // everything else coerces into R.
-      if (handlerCall.type.kind === "promise" && R.kind !== "promise") {
+      const flattened = maybePromiseHandlerResult(lowerer, call, handlerCall, R);
+      if (flattened) {
+        body.push(flattened);
+      } else if (handlerCall.type.kind === "promise" && R.kind !== "promise") {
         body.push(lowerer.adoptingReturn(handlerCall, R, (e) => lowerer.coerceInto(call, e, R)));
       } else if (R.kind === "void") {
         body.push({ kind: "exprStmt", expr: handlerCall, loc });
@@ -6519,10 +6675,10 @@ function recordAssignHelper(
   return helper;
 }
 
-/** The `Iterator` global's statics (ES2025 — Iterator.from, and the
- * abstract constructor as a value): no first-class iterator objects
- * exist here, so every member fences with the working spelling named
- * instead of the generic-method fence's monomorphization wording. */
+/** The `Iterator` global's statics (ES2025): `Iterator.from` over a typed
+ * built-in iterable lowers (lowerIteratorFromCall); every other member,
+ * and other arguments, fence with the working spelling named instead of
+ * the generic-method fence's monomorphization wording. */
 function lowerIteratorStaticFence(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -6530,11 +6686,15 @@ function lowerIteratorStaticFence(
 ): IrExpr | null {
   if (!lowerer.isStdlibGlobal(access.expression, "Iterator")) return null;
   if (!lowerer.isStdlibMember(access)) return null;
+  const from = lowerIteratorFromCall(lowerer, call, access);
+  if (from) return from;
   lowerer.noLowering(
     `Iterator.${access.name.text}`,
     call,
-    "first-class iterator objects have no lowering — iterator helpers compile as one chain on an " +
-      "array iterator, consumed in place: arr.values().map(f).take(n).toArray()",
+    access.name.text === "from"
+      ? "Iterator.from accepts arrays, strings, typed arrays, Sets, Maps and iterator objects such as generators"
+      : "iterator helpers apply directly to generators and to array, Map and Set iterators: " +
+          "arr.values().map(f).take(n).toArray()",
   );
 }
 
@@ -8185,6 +8345,30 @@ function lowerObjectAssignHybrid(lowerer: Lowerer, call: ts.CallExpression): IrE
   return { kind: "recordLit", fields, type: mapped, loc };
 }
 
+/** The accessed member is an overload set (isOverloadedCallableMemberType),
+ * also under an optional chain whose access still spells `| undefined`. */
+function isOverloadedMemberAccess(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  return isOverloadedCallableMemberType(
+    lowerer.checker.getNonNullableType(lowerer.typeOf(access)),
+    lowerer.checker,
+  );
+}
+
+/** The result type of the overload a call through an overloaded member
+ * resolved to: the erased slot's result converts to it. A non-generic
+ * overload answers through its declaration, because the resolved signature
+ * of an optional-chain call (`api?.m(x)`) also carries the chain's
+ * undefined; a generic one answers through its instantiation. */
+function resolvedOverloadResultType(lowerer: Lowerer, call: ts.CallExpression): IrType {
+  const { checker } = lowerer;
+  const signature = checker.getResolvedSignature(call);
+  const decl = signature ? checker.signatureDeclaration(signature) : undefined;
+  const declared = decl ? checker.getSignatureFromDeclaration(decl) : undefined;
+  const source = declared && declared.getTypeParameters().length === 0 ? declared : signature;
+  const result = source ? lowerer.mapTypeOf(checker.getReturnTypeOfSignature(source)) : null;
+  return result ?? lowerer.irTypeOf(call);
+}
+
 export function lowerRecordFieldCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -8216,7 +8400,18 @@ export function lowerRecordFieldCall(
     const callee = lowerer.lowerUnionProperty(access);
     if (callee?.type.kind !== "func") return null;
     const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
-    return { kind: "callValue", callee, args, type: callee.type.ret, loc: locOf(call) };
+    const value: IrExpr = {
+      kind: "callValue",
+      callee,
+      args,
+      type: callee.type.ret,
+      loc: locOf(call),
+    };
+    // An overloaded member's erased result converts to the resolved
+    // overload's type, as on a single record receiver below.
+    return isOverloadedMemberAccess(lowerer, access)
+      ? lowerer.coerceInto(call, value, resolvedOverloadResultType(lowerer, call))
+      : value;
   }
   const target = lowerer.fieldTarget(access);
   const loc = locOf(call);
@@ -8291,10 +8486,14 @@ export function lowerRecordFieldCall(
     type: callee.type.ret,
     loc,
   };
-  // A generic member's field holds its erased instance: the result
-  // converts to this call's instantiated return type at the call.
-  if (isGenericCallableMemberType(lowerer.typeOf(access), lowerer.checker))
+  // A generic member's field holds its erased instance, and an overloaded
+  // member's field its erased function (the overloads joined): the result
+  // converts to this call's instantiated or resolved return type.
+  const memberType = lowerer.typeOf(access);
+  if (isGenericCallableMemberType(memberType, lowerer.checker))
     result = lowerer.coerceInto(call, result, lowerer.irTypeOf(call));
+  else if (isOverloadedMemberAccess(lowerer, access))
+    result = lowerer.coerceInto(call, result, resolvedOverloadResultType(lowerer, call));
   return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
 }
 
@@ -9633,4 +9832,27 @@ export function lowerStaticNumberGlobal(
     }
   }
   return null;
+}
+
+/** A then handler's promise-armed result (`.then(() => cached ?? load())`
+ * typed `T | Promise<T>`, or a `Promise<void> | void` callback's result):
+ * the lifted async body adopts the promise arm and fulfills with the
+ * others, like `return u` in an async function. Null for other results. */
+function maybePromiseHandlerResult(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  value: IrExpr,
+  R: IrType,
+): IrStmt | null {
+  const mp = promiseArmedUnionOf(lowerer, value.type);
+  if (!mp || promiseArmedUnionOf(lowerer, R)) return null;
+  const stmt = maybePromiseReturnStmt(lowerer, value, mp, R, (e) => lowerer.coerceInto(call, e, R));
+  if (stmt === null) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `then handlers returning '${lowerer.fmt(value.type)}' into '${lowerer.fmt(R)}' (an arm does not convert to the result)`,
+    );
+  }
+  return stmt;
 }

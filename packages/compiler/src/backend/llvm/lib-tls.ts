@@ -164,13 +164,8 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       ]);
       B.br(done);
       B.startBlock(plain);
-      const insecure = callRuntime(host, "scr_http_request_ex", "ptr", [
-        ...a.slice(1, 8),
-        ...handler,
-        { type: "i32", name: "80" },
-        ptr(),
-        ptr(),
-      ]);
+      // The plain arm is http.request: Node's global agent serves it.
+      const insecure = callRuntime(host, "scr_http_request", "ptr", [...a.slice(1, 8), ...handler]);
       B.br(done);
       B.startBlock(done);
       const result = B.tmp();

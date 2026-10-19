@@ -312,6 +312,31 @@ static ScrDyn *sf_type_reason(const char *message, ScrError **error_out) {
   return d;
 }
 
+/* Request's URL parse failure: with the URL parser's TypeError pending,
+ * replace it by undici's TypeError "Failed to parse URL from <input>"
+ * whose (non-enumerable) cause is the parser error. */
+static void sf_throw_url_parse_failure(const ScrStr *input) {
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *cause = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  /* Sized without the NUL so it stays out of the unit's shared mergeable
+   * string section (which every program linking this unit carries). */
+  static const char prefix[25] = "Failed to parse URL from ";
+  size_t message_len = sizeof prefix + input->len;
+  char *message = malloc(message_len);
+  if (!message) sf_oom();
+  memcpy(message, prefix, sizeof prefix);
+  memcpy(message + sizeof prefix, input->data, input->len);
+  ScrStr *text = scr_str_new(message, message_len);
+  free(message);
+  ScrError *e = scr_error_new(SCR_ERR_TYPE, text);
+  scr_str_release(text);
+  scr_error_set_cause(e, cause);
+  e->cause_enumerable = false;
+  scr_dyn_release(cause);
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* ── AbortSignal ─────────────────────────────────────────────────── */
 
 static void sf_signal_track_reason(SfSignal *s) {
@@ -2386,6 +2411,50 @@ static ScrStr **sf_headers_sorted_names(SfHeaders *h, size_t *count_out) {
   return names;
 }
 
+static bool sf_headers_is_set_cookie(const ScrStr *name) {
+  return name->len == 10 && memcmp(name->data, "set-cookie", 10) == 0;
+}
+
+/* The `index`th entry of Fetch's "sort and combine" list: names in
+ * byte order, each with its combined value, except that every set-cookie
+ * value is its own entry (in insertion order), as Node's Headers
+ * iterator yields them. False past the end. Outputs are +1. */
+static bool sf_headers_sorted_entry(SfHeaders *h, size_t index,
+                                    ScrStr **name_out,
+                                    ScrStr **value_out) {
+  size_t count = 0;
+  ScrStr **names = sf_headers_sorted_names(h, &count);
+  bool found = false;
+  size_t at = 0;
+  for (size_t i = 0; i < count && !found; i++) {
+    if (!sf_headers_is_set_cookie(names[i])) {
+      if (at == index) {
+        *name_out = scr_str_retain(names[i]);
+        *value_out = sf_headers_get_value(h, names[i]);
+        found = true;
+      }
+      at++;
+      continue;
+    }
+    size_t n = (size_t)scr_arr_len(h->pairs);
+    for (size_t j = 0; j + 1 < n && !found; j += 2) {
+      ScrStr *key = scr_arr_get_ref(h->pairs, (double)j);
+      bool match = sf_headers_is_set_cookie(key);
+      scr_str_release(key);
+      if (!match) continue;
+      if (at == index) {
+        *name_out = scr_str_retain(names[i]);
+        *value_out = scr_arr_get_ref(h->pairs, (double)(j + 1));
+        found = true;
+      }
+      at++;
+    }
+  }
+  for (size_t j = 0; j < count; j++) scr_str_release(names[j]);
+  free(names);
+  return found;
+}
+
 static ScrDyn *sf_headers_invoke(void *ptr, ScrDyn *self,
                                  const char *method,
                                  ScrDyn *const *args, size_t argc,
@@ -2438,20 +2507,15 @@ static ScrDyn *sf_headers_invoke(void *ptr, ScrDyn *self,
      * a future name skips it, inserting a later name visits it, and
      * inserting before the current index can make the current name appear
      * again. The old one-time snapshot was only safe while every native
-     * Headers handle was immutable. */
+     * Headers handle was immutable. Set-Cookie values are visited one by
+     * one (sf_headers_sorted_entry). */
     for (size_t i = 0;; i++) {
-      size_t count = 0;
-      ScrStr **names = sf_headers_sorted_names(h, &count);
-      if (i >= count) {
-        for (size_t j = 0; j < count; j++) scr_str_release(names[j]);
-        free(names);
-        break;
-      }
-      ScrStr *value = sf_headers_get_value(h, names[i]);
+      ScrStr *name = NULL;
+      ScrStr *value = NULL;
+      if (!sf_headers_sorted_entry(h, i, &name, &value)) break;
       ScrDyn *boxed_value = scr_dyn_new_str(value);
-      ScrDyn *boxed_name = scr_dyn_new_str(names[i]);
-      for (size_t j = 0; j < count; j++) scr_str_release(names[j]);
-      free(names);
+      ScrDyn *boxed_name = scr_dyn_new_str(name);
+      scr_str_release(name);
       ScrDyn *call_args[3] = {boxed_value, boxed_name, self};
       scr_dyn_this_push_dyn(this_arg);
       ScrDyn *result =
@@ -2522,7 +2586,7 @@ static SfResponse *sf_response_retain(SfResponse *r) {
 
 static void sf_response_release(SfResponse *r) {
   if (!r || --r->rc > 0) return;
-  scr_weak_dispose(r);
+  scr_weak_dispose_inline(r);
   sf_stream_release(r->body);
   sf_headers_release(r->headers);
   scr_str_release(r->url);
@@ -4415,13 +4479,38 @@ static bool sf_start_hop(SfTransfer *t) {
   }
   if (connection_close) sf_push_header_text(headers, "connection", "close", 5);
   else sf_push_header_text(headers, "connection", "keep-alive", 10);
+  /* Headers keeps each Set-Cookie value separately, but undici sends its
+   * header list's combined value: one line, the values joined by ", ",
+   * at the position of the first one. */
+  bool set_cookie_sent = false;
   for (size_t i = 0; i + 1 < user_len; i += 2) {
     ScrStr *name = scr_arr_get_ref(t->headers, (double)i);
     ScrStr *value = scr_arr_get_ref(t->headers, (double)(i + 1));
-    if (sf_eq_ci(name, "host") || sf_eq_ci(name, "connection")) {
+    if (sf_eq_ci(name, "host") || sf_eq_ci(name, "connection") ||
+        (set_cookie_sent && sf_eq_ci(name, "set-cookie"))) {
       scr_str_release(name);
       scr_str_release(value);
       continue;
+    }
+    if (sf_eq_ci(name, "set-cookie")) {
+      set_cookie_sent = true;
+      for (size_t j = i + 2; j + 1 < user_len; j += 2) {
+        ScrStr *later = scr_arr_get_ref(t->headers, (double)j);
+        bool match = sf_eq_ci(later, "set-cookie");
+        scr_str_release(later);
+        if (!match) continue;
+        ScrStr *next = scr_arr_get_ref(t->headers, (double)(j + 1));
+        size_t joined_len = value->len + 2 + next->len;
+        char *joined = malloc(joined_len ? joined_len : 1);
+        if (!joined) sf_oom();
+        memcpy(joined, value->data, value->len);
+        memcpy(joined + value->len, ", ", 2);
+        memcpy(joined + value->len + 2, next->data, next->len);
+        scr_str_release(next);
+        scr_str_release(value);
+        value = scr_str_new(joined, joined_len);
+        free(joined);
+      }
     }
     scr_arr_push_ref(headers, name);
     scr_arr_push_ref(headers, value);
@@ -4578,14 +4667,33 @@ static ScrDyn *sf_response_init_get(
   return NULL;
 }
 
-ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
+/* The Response constructor, and Response.json(data, init) when json_data
+ * is non-NULL: undici converts ResponseInit, serializes the data (TypeError
+ * "Value is not JSON serializable" when JSON.stringify answers undefined),
+ * then initializes the response exactly as the constructor does, with
+ * "application/json" as the default content type. */
+typedef ScrDyn *(*SfJsonSerialize)(const ScrDyn *value);
+
+/* The JSON serializer reaches the constructor only through Response.json's
+ * entry point, so programs that never call it link no JSON walker. */
+static ScrDyn *sf_response_json_serialize(const ScrDyn *value) {
+  ScrStr *gap = scr_str_new("", 0);
+  ScrDyn *serialized = scr_json_stringify_replacer(value, scr_dyn_undefined(), gap);
+  scr_str_release(gap);
+  return serialized;
+}
+
+static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
+                                     const ScrDyn *json_data,
+                                     SfJsonSerialize serialize) {
   ScrArr *header_pairs = NULL;
   ScrArr *converted_headers = NULL;
   ScrBytes *body_bytes = NULL;
   ScrStr *status_text = NULL;
   SfStream *stream = NULL;
-  bool null_body =
-      !body || body->kind == SCR_DYN_UNDEF || body->kind == SCR_DYN_NULL;
+  bool json_body = json_data != NULL;
+  bool null_body = !json_body &&
+      (!body || body->kind == SCR_DYN_UNDEF || body->kind == SCR_DYN_NULL);
   bool text_body = false;
   int status = 200;
   bool status_range_error = false;
@@ -4594,7 +4702,7 @@ ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
    * string arm therefore runs before ResponseInit's dictionary conversion,
    * while a ReadableStream is only brand-converted here — its locked/
    * disturbed state belongs to the later body-extraction phase. */
-  if (!null_body &&
+  if (!null_body && !json_body &&
       !(body->kind == SCR_DYN_HANDLE &&
         body->v.handle.tag == SCR_DYNH_WEB_STREAM)) {
     if (body->kind == SCR_DYN_BYTES) {
@@ -4668,7 +4776,25 @@ ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
   /* Extract BodyInit before validating the response metadata. This makes a
    * locked/disturbed stream win over the later status range, statusText HTTP
    * reason-phrase, and HeadersInit validation exactly as in pinned Node. */
-  if (null_body) {
+  if (json_body) {
+    ScrDyn *serialized = serialize(json_data);
+    if (!serialized) goto fail;
+    if (serialized->kind != SCR_DYN_STR) {
+      static const char unserializable[30] = "Value is not JSON serializable";
+      scr_dyn_release(serialized);
+      scr_throw_error_msg(SCR_ERR_TYPE, unserializable, sizeof unserializable);
+      goto fail;
+    }
+    ScrStr *encoding = scr_str_new("utf8", 4);
+    body_bytes = scr_bytes_from_str(serialized->v.str, encoding);
+    scr_str_release(encoding);
+    scr_dyn_release(serialized);
+    stream = sf_stream_new_native();
+    sf_stream_enqueue_bytes(stream, body_bytes);
+    sf_stream_close(stream);
+    scr_bytes_release(body_bytes);
+    body_bytes = NULL;
+  } else if (null_body) {
     stream = sf_stream_new_native();
     sf_stream_close(stream);
   } else if (body->kind == SCR_DYN_HANDLE &&
@@ -4719,6 +4845,11 @@ ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
     sf_push_header_text(header_pairs, "content-type",
                         "text/plain;charset=UTF-8", 24);
   }
+  if (json_body && !sf_pairs_have(header_pairs, "content-type")) {
+    static const char json_type[16] = "application/json";
+    scr_arr_push_ref(header_pairs, scr_str_new("content-type", 12));
+    scr_arr_push_ref(header_pairs, scr_str_new(json_type, sizeof json_type));
+  }
 
   SfResponse *response = calloc(1, sizeof *response);
   if (!response) sf_oom();
@@ -4744,6 +4875,15 @@ fail:
   return NULL;
 }
 
+ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
+  return sf_response_construct(body, init, NULL, NULL);
+}
+
+ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init) {
+  return sf_response_construct(NULL, init, data ? data : scr_dyn_undefined(),
+                               &sf_response_json_serialize);
+}
+
 /* Request uses the same body stream and Headers ownership as Response. */
 typedef struct SfRequest {
   size_t rc;
@@ -4760,7 +4900,7 @@ static void *sf_request_retain_v(void *ptr) {
 static void sf_request_release_v(void *ptr) {
   SfRequest *r = ptr;
   if (--r->rc) return;
-  scr_weak_dispose(r);
+  scr_weak_dispose_inline(r);
   sf_response_release(r->payload);
   scr_str_release(r->url); scr_str_release(r->method); scr_str_release(r->redirect);
   sf_signal_release(r->signal); free(r);
@@ -4809,6 +4949,7 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   ScrStr *url_text = source ? scr_str_retain(source->url) : scr_dyn_string_coerce_js(input);
   if (!url_text) return NULL;
   ScrUrl *url = scr_url_new(url_text);
+  if (!url) sf_throw_url_parse_failure(url_text);
   scr_str_release(url_text);
   if (!url) return NULL;
   if (url->userinfo->len) { scr_url_release(url); sf_type_error("Request cannot be constructed from a URL that includes credentials"); return NULL; }
@@ -5118,6 +5259,7 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
 
   ScrUrl *u = scr_url_new(url);
   if (!u) {
+    sf_throw_url_parse_failure(url);
     scr_dyn_release(coerced_body);
     scr_arr_release(headers);
     scr_str_release(method);

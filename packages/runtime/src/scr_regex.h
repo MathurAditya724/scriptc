@@ -80,6 +80,16 @@ ScrStr *scr_regex_flags(ScrRegex *re);        /* +1 */
 ScrStr *scr_regex_to_string(ScrRegex *re);    /* +1 */
 /* replace: first match without /g, every match with it. */
 ScrStr *scr_regex_replace(ScrStr *s, ScrRegex *re, ScrStr *rep);
+/* replace/replaceAll with a typed replacer closure of `arity` (at most 4)
+ * parameters returning a string. Parameter i receives what Node passes at
+ * position i: the match and captures (strings) below the capture count n,
+ * the match offset (a number) at n, the subject (a string) at n + 1. The
+ * compiler admits a closure only when every position it declares is one of
+ * those with the declared kind, and every capture it reads is set in every
+ * match (scr_regex_replace_callback handles the rest). Borrows all. */
+struct ScrClosure;
+ScrStr *scr_regex_replace_fn(ScrStr *s, ScrRegex *re, struct ScrClosure *f, uint32_t arity,
+                             bool all);
 /* replaceAll: throws Node's TypeError when /g is missing (may-throw). */
 ScrStr *scr_regex_replace_all(ScrStr *s, ScrRegex *re, ScrStr *rep);
 /* split: captured substrings are interleaved with the split pieces;

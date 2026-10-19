@@ -120,6 +120,7 @@ void scr_als_restore(ScrAlsCtx *prev) {
 void scr_als_enter_with(double id, ScrDyn *value) {
   ScrAlsCtx *prev = scr_als_enter(id, value);
   scr_als_ctx_release(prev); /* no restore point — Node's enterWith */
+  scr_als_entered_with();
 }
 
 void scr_als_disable(double id) {
@@ -904,6 +905,27 @@ void scr_warning_emit_deferred(ScrDyn *w) {
   scr_warning_defer(w, scr_warning_tick);
 }
 
+static SCR_TL bool scr_punycode_loaded = false;
+
+void scr_punycode_warn(bool immediate, bool report) {
+  if (scr_punycode_loaded) return;
+  scr_punycode_loaded = true;
+  if (!report) return;
+  static const char text[] =
+      "The `punycode` module is deprecated. Please use a userland alternative instead.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0040", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  if (immediate) {
+    if (!scr_process_deprecation_flag_on(0)) scr_warning_dispatch(w);
+  } else {
+    scr_warning_emit_deferred(w);
+  }
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
 /* The console members' warnings. Node's emitWarning emits on
  * process.nextTick, so these queue in order and each rides one raw tick
  * on the shared tick queue; any left at exit are dropped with it. */
@@ -1015,11 +1037,9 @@ void scr_process_emit_warning(ScrDyn *args) {
   e->name = type ? scr_str_retain((ScrStr *)type) : scr_str_new("Warning", 7);
   e->name_present = true;
   if (code) e->code = scr_str_retain((ScrStr *)code);
+  if (detail) scr_error_set_prop(e, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
   ScrDyn *w = scr_dyn_from_error(e);
   scr_error_release(e);
-  if (detail) {
-    scr_dyn_obj_set(w, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
-  }
   scr_warning_emit_deferred(w);
   scr_dyn_release(w);
 }

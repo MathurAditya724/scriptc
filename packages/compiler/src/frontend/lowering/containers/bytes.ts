@@ -35,6 +35,7 @@ import {
 } from "../optional-arguments.js";
 import { lowerCheckedArrayFrom } from "./array-construction.js";
 import { lowerToNumberArgument } from "../lower-exprs.js";
+import { lowerBytesIteratorValue } from "../iterator-adapters.js";
 
 /** TypedArray.prototype.sort and toSorted. The receiver and comparator
  * expressions are evaluated before entering the helper (buildBytesSortFn).
@@ -461,6 +462,21 @@ export function lowerBytesMethodCall(
   }
   if (name === "sort" || name === "toSorted") {
     return lowerBytesSortCall(lowerer, call, access, receiverIr);
+  }
+  // values()/keys()/entries() as iterator objects (for...of heads and
+  // stored numeric iterators lower before this).
+  if ((name === "values" || name === "keys" || name === "entries") && nArgs === 0) {
+    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (type?.kind === "generator") {
+      const value = lowerBytesIteratorValue(
+        lowerer,
+        lowerer.lowerExpr(access.expression),
+        name,
+        type,
+        loc,
+      );
+      if (value) return value;
+    }
   }
   if (name === "toReversed") {
     if (nArgs !== 0) {
@@ -1511,11 +1527,23 @@ function lowerBufferStaticValue(
     } else {
       list = lowerer.lowerExpr(argNode);
       if (!typeEquals(list.type, arrayOf(BYTES_U8))) {
-        lowerer.noLowering(
-          `Buffer.concat of '${lowerer.fmt(list.type)}' values`,
-          argNode,
-          "one Uint8Array[]/Buffer[] value (or literal) is the lowered list shape",
-        );
+        // Any other list (JavaScript's untyped `const chunks = []`, or a
+        // union of arrays): the runtime checks it as Node does (an Array of
+        // Uint8Arrays, the ERR_INVALID_ARG_TYPE errors otherwise) before
+        // concatenating.
+        const value: IrExpr =
+          list.type.kind === "dyn" ? list : { kind: "dynFrom", value: list, type: DYN, loc };
+        if (args.length === 2) {
+          const total = lowerer.lowerExprExpecting(args[1]!, F64);
+          return {
+            kind: "libCall",
+            fn: "buffer.concatLenDyn",
+            args: [value, total],
+            type: BYTES_U8,
+            loc,
+          };
+        }
+        return { kind: "libCall", fn: "buffer.concatDyn", args: [value], type: BYTES_U8, loc };
       }
     }
     if (args.length === 2) {

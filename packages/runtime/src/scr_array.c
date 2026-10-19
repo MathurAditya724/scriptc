@@ -1181,7 +1181,7 @@ static void scr_arr_destroy(void *object) {
 #ifdef SCR_RC_AUDIT
     scr_live_arrays--;
 #endif
-    scr_weak_dispose(a);
+    scr_weak_dispose_inline(a);
     scr_mem_free(a);
   }
 }

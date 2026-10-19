@@ -26,10 +26,15 @@ ScrStr *scr_insp_regex(ScrRegex *re);  /* /source/flags */
 /* A Date (its time value): toISOString(), or "Invalid Date" for NaN (+1). */
 ScrStr *scr_insp_date(double ms);
 ScrStr *scr_insp_buffer(ScrBytes *b);  /* <Buffer aa bb ...>, 50-byte cap */
-/* The stackless error form: [Name: message] / [Name], plus the stamped
- * code slot as its one extra property ({ code: 'X' }); [Name] beyond
- * depth when a code makes it composite. */
+/* The stackless error form: [Name: message] / [Name], then a runtime
+ * error's own properties through its checked-dynamic node, or another
+ * error's stamped code slot as its one extra property ({ code: 'X' });
+ * [Name] beyond depth when a code makes it composite. */
 ScrStr *scr_insp_error(ScrError *e, double recurse, double depth);
+/* A runtime error rendered through its checked-dynamic node (the cached
+ * one, or one built from its fields), so Node's own properties follow the
+ * bracket form. */
+ScrStr *scr_insp_error_node(ScrError *e, double recurse, double depth);
 /* The checked-dynamic tree: shape lives in the value, so the whole
  * traversal is here. dyn-boxed bytes render in the checked-dynamic tree's documented
  * Uint8Array identity. */

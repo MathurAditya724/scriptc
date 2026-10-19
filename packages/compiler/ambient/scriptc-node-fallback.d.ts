@@ -3762,6 +3762,39 @@ declare module "node:querystring" {
   export * from "querystring";
 }
 
+/* node:punycode (deprecated, DEP0040) — punycode.js 2.1.0: decode and
+ * toUnicode throw its RangeErrors on malformed input; ucs2 converts
+ * between strings and UTF-16 code point arrays. */
+declare module "punycode" {
+  export function decode(string: string): string;
+  export function encode(string: string): string;
+  export function toUnicode(domain: string): string;
+  export function toASCII(domain: string): string;
+  export namespace ucs2 {
+    function decode(string: string): number[];
+    function encode(codePoints: readonly number[]): string;
+  }
+  export const version: string;
+}
+declare module "node:punycode" {
+  export * from "punycode";
+}
+
+/* node:constants (deprecated, DEP0008) — one frozen object: os.constants'
+ * dlopen, errno, priority and signals groups, fs.constants, and
+ * crypto.constants. A platform's missing constant reads as undefined. */
+declare module "constants" {
+  const constants: { readonly [name: string]: number } & {
+    readonly defaultCoreCipherList: string;
+    readonly defaultCipherList: string;
+  };
+  export = constants;
+}
+declare module "node:constants" {
+  import constants = require("constants");
+  export = constants;
+}
+
 /* node:readline — the question/close slice: createInterface over exactly
  * { input: process.stdin, output: process.stdout }, question(query, cb)
  * (the query writes to stdout, the callback gets the next line's text),
@@ -4835,17 +4868,16 @@ declare module "http" {
   /* The Agent lowers to a checked-dynamic HANDLE: option parsing at the
    * literal construction site, getName, destroy, the sockets/requests/
    * freeSockets snapshots, and REAL maxSockets accounting (over-limit
-   * requests defer their dial and queue). keepAlive: true throws the
-   * named pooling fence — this client dials one connection per request
-   * and closes it with the response, so freeSockets is always
-   * empty. */
+   * requests defer their dial and queue). keepAlive: true keeps finished
+   * connections in freeSockets for the next request to the same name,
+   * taken in `scheduling` order. */
   export interface AgentOptions {
     keepAlive?: boolean;
     keepAliveMsecs?: number;
     maxSockets?: number;
     maxFreeSockets?: number;
     maxTotalSockets?: number;
-    scheduling?: string;
+    scheduling?: "fifo" | "lifo";
     timeout?: number;
     port?: number;
     [option: string]: unknown;
@@ -4875,6 +4907,7 @@ declare module "http" {
     readonly freeSockets: { [key: string]: unknown[] };
     readonly requests: { [key: string]: unknown[] };
   }
+  /* Node's keepAlive global agent for requests without an agent option. */
   export const globalAgent: Agent;
   export interface ClientRequest {
     readonly destroyed: boolean;
@@ -5078,6 +5111,8 @@ declare module "https" {
   import { Server } from "http";
   import { Agent, ClientRequest, IncomingMessage, ServerResponse } from "http";
   export { Agent, Server };
+  /* Node's keepAlive global agent for requests without an agent option. */
+  export const globalAgent: Agent;
   export interface ServerOptions {
     cert: string | Uint8Array;
     key: string | Uint8Array;

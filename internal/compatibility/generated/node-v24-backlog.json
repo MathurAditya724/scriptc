@@ -7,9 +7,9 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1155,
-        "verify-gap": 2174,
-        "replace-refusal": 40,
+        "audit-partial": 1162,
+        "verify-gap": 2166,
+        "replace-refusal": 41,
         "classify": 2,
         "implement": 85
       }
@@ -880,7 +880,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:AsyncLocalStorage",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -932,7 +933,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:asyncLocalStorage.disable",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -959,7 +961,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:asyncLocalStorage.getStore",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -986,7 +989,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:asyncLocalStorage.enterWith",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -1013,7 +1017,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:asyncLocalStorage.run",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -1040,7 +1045,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:asyncLocalStorage.exit",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -1771,7 +1777,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:AsyncLocalStorage",
           "tests": [
-            "tests/corpus/2213-async-local-storage.cjs"
+            "tests/corpus/2213-async-local-storage.cjs",
+            "tests/corpus/5815-als-callback-context.ts"
           ]
         }
       }
@@ -6736,6 +6743,8 @@
           "source": "compiler-dedicated:crypto.createHash",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -6774,6 +6783,8 @@
           "source": "compiler-dedicated:crypto.createHmac",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -7396,6 +7407,8 @@
           "source": "compiler-dedicated:crypto.hash",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -7519,6 +7532,8 @@
           "source": "compiler-dedicated:crypto.pbkdf2",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -7557,6 +7572,8 @@
           "source": "compiler-dedicated:crypto.pbkdf2Sync",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9037,6 +9054,8 @@
           "source": "compiler-dedicated:Hash",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9075,6 +9094,8 @@
           "source": "compiler-dedicated:hash.copy",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9113,6 +9134,8 @@
           "source": "compiler-dedicated:hash.digest",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9151,6 +9174,8 @@
           "source": "compiler-dedicated:hash.update",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9189,6 +9214,8 @@
           "source": "compiler-dedicated:Hmac",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9227,6 +9254,8 @@
           "source": "compiler-dedicated:hmac.digest",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -9265,6 +9294,8 @@
           "source": "compiler-dedicated:hmac.update",
           "tests": [
             "tests/corpus/5760-crypto-hash-stream.ts",
+            "tests/corpus/5768-crypto-hash-unknown.ts",
+            "tests/corpus/5769-crypto-hash-unknown.cjs",
             "tests/corpus/5761-crypto-hash-stream-states.ts",
             "tests/corpus/5762-crypto-hash-stream.cjs",
             "tests/corpus/2890-crypto-static-utility.ts",
@@ -34178,11 +34209,11 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:globals",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:stdlib.webassembly",
           "tests": []
         }
       }
@@ -58559,12 +58590,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.decode",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58584,12 +58619,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.encode",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58609,12 +58648,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.toASCII",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58634,12 +58677,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.toUnicode",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58684,12 +58731,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.ucs2.decode",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58709,12 +58760,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.ucs2.encode",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },
@@ -58734,12 +58789,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.punycode.version",
+          "tests": [
+            "tests/corpus/6122-punycode-conversions.ts",
+            "tests/corpus/6124-punycode-require-warnings.cjs",
+            "tests/corpus/6126-punycode-dependency/main.cjs"
+          ]
         }
       }
     },

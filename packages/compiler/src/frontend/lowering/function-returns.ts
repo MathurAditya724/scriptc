@@ -157,6 +157,13 @@ export function declaredReturnType(
   }
   if (mappedReturn && isJsSourceFile(decl.getSourceFile()) && functionCanReturnUndefined(decl))
     mappedReturn = lowerer.withUndefinedArmOf(mappedReturn) ?? mappedReturn;
+  // A generic-class method body that can return an indexed read that
+  // misses returns undefined there, whatever the declared result says.
+  if (mappedReturn && lowerer.runtimeOptionalGenericReturns.has(decl))
+    mappedReturn =
+      mappedReturn.kind === "promise"
+        ? { kind: "promise", inner: lowerer.runtimeOptionalType(mappedReturn.inner) }
+        : lowerer.runtimeOptionalType(mappedReturn);
   if (isJsSourceFile(decl.getSourceFile()) && mappedReturn?.kind === "void") {
     let returnsValue = false;
     const scan = (node: ts.Node): void => {
@@ -429,11 +436,14 @@ export function resolveInferredReturn(
       if (ice.length > 0) lowerer.diags.push(...ice);
       lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
       const first = captured.find((d) => d.code !== "SC9001");
+      // Property writes, not literal element writes: the class method
+      // census reads `x["kind"] = …` as a possible write to every method
+      // named `kind`, which would make those methods dynamic in native builds.
       const mutable = e.stmt as unknown as Record<string, unknown>;
-      delete mutable["value"];
-      mutable["kind"] = "runtimeFence";
-      mutable["code"] = first?.code ?? "SC1090";
-      mutable["message"] = first
+      delete mutable.value;
+      mutable.kind = "runtimeFence";
+      mutable.code = first?.code ?? "SC1090";
+      mutable.message = first
         ? `${first.message} [${first.code}]`
         : "this return value has no lowering onto the instance's settled return type [SC1090]";
     }
