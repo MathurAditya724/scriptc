@@ -1,6 +1,7 @@
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
+import { lowerResponseStaticJson } from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
@@ -41,6 +42,7 @@ import {
   BOOL,
   CAUGHT,
   DYN,
+  DYN_HANDLE_KINDS,
   F64,
   type IrExpr,
   type IrFunction,
@@ -90,7 +92,10 @@ import {
 import { lowerArrayFromAsyncCall } from "./containers/array-from-async.js";
 import { lowerDynArrayFilterCall, lowerDynArrayFlatMapCall } from "./containers/array-callbacks.js";
 import { lowerGroupByStaticCall } from "./containers/collection-grouping.js";
-import { lowerIteratorHelperCall } from "./containers/iterator-helpers.js";
+import {
+  lowerGeneratorHelperCall,
+  lowerIteratorHelperCall,
+} from "./containers/iterator-helpers.js";
 import {
   lowerObjectAssignIndexShape,
   lowerObjectConstructor,
@@ -153,6 +158,7 @@ import {
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import {
   httpClientFnBindingOf,
@@ -218,6 +224,7 @@ import {
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
+import { maybePromiseReturnStmt, promiseArmedUnionOf } from "./maybe-promise.js";
 import {
   requireObjLitGenericReceiver,
   objLitGenericFnNodeOf,
@@ -1458,6 +1465,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // compile-time-known, so a literal key folds to a constant.
       lowerClassHasOwnPropertyCall(lowerer, expr, expr.expression) ??
       lowerObjectOwnMethodCall(lowerer, expr, expr.expression) ??
+      // Static Response.json(data, init?) builds a native Response.
+      lowerResponseStaticJson(lowerer, expr) ??
       // Refuse Response constructor operations before generic-call
       // fallbacks can report an unrelated SC1090 diagnostic.
       lowerer.fenceUnsupportedFetchConstructorMember(expr.expression) ??
@@ -1490,6 +1499,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // array method paths (the terminal names collide with array
       // methods, but only iterator-typed receivers reach this).
       lowerIteratorHelperCall(lowerer, expr, expr.expression) ??
+      // Helper calls on generators and other iterator objects.
+      lowerGeneratorHelperCall(lowerer, expr, expr.expression) ??
       lowerIteratorStaticFence(lowerer, expr, expr.expression) ??
       lowerObjectStaticCall(lowerer, expr, expr.expression) ??
       lowerObjectFromEntriesCall(lowerer, expr, expr.expression) ??
@@ -2127,6 +2138,9 @@ function lowerNumberConstructorValue(
     };
   const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
   if (optionalNumber) return optionalNumber;
+  // A program class instance converts through its own methods.
+  const classNumber = classToNumberConversion(lowerer, arg, argNode);
+  if (classNumber) return classNumber;
   const scalarUnionNumber = lowerScalarUnionNumber(lowerer, arg, argNode, loc);
   if (scalarUnionNumber) return scalarUnionNumber;
   return lowerer.noLowering(
@@ -3143,8 +3157,9 @@ function lowerOptionalStringNumber(
   return { kind: "call", callee: helper, args: [arg], type: F64, loc };
 }
 
-/** Iterator types whose helper calls have no lowering on any path (the
- * array iterator's chains lower in lowerIteratorHelperCall). */
+/** Iterator types with checked runtime receivers: Map/Set iterators'
+ * helper calls lower in lowerGeneratorHelperCall; the string iterator's
+ * have no lowering. */
 const UNLOWERED_ITERATOR_TYPES = new Set(["MapIterator", "SetIterator", "StringIterator"]);
 const ITERATOR_HELPER_METHODS = new Set([
   "map",
@@ -3211,6 +3226,8 @@ function lowerDynReceiverMethodCall(
     lowerer.isStdlibMember(access)
   ) {
     if (recvSymbol.name === "MapIterator" || recvSymbol.name === "SetIterator") {
+      const helper = lowerGeneratorHelperCall(lowerer, call, access);
+      if (helper) return helper;
       lowerer.noLowering(
         `collection iterator .${access.name.text}()`,
         call,
@@ -3221,7 +3238,7 @@ function lowerDynReceiverMethodCall(
     lowerer.noLowering(
       `${recvSymbol.name}.${access.name.text}`,
       call,
-      "iterator helpers lower on chains from arr.values() or arr.entries() that end in a terminal (toArray, forEach, reduce, some, every, find) — spread the string first: [...s].values()",
+      "iterator helpers lower on generators and on array, Map and Set iterators — spread the string first: [...s].values()",
     );
   }
   const arrayReceiver = lowerer.checker.isArrayType(recvTs);
@@ -3343,6 +3360,11 @@ function lowerDynReceiverMethodCall(
       lowerStringMethodCall(lowerer, call, access, () => recv)
     );
   }
+  // A native handle read through `as any` (`(hash as any).update(x)`)
+  // dispatches through the handle, as the same value held in an
+  // 'unknown' slot does.
+  if (checkerUntyped && DYN_HANDLE_KINDS.has(recv.type.kind))
+    recv = lowerer.coerceToExpected(recv, DYN);
   if (recv.type.kind !== "dyn") return null;
   if (
     access.name.text === "normalize" &&
@@ -4301,8 +4323,15 @@ function lowerUnionToStringCall(
       (a.kind === "bytes" && a.elem === "u8"),
   );
   if (!stringable) return null;
-  const operand = lowerer.lowerExpr(access.expression);
+  let operand = lowerer.lowerExpr(access.expression);
   if (operand.type.kind !== "union") return null;
+  // A flow-narrowed read keeps its wider storage union (`string | number`
+  // after `!Array.isArray(h.host)` over a `string | number | string[]`
+  // slot): retag it to the proven union before the per-union helper.
+  if (operand.type.unionId !== recvT.unionId) {
+    operand = lowerer.coerceInto(access.expression, operand, recvT);
+    if (operand.type.kind !== "union" || operand.type.unionId !== recvT.unionId) return null;
+  }
   return { kind: "toString", operand, type: STRING, loc: locOf(call) };
 }
 
@@ -5308,6 +5337,8 @@ export function lowerPromiseMethodCall(
         const resultOf = (value: IrExpr, returnsPromise = false): IrStmt[] => {
           if (value.type.kind === "promise")
             return [lowerer.adoptingReturn(value, R, (e) => lowerer.coerceInto(call, e, R))];
+          const flattened = maybePromiseHandlerResult(lowerer, call, value, R);
+          if (flattened) return [flattened];
           if (returnsPromise) {
             // A boxed handler's promise result adopts too: the then job's
             // turn after the call, then the await of the returned value.
@@ -5658,7 +5689,10 @@ export function lowerPromiseMethodCall(
       // The handler's result: promise returns flatten exactly like
       // `return p` in any async body (the spec's thenable adoption);
       // everything else coerces into R.
-      if (handlerCall.type.kind === "promise" && R.kind !== "promise") {
+      const flattened = maybePromiseHandlerResult(lowerer, call, handlerCall, R);
+      if (flattened) {
+        body.push(flattened);
+      } else if (handlerCall.type.kind === "promise" && R.kind !== "promise") {
         body.push(lowerer.adoptingReturn(handlerCall, R, (e) => lowerer.coerceInto(call, e, R)));
       } else if (R.kind === "void") {
         body.push({ kind: "exprStmt", expr: handlerCall, loc });
@@ -6611,9 +6645,9 @@ function recordAssignHelper(
 }
 
 /** The `Iterator` global's statics (ES2025 — Iterator.from, and the
- * abstract constructor as a value): no first-class iterator objects
- * exist here, so every member fences with the working spelling named
- * instead of the generic-method fence's monomorphization wording. */
+ * abstract constructor as a value) have no lowering: every member fences
+ * with the working spelling named instead of the generic-method fence's
+ * monomorphization wording. */
 function lowerIteratorStaticFence(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -6624,8 +6658,8 @@ function lowerIteratorStaticFence(
   lowerer.noLowering(
     `Iterator.${access.name.text}`,
     call,
-    "first-class iterator objects have no lowering — iterator helpers compile as one chain on an " +
-      "array iterator, consumed in place: arr.values().map(f).take(n).toArray()",
+    "iterator helpers apply directly to generators and to array, Map and Set iterators: " +
+      "arr.values().map(f).take(n).toArray()",
   );
 }
 
@@ -9763,4 +9797,27 @@ export function lowerStaticNumberGlobal(
     }
   }
   return null;
+}
+
+/** A then handler's promise-armed result (`.then(() => cached ?? load())`
+ * typed `T | Promise<T>`, or a `Promise<void> | void` callback's result):
+ * the lifted async body adopts the promise arm and fulfills with the
+ * others, like `return u` in an async function. Null for other results. */
+function maybePromiseHandlerResult(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  value: IrExpr,
+  R: IrType,
+): IrStmt | null {
+  const mp = promiseArmedUnionOf(lowerer, value.type);
+  if (!mp || promiseArmedUnionOf(lowerer, R)) return null;
+  const stmt = maybePromiseReturnStmt(lowerer, value, mp, R, (e) => lowerer.coerceInto(call, e, R));
+  if (stmt === null) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `then handlers returning '${lowerer.fmt(value.type)}' into '${lowerer.fmt(R)}' (an arm does not convert to the result)`,
+    );
+  }
+  return stmt;
 }

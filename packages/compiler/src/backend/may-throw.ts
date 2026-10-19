@@ -580,7 +580,7 @@ function breaksTo(
 
 /** Statements no execution reaches: those after a statement that cannot
  * complete normally in the same statement list. */
-function unreachableStatements(body: readonly IrStmt[]): Set<IrStmt> {
+export function unreachableStatements(body: readonly IrStmt[]): Set<IrStmt> {
   const dead = new Set<IrStmt>();
   const { statement } = completion();
   const list = (stmts: readonly IrStmt[]): void => {

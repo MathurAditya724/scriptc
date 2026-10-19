@@ -517,6 +517,9 @@ export interface ClassInfo {
   /** The synthetic InternTable class (@scriptc/experimental,
    * intern-tables.ts): synthesized like lifetimeRegion. */
   internTable?: true;
+  /** The synthetic ThreadSlots class (@scriptc/experimental,
+   * thread-slots.ts): synthesized like lifetimeRegion. */
+  threadSlots?: true;
   /** This class's own `emit` override in the FORWARDING SHAPE (the one
    * EventEmitter member a subclass may re-declare): never in `methods` —
    * emit calls keep routing through the emitter spoke, which lowers the
@@ -1573,7 +1576,14 @@ function inferredEmptyCollectionFieldType(
   const mappedArgument = (argument: ts.Expression): IrType | null => {
     const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(argument));
     const mapped = lowerer.mapTypeOf(type);
-    if (!mapped || mapped.kind === "dyn" || mapped.kind === "void" || isUnitType(mapped))
+    // Inferred JS collection fields keep functions in checked slots.
+    if (
+      !mapped ||
+      mapped.kind === "dyn" ||
+      mapped.kind === "void" ||
+      mapped.kind === "func" ||
+      isUnitType(mapped)
+    )
       return null;
     return mapped;
   };
@@ -2651,9 +2661,15 @@ export function collectClassShapeInner(
               ? String(Number(member.name.text))
               : member.name.text;
           const fieldName = symbolKey?.fieldName ?? stringKey;
+          // A TypeScript field without an initializer takes its declared
+          // type and the identifier fields' definite-assignment rule (an
+          // unconditional `this[key] = ...` at the constructor's top
+          // level), checked with the unguarded fields below.
+          const declaredOnly =
+            !member.initializer && !isJsSourceFile(member.getSourceFile()) && !!member.type;
           if (
             fieldName === null ||
-            (!member.initializer && !isJsSourceFile(member.getSourceFile()))
+            (!member.initializer && !isJsSourceFile(member.getSourceFile()) && !declaredOnly)
           ) {
             lowerer.unsupported(
               "SC1090",
@@ -2666,9 +2682,10 @@ export function collectClassShapeInner(
             member.type || !member.initializer
               ? declared
               : lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(member.initializer));
-          const mapped = member.initializer
-            ? (lowerer.mapTypeOf(inferred) ?? dynFallbackType(lowerer, member, inferred))
-            : DYN;
+          const mapped =
+            member.initializer || declaredOnly
+              ? (lowerer.mapTypeOf(inferred) ?? dynFallbackType(lowerer, member, inferred))
+              : DYN;
           let type =
             mapped?.kind === "record" && isJsSourceFile(member.getSourceFile()) && !member.type
               ? DYN
@@ -2680,7 +2697,7 @@ export function collectClassShapeInner(
             type.kind === "void" ||
             (type.kind === "dyn" &&
               !isJsSourceFile(member.getSourceFile()) &&
-              !lowerer.classImplementedProtocol(inferred))
+              !lowerer.classFieldStoresDyn(inferred))
           )
             lowerer.badType(member, inferred);
           if (isJsSourceFile(member.getSourceFile())) {
@@ -2688,7 +2705,24 @@ export function collectClassShapeInner(
             if (base?.fields.get(fieldName)?.kind === "dyn") type = DYN;
             if (base && !fields.has(fieldName) && lowerer.dynConvertible(type)) type = DYN;
           }
-          const undefinedInitializer = !member.initializer ? locOf(member) : undefined;
+          const undefinedInitializer =
+            !member.initializer && (!declaredOnly || type.kind === "dyn")
+              ? locOf(member)
+              : undefined;
+          if (
+            declaredOnly &&
+            type.kind !== "dyn" &&
+            !(
+              type.kind === "union" &&
+              lowerer.unions.get(type.unionId)?.arms.some((a) => a.kind === "undefinedT")
+            )
+          ) {
+            unguardedFields.push({
+              node: member.name,
+              name: fieldName,
+              why: `initializer-less computed fields not assigned at the constructor's top level (nothing guarantees '${symbolKey ? symbolFieldDisplayName(fieldName) : fieldName}' is assigned before a read — assign it unconditionally at the top of the constructor, give it an initializer, or include undefined in its type)`,
+            });
+          }
           const previous = fields.get(fieldName);
           if (previous) {
             if (symbolKey && !symbolFields.has(symbolKey.identity)) {
@@ -3448,7 +3482,17 @@ export function collectClassShapeInner(
         }
         let sig: { params: ParamShape[]; ret: IrType };
         if (isGet) {
-          const ret = lowerer.declaredReturnType(member, member.name);
+          let ret = lowerer.declaredReturnType(member, member.name);
+          // A getter that never returns a value: typed `never` (it only
+          // throws, Next.js's removed `page`/`ua` getters) or, unannotated
+          // with no return statement, inferred `void`. A read answers
+          // undefined or throws, so the property takes the checked-dynamic
+          // slot instead of VOID.
+          if (
+            ret.kind === "void" &&
+            (lowerer.typeOf(member.name).flags & (ts.TypeFlags.Never | ts.TypeFlags.Void)) !== 0
+          )
+            ret = DYN;
           if (ret.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           sig = { params: [], ret };
         } else {
@@ -3595,6 +3639,16 @@ export function collectClassShapeInner(
           stmt.expression.left.expression.kind === ts.SyntaxKind.ThisKeyword
         ) {
           topAssigned.add(stmt.expression.left.name.text);
+        } else if (
+          ts.isExpressionStatement(stmt) &&
+          ts.isBinaryExpression(stmt.expression) &&
+          stmt.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isElementAccessExpression(stmt.expression.left) &&
+          stmt.expression.left.expression.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+          const key = stmt.expression.left.argumentExpression;
+          const name = classSymbolKeyOf(lowerer, key)?.fieldName ?? lowerer.foldedStringKeyOf(key);
+          if (name !== null) topAssigned.add(name);
         }
       }
       for (const f of unguardedFields) {
@@ -3632,11 +3686,26 @@ export function collectClassShapeInner(
     }
 
     if (escape.assigned && !inst) {
+      let earlyReads: Set<string> | null = null;
       for (const f of fieldOrder) {
         if (f.redeclared || escape.assigned.has(f.name) || deferredInitFields.has(f.name)) continue;
         if (paramProps.some((pp) => pp.name === f.name)) continue;
         const declared = fields.get(f.name);
-        if (declared?.kind !== "object" || lowerer.classes.get(declared.className)?.def.runtime)
+        // Records, arrays and strings are pointer slots that start empty
+        // too, but only take the checked slot when a method the
+        // constructor calls actually reads them: their other early
+        // exposures keep the plain slot.
+        if (
+          declared?.kind === "record" ||
+          declared?.kind === "array" ||
+          declared?.kind === "string"
+        ) {
+          earlyReads ??= constructorMethodReads(decl, base, ctor ?? undefined);
+          if (!earlyReads.has(f.name)) continue;
+        } else if (
+          declared?.kind !== "object" ||
+          lowerer.classes.get(declared.className)?.def.runtime
+        )
           continue;
         const armed = lowerer.withUndefinedArm(declared);
         if (armed === null || armed.kind !== "union") continue;
@@ -4866,6 +4935,58 @@ export function staticShadowBelow(info: ClassInfo, name: string): boolean {
       s.genericStatics?.has(name) === true ||
       staticShadowBelow(s, name),
   );
+}
+
+/** The `this` members read by the methods and accessors a constructor
+ * calls through `this` (transitively, over the class and its bases),
+ * outside nested functions. The constructor's own reads are not included:
+ * they run where the constructor's statements put them. */
+function constructorMethodReads(
+  decl: ts.ClassLikeDeclaration,
+  base: ClassInfo | null,
+  ctor: ts.ConstructorDeclaration | undefined,
+): Set<string> {
+  const reads = new Set<string>();
+  const visited = new Set<string>();
+  const bodies = (name: string): ts.Node[] => {
+    const out: ts.Node[] = [];
+    let owner: ts.ClassLikeDeclaration | undefined = decl;
+    for (let next = base; owner; owner = next?.decl ?? undefined, next = next?.base ?? null) {
+      for (const member of owner.members) {
+        if (
+          (ts.isMethodDeclaration(member) || ts.isAccessor(member)) &&
+          member.body &&
+          (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
+          member.name.text === name
+        )
+          out.push(member.body);
+      }
+    }
+    return out;
+  };
+  const enter = (name: string): void => {
+    if (visited.has(name)) return;
+    visited.add(name);
+    for (const body of bodies(name)) scan(body, true);
+  };
+  // Nested functions (callbacks handed elsewhere) are not followed: only
+  // the straight-line code of the constructor and the methods it calls.
+  const scan = (node: ts.Node, inMethod: boolean): void => {
+    ts.walkPreorder(node, (n) => {
+      if (n !== node && ts.isFunctionLike(n)) return "skip";
+      if (
+        ts.isPropertyAccessExpression(n) &&
+        n.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        (ts.isIdentifier(n.name) || ts.isPrivateIdentifier(n.name))
+      ) {
+        if (inMethod) reads.add(n.name.text);
+        enter(n.name.text);
+      }
+      return undefined;
+    });
+  };
+  if (ctor?.body) scan(ctor.body, false);
+  return reads;
 }
 
 /** The nearest GENERIC static declaration of `name` at/above `info` —
@@ -7705,6 +7826,24 @@ function paramPropInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrLoca
   return out;
 }
 
+/** Whether a super() call's value is discarded by its statement: the call
+ * is the expression statement itself, or an operand of a comma chain that
+ * is (`super(m, o), this.code = c;`, as minifiers join statements). The
+ * statement lowering runs each comma operand as its own statement in
+ * source order, so the chain lowers exactly like `super(m, o); this.code =
+ * c;`. Parentheses are transparent to both. */
+function superCallInStatementPosition(call: ts.CallExpression): boolean {
+  let node: ts.Node = call;
+  for (;;) {
+    const parent = node.parent;
+    if (ts.isExpressionStatement(parent)) return true;
+    const comma =
+      ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken;
+    if (!comma && !ts.isParenthesizedExpression(parent)) return false;
+    node = parent;
+  }
+}
+
 /** Super statements initialize the base and then the derived fields on
  * whichever control-flow path executes. Repeated calls are explicitly
  * refused until native layouts can allocate a second receiver. */
@@ -7722,7 +7861,7 @@ export function lowerDerivedCtorBody(
   const previousInitialized = context.superInitialized;
   context.superInitialized = initialized;
   context.superCall = (superCall) => {
-    if (!ts.isExpressionStatement(superCall.parent))
+    if (!superCallInStatementPosition(superCall))
       lowerer.unsupported("SC1090", superCall, "super() in an expression position");
     superSeen = true;
     const loc = locOf(superCall);
@@ -9285,7 +9424,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           "SC1090",
           expr,
           `Map values of type '${lowerer.checker.typeToString(targs[1])}' ` +
-            `(Map values must be number, string, boolean, records, class instances, ` +
+            `(Map values must be number, string, boolean, records, class instances, functions, ` +
             `typed arrays, arrays, promises, Maps, Sets, or supported unions and checked values)`,
         );
       }

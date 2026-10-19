@@ -285,6 +285,11 @@ async function main(args: string[], host: CliHost): Promise<number> {
     }
     externalTypes[specifier] = declarationPath;
   }
+  const wasmArgs = values.wasm ?? [];
+  if (wasmArgs.length > 0 && command !== "coverage") {
+    fail(`--wasm is a coverage-only option\n\n${USAGE}`);
+  }
+  const wasmFiles = wasmArgs.map((file) => resolve(file));
   const ffiProfilePath = values.ffi !== undefined ? resolve(values.ffi) : undefined;
   if (values.backend !== undefined && values.backend !== "llvm") {
     fail(`unknown backend "${values.backend}" (supported: llvm)\n\n${USAGE}`);
@@ -364,6 +369,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(Object.keys(externalTypes).length > 0 ? { externalTypes } : {}),
       ...(tier !== undefined ? { tier } : {}),
       ...(explainDynamic !== undefined ? { explainDynamic: true } : {}),
+      ...(wasmFiles.length > 0 ? { wasm: wasmFiles } : {}),
     });
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.

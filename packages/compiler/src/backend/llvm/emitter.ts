@@ -1,6 +1,7 @@
 import { type ArraySearchKind, emitArraySearchHelpers } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitLlvmLayouts } from "./layouts.js";
+import { emitThreadSlotsIntrinsic, threadSlotsBlockDefinitions } from "./thread-slots.js";
 import { compileRegexMatcher, type RegexMatcherCode } from "./regex-matchers.js";
 import {
   CYC_BUF,
@@ -57,6 +58,7 @@ import {
   VOID,
 } from "../../ir/ir.js";
 import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
+import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
@@ -114,6 +116,7 @@ import {
 } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
 import { copyStableCaptures } from "../../ir/capture-values.js";
+import { resolveSelfCaptures } from "../../ir/self-captures.js";
 import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
@@ -165,6 +168,7 @@ import {
   mangleFnClosure,
   mangleFunction,
   mangleGenDrop,
+  mangleGenSourceClose,
   mangleGenSpawn,
   mangleGlobal,
   mangleLocal,
@@ -512,7 +516,9 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
               specializeNumericCalls(
                 foldConstantGlobals(
                   copyStableCaptures(
-                    hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                    resolveSelfCaptures(
+                      hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                    ),
                   ),
                 ),
                 mangleFunction,
@@ -540,7 +546,9 @@ export function emitLlvmModuleSource(
               specializeNumericCalls(
                 foldConstantGlobals(
                   copyStableCaptures(
-                    hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                    resolveSelfCaptures(
+                      hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                    ),
                   ),
                 ),
                 mangleFunction,
@@ -907,6 +915,8 @@ export class LlEmitter {
   /** Constant-key reads on checked-dynamic objects, each with its own
    * zero-initialized ScrDynReadIc (scr_runtime.h). */
   private dynReadIcSites = 0;
+  /** ThreadSlots blocks by family name (thread-slots.ts). */
+  private readonly threadSlotsBlocks = new Map<string, string>();
   /** May-throw analysis (computeMayThrow): pending
    * checks are emitted only after calls that can actually raise. */
   readonly mayThrow: Set<string>;
@@ -1179,18 +1189,14 @@ export class LlEmitter {
   readonly chainSlots = new Map<string, LlValue>();
   logArgSlots = 0;
   private readonly stackTraces: boolean;
+  /** Stack-trace mode: functions no capture can include (no frame push). */
+  private readonly unframedFunctions: ReadonlySet<string>;
 
   constructor(
     readonly mod: IrModule,
     options: LlvmTargetOptions,
   ) {
-    this.stackTraces = mod.functions.some(
-      (fn) =>
-        !everyStmtList(fn.body, {
-          stmt: () => true,
-          expr: (expr) => !(expr.kind === "libCall" && expr.fn === "error.stack"),
-        }),
-    );
+    this.stackTraces = observesStacks(mod);
     this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
     this.mockTimers = moduleUsesMockTimers(mod);
     this.debug =
@@ -1272,6 +1278,9 @@ export class LlEmitter {
     // which Windows lacks.
     this.stacklessAsyncAllowed = this.stacklessGenerators && mod.lib === undefined && !windows;
     this.publishedTypes = computePublishedTypes(mod);
+    this.unframedFunctions = this.stackTraces
+      ? captureFreeFunctions(mod, this.stackChecks, this.publishedTypes)
+      : new Set();
     this.immutableFields = computeImmutableFields(mod);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
     this.indirectMayThrow = mt.indirect || mod.workers === true;
@@ -2501,6 +2510,7 @@ export class LlEmitter {
     {
       const tl =
         this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : "";
+      out.push(...threadSlotsBlockDefinitions(this.threadSlotsBlocks, tl !== ""));
       for (let site = 0; site < this.dynReadIcSites; site++)
         out.push(
           `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${this.sizeType}, ${this.sizeType}, ptr } zeroinitializer`,
@@ -4623,6 +4633,25 @@ export class LlEmitter {
       dr.push(`  call void @free(ptr %ap)`, `  ret void`, `}`, ``);
       for (const line of dr) out.push(line);
 
+      // An iterator helper's return() before its first next() closes the
+      // source generator in its first argument slot.
+      const closesSource = fn.generator.closesSource === true;
+      if (closesSource) {
+        const field = lifted ? 1 : 0;
+        this.declare(`declare void @scr_gen_close(ptr)`);
+        this.declare(`declare void @scr_gen_set_unstarted_return(ptr, ptr)`);
+        out.push(
+          `define internal void @${mangleGenSourceClose(fn.name)}(ptr %ap) ${FN_ATTRS} {`,
+          `entry:`,
+          `  %sp = getelementptr inbounds %${pack}, ptr %ap, i64 0, i32 ${field}`,
+          `  %sv = load ptr, ptr %sp`,
+          `  call void @scr_gen_close(ptr %sv)`,
+          `  ret void`,
+          `}`,
+          ``,
+        );
+      }
+
       // Spawn wrapper: pack the args (+1 moves in), allocate the
       // SUSPENDED fiber — nothing runs until the first .next().
       if (lifted) {
@@ -4639,6 +4668,11 @@ export class LlEmitter {
         settleAsync === null
           ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
           : `  %gg = call ptr @scr_async_gen_new(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+        ...(closesSource
+          ? [
+              `  call void @scr_gen_set_unstarted_return(ptr %gg, ptr @${mangleGenSourceClose(fn.name)})`,
+            ]
+          : []),
         `  ret ptr %gg`,
         `}`,
         ``,
@@ -7150,13 +7184,39 @@ export class LlEmitter {
     // Stackful native fibers and native coroutine frames retain these frames
     // while suspended. The active exception context owns the chain, so
     // concurrent fibers isolate it.
-    if (this.stackTraces && !this.wasi && fn.sourceName !== undefined) {
-      this.declare(`declare void @scr_stack_enter(ptr, ptr)`);
-      this.declare(`declare void @scr_stack_leave(ptr)`);
+    if (
+      this.stackTraces &&
+      !this.wasi &&
+      fn.sourceName !== undefined &&
+      !this.unframedFunctions.has(fn.name)
+    ) {
       B.entryAllocas.push(`%source_frame = alloca { ptr, ptr }`);
-      const frame = `    at ${fn.sourceName} (${fn.loc.file})`;
-      B.line(`call void @scr_stack_enter(ptr %source_frame, ptr ${this.cstr(frame)})`);
-      B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
+      const frame = this.cstr(`    at ${fn.sourceName} (${fn.loc.file})`);
+      if (
+        B.excCellInvariant &&
+        this.mod.lib === undefined &&
+        this.mod.workers !== true &&
+        this.sizeType === "i64"
+      ) {
+        // Executables link the active-cell pointer as a plain global, and a
+        // synchronous body sees one cell from entry to every return: push
+        // and pop the frame inline (ScrExcCell.stack is at byte 56 on
+        // 64-bit targets) instead of calling the runtime twice per call.
+        this.declare(`@scr_exc_active = external global ptr`);
+        B.line(`%source_frame.cell = load ptr, ptr @scr_exc_active`);
+        B.line(`%source_frame.chain = getelementptr inbounds i8, ptr %source_frame.cell, i64 56`);
+        B.line(`%source_frame.previous = load ptr, ptr %source_frame.chain`);
+        B.line(`store ptr %source_frame.previous, ptr %source_frame`);
+        B.line(`%source_frame.text = getelementptr inbounds i8, ptr %source_frame, i64 8`);
+        B.line(`store ptr ${frame}, ptr %source_frame.text`);
+        B.line(`store ptr %source_frame, ptr %source_frame.chain`);
+        B.returnEpilogue = `store ptr %source_frame.previous, ptr %source_frame.chain`;
+      } else {
+        this.declare(`declare void @scr_stack_enter(ptr, ptr)`);
+        this.declare(`declare void @scr_stack_leave(ptr)`);
+        B.line(`call void @scr_stack_enter(ptr %source_frame, ptr ${frame})`);
+        B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
+      }
     }
     if (this.stackChecks?.has(fn.name)) this.emitStackCheck();
     if (this.workerEntryPolls?.has(fn.name)) this.emitPendingCheck(undefined, true);
@@ -9517,14 +9577,15 @@ export class LlEmitter {
         B.line(`${stash} = call ptr @scr_exc_take() ; stash across finally`);
         B.line(`store ptr ${stash}, ptr ${stashSlot}`);
         this.scopes.push([{ slot: stashSlot, type: CAUGHT }]);
-        const suppressHandler = s.suppressFinallyErrors
-          ? {
-              label: B.newLabel("try.fs"),
-              used: false,
-              frameDepth: this.frames.length,
-              scopeDepth: this.scopes.length,
-            }
-          : null;
+        const suppressHandler =
+          s.suppressFinallyErrors || s.dropFinallyErrors
+            ? {
+                label: B.newLabel("try.fs"),
+                used: false,
+                frameDepth: this.frames.length,
+                scopeDepth: this.scopes.length,
+              }
+            : null;
         if (suppressHandler) this.tryStack.push(suppressHandler);
         this.emitBlock(s.finallyBody!);
         if (suppressHandler) this.tryStack.pop();
@@ -9534,8 +9595,9 @@ export class LlEmitter {
         this.emitUnwind();
         if (suppressHandler?.used) {
           B.startBlock(suppressHandler.label);
-          this.declare(`declare void @scr_exc_suppress(ptr)`);
-          B.line(`call void @scr_exc_suppress(ptr ${stash}) ; consumes stash`);
+          const cleanup = s.dropFinallyErrors ? "scr_exc_keep_first" : "scr_exc_suppress";
+          this.declare(`declare void @${cleanup}(ptr)`);
+          B.line(`call void @${cleanup}(ptr ${stash}) ; consumes stash`);
           this.emitUnwind();
         }
       }
@@ -10121,7 +10183,18 @@ export class LlEmitter {
     )
       return this.emitRegionIntrinsic(e);
     if (e.name.startsWith("itable.")) return this.emitInternTableIntrinsic(e);
+    if (e.name.startsWith("slots.")) return emitThreadSlotsIntrinsic(this, e);
     return emitIntrinsicExpr(this, e);
+  }
+
+  /** The ScrSlots block of the ThreadSlots family `name`. */
+  threadSlotsBlock(name: string): string {
+    let sym = this.threadSlotsBlocks.get(name);
+    if (sym === undefined) {
+      sym = `@sc_slots_${this.threadSlotsBlocks.size}`;
+      this.threadSlotsBlocks.set(name, sym);
+    }
+    return sym;
   }
 
   /** InternTable's runtime calls (scr_itable.c). Table and entry handles

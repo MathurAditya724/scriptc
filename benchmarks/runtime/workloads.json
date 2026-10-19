@@ -128,6 +128,26 @@
       ]
     },
     {
+      "name": "thread-slots",
+      "entry": "workloads/thread-slots.ts",
+      "args": [
+        "slots",
+        "8",
+        "50000",
+        "20"
+      ]
+    },
+    {
+      "name": "thread-slots-cache",
+      "entry": "workloads/thread-slots.ts",
+      "args": [
+        "cache",
+        "8",
+        "50000",
+        "20"
+      ]
+    },
+    {
       "name": "atomics-contended",
       "entry": "workloads/atomics-contended.ts",
       "args": [

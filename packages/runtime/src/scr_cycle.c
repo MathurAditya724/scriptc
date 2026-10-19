@@ -175,14 +175,11 @@ static void scr_cyc_oom(void) {
  * struct on purpose: buffering a candidate is the hot path, and splitting
  * them across three arrays indexed by generation would touch three cache
  * lines per release where the original single buffer touched one. */
-typedef struct {
-  void **v;
-  size_t n, cap;
-  /* The most entries a pass held, for the work vectors a pass fills
-   * (scr_cyc_push_work); scr_cyc_pass_done frees a large vector that the
-   * pass used little of. */
-  size_t used;
-} ScrVec;
+/* Its layout is scr_rc.h's ScrCycBuffer (the candidate buffers are part of
+ * the inline buffering ABI). `used`: the most entries a pass held, for the
+ * work vectors a pass fills (scr_cyc_push_work); scr_cyc_pass_done frees a
+ * large vector that the pass used little of. */
+typedef ScrCycBuffer ScrVec;
 
 typedef struct {
   void *object;
@@ -226,7 +223,6 @@ typedef struct {
   unsigned char death_shift;
   bool falling;
   bool keep_base;
-  size_t nbuffered;
   size_t trigger;
   size_t alloc_trigger;
   size_t gray_referenced;
@@ -260,7 +256,6 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_cyc_growth_shift (scr_cyc_thread.growth_shift)
 #define scr_cyc_growth_streak (scr_cyc_thread.growth_streak)
 #define scr_cyc_backlog_shift (scr_cyc_thread.backlog_shift)
-#define scr_cyc_nbuffered (scr_cyc_thread.nbuffered)
 #define scr_cyc_trigger (scr_cyc_thread.trigger)
 #define scr_cyc_alloc_trigger (scr_cyc_thread.alloc_trigger)
 #define scr_gray_referenced (scr_cyc_thread.gray_referenced)
@@ -392,7 +387,16 @@ static inline void scr_cyc_note_used(ScrVec *vec) {
 /* ── the candidate-root buffers (one per generation) ──────────────────── */
 
 #ifndef SCR_WORKERS
-static SCR_TL ScrVec scr_roots[SCR_CYC_NGENS];
+/* Emitted and inline releases append nursery candidates to these buffers
+ * directly where the build allows it (scr_rc.h). Explicitly initialized so
+ * library localization can demote it (see scr_cyc_types). */
+#if SCR_CYC_INLINE_BUFFERING
+ScrCycBuffers scr_cyc_buffers = {0};
+#else
+static SCR_TL ScrCycBuffers scr_cyc_buffers;
+#endif
+#define scr_roots (scr_cyc_buffers.roots)
+#define scr_cyc_alloc_trigger (scr_cyc_buffers.alloc_trigger)
 static SCR_TL bool scr_collecting = false;
 #endif
 
@@ -440,6 +444,7 @@ static SCR_TL unsigned scr_gen_limit = SCR_CYC_OLD;
 #endif
 
 static size_t scr_cyc_pass(unsigned gen_limit);
+static void scr_cyc_route_bypassed(void);
 /* A limited pass (scr_cyc_collect_set) takes only the candidates in this
  * set from the buffers up to `scr_cyc_take_gen`; NULL takes them all. */
 static SCR_TL const ScrCycSet *scr_cyc_take = NULL;
@@ -552,18 +557,18 @@ static size_t scr_cyc_nursery_threshold(void) {
   return cached;
 }
 
-/* Buffered candidates across every generation, and the count at which the
- * release path next collects. Keeping a running total (rather than summing
- * the buffers) is what holds the hot path to one load and one compare, as
- * it was when there was a single buffer. The trigger is re-armed at the end
- * of every pass to "whatever survived, plus a nursery's worth": without that
+/* The number of buffered candidates (across every generation) at which the
+ * release path next collects, and the live count at which it collects
+ * however few candidates there are. The trigger is re-armed at the end of
+ * every pass to "whatever survived, plus a nursery's worth": without that
  * hysteresis a large older buffer — which a nursery pass cannot drain —
  * would re-arm on every single release. Both start at zero, so the first
- * release runs one trivial pass that arms them properly. */
+ * release runs one trivial pass that arms them properly. The inline
+ * appends (scr_rc.h) compare against the window scr_cyc_window_update
+ * derives from these, so the slow path sums the buffers when it needs the
+ * total. */
 #ifndef SCR_WORKERS
-static SCR_TL size_t scr_cyc_nbuffered = 0;
 static SCR_TL size_t scr_cyc_trigger = 0;
-static SCR_TL size_t scr_cyc_alloc_trigger = 0;
 #endif
 /* Gray objects whose count is above zero after the trial decrements so far
  * (see scr_mg_visit). markGray records the gray objects in scr_white while
@@ -594,6 +599,34 @@ static SCR_TL size_t scr_cyc_scheduled_mature_age = 0;
 static size_t scr_cyc_buffered(void) {
   return scr_roots[SCR_CYC_NURSERY].n + scr_roots[SCR_CYC_MATURE].n
          + scr_roots[SCR_CYC_OLD].n;
+}
+
+/* The inline buffering window (scr_rc.h): how many entries the nursery
+ * buffer may hold before an append would bring the buffered total to the
+ * trigger or would need the buffer to grow. While a pass runs, every
+ * release takes the call. Recomputed wherever the buffers, the nursery
+ * buffer's capacity or the trigger change in bulk; the release and death
+ * paths adjust it by one (scr_cyc_window_shrink). */
+static inline void scr_cyc_window_update(void) {
+#if SCR_CYC_INLINE_BUFFERING
+  size_t window = 0;
+  if (!scr_collecting) {
+    size_t older = scr_roots[SCR_CYC_MATURE].n + scr_roots[SCR_CYC_OLD].n;
+    if (scr_cyc_trigger > older + 1) window = scr_cyc_trigger - older - 1;
+    if (window > scr_roots[SCR_CYC_NURSERY].cap) window = scr_roots[SCR_CYC_NURSERY].cap;
+  }
+  scr_cyc_buffers.window = window;
+#endif
+}
+
+/* One step of the window's formula going down by one: an older candidate
+ * was buffered, or a nursery death lowered the trigger. A window below the
+ * formula only sends more releases through the call, so the clamp to the
+ * capacity can stay where it is. */
+static inline void scr_cyc_window_shrink(void) {
+#if SCR_CYC_INLINE_BUFFERING
+  if (scr_cyc_buffers.window) scr_cyc_buffers.window--;
+#endif
 }
 
 static bool scr_cyc_older_backlog(void) {
@@ -756,6 +789,7 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
  * per pass, so it is kept out of line and built for size, which leaves the
  * hot buffering path in scr_cyc_on_release small. */
 static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
+  scr_cyc_route_bypassed();
   scr_cyc_note_fall();
   unsigned gen = SCR_CYC_OLD;
   bool by_growth = scr_cyc_grown(SCR_CYC_OLD);
@@ -775,6 +809,7 @@ static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
  * per turn would walk the whole live heap every turn — which is exactly the
  * cost the generations exist to avoid. */
 void scr_cyc_collect_scheduled(void) {
+  scr_cyc_route_bypassed();
   scr_cyc_note_fall();
   if (scr_cyc_buffered() == 0) {
     scr_cyc_scheduled_mature_age = 0;
@@ -855,6 +890,10 @@ typedef struct ScrCycKind {
 static SCR_TL ScrCycKind *scr_cyc_kinds;
 static SCR_TL size_t scr_cyc_kinds_cap;
 #endif
+#if SCR_CYC_INLINE_BUFFERING
+/* Types that bypass the nursery right now (scr_cyc_route_bypassed). */
+static size_t scr_cyc_nursery_bypassing = 0;
+#endif
 
 /* The statistics of `kind` (nonzero), growing the table to cover it. */
 static SCR_CYC_COMPACT ScrCycKind *scr_cyc_kind_grow(uint32_t kind) {
@@ -879,7 +918,12 @@ static inline bool scr_cyc_bypassed(const ScrCycType *type, unsigned gen) {
   if (kind >= scr_cyc_kinds_cap) return false;
   ScrCycLevelStat *k = &scr_cyc_kinds[kind].level[gen];
   if (k->bypass == 0) return false;
-  if (--k->bypass == 0) k->walked = k->freed = 0;
+  if (--k->bypass == 0) {
+    k->walked = k->freed = 0;
+#if SCR_CYC_INLINE_BUFFERING
+    if (gen == SCR_CYC_NURSERY) scr_cyc_nursery_bypassing--;
+#endif
+  }
   return true;
 }
 
@@ -897,15 +941,56 @@ static inline void scr_cyc_walked(const ScrCycType *type, unsigned gen) {
   if (!type->kind) return;
   ScrCycLevelStat *k = &scr_cyc_kind(type->kind)->level[gen];
   if (++k->walked == SCR_CYC_BYPASS_WINDOW) {
+#if SCR_CYC_INLINE_BUFFERING
+    bool before = k->bypass != 0;
+#endif
     k->bypass = k->freed * SCR_CYC_BYPASS_RATIO < SCR_CYC_BYPASS_WINDOW
                     ? SCR_CYC_BYPASS_WINDOW * SCR_CYC_BYPASS_PROBE
                     : 0;
+#if SCR_CYC_INLINE_BUFFERING
+    if (gen == SCR_CYC_NURSERY && before != (k->bypass != 0))
+      scr_cyc_nursery_bypassing += before ? (size_t)-1 : 1;
+#endif
     k->walked = k->freed = 0;
   }
 }
 /* A pass at `gen` (nursery or mature) frees an object of `type`. */
 static inline void scr_cyc_freed(const ScrCycType *type, unsigned gen) {
   if (type->kind) scr_cyc_kind(type->kind)->level[gen].freed++;
+}
+
+/* An inline append (scr_rc.h) leaves every nursery candidate in the nursery
+ * buffer, including one whose type bypasses the nursery, which
+ * scr_cyc_on_release would have buffered past it. Where a candidate waits
+ * matters only once something reads the buffers, so every scheduling
+ * decision and every pass first moves such candidates to the generation
+ * scr_cyc_on_release would have chosen, consuming the bypass counts as it
+ * would have, in buffer order. Candidates that scr_cyc_on_release buffered
+ * already passed the same test with the counts unchanged since (they only
+ * change during passes), so they stay. */
+static SCR_CYC_COMPACT void scr_cyc_route_bypassed(void) {
+#if SCR_CYC_INLINE_BUFFERING
+  if (scr_cyc_nursery_bypassing == 0) return;
+  ScrVec *nursery = &scr_roots[SCR_CYC_NURSERY];
+  for (size_t i = 0; i < nursery->n;) {
+    void *obj = nursery->v[i];
+    ScrCycHdr *h = scr_cyc_hdr(obj);
+    unsigned gen = scr_cyc_buffer_gen(scr_cyc_type(h), SCR_CYC_NURSERY);
+    if (gen == SCR_CYC_NURSERY) {
+      i++;
+      continue;
+    }
+    void *last = nursery->v[--nursery->n];
+    nursery->v[i] = last;
+    if (last != obj) scr_cyc_set_buffered(scr_cyc_hdr(last), (uint32_t)i);
+    scr_cyc_set_gen(h, gen);
+    ScrVec *b = &scr_roots[gen];
+    if (b->n == b->cap) scr_cyc_grow(b);
+    scr_cyc_set_buffered(h, (uint32_t)b->n);
+    b->v[b->n++] = obj;
+  }
+  scr_cyc_window_update();
+#endif
 }
 
 void scr_cyc_on_dead(void *obj) {
@@ -920,11 +1005,12 @@ void scr_cyc_on_dead(void *obj) {
   b->v[i] = last;
   if (last != obj) scr_cyc_set_buffered(scr_cyc_hdr(last), (uint32_t)i);
   scr_cyc_clear_buffered(h);
-  scr_cyc_nbuffered--;
   /* A death must not consume room reserved for a future candidate. */
   scr_cyc_trigger--;
-  if (scr_cyc_gen(h) != SCR_CYC_NURSERY && !scr_cyc_older_backlog())
-    scr_cyc_scheduled_mature_age = 0;
+  /* An older death lowers the older count with the trigger: the window
+   * stays. A nursery death lowers only the trigger. */
+  if (scr_cyc_gen(h) == SCR_CYC_NURSERY) scr_cyc_window_shrink();
+  else if (!scr_cyc_older_backlog()) scr_cyc_scheduled_mature_age = 0;
 }
 
 /* Publication (scr_publish.c) takes buffered objects out of their candidate
@@ -973,31 +1059,39 @@ void scr_cyc_pub_fill(void) {
     }
     holes->n = 0;
     size_t closed = before - b->n;
-    scr_cyc_nbuffered -= closed;
     /* A death must not consume room reserved for a future candidate. */
     scr_cyc_trigger -= closed;
     if (closed && gen != SCR_CYC_NURSERY) older = true;
   }
   if (older && !scr_cyc_older_backlog()) scr_cyc_scheduled_mature_age = 0;
+  scr_cyc_window_update();
 }
 
 /* Every release that leaves an unbuffered object alive lands here (the
- * emitted and inline release paths test `buffered` first), so it stays what
- * it has always been: buffer inline, then one compare. */
+ * emitted and inline release paths test `buffered` first) unless the window
+ * let it append a nursery candidate on its own fast path (scr_rc.h), so it
+ * stays what it has always been: the same append, then buffer and compare. */
 void scr_cyc_on_release(void *obj) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   /* Releasing an existing candidate cannot advance the trigger. A pass
    * always re-arms after its teardowns, including any candidates they add. */
   if (scr_cyc_is_buffered(h)) return;
+#if SCR_CYC_INLINE_BUFFERING
+  if (scr_cyc_append(h, obj)) return;
+#endif
   if (scr_cyc_gen(h) < SCR_CYC_OLD) scr_cyc_set_gen(h, scr_cyc_buffer_gen(scr_cyc_type(h), scr_cyc_gen(h)));
-  ScrVec *b = &scr_roots[scr_cyc_gen(h)];
-  if (b->n == b->cap) scr_cyc_grow(b);
+  unsigned gen = scr_cyc_gen(h);
+  ScrVec *b = &scr_roots[gen];
+  if (b->n == b->cap) {
+    scr_cyc_grow(b);
+    scr_cyc_window_update();
+  }
   scr_cyc_set_buffered(h, (uint32_t)b->n);
   b->v[b->n++] = obj;
-  scr_cyc_nbuffered++;
+  if (gen != SCR_CYC_NURSERY) scr_cyc_window_shrink();
   /* Never re-entered: a teardown's releases of untraced children can buffer
    * new candidates mid-collection, but they only wait for the next pass. */
-  if (!scr_collecting && (scr_cyc_nbuffered >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger))
+  if (!scr_collecting && (scr_cyc_buffered() >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger))
     scr_cyc_collect_due();
 }
 
@@ -1375,10 +1469,10 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
   }
   /* markRoots drained buffers in bulk and teardowns moved the count around;
    * resync from the buffers themselves and re-arm. */
-  scr_cyc_nbuffered = scr_cyc_buffered();
-  scr_cyc_trigger = scr_cyc_nbuffered + scr_cyc_nursery_threshold();
+  scr_cyc_trigger = scr_cyc_buffered() + scr_cyc_nursery_threshold();
   scr_cyc_alloc_trigger = scr_cyc_live + SCR_CYC_NURSERY_ALLOCATIONS;
   scr_collecting = false;
+  scr_cyc_window_update();
   return freed;
 }
 
@@ -1418,7 +1512,9 @@ static size_t scr_cyc_pass_done(size_t freed) {
 
 static size_t scr_cyc_pass(unsigned gen_limit) {
   if (scr_collecting) return 0;
+  scr_cyc_route_bypassed();
   scr_collecting = true;
+  scr_cyc_window_update();
   scr_gen_limit = gen_limit;
 
   /* markRoots: every buffered entry is a candidate (retains do not mark
@@ -1596,6 +1692,9 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
 #ifdef SCR_CYC_TESTING
 /* Tests only: one pass at exactly `gen`, outside the schedule. */
 size_t scr_cyc_pass_at(unsigned gen) { return scr_cyc_pass(gen); }
+/* Tests only: route appended candidates of bypassing types, as the next
+ * scheduling decision or pass would. */
+void scr_cyc_route_bypassed_at(void) { scr_cyc_route_bypassed(); }
 #endif
 
 size_t scr_cyc_collect_set(const ScrCycSet *set, unsigned gen) {
@@ -1634,4 +1733,8 @@ void scr_cyc_context_cleanup(void) {
   free(scr_cyc_kinds);
   scr_cyc_kinds = NULL;
   scr_cyc_kinds_cap = 0;
+#if SCR_CYC_INLINE_BUFFERING
+  scr_cyc_nursery_bypassing = 0;
+#endif
+  scr_cyc_window_update();
 }

@@ -4217,6 +4217,13 @@
       "note": "UTC ISO formatting over constructed and stored Date values"
     },
     {
+      "id": "stdlib.date.toUTCString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toUTCString",
+      "status": "static",
+      "note": "RFC 7231 IMF-fixdate formatting over stored Date values"
+    },
+    {
       "id": "stdlib.date.valueOf",
       "kind": "stdlib",
       "name": "Date.prototype.valueOf",
@@ -4464,7 +4471,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.entries",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.map.forEach",
@@ -4489,7 +4496,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.keys",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.map.set",
@@ -4502,7 +4509,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.values",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.math.E",
@@ -5293,9 +5300,8 @@
       "id": "stdlib.response.static.json",
       "kind": "stdlib",
       "name": "Response.json",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: webidl-conversion, error-shape; supported scope: data that crosses the checked-dynamic boundary, serialized with JSON.stringify (toJSON hooks included); ResponseInit as for the constructor; differential evidence: fixture:static-response-json"
     },
     {
       "id": "stdlib.response.static.redirect",
@@ -5371,7 +5377,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.entries",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.set.forEach",
@@ -5418,7 +5424,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.keys",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.set.symmetricDifference",
@@ -5439,7 +5445,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.values",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.sharedArrayBuffer",
@@ -5629,6 +5635,14 @@
       "name": "string.prototype.trimStart",
       "status": "static",
       "note": "the lowered call form takes no arguments"
+    },
+    {
+      "id": "stdlib.webassembly",
+      "kind": "stdlib",
+      "name": "globalThis.WebAssembly",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "WebAssembly support is planned as translation of each module whose bytes the build can see (an inline literal, or a file read from a path the compiler resolves) into native code; 'scriptc coverage' lists the modules this program would load (https://scriptc.dev/limitations)"
     },
     {
       "id": "syntax.async-generators",

@@ -75,7 +75,7 @@ static bool scr_builtin_iterable(const ScrDyn *value) {
   return value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES ||
     (scr_dyn_generator(value) && value->v.typed_ref.type_key[0] != 'a') ||
     (value->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(value)) ||
-    (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_ITERATOR || value->v.handle.tag == SCR_DYNH_MAP || value->v.handle.tag == SCR_DYNH_SET ||
+    (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_ITERATOR || value->v.handle.tag == SCR_DYNH_ITERATOR_HELPER || value->v.handle.tag == SCR_DYNH_MAP || value->v.handle.tag == SCR_DYNH_SET ||
       scr_dyn_handle_ops_of(value)->iter_pack || scr_dyn_handle_ops_of(value)->iter_step));
 }
 static bool scr_iterator_object(const ScrDyn *value) {
@@ -3651,7 +3651,7 @@ ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc) {
  * always-linked core never references gated units. A missing tag at use
  * is an internal error: emitted programs install a unit's ops whenever
  * they can box its handles. */
-static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_COUNT];
+static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_CAPACITY];
 
 /* BroadcastChannel's EventTarget table (scr_et_broadcast_install). */
 SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops = NULL;
@@ -4657,8 +4657,16 @@ bool scr_dyn_iterator_step_done(const ScrDyn *value) {
   return ((ScrNativeIterator *)value->v.handle.ptr)->step_done;
 }
 
+static int scr_ih_method_index(const char *name, size_t len);
+static ScrDyn *scr_iterator_helper_method(ScrDyn *self, int index, ScrDyn *const *args, size_t argc);
+static ScrDyn *scr_ih_method_function(int index);
+
 static ScrDyn *scr_native_iterator_get(void *ptr, const char *key, size_t len) {
-  if (len != 4 || memcmp(key, "next", 4)) return NULL;
+  if (len != 4 || memcmp(key, "next", 4)) {
+    /* The Iterator.prototype helper methods. */
+    int index = scr_ih_method_index(key, len);
+    return index >= 0 ? scr_ih_method_function(index) : NULL;
+  }
   unsigned kind = ((ScrNativeIterator *)ptr)->kind;
   if (kind == 4) return scr_iterator_function(10, &scr_native_handle_iterator_next_call, "next");
   return kind == 3 ? scr_iterator_function(8, &scr_native_set_iterator_next_call, "next")
@@ -4669,8 +4677,9 @@ static ScrDyn *scr_native_iterator_get(void *ptr, const char *key, size_t len) {
 
 static ScrDyn *scr_native_iterator_invoke(void *ptr, ScrDyn *self, const char *method,
                                          ScrDyn *const *args, size_t argc, const char *what) {
-  (void)self;
   if (!strcmp(method, "next")) return scr_native_iterator_next(ptr);
+  int index = scr_ih_method_index(method, strlen(method));
+  if (index >= 0) return scr_iterator_helper_method(self, index, args, argc);
   ScrDyn *missing = scr_dyn_undefined();
   return scr_dyn_call(missing, args, argc, what);
 }
@@ -4698,6 +4707,682 @@ static ScrDyn *scr_native_collection_iterator(ScrDyn *source, unsigned selection
   ScrDyn *result = scr_native_iterator_new(source);
   ((ScrNativeIterator *)result->v.handle.ptr)->selection = selection;
   return result;
+}
+
+/* ── iterator helpers on checked iterators (ES2025) ─────────────────────────
+ * The Iterator.prototype methods over a checked iterator object: a native
+ * array, string, Map or Set iterator, or a helper object made here. Typed
+ * code lowers its helpers statically; these answer untyped JavaScript
+ * receivers. The stages (map, filter, take, drop, flatMap) make helper
+ * objects that pull lazily; the consuming methods (toArray, forEach, reduce,
+ * some, every, find) drive the iterator to completion or to their answer.
+ * Closing follows IteratorClose: a helper closes the iterator it was made
+ * from when a callback throws, when its budget is spent, and on return();
+ * an error from a close that runs because of another error is dropped. */
+
+static ScrDyn *scr_iterator_call(const ScrDyn *method, const ScrDyn *receiver, const char *name);
+static ScrDyn *scr_iterator_method(const ScrDyn *source);
+
+enum { SCR_IH_MAP, SCR_IH_FILTER, SCR_IH_TAKE, SCR_IH_DROP, SCR_IH_FLATMAP };
+enum { SCR_IH_START, SCR_IH_YIELDED, SCR_IH_RUNNING, SCR_IH_DONE };
+
+typedef struct {
+  size_t rc;
+  unsigned kind;
+  unsigned state;
+  ScrDyn *iterated; /* the iterator the helper was made from */
+  ScrDyn *next;     /* its next method, read when the helper was made */
+  ScrDyn *fn;       /* the map, filter or flatMap callback */
+  double remaining; /* the take or drop budget */
+  double counter;
+  ScrDyn *inner;    /* flatMap's current inner iterator */
+  ScrDyn *inner_next;
+} ScrIterHelper;
+
+static const char *const scr_ih_method_names[] = {
+  "map", "filter", "take", "drop", "flatMap", "reduce", "toArray", "forEach", "some", "every", "find",
+};
+#define SCR_IH_METHOD_COUNT (sizeof scr_ih_method_names / sizeof scr_ih_method_names[0])
+
+/* The index of an Iterator.prototype helper method name, or -1. */
+static int scr_ih_method_index(const char *name, size_t len) {
+  for (size_t i = 0; i < SCR_IH_METHOD_COUNT; i++) {
+    if (strlen(scr_ih_method_names[i]) == len && !memcmp(scr_ih_method_names[i], name, len)) return (int)i;
+  }
+  return -1;
+}
+
+/* V8's description of a value in "<value> is not a function": the type,
+ * with the value for primitives that print one. */
+static void scr_ih_describe_type(ScrJsonBuf *b, const ScrDyn *v) {
+  switch (v->kind) {
+  case SCR_DYN_UNDEF: scr_jb_puts(b, "undefined"); return;
+  case SCR_DYN_NULL: scr_jb_puts(b, "object null"); return;
+  case SCR_DYN_BOOL: scr_jb_puts(b, v->v.b ? "boolean true" : "boolean false"); return;
+  case SCR_DYN_NUM: {
+    scr_jb_puts(b, "number ");
+    ScrStr *n = scr_f64_to_scrstr(v->v.num);
+    scr_jb_write(b, n->data, n->len);
+    scr_str_release(n);
+    return;
+  }
+  case SCR_DYN_STR:
+    scr_jb_puts(b, "string \"");
+    scr_jb_write(b, v->v.str->data, v->v.str->len);
+    scr_jb_putc(b, '"');
+    return;
+  case SCR_DYN_SYMBOL: scr_jb_puts(b, "symbol"); return;
+  case SCR_DYN_BIGINT: scr_jb_puts(b, "bigint"); return;
+  default: scr_jb_puts(b, "object"); return;
+  }
+}
+
+static bool scr_ih_require_callable(const ScrDyn *fn) {
+  if (scr_dyn_is_callable(fn)) return true;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_ih_describe_type(&b, fn);
+  scr_jb_puts(&b, " is not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return false;
+}
+
+/* V8's text for the value in "<value> must be positive": numbers, strings
+ * raw, undefined by name,
+ * arrays and objects by their default string or constructor name. */
+static void scr_ih_describe_value(ScrJsonBuf *b, const ScrDyn *v) {
+  if (v->kind == SCR_DYN_ARR) {
+    scr_jb_puts(b, "[object Array]");
+    return;
+  }
+  if (v->kind == SCR_DYN_OBJ) {
+    scr_jb_puts(b, "#<Object>");
+    return;
+  }
+  if (v->kind == SCR_DYN_HANDLE) {
+    scr_jb_puts(b, "#<");
+    scr_jb_puts(b, scr_dyn_handle_ops_of(v)->cls);
+    scr_jb_putc(b, '>');
+    return;
+  }
+  if (v->kind == SCR_DYN_STR) {
+    scr_jb_write(b, v->v.str->data, v->v.str->len);
+    return;
+  }
+  if (v->kind == SCR_DYN_NUM) {
+    ScrStr *n = scr_f64_to_scrstr(v->v.num);
+    scr_jb_write(b, n->data, n->len);
+    scr_str_release(n);
+    return;
+  }
+  scr_jb_puts(b, v->kind == SCR_DYN_UNDEF ? "undefined" : "NaN");
+}
+
+/* ToIntegerOrInfinity of a take/drop budget with Node's RangeError for NaN
+ * and negative budgets. Answers false with the exception pending. */
+static bool scr_ih_budget(const ScrDyn *limit, double *out) {
+  double n = scr_dyn_number_coerce(limit);
+  if (scr_exc_pending()) return false;
+  if (n != n) {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_ih_describe_value(&b, limit);
+    scr_jb_puts(&b, " must be positive");
+    scr_throw_error(SCR_ERR_RANGE, scr_jb_finish(&b));
+    return false;
+  }
+  double t = n < 9007199254740992.0 && n > -9007199254740992.0 ? n - fmod(n, 1.0) : n;
+  if (t < 0) {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_ih_describe_value(&b, limit);
+    scr_jb_puts(&b, " must be positive");
+    scr_throw_error(SCR_ERR_RANGE, scr_jb_finish(&b));
+    return false;
+  }
+  *out = t == 0 ? 0 : t;
+  return true;
+}
+
+/* IteratorClose(iterator, completion). `abrupt` is a throw completion: the
+ * pending error stays and anything the return() call raises is dropped.
+ * Otherwise errors from return() propagate, and a non-object result is
+ * Node's TypeError. Answers false when an exception is pending after. */
+static bool scr_ih_close(ScrDyn *iterator, bool abrupt) {
+  ScrCaught *first = abrupt ? scr_exc_take() : NULL;
+  ScrDyn *method = scr_iterator_read(iterator, "return", 6);
+  bool ok = method != NULL;
+  if (ok && method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
+    ScrDyn *result = scr_iterator_call(method, iterator, "return");
+    if (!result) ok = false;
+    else {
+      if (!abrupt && !scr_iterator_object(result)) {
+        static const char message[] = "Iterator result is not an object";
+        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+        ok = false;
+      }
+      scr_dyn_release(result);
+    }
+  }
+  scr_dyn_release(method);
+  if (first) {
+    if (scr_exc_pending()) {
+      ScrCaught *dropped = scr_exc_take();
+      if (dropped) scr_caught_release(dropped);
+    }
+    scr_rethrow(first);
+    scr_caught_release(first);
+    return false;
+  }
+  return ok && !scr_exc_pending();
+}
+
+/* IteratorStepValue over (iterator, next): +1 value with *done false, or
+ * *done true (the answer is then undefined); NULL with the exception
+ * pending when next() throws or answers a non-object. */
+static ScrDyn *scr_ih_step(ScrDyn *iterator, ScrDyn *next, bool *done) {
+  *done = false;
+  if (scr_dyn_iterator_can_step(iterator, next)) {
+    ScrDyn *value = scr_dyn_iterator_step(iterator);
+    if (!value) return NULL;
+    *done = scr_dyn_iterator_step_done(iterator);
+    return value;
+  }
+  ScrDyn *raw = scr_iterator_call(next, iterator, "next");
+  if (!raw) return NULL;
+  ScrDyn *result = scr_dyn_iterator_result(raw);
+  scr_dyn_release(raw);
+  if (!result) return NULL;
+  ScrDyn *finished = scr_iterator_read(result, "done", 4);
+  if (!finished) {
+    scr_dyn_release(result);
+    return NULL;
+  }
+  *done = scr_dyn_truthy(finished);
+  scr_dyn_release(finished);
+  ScrDyn *value = *done ? scr_dyn_retain(scr_dyn_undefined()) : scr_iterator_read(result, "value", 5);
+  scr_dyn_release(result);
+  return value;
+}
+
+/* GetIteratorDirect: the receiver must be an object; its next method is
+ * read once. +1 next, or NULL with the TypeError pending. */
+static ScrDyn *scr_ih_direct(const ScrDyn *self, const char *method) {
+  if (!scr_iterator_object(self)) {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_puts(&b, "Iterator.prototype.");
+    scr_jb_puts(&b, method);
+    scr_jb_puts(&b, " called on non-object");
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+    return NULL;
+  }
+  return scr_iterator_read(self, "next", 4);
+}
+
+static ScrDyn *scr_ih_result(ScrDyn *value, bool done) {
+  ScrDyn *result = scr_dyn_new_obj();
+  scr_dyn_obj_set(result, "value", 5, value);
+  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
+  return result;
+}
+
+static void *scr_ih_retain(void *ptr) {
+  ((ScrIterHelper *)ptr)->rc++;
+  return ptr;
+}
+
+static void scr_ih_release(void *ptr) {
+  ScrIterHelper *h = ptr;
+  if (--h->rc) return;
+  scr_dyn_release(h->iterated);
+  scr_dyn_release(h->next);
+  if (h->fn) scr_dyn_release(h->fn);
+  if (h->inner) scr_dyn_release(h->inner);
+  if (h->inner_next) scr_dyn_release(h->inner_next);
+  free(h);
+}
+
+static void scr_ih_clear_inner(ScrIterHelper *h) {
+  if (h->inner) scr_dyn_release(h->inner);
+  if (h->inner_next) scr_dyn_release(h->inner_next);
+  h->inner = NULL;
+  h->inner_next = NULL;
+}
+
+/* GetIteratorFlattenable(value, reject-primitives) for flatMap's callback
+ * result: +1 iterator with *next_out +1, or NULL with the TypeError pending. */
+static ScrDyn *scr_ih_flattenable(ScrDyn *value, ScrDyn **next_out) {
+  if (!scr_iterator_object(value)) {
+    static const char message[] = "Iterator.prototype.flatMap called on non-object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  ScrDyn *method = scr_iterator_method(value);
+  if (!method) return NULL;
+  ScrDyn *iterator;
+  if (method->kind == SCR_DYN_UNDEF || method->kind == SCR_DYN_NULL) {
+    iterator = scr_dyn_retain(value);
+  } else {
+    iterator = scr_iterator_call(method, value, "value[Symbol.iterator]");
+    if (iterator && !scr_iterator_object(iterator)) {
+      scr_dyn_release(iterator);
+      static const char message[] = "Iterator result is not an object";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      iterator = NULL;
+    }
+  }
+  scr_dyn_release(method);
+  if (!iterator) return NULL;
+  ScrDyn *next = scr_iterator_read(iterator, "next", 4);
+  if (!next) {
+    scr_dyn_release(iterator);
+    return NULL;
+  }
+  *next_out = next;
+  return iterator;
+}
+
+/* Calls a stage callback with (value, counter); +1 result or NULL. */
+static ScrDyn *scr_ih_callback(ScrDyn *fn, ScrDyn *value, double counter) {
+  ScrDyn *index = scr_dyn_new_num(counter);
+  ScrDyn *args[2] = { value, index };
+  ScrDyn *undefined = scr_dyn_retain(scr_dyn_undefined());
+  scr_dyn_this_push_dyn(undefined);
+  ScrDyn *result = scr_dyn_call(fn, args, 2, "callback");
+  scr_dyn_this_pop();
+  scr_dyn_release(undefined);
+  scr_dyn_release(index);
+  return result;
+}
+
+/* The helper's next value: +1 value with *done false, *done true, or NULL
+ * with the exception pending (the helper is then done). */
+static ScrDyn *scr_ih_advance(ScrIterHelper *h, bool *done) {
+  *done = false;
+  for (;;) {
+    if (h->kind == SCR_IH_FLATMAP && h->inner) {
+      bool inner_done;
+      ScrDyn *value = scr_ih_step(h->inner, h->inner_next, &inner_done);
+      if (!value) {
+        scr_ih_close(h->iterated, true);
+        return NULL;
+      }
+      if (!inner_done) return value;
+      scr_dyn_release(value);
+      scr_ih_clear_inner(h);
+      continue;
+    }
+    if (h->kind == SCR_IH_TAKE) {
+      if (h->remaining == 0) {
+        *done = true;
+        if (!scr_ih_close(h->iterated, false)) return NULL;
+        return scr_dyn_retain(scr_dyn_undefined());
+      }
+      if (h->remaining != INFINITY) h->remaining--;
+    }
+    if (h->kind == SCR_IH_DROP) {
+      while (h->remaining > 0) {
+        if (h->remaining != INFINITY) h->remaining--;
+        bool skipped_done;
+        ScrDyn *skipped = scr_ih_step(h->iterated, h->next, &skipped_done);
+        if (!skipped) return NULL;
+        scr_dyn_release(skipped);
+        if (skipped_done) {
+          *done = true;
+          return scr_dyn_retain(scr_dyn_undefined());
+        }
+      }
+    }
+    bool source_done;
+    ScrDyn *value = scr_ih_step(h->iterated, h->next, &source_done);
+    if (!value) return NULL;
+    if (source_done) {
+      *done = true;
+      return value;
+    }
+    if (h->kind == SCR_IH_TAKE || h->kind == SCR_IH_DROP) return value;
+    ScrDyn *mapped = scr_ih_callback(h->fn, value, h->counter);
+    if (!mapped) {
+      scr_dyn_release(value);
+      scr_ih_close(h->iterated, true);
+      return NULL;
+    }
+    h->counter++;
+    if (h->kind == SCR_IH_MAP) {
+      scr_dyn_release(value);
+      return mapped;
+    }
+    if (h->kind == SCR_IH_FILTER) {
+      bool keep = scr_dyn_truthy(mapped);
+      scr_dyn_release(mapped);
+      if (keep) return value;
+      scr_dyn_release(value);
+      continue;
+    }
+    /* flatMap */
+    scr_dyn_release(value);
+    ScrDyn *inner_next = NULL;
+    ScrDyn *inner = scr_ih_flattenable(mapped, &inner_next);
+    scr_dyn_release(mapped);
+    if (!inner) {
+      scr_ih_close(h->iterated, true);
+      return NULL;
+    }
+    h->inner = inner;
+    h->inner_next = inner_next;
+  }
+}
+
+static void scr_ih_running_error(void) {
+  static const char message[] = "Generator is already running";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+}
+
+static ScrDyn *scr_ih_next(ScrIterHelper *h) {
+  if (h->state == SCR_IH_RUNNING) {
+    scr_ih_running_error();
+    return NULL;
+  }
+  if (h->state == SCR_IH_DONE) return scr_ih_result(scr_dyn_retain(scr_dyn_undefined()), true);
+  h->state = SCR_IH_RUNNING;
+  scr_ih_retain(h);
+  bool done;
+  ScrDyn *value = scr_ih_advance(h, &done);
+  ScrDyn *result = NULL;
+  if (!value || done) {
+    h->state = SCR_IH_DONE;
+    scr_ih_clear_inner(h);
+    if (value) {
+      scr_dyn_release(value);
+      result = scr_ih_result(scr_dyn_retain(scr_dyn_undefined()), true);
+    }
+  } else {
+    h->state = SCR_IH_YIELDED;
+    result = scr_ih_result(value, false);
+  }
+  scr_ih_release(h);
+  return result;
+}
+
+/* %IteratorHelperPrototype%.return: an unstarted or suspended helper
+ * completes and closes the iterator it was made from (flatMap closes its
+ * inner iterator first). */
+static ScrDyn *scr_ih_return(ScrIterHelper *h) {
+  if (h->state == SCR_IH_RUNNING) {
+    scr_ih_running_error();
+    return NULL;
+  }
+  if (h->state != SCR_IH_DONE) {
+    h->state = SCR_IH_DONE;
+    scr_ih_retain(h);
+    bool ok = true;
+    if (h->inner) {
+      ScrDyn *inner = scr_dyn_retain(h->inner);
+      scr_ih_clear_inner(h);
+      if (!scr_ih_close(inner, false)) {
+        scr_ih_close(h->iterated, true);
+        ok = false;
+      }
+      scr_dyn_release(inner);
+    }
+    if (ok) ok = scr_ih_close(h->iterated, false);
+    scr_ih_release(h);
+    if (!ok) return NULL;
+  }
+  return scr_ih_result(scr_dyn_retain(scr_dyn_undefined()), true);
+}
+
+static ScrDyn *scr_iterator_helper_method(ScrDyn *self, int index, ScrDyn *const *args, size_t argc);
+
+static ScrDyn *scr_ih_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what) {
+  if (!strcmp(method, "next")) return scr_ih_next(ptr);
+  if (!strcmp(method, "return")) return scr_ih_return(ptr);
+  int index = scr_ih_method_index(method, strlen(method));
+  if (index >= 0) return scr_iterator_helper_method(self, index, args, argc);
+  return scr_dyn_call(scr_dyn_undefined(), args, argc, what);
+}
+
+static ScrDyn *scr_ih_method_function(int index);
+
+static ScrDyn *scr_ih_next_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo; (void)args; (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *result = NULL;
+  if (self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_ITERATOR_HELPER) {
+    result = scr_ih_next(self->v.handle.ptr);
+  } else {
+    static const char message[] = "Method Iterator Helper.prototype.next called on incompatible receiver";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+static ScrDyn *scr_ih_return_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo; (void)args; (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *result = NULL;
+  if (self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_ITERATOR_HELPER) {
+    result = scr_ih_return(self->v.handle.ptr);
+  } else {
+    static const char message[] = "Method Iterator Helper.prototype.return called on incompatible receiver";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+static SCR_TL ScrDyn *scr_ih_functions[SCR_IH_METHOD_COUNT + 2];
+static SCR_TL bool scr_ih_functions_registered;
+
+static void scr_ih_functions_cleanup(void) {
+  for (size_t i = 0; i < SCR_IH_METHOD_COUNT + 2; i++) {
+    scr_dyn_release(scr_ih_functions[i]);
+    scr_ih_functions[i] = NULL;
+  }
+}
+
+static ScrDyn *scr_ih_function(size_t slot, ScrDynThunk thunk, const char *name) {
+  if (!scr_ih_functions_registered) {
+    scr_ih_functions_registered = true;
+    scr_atexit(scr_ih_functions_cleanup);
+  }
+  if (!scr_ih_functions[slot])
+    scr_ih_functions[slot] = scr_dyn_new_func(scr_closure_new(NULL, 0), thunk, 0, "native:iterator", name);
+  return scr_dyn_retain(scr_ih_functions[slot]);
+}
+
+static ScrDyn *scr_ih_get(void *ptr, const char *key, size_t len) {
+  (void)ptr;
+  if (len == 4 && !memcmp(key, "next", 4)) return scr_ih_function(SCR_IH_METHOD_COUNT, &scr_ih_next_call, "next");
+  if (len == 6 && !memcmp(key, "return", 6))
+    return scr_ih_function(SCR_IH_METHOD_COUNT + 1, &scr_ih_return_call, "return");
+  int index = scr_ih_method_index(key, len);
+  return index >= 0 ? scr_ih_method_function(index) : NULL;
+}
+
+static ScrDyn *scr_ih_inspect_view(void *ptr) {
+  (void)ptr;
+  return scr_dyn_new_obj();
+}
+
+static ScrDyn *scr_ih_new(unsigned kind, ScrDyn *iterated, ScrDyn *next, ScrDyn *fn, double remaining) {
+  static const ScrDynHandleOps ops = {
+    .cls = "Object",
+    .retain = &scr_ih_retain,
+    .release = &scr_ih_release,
+    .invoke = &scr_ih_invoke,
+    .get = &scr_ih_get,
+    .inspect_view = &scr_ih_inspect_view,
+    .to_string_tag = "Iterator Helper",
+    .inspect_view_empty = true,
+  };
+  scr_dyn_handle_install(SCR_DYNH_ITERATOR_HELPER, &ops);
+  ScrIterHelper *h = malloc(sizeof *h);
+  if (!h) scr_json_oom();
+  *h = (ScrIterHelper){ .rc = 1, .kind = kind, .state = SCR_IH_START, .iterated = scr_dyn_retain(iterated),
+    .next = next, .fn = fn ? scr_dyn_retain(fn) : NULL, .remaining = remaining };
+  ScrDyn *result = scr_dyn_new_handle(h, SCR_DYNH_ITERATOR_HELPER);
+  scr_ih_release(h);
+  return result;
+}
+
+/* The consuming methods: drive (self, next) with `fn`. */
+static ScrDyn *scr_ih_consume(ScrDyn *self, ScrDyn *next, int index, ScrDyn *fn, ScrDyn *const *args,
+                              size_t argc) {
+  const char *name = scr_ih_method_names[index];
+  bool reduce = !strcmp(name, "reduce");
+  ScrDyn *out = !strcmp(name, "toArray") ? scr_dyn_new_arr() : NULL;
+  ScrDyn *acc = NULL;
+  double counter = 0;
+  if (reduce && argc >= 2) acc = scr_dyn_retain(args[1]);
+  else if (reduce) {
+    bool done;
+    ScrDyn *first = scr_ih_step(self, next, &done);
+    if (!first) return NULL;
+    if (done) {
+      scr_dyn_release(first);
+      static const char message[] = "Reduce of a done iterator with no initial value";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NULL;
+    }
+    acc = first;
+    counter = 1;
+  }
+  for (;;) {
+    bool done;
+    ScrDyn *value = scr_ih_step(self, next, &done);
+    if (!value) {
+      if (out) scr_dyn_release(out);
+      if (acc) scr_dyn_release(acc);
+      return NULL;
+    }
+    if (done) {
+      scr_dyn_release(value);
+      break;
+    }
+    if (out) {
+      scr_dyn_arr_push(out, value);
+      continue;
+    }
+    ScrDyn *answer;
+    if (reduce) {
+      ScrDyn *index_value = scr_dyn_new_num(counter);
+      ScrDyn *call_args[3] = { acc, value, index_value };
+      ScrDyn *undefined = scr_dyn_retain(scr_dyn_undefined());
+      scr_dyn_this_push_dyn(undefined);
+      answer = scr_dyn_call(fn, call_args, 3, "callback");
+      scr_dyn_this_pop();
+      scr_dyn_release(undefined);
+      scr_dyn_release(index_value);
+    } else {
+      answer = scr_ih_callback(fn, value, counter);
+    }
+    counter++;
+    if (!answer) {
+      scr_dyn_release(value);
+      if (acc) scr_dyn_release(acc);
+      scr_ih_close(self, true);
+      return NULL;
+    }
+    if (reduce) {
+      scr_dyn_release(acc);
+      acc = answer;
+      scr_dyn_release(value);
+      continue;
+    }
+    bool truthy = scr_dyn_truthy(answer);
+    scr_dyn_release(answer);
+    if (!strcmp(name, "forEach")) {
+      scr_dyn_release(value);
+      continue;
+    }
+    bool stop = !strcmp(name, "every") ? !truthy : truthy;
+    if (!stop) {
+      scr_dyn_release(value);
+      continue;
+    }
+    if (!scr_ih_close(self, false)) {
+      scr_dyn_release(value);
+      return NULL;
+    }
+    if (!strcmp(name, "find")) return value;
+    scr_dyn_release(value);
+    return scr_dyn_new_bool(!strcmp(name, "some"));
+  }
+  if (out) return out;
+  if (reduce) return acc;
+  if (!strcmp(name, "some") || !strcmp(name, "every")) return scr_dyn_new_bool(!strcmp(name, "every"));
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* An Iterator.prototype helper method called on `self` (borrowed). */
+static ScrDyn *scr_iterator_helper_method(ScrDyn *self, int index, ScrDyn *const *args, size_t argc) {
+  const char *name = scr_ih_method_names[index];
+  ScrDyn *next = scr_ih_direct(self, name);
+  if (!next) return NULL;
+  ScrDyn *arg = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (!strcmp(name, "take") || !strcmp(name, "drop")) {
+    double budget;
+    if (!scr_ih_budget(arg, &budget)) {
+      scr_dyn_release(next);
+      scr_ih_close(self, true);
+      return NULL;
+    }
+    return scr_ih_new(!strcmp(name, "take") ? SCR_IH_TAKE : SCR_IH_DROP, self, next, NULL, budget);
+  }
+  if (!strcmp(name, "toArray")) {
+    ScrDyn *result = scr_ih_consume(self, next, index, NULL, args, argc);
+    scr_dyn_release(next);
+    return result;
+  }
+  if (!scr_ih_require_callable(arg)) {
+    scr_dyn_release(next);
+    scr_ih_close(self, true);
+    return NULL;
+  }
+  if (index < 5) {
+    unsigned kind = !strcmp(name, "map") ? SCR_IH_MAP : !strcmp(name, "filter") ? SCR_IH_FILTER : SCR_IH_FLATMAP;
+    return scr_ih_new(kind, self, next, arg, 0);
+  }
+  ScrDyn *result = scr_ih_consume(self, next, index, arg, args, argc);
+  scr_dyn_release(next);
+  return result;
+}
+
+static ScrDyn *scr_ih_method_call(int index, ScrDyn *const *args, size_t argc) {
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *result = scr_iterator_helper_method(self, index, args, argc);
+  scr_dyn_release(self);
+  return result;
+}
+
+#define SCR_IH_THUNK(i)                                                                     \
+  static ScrDyn *scr_ih_method_call_##i(ScrClosure *clo, ScrDyn *const *args, size_t argc) { \
+    (void)clo;                                                                              \
+    return scr_ih_method_call(i, args, argc);                                               \
+  }
+SCR_IH_THUNK(0)
+SCR_IH_THUNK(1)
+SCR_IH_THUNK(2)
+SCR_IH_THUNK(3)
+SCR_IH_THUNK(4)
+SCR_IH_THUNK(5)
+SCR_IH_THUNK(6)
+SCR_IH_THUNK(7)
+SCR_IH_THUNK(8)
+SCR_IH_THUNK(9)
+SCR_IH_THUNK(10)
+
+static ScrDyn *scr_ih_method_function(int index) {
+  static const ScrDynThunk thunks[SCR_IH_METHOD_COUNT] = {
+    &scr_ih_method_call_0, &scr_ih_method_call_1, &scr_ih_method_call_2, &scr_ih_method_call_3,
+    &scr_ih_method_call_4, &scr_ih_method_call_5, &scr_ih_method_call_6, &scr_ih_method_call_7,
+    &scr_ih_method_call_8, &scr_ih_method_call_9, &scr_ih_method_call_10,
+  };
+  return scr_ih_function((size_t)index, thunks[index], scr_ih_method_names[index]);
 }
 
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection) {
@@ -12818,8 +13503,15 @@ static ScrDyn *scr_native_set_pack(void *ptr) {
 
 ScrDyn *scr_dyn_native_set(ScrMap *value) {
   static const ScrDynHandleOps ops = {
-    "Set", &scr_map_retain_v, &scr_map_release_v, &scr_native_set_invoke,
-    &scr_native_set_get, &scr_weak_map_write, NULL, &scr_native_set_pack,
+      .cls = "Set",
+      .retain = &scr_map_retain_v,
+      .release = &scr_map_release_v,
+      .invoke = &scr_native_set_invoke,
+      .get = &scr_native_set_get,
+      .set = &scr_weak_map_write,
+      .iter_pack = &scr_native_set_pack,
+      /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
+      .json_empty_object = true,
   };
   scr_dyn_handle_install(SCR_DYNH_SET, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_SET);
@@ -12928,8 +13620,15 @@ static ScrDyn *scr_native_map_pack(void *ptr) {
 
 ScrDyn *scr_dyn_native_map(ScrMap *value) {
   static const ScrDynHandleOps ops = {
-    "Map", &scr_map_retain_v, &scr_map_release_v, &scr_native_map_invoke,
-    &scr_native_map_get, &scr_weak_map_write, NULL, &scr_native_map_pack,
+      .cls = "Map",
+      .retain = &scr_map_retain_v,
+      .release = &scr_map_release_v,
+      .invoke = &scr_native_map_invoke,
+      .get = &scr_native_map_get,
+      .set = &scr_weak_map_write,
+      .iter_pack = &scr_native_map_pack,
+      /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
+      .json_empty_object = true,
   };
   scr_dyn_handle_install(SCR_DYNH_MAP, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_MAP);

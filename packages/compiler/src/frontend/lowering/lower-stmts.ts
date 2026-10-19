@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
+import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
@@ -74,6 +75,7 @@ import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
 import {
   cjsExportAssignmentOf,
   cjsExportChainOf,
+  cjsVoidInitPreambleReals,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   isCjsJsFile,
@@ -111,6 +113,7 @@ import {
   lowerForOfSearchParams,
   lowerForOfSet,
 } from "./containers/for-of.js";
+import { lowerForOfHelperChain } from "./containers/iterator-helpers.js";
 import { objectIterOverIndexShape } from "./containers/indexed-objects.js";
 import { strCharsCall } from "./containers/array-construction.js";
 import {
@@ -679,10 +682,14 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
     out,
   };
   lowerer.activeStmtLists.push(entry);
+  const inFunction = stmts.length > 0 && enclosedByFunction(stmts[0]!);
+  let unreachable = false;
   try {
     for (let i = 0; i < stmts.length; i++) {
       const stmt = stmts[i]!;
       entry.index = i;
+      if (unreachable && skipsWhenUnreachable(stmt)) continue;
+      if (inFunction && isAbruptStatement(stmt)) unreachable = true;
       if (!lowerer.suppressStats) {
         lowerer.stats.statementsTotal++;
         if (sf !== undefined) lowerer.bumpFileStat(sf.fileName, "total");
@@ -802,6 +809,54 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
     lowerer.activeStmtLists.pop();
   }
   return out;
+}
+
+/** Whether a statement list belongs to a function body (at any block
+ * depth) rather than to a module's top level. */
+function enclosedByFunction(stmt: ts.Statement): boolean {
+  let owner: ts.Node | undefined = stmt.parent;
+  while (owner !== undefined && !ts.isFunctionLike(owner) && !ts.isSourceFile(owner))
+    owner = owner.parent;
+  return owner !== undefined && ts.isFunctionLike(owner);
+}
+
+/** `return`, `throw`, `break` and `continue`: the rest of the enclosing
+ * statement list never runs. */
+function isAbruptStatement(stmt: ts.Statement): boolean {
+  return (
+    ts.isReturnStatement(stmt) ||
+    ts.isThrowStatement(stmt) ||
+    ts.isBreakStatement(stmt) ||
+    ts.isContinueStatement(stmt)
+  );
+}
+
+/** Statements after an abrupt statement in a function body that lowering
+ * skips: they never execute, so neither their unsupported constructs nor the
+ * functions they reference become part of the program (production builds of
+ * libraries keep development-only code behind `throw` stubs this way).
+ * Hoisting keeps its meaning: a reference above the abrupt statement to a
+ * later function declaration lowers that declaration eagerly
+ * (predeclareForwardFnDecl), and references to a later `var`, `let` or
+ * `const` binding resolve through the forward-hoisting machinery to its
+ * undefined or TDZ state, which skipping its initializer preserves. Class,
+ * enum, module and import/export declarations and generic function
+ * declarations still lower. */
+function skipsWhenUnreachable(stmt: ts.Statement): boolean {
+  if (ts.isFunctionDeclaration(stmt)) return stmt.typeParameters === undefined;
+  if (ts.isVariableStatement(stmt))
+    return !(stmt.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+  return !(
+    ts.isClassDeclaration(stmt) ||
+    ts.isEnumDeclaration(stmt) ||
+    ts.isModuleDeclaration(stmt) ||
+    ts.isImportDeclaration(stmt) ||
+    ts.isImportEqualsDeclaration(stmt) ||
+    ts.isExportDeclaration(stmt) ||
+    ts.isExportAssignment(stmt) ||
+    ts.isInterfaceDeclaration(stmt) ||
+    ts.isTypeAliasDeclaration(stmt)
+  );
 }
 
 const TDZ_KINDS = new Set<IrType["kind"]>([
@@ -960,12 +1015,23 @@ export function predeclareForwardFnDecl(lowerer: Lowerer, symbol: ts.Symbol): bo
     entry.ctx.hoistedFnDecls.add(decl);
     const fnTail = lowerer.fnStack.splice(depth + 1);
     const scopeTail = entry.ctx.scopes.splice(frameIdx + 1);
+    // The hoisted function is kept even when the reference lowers inside
+    // a speculative attempt (a probe's temporary diagnostic sink): lower
+    // it without that sink, so its failing JS statements keep their
+    // runtime fences instead of vanishing from a body that is kept. A
+    // declaration that fails as a whole is not kept: its diagnostics go
+    // back to the probe.
+    const previousSink = lowerer.diagSink;
+    const diagsBefore = lowerer.diags.length;
+    lowerer.diagSink = null;
     try {
       entry.out.push(lowerer.lowerNestedFunctionDecl(decl));
     } catch (e) {
       entry.ctx.hoistedFnDecls.delete(decl);
+      if (previousSink !== null) previousSink.push(...lowerer.diags.splice(diagsBefore));
       throw e;
     } finally {
+      lowerer.diagSink = previousSink;
       entry.ctx.scopes.push(...scopeTail);
       lowerer.fnStack.push(...fnTail);
     }
@@ -2450,6 +2516,39 @@ export function lowerBindingPattern(
         lowerer.bindPatternTarget(el.name, value, isLet, out);
       });
       return;
+    }
+    // Map and Set sources (`const [[k, v], ...rest] = map`): the iterator
+    // yields the collection's entries (Map pairs) or values in order, so
+    // the source snapshots ONCE into that array — the spread's own
+    // machinery — and the pattern lowers as an array pattern over it,
+    // like the string case above. Element defaults keep a fence: they
+    // run between iterator steps and could mutate the live collection.
+    if (srcType.kind === "map" || srcType.kind === "set") {
+      const defaulted = pattern.elements.find(
+        (el): el is ts.BindingElement =>
+          ts.isBindingElement(el) && el.initializer !== undefined && !el.dotDotDotToken,
+      );
+      if (defaulted)
+        lowerer.unsupported("SC1031", defaulted, "binding defaults over Map/Set sources");
+      const snapshot = lowerCollectionSpread(
+        lowerer,
+        srcRef(),
+        pattern as unknown as ts.Expression,
+      );
+      if (snapshot && snapshot.type.kind === "array") {
+        const loc = locOf(pattern);
+        const snapshotT = snapshot.type;
+        const entries = lowerer.declareHiddenLocal("%dentries", snapshotT);
+        out.push({ kind: "varDecl", localId: entries.id, init: snapshot, loc });
+        lowerer.lowerBindingPattern(
+          pattern,
+          () => ({ kind: "varRef", localId: entries.id, type: snapshotT, loc }),
+          snapshotT,
+          isLet,
+          out,
+        );
+        return;
+      }
     }
     if (srcType.kind !== "array") {
       lowerer.unsupported(
@@ -6085,47 +6184,7 @@ function lowerCjsExportStatement(
     // the real assignment's position already orders. Preambles with no
     // later real assignment keep the ordinary path (the export IS
     // undefined then).
-    if (ts.isIdentifier(cjs.name)) {
-      const isExportsMember = (e: ts.Expression): e is ts.PropertyAccessExpression =>
-        ts.isPropertyAccessExpression(e) &&
-        ts.isIdentifier(e.name) &&
-        ((ts.isIdentifier(e.expression) && e.expression.text === "exports") ||
-          (ts.isPropertyAccessExpression(e.expression) &&
-            ts.isIdentifier(e.expression.expression) &&
-            e.expression.expression.text === "module" &&
-            ts.isIdentifier(e.expression.name) &&
-            e.expression.name.text === "exports"));
-      const isVoid = (e: ts.Expression): boolean => {
-        while (ts.isParenthesizedExpression(e)) e = e.expression;
-        return (
-          e.kind === ts.SyntaxKind.VoidExpression || (ts.isIdentifier(e) && e.text === "undefined")
-        );
-      };
-      // chains: `exports.a = exports.b = void 0;` collects every name
-      const names: string[] = [cjs.name.text];
-      let tail: ts.Expression = cjs.value;
-      while (
-        ts.isBinaryExpression(tail) &&
-        tail.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        isExportsMember(tail.left)
-      ) {
-        names.push((tail.left.name as ts.Identifier).text);
-        tail = tail.right;
-      }
-      if (isVoid(tail)) {
-        const sfHere = cjs.expr.getSourceFile();
-        const myPos = cjs.expr.getStart(sfHere);
-        const laterRealOf = (name: string): boolean =>
-          sfHere.statements.some((s) => {
-            const other = cjsExportAssignmentOf(s);
-            if (other?.kind !== "member" || !ts.isIdentifier(other.name)) return false;
-            if (other.name.text !== name) return false;
-            if (other.expr.getStart(sfHere) <= myPos) return false;
-            return !isVoid(other.value);
-          });
-        if (names.every(laterRealOf)) return { kind: "block", body: [], loc };
-      }
-    }
+    if (cjsVoidInitPreambleReals(cjs) !== null) return { kind: "block", body: [], loc };
     const sf = cjs.expr.getSourceFile();
     let root: IrGlobal | undefined;
     for (const stmt of sf.statements) {
@@ -8501,6 +8560,12 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         return lowerForOfStoredNumericIterator(lowerer, stmt, state, labels);
       }
     }
+  }
+  // A head that is a chain of iterator-helper stages runs as one loop
+  // over the chain's source.
+  {
+    const fused = lowerForOfHelperChain(lowerer, stmt, labels);
+    if (fused) return fused;
   }
   // `for (const k of m.keys())` / `.values()` / `.entries()`: the
   // iterator methods consumed DIRECTLY by a for-of head ride the
