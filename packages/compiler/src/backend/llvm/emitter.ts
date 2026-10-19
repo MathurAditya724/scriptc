@@ -1,4 +1,6 @@
 import { jsTruthy } from "./jsval.js";
+import { JsIcSites } from "../../ir/js-ic.js";
+import { JS_IC_WORDS } from "./js-ic.js";
 import { type ArraySearchKind, emitArraySearchHelpers } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitLlvmLayouts } from "./layouts.js";
@@ -910,6 +912,12 @@ export class LlEmitter {
   /** Constant-key reads on checked-dynamic objects, each with its own
    * zero-initialized ScrDynReadIc (scr_runtime.h). */
   private dynReadIcSites = 0;
+  /** Inline-cache sites of dynamic-tier functions (js-ic.ts): one
+   * zero-initialized ScrJsIc per site (scr_js.h). */
+  private jsIcSiteCount = 0;
+  private jsIcSitesMemo: JsIcSites | undefined;
+  /** The tier of the function being emitted. */
+  currentTier: IrFunction["tier"] = undefined;
   /** May-throw analysis (computeMayThrow): pending
    * checks are emitted only after calls that can actually raise. */
   readonly mayThrow: Set<string>;
@@ -2507,6 +2515,8 @@ export class LlEmitter {
         out.push(
           `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${this.sizeType}, ${this.sizeType}, ptr } zeroinitializer`,
         );
+      for (let site = 0; site < this.jsIcSiteCount; site++)
+        out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
     }
     for (const table of this.constantNumericTables.values()) {
       const n = table.values.length;
@@ -6763,6 +6773,7 @@ export class LlEmitter {
     const B = new BlockBuilder();
     this.B = B;
     this.currentFunctionName = fn.name;
+    this.currentTier = fn.tier;
     // Fiber switches restore the active exception cell before control
     // returns to a synchronous frame (emitPendingCheck).
     B.excCellInvariant = fn.async !== true && fn.generator === undefined;
@@ -11077,6 +11088,15 @@ export class LlEmitter {
   }
 
   /** A fresh read-site cache for one constant-key dyn read. */
+  /** The helper classification of this module's inline-cache sites. */
+  get jsIcSites(): JsIcSites {
+    return (this.jsIcSitesMemo ??= new JsIcSites(this.mod));
+  }
+
+  jsIcSite(): string {
+    return `@sc_js_ic_${this.jsIcSiteCount++}`;
+  }
+
   dynReadIcSite(): string {
     return `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
   }

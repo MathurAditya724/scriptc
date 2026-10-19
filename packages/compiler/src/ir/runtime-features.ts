@@ -8,6 +8,7 @@ import {
   RUNTIME_STREAM_CLASSES,
 } from "./ir.js";
 import { everyModuleNode } from "./traverse.js";
+import { JsIcSites, hasJsIcSite } from "./js-ic.js";
 
 export interface RuntimeFeatures {
   regex: boolean;
@@ -548,6 +549,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     return keepGoing();
   };
   if (keepGoing()) everyModuleNode(mod, { expr, stmt: keepGoing, type });
+  // Inline-cache sites of dynamic-tier functions use the tier's shapes
+  // (scr_js_object.c, with the SCR_JS_TIER build of scr_json.c).
+  if (!features.dynTier && mod.functions.some((fn) => fn.tier === "dynamic")) {
+    const sites = new JsIcSites(mod);
+    features.dynTier = mod.functions.some((fn) => fn.tier === "dynamic" && hasJsIcSite(fn, sites));
+  }
   return features;
 }
 
@@ -870,9 +877,9 @@ export function moduleUsesTlsCa(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "tlsCa").tlsCa;
 }
 
-/** True when the module has dynamic-tier jsval operations: the link switch
- * for the scr_js_* runtime units (two-tier design I3). Programs without
- * them never link a scr_js_ symbol. */
+/** True when the module has dynamic-tier jsval operations or inline-cache
+ * sites: the link switch for the scr_js_* runtime units (two-tier design
+ * I3). Programs without them never link a scr_js_ symbol. */
 export function moduleUsesDynTier(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "dynTier").dynTier;
 }

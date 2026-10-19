@@ -28,6 +28,7 @@ import { elemAccess, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { emitUnionWiden } from "./expr-records.js";
+import { emitJsIcMethod, jsIcMethods } from "./js-ic.js";
 
 export function emitDynamicExpr(
   host: LlvmEmitterContext,
@@ -206,10 +207,16 @@ export function emitDynamicExpr(
       // pending exception.
       const recv = emitBorrowedInput(host, e.recv);
       host.declare(`declare ptr @scr_dyn_prepare_method(ptr, ptr)`);
-      const prepared = B.tmp();
-      B.line(
-        `${prepared} = call ptr @scr_dyn_prepare_method(ptr ${recv.name}, ptr ${host.cstr(e.method)})`,
-      );
+      let prepared: string;
+      if (jsIcMethods(host)) {
+        // Dynamic-tier code reads the method through the site's cache.
+        prepared = emitJsIcMethod(host, e, recv.name);
+      } else {
+        prepared = B.tmp();
+        B.line(
+          `${prepared} = call ptr @scr_dyn_prepare_method(ptr ${recv.name}, ptr ${host.cstr(e.method)})`,
+        );
+      }
       host.own({ name: prepared, type: { kind: "dyn" } });
       host.emitPendingCheck();
       const args = e.args.map((a) => emitBorrowedInput(host, a));
