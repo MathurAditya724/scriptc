@@ -1712,6 +1712,15 @@ export interface IrFunction {
      * iterator helper's source): `.return()` before the first `.next()`
      * closes it. */
     closesSource?: true;
+    /** The @@toStringTag the object prints with (util.inspect,
+     * Object.prototype.toString) when it is not a generator object:
+     * "Iterator Helper", "Array Iterator", "String Iterator". A tag that
+     * starts with '!' marks a generator standing in for an object of
+     * another class, which those refuse to print. */
+    tag?: string;
+    /** The first parameter is a generator this one adapts: it prints with
+     * that generator's tag. */
+    inheritsTag?: true;
   };
   /** Source function name for native error stack frames. */
   sourceName?: string;

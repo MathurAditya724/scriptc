@@ -1058,6 +1058,99 @@ static ScrStr *scr_insp_weak_collection(const char *label, double recurse, doubl
   return ib_take(&out);
 }
 
+/* A native iterator: the array and string iterators print Node's empty
+ * `Object [Array Iterator] {}`; the Map and Set iterators print the
+ * entries their next steps would produce, under Node's labels
+ * (`[Set Iterator] { 1, 2 }`, `[Map Entries] { [ 'a', 1 ] }`), without
+ * advancing. NULL for a handle's iterator (kind 4), which keeps the
+ * unsupported answer. */
+static ScrStr *scr_insp_native_iterator(ScrDyn *d, double recurse, double depth) {
+  unsigned kind, selection;
+  ScrMap *map;
+  double index;
+  scr_dyn_native_iterator_state(d, &kind, &selection, &map, &index);
+  if (kind == 0) return scr_str_new("Object [Array Iterator] {}", 26);
+  if (kind == 1) return scr_str_new("Object [String Iterator] {}", 27);
+  if (kind != 2 && kind != 3) return NULL;
+  bool pairs = selection == 2;
+  const char *label = kind == 3 ? (pairs ? "[Set Entries]" : "[Set Iterator]")
+                                : (pairs ? "[Map Entries]" : "[Map Iterator]");
+  if (recurse > depth) {
+    InspBuf out = {0};
+    ib_cstr(&out, "[Object ");
+    ib_cstr(&out, label);
+    ib_char(&out, ']');
+    return ib_take(&out);
+  }
+  size_t remaining = 0;
+  if (map) {
+    for (double i = scr_map_iter_skip(map, index); i < scr_map_iter_count(map); i++)
+      if (scr_map_iter_live(map, i)) remaining++;
+  }
+  if (remaining == 0) {
+    InspBuf out = {0};
+    ib_cstr(&out, label);
+    ib_cstr(&out, " {  }");
+    return ib_take(&out);
+  }
+  ScrStr *base = scr_str_new(label, strlen(label));
+  scr_insp_begin(recurse + 1);
+  scr_map_iter_enter(map);
+  size_t shown = 0;
+  for (double i = scr_map_iter_skip(map, index); i < scr_map_iter_count(map) && shown < 100; i++) {
+    if (!scr_map_iter_live(map, i)) continue;
+    shown++;
+    ScrDyn *item;
+    if (pairs) {
+      item = scr_dyn_new_arr();
+      scr_dyn_arr_push(item, scr_map_dyn_key(map, i));
+      scr_dyn_arr_push(item, kind == 3 ? scr_map_dyn_key(map, i) : scr_map_dyn_value(map, i));
+    } else {
+      item = kind == 2 && selection == 0 ? scr_map_dyn_value(map, i) : scr_map_dyn_key(map, i);
+    }
+    ScrStr *text = scr_insp_dyn(item, recurse + 1, depth);
+    scr_dyn_release(item);
+    scr_insp_entry(text, false);
+    scr_str_release(text);
+  }
+  scr_map_iter_exit(map);
+  if (remaining > shown) {
+    ScrStr *more = scr_insp_more_items((double)(remaining - shown));
+    scr_insp_entry(more, false);
+    scr_str_release(more);
+  }
+  ScrStr *b0 = scr_str_new("{", 1);
+  ScrStr *b1 = scr_str_new("}", 1);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);
+  scr_str_release(base);
+  scr_str_release(b0);
+  scr_str_release(b1);
+  return out;
+}
+
+/* A compiled generator object: Node's empty `Object [<tag>] {}`, with the
+ * tag the compiler set (scr_gen_set_tag). A generator standing in for an
+ * object of another class (a tag starting with '!') throws the
+ * "not supported yet" Error instead. */
+static bool scr_insp_is_generator(const ScrDyn *d) {
+  const char *key = d->v.typed_ref.type_key;
+  return !strncmp(key, "generator<", 10) || !strncmp(key, "async-generator<", 16);
+}
+
+static ScrStr *scr_insp_generator(const ScrDyn *d) {
+  const char *tag = scr_gen_tag_reader(d->v.typed_ref.ptr);
+  if (tag[0] == '!') {
+    static const char message[] = "util.inspect of this iterator object is not supported yet";
+    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    return scr_str_new("", 0);
+  }
+  InspBuf out = {0};
+  ib_cstr(&out, "Object [");
+  ib_cstr(&out, tag);
+  ib_cstr(&out, "] {}");
+  return ib_take(&out);
+}
+
 static ScrStr *scr_insp_dyn_collection(ScrDyn *d, double recurse, double depth, bool is_map) {
   ScrMap *map = d->v.handle.ptr;
   const char *label = is_map ? "Map" : "Set";
@@ -1309,6 +1402,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         return scr_insp_weak_collection(d->v.handle.tag == SCR_DYNH_WEAK_MAP ? "WeakMap" : "WeakSet",
                                         recurse, depth);
       if (d->v.handle.tag == SCR_DYNH_DATE) return scr_insp_date(scr_dyn_native_date_value(d));
+      if (d->v.handle.tag == SCR_DYNH_ITERATOR) {
+        ScrStr *iterator = scr_insp_native_iterator(d, recurse, depth);
+        if (iterator) return iterator;
+      }
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
       if (ops->inspect_view) {
         /* Node's custom inspectors answer the bare class name beyond the
@@ -1349,6 +1446,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     }
 
     case SCR_DYN_TYPED_REF: {
+      if (scr_insp_is_generator(d)) return scr_insp_generator(d);
       const char *cls = NULL;
       ScrDyn *view = scr_event_ref_hooks ? scr_event_ref_hooks->inspect_view(d, &cls) : NULL;
       if (view) {

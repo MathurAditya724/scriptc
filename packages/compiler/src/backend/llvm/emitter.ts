@@ -4644,6 +4644,9 @@ export class LlEmitter {
       // An iterator helper's return() before its first next() closes the
       // source generator in its first argument slot.
       const closesSource = fn.generator.closesSource === true;
+      if (fn.generator.tag !== undefined) this.declare(`declare void @scr_gen_set_tag(ptr, ptr)`);
+      if (fn.generator.inheritsTag === true)
+        this.declare(`declare void @scr_gen_copy_tag(ptr, ptr)`);
       if (closesSource) {
         const field = lifted ? 1 : 0;
         this.declare(`declare void @scr_gen_close(ptr)`);
@@ -4676,6 +4679,12 @@ export class LlEmitter {
         settleAsync === null
           ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
           : `  %gg = call ptr @scr_async_gen_new(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+        ...(fn.generator.tag !== undefined
+          ? [`  call void @scr_gen_set_tag(ptr %gg, ptr ${this.cstr(fn.generator.tag)})`]
+          : []),
+        ...(fn.generator.inheritsTag === true
+          ? [`  call void @scr_gen_copy_tag(ptr %gg, ptr %a${lifted ? 1 : 0})`]
+          : []),
         ...(closesSource
           ? [
               `  call void @scr_gen_set_unstarted_return(ptr %gg, ptr @${mangleGenSourceClose(fn.name)})`,

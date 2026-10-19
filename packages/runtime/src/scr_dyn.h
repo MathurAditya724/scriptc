@@ -706,6 +706,12 @@ bool scr_dyn_iterator_step_done(const ScrDyn *iterator);
  * next live entry index of its collection, or -1 once the collection is
  * exhausted (the iterator then ends its iteration). */
 double scr_dyn_collection_iterator_index(const ScrDyn *iterator);
+/* For util.inspect: a native iterator's kind (0 array or typed array,
+ * 1 string, 2 Map, 3 Set, 4 a handle's), its selection (0 values, 1 keys,
+ * 2 entries), its collection (NULL once exhausted, and for kinds other
+ * than 2 and 3) and the index its next step reads from. */
+void scr_dyn_native_iterator_state(const ScrDyn *iterator, unsigned *kind, unsigned *selection,
+                                   ScrMap **collection, double *index);
 /* The ordinary object snapshot plus a retained typed source. source_access
  * releases that source when materialize=false and returns a fresh snapshot
  * when true. */

@@ -4986,6 +4986,7 @@ struct ScrGen {
   void (*drop_args)(void *);
   /* scr_gen_set_unstarted_return's hook; NULL for most generators. */
   void (*unstarted_return)(void *);
+  const char *tag; /* scr_gen_set_tag's; NULL is the default */
   bool is_async;
   void (*settle_async)(ScrGen *, ScrPromise *);
   ScrAsyncGenRequest *requests_head;
@@ -5546,6 +5547,18 @@ void scr_gen_resume(ScrGen *g) {
 }
 
 void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *)) { g->unstarted_return = hook; }
+
+void scr_gen_set_tag(ScrGen *g, const char *tag) { g->tag = tag; }
+
+void scr_gen_copy_tag(ScrGen *g, const ScrGen *from) { g->tag = from->tag; }
+
+const char *scr_gen_tag(const ScrGen *g) {
+  return g->tag ? g->tag : g->is_async ? "AsyncGenerator" : "Generator";
+}
+
+__attribute__((constructor)) static void scr_gen_tag_reader_init(void) {
+  scr_gen_tag_reader = scr_gen_tag;
+}
 
 void scr_gen_close(ScrGen *g) {
   scr_gen_slot_reset(&g->ret);

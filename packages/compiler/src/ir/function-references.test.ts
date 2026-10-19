@@ -143,6 +143,7 @@ const FUNCTION_FIELDS: Record<StringFields<Omit<IrFunction, "body">>, Role> = {
   "captures[].localId": "other",
   "classCaptures[].name": "other",
   "classCaptures[].localId": "other",
+  "generator.tag": "other",
 };
 
 const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
