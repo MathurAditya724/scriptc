@@ -178,5 +178,7 @@ export const g = import_g.g;
 `,
     "/pkg/dist/index.js",
   );
-  expect(result).toEqual({ degrade: expect.stringContaining("bundled CommonJS modules") as string });
+  expect(result).toEqual({
+    degrade: expect.stringContaining("bundled CommonJS modules") as string,
+  });
 });

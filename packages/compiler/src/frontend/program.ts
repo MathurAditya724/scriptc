@@ -6045,7 +6045,8 @@ export function npmStaticLoadableFiles(
   let computed = false;
   while (work.length > 0 && !computed) {
     const sf = work.pop()!;
-    const packageJs = npmStaticPackageOfPath(sf.fileName) !== null && isJsSourceFileName(sf.fileName);
+    const packageJs =
+      npmStaticPackageOfPath(sf.fileName) !== null && isJsSourceFileName(sf.fileName);
     const follow = (spec: string, kind: "import" | "require"): void => {
       if (canonicalBuiltinModule(spec) !== null) return;
       add(resolveImport7(program, sf, spec, kind) ?? npmStaticDepSf7(program, sf, spec, kind));

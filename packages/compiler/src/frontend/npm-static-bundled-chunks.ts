@@ -258,7 +258,10 @@ function strictPrologue(stmts: readonly ts.Statement[]): boolean {
 /** A cheap text probe: the helper's name, or its minified body's
  * `(m={exports:{}}).exports,m` fragment. */
 export function mayBundleChunks(source: string): boolean {
-  return source.includes("__commonJS") || /\{\s*exports\s*:\s*\{\s*\}\s*\}\s*\)\s*\.exports\s*,/.test(source);
+  return (
+    source.includes("__commonJS") ||
+    /\{\s*exports\s*:\s*\{\s*\}\s*\}\s*\)\s*\.exports\s*,/.test(source)
+  );
 }
 
 /** Splits a CommonJS bundle's __commonJS chunks into virtual modules (see

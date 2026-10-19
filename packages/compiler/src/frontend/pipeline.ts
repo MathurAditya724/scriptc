@@ -465,7 +465,8 @@ function loadFrontend(
     if (npmStaticFileDegrades().size > 0) {
       const loadable = npmStaticLoadableFiles(load.program, load.moduleOrder);
       for (const [file, { pkg, reason }] of npmStaticFileDegrades()) {
-        if (!reasons.has(pkg) && (loadable === null || loadable.has(file))) reasons.set(pkg, reason);
+        if (!reasons.has(pkg) && (loadable === null || loadable.has(file)))
+          reasons.set(pkg, reason);
       }
     }
     for (const d of preflight) {
