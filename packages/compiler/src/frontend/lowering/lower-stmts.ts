@@ -2397,7 +2397,7 @@ export function lowerBindingPattern(
         )
           ? {
               kind: "libCall",
-              fn: "dyn.iterPack",
+              fn: "dyn.destructureRest",
               args: [srcRef(), { kind: "strLit", value: dynSpell ?? "", type: STRING, loc }],
               type: DYN,
               loc,

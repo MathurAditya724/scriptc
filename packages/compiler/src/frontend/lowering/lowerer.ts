@@ -10608,6 +10608,10 @@ export class Lowerer {
     return lowerDefaultExport(this, stmt);
   }
 
+  /** Statements %main runs before any module initializer: runtime
+   * registrations the lowering passes add. */
+  readonly mainPrelude: IrStmt[] = [];
+
   buildMain(): IrFunction {
     return buildMain(this);
   }
