@@ -2390,6 +2390,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Rest listeners use the checked function bridge to pack event arguments. */
   "child.onDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
   "process.connected": { argTypes: [], result: BOOL },
+  /** Whether this fork child opened its channel; part of process.send's
+   * presence in programs with fork targets. Never throws. */
+  "process.ipcOpen": { argTypes: [], result: BOOL },
   "process.send": { argTypes: [STRING], result: BOOL },
   "process.sendCb": { argTypes: [STRING, null], result: BOOL },
   "process.disconnect": { argTypes: [], result: VOID },
@@ -3016,8 +3019,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "process.exit": { argTypes: [F64], result: VOID },
   /** Numeric process.exitCode write (integer validation, implicit exit status). */
   "process.setExitCode": { argTypes: [F64], result: VOID },
+  /** The process.exitCode write of a program that also reads the
+   * property: the same validation, and the code counts as assigned. */
+  "process.setExitCodeTracked": { argTypes: [F64], result: VOID },
   /** The code for process.exit() with no argument, or zero when unset. */
   "process.currentExitCode": { argTypes: [], result: F64 },
+  /** Whether process.exitCode reads a code rather than undefined. Never throws. */
+  "process.hasExitCode": { argTypes: [], result: BOOL },
   "process.cwd": { argTypes: [], result: STRING },
   /** getpid(2) / getuid(2): zero args → f64. POSIX-only target, so both
    * always answer (the checker's `getuid?` optionality covers Windows —

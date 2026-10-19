@@ -15,7 +15,7 @@ import { InternalCompilerError } from "../../errors.js";
  * flow (if/while/for/for-of/do, switch, try/catch, abrupt completions),
  * explicit resource management, and blocked-binding poisoning. */
 import * as ts from "../ts7/adapter.js";
-import { processDataMemberValue } from "./builtins/process.js";
+import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
 import { bindingSource } from "../binding-source.js";
@@ -7129,9 +7129,12 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         ) {
           const loc = locOf(expr);
           const value = lowerer.lowerExprExpecting(expr.right, F64);
+          const fn = programReadsExitCode(lowerer)
+            ? "process.setExitCodeTracked"
+            : "process.setExitCode";
           return {
             kind: "exprStmt",
-            expr: { kind: "libCall", fn: "process.setExitCode", args: [value], type: VOID, loc },
+            expr: { kind: "libCall", fn, args: [value], type: VOID, loc },
             loc,
           };
         }

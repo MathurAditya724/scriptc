@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6270-promisify-callback-functions.ts"
+ ],
+ "diags": []
+}

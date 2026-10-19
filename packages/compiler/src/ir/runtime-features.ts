@@ -250,6 +250,7 @@ const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.connected",
   "process.disconnect",
   "process.forkTarget",
+  "process.ipcOpen",
   "process.onDisconnect",
   "process.onMessage",
   "process.send",

@@ -6,7 +6,7 @@ import { lowerEventObjectProperty, lowerEventObjectPropertyWrite } from "./lower
 import { lowerDisposableStackInstanceOf } from "./builtins/disposable-stack.js";
 import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
-import { isOptionalProcessStreamProperty } from "./builtins/process.js";
+import { isOptionalProcessStreamProperty, processHasIpc } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { esmImportBindingKind } from "./builtins/module-bindings.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
@@ -644,6 +644,24 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (webAssembly) return webAssembly;
     if (lowerer.isStdlibGlobal(expr.expression, "process"))
       return { kind: "strLit", value: "object", type: STRING, loc };
+    {
+      let operand = expr.expression;
+      while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+      const ipcMember =
+        ts.isPropertyAccessExpression(operand) && !operand.questionDotToken
+          ? lowerer.stdlibGlobalMember(operand, "process")
+          : null;
+      if (ipcMember === "send" || ipcMember === "disconnect") {
+        return {
+          kind: "ternary",
+          cond: processHasIpc(lowerer, loc),
+          then: { kind: "strLit", value: "function", type: STRING, loc },
+          else_: { kind: "strLit", value: "undefined", type: STRING, loc },
+          type: STRING,
+          loc,
+        };
+      }
+    }
     if (lowerer.isStdlibGlobal(expr.expression, "fetch"))
       return { kind: "strLit", value: "function", type: STRING, loc };
     const performance = lowerPerfHooksTypeof(lowerer, expr.expression);

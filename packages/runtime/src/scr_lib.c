@@ -2037,6 +2037,19 @@ double scr_process_exit_code_or_zero(void) {
   return (double)scr_exit_code_hint_get();
 }
 
+static SCR_TL bool scr_exit_code_assigned = false;
+
+void scr_process_set_exit_code_tracked(double code) {
+  int converted;
+  if (!scr_process_exit_code_of(code, &converted)) return;
+  scr_exit_code_note(converted);
+  scr_exit_code_assigned = true;
+}
+
+bool scr_process_has_exit_code(void) {
+  return scr_exit_code_assigned || scr_exit_code_hint_get() != 0;
+}
+
 #if defined(__linux__)
 #include <sched.h>
 #include <signal.h>
