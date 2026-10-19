@@ -2112,6 +2112,51 @@ export class Lowerer {
     return fallback ?? null;
   }
 
+  /** A TypeScript object literal handed to a JavaScript checked-value
+   * parameter whose inferred type is open (`constructor({ factory, ...options
+   * } = {})` — the rest element admits any property): the literal names a
+   * property the contextual JS type does not declare, so it has no record
+   * layout there and is built as the plain object the JS side receives. */
+  private excessJsContextualProperty(
+    literal: ts.ObjectLiteralExpression,
+    contextual: readonly ts.Type[],
+  ): boolean {
+    const objects = contextual.filter(
+      (part) => !(part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)),
+    );
+    if (objects.length === 0) return false;
+    // Only a destructuring pattern with a rest element is open; other
+    // inferred JS types keep their record lowering.
+    const fromJs = objects.every((part) => {
+      const sym = part.getSymbol();
+      return (
+        sym !== undefined &&
+        this.checker.declarationsOf(sym).some((d) => {
+          if (!isJsSourceFile(d.getSourceFile())) return false;
+          // The pattern itself, or the `= {}` default of a pattern parameter.
+          const pattern =
+            ts.isObjectLiteralExpression(d) &&
+            d.parent !== undefined &&
+            ts.isParameter(d.parent) &&
+            d.parent.initializer === d
+              ? d.parent.name
+              : d;
+          return (
+            ts.isObjectBindingPattern(pattern) &&
+            pattern.elements.nodes.some((element) => element.dotDotDotToken !== undefined)
+          );
+        })
+      );
+    });
+    if (!fromJs) return false;
+    return literal.properties.nodes.some((prop) => {
+      if (!prop.name || !(ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)))
+        return false;
+      const name = prop.name.text;
+      return objects.every((part) => !this.checker.getPropertyOfType(part, name));
+    });
+  }
+
   /** The index value of a keyed read of a record's index signature that
    * can answer undefined for a missing key while its checker type does not
    * admit undefined, or null. A literal key naming a declared field is a
@@ -9615,7 +9660,8 @@ export class Lowerer {
           builtinOption("SpawnOptions") ||
           builtinOption("UrlObject") ||
           builtinOption("URLFormatOptions") ||
-          !this.mapTypeOf(this.typeOf(x))
+          !this.mapTypeOf(this.typeOf(x)) ||
+          this.excessJsContextualProperty(x, parts)
         ) {
           return lowerDynObjectLiteral(this, x);
         }
