@@ -257,7 +257,7 @@ export function emitDenseSlotUnlink(
   B.condBr(same, swap, done);
   B.startBlock(swap);
   B.line(`store ptr ${placeholder}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
-  host.releaseValue(current, element);
+  host.releaseHeap(current, element);
   B.br(done);
   B.startBlock(done);
 }
@@ -315,7 +315,7 @@ export function emitDenseArrayGet(
     fastLabel = B.newLabel("arr.get.ref");
     B.condBr(nonnull, fastLabel, slow);
     B.startBlock(fastLabel);
-    fast = retain ? host.retainValue(raw, element) : raw;
+    fast = retain ? host.retainFrame(raw, element) : raw;
   }
   B.br(join);
   B.startBlock(slow);
@@ -493,7 +493,7 @@ export function emitDenseArraySet(
     const releaseLabel = B.newLabel("arr.set.release");
     B.condBr(hadValue, releaseLabel, join);
     B.startBlock(releaseLabel);
-    host.releaseValue(old, element);
+    host.releaseHeap(old, element);
   }
   B.br(join);
   // Below the bound the slot holds a present value: replace it, leaving
@@ -508,7 +508,7 @@ export function emitDenseArraySet(
     );
   }
   storeValue(filledValuePtr);
-  if (filledOld) host.releaseValue(filledOld, element);
+  if (filledOld) host.releaseHeap(filledOld, element);
   B.br(join);
   B.startBlock(slow);
   call(" cold");
