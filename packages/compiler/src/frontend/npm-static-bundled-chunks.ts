@@ -230,6 +230,16 @@ function copyableInitializer(init: ts.Expression | undefined): boolean {
   return depth > 0 && ts.isIdentifier(walk) && walk.text === "Object";
 }
 
+/** One recognized chunk declaration. */
+interface Chunk {
+  name: string;
+  stmt: ts.VariableStatement;
+  params: string[];
+  body: ts.Block;
+  path: string;
+  spec: string;
+}
+
 interface TopLevel {
   stmt: ts.Statement;
   /** The declarator (or function declaration) itself. */
@@ -322,14 +332,6 @@ export function splitBundledChunks(
   }
 
   // The chunk declarations: `var NAME = HELPER(factory);`, one declarator.
-  interface Chunk {
-    name: string;
-    stmt: ts.VariableStatement;
-    params: string[];
-    body: ts.Block;
-    path: string;
-    spec: string;
-  }
   const chunks = new Map<string, Chunk>();
   const base = filePath.replace(/^.*[\\/]/, "");
   for (const [name, t] of top) {
@@ -470,12 +472,8 @@ function applyEdits(source: string, from: number, to: number, edits: Edit[]): st
 /** The virtual module text for one chunk, or a degrade reason. */
 function chunkSource(
   sf: ts.SourceFile,
-  chunk: {
-    name: string;
-    params: string[];
-    body: ts.Block;
-  },
-  chunks: ReadonlyMap<string, unknown>,
+  chunk: Chunk,
+  chunks: ReadonlyMap<string, Chunk>,
   top: ReadonlyMap<string, TopLevel>,
   stable: (name: string) => boolean,
   callEdits: readonly Edit[],
