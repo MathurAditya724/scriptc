@@ -23,6 +23,7 @@ import {
 } from "../../diagnostics/diagnostic.js";
 import { isCollationCovered } from "./collation-repertoire.js";
 import type { Lowerer } from "./lowerer.js";
+import { keptIdentityAssertion } from "./assertion-identity.js";
 
 /** How an identity-sensitive binding is used after a copy could replace it. */
 interface IdentityUse {
@@ -217,6 +218,8 @@ export function scanDivergences(
   }
 
   for (const { decl, source, type } of castDecls) {
+    // An assertion of the global object keeps that object: no copy.
+    if (keptIdentityAssertion(lowerer, decl.initializer!) !== undefined) continue;
     const name = (decl.name as ts.Identifier).text;
     const scope = enclosingScope(decl);
     if (scope === undefined) continue;

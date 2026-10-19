@@ -144,6 +144,7 @@ import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { handleEventReaderPrelude } from "./lower-event-target.js";
 import { jsHoldsDynObject } from "./lower-exprs.js";
+import { keptIdentityAssertion } from "./assertion-identity.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
 export interface FileParts {
@@ -1954,6 +1955,30 @@ export function collectGlobals(
                 checkedGlobalReference(lowerer, initializer)) ||
               stdlibGlobalNameOf(lowerer, initializer) === "globalThis")
           ) {
+            const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+            if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+              const g: IrGlobal = {
+                id: `%g.${tag}${nsPrefix}${nameNode.text}`,
+                name: nameNode.text,
+                type: DYN,
+                mutable: isLet,
+                source: bindingSource(nameNode),
+                ...(!isVarDeclared(decl) ? { tdz: true as const } : {}),
+              };
+              lowerer.globalsBySymbol.set(symbol, g);
+              lowerer.globalsList.push(g);
+              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+            }
+            continue;
+          }
+          // A file-scope binding of an assertion of the global object
+          // (`const state = globalThis as { [KEY]?: State }`): the binding
+          // holds that object, so writes through it reach the object other
+          // modules read (assertion-identity.ts).
+          const asserted = decl.initializer
+            ? keptIdentityAssertion(lowerer, decl.initializer)
+            : undefined;
+          if (nameNode === decl.name && !decl.type && asserted) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
               const g: IrGlobal = {
