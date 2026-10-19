@@ -22,6 +22,9 @@ export interface CjsRewriteHost {
    * exists, so Node's lexer-visible name set bounds nothing and every
    * name the export plumbing defines is part of its surface. */
   requireOnly?: ((filePath: string) => boolean) | undefined;
+  /** Told the names Node's lexer detects in the original file that the
+   * rewritten text spells only as accessors (which the lexer skips). */
+  lexerVisibleNames?: ((filePath: string, names: readonly string[]) => void) | undefined;
 }
 
 /** True when esbuild's export object (`module.exports = __toCommonJS(T)`
@@ -119,8 +122,12 @@ interface EntrySpec {
   name: string;
   /** "ident": VALUE is a plain identifier spelled directly in the table.
    * "hoist": VALUE is an expression text hoisted to a tail const first.
+   * "getter": VALUE is a getter body's returned expression the table
+   *   keeps as a live accessor (read on every access, like the original
+   *   getter, so a lazily initialized module still initializes at the
+   *   first read).
    * "any": the checked-dynamic fallback (`__scriptc_any`). */
-  kind: "ident" | "hoist" | "any";
+  kind: "ident" | "hoist" | "getter" | "any";
   value?: string;
 }
 
@@ -760,7 +767,14 @@ export function rewriteBundlerCjsSyntax(
       ...exportTables.filter((t) => t.target !== esbuildMainTarget),
     ];
     for (const t of tablesOrdered) {
-      for (const [name, value] of t.entries) claim(name, classify(name, value));
+      for (const [name, value] of t.entries) {
+        const spec = classify(name, value);
+        // The table feeding module.exports keeps a getter it cannot chase
+        // as a live accessor rather than a snapshot.
+        if (spec.kind === "any" && value !== null && t.target === esbuildMainTarget)
+          claim(name, { name, kind: "getter", value: value.getText() });
+        else claim(name, spec);
+      }
     }
     for (const d of definePropEntries) claim(d.name, classify(d.name, d.value));
 
@@ -1039,6 +1053,8 @@ export function rewriteBundlerCjsSyntax(
       const v = `__scriptc_e${hoistN++}`;
       hoists.push(`const ${v} = ${dropInteropDefault(spec.value!)};`);
       plainParts.push(`${keyOf(spec.name)}: ${v},`);
+    } else if (spec.kind === "getter") {
+      plainParts.push(`get ${keyOf(spec.name)}() { return ${dropInteropDefault(spec.value!)}; },`);
     } else {
       plainParts.push(`${keyOf(spec.name)}: __scriptc_any,`);
     }
@@ -1064,5 +1080,13 @@ export function rewriteBundlerCjsSyntax(
   lines.push(
     `module.exports = {${spreadParts.join("")}${plainParts.join("")}${esModulePart}${memberParts.join("")}};`,
   );
+  /* Node's lexer sees the original's names for these entries (esbuild's
+   * dead annotation), but no accessor of the canonical table: the host
+   * keeps those names lexer-visible, so ES-module importers link exactly
+   * as they do against the original. */
+  const accessorNames = [...entries.values()]
+    .filter((spec) => spec.kind === "getter" && lexed.exports.has(spec.name))
+    .map((spec) => spec.name);
+  if (accessorNames.length > 0) host.lexerVisibleNames?.(filePath, accessorNames);
   return text + lines.join("\n") + "\n";
 }

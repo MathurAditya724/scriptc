@@ -443,9 +443,154 @@ export function lowerBundledEsmInits(
     }
   }
   const lowered = new Set<string>();
+  /** Some binding between the use site and the top level rebinds a name
+   * the table's getters read. */
+  const shadowed = (site: ts.Node, entries: readonly [string, ts.Expression][]): boolean => {
+    const read = new Set<string>();
+    for (const [, value] of entries) for (const x of references(value)) read.add(x.text);
+    for (let a = site.parent; a !== undefined && !ts.isSourceFile(a); a = a.parent) {
+      if (
+        ts.isFunctionLike(a) ||
+        ts.isBlock(a) ||
+        ts.isClassDeclaration(a) ||
+        ts.isClassExpression(a)
+      ) {
+        for (const n of declaredNames(a)) if (read.has(n)) return true;
+      }
+    }
+    return false;
+  };
+  const getterText = (value: ts.Expression): string =>
+    applyEdits(source, value.getStart(sf), value.getEnd(), edits);
+
+  /* Memoized lazy loaders of those namespaces, `L = () => M ??= NS` (a
+   * bundle plugin's lazy re-exports): every `L().name` becomes the
+   * initializer call followed by the export's live read, so the first
+   * access still initializes the module, once, and later accesses read
+   * the binding. */
+  const loaderSpans: { start: number; end: number }[] = [];
+  for (const [name, t] of top) {
+    const d = t.node;
+    if (!ts.isVariableDeclaration(d) || d.initializer === undefined) continue;
+    const fn = unparen(d.initializer);
+    if (!ts.isArrowFunction(fn) || fn.parameters.nodes.length !== 0 || ts.isBlock(fn.body))
+      continue;
+    const memoize = unparen(fn.body);
+    if (
+      !ts.isBinaryExpression(memoize) ||
+      (memoize.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionEqualsToken &&
+        memoize.operatorToken.kind !== ts.SyntaxKind.BarBarEqualsToken) ||
+      !ts.isIdentifier(memoize.left)
+    )
+      continue;
+    let w = unparen(memoize.right);
+    let interop = false;
+    let nodeMode = false;
+    if (
+      ts.isCallExpression(w) &&
+      ts.isIdentifier(w.expression) &&
+      helperBase(w.expression.text) === "__toESM"
+    ) {
+      const [arg, mode] = w.arguments.nodes;
+      if (!arg || w.arguments.nodes.length > 2) continue;
+      if (mode !== undefined) {
+        if (ts.isNumericLiteral(mode)) nodeMode = Number(mode.text) !== 0;
+        else if (mode.kind === ts.SyntaxKind.TrueKeyword) nodeMode = true;
+        else if (mode.kind !== ts.SyntaxKind.FalseKeyword) continue;
+      }
+      interop = true;
+      w = unparen(arg);
+    }
+    let initCall: ts.CallExpression | null = null;
+    if (ts.isBinaryExpression(w) && w.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      const left = unparen(w.left);
+      if (
+        !ts.isCallExpression(left) ||
+        !ts.isIdentifier(left.expression) ||
+        !inits.has(left.expression.text) ||
+        left.arguments.nodes.length !== 0
+      )
+        continue;
+      initCall = left;
+      w = unparen(w.right);
+    }
+    if (
+      !ts.isCallExpression(w) ||
+      !ts.isIdentifier(w.expression) ||
+      helperBase(w.expression.text) !== "__toCommonJS" ||
+      w.arguments.nodes.length !== 1 ||
+      !ts.isIdentifier(w.arguments.nodes[0]!)
+    )
+      continue;
+    const target = (w.arguments.nodes[0] as ts.Identifier).text;
+    const table = tables.get(target);
+    if (table === undefined) continue;
+    const loaderWhy = {
+      degrade: `its memoized lazy loader '${name}' returns the namespace of a bundled ES module as a value, a module object the static rewrite cannot represent (only member reads of its result compile)`,
+    };
+    const memo = memoize.left.text;
+    const memoDecl = top.get(memo)?.node;
+    if (
+      memoDecl === undefined ||
+      !ts.isVariableDeclaration(memoDecl) ||
+      memoDecl.initializer !== undefined ||
+      writes.get(memo) !== 1 ||
+      countDeclarations(sf, memo) !== 1 ||
+      (refsByName.get(memo) ?? []).some((x) => x !== memoize.left) ||
+      writes.has(name) ||
+      countDeclarations(sf, name) !== 1
+    )
+      return loaderWhy;
+    const entries = new Map(table.entries);
+    for (const ref of refsByName.get(name) ?? []) {
+      const call = ref.parent;
+      if (
+        call === undefined ||
+        !ts.isCallExpression(call) ||
+        call.expression !== ref ||
+        call.arguments.nodes.length !== 0
+      )
+        return loaderWhy;
+      let access: ts.Node | undefined = call.parent;
+      if (
+        access === undefined ||
+        !ts.isPropertyAccessExpression(access) ||
+        access.expression !== call ||
+        !plainRead(access)
+      )
+        return loaderWhy;
+      // Node mode binds `default` to the namespace object itself.
+      if (interop && nodeMode && access.name.text === "default") {
+        const outer: ts.Node | undefined = access.parent;
+        if (
+          outer === undefined ||
+          !ts.isPropertyAccessExpression(outer) ||
+          outer.expression !== access ||
+          !plainRead(outer)
+        )
+          return loaderWhy;
+        access = outer;
+      }
+      const member = (access as ts.PropertyAccessExpression).name.text;
+      const value = entries.get(member);
+      if (value === undefined || shadowed(access, table.entries)) return loaderWhy;
+      const init = initCall === null ? "" : `${initCall.getText(sf)}, `;
+      edits.push({
+        start: access.getStart(sf),
+        end: access.getEnd(),
+        text: `(${init}${getterText(value)})`,
+      });
+    }
+    edits.push(...removeDeclarators(sf, new Set([d, memoDecl])));
+    loaderSpans.push({ start: d.getStart(sf), end: d.getEnd() });
+    lowered.add(target);
+  }
+
   for (const r of allRefs) {
     const table = tables.get(r.text);
     if (table === undefined) continue;
+    if (loaderSpans.some((span) => r.getStart(sf) >= span.start && r.getEnd() <= span.end))
+      continue;
     const p = r.parent;
     // The table's own declaration and __export call are handled below.
     if (p !== undefined && ts.isVariableDeclaration(p) && p.name === r) continue;
@@ -528,28 +673,26 @@ export function lowerBundledEsmInits(
     }
     // The getters read top-level bindings: nothing between the use site
     // and the top level may rebind one of their names.
-    const read = new Set<string>();
-    for (const [, value] of table.entries) for (const x of references(value)) read.add(x.text);
-    for (let a = p.parent; a !== undefined && !ts.isSourceFile(a); a = a.parent) {
-      if (
-        ts.isFunctionLike(a) ||
-        ts.isBlock(a) ||
-        ts.isClassDeclaration(a) ||
-        ts.isClassExpression(a)
-      ) {
-        for (const n of declaredNames(a)) {
-          if (read.has(n)) return { degrade: `its shipped JS ${why}` };
-        }
-      }
-    }
+    if (shadowed(p, table.entries)) return { degrade: `its shipped JS ${why}` };
     const getters = table.entries
       .map(
         ([n, value]) =>
-          `get ${/^[A-Za-z_$][\w$]*$/.test(n) ? n : JSON.stringify(n)}() { return ${applyEdits(source, value.getStart(sf), value.getEnd(), edits)}; }`,
+          `get ${/^[A-Za-z_$][\w$]*$/.test(n) ? n : JSON.stringify(n)}() { return ${getterText(value)}; }`,
       )
       .join(", ");
     edits.push({ start: p.getStart(sf), end: p.getEnd(), text: `{ ${getters} }` });
     lowered.add(r.text);
+  }
+  // A table nothing reads (its module is never required) goes too: its
+  // names are no exports of the bundle.
+  for (const [target, table] of tables) {
+    if (lowered.has(target)) continue;
+    const live = (refsByName.get(target) ?? []).some((x) => {
+      const p = x.parent;
+      if (p !== undefined && ts.isVariableDeclaration(p) && p.name === x) return false;
+      return !(x.getStart(sf) >= table.stmt.getStart(sf) && x.getEnd() <= table.stmt.getEnd());
+    });
+    if (!live) lowered.add(target);
   }
   for (const target of lowered) {
     const table = tables.get(target)!;

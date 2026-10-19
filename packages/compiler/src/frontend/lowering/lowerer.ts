@@ -2507,6 +2507,10 @@ export class Lowerer {
    * lifted lazily as module-level functions and interned per accessor
    * declaration: member reads call the getter (lower-exprs). */
   readonly cjsAccessorFns = new Map<ts.Node, { fnName: string; type: IrType & { kind: "func" } }>();
+  /** Accessor exports' link-time values for ES-module importers, and the
+   * per-module flag that the copy already ran (cjsAccessorSnapshotStores). */
+  readonly cjsAccessorSnapshots = new Map<ts.Node, { id: string; type: IrType }>();
+  readonly cjsSnapshotReady = new Map<ts.SourceFile, string>();
   /** Interned `%iter.drain.<n>` helpers (classIteratorDrainCall): one per
    * receiver class — the eager drain of a class iterable's protocol into
    * a fresh element array, behind array/call spreads. */

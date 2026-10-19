@@ -114,6 +114,7 @@ import {
   cjsClassExprWholeExportOf,
   cjsExportAssignmentOf,
   cjsExportDiscardReason,
+  cjsExportTargetLiteral,
   isCjsExportTableLiteral,
   isCjsJsFile,
   isJsSourceFile,
@@ -164,7 +165,7 @@ import {
 import { strCharsCall } from "./containers/array-construction.js";
 import { lowerOptionalStringIndex, lowerUnionStringIndex } from "./string-index.js";
 import { tryLowerIndexedComparison } from "./indexed-comparison.js";
-import { npmStaticPackageOfPath } from "../npm-static.js";
+import { npmStaticPackageOfPath, npmStaticLexerVisibleNames } from "../npm-static.js";
 import { unsupportedModuleFeatureOf } from "../builtin-modules.js";
 import { fenceEnumObjectValue, lowerEnumAccess } from "./lower-enums.js";
 import {
@@ -12541,7 +12542,106 @@ function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr |
   if (!ts.isObjectLiteralExpression(getter.parent) || !isCjsExportTableLiteral(getter.parent)) {
     return null;
   }
+  // An ES-module import binding reads the value Node copied when the
+  // importer linked the CommonJS module (cjsAccessorSnapshotStores).
+  const raw = lowerer.checker.getSymbolAtLocation(ident);
+  const binding = raw ? lowerer.checker.declarationsOf(raw)[0] : undefined;
+  if (
+    binding !== undefined &&
+    (ts.isImportSpecifier(binding) || ts.isExportSpecifier(binding)) &&
+    !isCjsJsFile(binding.getSourceFile(), lowerer.program)
+  ) {
+    const snapshot = cjsAccessorSnapshotOf(lowerer, getter);
+    if (snapshot !== null)
+      return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc: locOf(ident) };
+  }
   return cjsAccessorCall(lowerer, getter, locOf(ident));
+}
+
+/** The names Node's ES-module loader copies off a CommonJS module that a
+ * bundler rewrite spells as accessors (npmStaticLexerVisibleNames), with
+ * their getters in that order; empty for every other module. */
+function lexerVisibleAccessors(dep: ts.SourceFile): ts.GetAccessorDeclaration[] {
+  const names = npmStaticLexerVisibleNames(dep.fileName);
+  if (names.length === 0) return [];
+  let table: ts.ObjectLiteralExpression | null = null;
+  for (const stmt of dep.statements.nodes) {
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs?.kind === "table" && cjsExportDiscardReason(stmt) === null) {
+      table = cjsExportTargetLiteral(cjs.expr.right, dep);
+    }
+  }
+  if (table === null) return [];
+  const getters = new Map<string, ts.GetAccessorDeclaration>();
+  for (const p of table.properties.nodes) {
+    if (ts.isGetAccessorDeclaration(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)))
+      getters.set(p.name.text, p);
+  }
+  return names.flatMap((n) => {
+    const g = getters.get(n);
+    return g === undefined ? [] : [g];
+  });
+}
+
+/** The module global holding the value an accessor export had when an
+ * ES-module importer first linked its CommonJS module. */
+function cjsAccessorSnapshotOf(
+  lowerer: Lowerer,
+  getter: ts.GetAccessorDeclaration,
+): { id: string; type: IrType } | null {
+  const hit = lowerer.cjsAccessorSnapshots.get(getter);
+  if (hit !== undefined) return hit;
+  if (!lexerVisibleAccessors(getter.getSourceFile()).includes(getter)) return null;
+  const call = cjsAccessorCall(lowerer, getter, locOf(getter));
+  if (call === null) return null;
+  const snapshot = { id: `%g.cjsSnapshot.${lowerer.cjsAccessorSnapshots.size}`, type: call.type };
+  lowerer.globalsList.push({ id: snapshot.id, name: "%cjsSnapshot", type: call.type, mutable: true });
+  lowerer.cjsAccessorSnapshots.set(getter, snapshot);
+  return snapshot;
+}
+
+/** Node's ES-module loader reads every lexer-visible export of a CommonJS
+ * module once, when an importer first links it, and the import bindings
+ * keep those values. For the accessors a bundler rewrite introduced, the
+ * importer's link point runs each getter once, in the lexer's order, and
+ * stores the values its bindings read. Empty when the module has none. */
+export function cjsAccessorSnapshotStores(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  loc: SrcLoc,
+): IrStmt[] {
+  const getters = lexerVisibleAccessors(dep);
+  if (getters.length === 0) return [];
+  let readyId = lowerer.cjsSnapshotReady.get(dep);
+  if (readyId === undefined) {
+    readyId = `%g.cjsSnapshotReady.${lowerer.cjsSnapshotReady.size}`;
+    lowerer.globalsList.push({ id: readyId, name: "%cjsSnapshotReady", type: BOOL, mutable: true });
+    lowerer.cjsSnapshotReady.set(dep, readyId);
+  }
+  const stores: IrStmt[] = [
+    { kind: "assign", localId: readyId, value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
+  ];
+  for (const getter of getters) {
+    const snapshot = cjsAccessorSnapshotOf(lowerer, getter);
+    const call = cjsAccessorCall(lowerer, getter, loc);
+    if (snapshot === null || call === null) return [];
+    stores.push({ kind: "assign", localId: snapshot.id, value: call, loc });
+  }
+  return [
+    {
+      kind: "if",
+      cond: {
+        kind: "unary",
+        op: "!",
+        operand: { kind: "varRef", localId: readyId, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      },
+      then: stores,
+      else_: null,
+      loc,
+    },
+  ];
 }
 
 /** The interned lifted-getter call both accessor-read paths share. */

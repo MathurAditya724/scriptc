@@ -64,10 +64,17 @@ export class FrontendServices {
     source: string,
     path: string,
     liveExportTable?: (path: string) => void,
+    lexerVisibleNames?: (path: string, names: readonly string[]) => void,
   ): string | { degrade: string } | null {
     this.ensureOpen();
     if (!isBundlerCjsCandidate(source)) return null;
-    return rewriteBundlerCjsWithParser(this.sourceParser(), source, path, liveExportTable);
+    return rewriteBundlerCjsWithParser(
+      this.sourceParser(),
+      source,
+      path,
+      liveExportTable,
+      lexerVisibleNames,
+    );
   }
   /** A CommonJS bundle's __commonJS chunks as their own modules (null: no
    * chunks; a degrade reason: chunks the recognizer cannot move). */

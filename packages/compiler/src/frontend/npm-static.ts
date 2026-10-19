@@ -43,6 +43,14 @@ export function npmStaticLiveExportTable(path: string): boolean {
   return liveExportFiles.has(path.split("\\").join("/"));
 }
 
+/** Names Node's lexer detects in a rewritten file's original text that
+ * its rewrite spells only as accessors (the lexer skips those). */
+const lexerNames = new Map<string, readonly string[]>();
+
+export function npmStaticLexerVisibleNames(path: string): readonly string[] {
+  return lexerNames.get(path.split("\\").join("/")) ?? [];
+}
+
 export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): void {
   activePackages = new Set(packages);
   declarationOverloads = new Map();
@@ -51,6 +59,7 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   fileDegrades.clear();
   rewriteCache.clear();
   liveExportFiles.clear();
+  lexerNames.clear();
   clearVirtualSources();
   untypedPkgCache.clear();
   realpathProbed.clear();
@@ -439,6 +448,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 source,
               path,
               (live) => liveExportFiles.add(live.split("\\").join("/")),
+              (file, names) => lexerNames.set(file.split("\\").join("/"), names),
             );
             if (answer !== null && typeof answer === "object") {
               reportFileDegrade(path, target.pkg, answer.degrade);

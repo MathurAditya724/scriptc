@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2563)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2565)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
@@ -1476,6 +1476,17 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       "gtesmws",
       "gtcore",
     ]);
+  }, 180_000);
+
+  // 2564-2565: a barrel whose re-exports are memoized lazy loaders of
+  // lazily initialized ES modules (a bundle plugin's shape): ES-module
+  // importers copy every export when they link (Node's CommonJS import),
+  // require() reads each export's getter at the read.
+  test.each([
+    ["2564-lazy-barrel", ["gtlazy", "gtlazyws"]],
+    ["2565-lazy-barrel-require", ["gtlazyuser", "gtlazy"]],
+  ])("the lazy barrel %s compiles statically and byte-matches Node", async (name, packages) => {
+    await expectNodeParity(join(fixturesRoot, `npm/cases/${name}/main.ts`), packages);
   }, 180_000);
 
   // 2562: a file with unverifiable interop that no compiled code can load
