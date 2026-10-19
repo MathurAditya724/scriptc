@@ -72,6 +72,7 @@ import {
   uninhabitedArmRetagHelper,
   strandedUnitTrap,
   strandedCoercionTrap,
+  recordUnionRouteHelper,
   recordUnionWrapHelper,
   unionRetagHelper,
   narrowedArmHelper,
@@ -9145,6 +9146,14 @@ export class Lowerer {
     loc: SrcLoc,
   ): string | null {
     return recordUnionWrapHelper(this, source, toId, loc);
+  }
+
+  recordUnionRouteHelper(
+    source: IrType & { kind: "record" },
+    toId: string,
+    loc: SrcLoc,
+  ): string | null {
+    return recordUnionRouteHelper(this, source, toId, loc);
   }
 
   unionRetagHelper(

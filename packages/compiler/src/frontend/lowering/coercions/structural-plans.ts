@@ -1,4 +1,4 @@
-import { planRecordUnionWrap } from "../union-retag.js";
+import { planRecordUnionLift, planRecordUnionWrap } from "../union-retag.js";
 import type { WidthLift } from "../width-lift.js";
 import type { IrType } from "../../../ir/ir.js";
 import { isUnitType, typeEquals, UNDEFINED_T } from "../../../ir/ir.js";
@@ -77,6 +77,24 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         );
       });
       if (absentOnly.length === 1) selected = absentOnly;
+    }
+    // A record that fits several arms of a discriminated union selects one
+    // by its discriminant at run time. Without this, an arm that a nested
+    // field could reach only ambiguously dropped out of the candidates, and
+    // an arm reached by dropping fields could win alone.
+    if (selected.length !== 1 && src.kind === "record") {
+      const source = lowerer.shapes.get(src.shapeId);
+      if (
+        source &&
+        planRecordUnionLift(
+          source,
+          def,
+          (id) => lowerer.shapes.get(id),
+          (from, to) => lowerer.widthLiftPlan(from, to),
+        )
+      ) {
+        return { how: "discriminantRoute" };
+      }
     }
     if (selected.length !== 1) return null;
     return { how: "liftWrap", tag: selected[0]!.tag, arm: selected[0]!.arm };

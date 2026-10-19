@@ -106,6 +106,16 @@ export function applyWidthLift(
         );
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
+    case "discriminantRoute": {
+      if (dst.kind !== "union" || value.type.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: record discriminant route shape");
+      const helper = lowerer.recordUnionRouteHelper(value.type, dst.unionId, loc);
+      if (!helper)
+        throw new InternalCompilerError(
+          "lowerer bug: planned record discriminant route failed to intern",
+        );
+      return { kind: "call", callee: helper, args: [value], type: dst, loc };
+    }
     case "retag": {
       if (dst.kind !== "union" || value.type.kind !== "union")
         throw new InternalCompilerError("lowerer bug: retag lift shape");
