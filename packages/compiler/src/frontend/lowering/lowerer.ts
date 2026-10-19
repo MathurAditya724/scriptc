@@ -269,7 +269,11 @@ import {
   stdlibGlobalMember,
   nodeTypesOnlySymbol,
 } from "./surfaces.js";
-import { type BuiltinClassRef, builtinClassAliasOf } from "./builtins/class-values.js";
+import {
+  type BuiltinClassRef,
+  builtinClassAliasOf,
+  runtimeClassValueOfType,
+} from "./builtins/class-values.js";
 import {
   type FileParts,
   splitFiles,
@@ -302,6 +306,8 @@ import {
   type ClassIteratorInfo,
   type GenericClassInfo,
   registerBuiltinErrorClasses,
+  defineClassValueConstruct,
+  runtimeClassConstructs,
   registerBuiltinEmitterClass,
   registerBuiltinStreamClasses,
   builtinErrorInfoOf,
@@ -2774,6 +2780,9 @@ export class Lowerer {
   // top level, top = the innermost nested function currently lowering).
   fnStack: FnCtx[] = [];
   readonly liftedFns: IrFunction[] = [];
+  /** Runtime-provided classes used as values (defineClassValueConstruct),
+   * by IR class name. */
+  readonly runtimeClassValues = new Map<string, ClassInfo>();
   /** One Error-method helper belongs to this lowering session. Its cached
    * dispatch revision needs no weak-key identity or process-global state. */
   errorMethodDispatchRevision: string | null = null;
@@ -3004,6 +3013,7 @@ export class Lowerer {
       isErasing: () => this.erasingDepth > 0,
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
+      runtimeClassValue: (type) => runtimeClassValueOfType(this, type),
       mixinClassInstance: (decl) =>
         this.mixinTypeContext && this.mixinTypeContext.classNode === decl
           ? { kind: "object", className: this.mixinTypeContext.className }
@@ -3215,6 +3225,10 @@ export class Lowerer {
 
   builtinClassAliasOf(symbol: ts.Symbol): BuiltinClassRef | null {
     return builtinClassAliasOf(this, symbol);
+  }
+
+  defineClassValueConstruct(info: ClassInfo): void {
+    defineClassValueConstruct(this, info);
   }
 
   /** Program-wide qualified name for a top-level declaration. */
@@ -6744,6 +6758,7 @@ export class Lowerer {
     // implicit-any instances lowered eagerly at their first call sites.
     functions.push(...this.liftedFns);
     functions.push(...this.implicitFns);
+    functions.push(...runtimeClassConstructs(this, functions));
 
     if (this.remainder) {
       // Deferred collection diagnostics nothing flushed — declarations no
@@ -7419,6 +7434,7 @@ export class Lowerer {
       ...this.liftedFns,
       ...this.implicitFns,
     ];
+    functions.push(...runtimeClassConstructs(this, functions));
     if (this.regexGroupResults) for (const fn of functions) foldRegexSpanReads(this, fn);
     // The worklist can leave a virtual site with a single implementation.
     // Devirtualize after construction/override reachability has settled.
@@ -8552,6 +8568,18 @@ export class Lowerer {
           loc: expr.loc,
         };
       }
+      // A runtime-provided class value has no checked-dynamic form that
+      // inspects as Node's does (`[Function: EventEmitter] { ... }`).
+      if (expr.type.kind === "classval" && this.classes.get(expr.type.className)?.def.runtime) {
+        this.pushDiag(
+          unsupportedDiag(
+            "SC1090",
+            expr.loc,
+            `a runtime-provided class value ('${expr.type.className.slice(1)}') as an untyped value`,
+          ),
+        );
+        throw new PoisonError();
+      }
       if (expr.kind === "unitLit" || this.dynConvertible(expr.type)) {
         // Records and arrays keep their identity as untyped values, including
         // when they arrive through a union, so `unknown` views, weak
@@ -8771,6 +8799,7 @@ export class Lowerer {
       // and no completion target is meaningful — the exact-shape fence
       // downstream names the class-value flow instead.
       if (sub && sup && !sup.generic && this.ctorAbiEquals(sub, sup)) {
+        defineClassValueConstruct(this, sup);
         return { kind: "upcast", value: expr, type: expected, loc: expr.loc };
       }
     }
@@ -8891,6 +8920,7 @@ export class Lowerer {
           });
           if (baseTag >= 0) {
             if (!sub || !this.ctorAbiEquals(sub, c)) break;
+            defineClassValueConstruct(this, c);
             const widened: IrExpr = {
               kind: "upcast",
               value: expr,

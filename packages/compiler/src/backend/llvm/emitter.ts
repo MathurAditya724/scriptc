@@ -56,6 +56,7 @@ import {
   typeKey,
   STRING,
   VOID,
+  classJsName,
 } from "../../ir/ir.js";
 import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
@@ -6123,7 +6124,7 @@ export class LlEmitter {
   classObjSym(className: string): string {
     if (!this.classObjs.has(className)) {
       const meta = this.classMetaOf(className);
-      this.classObjs.set(className, { nameSym: this.internLiteral(meta.def.jsName ?? "") });
+      this.classObjs.set(className, { nameSym: this.internLiteral(classJsName(meta.def)) });
     }
     return mangleClassObj(className);
   }

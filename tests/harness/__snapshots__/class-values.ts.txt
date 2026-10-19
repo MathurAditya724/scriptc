@@ -1,15 +1,15 @@
-class-values.ts:24:7 - error SC2009: values of type 'ErrorConstructor[]' cannot be compiled: the array shape is supported, but its element type 'ErrorConstructor' does not compile
+class-values.ts:24:7 - error SC2009: values of type 'AggregateErrorConstructor[]' cannot be compiled: the array shape is supported, but its element type 'AggregateErrorConstructor' does not compile
 
-  23 | const E = Error;
+  23 | const E = AggregateError;
   24 | const errorClasses = [E];
      |       ^~~~~~~~~~~~
   25 | 
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-class-values.ts:24:22 - error SC2009: values of type 'ErrorConstructor[]' cannot be compiled: the array shape is supported, but its element type 'ErrorConstructor' does not compile
+class-values.ts:24:22 - error SC2009: values of type 'AggregateErrorConstructor[]' cannot be compiled: the array shape is supported, but its element type 'AggregateErrorConstructor' does not compile
 
-  23 | const E = Error;
+  23 | const E = AggregateError;
   24 | const errorClasses = [E];
      |                      ^~~
   25 | 

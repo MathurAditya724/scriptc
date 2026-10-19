@@ -6870,7 +6870,9 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
             }
           } else {
             const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.left.expression));
-            if (recvT?.kind === "classval") {
+            // A runtime-provided class (`Error.stackTraceLimit = 0`) keeps
+            // its static lowering below.
+            if (recvT?.kind === "classval" && !lowerer.classes.get(recvT.className)?.def.runtime) {
               // A static write through a class VALUE: sound exactly when
               // the value can only BE the declaring class — a LEAF class
               // (no strict descendants can flow into the slot, so JS's

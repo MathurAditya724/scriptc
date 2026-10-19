@@ -65,6 +65,7 @@ import {
   isUnitType,
   shapeHasAccessorSlots,
   typeEquals,
+  RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
@@ -8968,6 +8969,14 @@ export function lowerObjectMethodCall(
 ): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
   let mappedReceiver = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  // EventEmitter's static side (the class, a value of it, or the events
+  // module, which is the class) keeps its static surface on the emitter
+  // dispatch (`EventEmitter.setMaxListeners(n)`), which tells the statics
+  // apart by the receiver's construct signatures. The stream classes
+  // inherit the same statics.
+  if (mappedReceiver?.kind === "classval" && mappedReceiver.className === RUNTIME_EMITTER_CLASS) {
+    mappedReceiver = { kind: "object", className: RUNTIME_EMITTER_CLASS };
+  }
   // A specialized JS parameter can expose a native field whose checker
   // type still belongs to the unspecialized body (plane.normal.dot()).
   // Use the lowered receiver's representation and retain its evaluation.

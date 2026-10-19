@@ -2,6 +2,7 @@ import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { lowerReadlineUiNew } from "./builtins/readline.js";
+import { checkedClassUnionAssertion } from "./class-assertions.js";
 import { collectClassMethodMutations } from "./class-method-mutations.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Class lowering: shape collection over the single-inheritance graph
@@ -12,6 +13,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
+import { everyStmtList } from "../../ir/traverse.js";
 import {
   type BuiltinClassRef,
   builtinClassAliasOf,
@@ -28,6 +30,7 @@ import {
   type IrClassDef,
   type IrExpr,
   type IrFunction,
+  type IrLibFn,
   type IrLocal,
   type IrParam,
   type IrStmt,
@@ -37,6 +40,7 @@ import {
   RUNTIME_STREAM_CLASSES,
   STRING,
   type SrcLoc,
+  classValueConstructor,
   UNDEFINED_T,
   VOID,
   arrayOf,
@@ -539,6 +543,11 @@ export interface ClassInfo {
    * inherited signature, and the synthesized constructor forwards to it
    * (forwarding the completed ABI values; defaults apply in the base). */
   ctorParams: ParamShape[];
+  /** A runtime-provided class whose values construct (`const kinds =
+   * [Readable, Writable]`, `(C: typeof EventEmitter) => new C()`): the
+   * parameters of its `%C.construct` function (classValueConstructor).
+   * Absent for runtime classes that are not values. */
+  valueCtorParams?: ParamShape[];
   base: ClassInfo | null;
   /** Family heritage resolves its type arguments separately for each instance. */
   genericBase?: ts.ExpressionWithTypeArguments;
@@ -782,6 +791,17 @@ function symbolSlotReturnType(
   return out;
 }
 
+/** The error classes whose values construct through error.newOptions. */
+const ERROR_CLASS_VALUES: ReadonlySet<string> = new Set([
+  "%Error",
+  "%TypeError",
+  "%RangeError",
+  "%SyntaxError",
+  "%ReferenceError",
+  "%EvalError",
+  "%URIError",
+]);
+
 /** The builtin Error hierarchy
  * as eagerly-registered ClassInfos: mapType names them the moment a lib
  * Error type appears, so the infos must exist before any lowering. They
@@ -860,6 +880,17 @@ export function registerBuiltinErrorClasses(lowerer: Lowerer): void {
         { type: DYN, mode: "omittable" },
         { type: DYN, mode: "omittable" },
       ],
+      // The ECMAScript error constructors take (message?, options?);
+      // DOMException, AggregateError, AssertionError and SuppressedError
+      // have their own construction and are not values.
+      ...(ERROR_CLASS_VALUES.has(irName)
+        ? {
+            valueCtorParams: [
+              { type: DYN, mode: "omittable" as const },
+              { type: DYN, mode: "omittable" as const },
+            ],
+          }
+        : {}),
       base,
       subclasses: [],
       throwingSetters: [],
@@ -892,6 +923,7 @@ export function registerBuiltinEmitterClass(lowerer: Lowerer): void {
     // `new EventEmitter()` — zero-argument (the options bag fences at
     // construction sites; the checker may admit it via @types/node).
     ctorParams: [],
+    valueCtorParams: [],
     base: null,
     subclasses: [],
     throwingSetters: [],
@@ -923,6 +955,9 @@ export function registerBuiltinStreamClasses(lowerer: Lowerer): void {
       // `new Readable(opts?)` — the options bag is parsed structurally
       // by the stream spoke (lowerNew never completes against this).
       ctorParams: [],
+      // Construction through a class value builds the stream without
+      // options (lowerNew reports options passed through a value).
+      valueCtorParams: [],
       base,
       subclasses: [],
       throwingSetters: [],
@@ -5059,11 +5094,20 @@ export function classValueRef(lowerer: Lowerer, info: ClassInfo, blame: ts.Node)
     );
   }
   if (info.builtinError || info.builtinEmitter || info.builtinStream !== undefined) {
-    lowerer.unsupported(
-      "SC1090",
-      blame,
-      `builtin classes as values ('${display}' is runtime-provided — reference program-declared classes instead)`,
-    );
+    if (info.valueCtorParams === undefined) {
+      lowerer.unsupported(
+        "SC1090",
+        blame,
+        `builtin classes as values ('${display}' is runtime-provided — reference program-declared classes instead)`,
+      );
+    }
+    defineClassValueConstruct(lowerer, info);
+    return {
+      kind: "classRef",
+      className: info.def.name,
+      type: { kind: "classval", className: info.def.name },
+      loc: locOf(blame),
+    };
   }
   if (
     lowerer.inheritsBuiltinEmitterCtor(info) ||
@@ -5090,14 +5134,92 @@ export function classValueRef(lowerer: Lowerer, info: ClassInfo, blame: ts.Node)
   };
 }
 
+/** Notes a runtime-provided class whose value is named, widened to, or
+ * constructed through (a no-op for program classes, whose constructor is
+ * their own). runtimeClassConstructs defines `%C.construct` for the
+ * noted classes the finished module still references. */
+export function defineClassValueConstruct(lowerer: Lowerer, info: ClassInfo): void {
+  if (!info.def.runtime || info.valueCtorParams === undefined) return;
+  lowerer.noteEdge(classValueConstructor(info.def).fn);
+  lowerer.runtimeClassValues.set(info.def.name, info);
+}
+
+/** The `%C.construct` functions of the noted runtime classes that a
+ * classRef, newValue or classval upcast in `functions` names. Lowering can
+ * name a class speculatively and discard the expression, so the finished
+ * functions decide. */
+export function runtimeClassConstructs(lowerer: Lowerer, functions: IrFunction[]): IrFunction[] {
+  if (lowerer.runtimeClassValues.size === 0) return [];
+  const used = new Set<string>();
+  const note = (type: IrType): void => {
+    if (type.kind === "classval" && lowerer.runtimeClassValues.has(type.className))
+      used.add(type.className);
+  };
+  const visitor = {
+    expr: (e: IrExpr): boolean => {
+      if (e.kind === "classRef") note(e.type);
+      else if (e.kind === "newValue") note(e.callee.type);
+      else if (e.kind === "upcast") {
+        note(e.type);
+        note(e.value.type);
+      }
+      return true;
+    },
+    stmt: (): boolean => true,
+  };
+  for (const fn of functions) everyStmtList(fn.body, visitor);
+  return [...used]
+    .sort()
+    .map((name) => runtimeClassConstruct(lowerer.runtimeClassValues.get(name)!));
+}
+
+/** `%C.construct` for a runtime-provided class value: the thunk's target,
+ * which builds the instance through the runtime constructor the direct
+ * `new C(...)` uses (emitter.new, a stream's .newDyn without options,
+ * error.newOptions). */
+function runtimeClassConstruct(info: ClassInfo): IrFunction {
+  const params = info.valueCtorParams ?? [];
+  const name = classValueConstructor(info.def).fn;
+  const loc = info.def.loc;
+  const type: IrType = { kind: "object", className: info.def.name };
+  const ids = params.map((_, i) => `a${i}.0`);
+  const args = ids.map((id) => varRef(id, DYN, loc));
+  let fn: IrLibFn = "error.newOptions";
+  if (info.builtinEmitter) fn = "emitter.new";
+  else if (info.builtinStream !== undefined) {
+    fn = `${streamCtorShape(info.def.name).fn}.newDyn` as IrLibFn;
+    args.push(dynUndefinedExpr(loc));
+  }
+  return {
+    name,
+    params: params.map((shape, i) => ({ localId: ids[i]!, name: `a${i}`, type: shape.type })),
+    returnType: type,
+    locals: params.map((shape, i) => ({
+      id: ids[i]!,
+      name: `a${i}`,
+      type: shape.type,
+      mutable: false,
+    })),
+    body: [{ kind: "return", value: { kind: "libCall", fn, args, type, loc }, loc }],
+    loc,
+  };
+}
+
+/** The constructor parameters construction through a class value completes
+ * against: a program class's constructor, or a runtime class's
+ * `%C.construct`. */
+function classValueParams(info: ClassInfo): ParamShape[] {
+  return info.def.runtime ? (info.valueCtorParams ?? info.ctorParams) : info.ctorParams;
+}
+
 /** Constructor-ABI equality — the classval widening rule: a classval(D)
  * value may flow into a classval(C) slot only when D's completed
  * constructor signature equals C's (same count, modes, and ABI types),
  * which is what keeps newValue completion against C's one signature
  * sound for every value legally in the slot. */
 export function ctorAbiEquals(lowerer: Lowerer, sub: ClassInfo, sup: ClassInfo): boolean {
-  const a = sub.ctorParams;
-  const b = sup.ctorParams;
+  const a = classValueParams(sub);
+  const b = classValueParams(sup);
   return (
     a.length === b.length &&
     a.every((p, i) => p.mode === b[i]!.mode && typeEquals(p.type, b[i]!.type))
@@ -6232,6 +6354,9 @@ export function lowerClassValueProperty(
   const loc = locOf(expr);
   const member = expr.name.text;
   const info = lowerer.classes.get(recvT.className);
+  // A runtime-provided class value answers `.name` from its class object;
+  // its other statics (`Error.stackTraceLimit`) keep their own lowerings.
+  if (info?.def.runtime && member !== "name") return null;
   if (
     info &&
     ((hasRuntimeStatics(info) && !findStaticOn(lowerer, info, member)?.field) ||
@@ -9777,24 +9902,51 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       if (callee.type.kind === "dyn") return lowerCheckedConstructor(lowerer, expr, callee);
       if (callee.type.kind !== "classval")
         lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
-      lowerer.noteEdge(`%${info.def.name}.constructor`);
+      lowerer.noteEdge(classValueConstructor(info.def).fn);
       // Every constructor a value in this slot can dispatch to is a
       // descendant's — mark them reachable like a virtual edge.
       const below = (c: ClassInfo): void => {
         for (const s of c.subclasses) {
-          lowerer.noteEdge(`%${s.def.name}.constructor`);
+          lowerer.noteEdge(classValueConstructor(s.def).fn);
           below(s);
         }
       };
       below(info);
-      const args = lowerer.completeArgs(expr.arguments ?? [], info.ctorParams, loc, expr);
-      return {
+      // EventEmitter and stream class values construct without options
+      // only: a slot of either may hold any of those classes, and the
+      // direct `new Readable({...})` lowering reads its options at compile
+      // time (EventEmitter's options have no lowering at all).
+      if (
+        (info.builtinStream !== undefined || info.builtinEmitter) &&
+        (expr.arguments?.length ?? 0) > 0
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `EventEmitter and stream class values constructed with options (construct with 'new ${info.def.name.slice(1)}({ ... })' directly)`,
+        );
+      }
+      defineClassValueConstruct(lowerer, info);
+      const args = lowerer.completeArgs(expr.arguments ?? [], classValueParams(info), loc, expr);
+      const built: IrExpr = {
         kind: "newValue",
         callee,
         args,
         type: { kind: "object", className: info.def.name },
         loc,
       };
+      // A runtime class slot widened from a union (`[Readable, Writable]`'s
+      // elements hold EventEmitter values): the checker types the result as
+      // the union of the arms' instances, which the checked class view
+      // answers from the instance's class.
+      if (info.def.runtime) {
+        const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr));
+        if (resultT?.kind === "union") {
+          const asserted = checkedClassUnionAssertion(lowerer, built, resultT, loc);
+          if (asserted) return asserted;
+        }
+      }
+      return built;
     }
     if (calleeT?.kind === "union") {
       const def = lowerer.unions.get(calleeT.unionId);
