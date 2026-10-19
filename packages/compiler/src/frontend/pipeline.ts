@@ -221,16 +221,17 @@ function detectAutoPackages(
           continue;
         }
         // Both answers compile the JavaScript with inferred types; the
-        // declarations only check the importer. A DefinitelyTyped twin
-        // qualifies when it describes the installed release. A package
-        // without declarations qualifies as a dependency of a compiled
-        // package, whose JavaScript importer has no declarations to check.
+        // declarations only check the importer, and an inferred surface
+        // the program does not typecheck against still refuses the package
+        // below. A DefinitelyTyped twin qualifies; a package without
+        // declarations qualifies as a dependency of another package, whose
+        // JavaScript importer has no declarations to check.
         const refusal =
           npm === null
-            ? owner === null
+            ? owner === null && !sf.fileName.includes("/node_modules/")
               ? "it ships no own .d.ts declaration surface"
               : null
-            : definitelyTypedMismatch(runtimePkg, npm.typesFile, js!.typesFile);
+            : definitelyTypedMismatch(runtimePkg, npm.typesFile);
         if (refusal === null) {
           chosen.push(runtimePkg);
           continue;
@@ -269,6 +270,7 @@ function detectAutoPackages(
       pkg,
       typesFile,
       jsEntry !== null && isJsSourceFileName(jsEntry.typesFile) ? jsEntry.typesFile : null,
+      mode === "lib" && isJsSourceFileName(typesFile) && fromFile.includes("/node_modules/"),
     );
     if (reason === null) chosen.push(pkg);
     else

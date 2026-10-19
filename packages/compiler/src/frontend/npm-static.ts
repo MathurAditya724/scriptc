@@ -501,46 +501,18 @@ function hasTransformMarkers(source: string): boolean {
   return TRANSFORM_MARKERS.some((m) => source.includes(m));
 }
 
-/** The installed version of the package owning `file` (the innermost
- * node_modules segment), or null when no package.json names one. */
-function installedVersionOf(file: string): string | null {
-  const norm = file.split("\\").join("/");
-  const idx = norm.lastIndexOf("/node_modules/");
-  if (idx < 0) return null;
-  const pkg = npmPackageNameOf(norm);
-  if (pkg === null) return null;
-  const text = trackedReadFile(`${norm.slice(0, idx)}/node_modules/${pkg}/package.json`);
-  if (text === null) return null;
-  try {
-    const version = (JSON.parse(text) as { version?: unknown }).version;
-    return typeof version === "string" ? version : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Why a DefinitelyTyped twin cannot vouch for the runtime package `pkg`,
- * or null when it can. DefinitelyTyped versions an @types package by the
- * library version it describes (major.minor; 0.x minors break): the twin
- * must describe the release that is installed, read from both package
- * manifests next to the resolved declaration and JavaScript files. */
-export function definitelyTypedMismatch(
-  pkg: string,
-  typesFile: string,
-  jsFile: string,
-): string | null {
-  const typesVersion = installedVersionOf(typesFile);
-  const version = installedVersionOf(jsFile);
-  const twin = npmPackageNameOf(typesFile.split("\\").join("/")) ?? "its @types package";
-  if (typesVersion === null || version === null)
-    return `its declared types come from the separate ${twin} package, whose version cannot be matched against the installed ${pkg}`;
-  const line = (v: string): string => {
-    const [major = "", minor = ""] = v.split(".");
-    return major === "0" ? `0.${minor}` : major;
-  };
-  return line(typesVersion) === line(version)
+/** Why the declarations at `typesFile` cannot stand for the runtime
+ * package `pkg`, or null when they are its DefinitelyTyped twin
+ * (`@types/<mangled pkg>`). The declarations only check the importing
+ * program; the JavaScript compiles with its inferred types, and an
+ * inferred surface the program does not typecheck against refuses the
+ * package afterwards, whatever release the twin describes. */
+export function definitelyTypedMismatch(pkg: string, typesFile: string): string | null {
+  const owner = npmPackageNameOf(typesFile.split("\\").join("/"));
+  const twin = `@types/${mangledTypesName(pkg)}`;
+  return owner === twin
     ? null
-    : `its declared types come from ${twin}@${typesVersion}, which describes a different release than the installed ${pkg}@${version}`;
+    : `its declared types come from ${owner ?? typesFile}, which is not ${pkg}'s DefinitelyTyped package ${twin}`;
 }
 
 /** Auto-mode eligibility for one candidate package: `typesFile` is what
@@ -551,12 +523,17 @@ export function npmStaticIneligibleReason(
   pkgName: string,
   typesFile: string,
   jsEntry: string | null,
+  /** A dependency another package's JavaScript imports: no declarations
+   * check that importer, so the package need not ship its own. */
+  untypedDependency = false,
 ): string | null {
-  if (npmPackageNameOf(typesFile) !== pkgName) {
-    return "its declared types come from a third-party @types package, not the package itself";
-  }
-  if (!/\.d\.(ts|mts|cts)$/.test(typesFile)) {
-    return "it ships no own .d.ts declaration surface";
+  if (!untypedDependency) {
+    if (npmPackageNameOf(typesFile) !== pkgName) {
+      return "its declared types come from a third-party @types package, not the package itself";
+    }
+    if (!/\.d\.(ts|mts|cts)$/.test(typesFile)) {
+      return "it ships no own .d.ts declaration surface";
+    }
   }
   if (jsEntry === null) return "no runtime JS entry resolves";
   const source = trackedReadFile(jsEntry);

@@ -848,19 +848,16 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  test("an @types twin describing another release is refused with the opt-in remedy", () => {
+  // The twin only checks the program; the JavaScript compiles with its
+  // inferred surface, so a twin naming an export the JavaScript lacks
+  // (Node's link error) fails the build at the import's use instead of
+  // compiling against the declaration.
+  test("an @types twin that disagrees with the shipped JavaScript does not build", () => {
     const { coverage } = analyze(join(pilotRoot, "twinstale-cli.ts"));
-    expect(coverage.npmStatic).toEqual([
-      {
-        package: "twinstale",
-        status: "refused",
-        detail:
-          "its declared types come from @types/twinstale@2.0.4, which describes a different release than the installed twinstale@3.1.0",
-        hint: "to compile it anyway, name it with --npm-static=twinstale (or --npm-static=twinstale... to include its dependencies)",
-      },
-    ]);
-    const diagnostic = coverage.diagnostics.find((d) => d.code === "SC2013");
-    expect(diagnostic?.message).toContain("'twinstale'");
+    expect(coverage.npmStatic).toEqual([{ package: "twinstale", status: "static" }]);
+    expect(coverage.diagnostics).toContainEqual(
+      expect.objectContaining({ message: expect.stringContaining("'stale'") as string }),
+    );
   }, 120_000);
 
   test("a named package's untyped dependency compiles with it", () => {
