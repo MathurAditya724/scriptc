@@ -1,3 +1,5 @@
+import { staticFunctionNameRead } from "./static-function-names.js";
+import { argumentsOwner, typedArgumentsArity, typedArgumentsCandidate } from "./typed-arguments.js";
 import { dateJsonType, isDateJsonSource } from "./builtins/dates.js";
 import { guardNullProto, nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { lowerProtocolPropertyRead } from "./class-protocol-dispatch.js";
@@ -191,7 +193,7 @@ import {
 } from "./lower-classes.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import { bindingNeverReassigned, nullishGenericBindingUnitOf } from "./binding-analysis.js";
-import { funcTypeFromParamShapes } from "./call-signatures.js";
+import { funcTypeFromParamShapes, isThisParameter } from "./call-signatures.js";
 import {
   implicitMonoFile,
   objLitGenericFnInfoOf,
@@ -906,7 +908,18 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // type and lowerLambda declared the local.
     if (expr.text === "arguments") {
       const binding = captureContextArguments(lowerer.fnStack);
-      if (binding) return { kind: "varRef", localId: binding.id, type: DYN, loc };
+      if (binding && lowerer.pureTuples.has(binding.id)) {
+        throw new InternalCompilerError("lowerer bug: forwarded-only 'arguments' read as a value");
+      }
+      if (binding) return { kind: "varRef", localId: binding.id, type: binding.type, loc };
+      const owner = argumentsOwner(expr);
+      if (owner && typedArgumentsCandidate(owner)) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "'arguments' in a function expression whose value is not asserted to one fixed-arity signature (assert it, as in `function () { … } as F`, and the function lowers against that signature)",
+        );
+      }
     }
     // A compiler-projected adapter as a VALUE: the adapter has no
     // runtime function object (its calls rewrite directly) — call it
@@ -1929,6 +1942,18 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isConditionalExpression(expr)) return lowerTernary(lowerer, expr);
 
   if (ts.isPropertyAccessExpression(expr)) {
+    // `fn.name` on a function parameter of a generic instance keyed by
+    // its argument's static name (call-site specialization).
+    {
+      const staticName = staticFunctionNameRead(lowerer, expr);
+      if (staticName !== null) return { kind: "strLit", value: staticName, type: STRING, loc };
+    }
+    // `.length` of a forwarded fixed tuple (a typed `arguments`, a tuple
+    // rest parameter, an alias of either): the signature's arity.
+    if (expr.name.text === "length" && !expr.questionDotToken) {
+      const arity = typedArgumentsArity(lowerer, expr.expression);
+      if (arity !== null) return { kind: "numLit", value: arity, type: F64, loc };
+    }
     // `require("./x").member` over a program module's export table: the
     // module's %init at this position, then the member read exactly like
     // a `const m = require("./x")` binding's (cjs-inline-require.ts).
@@ -2233,9 +2258,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             p.dotDotDotToken === undefined,
         );
         if (fixedArity) {
+          // A `this` parameter is type-only: callers never pass it.
           return {
             kind: "numLit",
-            value: (fn as ts.FunctionLikeDeclaration).parameters.nodes.length,
+            value: (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
+              (p) => !isThisParameter(p),
+            ).length,
             type: F64,
             loc,
           };

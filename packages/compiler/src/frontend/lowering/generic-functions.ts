@@ -1,3 +1,4 @@
+import { staticNameBindings } from "./static-function-names.js";
 import * as ts from "../ts7/adapter.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
@@ -100,6 +101,9 @@ export interface GenericFnInfo {
    * names where the slot binds the call site's object type. Computed on
    * first use. */
   implicitPatterns?: (ImplicitPattern | null)[];
+  /** Parameter index → symbol for the function parameters whose `.name`
+   * the body reads (static-function-names.ts); computed on first use. */
+  nameReadParams?: Map<number, ts.Symbol>;
 }
 
 export interface GenericInstance {
@@ -140,6 +144,9 @@ export interface GenericInstance {
   implicitInferReturn?: true;
   /** An erased instance (every type parameter bound to `unknown`). */
   erased?: true;
+  /** Name-keyed instances: function parameter → its call site's static
+   * name (null when only known at run time), folded at `.name` reads. */
+  staticFnNames?: Map<ts.Symbol, string | null>;
 }
 
 /** Defaults bind during inference; collection only resolves symbols in
@@ -317,6 +324,7 @@ export function genericCallInstance(
   // different fields). Non-literal bindings (a key union, plain string)
   // share one runtime-keyed instance per IR signature, exactly the
   // widened discipline.
+  const named = staticNameBindings(lowerer, expr, info);
   const keyofTps = keyofConstrainedTypeParams(info);
   if (keyofTps.size > 0) {
     const tsBindings = new Map<ts.Symbol, ts.Type>();
@@ -333,12 +341,19 @@ export function genericCallInstance(
       })
       .join(",");
     return internGenericInstance(lowerer, expr, info, params, returnType, () => bindings, {
-      extraKey: `@${litKey}`,
+      extraKey: `@${litKey}${named?.key ?? ""}`,
       tsBindings,
+      ...(named ? { staticFnNames: named.names } : {}),
     });
   }
-  return internGenericInstance(lowerer, expr, info, params, returnType, (tsBindings) =>
-    lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings),
+  return internGenericInstance(
+    lowerer,
+    expr,
+    info,
+    params,
+    returnType,
+    (tsBindings) => lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings),
+    named ? { extraKey: named.key, staticFnNames: named.names } : undefined,
   );
 }
 
@@ -498,7 +513,11 @@ function internGenericInstance(
   params: ParamShape[],
   returnType: IrType,
   makeBindings: (tsBindings: Map<ts.Symbol, ts.Type>) => Map<ts.Symbol, IrType>,
-  opts?: { extraKey?: string; tsBindings?: Map<ts.Symbol, ts.Type> },
+  opts?: {
+    extraKey?: string;
+    tsBindings?: Map<ts.Symbol, ts.Type>;
+    staticFnNames?: Map<ts.Symbol, string | null>;
+  },
 ): GenericInstance {
   // keyof-constrained instantiations append their literal keys
   // (extraKey): the IR signature alone under-discriminates there — two
@@ -541,6 +560,7 @@ function internGenericInstance(
       bindings,
       tsBindings,
       typeArgsText,
+      ...(opts?.staticFnNames ? { staticFnNames: opts.staticFnNames } : {}),
     };
     info.instances.set(key, inst);
     lowerer.instantiationQueue.push({ info, inst });
@@ -824,6 +844,8 @@ export function lowerGenericInstance(
   const prevSuppress = lowerer.suppressStats;
   const prevClass = lowerer.currentClass;
   const prevImplicit = lowerer.implicitParamTypes;
+  const prevStaticFnNames = lowerer.staticFnNames;
+  lowerer.staticFnNames = inst.staticFnNames ?? null;
   // A generic METHOD of a generic-class INSTANTIATION lowers under BOTH
   // binding sets: the receiver instantiation's class type parameters
   // underneath, the method instantiation's own on top (disjoint symbol
@@ -984,6 +1006,7 @@ export function lowerGenericInstance(
     lowerer.typeParamBindings = prevBindings;
     lowerer.typeParamTsBindings = prevTsBindings;
     lowerer.implicitParamTypes = prevImplicit;
+    lowerer.staticFnNames = prevStaticFnNames;
     lowerer.instantiationContext = prevContext;
     lowerer.localClassInstantiations.pop();
     lowerer.suppressStats = prevSuppress;

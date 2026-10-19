@@ -1,3 +1,4 @@
+import { declareTypedArguments } from "./typed-arguments.js";
 import { varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
@@ -309,6 +310,8 @@ export function lowerLambda(
         : null;
     const { params, prologue } = lowerer.declareParams(node.parameters.nodes, shapes);
     if (receiver) prologue.unshift(receiver);
+    if (ts.isFunctionExpression(node) && lowerer.typedArgumentsLambdas.has(node))
+      declareTypedArguments(lowerer, node, shapes, params, prologue);
     declareFunctionArguments(
       lowerer,
       node,

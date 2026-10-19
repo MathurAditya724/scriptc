@@ -1,3 +1,4 @@
+import { onlyForwarded } from "./typed-arguments.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
 import {
   lifetimeRegionType,
@@ -1910,6 +1911,19 @@ export class Lowerer {
    * type parameters are bound to `unknown`, so lambdaSignature admits
    * them. */
   readonly erasingLambdas = new Set<ts.Node>();
+  /** Function expressions lowered against a fixed target signature with a
+   * tuple-typed `arguments` (typed-arguments.ts). */
+  readonly typedArgumentsLambdas = new Set<ts.Node>();
+  /** Const bindings holding a forwarded fixed tuple (`const args =
+   * arguments as any` in a typed-arguments function) → the tuple type. */
+  readonly tupleAliasSymbols = new Map<ts.Symbol, IrType>();
+  /** Tuple bindings that are only forwarded (typed-arguments.ts
+   * onlyForwarded): binding local id → the native slots forwarding reads.
+   * Such a binding is never materialized. */
+  readonly pureTuples = new Map<string, IrLocal[]>();
+  /** The static names of the current generic instance's name-keyed
+   * function parameters (static-function-names.ts). */
+  staticFnNames: Map<ts.Symbol, string | null> | null = null;
   /** Nesting depth of erased generic bodies being lowered (erased lambdas
    * and erased instances). */
   erasingDepth = 0;
@@ -10681,6 +10695,70 @@ export class Lowerer {
     return declareContextLocal(this.ctx, name, type, false, undefined, undefined);
   }
 
+  /** The body binding of a fixed-tuple rest parameter: one native slot per
+   * position (the flattened ABI), rebuilt into the tuple the source names.
+   * The empty tuple rides the empty-array representation. */
+  declareRestTupleParam(
+    decl: ts.ParameterDeclaration,
+    nameNode: ts.Identifier,
+    elemShapes: readonly ParamShape[],
+    params: IrParam[],
+    prologue: IrStmt[],
+  ): void {
+    const loc = locOf(decl);
+    const name = nameNode.text;
+    const tupleType = this.irTypeOf(nameNode);
+    const slots = elemShapes.map((shape, i) => {
+      const slot = this.declareHiddenLocal(`%${name}.${i}`, shape.type);
+      params.push({ localId: slot.id, name: `%${name}.${i}`, type: shape.type });
+      return slot;
+    });
+    const body = this.declareLocal(nameNode, name, tupleType, true);
+    const fn = decl.parent;
+    const symbol = this.checker.getSymbolAtLocation(nameNode);
+    if (
+      fn !== undefined &&
+      symbol !== undefined &&
+      onlyForwarded(
+        this,
+        fn,
+        (id) => id !== nameNode && this.checker.getSymbolAtLocation(id) === symbol,
+      )
+    ) {
+      this.pureTuples.set(body.id, slots);
+      return;
+    }
+    const init = this.tupleOfSlots(slots, tupleType, nameNode, loc);
+    prologue.push({ kind: "varDecl", localId: body.id, init, loc });
+  }
+
+  /** A fresh tuple holding the given positional slots, typed `tupleType`
+   * (a tuple record, or the empty-array form of `[]`). */
+  tupleOfSlots(slots: readonly IrLocal[], tupleType: IrType, blame: ts.Node, loc: SrcLoc): IrExpr {
+    if (slots.length === 0) {
+      if (tupleType.kind !== "array") this.badType(blame, this.typeOf(blame));
+      return { kind: "arrayLit", elems: [], type: tupleType, loc };
+    }
+    const shape = tupleType.kind === "record" ? this.shapes.get(tupleType.shapeId) : undefined;
+    if (!shape?.tuple || shape.fields.length !== slots.length)
+      this.badType(blame, this.typeOf(blame));
+    return {
+      kind: "recordLit",
+      fields: slots.map((slot, i) => {
+        const field = shape.fields.find((f) => f.name === String(i))!;
+        return {
+          name: field.name,
+          value: this.coerceToExpected(
+            { kind: "varRef", localId: slot.id, type: slot.type, loc },
+            field.type,
+          ),
+        };
+      }),
+      type: tupleType,
+      loc,
+    };
+  }
+
   /** Declares a callee's parameter locals from its ParamShapes and builds
    * the DEFAULT-PARAM PROLOGUE. Required/optional/rest params bind their
    * symbol directly (one local of the ABI type). A defaulted param `x: T = e`
@@ -10717,6 +10795,17 @@ export class Lowerer {
       return defaultAfterUndefined(undefinedValue, this.coerceInto(node, absent, expected));
     };
     decls.forEach((decl, i) => {
+      // A fixed-tuple rest parameter owns every remaining (flattened)
+      // shape, possibly none for `[]` (restTupleShapes).
+      if (
+        decl.dotDotDotToken !== undefined &&
+        ts.isIdentifier(decl.name) &&
+        i === decls.length - 1 &&
+        (shapes[i] === undefined ? shapes.length === i : shapes[i]!.restTuple === true)
+      ) {
+        this.declareRestTupleParam(decl, decl.name, shapes.slice(i), params, prologue);
+        return;
+      }
       const shape = shapes[i]!;
       if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
         // Pattern parameter: one hidden ABI slot carries the source value;
@@ -11033,6 +11122,13 @@ export class Lowerer {
     }
     if (!symbol) return null;
     const direct = this.resolveKey(symbol, ident);
+    if (direct && this.pureTuples.has(direct.id)) {
+      // onlyForwarded proved every read forwards; a plain read here means
+      // the analysis and the lowering disagree.
+      throw new InternalCompilerError(
+        `lowerer bug: forwarded-only tuple '${ident.text}' read as a value`,
+      );
+    }
     if (direct) return direct;
     // A PARAMETER PROPERTY declares two symbols: references resolve to the
     // PARAMETER symbol, while the declaration's name binds the PROPERTY

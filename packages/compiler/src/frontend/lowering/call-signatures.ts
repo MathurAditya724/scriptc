@@ -1,3 +1,8 @@
+import {
+  typedArgumentsCandidate,
+  typedArgumentsShapes,
+  typedArgumentsTarget,
+} from "./typed-arguments.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
@@ -15,6 +20,7 @@ import {
 import { isJsSourceFile, isNodeEsmFile } from "../program.js";
 import {
   genResultRecord,
+  restTupleParamTypes,
   isAnyArrayType,
   isUnitOnlyTsType,
   jsOpenObjectType,
@@ -52,6 +58,10 @@ export interface ParamShape {
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
+  /** One flattened position of a fixed-tuple rest parameter
+   * (restTupleShapes): the declaration's last parameter owns every shape
+   * from its index on, and the body binds the tuple (declareParams). */
+  restTuple?: true;
 }
 
 export interface FnSig {
@@ -369,6 +379,28 @@ export function isThisParameter(param: ts.ParameterDeclaration): boolean {
   return ts.isIdentifier(param.name) && param.name.text === "this";
 }
 
+/** A TypeScript rest parameter bound to a name whose type is a fixed tuple
+ * (`...args: [A, B]`, `...args: A` with A bound to a tuple, `...args:
+ * Parameters<F>` with F bound): one required shape per position. Call
+ * sites and function values see the equivalent fixed signature; the body
+ * rebuilds the tuple (declareParams) unless it only forwards it. Null for
+ * every other parameter. */
+export function restTupleShapes(
+  lowerer: Lowerer,
+  param: ts.ParameterDeclaration,
+  tsType?: ts.Type,
+): ParamShape[] | null {
+  if (
+    param.dotDotDotToken === undefined ||
+    !ts.isIdentifier(param.name) ||
+    isJsSourceFile(param.getSourceFile())
+  ) {
+    return null;
+  }
+  const elems = restTupleParamTypes(tsType ?? lowerer.typeOf(param.name), lowerer.typeCtx);
+  return elems ? elems.map((type) => ({ type, mode: "required", restTuple: true })) : null;
+}
+
 /** ParamShapes for a whole parameter list. */
 export function paramShapes(
   lowerer: Lowerer,
@@ -376,16 +408,37 @@ export function paramShapes(
   signature?: ts.Signature,
   blameOf?: (param: ts.ParameterDeclaration, index: number) => ts.Node,
 ): ParamShape[] {
-  if (!signature)
-    return params.filter((p) => !isThisParameter(p)).map((param) => lowerer.paramShape(param));
+  const out: ParamShape[] = [];
+  if (!signature) {
+    for (const param of params) {
+      if (isThisParameter(param)) continue;
+      const flattened = restTupleShapes(lowerer, param);
+      if (flattened) out.push(...flattened);
+      else out.push(lowerer.paramShape(param));
+    }
+    return out;
+  }
   const symbols = signature.getParameters();
-  return params.map((declParam, i) => {
+  const shapeAt = (declParam: ts.ParameterDeclaration, i: number): ParamShape => {
     const stage = lowerer.stageSourceType(declParam.name);
     if (stage) return { type: stage, mode: "required" as const };
     const symbol = symbols[i];
     const tsType = symbol
       ? lowerer.checker.getTypeOfSymbol(symbol)
       : lowerer.typeOf(declParam.name);
+    // A call-site instantiation whose concrete argument type does not map
+    // is that argument's blocker: name it there, with its concrete type,
+    // rather than as the declaration's unbound type parameter.
+    if (
+      blameOf !== undefined &&
+      !isJsSourceFile(declParam.getSourceFile()) &&
+      (tsType.flags & ts.TypeFlags.Any) === 0 &&
+      declParam.type !== undefined &&
+      mentionsTypeParameter(lowerer, lowerer.checker.getTypeFromTypeNode(declParam.type)) &&
+      lowerer.mapTypeOf(tsType) === null
+    ) {
+      lowerer.badType(blameOf(declParam, i), tsType);
+    }
     let mapped = jsOpenObjectType(
       declParam,
       lowerer.runtimeOptionalBindingType(
@@ -416,7 +469,32 @@ export function paramShapes(
       );
     }
     return { type: mapped, mode: declParam.questionToken ? "omittable" : "required" };
+  };
+  params.forEach((declParam, i) => {
+    const symbol = symbols[i];
+    const flattened = restTupleShapes(
+      lowerer,
+      declParam,
+      symbol ? lowerer.checker.getTypeOfSymbol(symbol) : undefined,
+    );
+    if (flattened) out.push(...flattened);
+    else out.push(shapeAt(declParam, i));
   });
+  return out;
+}
+
+/** A declared type that is (or is a union over) a bare type parameter
+ * or an instantiation of a generic alias/interface over type arguments. */
+function mentionsTypeParameter(lowerer: Lowerer, t: ts.Type): boolean {
+  if (t.flags & ts.TypeFlags.TypeParameter) return true;
+  const mentions = (part: ts.Type): boolean => mentionsTypeParameter(lowerer, part);
+  if (t.isUnionType()) return ts.constituentTypes(t).some(mentions);
+  if (t.getAliasTypeArguments().some(mentions)) return true;
+  return (
+    (t.flags & ts.TypeFlags.Object) !== 0 &&
+    ((t as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !== 0 &&
+    lowerer.checker.getTypeArguments(t as ts.TypeReference).some(mentions)
+  );
 }
 
 /** A default expression may itself yield undefined. Keep that arm in the
@@ -758,6 +836,16 @@ export function lambdaSignature(
     | ts.SetAccessorDeclaration,
 ): { shapes: ParamShape[]; funcType: IrType & { kind: "func" } } {
   if (!node.body) lowerer.unsupported("SC1090", node, "function overload signatures");
+  // A parameterless function expression forwarding its `arguments`,
+  // asserted to a fixed signature: that signature is its ABI.
+  if (typedArgumentsCandidate(node) && !node.typeParameters?.nodes.length) {
+    const target = typedArgumentsTarget(lowerer, node);
+    if (target) {
+      const shapes = typedArgumentsShapes(target);
+      lowerer.typedArgumentsLambdas.add(node);
+      return { shapes, funcType: funcTypeFromParamShapes(shapes, target.ret) };
+    }
+  }
   // A JS replacement of a native stream's write method receives the
   // actual call tuple, including overloads and omitted arguments. Node's
   // contextual overload signature cannot define this closure's ABI.

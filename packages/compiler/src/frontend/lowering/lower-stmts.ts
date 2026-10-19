@@ -1,3 +1,4 @@
+import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
@@ -4463,6 +4464,10 @@ export function lowerVarDecl(
     }
   }
   if (!ts.isIdentifier(decl.name)) lowerer.unsupported("SC1031", decl.name);
+  {
+    const alias = lowerTupleAliasDecl(lowerer, decl);
+    if (alias) return alias;
+  }
 
   // A NULLISH generic binding (`const i: I<A & B> = null as any` — the
   // declared type has no mapping, the value is provably null/undefined
@@ -4874,6 +4879,15 @@ export function lowerVarDecl(
     !decl.type &&
     !hasJsTypeAnnotation(decl) &&
     init.type.kind === "func"
+  )
+    type = init.type;
+  // A typed-arguments function expression (typed-arguments.ts): the
+  // checker types the binding variadic, but its value has the fixed
+  // signature every use asserts.
+  if (
+    !decl.type &&
+    init.type.kind === "func" &&
+    lowerer.typedArgumentsLambdas.has(stripTypeWrappers(decl.initializer))
   )
     type = init.type;
   // A TypeScript lambda whose closure returns the runtime result (a missing
