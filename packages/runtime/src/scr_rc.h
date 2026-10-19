@@ -260,6 +260,17 @@ void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset);
 #define SCR_SA_MAX 512u
 
 /* The class of a block of n bytes, 1 <= n <= SCR_SA_MAX. */
+#ifdef SCR_SA_NATIVE
+/* Defined by the native unit scr_sa.ts, with the allocation fast paths
+ * below. A build that defines SCR_SA_NATIVE names the header of stand-in
+ * bodies generated from the module (`native-unit --shapes`) and puts the
+ * module's code in their place in each unit that includes this header
+ * (runtime-pack-common/scripts/native-units.mjs). */
+#include SCR_SA_NATIVE
+static inline unsigned scr_sa_class(size_t n) SCR_NATIVE_SHAPE_scr_sa_class
+/* The block size of class c. */
+static inline size_t scr_sa_class_size(unsigned c) SCR_NATIVE_SHAPE_scr_sa_class_size
+#else
 static inline unsigned scr_sa_class(size_t n) {
   unsigned k = (unsigned)((n - 1) >> 3);
   return k < SCR_SA_FINE_MAX / 8 ? k : (k + SCR_SA_FINE_MAX / 8) >> 1;
@@ -269,6 +280,7 @@ static inline size_t scr_sa_class_size(unsigned c) {
   if (c < SCR_SA_FINE_MAX / 8) return (size_t)(c + 1 + (c == SCR_SA_WIDE)) * 8;
   return (size_t)(c + 1 - SCR_SA_FINE_MAX / 16) * 16;
 }
+#endif
 
 typedef struct ScrSaBlock {
   struct ScrSaBlock *next;
@@ -363,6 +375,12 @@ void scr_sa_thread_shares(void);
  * for large blocks, n == 0, an exhausted slice, or a refused reservation. */
 void *scr_sa_slow(size_t n, bool zero);
 
+#ifdef SCR_SA_NATIVE
+static inline void *scr_sa_take(size_t n, bool zero) SCR_NATIVE_SHAPE_scr_sa_take
+static inline void *scr_mem_alloc(size_t n) SCR_NATIVE_SHAPE_scr_mem_alloc
+static inline void *scr_mem_calloc(size_t n) SCR_NATIVE_SHAPE_scr_mem_calloc
+static inline void scr_mem_free(void *p) SCR_NATIVE_SHAPE_scr_mem_free
+#else
 static inline void *scr_sa_take(size_t n, bool zero) {
   if (n - 1 < SCR_SA_MAX) { /* n == 0 wraps to the slow path */
     unsigned c = scr_sa_class(n);
@@ -396,10 +414,17 @@ static inline void scr_mem_free(void *p) {
   }
   SCR_SA_FREE_FOREIGN(p);
 }
+#endif /* SCR_SA_NATIVE */
+#else
+#ifdef SCR_SA_NATIVE
+static inline void *scr_mem_alloc(size_t n) SCR_NATIVE_SHAPE_scr_mem_alloc
+static inline void *scr_mem_calloc(size_t n) SCR_NATIVE_SHAPE_scr_mem_calloc
+static inline void scr_mem_free(void *p) SCR_NATIVE_SHAPE_scr_mem_free
 #else
 static inline void *scr_mem_alloc(size_t n) { return malloc(n); }
 static inline void *scr_mem_calloc(size_t n) { return calloc(1, n); }
 static inline void scr_mem_free(void *p) { free(p); }
+#endif
 #endif
 
 /* Inline twins of scr_cyc_alloc/scr_cyc_free for hot runtime allocation

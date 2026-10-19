@@ -8,6 +8,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef SCR_KEY_NATIVE
+/* Defined by the native unit scr_key.ts. A build that defines
+ * SCR_KEY_NATIVE names the header of stand-in bodies generated from the
+ * module (`native-unit --shapes`) and puts the module's code in their place
+ * in each unit that includes this header
+ * (runtime-pack-common/scripts/native-units.mjs). */
+#include SCR_KEY_NATIVE
+static inline uint64_t scr_key_mix(uint64_t value) SCR_NATIVE_SHAPE_scr_key_mix
+static inline uint64_t scr_key_short_word(const char *bytes, size_t length) SCR_NATIVE_SHAPE_scr_key_short_word
+static inline bool scr_key_equal(const char *a, const char *b, size_t length) SCR_NATIVE_SHAPE_scr_key_equal
+static inline uint64_t scr_key_hash(const char *bytes, size_t length) SCR_NATIVE_SHAPE_scr_key_hash
+#else
 static inline uint64_t scr_key_mix(uint64_t value) {
   value ^= value >> 30;
   value *= UINT64_C(0xbf58476d1ce4e5b9);
@@ -58,6 +70,7 @@ static inline uint64_t scr_key_hash(const char *bytes, size_t length) {
   }
   return scr_key_mix(hash ^ scr_key_short_word(bytes + i, length - i));
 }
+#endif
 
 /* Integer-constant forms of the string key hash for static strings of at
  * most three bytes (word = scr_key_short_word of the bytes), folded to the

@@ -16,11 +16,15 @@
     ".": {
       "types": "./index.d.ts",
       "default": "./index.js"
+    },
+    "./native": {
+      "types": "./native/index.d.ts"
     }
   },
   "files": [
     "index.js",
     "index.d.ts",
+    "native/index.d.ts",
     "README.md"
   ],
   "dependencies": {

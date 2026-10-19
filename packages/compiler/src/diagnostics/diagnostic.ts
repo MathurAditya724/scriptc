@@ -50,8 +50,10 @@
  *   SC5xxx  native FFI: malformed manifests (SC5001), a configured
  *            binding that is not an ambient function declaration
  *            (SC5002), and a TypeScript signature that does not match its
- *            declared native ABI classes (SC5003), and native toolchain
- *            failures while applying a valid profile (SC5004)
+ *            declared native ABI classes (SC5003), native toolchain
+ *            failures while applying a valid profile (SC5004), and
+ *            constructs outside the native subset in a native unit
+ *            (`"use native";`, SC5010)
  *   SC6xxx  divergences: the program compiles, but the native binary can
  *            behave differently from Node at this site — WARNINGS, never
  *            build failures (coverage --fail-on=divergences opts in):
@@ -235,6 +237,12 @@ export function ffiBindingDiag(name: string, detail: string, loc: SrcLoc): ScrDi
       `declare it as a signature-only ambient function, for example ` +
       `'declare function ${name}(...): ...'; scriptc only replaces direct calls of that exact binding`,
   };
+}
+
+/** SC5010 — a native unit (`"use native";`) uses a construct outside the
+ * native subset, or a type outside its rules. */
+export function nativeUnitDiag(message: string, loc: SrcLoc): ScrDiagnostic {
+  return { code: "SC5010", message, loc };
 }
 
 /** SC5003 — the ambient TypeScript signature and manifest ABI disagree. */

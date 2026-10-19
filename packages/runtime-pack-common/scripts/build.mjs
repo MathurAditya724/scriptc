@@ -14,6 +14,7 @@ import {
 } from "./artifact-policy.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
 import { buildImportBitcode, buildRuntimeUnit, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
+import { createRuntimeUnitCompiler } from "./native-units.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { parallelMap } from "./parallel-map.mjs";
 
@@ -120,6 +121,15 @@ async function build() {
       output,
     ]);
   };
+  const compileRuntimeUnit = createRuntimeUnitCompiler({
+    run,
+    compiler,
+    compilerArgs,
+    sourcePathFlags,
+    repoRoot,
+    runtimeSrc,
+    workDir: join(buildRoot, "native-units"),
+  });
   // Speed-flavor executable units are emitted through the host LLVM helper
   // so their object and import bitcode come from one promoted module. The
   // helper also reduces release units' bitcode to what programs can import.
@@ -254,17 +264,14 @@ async function build() {
               (await buildRuntimeUnit({
                 helper: unitHelper,
                 compileBitcode: (optimized) =>
-                  run(compiler, [
-                    ...compilerArgs,
-                    ...sourcePathFlags,
-                    ...unitFlags,
-                    "-g0",
-                    "-emit-llvm",
-                    "-c",
+                  compileRuntimeUnit(
                     join(runtimeSrc, unit.source),
-                    "-o",
                     optimized,
-                  ]),
+                    [...unitFlags, "-g0"],
+                    {
+                      bitcode: true,
+                    },
+                  ),
                 object: output,
                 bitcode: bitcodeOutput,
                 triple: matrix.target.llvm_triple,
@@ -281,24 +288,25 @@ async function build() {
                 size: (await stat(bitcodeOutput)).size,
               };
             } else {
-              await compile(join(runtimeSrc, unit.source), output, unitFlags);
+              await mkdir(dirname(output), { recursive: true });
+              await compileRuntimeUnit(join(runtimeSrc, unit.source), output, [
+                ...unitFlags,
+                "-g0",
+              ]);
               if (
                 flavor === "release" &&
                 unitHelper !== null &&
                 (await buildImportBitcode({
                   helper: unitHelper,
                   compileBitcode: (optimized) =>
-                    run(compiler, [
-                      ...compilerArgs,
-                      ...sourcePathFlags,
-                      ...unitFlags,
-                      "-g0",
-                      "-emit-llvm",
-                      "-c",
+                    compileRuntimeUnit(
                       join(runtimeSrc, unit.source),
-                      "-o",
                       optimized,
-                    ]),
+                      [...unitFlags, "-g0"],
+                      {
+                        bitcode: true,
+                      },
+                    ),
                   bitcode: bitcodeOutput,
                   tag: unit.source.replace(/\.c$/, ""),
                 }))
