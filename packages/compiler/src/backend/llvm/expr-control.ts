@@ -58,7 +58,7 @@ export function emitControlExpr(
       // and the right runs in its own frame.
       const ty = host.llType(e.type);
       const l = host.emitExpr(e.left);
-      host.moveTemp(l);
+      host.toFrame(l);
       const slot = B.slot();
       B.entryAllocas.push(`${slot} = alloca ${ty}`);
       B.line(`store ${ty} ${l.name}, ptr ${slot}`);
@@ -73,7 +73,7 @@ export function emitControlExpr(
       if (e.op === "&&") B.condBr(truthy, rightLabel, joinLabel);
       else B.condBr(truthy, joinLabel, rightLabel);
       B.startBlock(rightLabel);
-      if (isRefCounted(e.type)) host.releaseValue(l.name, e.type);
+      if (isRefCounted(e.type)) host.releaseFrame(l.name, e.type);
       const rightInteger = host.emitBranchInto(slot, e.right, integerSlot);
       B.br(joinLabel);
       B.startBlock(joinLabel);
@@ -157,7 +157,7 @@ export function emitControlExpr(
           host.chainSlots.set(e.id, { name: bind, type: e.receiver.type, slot: true });
           host.frames.push([]);
           host.emitExpr(e.body);
-          host.releaseFrame(host.frames.pop()!);
+          host.releaseTemps(host.frames.pop()!);
           host.chainSlots.delete(e.id);
           B.br(lj);
           B.startBlock(lj);
@@ -203,7 +203,7 @@ export function emitControlExpr(
         bindPresent();
         host.frames.push([]);
         host.emitExpr(e.body);
-        host.releaseFrame(host.frames.pop()!);
+        host.releaseTemps(host.frames.pop()!);
         host.chainSlots.delete(e.id);
         B.br(lj);
         B.startBlock(lj);
@@ -272,7 +272,7 @@ export function emitControlExpr(
       const v = B.tmp();
       B.line(`${v} = load ${host.llType(bound.type)}, ptr ${bound.name}`);
       if (!isRefCounted(e.type)) return { name: v, type: e.type };
-      return host.own({ name: host.retainValue(v, e.type), type: e.type });
+      return host.own({ name: host.retainFrame(v, e.type), type: e.type });
     }
     case "orDefault": {
       // `u || d` narrowed to the single non-unit arm: nullish's dance
@@ -309,7 +309,7 @@ export function emitControlExpr(
         return host.own({ name: t, type: e.type });
       }
       const l = host.emitExpr(e.left);
-      host.moveTemp(l);
+      host.toFrame(l);
       const ty = host.llType(e.type);
       const slot = B.slot();
       B.entryAllocas.push(`${slot} = alloca ${ty}`);
@@ -337,11 +337,11 @@ export function emitControlExpr(
         B.line(
           `store ${ty} ${host.unionExtract(l.name, e.left.type.unionId, e.type)}, ptr ${slot}`,
         );
-        host.releaseValue(l.name, e.left.type);
+        host.releaseFrame(l.name, e.left.type);
       }
       B.br(lj);
       B.startBlock(lf);
-      host.releaseValue(l.name, e.left.type);
+      host.releaseFrame(l.name, e.left.type);
       host.emitBranchInto(slot, e.right);
       B.br(lj);
       B.startBlock(lj);
@@ -359,7 +359,7 @@ export function emitControlExpr(
         // The native checked-value kind decides whether the left is
         // nullish; the right runs lazily in its branch.
         const l = host.emitExpr(e.left);
-        host.moveTemp(l);
+        host.toFrame(l);
         host.declare(`declare zeroext i1 @scr_dyn_is_nullish(ptr)`);
         const slot = B.slot();
         B.entryAllocas.push(`${slot} = alloca ptr`);
@@ -370,7 +370,7 @@ export function emitControlExpr(
         const lj = B.newLabel("nuld.j");
         B.condBr(isN, lu, lv);
         B.startBlock(lu);
-        host.releaseValue(l.name, e.left.type);
+        host.releaseFrame(l.name, e.left.type);
         host.emitBranchInto(slot, e.right);
         B.br(lj);
         B.startBlock(lv);
@@ -426,7 +426,7 @@ export function emitControlExpr(
         return host.own({ name: t, type: e.type });
       }
       const l = host.emitExpr(e.left);
-      host.moveTemp(l);
+      host.toFrame(l);
       const ty = host.llType(e.type);
       const slot = B.slot();
       B.entryAllocas.push(`${slot} = alloca ${ty}`);
@@ -436,7 +436,7 @@ export function emitControlExpr(
       const lj = B.newLabel("nul.j");
       B.condBr(isUnit, lu, lv);
       B.startBlock(lu);
-      host.releaseValue(l.name, e.left.type);
+      host.releaseFrame(l.name, e.left.type);
       host.emitBranchInto(slot, e.right);
       B.br(lj);
       B.startBlock(lv);
@@ -445,7 +445,7 @@ export function emitControlExpr(
         B.line(`store ${ty} ${l.name}, ptr ${slot}`);
       } else {
         B.line(`store ${ty} ${host.unionExtract(l.name, def.id, e.type)}, ptr ${slot}`);
-        host.releaseValue(l.name, e.left.type);
+        host.releaseFrame(l.name, e.left.type);
       }
       B.br(lj);
       B.startBlock(lj);
@@ -533,7 +533,7 @@ export function emitOptionalChainReceiver(
   const isUnit = host.tagInSet(r.name, def.id, unitTags);
   const extract = (): string =>
     multiple
-      ? host.retainValue(r.name, narrowed)
+      ? host.retainFrame(r.name, narrowed)
       : borrowBind
         ? host.unionPeek(r.name, def.id)
         : host.unionExtract(r.name, def.id, narrowed);

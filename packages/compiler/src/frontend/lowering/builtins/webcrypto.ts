@@ -48,12 +48,12 @@ export function lowerWebCryptoCall(lowerer: Lowerer, call: ts.CallExpression): I
   if (callee.questionDotToken || call.questionDotToken) {
     lowerer.noLowering(`optional calls of crypto.subtle.${member}`, call, SUBTLE_HINT);
   }
-  if (call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`crypto.subtle.${member} with spread arguments`, call, SUBTLE_HINT);
   }
   // JsonWebKey imports are not implemented: a literal 'jwk' format is
   // refused here (the runtime refuses a computed one).
-  const format = call.arguments[0];
+  const format = call.arguments.nodes[0];
   if (
     member === "importKey" &&
     format !== undefined &&
@@ -63,7 +63,7 @@ export function lowerWebCryptoCall(lowerer: Lowerer, call: ts.CallExpression): I
     lowerer.noLowering("crypto.subtle.importKey with the 'jwk' key format", format, SUBTLE_HINT);
   }
   const loc = locOf(call);
-  const args = call.arguments.map((arg) =>
+  const args = call.arguments.nodes.map((arg) =>
     ts.isObjectLiteralExpression(arg)
       ? lowerDynObjectLiteral(lowerer, arg)
       : lowerer.lowerExprExpecting(arg, DYN),

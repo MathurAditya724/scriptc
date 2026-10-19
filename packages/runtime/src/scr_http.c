@@ -3323,6 +3323,13 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
 
 static void scr_http_conn_data(void *ctx, const char *buf, size_t n) {
   ScrHttpConn *conn = (ScrHttpConn *)ctx;
+  if (conn->pool_agent != NULL) {
+    /* Data on an idle pooled socket: the agent destroys the socket, as
+     * Node's free-socket read guard does, so the bytes are never read as
+     * the next request's response. */
+    scr_net_sock_destroy(conn->sock);
+    return;
+  }
   if (conn->len + n > conn->cap) {
     size_t cap = conn->cap ? conn->cap : 8192;
     while (cap < conn->len + n) cap *= 2;

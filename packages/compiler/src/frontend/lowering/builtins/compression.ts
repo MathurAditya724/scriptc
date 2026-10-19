@@ -197,7 +197,7 @@ export function lowerZlibStreamMethodCall(
 ): IrExpr {
   const loc = locOf(call);
   const member = access.name.text;
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.some(ts.isSpreadElement)) lowerer.noLowering(`${member} with spread arguments`, call);
   const isFunc = (node: ts.Expression): boolean =>
     lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "func";
@@ -304,25 +304,25 @@ export function lowerPromisifiedZlibCall(
   member: string,
   loc: SrcLoc,
 ): IrExpr {
-  if (expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`the promisified zlib.${member} with spread arguments`, expr);
   }
-  if (expr.arguments.length !== 1 && expr.arguments.length !== 2) {
+  if (expr.arguments.nodes.length !== 1 && expr.arguments.nodes.length !== 2) {
     lowerer.noLowering(
-      `the promisified zlib.${member} with ${expr.arguments.length} arguments`,
+      `the promisified zlib.${member} with ${expr.arguments.nodes.length} arguments`,
       expr,
       `the supported forms are ${member}Async(data) and ${member}Async(data, options)`,
     );
   }
-  const input = zlibInput(lowerer, expr.arguments[0]!, loc);
+  const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
   return {
     kind: "libCall",
     fn: input.dyn ? "zlib.promiseDyn" : "zlib.promise",
     args: [
       numLit(ZLIB_ONE_SHOT_MODES[member]!, loc),
       input.value,
-      expr.arguments[1] !== undefined
-        ? zlibOptionsValue(lowerer, expr.arguments[1], `zlib.${member}`, loc)
+      expr.arguments.nodes[1] !== undefined
+        ? zlibOptionsValue(lowerer, expr.arguments.nodes[1], `zlib.${member}`, loc)
         : dynUndefinedExpr(loc),
     ],
     type: { kind: "promise", inner: BYTES_U8 },
@@ -346,19 +346,26 @@ export function lowerZlibModuleCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr {
-  if (expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`zlib.${bi.member} with spread arguments`, expr);
   }
   const streamMode = ZLIB_STREAM_FACTORIES[bi.member];
   if (streamMode !== undefined) {
-    return lowerZlibStreamNew(lowerer, expr.arguments, streamMode, `zlib.${bi.member}`, expr, loc);
+    return lowerZlibStreamNew(
+      lowerer,
+      expr.arguments.nodes,
+      streamMode,
+      `zlib.${bi.member}`,
+      expr,
+      loc,
+    );
   }
   const syncFn = ZLIB_SYNC_FNS[bi.member];
   if (syncFn !== undefined) {
-    if (expr.arguments.length === 0 || expr.arguments.length > 2) {
-      lowerer.noLowering(`${bi.member} with ${expr.arguments.length} arguments`, expr);
+    if (expr.arguments.nodes.length === 0 || expr.arguments.nodes.length > 2) {
+      lowerer.noLowering(`${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    const input = zlibInput(lowerer, expr.arguments[0]!, loc);
+    const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
     if (input.dyn) {
       return {
         kind: "libCall",
@@ -366,8 +373,8 @@ export function lowerZlibModuleCall(
         args: [
           numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
           input.value,
-          expr.arguments[1] !== undefined
-            ? zlibOptionsValue(lowerer, expr.arguments[1], `zlib.${bi.member}`, loc)
+          expr.arguments.nodes[1] !== undefined
+            ? zlibOptionsValue(lowerer, expr.arguments.nodes[1], `zlib.${bi.member}`, loc)
             : dynUndefinedExpr(loc),
         ],
         type: BYTES_U8,
@@ -375,15 +382,15 @@ export function lowerZlibModuleCall(
       };
     }
     if (
-      expr.arguments.length === 2 &&
+      expr.arguments.nodes.length === 2 &&
       (bi.member === "deflateSync" || bi.member === "deflateRawSync" || bi.member === "gzipSync")
     ) {
-      const options = expr.arguments[1]!;
+      const options = expr.arguments.nodes[1]!;
       // A lone literal level keeps the direct compression entry (build-time
       // compression in the native emitters uses it); other options take the
       // runtime option ladder below.
-      if (ts.isObjectLiteralExpression(options) && options.properties.length === 1) {
-        const prop = options.properties[0]!;
+      if (ts.isObjectLiteralExpression(options) && options.properties.nodes.length === 1) {
+        const prop = options.properties.nodes[0]!;
         if (
           ts.isPropertyAssignment(prop) &&
           (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
@@ -416,14 +423,14 @@ export function lowerZlibModuleCall(
         }
       }
     }
-    if (expr.arguments.length === 2) {
+    if (expr.arguments.nodes.length === 2) {
       return {
         kind: "libCall",
         fn: "zlib.syncOpts",
         args: [
           numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
           input.value,
-          zlibOptionsValue(lowerer, expr.arguments[1]!, `zlib.${bi.member}`, loc),
+          zlibOptionsValue(lowerer, expr.arguments.nodes[1]!, `zlib.${bi.member}`, loc),
         ],
         type: BYTES_U8,
         loc,
@@ -439,19 +446,19 @@ export function lowerZlibModuleCall(
   }
   const callbackFn = ZLIB_CALLBACK_FNS[bi.member];
   if (callbackFn !== undefined) {
-    if (expr.arguments.length !== 2 && expr.arguments.length !== 3) {
+    if (expr.arguments.nodes.length !== 2 && expr.arguments.nodes.length !== 3) {
       lowerer.noLowering(
-        `${bi.member} with ${expr.arguments.length} arguments`,
+        `${bi.member} with ${expr.arguments.nodes.length} arguments`,
         expr,
         `${bi.member}(data, callback) and ${bi.member}(data, options, callback) are supported`,
       );
     }
-    const input = zlibInput(lowerer, expr.arguments[0]!, loc);
+    const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
     const dynData = input.dyn;
-    if (expr.arguments.length === 3 || dynData) {
+    if (expr.arguments.nodes.length === 3 || dynData) {
       // (data, options, callback): Node validates the options before the
       // callback and the input, so the runtime ladder runs first.
-      const withOptions = expr.arguments.length === 3;
+      const withOptions = expr.arguments.nodes.length === 3;
       return {
         kind: "libCall",
         fn: dynData ? "zlib.cbOptsDyn" : "zlib.cbOpts",
@@ -459,9 +466,9 @@ export function lowerZlibModuleCall(
           numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
           input.value,
           withOptions
-            ? zlibOptionsValue(lowerer, expr.arguments[1]!, `zlib.${bi.member}`, loc)
+            ? zlibOptionsValue(lowerer, expr.arguments.nodes[1]!, `zlib.${bi.member}`, loc)
             : dynUndefinedExpr(loc),
-          errorFirstBytesCallback(lowerer, expr.arguments[withOptions ? 2 : 1]!, "zlib"),
+          errorFirstBytesCallback(lowerer, expr.arguments.nodes[withOptions ? 2 : 1]!, "zlib"),
         ],
         type: VOID,
         loc,
@@ -470,15 +477,15 @@ export function lowerZlibModuleCall(
     return {
       kind: "libCall",
       fn: callbackFn,
-      args: [input.value, errorFirstBytesCallback(lowerer, expr.arguments[1]!, "zlib")],
+      args: [input.value, errorFirstBytesCallback(lowerer, expr.arguments.nodes[1]!, "zlib")],
       type: VOID,
       loc,
     };
   }
   if (bi.member === "crc32") {
-    if (expr.arguments.length < 1 || expr.arguments.length > 2) {
+    if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 2) {
       lowerer.noLowering(
-        `zlib.crc32 with ${expr.arguments.length} arguments`,
+        `zlib.crc32 with ${expr.arguments.nodes.length} arguments`,
         expr,
         "crc32(data[, initialValue]) is supported",
       );
@@ -487,9 +494,9 @@ export function lowerZlibModuleCall(
       kind: "libCall",
       fn: "zlib.crc32",
       args: [
-        lowerBuiltinByteInput(lowerer, expr.arguments[0]!, loc, "zlib"),
-        expr.arguments[1]
-          ? lowerer.lowerExprExpecting(expr.arguments[1]!, F64)
+        lowerBuiltinByteInput(lowerer, expr.arguments.nodes[0]!, loc, "zlib"),
+        expr.arguments.nodes[1]
+          ? lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, F64)
           : { kind: "numLit", value: 0, type: F64, loc },
       ],
       type: F64,

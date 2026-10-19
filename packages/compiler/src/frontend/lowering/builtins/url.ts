@@ -159,7 +159,7 @@ export function lowerUrlMethodCall(
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "url") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
-  if ((name === "toString" || name === "toJSON") && call.arguments.length === 0) {
+  if ((name === "toString" || name === "toJSON") && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExpr(access.expression);
     return { kind: "libCall", fn: "url.href", args: [receiver], type: STRING, loc: locOf(call) };
   }
@@ -185,7 +185,7 @@ export function lowerSearchParamsNew(
   expr: ts.NewExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   if (args.length > 1) {
     lowerer.noLowering(
       `new URLSearchParams with ${args.length} arguments`,
@@ -203,7 +203,7 @@ export function lowerSearchParamsNew(
   // type already rejects spreads' surprises, but keep the fence tight).
   if (ts.isObjectLiteralExpression(arg)) {
     let acc: IrExpr = { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc };
-    for (const prop of arg.properties) {
+    for (const prop of arg.properties.nodes) {
       if (!ts.isPropertyAssignment(prop) || prop.name === undefined) {
         lowerer.unsupported(
           "SC1090",
@@ -450,7 +450,7 @@ export function lowerSearchParamsMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   // The WHATWG arity ladder: too few arguments throw Node's
   // ERR_MISSING_ARGS before any conversion (the invalid-input probes'
   // `params.get()`). Claimed for effect-free receivers only — the
@@ -661,7 +661,7 @@ function lowerSpForEachCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr {
   const loc = locOf(call);
-  const argNode = call.arguments[0]!;
+  const argNode = call.arguments.nodes[0]!;
   const fnArg = lowerer.lowerExpr(argNode);
   if (
     fnArg.type.kind !== "func" ||
@@ -758,7 +758,7 @@ export function lowerFileUrlCall(
   loc: SrcLoc,
   hasSpread: boolean,
 ): IrExpr {
-  if (hasSpread || expr.arguments.length > 2) {
+  if (hasSpread || expr.arguments.nodes.length > 2) {
     lowerer.noLowering(
       `${bi.member} with these arguments`,
       expr,
@@ -767,8 +767,8 @@ export function lowerFileUrlCall(
   }
   // Keep the established typed one-argument paths free of boxing. The
   // checked variants preserve each converter's validation/getter order.
-  if (expr.arguments.length === 1 && bi.member !== "fileURLToPathBuffer") {
-    const arg = lowerer.lowerExpr(expr.arguments[0]!);
+  if (expr.arguments.nodes.length === 1 && bi.member !== "fileURLToPathBuffer") {
+    const arg = lowerer.lowerExpr(expr.arguments.nodes[0]!);
     if (bi.member === "fileURLToPath") {
       if (arg.type.kind === "url")
         return { kind: "libCall", fn: "url.fileURLToPathUrl", args: [arg], type: STRING, loc };
@@ -792,8 +792,8 @@ export function lowerFileUrlCall(
     };
   }
   const args = [0, 1].map((index) =>
-    expr.arguments[index]
-      ? lowerer.lowerExprExpecting(expr.arguments[index]!, DYN)
+    expr.arguments.nodes[index]
+      ? lowerer.lowerExprExpecting(expr.arguments.nodes[index]!, DYN)
       : dynUndefinedExpr(loc),
   );
   return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
@@ -818,7 +818,7 @@ export function lowerLegacyUrlCall(
 ): IrExpr {
   const arity =
     bi.member === "parse" ? 3 : bi.member === "format" || bi.member === "resolve" ? 2 : 1;
-  if (expr.arguments.some(ts.isSpreadElement) || expr.arguments.length > arity) {
+  if (expr.arguments.nodes.some(ts.isSpreadElement) || expr.arguments.nodes.length > arity) {
     lowerer.noLowering(
       `url.${bi.member} with these arguments`,
       expr,
@@ -827,7 +827,7 @@ export function lowerLegacyUrlCall(
   }
   const args: IrExpr[] = [];
   for (let index = 0; index < arity; index++) {
-    let arg = expr.arguments[index];
+    let arg = expr.arguments.nodes[index];
     while (arg && ts.isParenthesizedExpression(arg)) arg = arg.expression;
     // An inline urlObject or options literal builds as the checked-dynamic
     // object format() reads (nested query objects included).
@@ -840,7 +840,7 @@ export function lowerLegacyUrlCall(
     );
   }
   if (bi.member === "domainToASCII" || bi.member === "domainToUnicode") {
-    args.push({ kind: "boolLit", value: expr.arguments.length === 0, type: BOOL, loc });
+    args.push({ kind: "boolLit", value: expr.arguments.nodes.length === 0, type: BOOL, loc });
   } else {
     const warn = !insideNodeModules(expr.getSourceFile().fileName);
     args.push({ kind: "boolLit", value: warn, type: BOOL, loc });
@@ -855,7 +855,7 @@ export function isSearchParamsIterable(lowerer: Lowerer, node: ts.Expression): b
   if (lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "searchParams") return true;
   if (
     !ts.isCallExpression(node) ||
-    node.arguments.length !== 0 ||
+    node.arguments.nodes.length !== 0 ||
     !ts.isPropertyAccessExpression(node.expression)
   )
     return false;

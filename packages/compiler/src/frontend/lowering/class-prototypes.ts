@@ -360,7 +360,7 @@ export function reflectClassPrototype(
   const context = newFnCtx(false, null, null, DYN);
   lowerer.fnStack.push(context);
   try {
-    for (const member of info.decl.members) {
+    for (const member of info.decl.members.nodes) {
       if (
         (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) ||
         !member.body ||
@@ -430,12 +430,12 @@ export function lowerClassPrototypeData(
   const parent = expr.parent;
   const descriptorKey =
     ts.isCallExpression(parent) &&
-    parent.arguments[0] === expr &&
+    parent.arguments.nodes[0] === expr &&
     ts.isPropertyAccessExpression(parent.expression) &&
     lowerer.stdlibGlobalMember(parent.expression, "Object") === "defineProperty" &&
-    parent.arguments[1] &&
-    ts.isStringLiteral(parent.arguments[1])
-      ? parent.arguments[1].text
+    parent.arguments.nodes[1] &&
+    ts.isStringLiteral(parent.arguments.nodes[1])
+      ? parent.arguments.nodes[1].text
       : null;
   const name =
     ts.isPropertyAccessExpression(parent) && parent.expression === expr
@@ -481,12 +481,12 @@ export function lowerClassPrototypeAssign(
   lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
-  const target = call.arguments[0];
+  const target = call.arguments.nodes[0];
   if (!target || !ts.isPropertyAccessExpression(target) || target.name.text !== "prototype")
     return null;
   const info = exactClassOfReceiver(lowerer, target.expression);
   if (!info) return null;
-  if (!ts.isExpressionStatement(call.parent) || call.arguments.some(ts.isSpreadElement)) {
+  if (!ts.isExpressionStatement(call.parent) || call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.unsupported("SC1090", call, "class prototype assignment results and spread arguments");
   }
   const loc = locOf(call);
@@ -507,7 +507,9 @@ export function lowerClassPrototypeAssign(
       target,
       "prototype data on generic, mixin, or runtime-provided classes",
     );
-  const sources = call.arguments.slice(1).map((node) => lowerer.lowerExprExpecting(node, DYN));
+  const sources = call.arguments.nodes
+    .slice(1)
+    .map((node) => lowerer.lowerExprExpecting(node, DYN));
   return {
     kind: "libCall",
     fn: "dyn.assignPrototype",
@@ -685,11 +687,11 @@ export function lowerClassPrototypeDescriptors(
   call: ts.CallExpression,
   member: string,
 ): IrExpr | null {
-  const target = call.arguments[0];
+  const target = call.arguments.nodes[0];
   if (
     member !== "defineProperties" ||
-    call.arguments.length !== 2 ||
-    call.arguments.some(ts.isSpreadElement) ||
+    call.arguments.nodes.length !== 2 ||
+    call.arguments.nodes.some(ts.isSpreadElement) ||
     !target ||
     !ts.isPropertyAccessExpression(target) ||
     target.name.text !== "prototype"
@@ -720,7 +722,7 @@ export function lowerClassPrototypeDescriptors(
     fn: "dyn.definePrototypeProps",
     args: [
       prototype,
-      lowerer.lowerExprExpecting(call.arguments[1]!, DYN),
+      lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
       prototypeProtectedKeys(lowerer, info, target, loc),
     ],
     type: DYN,

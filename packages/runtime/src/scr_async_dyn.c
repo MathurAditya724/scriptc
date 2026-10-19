@@ -28,16 +28,6 @@ static void scr_ad_oom(void) {
   abort();
 }
 
-/* Fresh snapshot storage (the layout lives in scr_runtime.h; the RC pair
- * in scr_async.c — spawn/destroy touch it). */
-static ScrAlsCtx *scr_als_ctx_alloc(size_t len) {
-  ScrAlsCtx *c = malloc(sizeof *c + len * sizeof(ScrAlsEntry));
-  if (!c) scr_ad_oom();
-  c->rc = 1;
-  c->len = len;
-  return c;
-}
-
 static SCR_TL double scr_als_counter = 0;
 
 /* Main-slot teardown (atexit, LIFO after scr_init's audit registration —
@@ -68,30 +58,6 @@ ScrDyn *scr_als_get(double id) {
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
-/* Fresh snapshot with (id → value) replaced-or-appended (value borrowed,
- * retained in), installed as the active context; the PREVIOUS snapshot
- * returns (ownership moves out) for scr_als_restore. */
-ScrAlsCtx *scr_als_enter(double id, ScrDyn *value) {
-  ScrAlsCtx *prev = *SCR_ALS_SLOT();
-  size_t n = prev ? prev->len : 0;
-  bool have = false;
-  for (size_t i = 0; i < n; i++) {
-    if (prev->entries[i].id == id) { have = true; break; }
-  }
-  ScrAlsCtx *next = scr_als_ctx_alloc(have ? n : n + 1);
-  size_t w = 0;
-  for (size_t i = 0; i < n; i++) {
-    if (prev->entries[i].id == id) continue;
-    next->entries[w].id = prev->entries[i].id;
-    next->entries[w].value = scr_dyn_retain(prev->entries[i].value);
-    w++;
-  }
-  next->entries[w].id = id;
-  next->entries[w].value = scr_dyn_retain(value);
-  *SCR_ALS_SLOT() = next;
-  return prev; /* ownership moves to the caller */
-}
-
 /* The exit() arm: the id REMOVED from the snapshot. */
 ScrAlsCtx *scr_als_enter_absent(double id) {
   ScrAlsCtx *prev = *SCR_ALS_SLOT();
@@ -112,14 +78,10 @@ ScrAlsCtx *scr_als_enter_absent(double id) {
   return prev;
 }
 
-void scr_als_restore(ScrAlsCtx *prev) {
-  scr_als_ctx_release(*SCR_ALS_SLOT());
-  *SCR_ALS_SLOT() = prev; /* ownership moves back in */
-}
-
 void scr_als_enter_with(double id, ScrDyn *value) {
   ScrAlsCtx *prev = scr_als_enter(id, value);
   scr_als_ctx_release(prev); /* no restore point — Node's enterWith */
+  scr_als_entered_with();
 }
 
 void scr_als_disable(double id) {
@@ -1036,11 +998,9 @@ void scr_process_emit_warning(ScrDyn *args) {
   e->name = type ? scr_str_retain((ScrStr *)type) : scr_str_new("Warning", 7);
   e->name_present = true;
   if (code) e->code = scr_str_retain((ScrStr *)code);
+  if (detail) scr_error_set_prop(e, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
   ScrDyn *w = scr_dyn_from_error(e);
   scr_error_release(e);
-  if (detail) {
-    scr_dyn_obj_set(w, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
-  }
   scr_warning_emit_deferred(w);
   scr_dyn_release(w);
 }

@@ -13,7 +13,13 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import { isJsSourceFile, isNodeEsmFile } from "../program.js";
-import { genResultRecord, isAnyArrayType, jsOpenObjectType } from "../type-mapper.js";
+import {
+  genResultRecord,
+  isAnyArrayType,
+  isUnitOnlyTsType,
+  jsOpenObjectType,
+  unitOnlyUnion,
+} from "../type-mapper.js";
 import { dynFallbackType } from "./lowerer.js";
 import { builtinModuleFnOf } from "./surfaces.js";
 import { mixinFnShapeOf } from "./lower-mixins.js";
@@ -183,7 +189,7 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     executor &&
     (ts.isArrowFunction(executor) || ts.isFunctionExpression(executor)) &&
     ts.isNewExpression(construction) &&
-    construction.arguments?.[0] === executor &&
+    construction.arguments?.nodes[0] === executor &&
     lowerer.isStdlibGlobal(construction.expression, "Promise");
   if (
     !nativeExecutor &&
@@ -380,7 +386,7 @@ export function paramShapes(
     const tsType = symbol
       ? lowerer.checker.getTypeOfSymbol(symbol)
       : lowerer.typeOf(declParam.name);
-    const mapped = jsOpenObjectType(
+    let mapped = jsOpenObjectType(
       declParam,
       lowerer.runtimeOptionalBindingType(
         declParam.name,
@@ -389,6 +395,11 @@ export function paramShapes(
       lowerer.shapes,
       lowerer.unions,
     );
+    // An instantiation with a literal `undefined` argument (`id(undefined)`
+    // binds T = undefined): standalone undefined maps to VOID (the return
+    // convention), and a parameter is a value position, so it takes the
+    // unit-only slot like a declared `v: undefined` parameter.
+    if (mapped?.kind === "void" && isUnitOnlyTsType(tsType)) mapped = unitOnlyUnion(lowerer.unions);
     if (!mapped || mapped.kind === "void")
       lowerer.badType(blameOf?.(declParam, i) ?? declParam.name, tsType);
     if (declParam.dotDotDotToken) {
@@ -623,10 +634,10 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
   // body (run()/discover() skip by the same test). Generic mixins still
   // register their generic signature below: non-mixin-shaped calls
   // degrade to the generic machinery's own per-site fences.
-  if (!decl.typeParameters && mixinFnShapeOf(lowerer, decl)) return;
-  const isAsync = decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+  if (!decl.typeParameters?.nodes && mixinFnShapeOf(lowerer, decl)) return;
+  const isAsync = decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
   const isGenerator = decl.asteriskToken !== undefined;
-  if (decl.typeParameters) {
+  if (decl.typeParameters?.nodes) {
     // Generic async composes: each monomorphized instance is an async
     // IrFunction like any other — its own spawn wrapper, its body
     // returning the resolved promise's inner (lowerGenericInstance).
@@ -658,14 +669,14 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
     }
   }
 
-  const params = lowerer.paramShapes(decl.parameters);
+  const params = lowerer.paramShapes(decl.parameters.nodes);
   // The zero-parameter declaration retains its dynRest ABI; value
   // functions use the full arguments slot even with no named parameters.
   appendArgumentsParameter(
     lowerer,
     decl,
     params,
-    decl.parameters.length > 0 ? "arguments" : "dynRest",
+    decl.parameters.nodes.length > 0 ? "arguments" : "dynRest",
   );
   const nameBlame: ts.Node = decl.name ?? decl;
   const returnType = lowerer.declaredReturnType(decl, nameBlame);
@@ -717,7 +728,7 @@ function appendArgumentsParameter(
     !bodyReadsArguments(node)
   )
     return;
-  if (node.parameters.length > 0 || ts.isMethodDeclaration(node)) {
+  if (node.parameters.nodes.length > 0 || ts.isMethodDeclaration(node)) {
     const classMethod =
       ts.isMethodDeclaration(node) &&
       (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent));
@@ -754,7 +765,9 @@ export function lambdaSignature(
     isJsSourceFile(node.getSourceFile()) &&
     !node.type &&
     (ts.isFunctionExpression(node) || ts.isArrowFunction(node)) &&
-    node.parameters.every((param) => !param.type && !param.dotDotDotToken && !param.initializer) &&
+    node.parameters.nodes.every(
+      (param) => !param.type && !param.dotDotDotToken && !param.initializer,
+    ) &&
     ts.isBinaryExpression(node.parent) &&
     node.parent.right === node &&
     node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -764,11 +777,14 @@ export function lambdaSignature(
   ) {
     const receiver = lowerer.lowerExpr(node.parent.left.expression);
     if (receiver.type.kind === "dyn") {
-      const shapes: ParamShape[] = node.parameters.map(() => ({ type: DYN, mode: "required" }));
+      const shapes: ParamShape[] = node.parameters.nodes.map(() => ({
+        type: DYN,
+        mode: "required",
+      }));
       return { shapes, funcType: funcTypeFromParamShapes(shapes, DYN) };
     }
   }
-  if (node.typeParameters && !lowerer.erasingLambdas.has(node)) {
+  if (node.typeParameters?.nodes && !lowerer.erasingLambdas.has(node)) {
     // Generic function-like forms monomorphize only where a static home
     // exists: top-level generic function declarations, generic methods
     // (class and object-literal), and module-scope never-reassigned
@@ -786,14 +802,14 @@ export function lambdaSignature(
           : "generic arrow/function expressions outside a never-reassigned module-scope binding (only `const f = <T>(x: T) => ...` bindings and top-level generic function declarations monomorphize)",
     );
   }
-  const shapes = lowerer.paramShapes(node.parameters);
+  const shapes = lowerer.paramShapes(node.parameters.nodes);
   // Error-first callbacks captured by native filesystem adapters receive
   // the selected runtime overload. Ambient contextual inference can pick
   // the string overload even when options request a Buffer.
   if (
     (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
     ts.isCallExpression(node.parent) &&
-    node.parent.arguments.at(-1) === node
+    node.parent.arguments.nodes.at(-1) === node
   ) {
     const builtin = ts.isPropertyAccessExpression(node.parent.expression)
       ? lowerer.builtinMemberOf(node.parent.expression)
@@ -806,7 +822,7 @@ export function lambdaSignature(
       builtinModuleFnOf(lowerer, builtin.module, builtin.member)?.fn === "fs.callbackCall"
     ) {
       for (let index = 0; index < shapes.length; index++) {
-        if (!node.parameters[index]?.type) {
+        if (!node.parameters.nodes[index]?.type) {
           shapes[index]!.type = DYN;
           if (shapes[index]!.bodyType) shapes[index]!.bodyType = DYN;
         }
@@ -843,7 +859,7 @@ export function lambdaSignature(
   // that recursive layout instead of first inferring narrower arrays.
   const isAsyncLike =
     !ts.isMethodDeclaration(node) &&
-    node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+    node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
   const innerRet = isAsyncLike && ret.kind === "promise" ? ret.inner : ret;
   // Union-inferred returns adopt too (a mixed-return body inferring a
   // SUB-union of the slot's union — adopting is a no-op when the two

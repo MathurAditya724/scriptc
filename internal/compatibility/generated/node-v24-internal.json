@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 64,
+        "partial": 65,
         "refused": 0,
-        "not-implemented": 53,
+        "not-implemented": 52,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1953,7 +1953,8 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -2002,7 +2003,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2074,7 +2076,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.disable",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2100,7 +2103,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.getStore",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2126,7 +2130,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.enterWith",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2152,7 +2157,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.run",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2178,7 +2184,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.exit",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2481,6 +2488,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -3042,7 +3050,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91065,6 +91074,8 @@
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
+          "tests/fixtures/node-test/cases/get-test-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
@@ -94813,8 +94824,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.getTestContext",
+        "tests": [
+          "tests/fixtures/node-test/cases/get-test-context.ts",
+          "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

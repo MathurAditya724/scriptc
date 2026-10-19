@@ -56,7 +56,7 @@ export function lowerArrayCallback(
     lead[0]?.kind === "dyn" &&
     (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode))
   ) {
-    for (const p of argNode.parameters) {
+    for (const p of argNode.parameters.nodes) {
       if (!ts.isIdentifier(p.name) || p.type || p.initializer || p.dotDotDotToken) continue;
       const t = lowerer.checker.getTypeAtLocation(p.name);
       if ((t.flags & ts.TypeFlags.Any) !== 0 && !lowerer.chainNarrowedType.has(p.name)) {
@@ -71,7 +71,7 @@ export function lowerArrayCallback(
   // handles the loop passes, whatever the contextual type spelled —
 
   if (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)) {
-    argNode.parameters.forEach((_p, _i) => {
+    argNode.parameters.nodes.forEach((_p, _i) => {
       return;
     });
   }
@@ -85,7 +85,7 @@ export function lowerArrayCallback(
   const previousImplicit = lowerer.implicitParamTypes;
   let contextualTs: Map<ts.Symbol, ts.Type> | null = null;
   if (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)) {
-    argNode.parameters.forEach((param, i) => {
+    argNode.parameters.nodes.forEach((param, i) => {
       const expected = full[i];
       if (
         expected === undefined ||
@@ -137,7 +137,7 @@ export function lowerArrayCallback(
   // that stored layout; its names then see the optional values.
   const patterns: { node: ts.Node; previous: IrType | undefined }[] = [];
   if (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)) {
-    argNode.parameters.forEach((param, i) => {
+    argNode.parameters.nodes.forEach((param, i) => {
       const expected = full[i];
       if (
         expected === undefined ||

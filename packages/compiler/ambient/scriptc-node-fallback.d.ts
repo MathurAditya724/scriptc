@@ -3510,8 +3510,10 @@ declare module "node:test" {
     readonly tags: readonly string[];
     readonly assert: TestContextAssert;
     readonly mock: MockTracker;
-    test(name: string, fn?: TestFn): Promise<void>;
-    test(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
+    test(name?: string, fn?: TestFn): Promise<void>;
+    test(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    test(options?: TestOptions, fn?: TestFn): Promise<void>;
+    test(fn?: TestFn): Promise<void>;
     skip(message?: string): void;
     todo(message?: string): void;
     diagnostic(message: string): void;
@@ -3541,23 +3543,44 @@ declare module "node:test" {
     match(value: string, regExp: RegExp, message?: string): void;
     doesNotMatch(value: string, regExp: RegExp, message?: string): void;
   }
-  function test(name: string, fn?: TestFn): Promise<void>;
-  function test(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
+  /* The name, options and function are each optional, as in Node: a test
+   * without a name takes the function's name, or "<anonymous>". */
+  function test(name?: string, fn?: TestFn): Promise<void>;
+  function test(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+  function test(options?: TestOptions, fn?: TestFn): Promise<void>;
+  function test(fn?: TestFn): Promise<void>;
   namespace test {
-    function skip(name: string, fn?: TestFn): Promise<void>;
-    function skip(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
-    function todo(name: string, fn?: TestFn): Promise<void>;
-    function todo(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
-    function only(name: string, fn?: TestFn): Promise<void>;
-    function only(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
+    function skip(name?: string, fn?: TestFn): Promise<void>;
+    function skip(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function skip(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function skip(fn?: TestFn): Promise<void>;
+    function todo(name?: string, fn?: TestFn): Promise<void>;
+    function todo(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function todo(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function todo(fn?: TestFn): Promise<void>;
+    function only(name?: string, fn?: TestFn): Promise<void>;
+    function only(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function only(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function only(fn?: TestFn): Promise<void>;
   }
   const it: typeof test;
-  function describe(name: string, fn?: SuiteFn): void;
-  function describe(name: string, options: TestOptions, fn?: SuiteFn): void;
+  function describe(name?: string, fn?: SuiteFn): void;
+  function describe(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+  function describe(options?: TestOptions, fn?: SuiteFn): void;
+  function describe(fn?: SuiteFn): void;
   namespace describe {
-    function skip(name: string, fn?: SuiteFn): void;
-    function todo(name: string, fn?: SuiteFn): void;
-    function only(name: string, fn?: SuiteFn): void;
+    function skip(name?: string, fn?: SuiteFn): void;
+    function skip(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function skip(options?: TestOptions, fn?: SuiteFn): void;
+    function skip(fn?: SuiteFn): void;
+    function todo(name?: string, fn?: SuiteFn): void;
+    function todo(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function todo(options?: TestOptions, fn?: SuiteFn): void;
+    function todo(fn?: SuiteFn): void;
+    function only(name?: string, fn?: SuiteFn): void;
+    function only(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function only(options?: TestOptions, fn?: SuiteFn): void;
+    function only(fn?: SuiteFn): void;
   }
   const suite: typeof describe;
   function before(fn: HookFn): void;
@@ -3632,6 +3655,9 @@ declare module "node:test" {
     [Symbol.dispose](): void;
   }
   const mock: MockTracker;
+  /* The context of the test, suite or hook running in the current async
+   * context; undefined outside one. */
+  function getTestContext(): TestContext | SuiteContext | undefined;
   /* Declared for typechecking only — every use fences (no lowering).
    * `assert` is the module-level custom-assertion registry (v24's
    * `const { assert } = require('node:test')`), not TestContext.assert. */
@@ -3649,6 +3675,7 @@ declare module "node:test" {
     afterEach,
     mock,
     assert,
+    getTestContext,
     run,
     snapshot,
     TestContext,

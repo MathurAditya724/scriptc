@@ -113,6 +113,7 @@ import { provenanceSources } from "./frontend/provenance-registry.js";
 import { clearResolveCaches } from "./frontend/resolve.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
 import { executableLinkFeatures } from "./backend/executable-features.js";
+import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { FrontendInputTracker, trackedReadFile } from "./frontend/input-tracker.js";
 import {
   libraryFrontendImplementationFingerprint,
@@ -548,6 +549,7 @@ async function compileExecutableNative(
     watch: features.watch,
     foreignFfi: features.foreignFfi,
     ...(features.workers ? { workers: true } : {}),
+    ...(features.youngNursery ? { youngNursery: true } : {}),
     nodeTest: features.nodeTest,
     tls: features.tls,
     tlsCa: features.tlsCa,
@@ -1047,6 +1049,7 @@ async function compileTracked(
       ...(opts.strip ? { strip: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
+      ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,
       ffiProfile:
         opts.ffiProfilePath === undefined || ffiProfileBytes === null

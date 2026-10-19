@@ -3,11 +3,13 @@ import { type IrModule } from "../ir/ir.js";
 import { moduleRuntimeFeatures } from "../ir/runtime-features.js";
 import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { youngNurseryRequested } from "./young-nursery.js";
 
 export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
   const features = moduleRuntimeFeatures(mod);
   return {
     ...(mod.workers ? { workers: true } : {}),
+    ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
     regex: features.regex,
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
