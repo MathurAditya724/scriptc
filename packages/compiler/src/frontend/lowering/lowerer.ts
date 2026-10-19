@@ -20,6 +20,7 @@ import {
 } from "./require-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
+import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
@@ -2442,6 +2443,9 @@ export class Lowerer {
    * Reachability lowers inits before the declarations they discover, so
    * these rebuild after the worklist restores historical shape metadata. */
   readonly shapeOrderHelperFinalizers: (() => void)[] = [];
+  /** Construction witnesses that choose each shape's enumeration order
+   * once lowering settles (key-order-witness.ts). */
+  readonly keyOrder = new KeyOrderNotes();
   /** Emit-override specializations (`%C.emit:<event>` — lower-event-emitter.ts's
    * emit-overrides block): interned names, the drive-loop queue, and the
    * currently-lowering specialization's context (the super-forward
@@ -7432,6 +7436,13 @@ export class Lowerer {
     this.settleGenericDemandPriorities();
     this.shapes.settleDeclaredOrderPriorities();
     for (const finalize of this.shapeOrderMetadataFinalizers) finalize();
+    applyKeyOrderWitnesses(this, [
+      ...orderedUnits,
+      ...initFunctions,
+      ...instanceFunctions,
+      ...this.liftedFns,
+      ...this.implicitFns,
+    ]);
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     const functions = [
       ...orderedUnits,

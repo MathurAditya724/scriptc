@@ -613,6 +613,10 @@ function buildRecordProjection(
   const localId = parameter + ".0";
   const receiver = varRef(localId, source, loc);
   const result: IrType = { kind: "record", shapeId: target.id };
+  // A record source's copy keeps the source's key order; a class
+  // instance's fields keep today's table.
+  const copyOf = (node: IrExpr): IrExpr =>
+    source.kind === "record" ? lowerer.keyOrder.copy(node, source.shapeId) : node;
   return {
     name,
     params: [{ localId, name: parameter, type: source }],
@@ -621,7 +625,7 @@ function buildRecordProjection(
     body: [
       {
         kind: "return",
-        value: {
+        value: copyOf({
           kind: "recordLit",
           fields: target.fields.map((field) => {
             const conversion = plan.get(field.name)!;
@@ -671,7 +675,7 @@ function buildRecordProjection(
           }),
           type: result,
           loc,
-        },
+        }),
         loc,
       },
     ],

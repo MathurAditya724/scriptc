@@ -6619,6 +6619,7 @@ export function recordKeysArrayCall(
   loc: SrcLoc,
 ): IrExpr {
   const resultT = arrayOf(STRING);
+  lowerer.keyOrder.observe(argIr);
   const key = `obj.keys:${argIr.shapeId}:${typeKey(resultT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
@@ -8099,6 +8100,7 @@ function lowerObjectStaticCall(
     valueT = tupleShape.fields.find((f) => f.name === "1")!.type;
   }
 
+  lowerer.keyOrder.observe(argIr);
   const key = `obj.${member}:${argIr.shapeId}:${typeKey(resultT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
