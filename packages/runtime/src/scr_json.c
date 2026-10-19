@@ -6962,6 +6962,15 @@ static bool scr_dyn_error_encoding(const ScrDyn *d) {
   return d->kind == SCR_DYN_OBJ && scr_dyn_obj_get(d, "%error", 6) != NULL;
 }
 
+static bool scr_dyn_is_date(const ScrDyn *d) {
+  return d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_DATE;
+}
+
+/* A Date's valueOf(): its time value as a number. +1. */
+static ScrDyn *scr_dyn_date_value_of(const ScrDyn *d) {
+  return scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "valueOf", NULL, 0, "valueOf");
+}
+
 /* Receiver-kind-dispatched toString() on a checked-dynamic value (the
  * dyn method surface — a stream's 'data'/for-await chunk is the common
  * receiver): bytes decode per the encoding (Node's Buffer.toString,
@@ -7000,7 +7009,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     if (scr_dyn_error_encoding(d) && !scr_dyn_property_owner(d, "toString", 8)) return scr_dyn_error_string(d);
     return scr_str_new("[object Object]", 15);
   case SCR_DYN_HANDLE:
-    if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL) {
+    if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
       if (!text) return NULL;
       ScrStr *out = scr_str_retain(text->v.str);
@@ -7424,6 +7433,14 @@ bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out) {
     return false;
   }
   default: {
+    /* A Date's valueOf answers its time value. */
+    if (scr_dyn_is_date(d)) {
+      ScrDyn *time = scr_dyn_date_value_of(d);
+      if (!time) return false;
+      *out = time->v.num;
+      scr_dyn_release(time);
+      return true;
+    }
     /* Arrays, byte views, functions, promises, and native handles inherit a
      * valueOf that returns the receiver, then use their existing JS-exact
      * string rendering for the numeric conversion. */
@@ -7444,8 +7461,14 @@ double scr_dyn_number_coerce(const ScrDyn *d) {
 
 static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d);
 
+/* ToPrimitive with the number hint, which differs from the default hint
+ * only for a Date: its time value. */
+static ScrDyn *scr_dyn_number_primitive(const ScrDyn *d) {
+  return scr_dyn_is_date(d) ? scr_dyn_date_value_of(d) : scr_dyn_add_primitive(d);
+}
+
 double scr_dyn_number_constructor(const ScrDyn *d) {
-  ScrDyn *primitive = scr_dyn_add_primitive(d);
+  ScrDyn *primitive = scr_dyn_number_primitive(d);
   if (!primitive) return NAN;
   double result = primitive->kind == SCR_DYN_BIGINT
     ? scr_bigint_to_f64(primitive->v.bigint) : scr_dyn_number_coerce(primitive);
@@ -7454,7 +7477,7 @@ double scr_dyn_number_constructor(const ScrDyn *d) {
 }
 
 static ScrBigInt *scr_dyn_bigint_convert(const ScrDyn *d, bool allow_number) {
-  ScrDyn *primitive = scr_dyn_add_primitive(d);
+  ScrDyn *primitive = scr_dyn_number_primitive(d);
   if (!primitive) return NULL;
   ScrBigInt *result = NULL;
   switch (primitive->kind) {
@@ -7587,7 +7610,7 @@ ScrDyn *scr_dyn_add(const ScrDyn *left, const ScrDyn *right) {
 }
 
 ScrDyn *scr_dyn_to_numeric(const ScrDyn *value) {
-  ScrDyn *primitive = scr_dyn_add_primitive(value);
+  ScrDyn *primitive = scr_dyn_number_primitive(value);
   if (!primitive) return NULL;
   if (primitive->kind == SCR_DYN_BIGINT) return primitive;
   double number;
@@ -7611,9 +7634,9 @@ ScrDyn *scr_dyn_increment(const ScrDyn *value, bool increment) {
 bool scr_dyn_compare(const ScrDyn *left, const ScrDyn *right, const ScrStr *operation) {
   // ToPrimitive is observable and always visits the original left operand
   // first, including the > and <= spellings of relational comparison.
-  ScrDyn *l = scr_dyn_add_primitive(left);
+  ScrDyn *l = scr_dyn_number_primitive(left);
   if (!l) return false;
-  ScrDyn *r = scr_dyn_add_primitive(right);
+  ScrDyn *r = scr_dyn_number_primitive(right);
   if (!r) { scr_dyn_release(l); return false; }
   double order = 2;
   if (l->kind == SCR_DYN_STR && r->kind == SCR_DYN_STR) {

@@ -326,6 +326,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.getMilliseconds": "scr_date_get_milliseconds",
   "date.getUTCMilliseconds": "scr_date_get_milliseconds",
   "date.getTimezoneOffset": "scr_date_get_timezone_offset",
+  "date.toString": "scr_date_to_string",
+  "date.toDateString": "scr_date_to_date_string",
+  "date.toTimeString": "scr_date_to_time_string",
   "fs.existsSync": "scr_fs_exists",
   // ── the throwing slice (MAY_THROW_LIB_FNS members): the generic path
   // emits the standard pending check after each — exprs.ts's finish.
