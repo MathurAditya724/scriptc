@@ -11,6 +11,7 @@ import {
   RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
+  classValueConstructor,
 } from "../../ir/ir.js";
 import { streamRooted, undefinedArmTag } from "../../ir/analysis.js";
 import {
@@ -926,14 +927,32 @@ export function emitClassObjDefs(
         `llvm emitter bug: class object for ${className} names unknown family ${meta.def.genericOf ?? ""}`,
       );
     }
-    const ctor = fnByName.get(`%${className}.constructor`);
+    const valueCtor = classValueConstructor(meta.def);
+    const ctor = fnByName.get(valueCtor.fn);
     if (!ctor)
       throw new InternalCompilerError(
         `llvm emitter bug: class object for ${className} without a constructor`,
       );
-    const params = ctor.params.slice(1);
+    const params = ctor.params.slice(valueCtor.firstArg);
     const paramDecls = params.map((p, i) => `${llType(p.type)} %a${i}`).join(", ");
     const ctorArgs = params.map((p, i) => `${llType(p.type)} %a${i}`);
+    const classObj =
+      `@${mangleClassObj(className)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClassObj ` +
+      `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? (meta.def.runtime ? 1 : 0)}, ptr null, ptr null } ; class ${className}`;
+    if (meta.def.runtime) {
+      // A runtime-provided class: %C.construct allocates through the
+      // runtime and returns the instance.
+      out.push(
+        `define internal ptr @${mangleCtorThunk(className)}(ptr %class${paramDecls ? ", " + paramDecls : ""}) ${FN_ATTRS} { ; construct thunk ${className}`,
+        `entry:`,
+        `  %o = call ptr @${mangleFunction(valueCtor.fn)}(${ctorArgs.join(", ")})`,
+        `  ret ptr %o`,
+        `}`,
+        classObj,
+        ``,
+      );
+      continue;
+    }
     if (meta.def.localCaptures !== undefined)
       host.declare(`declare ptr @scr_classobj_retain_v(ptr)`);
     const localBaseInits: string[] = [];
@@ -992,8 +1011,7 @@ export function emitClassObjDefs(
       `  call void @${mangleFunction(`%${className}.constructor`)}(${[`ptr %r`, ...ctorArgs].join(", ")})`,
       `  ret ptr %o`,
       `}`,
-      `@${mangleClassObj(className)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClassObj ` +
-        `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? 0}, ptr null, ptr null } ; class ${className}`,
+      classObj,
       ``,
     );
   }

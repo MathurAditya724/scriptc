@@ -39,6 +39,8 @@ import {
   lowerZlibStreamBytesWritten,
 } from "./builtins/compression.js";
 import {
+  runtimeClassValueOf,
+  runtimeClassValueOfType,
   builtinClassAliasOwnsNoSlot,
   builtinClassRefOf,
   sameBuiltinClass,
@@ -939,6 +941,13 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           expr,
           `a builtin function alias as an escaping value (call '${expr.text}' directly)`,
         );
+      }
+      // `EventEmitter`, `Readable` or `TypeError` (or a const alias of
+      // one) as a value in a TypeScript file: the runtime class's class
+      // object. JavaScript files keep the identity token.
+      if (!isJsSourceFile(expr.getSourceFile())) {
+        const runtimeClass = runtimeClassValueOf(lowerer, expr);
+        if (runtimeClass) return lowerer.classValueRef(runtimeClass, expr);
       }
       // `const E = EventEmitter` owns no runtime slot: construction,
       // instanceof, typeof and .name lower at their use sites.
@@ -1961,6 +1970,16 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (expr.name.text === "name" && !expr.questionDotToken) {
       const ref = builtinClassRefOf(lowerer, expr.expression);
       if (ref !== null) return { kind: "strLit", value: ref.name, type: STRING, loc };
+    }
+    // `C.name` through a runtime-provided class VALUE (a `typeof Readable`
+    // parameter): the class object's stored name.
+    if (
+      expr.name.text === "name" &&
+      !expr.questionDotToken &&
+      runtimeClassValueOfType(lowerer, lowerer.typeOf(expr.expression)) !== null
+    ) {
+      const read = lowerer.lowerFieldRead(expr);
+      if (read) return read;
     }
     // Expando statics may still be absent even when JS inference sees
     // the eventual assignment's scalar type. Preserve the checked value.
@@ -13013,8 +13032,21 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       }
       const left = lowerer.lowerExpr(expr.left);
       if (left.type.kind === "dyn") {
+        if (targetInfo.def.runtime) {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            "'instanceof' through a runtime-provided class value on an untyped value (give the operand a class type first)",
+          );
+        }
         const classValue = lowerer.lowerExpr(expr.right);
         return classInstanceOf(lowerer, left, targetInfo, loc, classValue);
+      }
+      // A union of class instances against a runtime class value (`new K()`
+      // through a widened `[Readable, Writable]` element).
+      if (left.type.kind === "union" && targetInfo.def.runtime) {
+        const tested = unionClassValueInstanceOf(lowerer, left, expr.right, targetInfo, loc);
+        if (tested) return tested;
       }
       if (left.type.kind !== "object") {
         lowerer.unsupported(
@@ -13033,6 +13065,15 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         const classValue = lowerer.lowerExpr(expr.right);
         if (classValue.type.kind !== "classval")
           lowerer.badType(expr.right, lowerer.typeOf(expr.right));
+        const writableTest = writableClassValueTest(
+          lowerer,
+          left,
+          classValue,
+          targetInfo,
+          lhsInfo,
+          loc,
+        );
+        if (writableTest) return writableTest;
         return { kind: "instanceOfValue", value: left, classValue, type: BOOL, loc };
       }
       // A standalone side: the answer is static (the target slot can
@@ -13329,6 +13370,137 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     expr,
     "statically-decided 'instanceof' on computed operands (bind the value to a variable first)",
   );
+}
+
+/** `x instanceof K` for a union-typed operand whose arms are class
+ * instances or unit values: each instance arm tests against the class
+ * value (with the Writable rule), unit arms answer false. Null when an arm
+ * is anything else. */
+function unionClassValueInstanceOf(
+  lowerer: Lowerer,
+  left: IrExpr,
+  right: ts.Expression,
+  targetInfo: ClassInfo,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (left.type.kind !== "union") return null;
+  const unionId = left.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (
+    !arms?.every((arm) => {
+      if (arm.kind !== "object") return isUnitType(arm);
+      const info = lowerer.classes.get(arm.className);
+      return info !== undefined && lowerer.inHierarchy(info);
+    })
+  )
+    return null;
+  const classValue = lowerer.lowerExpr(right);
+  if (classValue.type.kind !== "classval") lowerer.badType(right, lowerer.typeOf(right));
+  const value = lowerer.declareHiddenLocal("%instanceValue", left.type);
+  const cls = lowerer.declareHiddenLocal("%instanceClass", classValue.type);
+  const valueRef = varRef(value.id, left.type, loc);
+  const clsRef = varRef(cls.id, classValue.type, loc);
+  let result: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+  arms.forEach((arm, tag) => {
+    if (arm.kind !== "object") return;
+    const narrowed: IrExpr = { kind: "unionNarrow", unionId, tag, value: valueRef, type: arm, loc };
+    const lhsInfo = lowerer.classes.get(arm.className)!;
+    const test: IrExpr = writableClassValueTest(
+      lowerer,
+      narrowed,
+      clsRef,
+      targetInfo,
+      lhsInfo,
+      loc,
+    ) ?? { kind: "instanceOfValue", value: narrowed, classValue: clsRef, type: BOOL, loc };
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value: valueRef, type: BOOL, loc },
+      then: test,
+      else_: result,
+      type: BOOL,
+      loc,
+    };
+  });
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: value.id, init: left, loc },
+      { kind: "varDecl", localId: cls.id, init: classValue, loc },
+    ],
+    result,
+    type: BOOL,
+    loc,
+  };
+}
+
+/** `x instanceof K` where K is a class value that may hold Writable (a
+ * `typeof Writable` or `typeof EventEmitter` slot): Node's
+ * Writable[Symbol.hasInstance] also answers true for streams with a
+ * writable side that do not inherit from Writable (Duplex and its
+ * subclasses), so when K is Writable the Duplex interval answers too.
+ * Null when the slot cannot hold Writable or the operand cannot be a
+ * Duplex. */
+function writableClassValueTest(
+  lowerer: Lowerer,
+  left: IrExpr,
+  classValue: IrExpr,
+  targetInfo: ClassInfo,
+  lhsInfo: ClassInfo,
+  loc: SrcLoc,
+): IrExpr | null {
+  const writable = lowerer.classes.get("%Writable");
+  const duplex = lowerer.classes.get("%Duplex");
+  if (!writable || !duplex || classValue.type.kind !== "classval" || left.type.kind !== "object")
+    return null;
+  const slotHoldsWritable =
+    targetInfo === writable || lowerer.isSubclassOf("%Writable", targetInfo.def.name);
+  const operandMayBeDuplex =
+    lhsInfo === duplex ||
+    lowerer.isSubclassOf(lhsInfo.def.name, "%Duplex") ||
+    lowerer.isSubclassOf("%Duplex", lhsInfo.def.name);
+  if (!slotHoldsWritable || !operandMayBeDuplex) return null;
+  lowerer.defineClassValueConstruct(writable);
+  const value = lowerer.declareHiddenLocal("%instanceValue", left.type);
+  const cls = lowerer.declareHiddenLocal("%instanceClass", classValue.type);
+  const valueRef = varRef(value.id, left.type, loc);
+  const clsRef = varRef(cls.id, classValue.type, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: value.id, init: left, loc },
+      { kind: "varDecl", localId: cls.id, init: classValue, loc },
+    ],
+    result: {
+      kind: "logical",
+      op: "||",
+      left: { kind: "instanceOfValue", value: valueRef, classValue: clsRef, type: BOOL, loc },
+      right: {
+        kind: "logical",
+        op: "&&",
+        left: {
+          kind: "bin",
+          op: "===",
+          left: clsRef,
+          right: {
+            kind: "classRef",
+            className: "%Writable",
+            type: { kind: "classval", className: "%Writable" },
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        right: { kind: "instanceOf", value: valueRef, className: "%Duplex", type: BOOL, loc },
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  };
 }
 
 /** A statically decided `instanceof` still reads its class after the left

@@ -10,6 +10,7 @@ import {
   typeKey,
   type IrExpr,
   type IrFunction,
+  classValueConstructor,
 } from "../../ir/ir.js";
 import { liveRefView } from "./expr-stream-bridges.js";
 import { typedRefConstructor, vAdapters } from "./shapes.js";
@@ -1043,7 +1044,8 @@ export function emitCallExpr(
       if (e.callee.type.kind !== "classval")
         throw new InternalCompilerError("llvm emitter bug: newValue on non-classval callee");
       const cls = e.callee.type.className;
-      const ctor = host.fnByName.get(`%${cls}.constructor`);
+      const valueCtor = classValueConstructor(host.classMetaOf(cls).def);
+      const ctor = host.fnByName.get(valueCtor.fn);
       if (!ctor)
         throw new InternalCompilerError(
           `llvm emitter bug: newValue on ${cls} without a constructor`,
@@ -1056,7 +1058,7 @@ export function emitCallExpr(
       B.line(`${ctorp} = getelementptr inbounds %ScrClassObj, ptr ${callee.name}, i64 0, i32 3`);
       B.line(`${thunk} = load ptr, ptr ${ctorp}`);
       const argList = args
-        .map((a, i) => `${host.llType(ctor.params[i + 1]!.type)} ${a.name}`)
+        .map((a, i) => `${host.llType(ctor.params[i + valueCtor.firstArg]!.type)} ${a.name}`)
         .join(", ");
       const t = B.tmp();
       B.line(`${t} = call ptr ${thunk}(ptr ${callee.name}${argList ? ", " + argList : ""})`);

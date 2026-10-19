@@ -1055,6 +1055,9 @@ export interface TypeMapperCtx {
    * mixin context (the type alone cannot name a call site). */
   mixinClassInstance?: (decl: ts.ClassLikeDeclaration) => IrType | null;
   localClassInstance?: (decl: ts.ClassLikeDeclaration, instanceType?: ts.Type) => IrType | null;
+  /** The runtime-provided class whose static side a type is (`typeof
+   * EventEmitter`, `ErrorConstructor`), when values of it construct. */
+  runtimeClassValue?: (type: ts.Type) => string | null;
   /** Live class protocols retain identity and receiver dispatch rather than
    * copying an instance into an unrelated record layout. */
   classImplementedProtocol?: (type: ts.Type) => boolean;
@@ -2046,6 +2049,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return instance;
     }
     return { kind: "object", className: classNamer(classDecl) };
+  }
+  // A runtime-provided class's static side (`typeof EventEmitter`,
+  // `typeof Readable`, `ErrorConstructor`): that class's value.
+  {
+    const runtimeClass = ctx.runtimeClassValue?.(widened);
+    if (runtimeClass) return { kind: "classval", className: runtimeClass };
   }
   // The class STATIC side (`typeof C` — the class name as a value): the
   // same symbol WITH its construct signatures. Program classes only; lib
