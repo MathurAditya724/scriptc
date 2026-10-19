@@ -689,10 +689,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       entry.index = i;
       if (unreachable && skipsWhenUnreachable(stmt)) continue;
       if (inFunction && isAbruptStatement(stmt)) unreachable = true;
-      if (!lowerer.suppressStats) {
-        lowerer.stats.statementsTotal++;
-        if (sf !== undefined) lowerer.bumpFileStat(sf.fileName, "total");
-      }
+      if (!lowerer.suppressStats) lowerer.countStatement(stmt, sf?.fileName);
       const diagsBefore = lowerer.diags.length;
       const sinkMark = lowerer.diagSinkMark();
       try {
@@ -757,10 +754,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
         } else if (!(e instanceof PoisonError)) {
           throw e;
         }
-        if (!lowerer.suppressStats) {
-          lowerer.stats.statementsFailed++;
-          if (sf !== undefined) lowerer.bumpFileStat(sf.fileName, "failed");
-        }
+        if (!lowerer.suppressStats) lowerer.countStatementFailed(stmt, sf?.fileName);
         lowerer.noteBlockedBindings(stmt);
         // The runtime-fence conversion (JS sources, direct diagnostics
         // only — a capture wrapper in force means collection owns the
