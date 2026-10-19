@@ -2440,13 +2440,21 @@ export type IrRegexIntrinsicMethod =
    * unobservable across the lowered surface (strings are immutable; the
    * spec clones the regex at the call, so lastIndex games can't reach the
    * drain either). Non-global regexes THROW Node's exact TypeError
-   * (catchable — replaceAll's stance). */
+   * (catchable — replaceAll's stance). Each row carries its index, input
+   * and groups properties. */
   | "matchAll"
+  /** matchAll whose rows are read only through their elements
+   * (matchAllRowsReadByElements): the rows carry no index, input or
+   * groups properties. Same result and throw contract as matchAll. */
+  | "matchAllCaptures"
   /** matchAll's companion-index form (the for-of-over-matchAll desugar):
    * args[1] is a number[] the drain ALSO fills with each match's UTF-16
    * start index — the row's `.index`, always present (every drained row
    * matched). Same result and throw contract as matchAll. */
   | "matchAllInto"
+  /** matchAllInto whose rows are read only through their elements and the
+   * companion index: the rows carry no index, input or groups properties. */
+  | "matchAllCapturesInto"
   /** `s.search(re)` — the first match's UTF-16 index, or -1. Symbol.search
    * neither reads nor writes lastIndex (a fresh exec from position 0), so
    * no g/y fence applies: /g is irrelevant and /y anchors at 0 — exactly

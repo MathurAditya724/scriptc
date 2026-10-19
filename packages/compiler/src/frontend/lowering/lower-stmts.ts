@@ -1,3 +1,7 @@
+import {
+  matchAllRowsReadByElements,
+  storedMatchAllRowsReadByElements,
+} from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -1885,7 +1889,9 @@ function lowerMatchAllDrainDecl(
       localId: local.id,
       init: {
         kind: "regexIntrinsic",
-        method: "matchAllInto",
+        method: storedMatchAllRowsReadByElements(lowerer, decl)
+          ? "matchAllCapturesInto"
+          : "matchAllInto",
         receiver,
         args: [re, { kind: "varRef", localId: idxs.id, type: idxsT, loc }],
         type: rowsT,
@@ -9554,7 +9560,9 @@ function lowerForOfMatchAll(
     });
     rowsInit = {
       kind: "regexIntrinsic",
-      method: "matchAllInto",
+      method: matchAllRowsReadByElements(lowerer, call, true)
+        ? "matchAllCapturesInto"
+        : "matchAllInto",
       receiver,
       args: [re, { kind: "varRef", localId: idxs.id, type: idxsT, loc }],
       type: rowsT,
