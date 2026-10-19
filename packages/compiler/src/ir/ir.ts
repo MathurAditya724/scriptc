@@ -667,7 +667,12 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     t.kind === "object" ||
     t.kind === "array" ||
     t.kind === "netServer" ||
-    t.kind === "symbol"
+    t.kind === "symbol" ||
+    // A function value is one closure for its whole life (top-level
+    // functions intern one immortal closure, inner closures allocate once
+    // per evaluation), so pointer identity is JS function identity.
+    // Closures are cycle-headered and traced like records.
+    t.kind === "func"
   );
 }
 
@@ -713,8 +718,8 @@ export function isSupportedSetElem(t: IrType, unionArms?: IrType[]): boolean {
   return isSupportedMapKey(t, unionArms);
 }
 
-/** The Map VALUE fence: scalars, supported native references and checked
- * values. Functions require checked-value boxing.
+/** The Map VALUE fence: scalars, supported native references, closures
+ * and checked values.
  * Record/object/union values can point back at the map holding them, which
  * is exactly why ref-valued maps are cycle-capable (see the backend's
  * cycle analysis and docs/memory.md). Shared frontend/validator. */
@@ -768,6 +773,12 @@ export function isSupportedMapValue(t: IrType): boolean {
     // a regex holds no references), map form.
     case "regex":
       return true;
+    // A closure (Map<string, (x: T) => U> — the factory/handler registry):
+    // the index-signature overflow story (scr_closure adapters; closures
+    // are cycle-headered and traced, so a handler capturing its own
+    // registry collects).
+    case "func":
+      return true;
     default:
       return false;
   }
@@ -783,7 +794,7 @@ export function isSupportedMapValue(t: IrType): boolean {
  * Nested index-signature RECORDS ride the record kind like any other.
  * Shared frontend (mapType) / validator. */
 export function isSupportedIndexValue(t: IrType): boolean {
-  return t.kind === "dyn" || t.kind === "func" || isSupportedMapValue(t);
+  return t.kind === "dyn" || isSupportedMapValue(t);
 }
 
 export function funcOf(params: IrType[], ret: IrType): IrType {
@@ -791,12 +802,23 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
 }
 
 /** Maps and sets use tagged union storage and retain their native identity.
- * Promises still require nullable-only unions until their data-arm narrowing
- * and await boundary have a matching contract. */
+ * Joined unions (inferred joins of member reads and array elements) keep
+ * promises nullable-only; declared maybe-promise unions are admitted by
+ * maybePromiseUnionArmsOk. */
 export function unionContainerArmsOk(arms: IrType[]): boolean {
   return arms.every(
     (a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b)),
   );
+}
+
+/** The MAYBE-PROMISE union (`T | Promise<T>`, `Promise<R | void> | R |
+ * void`): at most one promise arm, beside unit or data arms. The union tag
+ * is the `instanceof Promise` test, and `await` / async `return` branch on
+ * it (the promise arm awaits or adopts, the other arms take the
+ * non-thenable path). Data arms must not be thenable; the type mapper
+ * checks that against the checker types before minting such a union. */
+export function maybePromiseUnionArmsOk(arms: IrType[]): boolean {
+  return arms.filter((a) => a.kind === "promise").length <= 1;
 }
 
 /** Canonical, injective text form of an IrType — the building block of
@@ -855,6 +877,33 @@ export function typeKey(t: IrType): string {
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** The type a CALL SITE (or function value) receives from a module
+ * function: an async body's returnType is the promise's INNER type, so
+ * calls and closures over it see Promise<T>; a generator body's is the
+ * TReturn channel, so call sites see the generator type. The one place
+ * the body/call-site split is spelled out, for the validator and lowering. */
+export function callSiteReturnType(fn: IrFunction): IrType {
+  if (fn.async && fn.generator !== undefined) {
+    return {
+      kind: "generator",
+      async: true,
+      yieldT: fn.generator.yieldT,
+      retT: fn.returnType,
+      nextT: fn.generator.nextT,
+    };
+  }
+  if (fn.async) return { kind: "promise", inner: fn.returnType };
+  if (fn.generator !== undefined) {
+    return {
+      kind: "generator",
+      yieldT: fn.generator.yieldT,
+      retT: fn.returnType,
+      nextT: fn.generator.nextT,
+    };
+  }
+  return fn.returnType;
 }
 
 export function typeEquals(a: IrType, b: IrType): boolean {
@@ -955,6 +1004,10 @@ export interface IrModule {
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
   lifetimeRegions?: true;
+  /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
+   * each one's hierarchy carries a slot word (the slots.* intrinsics;
+   * backend/llvm/thread-slots.ts). */
+  threadSlotKeys?: string[];
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
@@ -3592,7 +3645,19 @@ export type IrExpr =
         | "itable.find"
         | "itable.insert"
         | "itable.value"
-        | "itable.size";
+        | "itable.size"
+        /* ThreadSlots (@scriptc/experimental; scr_slots.c). Every one takes
+         * the family name (a string literal), the family's %ThreadSlots
+         * value (read for its effects only) and the key, a class instance
+         * whose hierarchy is in IrModule.threadSlotKeys:
+         * slots.get → V | undefined, a nullable union, owned (+1);
+         * slots.has → bool; slots.delete → bool, releasing the value;
+         * slots.set (…, V value) → void, or the %ThreadSlots value when the
+         * result is used. Nothing throws. */
+        | "slots.get"
+        | "slots.has"
+        | "slots.set"
+        | "slots.delete";
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;

@@ -10489,6 +10489,72 @@ ScrStr *scr_date_to_iso(double ms) {
   return scr_str_new(buf, (size_t)len);
 }
 
+/* Node's Date.prototype.toUTCString over a stored (TimeClip'd) time
+ * value: "Www, DD Mmm YYYY HH:mm:ss GMT", a "-" and at least four digits
+ * for negative years, and "Invalid Date" for NaN. Never throws. +1.
+ * The text is assembled from function-local arrays rather than string
+ * literals: literals would land in this unit's shared mergeable string
+ * section and grow every executable, while these arrays are removed with
+ * the function by --gc-sections when a program never calls it. */
+ScrStr *scr_date_to_utc_string(double ms) {
+  /* Sized without the terminating NUL, so none is a C string the
+   * compiler could move into a mergeable string section. */
+  static const char invalid[12] = "Invalid Date";
+  static const char weekdays[21] = "SunMonTueWedThuFriSat";
+  static const char months[36] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  if (!(fabs(ms) <= 8640000000000000.0)) return scr_str_new(invalid, sizeof invalid);
+  double t = trunc(ms);
+  double dayd = floor(t / 86400000.0);
+  long long msday = (long long)(t - dayd * 86400000.0);
+  long long days = (long long)dayd;
+  int weekday = (int)(((days + 4) % 7 + 7) % 7);
+  long long z = days + 719468;
+  long long era = (z >= 0 ? z : z - 146096) / 146097;
+  unsigned long long doe = (unsigned long long)(z - era * 146097);
+  unsigned long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  long long y = (long long)yoe + era * 400;
+  unsigned long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  unsigned long long mp = (5 * doy + 2) / 153;
+  unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
+  unsigned long long m = mp < 10 ? mp + 3 : mp - 9;
+  if (m <= 2) y += 1;
+  int hh = (int)(msday / 3600000), mi = (int)(msday / 60000 % 60),
+      ss = (int)(msday / 1000 % 60);
+  char buf[40];
+  size_t n = 0;
+  memcpy(buf, weekdays + 3 * weekday, 3);
+  n = 3;
+  buf[n++] = ',';
+  buf[n++] = ' ';
+  buf[n++] = (char)('0' + d / 10);
+  buf[n++] = (char)('0' + d % 10);
+  buf[n++] = ' ';
+  memcpy(buf + n, months + 3 * (m - 1), 3);
+  n += 3;
+  buf[n++] = ' ';
+  if (y < 0) buf[n++] = '-';
+  unsigned long long year = (unsigned long long)(y < 0 ? -y : y);
+  char digits[20];
+  size_t count = 0;
+  do {
+    digits[count++] = (char)('0' + year % 10);
+    year /= 10;
+  } while (year > 0);
+  while (count < 4) digits[count++] = '0';
+  while (count > 0) buf[n++] = digits[--count];
+  int parts[3] = {hh, mi, ss};
+  for (int i = 0; i < 3; i++) {
+    buf[n++] = i == 0 ? ' ' : ':';
+    buf[n++] = (char)('0' + parts[i] / 10);
+    buf[n++] = (char)('0' + parts[i] % 10);
+  }
+  buf[n++] = ' ';
+  buf[n++] = 'G';
+  buf[n++] = 'M';
+  buf[n++] = 'T';
+  return scr_str_new(buf, n);
+}
+
 /* ── new Date(dateString).getTime() ──────────────────────────────────────
  *
  * The BOUNDED date-string parse (documented divergence — V8's parser
