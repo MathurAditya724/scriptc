@@ -72,8 +72,8 @@ export function recordDynKeepsIdentity(shape: IrRecordShape): boolean {
 }
 
 /** ScrDynKind values (scr_runtime.h). */
-/** ScrDynHandleTag numeric values (scr_runtime.h's enum order). */
-const DYN_HANDLE_TAG_NUM: Record<string, number> = {
+/** ScrDynHandleTag values (scr_dyn.h's explicit values; dyn-handle-tags.test.ts checks them). */
+export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   httpReq: 0,
   httpRes: 1,
   netSocket: 2,
@@ -4014,14 +4014,9 @@ export class LlDyn {
     const name = "sc_dyn_iter_n";
     this.dynBuilders.set(memoKey, name);
     const host = this.host;
-    host.declare(`declare void @scr_jb_init(ptr)`);
-    host.declare(`declare ptr @scr_jb_finish(ptr)`);
-    host.declare(`declare void @scr_jb_puts(ptr, ptr)`);
-    host.declare(`declare void @scr_throw_error(i32, ptr)`);
     host.declare(`declare ptr @scr_dyn_new_arr()`);
     host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
     host.declare(`declare ptr @scr_dyn_new_num(double)`);
-    host.declare(`declare ptr @scr_f64_to_scrstr(double)`);
     host.declare(`declare void @scr_str_release(ptr)`);
     const B = new BlockBuilder();
     const kd = this.kindOf(B, "%d");
@@ -4033,6 +4028,21 @@ export class LlDyn {
       const lNext = B.newLabel("din.nt");
       B.condBr(isTyped, lTyped, lNext);
       B.startBlock(lTyped);
+      // Compiled generators step through the iterator protocol.
+      host.declare(`declare i1 @scr_dyn_iterates_by_protocol(ptr)`);
+      host.declare(`declare ptr @scr_dyn_iter_take(ptr, ${host.sizeType}, ptr)`);
+      const protocol = B.tmp();
+      const lProtocol = B.newLabel("din.pr");
+      const lView = B.newLabel("din.vw");
+      B.line(`${protocol} = call i1 @scr_dyn_iterates_by_protocol(ptr %d)`);
+      B.condBr(protocol, lProtocol, lView);
+      B.startBlock(lProtocol);
+      const stepped = B.tmp();
+      B.line(
+        `${stepped} = call ptr @scr_dyn_iter_take(ptr %d, ${host.sizeType} %n, ptr %spelling)`,
+      );
+      B.terminate(`ret ptr ${stepped}`);
+      B.startBlock(lView);
       host.declare(`declare ptr @scr_dyn_typed_ref_materialize(ptr)`);
       host.declare(`declare void @scr_dyn_release_v(ptr)`);
       const materialized = B.tmp();
@@ -4057,71 +4067,13 @@ export class LlDyn {
     const lGo = B.newLabel("din.g");
     const lThrow = B.newLabel("din.t");
     B.condBr(ok, lGo, lThrow);
-    // V8's exact not-iterable TypeError.
+    // Other iterables step through the iterator protocol; non-iterables
+    // throw V8's exact not-iterable TypeError.
     B.startBlock(lThrow);
-    const buf = "%dib";
-    B.entryAllocas.push(`${buf} = alloca %ScrJsonBuf`);
-    B.line(`call void @scr_jb_init(ptr ${buf})`);
-    const hasSpelling = B.tmp();
-    B.line(`${hasSpelling} = icmp ne ptr %spelling, null`);
-    const named = B.newLabel("din.named"),
-      unnamed = B.newLabel("din.unnamed");
-    B.condBr(hasSpelling, named, unnamed);
-    B.startBlock(named);
-    B.line(`call void @scr_jb_puts(ptr ${buf}, ptr %spelling)`);
-    const namedMessage = B.tmp();
-    B.line(`${namedMessage} = call ptr @scr_jb_finish(ptr ${buf})`);
-    B.line(`call void @scr_throw_error(i32 1, ptr ${namedMessage})`);
-    B.terminate(`ret ptr null`);
-    B.startBlock(unnamed);
-    const lU = B.newLabel("din.u");
-    const lN = B.newLabel("din.n");
-    const lB2 = B.newLabel("din.b");
-    const lNum = B.newLabel("din.m");
-    const lF = B.newLabel("din.f");
-    const lDef = B.newLabel("din.d");
-    const lTail = B.newLabel("din.e");
-    B.terminate(
-      `switch i32 ${kd}, label %${lDef} [ i32 ${DYN_KIND.UNDEF}, label %${lU} i32 ${DYN_KIND.NULL}, label %${lN} i32 ${DYN_KIND.BOOL}, label %${lB2} i32 ${DYN_KIND.NUM}, label %${lNum} i32 ${DYN_KIND.FUNC}, label %${lF} ]`,
-    );
-    B.startBlock(lU);
-    this.puts(B, buf, "undefined");
-    B.br(lTail);
-    B.startBlock(lN);
-    this.puts(B, buf, "object null");
-    B.br(lTail);
-    B.startBlock(lB2);
-    {
-      const bv = this.boolOf(B, "%d");
-      const s = B.tmp();
-      B.line(
-        `${s} = select i1 ${bv}, ptr ${host.cstr("boolean true")}, ptr ${host.cstr("boolean false")}`,
-      );
-      B.line(`call void @scr_jb_puts(ptr ${buf}, ptr ${s})`);
-      B.br(lTail);
-    }
-    B.startBlock(lNum);
-    {
-      this.puts(B, buf, "number ");
-      const x = this.payloadOf(B, "%d", "double");
-      const s = B.tmp();
-      B.line(`${s} = call ptr @scr_f64_to_scrstr(double ${x})`);
-      this.putScrStr(B, buf, s);
-      B.line(`call void @scr_str_release(ptr ${s})`);
-      B.br(lTail);
-    }
-    B.startBlock(lF);
-    this.puts(B, buf, "function");
-    B.br(lTail);
-    B.startBlock(lDef);
-    this.puts(B, buf, "object");
-    B.br(lTail);
-    B.startBlock(lTail);
-    this.puts(B, buf, " is not iterable (cannot read property Symbol(Symbol.iterator))");
-    const msg = B.tmp();
-    B.line(`${msg} = call ptr @scr_jb_finish(ptr ${buf})`);
-    B.line(`call void @scr_throw_error(i32 1, ptr ${msg}) ; SCR_ERR_TYPE`);
-    B.terminate(`ret ptr null`);
+    host.declare(`declare ptr @scr_dyn_iter_take(ptr, ${host.sizeType}, ptr)`);
+    const taken = B.tmp();
+    B.line(`${taken} = call ptr @scr_dyn_iter_take(ptr %d, ${host.sizeType} %n, ptr %spelling)`);
+    B.terminate(`ret ptr ${taken}`);
     B.startBlock(lGo);
     const out = B.tmp();
     B.line(`${out} = call ptr @scr_dyn_new_arr()`);

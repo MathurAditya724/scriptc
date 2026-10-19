@@ -67,7 +67,7 @@ export function indexReadInBounds(
     ) {
       // A value-preserving wrapper.
     } else if (ts.isCallExpression(parent) || ts.isNewExpression(parent)) {
-      const args = parent.arguments ?? [];
+      const args = parent.arguments?.nodes ?? [];
       const at = args.indexOf(child as ts.Expression);
       if (at < 0 || (ts.isCallExpression(parent) && parent.questionDotToken)) return false;
       before.push(parent.expression, ...args.slice(0, at));
@@ -80,7 +80,7 @@ export function indexReadInBounds(
       ts.isVariableDeclaration(parent) &&
       parent.initializer === child &&
       ts.isVariableDeclarationList(parent.parent) &&
-      parent.parent.declarations[0] === parent &&
+      parent.parent.declarations.nodes[0] === parent &&
       ts.isVariableStatement(parent.parent.parent)
     ) {
       return boundedBefore(parent.parent.parent, { array, index, facts }, before);
@@ -108,7 +108,7 @@ function boundedBefore(statement: ts.Statement, operands: Operands, start: ts.No
   let parent: ts.Node | undefined = statement.parent;
   while (parent && !isFunctionBoundary(parent)) {
     if (isStatementList(parent)) {
-      const statements = (parent as { statements: ts.NodeArray<ts.Statement> }).statements;
+      const statements = (parent as { statements: ts.NodeArray<ts.Statement> }).statements.nodes;
       const at = statements.indexOf(child as ts.Statement);
       for (let i = at - 1; i >= 0; i--) {
         const statement = statements[i]!;
@@ -290,7 +290,7 @@ function assertsSlot(node: ts.Node, operands: Operands): boolean {
     n.forEachChild(visit);
   };
   if (ts.isVariableStatement(node)) {
-    for (const declaration of node.declarationList.declarations)
+    for (const declaration of node.declarationList.declarations.nodes)
       if (declaration.initializer) visit(declaration.initializer);
   } else if (ts.isExpressionStatement(node)) visit(node.expression);
   else if (!ts.isStatement(node)) visit(node);

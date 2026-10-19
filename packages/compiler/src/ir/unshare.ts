@@ -1,5 +1,4 @@
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
-import { reparseExpr, reparseStmt } from "./serialize.js";
 import { everyExprChild, everyStmtChild, mapExprChildren, mapStmtChildren } from "./traverse.js";
 
 /** Give every occurrence of an executable node its own object.
@@ -42,14 +41,15 @@ export function unshareNodes(mod: IrModule): IrModule {
   }
   if (affected.size === 0) return mod;
   // Rebuilding a function copies every node that has children; a repeated
-  // childless node reads back as a fresh object at each of its sites there.
+  // childless node gets its own shallow copy at each of its sites there.
+  // Both kinds of copy keep sharing the type and location objects.
   const expr = (node: IrExpr): IrExpr => {
     const copy = mapExprChildren(node, expr, stmt);
-    return copy !== node || !repeated.has(node) ? copy : reparseExpr(node);
+    return copy !== node || !repeated.has(node) ? copy : { ...node };
   };
   const stmt = (node: IrStmt): IrStmt => {
     const copy = mapStmtChildren(node, expr, stmt);
-    return copy !== node || !repeated.has(node) ? copy : reparseStmt(node);
+    return copy !== node || !repeated.has(node) ? copy : { ...node };
   };
   return {
     ...mod,

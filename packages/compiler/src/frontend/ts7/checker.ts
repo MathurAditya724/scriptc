@@ -120,6 +120,16 @@ export function constituentTypes(type: Type): readonly Type[] {
   return type.getTypes() ?? [];
 }
 
+/** True for the panic typescript-go's API raises serializing a union's
+ * constituents (an empty tuple cloned as an array literal keeps the tuple
+ * flag without tuple data: `s.match(re) || []`). The union itself is
+ * readable; its members are not. */
+export function isUnreadableConstituentsPanic(e: unknown): boolean {
+  return (
+    e instanceof Error && (e as { unreadableConstituents?: true }).unreadableConstituents === true
+  );
+}
+
 /** Function-like declarations whose body is deferred until reachability
  * asks for it. Header prefetch walks their names, type parameters, params,
  * and return types but leaves the body for a later explicit body wave. */
@@ -163,7 +173,7 @@ function isDeferredExecutableRoot(node: Node, walk: PrefetchWalk): boolean {
   return (
     parent.kind === SyntaxKind.PropertyDeclaration &&
     parent.initializer === node &&
-    !parent.modifiers?.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
+    !parent.modifiers?.nodes.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
   );
 }
 

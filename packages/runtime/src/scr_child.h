@@ -44,18 +44,22 @@ ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_
  * 0 captures AND echoes to the parent stderr after completion (Node's
  * no-stdio-option default), 1 captures only, 2 ignores, 3 inherits.
  * Result is the captured utf8 stdout (+1) — "" when nothing captures
- * (Node answers null there; discarded results cannot tell). All args
+ * (Node answers null there; discarded results cannot tell). A failure's
+ * error carries Node's status, signal, output, pid, stdout and stderr;
+ * `buffers` (no encoding option) makes those outputs Buffers. All args
  * borrowed. */
 ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                        bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
-                       double timeout_ms, double stdout_mode, double stderr_mode);
+                       double timeout_ms, double stdout_mode, double stderr_mode,
+                       bool buffers);
 /* The promisified-execFile/exec capture (cp.execCapture; shell as for
  * scr_exec_sync — the /bin/sh -c argv): the same core in the
  * async shape — both streams captured (no echo), Node's ASYNC error
  * messages on the throw paths ("Command failed: <cmd>\n<stderr>" with the
  * unconditional newline, "spawn <file> <ERR>" with .code, timeouts as
- * ordinary SIGTERM command failures). +1 ScrSpawnRes on success (stdout +
- * stderr; status unused). All args borrowed. */
+ * ordinary SIGTERM command failures), each error with Node's code, killed,
+ * signal, cmd, stdout and stderr properties. +1 ScrSpawnRes on success
+ * (stdout + stderr; status unused). All args borrowed. */
 ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd,
                                bool has_env, ScrArr *env_pairs, double timeout_ms);
 ScrSpawnRes *scr_spawn_res_retain(ScrSpawnRes *r);

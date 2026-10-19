@@ -360,9 +360,9 @@ function subjectOf(node: ts.Node): ts.Node {
       ts.isPropertyAccessExpression(callee) &&
       ts.isIdentifier(callee.expression) &&
       REFLECTION_NAMESPACES.has(callee.expression.text) &&
-      current.arguments.length > 0
+      current.arguments.nodes.length > 0
     ) {
-      return current.arguments[0]!;
+      return current.arguments.nodes[0]!;
     }
     return callee;
   }

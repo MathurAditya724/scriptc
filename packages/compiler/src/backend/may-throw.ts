@@ -297,7 +297,9 @@ export function computeMayThrow(
             rec.method === "replaceAll" ||
             rec.method === "split" ||
             rec.method === "matchAll" ||
-            rec.method === "matchAllInto"
+            rec.method === "matchAllCaptures" ||
+            rec.method === "matchAllInto" ||
+            rec.method === "matchAllCapturesInto"
           ) {
             f.throws = true;
           }

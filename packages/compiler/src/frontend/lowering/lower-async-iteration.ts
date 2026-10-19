@@ -81,10 +81,10 @@ function literalBooleanOption(
   fallback: boolean,
   api: string,
 ): boolean {
-  if (call.arguments.length === 0) return fallback;
-  const argumentNode = call.arguments[0];
+  if (call.arguments.nodes.length === 0) return fallback;
+  const argumentNode = call.arguments.nodes[0];
   if (
-    call.arguments.length !== 1 ||
+    call.arguments.nodes.length !== 1 ||
     argumentNode === undefined ||
     ts.isSpreadElement(argumentNode)
   ) {
@@ -101,7 +101,7 @@ function literalBooleanOption(
     return fallback;
   }
   let answer = fallback;
-  for (const member of argument.properties) {
+  for (const member of argument.properties.nodes) {
     const name = propertyName(member);
     if (name !== option) {
       const value = ts.isPropertyAssignment(member) ? member.initializer : null;
@@ -305,7 +305,7 @@ export function checkForAwaitBinding(
   if (!isConst && !isLet) {
     lowerer.unsupported("SC1030", list, "'var' loop bindings in 'for await' (use const)");
   }
-  const declaration = list.declarations[0];
+  const declaration = list.declarations.nodes[0];
   if (!declaration) throw new InternalCompilerError("for-await declaration list has no binding");
   if (!ts.isIdentifier(declaration.name)) lowerer.unsupported("SC1031", declaration.name);
   return {

@@ -84,15 +84,15 @@ function chaseValue(e: ts.Expression): { kind: "ident" | "hoist"; text: string }
  * the arrow forms the esbuild table uses (`() => X`, `() => { return X }`). */
 function getterReturnOf(fn: ts.Node): ts.Expression | null {
   let body: ts.ConciseBody | undefined;
-  if (ts.isArrowFunction(fn) && fn.parameters.length === 0) body = fn.body;
-  else if (ts.isFunctionExpression(fn) && fn.parameters.length === 0) body = fn.body;
-  else if (ts.isMethodDeclaration(fn) && fn.parameters.length === 0 && fn.body !== undefined)
+  if (ts.isArrowFunction(fn) && fn.parameters.nodes.length === 0) body = fn.body;
+  else if (ts.isFunctionExpression(fn) && fn.parameters.nodes.length === 0) body = fn.body;
+  else if (ts.isMethodDeclaration(fn) && fn.parameters.nodes.length === 0 && fn.body !== undefined)
     body = fn.body;
   else return null;
   if (body === undefined) return null;
   if (!ts.isBlock(body)) return body; // expression-bodied arrow
-  if (body.statements.length !== 1) return null;
-  const ret = body.statements[0]!;
+  if (body.statements.nodes.length !== 1) return null;
+  const ret = body.statements.nodes[0]!;
   return ts.isReturnStatement(ret) && ret.expression !== undefined ? ret.expression : null;
 }
 
@@ -103,11 +103,11 @@ function exportCallOf(
   call: ts.CallExpression,
 ): { target: string; entries: [string, ts.Expression | null][] } | null {
   if (calleeNameOf(call) !== "__export") return null;
-  if (call.arguments.length !== 2) return null;
-  const [target, table] = call.arguments as unknown as [ts.Expression, ts.Expression];
+  if (call.arguments.nodes.length !== 2) return null;
+  const [target, table] = call.arguments.nodes as unknown as [ts.Expression, ts.Expression];
   if (!ts.isIdentifier(target) || !ts.isObjectLiteralExpression(table)) return null;
   const entries: [string, ts.Expression | null][] = [];
-  for (const prop of table.properties) {
+  for (const prop of table.properties.nodes) {
     if (!ts.isPropertyAssignment(prop)) return null;
     let name: string;
     if (ts.isIdentifier(prop.name)) name = prop.name.text;
@@ -135,8 +135,8 @@ function definePropertyExportOf(
   ) {
     return null;
   }
-  if (call.arguments.length !== 3) return null;
-  const [recv, nameArg, desc] = call.arguments as unknown as [
+  if (call.arguments.nodes.length !== 3) return null;
+  const [recv, nameArg, desc] = call.arguments.nodes as unknown as [
     ts.Expression,
     ts.Expression,
     ts.Expression,
@@ -145,7 +145,7 @@ function definePropertyExportOf(
   if (!ts.isStringLiteral(nameArg) || !ts.isObjectLiteralExpression(desc)) return null;
   const name = nameArg.text;
   let value: ts.Expression | null = null;
-  for (const p of desc.properties) {
+  for (const p of desc.properties.nodes) {
     if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name)) {
       if (p.name.text === "value") value = p.initializer;
       else if (p.name.text === "get") value = getterReturnOf(p.initializer);
@@ -196,7 +196,7 @@ interface ToEsmPlan {
  * formatting are free; the SHAPE is the contract. */
 function recognizedToEsmDecl(stmt: ts.Statement): boolean {
   if (!ts.isVariableStatement(stmt)) return false;
-  const decls = stmt.declarationList.declarations;
+  const decls = stmt.declarationList.declarations.nodes;
   if (decls.length !== 1) return false;
   const d = decls[0]!;
   if (!ts.isIdentifier(d.name) || d.name.text !== "__toESM" || d.initializer === undefined)
@@ -204,9 +204,9 @@ function recognizedToEsmDecl(stmt: ts.Statement): boolean {
   let init: ts.Expression = d.initializer;
   while (ts.isParenthesizedExpression(init)) init = init.expression;
   if (!ts.isArrowFunction(init)) return false;
-  if (init.parameters.length < 2 || init.parameters.length > 3) return false;
-  const p0 = init.parameters[0]!;
-  const p1 = init.parameters[1]!;
+  if (init.parameters.nodes.length < 2 || init.parameters.nodes.length > 3) return false;
+  const p0 = init.parameters.nodes[0]!;
+  const p1 = init.parameters.nodes[1]!;
   if (!ts.isIdentifier(p0.name) || !ts.isIdentifier(p1.name)) return false;
   const mod = p0.name.text;
   const isNodeMode = p1.name.text;
@@ -224,10 +224,10 @@ function recognizedToEsmDecl(stmt: ts.Statement): boolean {
     expr.expression.text !== "__copyProps"
   )
     return false;
-  if (expr.arguments.length < 2) return false;
-  const from = expr.arguments[1]!;
+  if (expr.arguments.nodes.length < 2) return false;
+  const from = expr.arguments.nodes[1]!;
   if (!ts.isIdentifier(from) || from.text !== mod) return false;
-  let to: ts.Expression = expr.arguments[0]!;
+  let to: ts.Expression = expr.arguments.nodes[0]!;
   while (ts.isParenthesizedExpression(to)) to = to.expression;
   if (!ts.isConditionalExpression(to)) return false;
   const condText = to.condition.getText();
@@ -240,12 +240,12 @@ function recognizedToEsmDecl(stmt: ts.Statement): boolean {
     stamp.expression.text !== "__defProp"
   )
     return false;
-  if (stamp.arguments.length !== 3) return false;
-  const nameArg = stamp.arguments[1]!;
+  if (stamp.arguments.nodes.length !== 3) return false;
+  const nameArg = stamp.arguments.nodes[1]!;
   if (!ts.isStringLiteral(nameArg) || nameArg.text !== "default") return false;
-  const desc = stamp.arguments[2]!;
+  const desc = stamp.arguments.nodes[2]!;
   if (!ts.isObjectLiteralExpression(desc)) return false;
-  return desc.properties.some(
+  return desc.properties.nodes.some(
     (p) =>
       ts.isPropertyAssignment(p) &&
       ts.isIdentifier(p.name) &&
@@ -278,10 +278,10 @@ function planToEsmInterop(sf: ts.SourceFile, filePath: string, host: CjsRewriteH
     degrade: reason,
   });
 
-  const declStmts = sf.statements.filter(
+  const declStmts = sf.statements.nodes.filter(
     (s) =>
       ts.isVariableStatement(s) &&
-      s.declarationList.declarations.some(
+      s.declarationList.declarations.nodes.some(
         (d) => ts.isIdentifier(d.name) && d.name.text === "__toESM",
       ),
   );
@@ -299,7 +299,7 @@ function planToEsmInterop(sf: ts.SourceFile, filePath: string, host: CjsRewriteH
   const callees = new Set<ts.Node>(calls.map((c) => c.expression));
   const declNames = new Set<ts.Node>();
   for (const s of declStmts) {
-    for (const d of (s as ts.VariableStatement).declarationList.declarations) {
+    for (const d of (s as ts.VariableStatement).declarationList.declarations.nodes) {
       if (ts.isIdentifier(d.name) && d.name.text === "__toESM") declNames.add(d.name);
     }
   }
@@ -312,12 +312,12 @@ function planToEsmInterop(sf: ts.SourceFile, filePath: string, host: CjsRewriteH
    * module (pad the access) rather than a member read of its `default`. */
   const bindings = new Map<string, boolean>();
   for (const call of calls) {
-    const arg0 = call.arguments[0];
+    const arg0 = call.arguments.nodes[0];
     const spec = arg0 !== undefined ? bareRequireSpecOf(arg0) : null;
-    if (spec === null || call.arguments.length > 2) return fail(TO_ESM_ARG_DEGRADE);
+    if (spec === null || call.arguments.nodes.length > 2) return fail(TO_ESM_ARG_DEGRADE);
     let isNodeMode = false;
-    if (call.arguments.length === 2) {
-      const modeArg = call.arguments[1]!;
+    if (call.arguments.nodes.length === 2) {
+      const modeArg = call.arguments.nodes[1]!;
       if (ts.isNumericLiteral(modeArg)) isNodeMode = Number(modeArg.text) !== 0;
       else if (modeArg.kind === ts.SyntaxKind.TrueKeyword) isNodeMode = true;
       else if (modeArg.kind === ts.SyntaxKind.FalseKeyword) isNodeMode = false;
@@ -511,7 +511,7 @@ export function rewriteBundlerCjsSyntax(
     if (!starSpecsInOrder.includes(spec)) starSpecsInOrder.push(spec);
   };
 
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     if (!ts.isExpressionStatement(stmt)) continue;
     const e = stmt.expression;
     // `module.exports = <rhs>`
@@ -524,10 +524,10 @@ export function rewriteBundlerCjsSyntax(
       if (
         ts.isCallExpression(rhs) &&
         calleeNameOf(rhs) === "__toCommonJS" &&
-        rhs.arguments.length === 1 &&
-        ts.isIdentifier(rhs.arguments[0]!)
+        rhs.arguments.nodes.length === 1 &&
+        ts.isIdentifier(rhs.arguments.nodes[0]!)
       ) {
-        esbuildMainTarget = (rhs.arguments[0] as ts.Identifier).text;
+        esbuildMainTarget = (rhs.arguments.nodes[0] as ts.Identifier).text;
         tablePos = stmt.getStart(sf);
         neutralize.push({ start: stmt.getStart(sf), end: stmt.getEnd() });
         sawBundleShape = true;
@@ -601,8 +601,8 @@ export function rewriteBundlerCjsSyntax(
     }
     // `__exportStar(require('spec'), exports);` — the tsc/tslib spelling —
     // and `__export(require('spec'))`, the legacy twin.
-    if ((name === "__exportStar" || name === "__export") && e.arguments.length >= 1) {
-      const spec = bareRequireSpecOf(e.arguments[0]!);
+    if ((name === "__exportStar" || name === "__export") && e.arguments.nodes.length >= 1) {
+      const spec = bareRequireSpecOf(e.arguments.nodes[0]!);
       if (spec !== null) {
         addStarSpec(spec);
         neutralize.push({ start: stmt.getStart(sf), end: stmt.getEnd() });
@@ -612,8 +612,8 @@ export function rewriteBundlerCjsSyntax(
     }
     // `__reExport(TARGET, require('spec')[, module.exports]);` — esbuild's
     // `export * from` plumbing.
-    if (name === "__reExport" && e.arguments.length >= 2) {
-      const spec = bareRequireSpecOf(e.arguments[1]!);
+    if (name === "__reExport" && e.arguments.nodes.length >= 2) {
+      const spec = bareRequireSpecOf(e.arguments.nodes[1]!);
       if (spec !== null) {
         addStarSpec(spec);
         neutralize.push({ start: stmt.getStart(sf), end: stmt.getEnd() });
@@ -733,7 +733,7 @@ export function rewriteBundlerCjsSyntax(
      * fence the whole statement). Everything else snapshots via a tail
      * const. */
     const immutableTopLevel = new Set<string>();
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (ts.isFunctionDeclaration(stmt) && stmt.name !== undefined)
         immutableTopLevel.add(stmt.name.text);
       else if (ts.isClassDeclaration(stmt) && stmt.name !== undefined)
@@ -742,7 +742,7 @@ export function rewriteBundlerCjsSyntax(
         ts.isVariableStatement(stmt) &&
         (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0
       ) {
-        for (const d of stmt.declarationList.declarations) {
+        for (const d of stmt.declarationList.declarations.nodes) {
           if (ts.isIdentifier(d.name)) immutableTopLevel.add(d.name.text);
         }
       }
@@ -821,9 +821,9 @@ export function rewriteBundlerCjsSyntax(
       "__importDefault",
     ]);
     const helperDecls = new Map<string, { start: number; end: number }>();
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (!ts.isVariableStatement(stmt)) continue;
-      const decls = stmt.declarationList.declarations;
+      const decls = stmt.declarationList.declarations.nodes;
       if (decls.length !== 1) continue;
       const d = decls[0]!;
       if (ts.isIdentifier(d.name) && HELPER_NAMES.has(d.name.text)) {

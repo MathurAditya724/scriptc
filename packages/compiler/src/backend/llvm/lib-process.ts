@@ -18,7 +18,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const cmd = host.emitExpr(e.args[0]!);
     const argv = host.emitExpr(e.args[1]!);
     const cb = host.emitExpr(callbackArg);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     const shell = host.emitExpr(e.args[3]!);
     const adapter = host.execFileThunkFor(cbT);
     host.usesTimers = true;
@@ -72,7 +72,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
   if (e.fn === "child.onSpawn") {
     const child = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     host.declare("declare void @scr_child_on_spawn(ptr, ptr)");
     B.line(`call void @scr_child_on_spawn(ptr ${child.name}, ptr ${cb.name})`);
     return { name: "", type: e.type };
@@ -87,7 +87,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
     const child = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     let adapter: string;
     if (cbT.params.length === 0) {
       adapter = "scr_child_exit_thunk0";
@@ -110,7 +110,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       throw new InternalCompilerError("llvm emitter bug: child.onError callback not a func");
     const child = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
     host.declare(`declare void @${adapter}(ptr, ptr)`);
     host.declare(`declare void @scr_child_on_error(ptr, ptr, ptr)`);
@@ -136,7 +136,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       if (cbT.kind !== "func")
         throw new InternalCompilerError("llvm emitter bug: child.send callback not a func");
       const cb = host.emitExpr(e.args[2]!);
-      host.moveTemp(cb);
+      host.toHeap(cb);
       suffix = `, ptr ${cb.name}, ptr @${host.ipcSendThunkFor(cbT)}`;
       decl += ", ptr, ptr";
     }
@@ -160,7 +160,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
     const cb = host.emitExpr(e.args[1]!);
     const once = host.emitExpr(e.args[2]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     if (e.fn === "child.onMessage") {
       host.declare(`declare void @scr_child_ipc_on_message(ptr, ptr, ptr, i1 zeroext)`);
       B.line(
@@ -337,7 +337,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     if (cbT.kind !== "func")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
     const cb = host.emitExpr(e.args[1]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     const once = host.emitExpr(e.args[2]!);
     if (e.fn === "writer.onError") {
       const adapter =
@@ -373,17 +373,19 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
     // main runs the loop.
     host.usesTimers = true;
     const cb = host.emitExpr(e.args[0]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
+    // Programs that enter AsyncLocalStorage stores schedule through the
+    // *_als entry points, which carry the active stores into the callback.
     const sym =
-      mockTimerSym(host, e) ??
-      {
-        "timers.setTimeout": "scr_set_timeout",
-        "timers.setInterval": "scr_set_interval",
-        "timers.setTimeoutHandle": "scr_set_timeout_handle",
-        "timers.setImmediate": "scr_set_immediate",
-        "process.nextTick": "scr_next_tick",
-        "timers.queueMicrotask": "scr_queue_microtask",
-      }[e.fn];
+      (mockTimerSym(host, e) ??
+        {
+          "timers.setTimeout": "scr_set_timeout",
+          "timers.setInterval": "scr_set_interval",
+          "timers.setTimeoutHandle": "scr_set_timeout_handle",
+          "timers.setImmediate": "scr_set_immediate",
+          "process.nextTick": "scr_next_tick",
+          "timers.queueMicrotask": "scr_queue_microtask",
+        }[e.fn]!) + (host.schedulesInContext ? "_als" : "");
     const rest = e.args.slice(1).map((a) => host.emitExpr(a));
     const argList = [`ptr ${cb.name}`, ...rest.map((a) => `${host.llType(a.type)} ${a.name}`)].join(
       ", ",
@@ -464,7 +466,7 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       if (cbT.kind !== "func")
         throw new InternalCompilerError("llvm emitter bug: process.send callback not a func");
       const cb = host.emitExpr(e.args[1]!);
-      host.moveTemp(cb);
+      host.toHeap(cb);
       suffix = `, ptr ${cb.name}, ptr @${host.ipcSendThunkFor(cbT)}`;
       decl += ", ptr, ptr";
     }
@@ -486,7 +488,7 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
     const cb = host.emitExpr(e.args[0]!);
     const once = host.emitExpr(e.args[1]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     if (e.fn === "process.onMessage") {
       host.declare(`declare void @scr_process_ipc_on_message(ptr, ptr, i1 zeroext)`);
       B.line(
@@ -507,7 +509,7 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const cbT = e.args[2]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: process write callback not a func");
-    host.moveTemp(args[2]!);
+    host.toHeap(args[2]!);
     const adapter = host.fsRenameThunkFor(cbT);
     const write =
       e.fn === "process.stdoutWriteBytesCb"
@@ -538,7 +540,7 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
     const cb = host.emitExpr(e.args[0]!);
     const once = host.emitExpr(e.args[1]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     if (e.fn === "stdin.onEnd") {
       host.declare(`declare void @scr_stdin_on_end(ptr, i1 zeroext)`);
       B.line(`call void @scr_stdin_on_end(ptr ${cb.name}, i1 ${once.name})`);
@@ -586,7 +588,7 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       throw new InternalCompilerError("llvm emitter bug: process.onExit callback not a func");
     const cb = host.emitExpr(e.args[0]!);
     const once = host.emitExpr(e.args[1]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     const adapter = cbT.params.length === 0 ? "scr_exit_thunk0" : "scr_exit_thunk_code";
     host.declare(`declare void @${adapter}(ptr, double)`);
     host.declare(`declare void @scr_process_on_exit(ptr, ptr, i1 zeroext)`);
@@ -741,7 +743,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const cbr = B.tmp();
     B.line(`${cbr} = call ptr @scr_closure_retain_v(ptr ${args[2]!.name})`);
     const wrapped = host.wrapEmitterListener(cbr, adapterFn);
-    host.moveTemp(args[2]!);
+    host.toHeap(args[2]!);
     host.declare(
       `declare ptr @scr_emitter_on_via(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext)`,
     );
@@ -765,7 +767,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       throw new InternalCompilerError("llvm emitter bug: emitter.onDyn adapter not a func");
     const args = e.args.map((a) => host.emitExpr(a));
     const { fn: adapterFn, shim } = host.emitterFixedAdapter(adT);
-    host.moveTemp(args[3]!); // the frame's +1 moves into the wrapper's box
+    host.toHeap(args[3]!); // the frame's +1 moves into the wrapper's box
     const wrapped = host.wrapEmitterListener(args[3]!.name, adapterFn);
     host.declare(
       `declare ptr @scr_emitter_on_dyn(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext)`,
@@ -864,7 +866,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     host.declare(`declare void @scr_ee_inv_fixed2(ptr, ptr)`);
     const t = B.tmp();
     if (isDyn) {
-      host.moveTemp(args[3]!);
+      host.toHeap(args[3]!);
       const wrapped = host.wrapEmitterListener(args[3]!.name, adapterFn);
       host.declare(
         `declare ptr @scr_emitter_on_dyn(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext)`,
@@ -878,7 +880,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       const cbr = B.tmp();
       B.line(`${cbr} = call ptr @scr_closure_retain_v(ptr ${args[2]!.name})`);
       const wrapped = host.wrapEmitterListener(cbr, adapterFn);
-      host.moveTemp(args[2]!);
+      host.toHeap(args[2]!);
       host.declare(
         `declare ptr @scr_emitter_on_via(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext)`,
       );

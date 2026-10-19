@@ -159,7 +159,7 @@ function returnsThis(
     while (pending.length > 0) {
       const sub = pending.pop()!;
       pending.push(...sub.subclasses);
-      for (const member of sub.decl?.members ?? []) {
+      for (const member of sub.decl?.members.nodes ?? []) {
         if (member.name === undefined || !ts.isIdentifier(member.name) || member.name.text !== name)
           continue;
         if (!ts.isMethodDeclaration(member)) return false;

@@ -176,7 +176,7 @@ function ffiDeclarationDiagnostic(
       loc,
     );
   }
-  if (functionDecls.some((decl) => (decl.typeParameters?.length ?? 0) > 0)) {
+  if (functionDecls.some((decl) => (decl.typeParameters?.nodes.length ?? 0) > 0)) {
     return signatureDiag(
       binding.name,
       "generic ambient declarations cannot describe one fixed C ABI",
@@ -474,18 +474,18 @@ export function lowerFfiCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr 
   if (expr.questionDotToken !== undefined || expr.typeArguments !== undefined) {
     signatureError("native bindings support direct, non-generic calls only");
   }
-  if (expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.some(ts.isSpreadElement)) {
     signatureError("spread arguments do not have a fixed native ABI");
   }
   const expectedParams = ffiSourceParamTypes(binding.params);
-  if (expr.arguments.length !== expectedParams.length) {
+  if (expr.arguments.nodes.length !== expectedParams.length) {
     signatureError(
-      `this call passes ${expr.arguments.length} argument(s), but the native binding requires exactly ${expectedParams.length}`,
+      `this call passes ${expr.arguments.nodes.length} argument(s), but the native binding requires exactly ${expectedParams.length}`,
     );
   }
   const expectedReturn = ffiClassType(binding.returns);
   const sourceParams = ffiSourceParams(binding);
-  const args = expr.arguments.map((arg, i) => {
+  const args = expr.arguments.nodes.map((arg, i) => {
     const sourceParam = sourceParams[i]!;
     const expected = expectedParams[i]!;
     const lowered = lowerer.lowerExprExpecting(arg, expected);

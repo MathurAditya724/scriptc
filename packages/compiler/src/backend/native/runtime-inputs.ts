@@ -70,6 +70,7 @@ export const EXECUTABLE_RUNTIME_SOURCES = [
   "scr_publish.c",
   "scr_region.c",
   "scr_itable.c",
+  "scr_slots.c",
   "scr_alloc.c",
 ] as const;
 

@@ -63,6 +63,20 @@ ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
 /* Runs when return() reaches the generator before its first resume, with
  * the packed arguments still alive: an iterator helper closes its source. */
 void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *));
+/* The @@toStringTag that util.inspect and Object.prototype.toString print
+ * for the generator object: "Generator" (or "AsyncGenerator") unless set,
+ * as the compiler does for iterator helpers ("Iterator Helper") and for
+ * the array and string iterators it builds as generators. A tag that
+ * starts with '!' marks a generator standing in for an object of another
+ * class, which these refuse to print. */
+void scr_gen_set_tag(ScrGen *g, const char *tag);
+/* An adapter generator prints with the tag of the generator it adapts. */
+void scr_gen_copy_tag(ScrGen *g, const ScrGen *from);
+const char *scr_gen_tag(const ScrGen *g);
+/* scr_gen_tag for units that also link without the generator runtime (a
+ * library links none): the generator runtime sets it at startup, and only
+ * then can a generator capsule exist. */
+extern const char *(*scr_gen_tag_reader)(const ScrGen *g);
 ScrGen *scr_gen_retain(ScrGen *g);
 void scr_gen_release(ScrGen *g); /* NULL-tolerant */
 void *scr_gen_retain_v(void *g);
@@ -166,6 +180,7 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init);
 ScrDyn *scr_fetch_headers_new(ScrDyn *init);
 ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init); /* +1 promise<Response handle> */
 ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init); /* borrowed args; +1 Response handle or NULL pending */
+ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init); /* Response.json; borrowed args; +1 Response handle or NULL pending */
 ScrPromise *scr_fetch_response_json(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_text(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_array_buffer(ScrDyn *response); /* +1 promise<dyn> */

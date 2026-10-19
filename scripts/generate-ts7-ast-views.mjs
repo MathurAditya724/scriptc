@@ -63,6 +63,8 @@ export function generateAstViews(root, packageRoot, version, check) {
       // The pinned native wire and RemoteNode getter encode one tag, despite
       // the SDK factory-oriented interface declaring an array of tags.
       if (key === "jsdocPropertyTags") type = "JSDocPropertyTag";
+      // A list's children are a node list, as every other list field.
+      if (name === "SyntaxList" && key === "children") type = "NodeArray<Node>";
       if (member.questionToken) type += " | undefined";
       fields.set(key, `  readonly ${key}: ${type};`);
     }

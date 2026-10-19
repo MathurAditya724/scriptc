@@ -89,20 +89,20 @@ export function ipcSendCallback(lowerer: Lowerer, node: ts.Expression): IrExpr {
 export function lowerProcessIpcSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
   const loc = locOf(call);
   if (
-    call.arguments.length < 1 ||
-    call.arguments.length > 2 ||
-    call.arguments.some(ts.isSpreadElement)
+    call.arguments.nodes.length < 1 ||
+    call.arguments.nodes.length > 2 ||
+    call.arguments.nodes.some(ts.isSpreadElement)
   ) {
     lowerer.noLowering(
-      `process.send with ${call.arguments.length} arguments`,
+      `process.send with ${call.arguments.nodes.length} arguments`,
       call,
       "send(message[, callback]) is supported; handle transfer and options are not",
     );
   }
-  const json = ipcJsonMessage(lowerer, call.arguments[0]!, loc);
-  if (call.arguments[1] === undefined) {
+  const json = ipcJsonMessage(lowerer, call.arguments.nodes[0]!, loc);
+  if (call.arguments.nodes[1] === undefined) {
     return { kind: "libCall", fn: "process.send", args: [json], type: BOOL, loc };
   }
-  const callback = ipcSendCallback(lowerer, call.arguments[1]);
+  const callback = ipcSendCallback(lowerer, call.arguments.nodes[1]);
   return { kind: "libCall", fn: "process.sendCb", args: [json, callback], type: BOOL, loc };
 }

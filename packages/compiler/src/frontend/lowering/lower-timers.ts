@@ -6,6 +6,7 @@ import {
   canBoxFuncIntoDyn,
   DYN,
   F64,
+  isUnitType,
   VOID,
   type IrExpr,
   type IrType,
@@ -283,20 +284,33 @@ export const TIMER_MODULE_MEMBERS: ReadonlySet<string> = new Set([
  * path. Null when the argument might be a real handle. */
 function tolerantClearNoop(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr | null {
   const noop: IrExpr = { kind: "libCall", fn: "timers.clearNoop", args: [], type: VOID, loc };
-  if (expr.arguments.length === 0) return noop;
-  if (expr.arguments.length !== 1) return null;
-  let arg = expr.arguments[0]!;
+  if (expr.arguments.nodes.length === 0) return noop;
+  if (expr.arguments.nodes.length !== 1) return null;
+  let arg = expr.arguments.nodes[0]!;
   // `{} as never` / parenthesized spellings: the cast changes no value.
   while (ts.isAsExpression(arg) || ts.isTypeAssertion(arg) || ts.isParenthesizedExpression(arg))
     arg = arg.expression;
   if (arg.kind === ts.SyntaxKind.NullKeyword) return noop;
-  if (ts.isObjectLiteralExpression(arg) && arg.properties.length === 0) return noop;
+  if (ts.isObjectLiteralExpression(arg) && arg.properties.nodes.length === 0) return noop;
   if (ts.isIdentifier(arg)) {
     const t = lowerer.mapTypeOf(lowerer.typeOf(arg));
     if (t && (t.kind === "nullT" || t.kind === "undefinedT")) return noop;
     if (arg.text === "undefined") return noop;
   }
   return null;
+}
+
+/** A clear's handle as the f64 id it passes to the runtime. A handle that
+ * may be undefined or null (`let timer: Timeout | undefined`) passes 0
+ * when absent: no timer has id 0, so the clear does nothing, as Node's
+ * clearTimeout(undefined) does. Other handle types are returned as they
+ * are. */
+function optionalTimerHandle(lowerer: Lowerer, handle: IrExpr, loc: SrcLoc): IrExpr {
+  if (handle.type.kind !== "union") return handle;
+  const arms = lowerer.unions.get(handle.type.unionId)?.arms ?? [];
+  const present = arms.filter((arm) => !isUnitType(arm));
+  if (present.length !== 1 || present[0]!.kind !== "f64") return handle;
+  return { kind: "nullish", left: handle, right: numLit(0, loc), type: F64, loc };
 }
 
 const MOCKABLE_TIMER_FNS: ReadonlySet<string> = new Set([
@@ -355,7 +369,7 @@ function lowerTimerCall(
   // Delayed timers share callback adaptation and the 1ms default. Trailing
   // arguments are captured now and delivered when the callback fires.
   if (member === "setTimeout" || member === "setInterval") {
-    if (expr.arguments.length === 0) {
+    if (expr.arguments.nodes.length === 0) {
       lowerer.noLowering(
         `${member} with 0 arguments`,
         expr,
@@ -363,19 +377,25 @@ function lowerTimerCall(
       );
     }
     const cb =
-      expr.arguments.length > 2
-        ? makeTimerArgsThunk(lowerer, expr.arguments[0]!, expr.arguments.slice(2), member, loc)
+      expr.arguments.nodes.length > 2
+        ? makeTimerArgsThunk(
+            lowerer,
+            expr.arguments.nodes[0]!,
+            expr.arguments.nodes.slice(2),
+            member,
+            loc,
+          )
         : adaptZeroArgTimerCallback(
             lowerer,
-            lowerer.lowerExpr(expr.arguments[0]!),
-            expr.arguments[0]!,
+            lowerer.lowerExpr(expr.arguments.nodes[0]!),
+            expr.arguments.nodes[0]!,
             loc,
           );
     // An omitted delay is NaN, Node's undefined: the loop clamps it to
     // 1ms, and mock.timers queues it to run at the next tick.
     const ms: IrExpr =
-      expr.arguments.length >= 2
-        ? lowerer.lowerExpr(expr.arguments[1]!)
+      expr.arguments.nodes.length >= 2
+        ? lowerer.lowerExpr(expr.arguments.nodes[1]!)
         : { kind: "numLit", value: NaN, type: F64, loc };
     if (member === "setInterval") {
       return { kind: "libCall", fn: "timers.setInterval", args: [cb, ms], type: F64, loc };
@@ -392,15 +412,14 @@ function lowerTimerCall(
     return { kind: "libCall", fn: "timers.setTimeout", args: [cb, ms], type: VOID, loc };
   }
   // clearTimeout(handle): shares the interval clear (the handle ids
-  // share one space). A `Timeout | null` handle narrows first, like
-  // clearInterval.
+  // share one space). An optional handle clears nothing when absent.
   if (member === "clearTimeout") {
     const noop = tolerantClearNoop(lowerer, expr, loc);
     if (noop) return noop;
-    if (expr.arguments.length !== 1) {
-      lowerer.noLowering(`clearTimeout with ${expr.arguments.length} arguments`, expr);
+    if (expr.arguments.nodes.length !== 1) {
+      lowerer.noLowering(`clearTimeout with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    let handle = lowerer.lowerExpr(expr.arguments[0]!);
+    let handle = lowerer.lowerExpr(expr.arguments.nodes[0]!);
     if (handle.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile())) {
       const stored = lowerer.declareHiddenLocal("%timer.clear", DYN);
       const ref = varRef(stored.id, DYN, loc);
@@ -410,7 +429,7 @@ function lowerTimerCall(
         result: {
           kind: "ternary",
           cond: { kind: "dynTest", test: "number", value: ref, type: BOOL, loc },
-          then: lowerer.coerceInto(expr.arguments[0]!, ref, F64),
+          then: lowerer.coerceInto(expr.arguments.nodes[0]!, ref, F64),
           else_: numLit(0, loc),
           type: F64,
           loc,
@@ -419,11 +438,12 @@ function lowerTimerCall(
         loc,
       };
     }
+    handle = optionalTimerHandle(lowerer, handle, loc);
     if (handle.type.kind !== "f64") {
       lowerer.noLowering(
         `clearTimeout of '${lowerer.fmt(handle.type)}' handles`,
-        expr.arguments[0]!,
-        "the handle is the Timeout setTimeout returned (narrow 'Timeout | null' first)",
+        expr.arguments.nodes[0]!,
+        "the handle is the Timeout setTimeout returned, or undefined or null",
       );
     }
     return { kind: "libCall", fn: "timers.clearTimeout", args: [handle], type: VOID, loc };
@@ -431,15 +451,15 @@ function lowerTimerCall(
   if (member === "clearInterval") {
     const noop = tolerantClearNoop(lowerer, expr, loc);
     if (noop) return noop;
-    if (expr.arguments.length !== 1) {
-      lowerer.noLowering(`clearInterval with ${expr.arguments.length} arguments`, expr);
+    if (expr.arguments.nodes.length !== 1) {
+      lowerer.noLowering(`clearInterval with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    const handle = lowerer.lowerExpr(expr.arguments[0]!);
+    const handle = optionalTimerHandle(lowerer, lowerer.lowerExpr(expr.arguments.nodes[0]!), loc);
     if (handle.type.kind !== "f64") {
       lowerer.noLowering(
         `clearInterval of '${lowerer.fmt(handle.type)}' handles`,
-        expr.arguments[0]!,
-        "the handle is the number setInterval returned (narrow `number | null` first)",
+        expr.arguments.nodes[0]!,
+        "the handle is the Timeout setInterval returned, or undefined or null",
       );
     }
     return { kind: "libCall", fn: "timers.clearInterval", args: [handle], type: VOID, loc };
@@ -448,7 +468,7 @@ function lowerTimerCall(
   // the f64 immediate id (its own space — clearTimeout of an Immediate
   // no-ops, like Node); the callback adapts like setTimeout's.
   if (member === "setImmediate") {
-    if (expr.arguments.length === 0) {
+    if (expr.arguments.nodes.length === 0) {
       lowerer.noLowering(
         "setImmediate with 0 arguments",
         expr,
@@ -456,18 +476,18 @@ function lowerTimerCall(
       );
     }
     const cb =
-      expr.arguments.length > 1
+      expr.arguments.nodes.length > 1
         ? makeTimerArgsThunk(
             lowerer,
-            expr.arguments[0]!,
-            expr.arguments.slice(1),
+            expr.arguments.nodes[0]!,
+            expr.arguments.nodes.slice(1),
             "setImmediate",
             loc,
           )
         : adaptZeroArgTimerCallback(
             lowerer,
-            lowerer.lowerExpr(expr.arguments[0]!),
-            expr.arguments[0]!,
+            lowerer.lowerExpr(expr.arguments.nodes[0]!),
+            expr.arguments.nodes[0]!,
             loc,
           );
     return { kind: "libCall", fn: "timers.setImmediate", args: [cb], type: F64, loc };
@@ -475,15 +495,15 @@ function lowerTimerCall(
   if (member === "clearImmediate") {
     const noop = tolerantClearNoop(lowerer, expr, loc);
     if (noop) return noop;
-    if (expr.arguments.length !== 1) {
-      lowerer.noLowering(`clearImmediate with ${expr.arguments.length} arguments`, expr);
+    if (expr.arguments.nodes.length !== 1) {
+      lowerer.noLowering(`clearImmediate with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    const handle = lowerer.lowerExpr(expr.arguments[0]!);
+    const handle = optionalTimerHandle(lowerer, lowerer.lowerExpr(expr.arguments.nodes[0]!), loc);
     if (handle.type.kind !== "f64") {
       lowerer.noLowering(
         `clearImmediate of '${lowerer.fmt(handle.type)}' handles`,
-        expr.arguments[0]!,
-        "the handle is the Immediate setImmediate returned (narrow 'Immediate | undefined' first)",
+        expr.arguments.nodes[0]!,
+        "the handle is the Immediate setImmediate returned, or undefined or null",
       );
     }
     return { kind: "libCall", fn: "timers.clearImmediate", args: [handle], type: VOID, loc };
