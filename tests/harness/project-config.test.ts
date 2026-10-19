@@ -422,6 +422,24 @@ test("node-types: util.promisify over typed callback-last functions settles like
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: stream subclasses extend the @types/node stream classes", async () => {
+  const outDir = outDirFor("stream-subclass-hooks");
+  const entry = join(nodeTypesDir, "stream-subclass-hooks.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "stream-subclass-hooks"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: promisified setTimeout and setImmediate lower as timers/promises", async () => {
   const outDir = outDirFor("promisify-timers");
   const entry = join(nodeTypesDir, "promisify-timers.ts");
