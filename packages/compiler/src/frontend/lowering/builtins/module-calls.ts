@@ -101,8 +101,8 @@ export function lowerBuiltinModuleCall(
   if (
     bi.module === "fs" &&
     bi.member === "openSync" &&
-    expr.arguments.length >= 2 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[1]!))?.kind === "f64"
+    expr.arguments.nodes.length >= 2 &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "f64"
   ) {
     return lowerFsNumericOpenCall(lowerer, expr, loc);
   }
@@ -146,7 +146,7 @@ export function lowerBuiltinModuleCall(
   // verification stance.
   const syncReaddirTypes = bi.module === "fs" && bi.member === "readdirSync";
   const promiseReaddirTypes = bi.module === "fs/promises" && bi.member === "readdir";
-  if ((syncReaddirTypes || promiseReaddirTypes) && expr.arguments.length === 2) {
+  if ((syncReaddirTypes || promiseReaddirTypes) && expr.arguments.nodes.length === 2) {
     return lowerFsReaddirTypesCall(lowerer, expr, loc, promiseReaddirTypes);
   }
   // fs.statSync/fs.lstatSync(path, options): throwIfNoEntry and bigint:
@@ -154,7 +154,7 @@ export function lowerBuiltinModuleCall(
   if (
     bi.module === "fs" &&
     (bi.member === "statSync" || bi.member === "lstatSync") &&
-    expr.arguments.length === 2
+    expr.arguments.nodes.length === 2
   ) {
     return lowerFsStatOptionsCall(lowerer, expr, loc, bi.member === "lstatSync");
   }
@@ -216,11 +216,11 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerReadlineCreateCall(lowerer, expr, loc, bi.module === "readline/promises");
   }
-  if (bi.module === "fs" && bi.member === "readFileSync" && expr.arguments.length === 2) {
+  if (bi.module === "fs" && bi.member === "readFileSync" && expr.arguments.nodes.length === 2) {
     const encoded = lowerFsEncodedRead(
       lowerer,
       expr,
-      lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[0]!))?.kind === "f64",
+      lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[0]!))?.kind === "f64",
       loc,
     );
     if (encoded) return encoded;
@@ -233,18 +233,26 @@ export function lowerBuiltinModuleCall(
   if (
     bi.module === "fs" &&
     bi.member === "readFileSync" &&
-    expr.arguments.length === 1 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[0]!))?.kind !== "f64"
+    expr.arguments.nodes.length === 1 &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[0]!))?.kind !== "f64"
   ) {
-    const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+    const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
     return { kind: "libCall", fn: "fs.readFileSyncBytes", args: [path], type: BYTES_U8, loc };
   }
-  if (bi.module === "fs/promises" && bi.member === "readFile" && expr.arguments.length === 2) {
+  if (
+    bi.module === "fs/promises" &&
+    bi.member === "readFile" &&
+    expr.arguments.nodes.length === 2
+  ) {
     const encoded = lowerFsPromisesEncodedRead(lowerer, expr, loc);
     if (encoded) return encoded;
   }
-  if (bi.module === "fs/promises" && bi.member === "readFile" && expr.arguments.length === 1) {
-    const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  if (
+    bi.module === "fs/promises" &&
+    bi.member === "readFile" &&
+    expr.arguments.nodes.length === 1
+  ) {
+    const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
     return {
       kind: "libCall",
       fn: "fsp.readFileBytes",
@@ -256,8 +264,8 @@ export function lowerBuiltinModuleCall(
   if (
     bi.module === "fs" &&
     bi.member === "readFileSync" &&
-    expr.arguments.length >= 1 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[0]!))?.kind === "f64"
+    expr.arguments.nodes.length >= 1 &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[0]!))?.kind === "f64"
   ) {
     return lowerFsReadDescriptorCall(lowerer, expr, loc);
   }
@@ -273,13 +281,13 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerFsStreamCreate(lowerer, expr, bi.member, loc);
   }
-  if (bi.module === "fs" && bi.member === "mkdirSync" && expr.arguments.length === 2) {
+  if (bi.module === "fs" && bi.member === "mkdirSync" && expr.arguments.nodes.length === 2) {
     return lowerFsMkdirSyncCall(lowerer, expr, loc);
   }
-  if (bi.module === "fs/promises" && bi.member === "mkdir" && expr.arguments.length === 2) {
+  if (bi.module === "fs/promises" && bi.member === "mkdir" && expr.arguments.nodes.length === 2) {
     return lowerFsPromisesMkdirCall(lowerer, expr, loc);
   }
-  if (bi.module === "fs" && bi.member === "rmSync" && expr.arguments.length === 2) {
+  if (bi.module === "fs" && bi.member === "rmSync" && expr.arguments.nodes.length === 2) {
     return lowerFsRemoveCall(lowerer, expr, loc);
   }
   // accessSync(p, mode?) and truncateSync(p, len?), with their promise
@@ -290,20 +298,20 @@ export function lowerBuiltinModuleCall(
       ? bi.member === "accessSync" || bi.member === "truncateSync"
       : bi.module === "fs/promises" && (bi.member === "access" || bi.member === "truncate");
   if (zeroDefault) {
-    if (expr.arguments.length < 1 || expr.arguments.length > 2) {
-      lowerer.noLowering(`${bi.member} with ${expr.arguments.length} arguments`, expr);
+    if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 2) {
+      lowerer.noLowering(`${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-    const second: IrExpr = expr.arguments[1]
-      ? lowerer.lowerExprExpecting(expr.arguments[1], F64)
+    const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+    const second: IrExpr = expr.arguments.nodes[1]
+      ? lowerer.lowerExprExpecting(expr.arguments.nodes[1], F64)
       : { kind: "numLit", value: 0, type: F64, loc };
     return { kind: "libCall", fn: fn.fn, args: [path, second], type: fn.result, loc };
   }
   if (
     bi.module === "fs/promises" &&
     bi.member === "appendFile" &&
-    expr.arguments.length === 2 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[1]!))?.kind === "bytes"
+    expr.arguments.nodes.length === 2 &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "bytes"
   ) {
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
@@ -311,7 +319,7 @@ export function lowerBuiltinModuleCall(
   if (
     bi.module === "fs" &&
     (bi.member === "writeFileSync" || bi.member === "appendFileSync") &&
-    expr.arguments.length === 2
+    expr.arguments.nodes.length === 2
   ) {
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
@@ -325,15 +333,15 @@ export function lowerBuiltinModuleCall(
   // remain outside the static surface.
   const syncWriteOptions = bi.module === "fs" && bi.member === "writeFileSync";
   const promiseWriteOptions = bi.module === "fs/promises" && bi.member === "writeFile";
-  if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.length === 3) {
+  if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.nodes.length === 3) {
     return lowerFsWriteOptionsCall(lowerer, expr, loc, promiseWriteOptions);
   }
   if (fn.variadicPack) {
     // join(...parts) forwards the array itself; mixing spread and plain
     // arguments (or spreading anything but a string[]) stays out.
-    const spread = expr.arguments.find(ts.isSpreadElement);
+    const spread = expr.arguments.nodes.find(ts.isSpreadElement);
     if (spread) {
-      if (expr.arguments.length === 1) {
+      if (expr.arguments.nodes.length === 1) {
         // The whole-array form forwards the operand directly (no copy).
         const packed = lowerer.lowerExprExpecting(spread.expression, arrayOf(STRING));
         return { kind: "libCall", fn: fn.fn, args: [packed], type: fn.result, loc };
@@ -342,31 +350,31 @@ export function lowerBuiltinModuleCall(
       // tmpdir.resolve: plain arguments and spread arrays pack into one
       // fresh string[] (arrayLit's spread positions copy element-wise,
       // JS-exact; a dyn spread source rides the validated extraction).
-      const elems = expr.arguments.map((a) =>
+      const elems = expr.arguments.nodes.map((a) =>
         ts.isSpreadElement(a)
           ? lowerer.lowerExprExpecting(a.expression, arrayOf(STRING))
           : lowerer.lowerExprExpecting(a, STRING),
       );
-      const spreads = expr.arguments.flatMap((a, i) => (ts.isSpreadElement(a) ? [i] : []));
+      const spreads = expr.arguments.nodes.flatMap((a, i) => (ts.isSpreadElement(a) ? [i] : []));
       const packed: IrExpr = { kind: "arrayLit", elems, spreads, type: arrayOf(STRING), loc };
       return { kind: "libCall", fn: fn.fn, args: [packed], type: fn.result, loc };
     }
-    const elems = expr.arguments.map((a) => lowerer.lowerExprExpecting(a, STRING));
+    const elems = expr.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, STRING));
     const packed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(STRING), loc };
     return { kind: "libCall", fn: fn.fn, args: [packed], type: fn.result, loc };
   }
   if (
     bi.module === "fs" &&
     bi.member === "readFileSync" &&
-    expr.arguments.length >= 1 &&
-    expr.arguments.length <= 2 &&
-    !expr.arguments.some(ts.isSpreadElement)
+    expr.arguments.nodes.length >= 1 &&
+    expr.arguments.nodes.length <= 2 &&
+    !expr.arguments.nodes.some(ts.isSpreadElement)
   ) {
     const lowered = lowerFsReadPathCall(lowerer, expr, loc);
     if (lowered) return lowered;
   }
   const required = fn.params.length - (fn.defaults?.length ?? 0);
-  const hasSpread = expr.arguments.some(ts.isSpreadElement);
+  const hasSpread = expr.arguments.nodes.some(ts.isSpreadElement);
   if (
     bi.module === "url" &&
     ["fileURLToPath", "fileURLToPathBuffer", "pathToFileURL"].includes(bi.member)
@@ -386,10 +394,10 @@ export function lowerBuiltinModuleCall(
   }
   if (
     !hasSpread &&
-    (expr.arguments.length < required || expr.arguments.length > fn.params.length)
+    (expr.arguments.nodes.length < required || expr.arguments.nodes.length > fn.params.length)
   ) {
     lowerer.noLowering(
-      `${name} with ${expr.arguments.length} argument${expr.arguments.length === 1 ? "" : "s"}`,
+      `${name} with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
       expr,
       bi.member === "readFileSync" || bi.member === "readFile"
         ? `pass the encoding: ${bi.member}(path, "utf8") — Buffer reads and options objects have no lowering`
@@ -406,11 +414,11 @@ export function lowerBuiltinModuleCall(
     // "utf8" — or Node's "utf-8" alias, the same decoder (the fallback
     // declaration enforces the pair at typecheck; @types/node accepts
     // every BufferEncoding).
-    const enc = lowerer.typeOf(expr.arguments[1]!);
+    const enc = lowerer.typeOf(expr.arguments.nodes[1]!);
     if (!(enc.isStringLiteralType() && (enc.value === "utf8" || enc.value === "utf-8"))) {
       lowerer.noLowering(
         `${bi.member} with a non-"utf8" encoding`,
-        expr.arguments[1]!,
+        expr.arguments.nodes[1]!,
         `only utf8 reads are supported: ${bi.member}(path, "utf8")`,
       );
     }
@@ -434,7 +442,7 @@ export function lowerBuiltinModuleCall(
         );
       return { type, mode: param.mode === "optional" ? "omittable" : "required" };
     });
-    const args = lowerer.completeArgs(expr.arguments, shapes, loc, expr);
+    const args = lowerer.completeArgs(expr.arguments.nodes, shapes, loc, expr);
     return { kind: "callValue", callee, args, type: callee.type.ret, loc };
   }
   let args: IrExpr[];
@@ -453,9 +461,9 @@ export function lowerBuiltinModuleCall(
             },
           },
     );
-    args = lowerer.completeArgs(expr.arguments, shapes, loc, expr);
+    args = lowerer.completeArgs(expr.arguments.nodes, shapes, loc, expr);
   } else {
-    args = expr.arguments.map((a, i) => lowerer.lowerExprExpecting(a, fn.params[i]));
+    args = expr.arguments.nodes.map((a, i) => lowerer.lowerExprExpecting(a, fn.params[i]));
     for (let i = args.length; i < fn.params.length; i++) {
       const dflt = fn.defaults![i - required]!;
       args.push({ kind: "strLit", value: dflt, type: STRING, loc });

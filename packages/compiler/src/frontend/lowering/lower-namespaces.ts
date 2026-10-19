@@ -77,7 +77,7 @@ function nsTypeOnlyBody(decl: ts.ModuleDeclaration): boolean {
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined) return true;
   if (!ts.isModuleBlock(body)) return true;
-  return body.statements.every(
+  return body.statements.nodes.every(
     (s) =>
       ts.isInterfaceDeclaration(s) ||
       ts.isTypeAliasDeclaration(s) ||
@@ -129,7 +129,7 @@ export function collectNamespaceStmt(
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined || !ts.isModuleBlock(body)) return; // bodyless non-ambient: tsc-rejected
   lowerer.nsBlocks.set(body, "flattened");
-  for (const s of body.statements) {
+  for (const s of body.statements.nodes) {
     if (ts.isFunctionDeclaration(s)) fp.fnDecls.push(s);
     else if (ts.isClassDeclaration(s)) fp.classDecls.push(s);
     else if (ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s)) continue;
@@ -146,7 +146,7 @@ function registerTypeOnlyBlocks(lowerer: Lowerer, decl: ts.ModuleDeclaration): v
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined || !ts.isModuleBlock(body)) return;
   lowerer.nsBlocks.set(body, "typeOnly");
-  for (const s of body.statements) {
+  for (const s of body.statements.nodes) {
     if (ts.isModuleDeclaration(s)) registerTypeOnlyBlocks(lowerer, s);
   }
 }

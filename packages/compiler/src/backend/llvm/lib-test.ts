@@ -49,6 +49,10 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_ctx_passed", a);
     case "test.workerId":
       return finishRuntimeCall(host, e, "scr_test_worker_id", a);
+    case "test.hasContext":
+      return finishRuntimeCall(host, e, "scr_test_has_context", a);
+    case "test.context":
+      return finishRuntimeCall(host, e, "scr_test_context", a);
     case "test.ctxHook":
       host.toHeap(args[2]!);
       return finishRuntimeCall(host, e, "scr_test_ctx_hook", a);

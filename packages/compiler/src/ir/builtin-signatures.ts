@@ -1480,6 +1480,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // undefined.
   "test.ctxPassed": { argTypes: [TESTCTX_T], result: BOOL },
   "test.workerId": { argTypes: [], result: F64 },
+  // getTestContext(): whether a test, suite or hook is running in the
+  // current async context, and that context.
+  "test.hasContext": { argTypes: [], result: BOOL },
+  "test.context": { argTypes: [], result: TESTCTX_T },
   // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
   // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
   "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },

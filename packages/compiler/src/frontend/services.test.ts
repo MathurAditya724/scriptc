@@ -80,7 +80,7 @@ test("syntax sessions reuse one connection and returned ASTs survive edits and c
   services.close();
   services.close();
   expect(connections[0]!.close).toHaveBeenCalledTimes(1);
-  expect(before.statements[0]!.getText()).toBe(before.text);
+  expect(before.statements.nodes[0]!.getText()).toBe(before.text);
 });
 
 test("program hosts remain usable after their creating services close", () => {

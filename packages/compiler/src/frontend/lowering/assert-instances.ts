@@ -110,14 +110,14 @@ export function isAssertClassNew(lowerer: Lowerer, expr: ts.Expression): boolean
 /** The options of `new Assert(<literal options>)`, or null when an option is
  * not a literal or the argument list has another shape. */
 export function literalAssertOptions(expr: ts.NewExpression): AssertInstanceOptions | null {
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   const options: AssertInstanceOptions = { strict: true, diff: "simple", skipPrototype: false };
   if (args.length === 0) return options;
   if (args.length > 1) return null;
   const arg = stripTypeCasts(args[0]!);
   if (ts.isIdentifier(arg) && arg.text === "undefined") return options;
   if (!ts.isObjectLiteralExpression(arg)) return null;
-  for (const prop of arg.properties) {
+  for (const prop of arg.properties.nodes) {
     if (!ts.isPropertyAssignment(prop)) return null;
     const name =
       ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : null;

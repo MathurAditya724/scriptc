@@ -40,8 +40,8 @@ export function isPrivateSplitConsumer(
     init.expression.name.text !== "split" ||
     !lowerer.isStdlibMember(init.expression) ||
     lowerer.mapTypeOf(lowerer.typeOf(init.expression.expression))?.kind !== "string" ||
-    init.arguments.length === 0 ||
-    lowerer.mapTypeOf(lowerer.typeOf(init.arguments[0]!))?.kind !== "string"
+    init.arguments.nodes.length === 0 ||
+    lowerer.mapTypeOf(lowerer.typeOf(init.arguments.nodes[0]!))?.kind !== "string"
   )
     return false;
 

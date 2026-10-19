@@ -12,6 +12,7 @@ import {
   RECORD_SOURCES_GATE,
   WEAK_KEYS_GATE,
 } from "./alloc.js";
+import { youngNurseryRequested } from "../young-nursery.js";
 import { hasLoneSurrogate, llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
 import { createHash } from "node:crypto";
@@ -57,6 +58,7 @@ import {
   typeKey,
   STRING,
   VOID,
+  classJsName,
 } from "../../ir/ir.js";
 import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
@@ -1463,6 +1465,7 @@ export class LlEmitter {
       ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
       ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
       nextCycKind: () => FIRST_EMITTED_CYC_KIND + this.cycKinds++,
+      ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
       unionsById: this.unionsById,
       declare: (decl) => this.declare(decl),
       needOom: () => this.needOom(),
@@ -6126,7 +6129,7 @@ export class LlEmitter {
   classObjSym(className: string): string {
     if (!this.classObjs.has(className)) {
       const meta = this.classMetaOf(className);
-      this.classObjs.set(className, { nameSym: this.internLiteral(meta.def.jsName ?? "") });
+      this.classObjs.set(className, { nameSym: this.internLiteral(classJsName(meta.def)) });
     }
     return mangleClassObj(className);
   }

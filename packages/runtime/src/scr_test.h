@@ -52,6 +52,10 @@ ScrStr *scr_test_ctx_full_name(ScrTestCtx *t);
 bool scr_test_ctx_passed(ScrTestCtx *t);
 double scr_test_worker_id(void);
 ScrStr *scr_test_ctx_name(ScrTestCtx *t); /* +1 */
+/* getTestContext(): whether a test, suite or hook is running in the
+ * current async context, and its context (+1; call when has_context). */
+bool scr_test_has_context(void);
+ScrTestCtx *scr_test_context(void);
 /* Mock trackers: the module's `mock` and each test's t.mock. track keeps
  * the closure that restores one mock; restore_all calls them in creation
  * order; reset calls them and forgets them. A test's t.mock is reset when

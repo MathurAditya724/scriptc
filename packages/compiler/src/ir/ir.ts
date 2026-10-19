@@ -1509,6 +1509,27 @@ export const RUNTIME_ERROR_CLASSES: ReadonlyMap<
  * owns listener closures, whatever the subclass fields say. */
 export const RUNTIME_EMITTER_CLASS = "%EventEmitter";
 
+/** The function that construction through a class value calls, and the
+ * index of its first argument. A program class constructs through
+ * `%C.constructor(this, ...)` after the thunk allocates; a runtime-provided
+ * class (EventEmitter, the stream and error classes) through the
+ * frontend's `%C.construct(...)`, which allocates through the runtime and
+ * returns the new instance. */
+export function classValueConstructor(def: { name: string; runtime?: true }): {
+  fn: string;
+  firstArg: number;
+} {
+  return def.runtime
+    ? { fn: `%${def.name}.construct`, firstArg: 0 }
+    : { fn: `%${def.name}.constructor`, firstArg: 1 };
+}
+
+/** The JavaScript `.name` of a class: its jsName, or the runtime-provided
+ * class's own name (`%TypeError` is TypeError). */
+export function classJsName(def: { name: string; runtime?: true; jsName?: string }): string {
+  return def.jsName ?? (def.runtime ? def.name.replace(/^%/, "") : "");
+}
+
 /** The runtime-provided node:stream classes (ScrStream / scr_stream_*,
  * scr_stream.c — link-gated by moduleUsesStream). They root at the
  * emitter class (base chains below), so the emitter method surface and

@@ -23,7 +23,7 @@ export function execResultCaptureMask(lowerer: Lowerer, call: ts.CallExpression)
   const statement = decl.parent.parent;
   if (
     ts.isVariableStatement(statement) &&
-    statement.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+    statement.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
   )
     return null;
   const symbol = lowerer.resolveValueSymbol(decl.name);
