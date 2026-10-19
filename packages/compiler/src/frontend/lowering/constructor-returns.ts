@@ -17,7 +17,10 @@
  * object refuses.
  *
  * `super()` from a subclass refuses: Node would rebind the subclass's
- * `this` to the returned instance. */
+ * `this` to the returned instance. In JavaScript the refusal is a run-time
+ * test after the call: an instance other than the subclass's own `this`
+ * refuses, and the constructed instance itself (`return this.set(r, g,
+ * b)`, where `set` answers `this`) continues. */
 import * as ts from "../ts7/adapter.js";
 import { varRef } from "../../ir/build.js";
 import {
@@ -29,6 +32,7 @@ import {
   type IrType,
   STRING,
   typeKey,
+  VOID,
 } from "../../ir/ir.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { isJsSourceFile, locOf } from "../program.js";
@@ -435,15 +439,84 @@ export function constructedFromValue(
   return constructedValue(lowerer, info, constructed);
 }
 
-/** `super()` into a class with a result slot: Node rebinds the subclass's
- * `this` to the returned instance, which has no representation. */
-export function refuseSuperIntoResultSlot(lowerer: Lowerer, base: ClassInfo, blame: ts.Node): void {
+/** `super()` into a class with a result slot, from the constructor of
+ * class `sub`: `call` runs the base constructor over `self` (the
+ * subclass's `this`, upcast to the base). Node rebinds the subclass's
+ * `this` to an instance the base constructor returns, which has no
+ * representation. A TypeScript subclass refuses. In JavaScript the base
+ * stores the instance it returns in its slot, and a per-subclass helper
+ * reads and clears the slot after the call: an instance other than `self`
+ * refuses at run time. Unchanged for bases without a result slot. */
+export function superIntoResultSlot(
+  lowerer: Lowerer,
+  base: ClassInfo,
+  sub: ClassInfo,
+  call: IrStmt,
+  self: IrExpr,
+  blame: ts.Node,
+): IrStmt {
   const plan = constructorReturnPlan(lowerer, base);
-  if (plan === null || plan.slot === null) return;
+  if (plan === null || plan.slot === null) return call;
+  const slot = plan.slot;
   const display = base.def.name.replace(/^%|^%m\d+\./, "");
-  lowerer.unsupported(
-    "SC1090",
-    blame,
-    `extending a class whose constructor can return an existing instance ('super()' would rebind 'this' to the instance '${display}' returns)`,
-  );
+  const feature = `extending a class whose constructor can return an existing instance ('super()' would rebind 'this' to the instance '${display}' returns)`;
+  if (!isJsSourceFile(blame.getSourceFile())) {
+    lowerer.unsupported("SC1090", blame, feature);
+    return call;
+  }
+  const loc = locOf(blame);
+  const type = instanceType(base);
+  const name = `%${sub.def.name}.%superResult`;
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    const diag = unsupportedDiag("SC1090", loc, feature);
+    lowerer.runtimeFences.push(diag);
+    const line = ts.getLineAndCharacterOfPosition(blame.getSourceFile(), loc.start).line + 1;
+    const instance = { id: "instance.0", name: "instance", type, mutable: false };
+    const returned = { id: "returned.0", name: "returned", type: slot.type, mutable: false };
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: instance.id, name: instance.name, type }],
+      returnType: VOID,
+      locals: [instance, returned],
+      body: [
+        { kind: "varDecl", localId: returned.id, init: varRef(slot.id, slot.type, loc), loc },
+        { kind: "assign", localId: slot.id, value: lowerer.wrappedUndefined(slot.type, loc)!, loc },
+        {
+          kind: "if",
+          cond: {
+            kind: "bin",
+            op: "!==",
+            left: {
+              kind: "orDefault",
+              left: varRef(returned.id, slot.type, loc),
+              right: varRef(instance.id, type, loc),
+              type,
+              loc,
+            },
+            right: varRef(instance.id, type, loc),
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "runtimeFence",
+              code: diag.code,
+              message: `${diag.message} [${diag.code} at ${loc.file}:${line}]`,
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ],
+      loc,
+    });
+  }
+  const check: IrStmt = {
+    kind: "exprStmt",
+    expr: { kind: "call", callee: name, args: [self], type: VOID, loc },
+    loc,
+  };
+  return { kind: "block", body: [call, check], loc };
 }

@@ -3,7 +3,7 @@ import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
 import {
   constructedFromValue,
   constructedValue,
-  refuseSuperIntoResultSlot,
+  superIntoResultSlot,
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { lowerReadlineUiNew } from "./builtins/readline.js";
@@ -8032,9 +8032,8 @@ export function superCallStmt(
       info.decl ?? info.ctor!,
     )[0]!;
   }
-  refuseSuperIntoResultSlot(lowerer, base, info.ctor ?? info.decl!);
   lowerer.noteSuperConstructorEdge(`%${base.def.name}.constructor`);
-  return {
+  const call: IrStmt = {
     kind: "exprStmt",
     expr: {
       kind: "call",
@@ -8045,6 +8044,14 @@ export function superCallStmt(
     },
     loc,
   };
+  return superIntoResultSlot(
+    lowerer,
+    base,
+    info,
+    call,
+    lowerer.upcastTo({ ...thisRef }, base.def.name),
+    info.ctor ?? info.decl!,
+  );
 }
 
 /** `super.method(args)`: the base chain's implementation, called
