@@ -3890,7 +3890,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /* Circular references over cycle-capable composites (recursive record/
    * class types): circCheck answers a value's circular id when it is
    * already on the traversal stack (0 otherwise), seenPush/refWrap
-   * bracket the frame (refWrap adds Node's "<ref *N> " prefix to values
+   * bracket the frame (insp.end adds Node's "<ref *N> " prefix to values
    * the walk found circular), circular renders "[Circular *N]". */
   "insp.circCheck": { argTypes: [null], result: F64 },
   "insp.seenPush": { argTypes: [null], result: VOID },
