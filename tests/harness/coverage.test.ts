@@ -391,7 +391,7 @@ test("a rejected class reached only through a receiver probe reports its own dia
   const { coverage } = analyze(join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts"));
   const messages = coverage.diagnostics.map((d) => d.message);
   expect(
-    messages.filter((m) => m.startsWith("'WeakMap<object, string>'-typed class fields")),
+    messages.filter((m) => m.startsWith("'MapIterator<string>'-typed class fields")),
   ).toHaveLength(1);
   expect(messages.some((m) => m.startsWith("constructing through a class value"))).toBe(true);
   expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
