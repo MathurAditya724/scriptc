@@ -342,8 +342,8 @@
       "static": {
         "supported": 0,
         "partial": 12,
-        "refused": 0,
-        "not-implemented": 80,
+        "refused": 1,
+        "not-implemented": 79,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -611,9 +611,9 @@
       "apiEntries": 9,
       "static": {
         "supported": 0,
-        "partial": 0,
+        "partial": 8,
         "refused": 0,
-        "not-implemented": 9,
+        "not-implemented": 1,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 64,
+        "partial": 65,
         "refused": 0,
-        "not-implemented": 53,
+        "not-implemented": 52,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1953,7 +1953,8 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -2002,7 +2003,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2074,7 +2076,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.disable",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2100,7 +2103,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.getStore",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2126,7 +2130,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.enterWith",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2152,7 +2157,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.run",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2178,7 +2184,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.exit",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2481,6 +2488,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -3042,7 +3050,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19861,6 +19870,8 @@
           "tests/corpus/5760-crypto-hash-stream.ts",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -20402,6 +20413,8 @@
         "evidence": "compiler-dedicated:crypto.createHash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -20439,6 +20452,8 @@
         "evidence": "compiler-dedicated:crypto.createHmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -21040,6 +21055,8 @@
         "evidence": "compiler-dedicated:crypto.hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -21158,6 +21175,8 @@
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -21195,6 +21214,8 @@
         "evidence": "compiler-dedicated:crypto.pbkdf2Sync",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23095,6 +23116,8 @@
         "evidence": "compiler-dedicated:Hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23132,6 +23155,8 @@
         "evidence": "compiler-dedicated:hash.copy",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23169,6 +23194,8 @@
         "evidence": "compiler-dedicated:hash.digest",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23206,6 +23233,8 @@
         "evidence": "compiler-dedicated:hash.update",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23243,6 +23272,8 @@
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23280,6 +23311,8 @@
         "evidence": "compiler-dedicated:hmac.digest",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23317,6 +23350,8 @@
         "evidence": "compiler-dedicated:hmac.update",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -25031,6 +25066,8 @@
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -28114,6 +28151,8 @@
         "evidence": "compiler-dedicated:Hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -28164,6 +28203,8 @@
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -53570,8 +53611,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:stdlib.webassembly"
       },
       "anchorSource": "exact"
     },
@@ -81994,8 +82035,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82017,8 +82063,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.decode",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82040,8 +82091,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.encode",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82063,8 +82119,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.toASCII",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82086,8 +82147,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.toUnicode",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82132,8 +82198,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.ucs2.decode",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82155,8 +82226,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.ucs2.encode",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82178,8 +82254,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:punycode"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.punycode.version",
+        "tests": [
+          "tests/corpus/6122-punycode-conversions.ts",
+          "tests/corpus/6124-punycode-require-warnings.cjs",
+          "tests/corpus/6126-punycode-dependency/main.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -91023,6 +91104,8 @@
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
+          "tests/fixtures/node-test/cases/get-test-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
@@ -94771,8 +94854,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.getTestContext",
+        "tests": [
+          "tests/fixtures/node-test/cases/get-test-context.ts",
+          "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

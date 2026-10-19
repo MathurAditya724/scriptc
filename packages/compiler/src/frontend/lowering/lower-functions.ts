@@ -171,10 +171,10 @@ export function lowerLambda(
   // A generic lambda used as a value has no per-call instantiation: it
   // lowers once with its type parameters bound to `unknown`, the erased
   // instance JavaScript itself runs.
-  if (node.typeParameters?.length && !lowerer.erasingLambdas.has(node)) {
+  if (node.typeParameters?.nodes.length && !lowerer.erasingLambdas.has(node)) {
     const previous = lowerer.typeParamBindings;
     const bindings = new Map(previous ?? []);
-    for (const parameter of node.typeParameters) {
+    for (const parameter of node.typeParameters.nodes) {
       const symbol = lowerer.checker.getSymbolAtLocation(parameter.name);
       if (symbol) bindings.set(symbol, DYN);
     }
@@ -253,7 +253,7 @@ export function lowerLambda(
   // the lifted body returns the inner T (a `return v` fulfills with v).
   const isAsync =
     !ts.isAccessor(node) &&
-    node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+    node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
   const isGenerator = node.asteriskToken !== undefined;
   if (isAsync && !isGenerator && funcType.ret.kind !== "promise")
     lowerer.badType(node, lowerer.typeOf(node));
@@ -270,6 +270,8 @@ export function lowerLambda(
     : lowerer.bodyReturnType(isAsync, funcType.ret);
 
   const fnCtx = newFnCtx(true, selfSymbol, funcType, bodyReturn);
+  if (lowerer.methodLambdasInProgress.has(node))
+    lowerer.methodLambdasInProgress.set(node, { fnName, type: funcType, selfReads: 0 });
   const inferredSignature =
     isJsSourceFile(node.getSourceFile()) && !node.type
       ? lowerer.checker.getSignatureFromDeclaration(node)
@@ -301,11 +303,11 @@ export function lowerLambda(
     const receiver =
       (checkedReceiver ||
         isJsSourceFile(node.getSourceFile()) ||
-        node.parameters.some(isThisParameter)) &&
+        node.parameters.nodes.some(isThisParameter)) &&
       !ts.isArrowFunction(node)
         ? declareCallReceiver(lowerer, node, isGenerator)
         : null;
-    const { params, prologue } = lowerer.declareParams(node.parameters, shapes);
+    const { params, prologue } = lowerer.declareParams(node.parameters.nodes, shapes);
     if (receiver) prologue.unshift(receiver);
     declareFunctionArguments(
       lowerer,
@@ -321,7 +323,7 @@ export function lowerLambda(
 
     let body: IrStmt[];
     if (ts.isBlock(node.body!)) {
-      body = lowerer.lowerStmts(node.body!.statements);
+      body = lowerer.lowerStmts(node.body!.statements.nodes);
     } else {
       // Bare-expression arrow body: `x => e` is `x => { return e; }`
       // (or an expression statement when the signature returns void — or
@@ -345,9 +347,12 @@ export function lowerLambda(
         } else {
           const value = lowerer.lowerExpr(bodyExpr);
           // `async () => p` with a void result still resolves the
-          // function's promise with p (its settlement, rejections included).
-          body =
-            value.kind === "unitLit"
+          // function's promise with p (its settlement, rejections included);
+          // a maybe-promise value adopts only its promise arm.
+          const flattened = isAsync ? lowerer.maybePromiseReturn(bodyExpr, value, VOID) : null;
+          body = flattened
+            ? [flattened]
+            : value.kind === "unitLit"
               ? []
               : isAsync && value.type.kind === "promise"
                 ? [lowerer.adoptingReturn(value, VOID, (e) => e)]
@@ -367,8 +372,13 @@ export function lowerLambda(
         if (isAsync && value.type.kind === "promise" && bodyReturn.kind !== "promise") {
           value = lowerer.returnedPromiseAwait(value);
         }
-        body =
-          value.type.kind === "void" && lowerer.wrappedUndefined(bodyReturn, locOf(node.body!))
+        const flattened =
+          isAsync && !fnCtx.inferReturn
+            ? lowerer.maybePromiseReturn(bodyExpr, value, bodyReturn)
+            : null;
+        body = flattened
+          ? [flattened]
+          : value.type.kind === "void" && lowerer.wrappedUndefined(bodyReturn, locOf(node.body!))
             ? [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }]
             : [
                 {
@@ -484,10 +494,10 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
   lowerer.fnStack.push(ctx);
   try {
     const receiver =
-      decl.parameters.some(isThisParameter) || isJsSourceFile(decl.getSourceFile())
+      decl.parameters.nodes.some(isThisParameter) || isJsSourceFile(decl.getSourceFile())
         ? declareCallReceiver(lowerer, decl, sig.generator !== undefined)
         : null;
-    const { params, prologue } = lowerer.declareParams(decl.parameters, sig.params);
+    const { params, prologue } = lowerer.declareParams(decl.parameters.nodes, sig.params);
     if (receiver) prologue.unshift(receiver);
     declareFunctionArguments(
       lowerer,
@@ -496,7 +506,7 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       params,
       prologue,
       locOf(decl),
-      sig.params.length > decl.parameters.length &&
+      sig.params.length > decl.parameters.nodes.length &&
         (sig.params[sig.params.length - 1]!.mode === "dynRest" ||
           sig.params[sig.params.length - 1]!.mode === "arguments"),
     );
@@ -508,7 +518,7 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
         "function declarations whose block body the frontend cannot locate",
       );
     }
-    const body = [...prologue, ...lowerer.lowerStmts(bodyBlock.statements)];
+    const body = [...prologue, ...lowerer.lowerStmts(bodyBlock.statements.nodes)];
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(decl));
     const fn: IrFunction = {
       name: sig.name,

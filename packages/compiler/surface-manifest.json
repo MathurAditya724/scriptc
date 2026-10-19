@@ -467,6 +467,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.constants",
+      "kind": "node-builtin",
+      "name": "constants",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
       "id": "node-builtin.crypto",
       "kind": "node-builtin",
       "name": "crypto",
@@ -2113,6 +2120,56 @@
       "name": "process.versions",
       "status": "static",
       "note": "shared version dictionary containing node and openssl; other components are absent unless defined by the program"
+    },
+    {
+      "id": "node-builtin.punycode",
+      "kind": "node-builtin",
+      "name": "punycode",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.punycode.decode",
+      "kind": "node-builtin",
+      "name": "punycode.decode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.encode",
+      "kind": "node-builtin",
+      "name": "punycode.encode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.toASCII",
+      "kind": "node-builtin",
+      "name": "punycode.toASCII",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.toUnicode",
+      "kind": "node-builtin",
+      "name": "punycode.toUnicode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.ucs2.decode",
+      "kind": "node-builtin",
+      "name": "punycode.ucs2.decode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.ucs2.encode",
+      "kind": "node-builtin",
+      "name": "punycode.ucs2.encode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.version",
+      "kind": "node-builtin",
+      "name": "punycode.version",
+      "status": "static",
+      "note": "constant value read"
     },
     {
       "id": "node-builtin.querystring",
@@ -4180,11 +4237,37 @@
       "note": "one date string, using the bounded parser shared with new Date(dateString).getTime()"
     },
     {
+      "id": "stdlib.date.toDateString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toDateString",
+      "status": "static"
+    },
+    {
       "id": "stdlib.date.toISOString",
       "kind": "stdlib",
       "name": "Date.prototype.toISOString",
       "status": "static",
       "note": "UTC ISO formatting over constructed and stored Date values"
+    },
+    {
+      "id": "stdlib.date.toString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toString",
+      "status": "static",
+      "note": "local time with the host zone's long English name; String(date) and template literals use it"
+    },
+    {
+      "id": "stdlib.date.toTimeString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toTimeString",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.toUTCString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toUTCString",
+      "status": "static",
+      "note": "RFC 7231 IMF-fixdate formatting over stored Date values"
     },
     {
       "id": "stdlib.date.valueOf",
@@ -4434,7 +4517,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.entries",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.map.forEach",
@@ -4459,7 +4542,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.keys",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.map.set",
@@ -4472,7 +4555,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.values",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.math.E",
@@ -5263,9 +5346,8 @@
       "id": "stdlib.response.static.json",
       "kind": "stdlib",
       "name": "Response.json",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: webidl-conversion, error-shape; supported scope: data that crosses the checked-dynamic boundary, serialized with JSON.stringify (toJSON hooks included); ResponseInit as for the constructor; differential evidence: fixture:static-response-json"
     },
     {
       "id": "stdlib.response.static.redirect",
@@ -5341,7 +5423,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.entries",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.set.forEach",
@@ -5388,7 +5470,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.keys",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.set.symmetricDifference",
@@ -5409,7 +5491,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.values",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.sharedArrayBuffer",
@@ -5599,6 +5681,14 @@
       "name": "string.prototype.trimStart",
       "status": "static",
       "note": "the lowered call form takes no arguments"
+    },
+    {
+      "id": "stdlib.webassembly",
+      "kind": "stdlib",
+      "name": "globalThis.WebAssembly",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "WebAssembly support is planned as translation of each module whose bytes the build can see (an inline literal, or a file read from a path the compiler resolves) into native code; 'scriptc coverage' lists the modules this program would load (https://scriptc.dev/limitations)"
     },
     {
       "id": "syntax.async-generators",

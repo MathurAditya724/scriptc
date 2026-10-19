@@ -46,6 +46,8 @@ export interface CcOptions {
   frameworks?: readonly string[];
   /** Isolated native Worker contexts; every runtime object must use TLS. */
   workers?: boolean;
+  /** Compile the runtime with SCR_YIN (backend/young-nursery.ts). */
+  youngNursery?: boolean;
 
   regex?: boolean;
   /** The program uses one of the copying/typed-array bridge intrinsics

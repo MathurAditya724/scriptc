@@ -5,7 +5,10 @@
 // @refresh reset
 
 import { useEffect, useMemo, useState } from "react";
-import compatibilityMeta from "@/generated/node-v24-compatibility-meta.json";
+
+// Set by next.config.mjs from the committed artifact.
+const artifactVersion = process.env.COMPATIBILITY_ARTIFACT_VERSION;
+const rowCount = Number(process.env.COMPATIBILITY_ROW_COUNT);
 
 type Status =
   | "supported"
@@ -211,14 +214,14 @@ export function NodeCompatibilityMatrix() {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch(`/compatibility/data?v=${compatibilityMeta.artifactVersion}`, { cache: "no-store", signal: controller.signal })
+    fetch(`/compatibility/data?v=${artifactVersion}`, { cache: "no-store", signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error(`compatibility data: ${response.status}`);
         return response.json() as Promise<Snapshot>;
       })
       .then((data) => {
-        if (!Array.isArray(data.rows) || data.rows.length !== compatibilityMeta.rowCount) {
-          throw new Error(`compatibility data is stale or malformed (expected ${compatibilityMeta.rowCount} rows)`);
+        if (!Array.isArray(data.rows) || data.rows.length !== rowCount) {
+          throw new Error(`compatibility data is stale or malformed (expected ${rowCount} rows)`);
         }
         setSnapshot(data);
       })
@@ -281,7 +284,7 @@ export function NodeCompatibilityMatrix() {
     return <div className="flex h-full items-center justify-center p-6"><div className="rounded-xl border border-red-500/40 bg-red-100 p-4 text-sm text-red-900">The compatibility dataset could not be loaded.</div></div>;
   }
   if (!snapshot) {
-    return <div className="flex h-full items-center justify-center p-6 text-sm text-gray-900">Loading {compatibilityMeta.rowCount.toLocaleString()} Node.js API rows…</div>;
+    return <div className="flex h-full items-center justify-center p-6 text-sm text-gray-900">Loading {rowCount.toLocaleString()} Node.js API rows…</div>;
   }
 
   return (

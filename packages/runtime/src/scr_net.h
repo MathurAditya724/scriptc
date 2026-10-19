@@ -138,6 +138,7 @@ void scr_net_listen_opts_reuse_port(ScrNetServer *s, double port, ScrStr *host /
 double scr_net_server_port(ScrNetServer *s); /* address().port */
 bool scr_net_server_listening(ScrNetServer *s);
 void scr_net_sock_set_ref(ScrNetSocket *s, bool ref);
+void scr_net_sock_move_writes(ScrNetSocket *from, ScrNetSocket *to);
 void scr_net_server_set_ref(ScrNetServer *s, bool ref);
 bool scr_net_sock_has_ref(ScrNetSocket *s);
 double scr_net_server_keep_alive_ms(ScrNetServer *s);

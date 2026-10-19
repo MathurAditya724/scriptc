@@ -8,6 +8,7 @@ import * as win32 from "node:path/win32";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import type { FileParts } from "./lower-modules.js";
+import { lowerCjsExportsObjectValue } from "./cjs-exports-object.js";
 import { isCjsJsFile, isNodeEsmFile, locOf } from "../program.js";
 import { runtimePathForTarget } from "../runtime-resolve.js";
 import {
@@ -175,6 +176,12 @@ export function cjsModuleRegistryPrelude(lowerer: Lowerer, loc: IrExpr["loc"]): 
 export function cjsModuleRef(lowerer: Lowerer, node: ts.Node): IrExpr | null {
   const id = lowerer.cjsModuleIdOf.get(node.getSourceFile());
   return id === undefined ? null : numLit(id, locOf(node));
+}
+
+/** True when `node` is the CommonJS `require` global (not shadowed by a
+ * source binding, and not in an ES module). */
+export function isCjsRequireGlobal(lowerer: Lowerer, node: ts.Expression): boolean {
+  return cjsGlobal(lowerer, node, "require");
 }
 
 export function isCjsModuleGlobal(lowerer: Lowerer, node: ts.Expression): boolean {
@@ -428,6 +435,13 @@ export function lowerNodeModuleIdentifier(lowerer: Lowerer, expr: ts.Identifier)
   if (!isCjsModuleGlobal(lowerer, expr)) return null;
   const ref = cjsModuleRef(lowerer, expr);
   if (ref) return ref;
+  if (isCjsJsFile(expr.getSourceFile(), lowerer.program)) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      "the CommonJS 'module' object in this position (module.exports members, the whole module.exports in comparisons, and the module metadata fields lower)",
+    );
+  }
   lowerer.unsupported("SC1090", expr, "the CommonJS 'module' object in an ES module");
 }
 
@@ -441,6 +455,10 @@ export function lowerNodeModuleProperty(
   const member = expr.name.text;
   if (member === "exports" && direct && moduleExportsAlwaysTruthy(lowerer, expr))
     return boolLit(true, locOf(expr));
+  if (member === "exports" && direct) {
+    const value = lowerCjsExportsObjectValue(lowerer, expr);
+    if (value) return value;
+  }
   if (member === "exports" || member === "require") return null;
   let moduleRef = direct
     ? cjsModuleRef(lowerer, expr.expression)
@@ -539,10 +557,10 @@ export function lowerRequireCacheKeys(
   call: ts.CallExpression,
   member: string,
 ): IrExpr | null {
-  const argument = call.arguments[0];
+  const argument = call.arguments.nodes[0];
   if (
     member !== "keys" ||
-    call.arguments.length !== 1 ||
+    call.arguments.nodes.length !== 1 ||
     argument === undefined ||
     !isRequireCacheExpr(lowerer, argument)
   )

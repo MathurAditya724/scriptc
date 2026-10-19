@@ -47,6 +47,10 @@ export type StackObjectFieldOwner = (fields: readonly StackObjectField[]) => voi
  * (stackObjectFields). Published shapes keep heap storage: their field
  * guards treat the immortal header as a frozen object. */
 export function canStackObject(host: LlvmEmitterContext, e: IrExpr): e is StackObjectSource {
+  // A ThreadSlots key keeps its slot index for its lifetime and has its
+  // values released when it is freed: it lives on the heap.
+  if (e.type.kind === "object" && host.classMeta.get(e.type.className)?.threadSlot === true)
+    return false;
   if (e.type.kind === "record" && host.publishedTypes?.recordGuarded(e.type.shapeId) === true)
     return false;
   // A producer with a result-slot entry builds its fresh result in the
@@ -232,7 +236,7 @@ function emitRecordCloneFields(
     const fieldTy = llFieldType(from.type, from.inline);
     const v = B.tmp();
     B.line(`${v} = load ${fieldTy}, ptr ${from.ptr}`);
-    const stored = isRefCounted(from.type) && !from.inline ? host.retainValue(v, from.type) : v;
+    const stored = isRefCounted(from.type) && !from.inline ? host.retainFrame(v, from.type) : v;
     B.line(`store ${fieldTy} ${stored}, ptr ${to.ptr}`);
   }
   const initialized = new Set<string>();

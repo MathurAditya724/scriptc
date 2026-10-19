@@ -751,6 +751,20 @@ export function noLoweringDiag(
   };
 }
 
+/** A REACHED use of the WebAssembly API (SC2020): scriptc.d.ts declares
+ * its types so packages that mention them typecheck, but no module
+ * compiles to native code yet. `surface` names what was used
+ * ('WebAssembly.compile', 'new WebAssembly.Module', 'globalThis.WebAssembly'). */
+export function webAssemblyDiag(surface: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${surface}' is not supported yet: scriptc does not compile WebAssembly modules to native code yet`,
+    loc,
+    milestone: "later",
+    hint: "WebAssembly support is planned as translation of each module whose bytes the build can see (an inline literal, or a file read from a path the compiler resolves) into native code; 'scriptc coverage' lists the modules this program would load (https://scriptc.dev/limitations)",
+  };
+}
+
 /** A resolved native addon needs Node's embedding ABI. The migration uses the
  * underlying native operation through an ordinary C ABI declaration. */
 export function nativeAddonDiag(specifier: string, loc: SrcLoc): ScrDiagnostic {
@@ -877,13 +891,20 @@ export function unsupportedPackageValueDiag(pkg: string, loc: SrcLoc): ScrDiagno
   );
 }
 
-export function npmStaticRefusalDiag(pkg: string, detail: string, loc: SrcLoc): ScrDiagnostic {
+export function npmStaticRefusalDiag(
+  pkg: string,
+  detail: string,
+  loc: SrcLoc,
+  hint?: string,
+): ScrDiagnostic {
   return {
     code: "SC2013",
     message: `cannot compile npm package '${pkg}' statically: ${detail}`,
     loc,
     milestone: "later",
-    hint: "use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback",
+    hint:
+      hint ??
+      "use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback",
   };
 }
 

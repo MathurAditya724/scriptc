@@ -73,6 +73,7 @@ bool scr_num_is_safe_integer(double x);
 ScrStr *scr_num_to_exponential(double x);
 ScrStr *scr_num_to_fixed0(double x);
 ScrStr *scr_num_to_fixed(double x, double fraction_digits);
+ScrStr *scr_num_to_string_radix_f64(double value, double radix);
 
 /* Object.is over two numbers — the spec's SameValue on doubles: NaN
  * equals NaN, +0 differs from -0, everything else is ==. Never throws. */
@@ -101,6 +102,9 @@ double scr_date_get_time(double ms);
  * 0–9999). THROWS Node's "Invalid time value" RangeError on NaN or
  * |ms| > 8.64e15 and returns NULL; +1 otherwise. */
 ScrStr *scr_date_to_iso(double ms);
+/* Node's Date.prototype.toUTCString ("Thu, 01 Jan 1970 00:00:00 GMT";
+ * "Invalid Date" for NaN). Never throws; +1. */
+ScrStr *scr_date_to_utc_string(double ms);
 /* new Date(dateString).getTime(): the BOUNDED parse (the X509 validity
  * shape + ECMA's format with an explicit offset); NaN elsewhere. */
 double scr_date_parse_get_time(ScrStr *s);
@@ -119,6 +123,15 @@ double scr_date_get_minutes(double ms, bool utc);
 double scr_date_get_seconds(double ms, bool utc);
 double scr_date_get_milliseconds(double ms);
 double scr_date_get_timezone_offset(double ms);
+/* Date.prototype.toString, toDateString and toTimeString with V8's
+ * formats; "Invalid Date" for NaN. +1. */
+ScrStr *scr_date_to_string(double ms);
+ScrStr *scr_date_to_date_string(double ms);
+ScrStr *scr_date_to_time_string(double ms);
+/* The long time zone name Node prints after the GMT offset for the host
+ * zone at time value `ms`; `isdst` is tm_isdst at `ms`, or -1 when not
+ * known. Borrowed; valid until the next call on the same thread. */
+const char *scr_date_zone_name(double ms, int isdst);
 /* One-argument ABI wrappers used by the LLVM lib-call table. */
 double scr_date_get_full_year_local(double ms);
 double scr_date_get_full_year_utc(double ms);

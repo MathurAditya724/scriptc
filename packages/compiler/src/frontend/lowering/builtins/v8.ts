@@ -40,8 +40,8 @@ export function lowerV8HeapStatisticsCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (call.arguments.length !== 0) {
-    lowerer.noLowering(`v8.getHeapStatistics with ${call.arguments.length} arguments`, call);
+  if (call.arguments.nodes.length !== 0) {
+    lowerer.noLowering(`v8.getHeapStatistics with ${call.arguments.nodes.length} arguments`, call);
   }
   const t = lowerer.mapTypeOf(lowerer.typeOf(call));
   if (t?.kind !== "record") lowerer.badType(call, lowerer.typeOf(call));

@@ -161,7 +161,7 @@ export function emitDynamicExpr(
             );
             host.emitPendingCheck();
           } else {
-            host.moveTemp(v);
+            host.toHeap(v);
             B.line(`call void @scr_dyn_arr_push(ptr ${pack}, ptr ${v.name})`);
           }
         });
@@ -253,7 +253,7 @@ export function emitDynamicExpr(
       const out = host.own({ name: arr, type: e.type });
       for (const el of e.elems) {
         const v = host.emitExpr(el);
-        host.moveTemp(v);
+        host.toHeap(v);
         B.line(`call void @scr_dyn_arr_push(ptr ${arr}, ptr ${v.name})`);
       }
       return out;
@@ -296,7 +296,7 @@ export function emitDynamicExpr(
         return host.own({ name: host.unitInstanceRef(e.unionId, e.tag), type: e.type });
       }
       const v = host.emitExpr(e.value);
-      if (isRefCounted(arm)) host.moveTemp(v);
+      if (isRefCounted(arm)) host.toHeap(v);
       return host.own({ name: host.unionNewOwned(e.unionId, e.tag, v), type: e.type });
     }
     case "unionNarrow": {
@@ -353,7 +353,7 @@ export function emitDynamicExpr(
           const value = nullable
             ? host.nullableToOwnedUnion(v, nullable)
             : isRefCounted(e.type)
-              ? host.retainValue(v, e.type)
+              ? host.retainFrame(v, e.type)
               : v;
           B.line(`store ${ty} ${value}, ptr ${slot}`);
           B.br(join);
@@ -465,7 +465,7 @@ export function emitDynamicExpr(
             const owned = inline
               ? host.inlineFieldUnion(ptr, ft)
               : isRefCounted(ft)
-                ? host.retainValue(v, ft)
+                ? host.retainFrame(v, ft)
                 : v;
             B.line(`store ${ty} ${owned}, ptr ${slot}`);
             B.br(join);
@@ -487,7 +487,7 @@ export function emitDynamicExpr(
             ft.kind === "f64" || ft.kind === "bool"
               ? host.unionNewOwned(e.type.unionId, tag, { name: v, type: ft })
               : host.unionNewOwned(e.type.unionId, tag, {
-                  name: host.retainValue(v, ft),
+                  name: host.retainHeap(v, ft),
                   type: ft,
                 });
           B.line(`store ptr ${wrapped}, ptr ${slot}`);
@@ -1087,7 +1087,7 @@ export function emitDynamicExpr(
       B.line(`${pp} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 4`);
       B.line(`${payload} = load ptr, ptr ${pp}`);
       if (e.type.kind === "string") {
-        return host.own({ name: host.retainValue(payload, e.type), type: e.type });
+        return host.own({ name: host.retainFrame(payload, e.type), type: e.type });
       }
       if (e.type.kind === "object") {
         // Retain through the snapshot's own entry point (the payload's

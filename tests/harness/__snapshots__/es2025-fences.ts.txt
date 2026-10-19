@@ -43,23 +43,14 @@ es2025-fences.ts:22:16 - error SC2020: 'Atomics.waitAsync' is part of the standa
 
   hint: use integer load, store, exchange, compareExchange, add, sub, and, or, xor, wait or notify
 
-es2025-fences.ts:25:7 - error SC2020: 'IteratorObject<number, undefined, unknown>' is part of the standard library types but has no scriptc lowering yet
-
-  24 | // First-class iterator objects.
-  25 | const it = Iterator.from([1, 2, 3].values());
-     |       ^~
-  26 | 
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
 es2025-fences.ts:25:12 - error SC2020: 'Iterator.from' is part of the standard library types but has no scriptc lowering yet
 
-  24 | // First-class iterator objects.
-  25 | const it = Iterator.from([1, 2, 3].values());
-     |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  24 | // Iterator.from over an object with its own next method.
+  25 | const it = Iterator.from({ next: (): IteratorResult<number> => ({ value: 1, done: false }) });
+     |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   26 | 
 
-  hint: first-class iterator objects have no lowering — iterator helpers compile as one chain on an array iterator, consumed in place: arr.values().map(f).take(n).toArray()
+  hint: Iterator.from accepts arrays, strings, typed arrays, Sets, Maps and iterator objects such as generators
 
 es2025-fences.ts:28:27 - error SC2020: 'Promise.try over a callback of type '(a: number, b?: number | undefined) => number' with 1 argument' is part of the standard library types but has no scriptc lowering yet
 

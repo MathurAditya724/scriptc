@@ -26,7 +26,7 @@ export function lowerAddAbortListener(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`addAbortListener with this argument list`, expr);
   }
@@ -63,7 +63,7 @@ export function lowerAddAbortListener(
  * The returned module object has no representation; other positions
  * fence. */
 function lowerGracefulify(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (!resultIsDiscarded(expr) || args.length !== 1 || ts.isSpreadElement(args[0]!)) {
     lowerer.noLowering(
       "gracefulify",

@@ -448,12 +448,12 @@ export function lowerArrayOfCall(
   if (result?.kind !== "array" || !isSupportedArrayElem(result.elem)) {
     lowerer.badType(call, lowerer.typeOf(call));
   }
-  if (call.arguments.some(ts.isSpreadElement)) {
-    return lowerArraySpreadItems(lowerer, call.arguments, result.elem, result, locOf(call));
+  if (call.arguments.nodes.some(ts.isSpreadElement)) {
+    return lowerArraySpreadItems(lowerer, call.arguments.nodes, result.elem, result, locOf(call));
   }
   return {
     kind: "arrayLit",
-    elems: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, result.elem)),
+    elems: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, result.elem)),
     type: result,
     loc: locOf(call),
   };
@@ -795,7 +795,7 @@ export function lowerArrayFromCall(
   if (!lowerer.isStdlibGlobal(access.expression, "Array")) return null;
   if (access.name.text !== "from") return null;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (
     isJsSourceFile(call.getSourceFile()) &&
     args.length >= 1 &&
@@ -884,9 +884,9 @@ export function lowerArrayFromCall(
   if (
     args.length === 1 &&
     ts.isObjectLiteralExpression(args[0]!) &&
-    args[0]!.properties.length === 1
+    args[0]!.properties.nodes.length === 1
   ) {
-    const n = lowerLengthProp(lowerer, args[0]!.properties[0]!);
+    const n = lowerLengthProp(lowerer, args[0]!.properties.nodes[0]!);
     if (n) {
       if (n.type.kind !== "f64") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
       const arrT = lowerer.mapTypeOf(lowerer.typeOf(call));
@@ -941,7 +941,7 @@ export function lowerArrayFromCall(
       const valueT = arrayValueType(lowerer, arrT.elem);
       const firstParam =
         ts.isArrowFunction(mapper) || ts.isFunctionExpression(mapper)
-          ? mapper.parameters[0]?.name
+          ? mapper.parameters.nodes[0]?.name
           : undefined;
       const paramSymbol =
         firstParam && ts.isIdentifier(firstParam)
@@ -1021,8 +1021,10 @@ export function lowerArrayFromCall(
     );
   }
   const n =
-    args.length === 2 && ts.isObjectLiteralExpression(args[0]!) && args[0]!.properties.length === 1
-      ? lowerLengthProp(lowerer, args[0]!.properties[0]!)
+    args.length === 2 &&
+    ts.isObjectLiteralExpression(args[0]!) &&
+    args[0]!.properties.nodes.length === 1
+      ? lowerLengthProp(lowerer, args[0]!.properties.nodes[0]!)
       : null;
   if (!n) {
     lowerer.noLowering(

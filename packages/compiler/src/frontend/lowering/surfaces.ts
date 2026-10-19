@@ -141,7 +141,7 @@ export function sideEffectFreeOptionValue(node: ts.Expression): boolean {
     return sideEffectFreeOptionValue(e.operand);
   }
   if (ts.isObjectLiteralExpression(e)) {
-    return e.properties.every(
+    return e.properties.nodes.every(
       (p) =>
         ts.isShorthandPropertyAssignment(p) ||
         (ts.isPropertyAssignment(p) &&
@@ -150,7 +150,7 @@ export function sideEffectFreeOptionValue(node: ts.Expression): boolean {
     );
   }
   if (ts.isArrayLiteralExpression(e)) {
-    return e.elements.every((el) => !ts.isSpreadElement(el) && sideEffectFreeOptionValue(el));
+    return e.elements.nodes.every((el) => !ts.isSpreadElement(el) && sideEffectFreeOptionValue(el));
   }
   return false;
 }
@@ -277,8 +277,8 @@ export const HTTP_SERVER_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
 /** new http.Agent(options)'s documented keys (Node v24 — the Agent
  * constructor table plus the socket.connect() options it forwards into
  * each dial). The lowered set is keepAlive/keepAliveMsecs/maxSockets/
- * maxFreeSockets/timeout/port (+ scheduling, dropped: no free pool
- * exists); the rest fence by name and unknown keys drop like Node. */
+ * maxFreeSockets/timeout/port/scheduling; the rest fence by name and
+ * unknown keys drop like Node. */
 export const AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "family",
   "hints",
@@ -1823,6 +1823,22 @@ export const BUILTIN_MODULE_FNS: Record<
       valueParams: [{ mode: "required", type: STRING }],
     },
   },
+  // node:punycode (deprecated): punycode.js 2.1.0's conversions over
+  // strings (scr_url.c). ucs2.decode/encode are members of the module's
+  // ucs2 object, dispatched as module members (builtinMemberOf). The
+  // DEP0040 report rides the module's load sites (punycodeLoadWarning).
+  punycode: {
+    decode: { fn: "punycode.decode", params: [STRING], result: STRING },
+    encode: { fn: "punycode.encode", params: [STRING], result: STRING },
+    toASCII: { fn: "punycode.toASCII", params: [STRING], result: STRING },
+    toUnicode: { fn: "punycode.toUnicode", params: [STRING], result: STRING },
+    "ucs2.decode": { fn: "punycode.ucs2Decode", params: [STRING], result: arrayOf(F64) },
+    "ucs2.encode": { fn: "punycode.ucs2Encode", params: [arrayOf(F64)], result: STRING },
+  },
+  // node:constants (deprecated) is one frozen object (Object.assign of
+  // os.constants' groups, fs.constants and crypto.constants): bindings of
+  // the module read it as a checked-dynamic value (builtinConstantsObject).
+  constants: {},
   // node:readline: createInterface's options are entirely special-cased
   // (exactly { input: process.stdin, output?: process.stdout } — see
   // lowerBuiltinModuleCall); the entry carries the canonical shape. The
@@ -1964,6 +1980,7 @@ export const BUILTIN_MODULE_CONSTS: Record<
   os: { EOL: "\n", devNull: "/dev/null" },
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
+  punycode: { version: "2.1.0" },
   // zlib's module-level copies of its constants (every member outside
   // BROTLI_*, Node's own loop over zlib.constants).
   zlib: Object.fromEntries(
@@ -2221,6 +2238,13 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     note: "UTC ISO formatting over constructed and stored Date values",
   },
   {
+    id: "stdlib.date.toUTCString",
+    kind: "stdlib",
+    name: "Date.prototype.toUTCString",
+    fns: ["date.toUTCString"],
+    note: "RFC 7231 IMF-fixdate formatting over stored Date values",
+  },
+  {
     id: "stdlib.date.getFullYear",
     kind: "stdlib",
     name: "Date.prototype.getFullYear",
@@ -2316,6 +2340,25 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "stdlib",
     name: "Date.prototype.getTimezoneOffset",
     fns: ["date.getTimezoneOffset"],
+  },
+  {
+    id: "stdlib.date.toString",
+    kind: "stdlib",
+    name: "Date.prototype.toString",
+    fns: ["date.toString"],
+    note: "local time with the host zone's long English name; String(date) and template literals use it",
+  },
+  {
+    id: "stdlib.date.toDateString",
+    kind: "stdlib",
+    name: "Date.prototype.toDateString",
+    fns: ["date.toDateString"],
+  },
+  {
+    id: "stdlib.date.toTimeString",
+    kind: "stdlib",
+    name: "Date.prototype.toTimeString",
+    fns: ["date.toTimeString"],
   },
   // ── perf_hooks (lowerPerfHooksCall): the monotonic clock.
   {
@@ -3224,7 +3267,9 @@ export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined):
  *     `global.process`) — `declare var` globals ARE properties of
  *     `typeof globalThis`, same symbol either way;
  *   - a local alias binding (`const process = globalThis.process`, the
- *     tamper-guard prologue) registered in stdlibGlobalAliases. */
+ *     tamper-guard prologue) registered in stdlibGlobalAliases;
+ *   - a const binding of the Map or Set constructor (`const M = Map`,
+ *     builtinClassAliasOf). */
 export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
   if (ts.isParenthesizedExpression(expr)) return stdlibGlobalNameOf(lowerer, expr.expression);
   if (ts.isIdentifier(expr)) {
@@ -3242,6 +3287,8 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     if (!symbol) return null;
     const alias = lowerer.stdlibGlobalAliases.get(symbol);
     if (alias !== undefined) return alias;
+    const classAlias = lowerer.builtinClassAliasOf(symbol);
+    if (classAlias?.kind === "collection") return classAlias.which;
     const decl = lowerer.checker.declarationsOf(symbol)[0];
     if (decl !== undefined && ts.isImportClause(decl) && decl.name !== undefined) {
       const importDecl = decl.parent;

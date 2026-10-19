@@ -10,6 +10,7 @@ import { nearestPackageType, resolveBareModule } from "./resolve.js";
 import { npmStaticPackageOfPath } from "./npm-static.js";
 import { trackedReadFile } from "./input-tracker.js";
 import { npmPackageNameOf } from "./workspace-registry.js";
+import { typeOnlyNamedImport } from "./type-only-imports.js";
 
 export function isPrunedNpmReexport(program: ts.Program, stmt: ts.ExportDeclaration): boolean {
   return program.analysis.prunedNpmReexports.has(stmt);
@@ -188,7 +189,7 @@ export function planNpmStaticReexports(
       if (pureMemo.get(sf) === false || !filePure(sf)) return false;
       visited.add(sf);
       const edges: { spec: string; kind?: "import" | "require" }[] = [];
-      for (const stmt of sf.statements) {
+      for (const stmt of sf.statements.nodes) {
         if (
           ts.isImportDeclaration(stmt) &&
           stmt.importClause?.phaseModifier !== ts.SyntaxKind.TypeKeyword &&
@@ -204,8 +205,8 @@ export function planNpmStaticReexports(
           edges.push({ spec: stmt.moduleSpecifier.text });
       }
       ts.walkPreorder(sf, (node) => {
-        if (!ts.isCallExpression(node) || node.arguments.length !== 1) return;
-        const arg = node.arguments[0];
+        if (!ts.isCallExpression(node) || node.arguments.nodes.length !== 1) return;
+        const arg = node.arguments.nodes[0];
         if (!arg || !ts.isStringLiteralLike(arg)) return;
         if (node.expression.kind === ts.SyntaxKind.ImportKeyword)
           edges.push({ spec: arg.text, kind: "import" });
@@ -246,7 +247,7 @@ export function planNpmStaticReexports(
 
   while (queue.length > 0) {
     const sf = queue.shift()!;
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (ts.isImportDeclaration(stmt)) {
         if (!ts.isStringLiteral(stmt.moduleSpecifier)) continue;
         const clause = stmt.importClause;
@@ -257,24 +258,24 @@ export function planNpmStaticReexports(
           (clause.namedBindings !== undefined &&
             (ts.isNamespaceImport(clause.namedBindings) ||
               (ts.isNamedImports(clause.namedBindings) &&
-                clause.namedBindings.elements.length === 0)))
+                clause.namedBindings.elements.nodes.length === 0))) ||
+          // `import { type A }` still loads the module, like `import {}`.
+          typeOnlyNamedImport(stmt)
         ) {
           request(dep, null);
         } else {
           if (clause.name !== undefined) request(dep, "default");
           if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
-            for (const element of clause.namedBindings.elements) {
+            for (const element of clause.namedBindings.elements.nodes) {
               if (!element.isTypeOnly) request(dep, (element.propertyName ?? element.name).text);
             }
           }
         }
       } else if (ts.isExportDeclaration(stmt)) {
+        // `export { type A } from` still loads the module under Node's
+        // type stripping; only `export type … from` erases.
         if (
           stmt.isTypeOnly ||
-          (stmt.exportClause !== undefined &&
-            ts.isNamedExports(stmt.exportClause) &&
-            stmt.exportClause.elements.length > 0 &&
-            stmt.exportClause.elements.every((element) => element.isTypeOnly)) ||
           stmt.moduleSpecifier === undefined ||
           !ts.isStringLiteral(stmt.moduleSpecifier)
         )
@@ -285,8 +286,8 @@ export function planNpmStaticReexports(
       }
     }
     ts.walkPreorder(sf, (node) => {
-      if (!ts.isCallExpression(node) || node.arguments.length !== 1) return undefined;
-      const arg = node.arguments[0];
+      if (!ts.isCallExpression(node) || node.arguments.nodes.length !== 1) return undefined;
+      const arg = node.arguments.nodes[0];
       if (arg === undefined || !ts.isStringLiteralLike(arg)) return undefined;
       if (
         node.expression.kind === ts.SyntaxKind.ImportKeyword ||
@@ -307,7 +308,7 @@ export function planNpmStaticReexports(
 
   const pruned = new Set<ts.ExportDeclaration>();
   for (const sf of demanded.keys()) {
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (
         !ts.isExportDeclaration(stmt) ||
         stmt.moduleSpecifier === undefined ||

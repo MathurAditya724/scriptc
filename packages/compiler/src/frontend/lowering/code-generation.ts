@@ -79,7 +79,7 @@ export function lowerCodeGenerationCall(
   for (const operand of indirectEvalPrefix(expr.expression)) {
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(operand), loc: locOf(operand) });
   }
-  for (const arg of expr.arguments ?? []) {
+  for (const arg of expr.arguments?.nodes ?? []) {
     if (ts.isSpreadElement(arg)) {
       lowerer.noLowering(
         `${kind === "eval" ? "eval" : "the Function constructor"} with spread arguments`,

@@ -45,6 +45,8 @@ export const SUPPORTED_BUILTIN_MODULES = [
   "v8",
   "stream/web",
   "dns/promises",
+  "punycode",
+  "constants",
 ] as const;
 
 /** Builtins Node itself serves ONLY under the node: prefix —

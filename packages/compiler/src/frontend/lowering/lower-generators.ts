@@ -112,8 +112,18 @@ export function lowerGenMethodCall(
   const name = access.name.text;
   if (name !== "next" && name !== "return" && name !== "throw") return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "generator") return null;
-  if (call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.unsupported("SC1090", call, "spread arguments");
+  }
+  // Iterator helpers and the built-in iterators have no throw method; an
+  // iterator-typed value may hold one, so only a generator's own member
+  // lowers.
+  if (name === "throw" && !isGeneratorMember(lowerer, access)) {
+    lowerer.noLowering(
+      `${lowerer.checker.typeToString(lowerer.typeOf(access.expression))}.throw`,
+      call,
+      "throw() lowers on values typed as generators (iterator helpers and built-in iterators have no throw method)",
+    );
   }
   const loc = locOf(call);
   const gen = lowerer.lowerExpr(access.expression);
@@ -121,7 +131,7 @@ export function lowerGenMethodCall(
   const genT = gen.type;
   const recT = resultRecordOf(lowerer, genT);
   const resultT: IrType = genT.async ? { kind: "promise", inner: recT } : recT;
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   let arg: IrExpr | null = null;
   if (name === "next") {
     if (argNode === undefined) {
@@ -185,6 +195,23 @@ export function lowerGenMethodCall(
     }
   }
   return { kind: "genResume", mode: name, gen, arg, type: resultT, loc };
+}
+
+/** Whether `access` names a member the lib declares on Generator or
+ * AsyncGenerator itself. */
+function isGeneratorMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  const member = lowerer.checker.getSymbolAtLocation(access.name);
+  return (
+    member !== undefined &&
+    lowerer.checker
+      .declarationsOf(member)
+      .some(
+        (d) =>
+          ts.isInterfaceDeclaration(d.parent) &&
+          (d.parent.name.text === "Generator" || d.parent.name.text === "AsyncGenerator") &&
+          lowerer.isStdlibFile(d.getSourceFile()),
+      )
+  );
 }
 
 /** Extraction of a suspended resume's yield value out of the result
@@ -319,7 +346,7 @@ export function genValue(gen: IrExpr & { type: GenType }, loc: SrcLoc): IrExpr {
   return { kind: "genResume", mode: "value", gen, arg: null, type: gen.type.yieldT, loc };
 }
 
-function generatorLoopBinding(
+export function generatorLoopBinding(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
   value: IrExpr,
@@ -352,7 +379,7 @@ function generatorLoopBinding(
     lowerer.unsupported("SC1090", stmt.initializer, "for-of assignment to this target");
   }
   const list = stmt.initializer;
-  const decl = list.declarations[0]!;
+  const decl = list.declarations.nodes[0]!;
   const isLet = (list.flags & ts.NodeFlags.Let) !== 0;
   // The iterator result uses checked storage when its return channel is
   // unknown. After the done test, restore the declared yield shape for
@@ -572,7 +599,9 @@ export function lowerForOfGenerator(
           catchBody: null,
           catchLocalId: null,
           // IteratorClose: every exit that leaves the generator unfinished
-          // closes it — finallys run; the .return() result is dropped.
+          // closes it — finallys run; the .return() result is dropped, and
+          // after a throw from the body an error from the close is too.
+          dropFinallyErrors: true,
           finallyBody: [
             {
               kind: "if",

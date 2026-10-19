@@ -53,7 +53,7 @@ export function collectionInput(
   if (
     ts.isCallExpression(expression) &&
     !expression.questionDotToken &&
-    expression.arguments.length === 0 &&
+    expression.arguments.nodes.length === 0 &&
     ts.isPropertyAccessExpression(expression.expression) &&
     !expression.expression.questionDotToken
   ) {

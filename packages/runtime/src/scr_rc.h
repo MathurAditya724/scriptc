@@ -423,8 +423,15 @@ static inline void *scr_cyc_alloc_inline(size_t size, ScrCycType *type) {
   scr_cyc_live++;
   return h + 1;
 }
-static inline void scr_cyc_free_inline(void *obj) {
+/* scr_weak_dispose's NULL test inline, for the runtime's hot frees: the
+ * hook stays NULL unless the program creates a weak collection or keeps a
+ * checked record's source, so the free costs one predictable branch, not a
+ * call. */
+static inline void scr_weak_dispose_inline(void *obj) {
   if (scr_weak_dispose_hook) scr_weak_dispose_hook(obj);
+}
+static inline void scr_cyc_free_inline(void *obj) {
+  scr_weak_dispose_inline(obj);
   scr_cyc_live--;
   if (scr_cyc_gen(scr_cyc_hdr(obj)) == SCR_CYC_OLD) scr_cyc_old_freed++;
   scr_mem_free(scr_cyc_hdr(obj));
@@ -475,12 +482,76 @@ uint32_t scr_cyc_pub_take(void *obj);
 void scr_cyc_pub_restore(void *obj, uint32_t index);
 void scr_cyc_pub_fill(void);
 
+/* The candidate buffers, one per generation (scr_cycle.c), and the window
+ * through which a release buffers a nursery candidate on its fast path. A
+ * release that leaves an unbuffered nursery object alive appends it to the
+ * nursery buffer while that buffer holds fewer than `window` entries and the
+ * live count is below `alloc_trigger` (scr_cyc_append); anything else takes
+ * the full scr_cyc_on_release. scr_cycle.c keeps `window` at most at the
+ * number of nursery entries the buffers can hold before a collection falls
+ * due or the buffer must grow, and at 0 while a pass runs, so the append is
+ * exactly what scr_cyc_on_release would do with a nursery candidate. A
+ * candidate whose type bypasses the nursery is moved past it before the
+ * buffers are next read (scr_cycle.c, "level bypass").
+ *
+ * The runtime's own release paths append inline (scr_cyc_released), and
+ * scr_cyc_on_release tries the append first. The layout is an ABI:
+ * optimized emitted code appends through a per-module helper
+ * (llvm/alloc.ts cycleAppendHelper) that addresses roots[0].v, roots[0].n,
+ * window and alloc_trigger at fixed offsets. Builds whose collector state
+ * is thread-local (worker executables, thread-instanced libraries) never
+ * append on a fast path. */
+typedef struct ScrCycBuffer {
+  void **v;
+  size_t n, cap;
+  /* The most entries a pass held, for the work vectors a pass fills
+   * (scr_cycle.c ScrVec); unused by the candidate buffers. */
+  size_t used;
+} ScrCycBuffer;
+typedef struct ScrCycBuffers {
+  ScrCycBuffer roots[SCR_CYC_NGENS];
+  size_t window;
+  size_t alloc_trigger;
+} ScrCycBuffers;
+#if !defined(SCR_WORKERS) && !(defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
+#define SCR_CYC_INLINE_BUFFERING 1
+extern ScrCycBuffers scr_cyc_buffers;
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(offsetof(ScrCycBuffers, roots) == 0 && offsetof(ScrCycBuffer, v) == 0 &&
+                   offsetof(ScrCycBuffer, n) == 8 && offsetof(ScrCycBuffers, window) == 96 &&
+                   offsetof(ScrCycBuffers, alloc_trigger) == 104,
+               "llvm/alloc.ts appends nursery candidates against this layout");
+#endif
+/* Append the unbuffered object `obj` (header `h`) to the nursery buffer if
+ * it is a nursery object and the window allows; false leaves it to the rest
+ * of scr_cyc_on_release. */
+static inline bool scr_cyc_append(ScrCycHdr *h, void *obj) {
+  ScrCycBuffer *nursery = &scr_cyc_buffers.roots[SCR_CYC_NURSERY];
+  size_t n = nursery->n;
+  if (scr_cyc_gen(h) != SCR_CYC_NURSERY || n >= scr_cyc_buffers.window ||
+      scr_cyc_live >= scr_cyc_buffers.alloc_trigger)
+    return false;
+  nursery->v[n] = obj;
+  nursery->n = n + 1;
+  scr_cyc_set_buffered(h, (uint32_t)n);
+  return true;
+}
+#else
+#define SCR_CYC_INLINE_BUFFERING 0
+#endif
+
 /* Inline halves of the hooks for runtime release paths, mirroring the
  * emitted ones (llvm/shapes.ts): a release of an already-buffered
- * object, and the death of an object that was never buffered, need no call.
+ * object, and the death of an object that was never buffered, need no call,
+ * and a nursery candidate is appended inline while the window allows.
  * Most releases of long-lived containers take the first early return. */
 static inline void scr_cyc_released(void *obj) {
-  if (!scr_cyc_is_buffered(scr_cyc_hdr(obj))) scr_cyc_on_release(obj);
+  ScrCycHdr *h = scr_cyc_hdr(obj);
+  if (scr_cyc_is_buffered(h)) return;
+#if SCR_CYC_INLINE_BUFFERING
+  if (scr_cyc_append(h, obj)) return;
+#endif
+  scr_cyc_on_release(obj);
 }
 static inline void scr_cyc_dead(void *obj) {
   if (scr_cyc_is_buffered(scr_cyc_hdr(obj))) scr_cyc_on_dead(obj);
@@ -535,5 +606,37 @@ struct ScrArr;
 SCR_COLD void scr_throw_published_field(const char *prop, const char *owner);
 bool scr_throw_published_array(int op, const struct ScrArr *a, double index, double n);
 SCR_COLD void scr_throw_published_collection(bool set);
+
+/* Young-in nursery (scr_cycle.c built with SCR_YIN, linked by programs
+ * compiled with SCRIPTC_YOUNG_NURSERY=1). A young object's header has
+ * generation SCR_CYC_YOUNG, above every trial-deletion level, and its
+ * nursery index in `buf` under SCR_CYC_BUFFERED_BIT, so release paths treat
+ * it as a buffered candidate (no call on a release that leaves it alive,
+ * scr_cyc_on_dead at its death). Emitted constructors of compiled classes
+ * and records call scr_yin_enter on each new object, after storing its
+ * count; the call may collect the nursery first. */
+#define SCR_CYC_YOUNG 3
+void scr_yin_enter(void *obj);
+/* The inline entry's halves: the per-registry-id countdown of allocations
+ * that skip the nursery (process-wide in executables without workers,
+ * which are the ones that inline the entry), and the append when the
+ * nursery has no room. */
+extern uint32_t scr_yin_skip[SCR_CYC_MAX_TYPES];
+void scr_yin_enter_slow(void *obj);
+/* The nursery: live young objects v[0..n), capacity cap. Its layout is an
+ * ABI: emitted constructors (llvm/shapes.ts youngEntryLines) append inline
+ * while n < lim, writing the header themselves, and call scr_yin_enter
+ * otherwise; lim stays at most the capacity and the collection size. */
+typedef struct ScrYin {
+  void **v;
+  size_t n;
+  size_t lim;
+  size_t cap;
+} ScrYin;
+extern SCR_TL ScrYin scr_yin;
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(offsetof(ScrYin, n) == 8 && offsetof(ScrYin, lim) == 16,
+               "llvm/shapes.ts appends to the nursery at these offsets");
+#endif
 
 #endif /* SCR_RC_H */

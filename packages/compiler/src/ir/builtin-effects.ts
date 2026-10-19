@@ -119,6 +119,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.requestNew",
   "fetch.headersNew",
   "fetch.responseNew",
+  "fetch.responseJsonStatic",
   "fetch.abortTimeout",
   "fetch.abortAny",
   "abort.timeout",
@@ -137,6 +138,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.streamFrom",
   "num.toFixed",
   "num.toStringRadix",
+  "num.toStringRadixF64",
   "insp.jsonDyn",
   // diagnostics_channel: publish runs subscribers synchronously (a throw
   // propagates — the documented divergence from triggerUncaughtException);
@@ -166,6 +168,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteHeadDyn",
   "http.resSetHeaderDyn",
   "http.clientSignal",
+  "http.clientSignalCheck",
   "http.serverMaxHeaderSize",
   "http.clientMaxHeaderSize",
   "http.resAppendHeader",
@@ -489,6 +492,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "str.encodeUri",
   "qs.escape",
   "qs.stringify",
+  // node:punycode's RangeErrors (encode/toASCII only past 32-bit deltas)
+  // and String.fromCodePoint's for ucs2.encode.
+  "punycode.decode",
+  "punycode.encode",
+  "punycode.toASCII",
+  "punycode.toUnicode",
+  "punycode.ucs2Encode",
   // The base64 globals: atob/btoa throw the catchable DOMException
   // InvalidCharacterError on malformed input; the zero-argument form
   // always throws Node's TypeError [ERR_MISSING_ARGS].
@@ -559,6 +569,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
   "dyn.iterPack",
+  "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",
   "dyn.iteratorResult",
@@ -686,6 +697,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.scryptCb",
   "buffer.concat",
   "buffer.concatLen",
+  "buffer.concatDyn",
+  "buffer.concatLenDyn",
   "buffer.fromDyn",
   "buffer.fromStrChecked",
   "buffer.alloc",
