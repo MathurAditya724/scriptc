@@ -31,8 +31,6 @@ const f = c.on;
 // Node's options or the optional-callback overload family.
 execFile("true");
 execFile("true", [], { cwd: "/tmp" }, () => {});
-const bufferLimit = 1024;
-execFile("true", [], { maxBuffer: bufferLimit }, () => {});
 const getEncoding = (): "utf8" => "utf8";
 execFile("true", [], { encoding: getEncoding() }, () => {});
 // Fork targets are part of the compiled graph and therefore must resolve at

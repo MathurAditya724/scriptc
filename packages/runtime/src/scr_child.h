@@ -46,12 +46,14 @@ ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_
  * Result is the captured utf8 stdout (+1) — "" when nothing captures
  * (Node answers null there; discarded results cannot tell). A failure's
  * error carries Node's status, signal, output, pid, stdout and stderr;
- * `buffers` (no encoding option) makes those outputs Buffers. All args
- * borrowed. */
+ * `buffers` (no encoding option) makes those outputs Buffers. Outputs
+ * together past max_buffer (0 = no limit) kill the child and throw Node's
+ * "spawnSync <file> ENOBUFS"; a negative or NaN max_buffer throws
+ * ERR_OUT_OF_RANGE. All args borrowed. */
 ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                        bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
                        double timeout_ms, double stdout_mode, double stderr_mode,
-                       bool buffers);
+                       bool buffers, double max_buffer);
 /* The promisified-execFile/exec capture (cp.execCapture; shell as for
  * scr_exec_sync — the /bin/sh -c argv): the same core in the
  * async shape — both streams captured (no echo), Node's ASYNC error
@@ -61,7 +63,13 @@ ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
  * signal, cmd, stdout and stderr properties. +1 ScrSpawnRes on success
  * (stdout + stderr; status unused). All args borrowed. */
 ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd,
-                               bool has_env, ScrArr *env_pairs, double timeout_ms);
+                               bool has_env, ScrArr *env_pairs, double timeout_ms,
+                               double max_buffer);
+/* Node's validateTimeout then validateMaxBuffer for the promisified exec
+ * forms, which throw them synchronously before the promise exists:
+ * ERR_OUT_OF_RANGE for a timeout that is not a non-negative integer or a
+ * negative or NaN maxBuffer. */
+void scr_exec_validate(double timeout_ms, double max_buffer);
 ScrSpawnRes *scr_spawn_res_retain(ScrSpawnRes *r);
 void scr_spawn_res_release(ScrSpawnRes *r);
 void *scr_spawn_res_retain_v(void *p);
@@ -161,9 +169,12 @@ void scr_child_on_spawn(ScrChild *child, ScrClosure *cb); /* moves zero-argument
  * all three stdio slots piped; stdout/stderr are captured internally and
  * the callback moves into the child registry until settlement. With shell
  * (exec), args is ["-c", command] for /bin/sh and failure messages show
- * the command, as for scr_exec_sync. */
+ * the command, as for scr_exec_sync. A stream past max_buffer is cut there,
+ * both captures end, the child gets SIGTERM and the callback receives
+ * Node's ERR_CHILD_PROCESS_STDIO_MAXBUFFER RangeError; a negative or NaN
+ * max_buffer throws ERR_OUT_OF_RANGE (NULL, the callback released). */
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
-                        ScrExecFileFn fn, bool shell);
+                        ScrExecFileFn fn, bool shell, double max_buffer);
 ScrChild *scr_child_retain(ScrChild *c);
 void scr_child_release(ScrChild *c);
 void *scr_child_retain_v(void *p);

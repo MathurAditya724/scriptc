@@ -44,51 +44,42 @@ child-process.ts:33:24 - error SC2020: 'execFile option 'cwd'' is part of the st
   32 | execFile("true");
   33 | execFile("true", [], { cwd: "/tmp" }, () => {});
      |                        ^~~~~~~~~~~
-  34 | const bufferLimit = 1024;
+  34 | const getEncoding = (): "utf8" => "utf8";
 
-  hint: only encoding: 'utf8' and a pure numeric maxBuffer are supported in the callback form
+  hint: only encoding: 'utf8' and maxBuffer are supported in the callback form
 
-child-process.ts:35:35 - error SC2020: 'execFile with a non-literal maxBuffer' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:35:34 - error SC2020: 'execFile with a non-literal utf8 encoding' is part of the standard library types but has no scriptc lowering yet
 
-  34 | const bufferLimit = 1024;
-  35 | execFile("true", [], { maxBuffer: bufferLimit }, () => {});
-     |                                   ^~~~~~~~~~~
-  36 | const getEncoding = (): "utf8" => "utf8";
-
-  hint: pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)
-
-child-process.ts:37:34 - error SC2020: 'execFile with a non-literal utf8 encoding' is part of the standard library types but has no scriptc lowering yet
-
-  36 | const getEncoding = (): "utf8" => "utf8";
-  37 | execFile("true", [], { encoding: getEncoding() }, () => {});
+  34 | const getEncoding = (): "utf8" => "utf8";
+  35 | execFile("true", [], { encoding: getEncoding() }, () => {});
      |                                  ^~~~~~~~~~~~~
-  38 | // Fork targets are part of the compiled graph and therefore must resolve at
+  36 | // Fork targets are part of the compiled graph and therefore must resolve at
 
   hint: pass the literal 'utf8' or 'utf-8' (other expressions might have side effects)
 
-child-process.ts:40:6 - error SC2020: 'fork with a runtime-valued module path' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:38:6 - error SC2020: 'fork with a runtime-valued module path' is part of the standard library types but has no scriptc lowering yet
 
-  39 | // build time. The remaining channel is JSON-only and occupies stdio slot 3.
-  40 | fork(process.argv[1]!);
+  37 | // build time. The remaining channel is JSON-only and occupies stdio slot 3.
+  38 | fork(process.argv[1]!);
      |      ^~~~~~~~~~~~~~~~
-  41 | const staticWorker = new URL("./child-process.ts", import.meta.url);
+  39 | const staticWorker = new URL("./child-process.ts", import.meta.url);
 
   hint: resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed
 
-child-process.ts:42:41 - error SC2020: 'fork with non-JSON serialization' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:40:41 - error SC2020: 'fork with non-JSON serialization' is part of the standard library types but has no scriptc lowering yet
 
-  41 | const staticWorker = new URL("./child-process.ts", import.meta.url);
-  42 | fork(staticWorker, [], { serialization: "advanced" });
+  39 | const staticWorker = new URL("./child-process.ts", import.meta.url);
+  40 | fork(staticWorker, [], { serialization: "advanced" });
      |                                         ^~~~~~~~~~
-  43 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
+  41 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
 
   hint: the static IPC channel supports Node's default serialization or serialization: "json"
 
-child-process.ts:43:64 - error SC2020: 'fork without a fourth-slot IPC channel' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:41:64 - error SC2020: 'fork without a fourth-slot IPC channel' is part of the standard library types but has no scriptc lowering yet
 
-  42 | fork(staticWorker, [], { serialization: "advanced" });
-  43 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
+  40 | fork(staticWorker, [], { serialization: "advanced" });
+  41 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
      |                                                                ^~~~~~~~
-  44 | // Keep each fence on its own statement so diagnostics remain site-specific.
+  42 | // Keep each fence on its own statement so diagnostics remain site-specific.
 
   hint: the fourth stdio entry must be "ipc"

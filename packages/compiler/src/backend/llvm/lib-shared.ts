@@ -691,7 +691,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.offSignal": "scr_signal_off",
   "process.offExit": "scr_process_off_exit",
   // child_process (scr_child.c): spawnSync/exec forms are synchronous
-  // (execSync/execCapture throw — the may-throw check); handle getters
+  // (spawnSync, execSync, execCapture and execValidate throw — the
+  // may-throw check); handle getters
   // are pure reads. Registration forms are special-cased (moves + per-
   // shape adapters); spawn itself is special-cased for usesTimers.
   "cp.spawnSync": "scr_spawn_sync",
@@ -699,6 +700,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",
   "cp.execSync": "scr_exec_sync",
   "cp.execCapture": "scr_exec_capture",
+  "cp.execValidate": "scr_exec_validate",
   "spawnRes.stdout": "scr_spawn_res_stdout",
   "spawnRes.stderr": "scr_spawn_res_stderr",
   "child.killed": "scr_child_killed",

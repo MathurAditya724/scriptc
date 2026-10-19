@@ -411,6 +411,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.connectLookup",
   "cp.execSync",
   "cp.execCapture",
+  // execFile/exec's callback form, the promisified forms' pre-call check
+  // and spawnSync throw Node's ERR_OUT_OF_RANGE for an invalid timeout or
+  // maxBuffer before anything spawns.
+  "cp.execFile",
+  "cp.execValidate",
+  "cp.spawnSyncOpts",
+  "cp.spawnSyncStdioStr",
   // The client request constructors validate the method token
   // synchronously (Node's ClientRequest ctor throw:
   // ERR_INVALID_HTTP_TOKEN).

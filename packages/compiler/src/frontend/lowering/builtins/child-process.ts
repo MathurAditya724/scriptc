@@ -731,10 +731,9 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
  * stdin/stdout/stderr piped; the runtime captures both outputs and invokes
  * the error-first callback after settlement. The callback may ignore a suffix of `(error, stdout,
  * stderr)`, but every declared parameter must have the Node shape. Inline
- * `encoding: "utf8"` and a pure numeric `maxBuffer` are accepted; the latter
- * is not enforced by the growing native capture, as
- * with the synchronous and promisified capture forms. Other options remain
- * fenced until their lifecycle can share this asynchronous core. */
+ * `encoding: "utf8"` and a numeric `maxBuffer` (Node's 1 MiB default
+ * otherwise, validated by the runtime) are accepted. Other options remain fenced until their
+ * lifecycle can share this asynchronous core. */
 export function lowerExecFileCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -769,6 +768,8 @@ export function lowerExecFileCall(
         loc,
       }
     : lowerChildArgsArg(lowerer, expr.arguments.length >= 3 ? expr.arguments[1] : undefined, loc);
+  // Node's default maxBuffer for exec and execFile.
+  let maxBuffer: IrExpr = numLit(1024 * 1024, loc);
   const optionsNode =
     expr.arguments.length === (shell ? 3 : 4) ? expr.arguments[shell ? 1 : 2] : undefined;
   if (optionsNode) {
@@ -780,18 +781,6 @@ export function lowerExecFileCall(
         "pass encoding and maxBuffer in an inline object literal",
       );
     }
-    const pureNumber = (node: ts.Expression): boolean =>
-      ts.isNumericLiteral(node) ||
-      (ts.isParenthesizedExpression(node) && pureNumber(node.expression)) ||
-      (ts.isBinaryExpression(node) &&
-        [
-          ts.SyntaxKind.PlusToken,
-          ts.SyntaxKind.MinusToken,
-          ts.SyntaxKind.AsteriskToken,
-          ts.SyntaxKind.SlashToken,
-        ].includes(node.operatorToken.kind) &&
-        pureNumber(node.left) &&
-        pureNumber(node.right));
     for (const property of options.properties) {
       const member = optionMember(property);
       if (!member)
@@ -812,18 +801,12 @@ export function lowerExecFileCall(
           );
         }
       } else if (member.name === "maxBuffer") {
-        if (!pureNumber(member.value)) {
-          lowerer.noLowering(
-            `${what} with a non-literal maxBuffer`,
-            member.value,
-            "pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)",
-          );
-        }
+        maxBuffer = lowerer.lowerExprExpecting(member.value, F64);
       } else {
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "only encoding: 'utf8' and a pure numeric maxBuffer are supported in the callback form",
+          "only encoding: 'utf8' and maxBuffer are supported in the callback form",
         );
       }
     }
@@ -875,7 +858,7 @@ export function lowerExecFileCall(
   return {
     kind: "libCall",
     fn: "cp.execFile",
-    args: [cmd, argv, callback, boolLit(shell, loc)],
+    args: [cmd, argv, callback, boolLit(shell, loc), maxBuffer],
     type: CHILD_T,
     loc,
   };

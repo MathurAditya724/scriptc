@@ -26,8 +26,8 @@ import { optionMember } from "./arguments.js";
  * are drawn from the honestly-implemented set — `encoding` (must be the
  * "utf8"/"utf-8" literal, like spawnSync — outputs are captured utf8),
  * `cwd`, `env`, `input`, `timeout`, `stdio` (the "pipe"/"ignore"
- * string form or a 3-tuple of those), `maxBuffer` (accepted, not
- * enforced — the capture grows), `killSignal` (accepted only as the
+ * string form or a 3-tuple of those), `maxBuffer` (Node's 1 MiB default
+ * otherwise; 0 means no limit), `killSignal` (accepted only as the
  * SIGTERM default), `windowsHide`/`shell:false` on execFileSync (Node
  * no-ops here). Every other member (a non-default killSignal, shell:true
  * on execFileSync, ...) fences by name. */
@@ -99,6 +99,8 @@ export function lowerExecSyncCall(
   let hasEnv: IrExpr = boolLit(false, loc);
   let envPairs: IrExpr = emptyPairs;
   let timeout: IrExpr = numLit(0, loc);
+  // Node's default maxBuffer for the sync forms.
+  let maxBuffer: IrExpr = numLit(1024 * 1024, loc);
   let stdoutMode = 1;
   let stderrMode = 0;
   let stdinInherit = false;
@@ -138,6 +140,7 @@ export function lowerExecSyncCall(
             runtime.stderrMode,
             // The runtime options carry a utf8 encoding (others throw).
             boolLit(false, loc),
+            runtime.maxBuffer,
           ],
           type: STRING,
           loc,
@@ -338,9 +341,7 @@ export function lowerExecSyncCall(
           applyStdio(m.value);
           break;
         case "maxBuffer":
-          // Accepted, not enforced (the capture grows unbounded — no
-          // real corpus hits the cap); evaluate for side effects.
-          lowerer.lowerExpr(m.value);
+          maxBuffer = lowerer.lowerExprExpecting(m.value, F64);
           break;
         case "killSignal": {
           const t = lowerer.typeOf(m.value);
@@ -401,6 +402,7 @@ export function lowerExecSyncCall(
       numLit(stdoutMode + (stdinInherit ? 4 : 0), loc),
       numLit(stderrMode, loc),
       boolLit(!encodingGiven, loc),
+      maxBuffer,
     ],
     type: STRING,
     loc,
@@ -445,6 +447,7 @@ function lowerExecSyncRuntimeOptions(
   hasInput: IrExpr;
   cwd: IrExpr;
   timeout: IrExpr;
+  maxBuffer: IrExpr;
   stdoutMode: IrExpr;
   stderrMode: IrExpr;
 } | null {
@@ -518,6 +521,7 @@ function lowerExecSyncRuntimeOptions(
     hasInput,
     cwd: readOpt("cwd", emptyStr, STRING),
     timeout: readOpt("timeout", { kind: "numLit", value: 0, type: F64, loc }, F64),
+    maxBuffer: readOpt("maxBuffer", { kind: "numLit", value: 1024 * 1024, type: F64, loc }, F64),
     stdoutMode: modeCall(1),
     stderrMode: modeCall(2),
   };

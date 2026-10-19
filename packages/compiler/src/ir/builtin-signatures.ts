@@ -2291,9 +2291,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * see scr_child.h). Throws Node's exact errors: "Command failed: <cmd>"
    * (+ captured stderr) on non-zero exit or signal death, "spawnSync
    * <file> ENOENT" on spawn failure, "spawnSync <file> ETIMEDOUT" after
-   * the SIGTERM timeout, with Node's status, signal, output, pid, stdout
-   * and stderr properties (Buffer outputs when buffers is set: no
-   * encoding option). Result is the captured utf8 stdout (+1). */
+   * the SIGTERM timeout, "spawnSync <file> ENOBUFS" when the outputs
+   * together pass maxBuffer (the last argument; 0 means no limit), with
+   * Node's status, signal, output, pid, stdout and stderr properties
+   * (Buffer outputs when buffers is set: no encoding option). Result is
+   * the captured utf8 stdout (+1). */
   "cp.execSync": {
     argTypes: [
       STRING,
@@ -2308,6 +2310,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
       F64,
       F64,
       BOOL,
+      F64,
     ],
     result: STRING,
   },
@@ -2321,11 +2324,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * ScrSpawnRes container (+1; stdout/stderr strings, status unused).
    * Called only from the frontend's interned %execFileAsync and
    * %execAsync ASYNC helpers, whose fiber turns the throw into the
-   * rejection. */
+   * rejection. The last argument is maxBuffer: a stream past it is cut
+   * there, the child is killed and the capture fails with Node's
+   * ERR_CHILD_PROCESS_STDIO_MAXBUFFER. */
   "cp.execCapture": {
-    argTypes: [STRING, arrayOf(STRING), BOOL, STRING, BOOL, arrayOf(STRING), F64],
+    argTypes: [STRING, arrayOf(STRING), BOOL, STRING, BOOL, arrayOf(STRING), F64, F64],
     result: SPAWNRES_T,
   },
+  /** Node's validateTimeout then validateMaxBuffer (timeout, maxBuffer),
+   * run before the %execFileAsync/%execAsync helper call: the promisified
+   * forms call execFile synchronously, so these throw instead of
+   * rejecting. */
+  "cp.execValidate": { argTypes: [F64, F64], result: VOID },
   /** child_process.spawn (scr_child.c + the scr_async.c loop): posix_spawnp
    * with per-slot ignore/inherit/pipe modes (and number output fds), the
    * all-piped Node default, and the child registered with the event loop,
@@ -2377,9 +2387,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** child_process.execFile's callback slice: starts an all-piped child,
    * captures stdout/stderr, and moves the error-first callback into the
    * child registry. The callback shape is program-dependent and checked
-   * by the validator/backends. The last argument is exec's shell flag:
-   * the argv is ["-c", command] and failure messages show the command. */
-  "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null, BOOL], result: CHILD_T },
+   * by the validator/backends. Then exec's shell flag (the argv is
+   * ["-c", command] and failure messages show the command) and maxBuffer
+   * (a stream past it is cut there, the child is killed and the callback
+   * gets Node's ERR_CHILD_PROCESS_STDIO_MAXBUFFER). */
+  "cp.execFile": { argTypes: [STRING, arrayOf(STRING), null, BOOL, F64], result: CHILD_T },
   // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
   // 2 fd) with the out/err fds for mode 2, detached, env replacement
   // pairs, cwd ("" = inherit).
