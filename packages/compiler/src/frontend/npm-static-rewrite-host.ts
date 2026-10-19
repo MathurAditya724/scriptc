@@ -2,7 +2,12 @@
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import type { Ts7SourceParser } from "./ts7/source-parser.js";
-import { trackedDirectoryExists, trackedFileExists, trackedReadFile } from "./input-tracker.js";
+import {
+  isVirtualSource,
+  trackedDirectoryExists,
+  trackedFileExists,
+  trackedReadFile,
+} from "./input-tracker.js";
 import { resolveExports } from "./resolve.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
 import { isBundlerCjsCandidate, rewriteBundlerCjsSyntax } from "./npm-static-rewrite-syntax.js";
@@ -168,6 +173,7 @@ export function rewriteBundlerCjsWithParser(
   if (!isBundlerCjsCandidate(source)) return null;
   return rewriteBundlerCjsSyntax(parser.parse(filePath, source, "js"), filePath, {
     liveExportTable,
+    requireOnly: isVirtualSource,
     requireTargetEsModuleStamped: (from, spec) => requireTargetEsModuleStamped(parser, from, spec),
     starTargetNames: (from, spec) => {
       const target = resolveRelativeCjs(from, spec);

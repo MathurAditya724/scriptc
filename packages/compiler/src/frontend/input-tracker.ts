@@ -174,6 +174,10 @@ export function setVirtualSource(path: string, text: string): void {
   virtualSources.set(resolve(path), text);
 }
 
+export function isVirtualSource(path: string): boolean {
+  return virtualSources.has(resolve(path));
+}
+
 export function clearVirtualSources(): void {
   virtualSources.clear();
 }

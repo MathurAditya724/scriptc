@@ -3188,7 +3188,7 @@ function cjsCycleRefusal7(
         const dep = resolveImport7(program, m, req.spec, "require");
         if (dep === null || !members.has(dep)) continue;
         const reached = requireBindingEarlyUse7(program, m, stmts.length, req.decl, [], (id) =>
-          functionExportRead7(program, id, members),
+          functionExportRead7(id, dep),
         );
         if (reached !== null) {
           return `the top-level code of ${m.fileName} can use its binding '${reached.text}' of a module of the cycle (${lineOf(reached)}) while the cycle initializes`;
@@ -3199,16 +3199,12 @@ function cjsCycleRefusal7(
   return null;
 }
 
-/** True for a plain read `binding.name` (not a call, not a write) whose
- * export resolves to a top-level function declaration of a module of the
- * cycle that nothing reassigns. Every member settles its exports before
+/** True for a plain read `binding.name` (not a call, not a write) of the
+ * cycle member `dep` whose export `name` is a top-level function
+ * declaration nothing reassigns. Every member settles its exports before
  * entering the cycle, so Node reads that same function whenever the read
  * runs, and the compiled read resolves to the declaration itself. */
-function functionExportRead7(
-  program: ts.Program,
-  id: ts.Identifier,
-  members: ReadonlySet<ts.SourceFile>,
-): boolean {
+function functionExportRead7(id: ts.Identifier, dep: ts.SourceFile): boolean {
   const access = id.parent;
   if (!ts.isPropertyAccessExpression(access) || access.expression !== id) return false;
   let use: ts.Node = access;
@@ -3226,37 +3222,60 @@ function functionExportRead7(
       parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
   )
     return false;
-  const checker = program.getTypeChecker();
-  const resolved = (sym: ts.Symbol | undefined, depth: number): ts.FunctionDeclaration | null => {
-    if (sym === undefined || depth > 4) return null;
-    if ((sym.flags & ts.SymbolFlags.Alias) !== 0) sym = checker.getAliasedSymbol(sym);
-    for (const d of checker.declarationsOf(sym)) {
-      if (ts.isFunctionDeclaration(d)) return d;
-      if (ts.isPropertyAssignment(d) && ts.isIdentifier(d.initializer))
-        return resolved(checker.getSymbolAtLocation(d.initializer), depth + 1);
-      if (ts.isShorthandPropertyAssignment(d))
-        return resolved(checker.getShorthandAssignmentValueSymbol(d), depth + 1);
+  const name = access.name.text;
+  // The exported value's identifier: a table entry or a member export.
+  const values: ts.Expression[] = [];
+  for (const stmt of dep.statements.nodes) {
+    if (!ts.isExpressionStatement(stmt) || !ts.isBinaryExpression(stmt.expression)) continue;
+    const e = stmt.expression;
+    if (e.operatorToken.kind !== ts.SyntaxKind.EqualsToken) continue;
+    if (isModuleExportsAccess(e.left)) {
+      if (!ts.isObjectLiteralExpression(e.right)) return false;
+      for (const p of e.right.properties.nodes) {
+        if (ts.isSpreadAssignment(p)) return false;
+        if (ts.isShorthandPropertyAssignment(p) && p.name.text === name)
+          values.push(p.name as ts.Identifier);
+        else if (
+          ts.isPropertyAssignment(p) &&
+          (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+          p.name.text === name
+        )
+          values.push(p.initializer);
+      }
+    } else if (
+      ts.isPropertyAccessExpression(e.left) &&
+      e.left.name.text === name &&
+      ((ts.isIdentifier(e.left.expression) && e.left.expression.text === "exports") ||
+        isModuleExportsAccess(e.left.expression))
+    ) {
+      values.push(e.right);
     }
-    return null;
-  };
-  const fn = resolved(checker.getSymbolAtLocation(access.name), 0);
-  if (fn === null || fn.name === undefined || !members.has(fn.getSourceFile())) return false;
-  if (!ts.isSourceFile(fn.parent)) return false;
-  const name = fn.name.text;
-  let reassigned = false;
-  ts.walkPreorder(fn.getSourceFile(), (n) => {
-    if (reassigned) return "stop";
-    if (
-      ts.isBinaryExpression(n) &&
-      ts.isIdentifier(n.left) &&
-      n.left.text === name &&
-      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+  }
+  const value = values.length === 1 ? values[0]! : null;
+  if (value === null || !ts.isIdentifier(value)) return false;
+  const fnName = value.text;
+  if (
+    !dep.statements.nodes.some(
+      (st) => ts.isFunctionDeclaration(st) && st.name?.text === fnName && st.body !== undefined,
     )
-      reassigned = true;
+  )
+    return false;
+  let rebound = false;
+  ts.walkPreorder(dep, (n) => {
+    if (rebound) return "stop";
+    if (
+      (ts.isBinaryExpression(n) &&
+        ts.isIdentifier(n.left) &&
+        n.left.text === fnName &&
+        n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+      (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === fnName) ||
+      (ts.isFunctionDeclaration(n) && n.name?.text === fnName && !ts.isSourceFile(n.parent))
+    )
+      rebound = true;
     return undefined;
   });
-  return !reassigned;
+  return !rebound;
 }
 
 /* ── exact cyclic initialization ─────────────────────────────────────────

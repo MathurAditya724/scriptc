@@ -17,6 +17,11 @@ export interface CjsRewriteHost {
    * module's code (liveExportTableFirst): a module of a require cycle that
    * captured the export object early observes exactly that table. */
   liveExportTable?: ((filePath: string) => void) | undefined;
+  /** True for a module only ever loaded through require() (a bundle's
+   * CommonJS chunk split into its own module): no ES-module importer
+   * exists, so Node's lexer-visible name set bounds nothing and every
+   * name the export plumbing defines is part of its surface. */
+  requireOnly?: ((filePath: string) => boolean) | undefined;
 }
 
 /** True when esbuild's export object (`module.exports = __toCommonJS(T)`
@@ -711,6 +716,11 @@ export function rewriteBundlerCjsSyntax(
   }
 
   const lexed = cjsLexedExportsOfFile(sf);
+  if (host.requireOnly?.(filePath) === true) {
+    for (const t of exportTables) for (const [name] of t.entries) lexed.exports.add(name);
+    for (const d of definePropEntries) lexed.exports.add(d.name);
+    for (const m of memberStmts) for (const name of m.names) lexed.exports.add(name);
+  }
   let emitTable = sawBundleShape && (lexed.exports.size > 0 || lexed.reexports.length > 0);
 
   const starSpecs: string[] = [];
