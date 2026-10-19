@@ -13,6 +13,7 @@ import {
 } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { typeKey } from "../type-mapper.js";
+import { functionCanReturnUndefined } from "../function-completion.js";
 import { PoisonError, dynFallbackType, neverTaintedJsType, newFnCtx } from "./lowerer.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { findGenericMethodOn, storedClassValueType, type ClassInfo } from "./lower-classes.js";
@@ -294,11 +295,19 @@ export function genericCallInstance(
   const retTs = lowerer.checker.getReturnTypeOfSignature(rsig);
   const local = localClassResultInstance(lowerer, expr, info, rsig, params, retTs);
   if (local) return local;
-  const returnType = lowerer.mapTypeOf(retTs);
-  if (!returnType) {
+  const mappedReturn = lowerer.mapTypeOf(retTs);
+  if (!mappedReturn) {
     fenceGenericSignatureResult(lowerer, expr, retTs);
     lowerer.badType(expr, retTs);
   }
+  // A body that can return an indexed read that misses returns undefined
+  // there, as in JavaScript, whatever the declared result says. An async
+  // body's promise is always present and settles with undefined there.
+  const returnType = lowerer.runtimeOptionalGenericReturns.has(info.decl)
+    ? mappedReturn.kind === "promise"
+      ? { kind: "promise" as const, inner: lowerer.runtimeOptionalType(mappedReturn.inner) }
+      : lowerer.runtimeOptionalType(mappedReturn)
+    : mappedReturn;
 
   // keyof-constrained type parameters (`K extends keyof T`): the bound
   // LITERAL is semantic — the instance body reads the named field — so
@@ -1574,6 +1583,16 @@ function implicitDeclaredReturn(lowerer: Lowerer, info: GenericFnInfo): IrType |
       return null;
     if (mapped !== null && promiseCarriesDyn(lowerer, mapped) && !hasExplicitJsDocReturn(info.decl))
       return null;
+    // A JavaScript body that can complete without returning yields
+    // undefined there, whatever its JSDoc claims (bcryptjs's `hash`
+    // returns a promise only when no callback is passed), exactly as
+    // declaredReturnType widens non-generic JavaScript functions.
+    if (
+      mapped !== null &&
+      isJsSourceFile(info.decl.getSourceFile()) &&
+      functionCanReturnUndefined(info.decl)
+    )
+      return lowerer.withUndefinedArmOf(mapped) ?? mapped;
     return mapped;
   } catch (e) {
     if (!(e instanceof PoisonError)) throw e;

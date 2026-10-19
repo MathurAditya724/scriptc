@@ -1,8 +1,0 @@
-string-iterator-helpers.ts:3:15 - error SC2020: 'StringIterator.map' is part of the standard library types but has no scriptc lowering yet
-
-  2 | // refused instead of failing at run time.
-  3 | const upper = "abc"[Symbol.iterator]().map((c) => c.toUpperCase());
-    |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  4 | 
-
-  hint: iterator helpers lower on generators and on array, Map and Set iterators — spread the string first: [...s].values()

@@ -19,6 +19,7 @@ import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
 import { lowerInternTableProperty } from "./intern-tables.js";
+import { lowerThreadSlotsProperty } from "./thread-slots.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import { SYMBOL_T } from "../../ir/ir.js";
@@ -58,6 +59,11 @@ import {
   isCjsExportsIdentifier,
   lowerCjsExportsObjectValue,
 } from "./cjs-exports-object.js";
+import {
+  lowerMaybePromiseAwait,
+  maybePromiseInstanceOf,
+  maybePromiseUnionOf,
+} from "./maybe-promise.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "./class-assertions.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import { narrowClassUnion, narrowStoredClassValue } from "./class-unions.js";
@@ -141,6 +147,7 @@ import {
 } from "../../diagnostics/diagnostic.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, neverTaintedJsType, own } from "./lowerer.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
+import { lowerHelperReturnCall } from "./containers/iterator-helpers.js";
 import {
   arrayNumberRead,
   arrayValueRead,
@@ -215,6 +222,11 @@ import {
 } from "./expressions/optional-chains.js";
 import { foldedStringKeyOf } from "./expressions/object-literals.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import {
+  classToNumberConversion,
+  classToStringConversion,
+  classUnionToString,
+} from "./class-to-primitive.js";
 import {
   fenceNodeModuleMutation,
   isNodeModuleValue,
@@ -1241,6 +1253,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           expr,
           'open tables with new InternTable("name")',
         );
+      if (experimentalImportOf(lowerer.program, expr) === "ThreadSlots")
+        lowerer.noLowering(
+          "ThreadSlots (@scriptc/experimental) as a value",
+          expr,
+          'open slots with new ThreadSlots("name")',
+        );
     }
     {
       const bi = lowerer.builtinImportOf(expr);
@@ -1272,6 +1290,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         }
         if (bi.module === "http" && bi.member === "METHODS") {
           return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
+        }
+        if ((bi.module === "http" || bi.module === "https") && bi.member === "globalAgent") {
+          return {
+            kind: "libCall",
+            fn: "http.globalAgent",
+            args: [{ kind: "boolLit", value: bi.module === "https", type: BOOL, loc }],
+            type: DYN,
+            loc,
+          };
         }
         if (bi.module === "http" && bi.member === "STATUS_CODES") {
           return { kind: "libCall", fn: "http.statusCodes", args: [], type: DYN, loc };
@@ -1761,6 +1788,18 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         const promiseArm = def.arms[promiseTag]!;
         const inner = promiseArm.kind === "promise" ? promiseArm.inner : VOID;
         const units = def.arms.filter(isUnitType);
+        // A checked-dynamic inner: the whole operand is a dyn value (the
+        // promise boxes by reference, the unit as itself), and the dyn
+        // await adopts the promise or hops once for the unit.
+        if (inner.kind === "dyn" && lowerer.dynConvertible(value.type)) {
+          return {
+            kind: "libCall",
+            fn: "async.awaitDyn",
+            args: [lowerer.coerceToExpected(value, DYN)],
+            type: DYN,
+            loc,
+          };
+        }
         if (inner.kind === "union" || inner.kind === "dyn") {
           // A union inner would need an arm-wise re-tag into the result
 
@@ -1788,6 +1827,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         }
         return { kind: "awaitUnionExpr", value, promiseTag, type, loc };
       }
+      const maybePromise = maybePromiseUnionOf(lowerer, value.type);
+      if (maybePromise) return lowerMaybePromiseAwait(lowerer, expr, value, maybePromise, loc);
     }
     if (value.type.kind !== "promise") {
       // A CHECKED-DYNAMIC operand (`await v` where v rode an untyped
@@ -1864,6 +1905,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isPostfixUnaryExpression(expr)) return lowerIncDec(lowerer, expr, false);
   if (ts.isBinaryExpression(expr)) return lowerer.lowerBinary(expr);
   if (ts.isCallExpression(expr)) {
+    // `h.return?.()` on a helper object: the method exists, so the
+    // optional call is the call.
+    const helperReturn = lowerHelperReturnCall(lowerer, expr);
+    if (helperReturn) return helperReturn;
     // The tail of an optional chain whose `?.` sits deeper
     // (`x?.trim().toLowerCase()`): the whole tail short-circuits together.
     if (isOptionalChainTail(lowerer, expr)) return lowerer.lowerOptionalChain(expr);
@@ -1910,6 +1955,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const table = lowerInternTableProperty(lowerer, expr);
       if (table) return table;
     }
+    lowerThreadSlotsProperty(lowerer, expr);
     // `EventEmitter.name`, `zlib.Gzip.name`, `C.name` over a builtin
     // class alias.
     if (expr.name.text === "name" && !expr.questionDotToken) {
@@ -2115,13 +2161,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         (lowerer.isStdlibMember(expr) || isJsSourceFile(expr.getSourceFile()))
       ) {
         const recv = represented;
-        const read: IrExpr = {
-          kind: "dynKeyGet",
-          value: lowerer.coerceToExpected(recv, DYN),
-          key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
-          type: DYN,
-          loc,
-        };
+        const key: IrExpr = { kind: "strLit", value: expr.name.text, type: STRING, loc };
+        // A plain slice answers from its match source without a dynamic copy.
+        const read: IrExpr = typeEquals(recv.type, arrayOf(STRING))
+          ? { kind: "libCall", fn: "regex.resultProp", args: [recv, key], type: DYN, loc }
+          : { kind: "dynKeyGet", value: lowerer.coerceToExpected(recv, DYN), key, type: DYN, loc };
         return lowerer.maybeNarrow(read, expr);
       }
     }
@@ -4737,12 +4781,61 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   );
 }
 
+/** `typeof (u as any).then` / `if ((u as Promise<T>).then)` over a
+ * maybe-promise union `u` (the cast is erasure in JS): a promise arm has
+ * the prototype's `then` function, and no data arm is thenable (the type
+ * mapper's rule), so the union tag answers. Null for every other shape. */
+function maybePromiseThenPresence(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  result: IrExpr,
+): IrExpr | null {
+  let receiver: ts.Expression = access.expression;
+  let cast = false;
+  for (;;) {
+    if (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+    else if (ts.isAsExpression(receiver) || ts.isTypeAssertion(receiver)) {
+      receiver = receiver.expression;
+      cast = true;
+    } else break;
+  }
+  if (!cast) return null;
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(receiver));
+  if (!mapped || !maybePromiseUnionOf(lowerer, mapped)) return null;
+  const value = lowerer.lowerExpr(receiver);
+  const mp = maybePromiseUnionOf(lowerer, value.type);
+  if (!mp) return null;
+  const loc = locOf(access);
+  const absent: IrExpr =
+    result.type.kind === "bool"
+      ? { kind: "boolLit", value: false, type: BOOL, loc }
+      : { kind: "strLit", value: "undefined", type: STRING, loc };
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "unionIsTag",
+      unionId: mp.def.id,
+      tag: mp.promiseTag,
+      negated: false,
+      value,
+      type: BOOL,
+      loc,
+    },
+    then: result,
+    else_: absent,
+    type: result.type,
+    loc,
+  };
+}
+
 function lowerPromiseThenPresence(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
   result: IrExpr,
 ): IrExpr | null {
   if (access.name.text !== "then") return null;
+  const maybePromise = maybePromiseThenPresence(lowerer, access, result);
+  if (maybePromise !== null) return maybePromise;
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   const promiseType =
     mapped?.kind === "promise"
@@ -5926,6 +6019,11 @@ export function lowerArrayLiteral(
     const elem = mapped.elem;
     const arms = elem.kind === "union" ? lowerer.unions.get(elem.unionId)?.arms : [elem];
     if (arms?.length && arms.every((arm) => arm.kind === "classval")) mapped = DYN;
+    // Inferred JavaScript literals mixing promises and plain values
+    // (`[Promise.resolve(1), 2]`) keep the checked-dynamic array: their
+    // consumers (Readable.from, Promise.all over iterators) inspect each
+    // element at run time.
+    if (maybePromiseUnionOf(lowerer, elem)) mapped = DYN;
   }
   if (
     !expected &&
@@ -7229,25 +7327,38 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
 /** A record receiver that an outer keyed read left optional
  * (`nested[a][b]`, where `nested[a]` can miss). The receiver evaluates
  * once into `stmts`; `present` is its record arm, valid only once the
- * access has tested `stable` against the undefined arm. */
+ * access has tested `stable` against the undefined (or, for reads, null)
+ * arm. */
 interface OptionalRecordReceiver {
   stmts: IrStmt[];
   stable: IrExpr;
   present: IrExpr;
   unionId: string;
   undefTag: number;
+  nullish: "undefined" | "null";
 }
 
 function optionalRecordReceiver(
   lowerer: Lowerer,
   value: IrExpr,
   loc: SrcLoc,
+  allowNull = false,
 ): OptionalRecordReceiver | null {
   if (value.type.kind !== "union") return null;
   const unionId = value.type.unionId;
-  const undefTag = lowerer.armTag(unionId, UNDEFINED_T);
-  if (undefTag < 0 || lowerer.unions.get(unionId)?.arms.length !== 2) return null;
-  const record = lowerer.stripUndefinedArm(value.type);
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (arms?.length !== 2) return null;
+  let undefTag = lowerer.armTag(unionId, UNDEFINED_T);
+  let nullish: OptionalRecordReceiver["nullish"] = "undefined";
+  // A null-initialized slot assigned a record later (iconv-lite's
+  // `encodings = null` table, filled on first use): the checker narrows
+  // the read to the record, the storage keeps the null arm.
+  if (undefTag < 0 && allowNull) {
+    undefTag = lowerer.armTag(unionId, NULL_T);
+    nullish = "null";
+  }
+  if (undefTag < 0) return null;
+  const record = arms[1 - undefTag]!;
   if (record.kind !== "record") return null;
   const stmts: IrStmt[] = [];
   const stable = stabilized(lowerer, value, "%recordReceiver", stmts);
@@ -7259,7 +7370,7 @@ function optionalRecordReceiver(
     type: record,
     loc,
   };
-  return { stmts, stable, present, unionId, undefTag };
+  return { stmts, stable, present, unionId, undefTag, nullish };
 }
 
 /** `value`, evaluated once at this point of `out`. */
@@ -7282,14 +7393,16 @@ function undefinedReceiver(receiver: OptionalRecordReceiver, loc: SrcLoc): IrExp
   };
 }
 
-/** Node's TypeError for a keyed read or write on an undefined receiver. */
+/** Node's TypeError for a keyed read or write on an undefined (or null)
+ * receiver. */
 function undefinedReceiverThrow(
   key: IrExpr,
   action: "read" | "set",
   type: IrType,
   loc: SrcLoc,
+  nullish: OptionalRecordReceiver["nullish"] = "undefined",
 ): IrExpr {
-  const head = `Cannot ${action} properties of undefined (${action === "read" ? "reading" : "setting"} '`;
+  const head = `Cannot ${action} properties of ${nullish} (${action === "read" ? "reading" : "setting"} '`;
   const message: IrExpr = {
     kind: "strConcat",
     left: {
@@ -7319,8 +7432,9 @@ function guardedRecordAccess(
   lowerer: Lowerer,
   access: ts.ElementAccessExpression,
   rawObj: IrExpr,
+  allowNull = false,
 ): { receiver: OptionalRecordReceiver; key: IrExpr; name: IrExpr } | null {
-  const receiver = optionalRecordReceiver(lowerer, rawObj, locOf(access.expression));
+  const receiver = optionalRecordReceiver(lowerer, rawObj, locOf(access.expression), allowNull);
   if (!receiver) return null;
   const keyNode = access.argumentExpression;
   const litKey = recordKeyLiteralText(keyNode) ?? recordKeyTypeLiteralText(lowerer, keyNode);
@@ -7384,6 +7498,89 @@ function lowerGuardedRecordWrite(
   };
 }
 
+/** `b[i] = v` where the checker's flow type of `b` is a typed array but
+ * its storage is wider. A hoisted JavaScript `var` (or a field written
+ * after construction) holds `bytes | undefined`: the receiver, index and
+ * value evaluate in order, then an undefined receiver throws Node's
+ * TypeError and a present one takes the typed store. Any other storage (a
+ * `var` later reassigned a string, a checked-dynamic value) takes the
+ * checked-dynamic store, which applies whatever value the receiver holds. */
+function lowerWiderBytesWrite(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  target: ts.ElementAccessExpression,
+  recv: IrExpr,
+): IrStmt {
+  const loc = locOf(expr);
+  if (recv.type.kind === "union") {
+    const unionId = recv.type.unionId;
+    const arms = lowerer.unions.get(unionId)?.arms;
+    const undefTag = lowerer.armTag(unionId, UNDEFINED_T);
+    const bytes = arms?.length === 2 && undefTag >= 0 ? arms[1 - undefTag]! : null;
+    const keyType = lowerer.mapTypeOf(lowerer.typeOf(target.argumentExpression));
+    const index =
+      bytes?.kind === "bytes" && keyType?.kind === "f64"
+        ? lowerer.lowerExpr(target.argumentExpression)
+        : null;
+    // An index stored wider than a number (a hoisted `var` counter) keeps
+    // the checked-dynamic store below, which converts the key exactly.
+    if (bytes?.kind === "bytes" && index?.type.kind === "f64") {
+      const stmts: IrStmt[] = [];
+      const stable = stabilized(lowerer, recv, "%bytesReceiver", stmts);
+      const key = stabilized(lowerer, index, "%bytesIndex", stmts);
+      const value = stabilized(
+        lowerer,
+        lowerer.lowerExprExpecting(expr.right, F64),
+        "%bytesValue",
+        stmts,
+      );
+      const name = lowerRecordPropertyKey(lowerer, key, target.argumentExpression);
+      const present: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag: 1 - undefTag,
+        value: stable,
+        type: bytes,
+        loc,
+      };
+      return {
+        kind: "block",
+        body: [
+          ...stmts,
+          {
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag: undefTag,
+              negated: false,
+              value: stable,
+              type: BOOL,
+              loc,
+            },
+            then: [{ kind: "exprStmt", expr: undefinedReceiverThrow(name, "set", VOID, loc), loc }],
+            else_: [{ kind: "bytesSet", arr: present, index: key, value, loc }],
+            loc,
+          },
+        ],
+        loc,
+      };
+    }
+  }
+  if (!lowerer.dynConvertible(recv.type)) {
+    lowerer.unsupported(
+      "SC1090",
+      target.expression,
+      `typed-array element writes through '${lowerer.fmt(recv.type)}' storage`,
+    );
+  }
+  return {
+    kind: "exprStmt",
+    expr: lowerDynMemberAssignment(lowerer, expr, lowerer.coerceInto(target.expression, recv, DYN)),
+    loc,
+  };
+}
+
 /** `r[k]` over a (non-tuple) record shape. A LITERAL key naming a declared
  * field is the bracket spelling of field access (the ONLY spelling tsc
  * permits for signature-declared fields under
@@ -7423,7 +7620,15 @@ export function lowerRecordKeyRead(
   // evaluates the receiver before the key).
   const obj = lowerer.lowerExpr(expr.expression);
   {
-    const guarded = guardedRecordAccess(lowerer, expr, obj);
+    // A null arm is guarded only for string and number keys: other keys
+    // already take the checked-dynamic read, which handles null itself.
+    // Only a receiver with a null arm asks about the key.
+    let allowNull = false;
+    if (obj.type.kind === "union" && lowerer.armTag(obj.type.unionId, NULL_T) >= 0) {
+      const keyType = litKey !== null ? STRING : lowerer.mapTypeOf(lowerer.typeOf(keyNode));
+      allowNull = keyType?.kind === "string" || keyType?.kind === "f64";
+    }
+    const guarded = guardedRecordAccess(lowerer, expr, obj, allowNull);
     if (guarded) {
       const { receiver, key, name } = guarded;
       const read = lowerer.withExpressionOverride(expr.expression, receiver.present, () =>
@@ -7439,7 +7644,7 @@ export function lowerRecordKeyRead(
         result: {
           kind: "ternary",
           cond: undefinedReceiver(receiver, loc),
-          then: undefinedReceiverThrow(name, "read", read.type, loc),
+          then: undefinedReceiverThrow(name, "read", read.type, loc, receiver.nullish),
           else_: read,
           type: read.type,
           loc,
@@ -8029,7 +8234,7 @@ function lowerElementCompoundParts(
     const appended: IrExpr = {
       kind: "strConcat",
       left: oldValue,
-      right: lowerer.ensureString(rhs, expr.right),
+      right: concatOperand(lowerer, rhs, expr.right),
       type: STRING,
       loc,
     };
@@ -8047,7 +8252,7 @@ function lowerElementCompoundParts(
     computed = {
       kind: "strConcat",
       left: lowerer.ensureString(oldRef(), target),
-      right: lowerer.ensureString(rhs, expr.right),
+      right: concatOperand(lowerer, rhs, expr.right),
       type: STRING,
       loc,
     };
@@ -8430,6 +8635,8 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
   // the runtime coerces JS-exactly; invalid indices are ignored.
   if (receiverIr?.kind === "bytes") {
     const recv = lowerer.lowerExpr(target.expression);
+    // The checker's flow type is a typed array, but the storage is wider.
+    if (recv.type.kind !== "bytes") return lowerWiderBytesWrite(lowerer, expr, target, recv);
     const index = lowerer.lowerExpr(target.argumentExpression);
     if (index.type.kind === "dyn" && recv.type.kind === "bytes") {
       return {
@@ -8798,6 +9005,16 @@ export function lowerEnvironmentKey(lowerer: Lowerer, node: ts.Expression): IrEx
   return lowerRecordPropertyKey(lowerer, key, node);
 }
 
+/** An operand of `+` with a string: ToString of ToPrimitive with the
+ * default hint, which tries a class instance's valueOf before toString. */
+function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+  return (
+    classToStringConversion(lowerer, e, "default", node) ??
+    classUnionToString(lowerer, e, "default", node) ??
+    lowerer.ensureString(e, node)
+  );
+}
+
 export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
@@ -8841,6 +9058,9 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
         return errorToStringCall(lowerer, e);
       }
     }
+    // A program class instance converts through its own methods.
+    const converted = classToStringConversion(lowerer, e, "string", node);
+    if (converted) return converted;
   }
   if (e.type.kind === "union") {
     // `${u}` — the arm's ToString via a per-union interned helper
@@ -8899,6 +9119,8 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
           node,
         );
     }
+    const viaClasses = classUnionToString(lowerer, e, "string", node);
+    if (viaClasses) return viaClasses;
     lowerer.unsupported(
       "SC1090",
       node,
@@ -9372,6 +9594,8 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       if (raw.type.kind === "string") {
         return { kind: "libCall", fn: "num.fromString", args: [raw], type: F64, loc };
       }
+      const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
+      if (classNumber) return classNumber;
       const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "+", [raw.type]);
       return operand;
@@ -9840,7 +10064,7 @@ export function lowerCompoundValueToTarget(
       {
         kind: "strConcat",
         left: lowerer.ensureString(read, expr.left),
-        right: lowerer.ensureString(rhs, expr.right),
+        right: concatOperand(lowerer, rhs, expr.right),
         type: STRING,
         loc,
       },
@@ -10903,8 +11127,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       if (left.type.kind === "string" || right.type.kind === "string") {
         return {
           kind: "strConcat",
-          left: lowerer.ensureString(left, expr.left),
-          right: lowerer.ensureString(right, expr.right),
+          left: concatOperand(lowerer, left, expr.left),
+          right: concatOperand(lowerer, right, expr.right),
           type: STRING,
           loc,
         };
@@ -12693,6 +12917,38 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           loc,
         };
       }
+    }
+    // `x instanceof Promise` over a promise-armed union (the maybe-promise
+    // `T | Promise<T>` dispatch): a union tag test — the data arms are
+    // never promises (scriptc promises are all native, and no data arm
+    // can hold one). A promise-typed operand answers true after its
+    // evaluation; a checked-dynamic one asks the runtime.
+    if (
+      ts.isIdentifier(expr.right) &&
+      lowerer.isStdlibGlobal(expr.right, "Promise") &&
+      !lowerer.caughtLocalOf(expr.left)
+    ) {
+      const left = lowerer.lowerExpr(expr.left);
+      const tagTest = maybePromiseInstanceOf(lowerer, left, loc);
+      if (tagTest) return tagTest;
+      if (left.type.kind === "dyn")
+        return { kind: "dynTest", test: "promise", value: left, type: BOOL, loc };
+      if (left.type.kind === "promise") {
+        const yes: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+        if (isSafeToDiscard(left)) return yes;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: left, loc }],
+          result: yes,
+          type: BOOL,
+          loc,
+        };
+      }
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `'instanceof Promise' on '${lowerer.fmt(left.type)}' values (only promises, promise-armed unions, and checked-dynamic values have a lowering)`,
+      );
     }
     // `x instanceof RegExp` over a union with a regex arm (the
     // skip-utility `string | RegExp` dispatch): a union tag test — the
@@ -15932,7 +16188,11 @@ export function lowerPromiseRejectCall(
     );
   }
   const ctxT = lowerer.checker.getContextualType(call);
-  const type = ctxT ? lowerer.mapTypeOf(ctxT) : null;
+  const contextual = ctxT ? lowerer.mapTypeOf(ctxT) : null;
+  // A maybe-promise context (`return Promise.reject(e)` from a function
+  // returning `T | Promise<T>`) names its one promise arm.
+  const maybePromise = contextual ? maybePromiseUnionOf(lowerer, contextual) : null;
+  const type = maybePromise ? maybePromise.promise : contextual;
   const reasonNode = call.arguments[0]!;
   // A CHECKED-DYNAMIC reason (`Promise.reject(value)` where value rode
   // an untyped binding — the tracingChannel suite's shape): the checked-dynamic tree
@@ -16196,7 +16456,7 @@ function lowerFieldCompoundValue(
   const numericRead = lowerOptionalNumber(lowerer, read, loc, access);
   const bigintValue = rhsNode ? bigintCompoundValue(op, read, rhs, loc) : null;
   if (op === "+" && read.type.kind === "string") {
-    appended = lowerer.ensureString(rhs, rhsNode ?? access);
+    appended = concatOperand(lowerer, rhs, rhsNode ?? access);
     value = { kind: "strConcat", left: read, right: appended, type: STRING, loc };
   } else if (numericRead.type.kind === "f64" && numericRhs.type.kind === "f64") {
     value = { kind: "bin", op, left: numericRead, right: numericRhs, type: F64, loc };

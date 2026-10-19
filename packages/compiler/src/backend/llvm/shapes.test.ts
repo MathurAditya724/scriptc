@@ -205,6 +205,43 @@ describe("LLVM runtime RC symbols", () => {
     expect(fn("sc_rc_retain_promise")).not.toContain("store i32");
   });
 
+  test("optimized builds buffer candidates through the module's append helper", () => {
+    const emit = (inlineRc: true | "release", extra: Partial<ShapeHost>) => {
+      const { host } = declarationHost(64, inlineRc);
+      const configured: ShapeHost = { ...host, inlineAlloc: true, ...extra };
+      releaseSym(configured, { kind: "dyn" });
+      return {
+        ir: emitInlineRcHelpers(configured).join("\n"),
+        decls: inlineRcDecls(configured),
+      };
+    };
+    for (const mode of [true, "release"] as const) {
+      const { ir, decls } = emit(mode, {});
+      expect(ir).toContain("call preserve_mostcc void @sc_cyc_append(ptr %o)");
+      expect(ir).toContain("define internal preserve_mostcc void @sc_cyc_append(ptr %o) noinline");
+      // The young test reads the generation byte at obj-5; the append fills
+      // scr_cyc_buffers' nursery buffer and the header's position at obj-4.
+      expect(ir).toContain("getelementptr i8, ptr %o, i64 -5");
+      expect(ir).toContain("getelementptr inbounds i8, ptr @scr_cyc_buffers, i64 96");
+      expect(ir).toContain("getelementptr inbounds i8, ptr @scr_cyc_buffers, i64 104");
+      expect(ir).toContain("load i64, ptr @scr_cyc_live");
+      expect(ir).toContain("or i32 %i, -2147483648");
+      expect(ir).toContain("call void @scr_cyc_on_release(ptr %o)");
+      expect(decls).toContain(
+        "@scr_cyc_buffers = external global { [3 x { ptr, i64, i64, i64 }], i64, i64 }",
+      );
+      expect(decls).toContain("@scr_cyc_live = external global i64");
+    }
+    // Worker executables and targets without inline allocation call
+    // scr_cyc_on_release, which tries the same append first.
+    for (const extra of [{ threadLocalAlloc: true }, { inlineAlloc: false }]) {
+      const { ir, decls } = emit(true, extra);
+      expect(ir).not.toContain("sc_cyc_append");
+      expect(ir).toContain("call void @scr_cyc_on_release(ptr %o)");
+      expect(decls.join("\n")).not.toContain("scr_cyc_buffers");
+    }
+  });
+
   test("uses the wasm32 header offsets", () => {
     const { host } = declarationHost(32, true);
     releaseSym(host, { kind: "union", unionId: "u0" } as never);

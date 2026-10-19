@@ -13,6 +13,7 @@ import {
 } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
 import type { Lowerer } from "../lowerer.js";
+import { maybePromiseUnionOf } from "../maybe-promise.js";
 
 /** Wrap a zero-argument function whose array result needs an element
  * conversion. Each invocation creates a fresh converted array; the factory
@@ -96,6 +97,11 @@ export function coercibleValue(lowerer: Lowerer, src: IrType, dst: IrType): bool
   if (dst.kind === "union") {
     if (src.kind === "union") return lowerer.unionRetagMappable(src.unionId, dst.unionId);
     if (src.kind === "void") return lowerer.armTag(dst.unionId, UNDEFINED_T) >= 0;
+    if (src.kind === "promise") {
+      // A maybe-promise union's promise arm accepts payload widening.
+      const mp = maybePromiseUnionOf(lowerer, dst);
+      if (mp) return lowerer.promisePayloadWidens(src, mp.promise);
+    }
     return !isUnitType(src) && lowerer.armTag(dst.unionId, src) >= 0;
   }
   if (src.kind === "union") {

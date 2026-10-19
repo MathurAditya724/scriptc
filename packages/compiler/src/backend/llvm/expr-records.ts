@@ -147,7 +147,9 @@ function directRegexOperandMethod(method: string): boolean {
     case "match":
     case "search":
     case "matchAll":
+    case "matchAllCaptures":
     case "matchAllInto":
+    case "matchAllCapturesInto":
     case "replace":
     case "replaceAll":
     case "split":
@@ -192,7 +194,7 @@ export function emitRegexIntrinsic(
   } else {
     values = preservesRegexInputs(method)
       ? emitBorrowedInputs(host, inputs)
-      : method === "matchAllInto"
+      : method === "matchAllInto" || method === "matchAllCapturesInto"
         ? inputs.map((a) => emitBorrowedInput(host, a))
         : inputs.map((a) => host.emitExpr(a));
   }
@@ -216,11 +218,19 @@ export function emitRegexIntrinsic(
       // Every match drained eagerly into a fresh +1 string[][]; throws
       // Node's TypeError on a non-global regex (catchable).
       return fallible("scr_regex_match_all", `ptr ${r.name}, ptr ${args[0]!.name}`);
+    case "matchAllCaptures":
+      // matchAll whose rows carry no index, input or groups properties.
+      return fallible("scr_regex_match_all_captures", `ptr ${r.name}, ptr ${args[0]!.name}`);
     case "matchAllInto":
       // matchAll's companion-index form: args[1] (a number[]) also
       // receives each match's UTF-16 start index.
       return fallible(
         "scr_regex_match_all_into",
+        `ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}`,
+      );
+    case "matchAllCapturesInto":
+      return fallible(
+        "scr_regex_match_all_captures_into",
         `ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}`,
       );
     case "replaceAll":

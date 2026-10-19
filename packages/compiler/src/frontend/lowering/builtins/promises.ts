@@ -2,6 +2,7 @@ import { checkedPromiseAll } from "../checked-promise-all.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
+import { maybePromiseResolve, maybePromiseUnionOf } from "../maybe-promise.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
   DYN,
@@ -402,6 +403,22 @@ export function lowerPromiseStaticCall(
         if (v.type.kind !== "promise") lowerer.badType(argNode, argT);
         return v;
       }
+      const maybePromise = argIr ? maybePromiseUnionOf(lowerer, argIr) : null;
+      if (maybePromise) {
+        const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+        const v = lowerer.lowerExpr(argNode);
+        const mp = maybePromiseUnionOf(lowerer, v.type);
+        const resolved =
+          resultT?.kind === "promise" && mp
+            ? maybePromiseResolve(lowerer, v, mp, resultT, loc)
+            : null;
+        if (resolved) return resolved;
+        lowerer.noLowering(
+          `Promise.resolve over '${lowerer.fmt(v.type)}' at this result type`,
+          argNode,
+          "the promise arm passes through identically, so it must already be the result's promise type",
+        );
+      }
       if (
         argIr?.kind === "union" &&
         (lowerer.unions.get(argIr.unionId)?.arms ?? []).some((a) => a.kind === "promise")
@@ -423,7 +440,17 @@ export function lowerPromiseStaticCall(
         }
       }
     }
-    const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+    let resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+    // A maybe-promise context (`return Promise.resolve(v)` from a function
+    // returning `Promise<R | void> | R | void`) names its promise arm: the
+    // fresh promise takes that payload type directly.
+    if (argNode !== undefined && resultT?.kind === "promise") {
+      const ctxT = lowerer.checker.getContextualType(call);
+      const contextual = ctxT?.isUnionType() ? lowerer.mapTypeOf(ctxT) : null;
+      const mp = contextual ? maybePromiseUnionOf(lowerer, contextual) : null;
+      if (mp && !typeEquals(mp.promise, resultT) && mp.promise.inner.kind !== "void")
+        resultT = mp.promise;
+    }
     if (resultT?.kind !== "promise") {
       lowerer.noLowering(
         "Promise.resolve at this type",

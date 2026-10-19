@@ -3405,8 +3405,10 @@ declare module "node:test" {
     readonly tags: readonly string[];
     readonly assert: TestContextAssert;
     readonly mock: MockTracker;
-    test(name: string, fn?: TestFn): Promise<void>;
-    test(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
+    test(name?: string, fn?: TestFn): Promise<void>;
+    test(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    test(options?: TestOptions, fn?: TestFn): Promise<void>;
+    test(fn?: TestFn): Promise<void>;
     skip(message?: string): void;
     todo(message?: string): void;
     diagnostic(message: string): void;
@@ -3436,23 +3438,44 @@ declare module "node:test" {
     match(value: string, regExp: RegExp, message?: string): void;
     doesNotMatch(value: string, regExp: RegExp, message?: string): void;
   }
-  function test(name: string, fn?: TestFn): Promise<void>;
-  function test(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
+  /* The name, options and function are each optional, as in Node: a test
+   * without a name takes the function's name, or "<anonymous>". */
+  function test(name?: string, fn?: TestFn): Promise<void>;
+  function test(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+  function test(options?: TestOptions, fn?: TestFn): Promise<void>;
+  function test(fn?: TestFn): Promise<void>;
   namespace test {
-    function skip(name: string, fn?: TestFn): Promise<void>;
-    function skip(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
-    function todo(name: string, fn?: TestFn): Promise<void>;
-    function todo(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
-    function only(name: string, fn?: TestFn): Promise<void>;
-    function only(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
+    function skip(name?: string, fn?: TestFn): Promise<void>;
+    function skip(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function skip(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function skip(fn?: TestFn): Promise<void>;
+    function todo(name?: string, fn?: TestFn): Promise<void>;
+    function todo(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function todo(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function todo(fn?: TestFn): Promise<void>;
+    function only(name?: string, fn?: TestFn): Promise<void>;
+    function only(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function only(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function only(fn?: TestFn): Promise<void>;
   }
   const it: typeof test;
-  function describe(name: string, fn?: SuiteFn): void;
-  function describe(name: string, options: TestOptions, fn?: SuiteFn): void;
+  function describe(name?: string, fn?: SuiteFn): void;
+  function describe(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+  function describe(options?: TestOptions, fn?: SuiteFn): void;
+  function describe(fn?: SuiteFn): void;
   namespace describe {
-    function skip(name: string, fn?: SuiteFn): void;
-    function todo(name: string, fn?: SuiteFn): void;
-    function only(name: string, fn?: SuiteFn): void;
+    function skip(name?: string, fn?: SuiteFn): void;
+    function skip(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function skip(options?: TestOptions, fn?: SuiteFn): void;
+    function skip(fn?: SuiteFn): void;
+    function todo(name?: string, fn?: SuiteFn): void;
+    function todo(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function todo(options?: TestOptions, fn?: SuiteFn): void;
+    function todo(fn?: SuiteFn): void;
+    function only(name?: string, fn?: SuiteFn): void;
+    function only(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function only(options?: TestOptions, fn?: SuiteFn): void;
+    function only(fn?: SuiteFn): void;
   }
   const suite: typeof describe;
   function before(fn: HookFn): void;
@@ -4868,17 +4891,16 @@ declare module "http" {
   /* The Agent lowers to a checked-dynamic HANDLE: option parsing at the
    * literal construction site, getName, destroy, the sockets/requests/
    * freeSockets snapshots, and REAL maxSockets accounting (over-limit
-   * requests defer their dial and queue). keepAlive: true throws the
-   * named pooling fence — this client dials one connection per request
-   * and closes it with the response, so freeSockets is always
-   * empty. */
+   * requests defer their dial and queue). keepAlive: true keeps finished
+   * connections in freeSockets for the next request to the same name,
+   * taken in `scheduling` order. */
   export interface AgentOptions {
     keepAlive?: boolean;
     keepAliveMsecs?: number;
     maxSockets?: number;
     maxFreeSockets?: number;
     maxTotalSockets?: number;
-    scheduling?: string;
+    scheduling?: "fifo" | "lifo";
     timeout?: number;
     port?: number;
     [option: string]: unknown;
@@ -4908,6 +4930,7 @@ declare module "http" {
     readonly freeSockets: { [key: string]: unknown[] };
     readonly requests: { [key: string]: unknown[] };
   }
+  /* Node's keepAlive global agent for requests without an agent option. */
   export const globalAgent: Agent;
   export interface ClientRequest {
     readonly destroyed: boolean;
@@ -5111,6 +5134,8 @@ declare module "https" {
   import { Server } from "http";
   import { Agent, ClientRequest, IncomingMessage, ServerResponse } from "http";
   export { Agent, Server };
+  /* Node's keepAlive global agent for requests without an agent option. */
+  export const globalAgent: Agent;
   export interface ServerOptions {
     cert: string | Uint8Array;
     key: string | Uint8Array;

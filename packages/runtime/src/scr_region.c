@@ -65,7 +65,14 @@ void __lsan_unregister_root_region(const void *p, size_t size) __attribute__((we
 #endif
 
 #define SCR_RGN_HDR ((size_t)64)
+/* A class's segments in a default region start at SCR_RGN_SEG_FIRST bytes
+ * and double up to SCR_RGN_SEG: a class with a few instances in a thread's
+ * default region, as most classes have in most threads, then leaves little
+ * unused memory behind its last instance. Other regions start at
+ * SCR_RGN_SEG: their classes are usually many and short-lived, and more
+ * segments cost the release walk. */
 #define SCR_RGN_SEG ((size_t)16384)
+#define SCR_RGN_SEG_FIRST ((size_t)1024)
 #define SCR_RGN_AHEAD ((size_t)256 << 10)      /* see scr_rgn_ahead */
 #define SCR_RGN_AHEAD_START ((size_t)1 << 20)  /* see scr_rgn_ahead */
 _Static_assert(sizeof(ScrRgnChunk) <= SCR_RGN_HDR, "the chunk header fits before the first segment");
@@ -82,9 +89,11 @@ _Static_assert(sizeof(ScrRgnChunk) <= SCR_RGN_HDR, "the chunk header fits before
 #define SCR_RGN_CACHE_BYTES ((size_t)8 << 20)
 #define SCR_RGN_CACHE_WARM ((size_t)256 << 10)
 
-/* Regions start with small pages and switch to huge pages once they span
- * this many chunks (a default region at once): small regions then do not
- * pay a 2 MiB fault, large ones do not pay 512 small ones. */
+/* Freeable regions start with small pages and switch to huge pages once
+ * they span this many chunks: small regions then do not pay a 2 MiB fault,
+ * large ones do not pay 512 small ones. Default regions keep small pages:
+ * every thread has one, most hold few instances, and a huge page commits
+ * 2 MiB per thread for them. */
 #define SCR_RGN_HUGE_AFTER 4
 
 /* Retries. A condemned region is attempted at the first retry after its
@@ -340,7 +349,7 @@ static void scr_rgn_chunk_unmap(ScrRgnChunk *c) {
 }
 
 /* Whether the region's next chunk uses huge pages. */
-static bool scr_rgn_huge(const ScrRegion *r) { return r->id == 0 || r->nchunks + 1 >= SCR_RGN_HUGE_AFTER; }
+static bool scr_rgn_huge(const ScrRegion *r) { return r->id != 0 && r->nchunks + 1 >= SCR_RGN_HUGE_AFTER; }
 
 /* A chunk for `r`'s next one, with its page policy. */
 static ScrRgnChunk *scr_rgn_chunk_reserve(const ScrRegion *r) {
@@ -479,9 +488,11 @@ static void scr_rgn_chunk_retire(ScrRgnThread *t, ScrRgnChunk *c) {
 /* The instance stride: the emitted fast path rounds the size the same way. */
 static inline size_t scr_rgn_stride(const ScrRgnClass *cls) { return (cls->size + 7) & ~(size_t)7; }
 
-static ScrRgnSeg *scr_rgn_seg_new(ScrRegion *r, const ScrRgnClass *cls) {
+static ScrRgnSeg *scr_rgn_seg_new(ScrRegion *r, const ScrRgnClass *cls, const ScrRgnSeg *prev) {
   size_t stride = scr_rgn_stride(cls);
-  size_t need = stride > SCR_RGN_SEG ? stride : SCR_RGN_SEG;
+  size_t size = prev ? (size_t)(prev->limit - prev->start) * 2 : r->id == 0 ? SCR_RGN_SEG_FIRST : SCR_RGN_SEG;
+  if (size > SCR_RGN_SEG) size = SCR_RGN_SEG;
+  size_t need = stride > size ? stride : size;
   if (need > SCR_RGN_CHUNK - SCR_RGN_HDR) scr_trap("scriptc: ProgramLifetime instance too large for a region\n");
   ScrRgnChunk *c = r->chunks;
   if (!c || (size_t)((char *)c + SCR_RGN_CHUNK - c->bump) < need) c = scr_rgn_chunk_new(r);
@@ -589,7 +600,7 @@ void *scr_region_alloc(ScrRgnCursor *cursor, ScrRgnClass *cls) {
   if (s && cursor->bump) s->end = cursor->bump;
   size_t stride = scr_rgn_stride(cls);
   if (!s || (size_t)(s->limit - s->end) < stride) {
-    s = scr_rgn_seg_new(r, cls);
+    s = scr_rgn_seg_new(r, cls, s);
     r->cur[slot] = s;
   }
   char *o = s->end;

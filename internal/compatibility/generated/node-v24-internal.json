@@ -1953,7 +1953,8 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -2002,7 +2003,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2074,7 +2076,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.disable",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2100,7 +2103,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.getStore",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2126,7 +2130,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.enterWith",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2152,7 +2157,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.run",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2178,7 +2184,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.exit",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2481,6 +2488,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -3042,7 +3050,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"

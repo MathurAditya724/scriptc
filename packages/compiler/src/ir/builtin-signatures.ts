@@ -64,6 +64,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * are opaque checked-dynamic handles. */
   "fetch.start": { argTypes: [STRING, DYN], result: { kind: "promise", inner: DYN } },
   "fetch.responseNew": { argTypes: [DYN, DYN], result: DYN },
+  "fetch.responseJsonStatic": { argTypes: [DYN, DYN], result: DYN },
   "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "abort.controllerNew": { argTypes: [], result: DYN },
   /** EventTarget / Event / CustomEvent construction (scr_event_target.c):
@@ -181,6 +182,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
   "dyn.iteratorStepDone": { argTypes: [DYN], result: BOOL },
+  "dyn.collectionIteratorIndex": { argTypes: [DYN], result: F64 },
   "dyn.mapSeedEntries": { argTypes: [DYN], result: DYN },
   "dyn.mapSeedEntry": { argTypes: [DYN], result: DYN },
   /** The for-of-over-dyn pack accessors — the emitted index loop drives
@@ -1797,15 +1799,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * socket POOLING is not modeled (one dial per request); maxSockets
    * accounting is real: over-limit requests defer their dial and queue.
    * MAY THROW. */
-  "http.agentNew": { argTypes: [BOOL, BOOL, F64, F64, F64, F64, F64], result: DYN },
+  "http.agentNew": { argTypes: [BOOL, BOOL, F64, F64, F64, F64, F64, DYN], result: DYN },
+  /** http.globalAgent / https.globalAgent (true): Node's keepAlive global
+   * agent, the one requests without an agent option use. */
+  "http.globalAgent": { argTypes: [BOOL], result: DYN },
   /** http.request's `signal` option over the fresh request: an aborted
    * signal destroys it with Node's AbortError now, a later abort event
    * does the same. A falsy value is ignored; a non-signal throws
    * ERR_INVALID_ARG_TYPE. */
   "http.clientSignal": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
-  /** https.request's servername option: the TLS name sent and verified.
-   * The "https." prefix keeps the TLS unit linked. */
-  "https.clientServername": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
+  /** options.signal checked before the request is built (ERR_INVALID_ARG_TYPE). */
+  "http.clientSignalCheck": { argTypes: [DYN], result: VOID },
+  /** https.request's servername option, stored for the construction call
+   * that follows: the TLS name sent and verified, and part of the pooled
+   * socket key. The "https." prefix keeps the TLS unit linked. */
+  "https.nextServername": { argTypes: [STRING], result: VOID },
   /** The maxHeaderSize option of createServer / http.request: Node's
    * validateInteger (ERR_OUT_OF_RANGE) then the header size bound.
    * MAY THROW. */
@@ -2279,11 +2287,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   /** execFileSync/execSync as ONE entry (args: cmd, argv, shell, input,
-   * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode — see
-   * scr_runtime.h). Throws Node's exact errors: "Command failed: <cmd>"
+   * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, buffers —
+   * see scr_child.h). Throws Node's exact errors: "Command failed: <cmd>"
    * (+ captured stderr) on non-zero exit or signal death, "spawnSync
    * <file> ENOENT" on spawn failure, "spawnSync <file> ETIMEDOUT" after
-   * the SIGTERM timeout. Result is the captured utf8 stdout (+1). */
+   * the SIGTERM timeout, with Node's status, signal, output, pid, stdout
+   * and stderr properties (Buffer outputs when buffers is set: no
+   * encoding option). Result is the captured utf8 stdout (+1). */
   "cp.execSync": {
     argTypes: [
       STRING,
@@ -2297,6 +2307,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
       F64,
       F64,
       F64,
+      BOOL,
     ],
     result: STRING,
   },
@@ -3399,6 +3410,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "regex.groupEquals": { argTypes: [arrayOf(STRING), F64, STRING], result: BOOL },
   "regex.groupNumber": { argTypes: [arrayOf(STRING), F64], result: F64 },
   "regex.groupParseInt": { argTypes: [arrayOf(STRING), F64, F64], result: F64 },
+  // `.index` / `.input` (args[1]) of a match result. Borrowed; never throws.
+  "regex.resultProp": { argTypes: [arrayOf(STRING), STRING], result: DYN },
   // node:events EventEmitter: receivers are emitter-hierarchy objects and
   // the chaining forms (on/off/removeAll/setMax) return the receiver's
   // own class — program-dependent object types, checked in the libCall
@@ -3877,7 +3890,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /* Circular references over cycle-capable composites (recursive record/
    * class types): circCheck answers a value's circular id when it is
    * already on the traversal stack (0 otherwise), seenPush/refWrap
-   * bracket the frame (refWrap adds Node's "<ref *N> " prefix to values
+   * bracket the frame (insp.end adds Node's "<ref *N> " prefix to values
    * the walk found circular), circular renders "[Circular *N]". */
   "insp.circCheck": { argTypes: [null], result: F64 },
   "insp.seenPush": { argTypes: [null], result: VOID },
@@ -4191,6 +4204,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.valueOf": { argTypes: [DATE_T], result: F64 },
   "date.toISOString": { argTypes: [F64], result: STRING },
   "date.toISOStringValue": { argTypes: [DATE_T], result: STRING },
+  /** Date.prototype.toUTCString over a stored Date ("Invalid Date" for
+   * NaN; never throws). */
+  "date.toUTCString": { argTypes: [DATE_T], result: STRING },
   "date.getFullYear": { argTypes: [DATE_T], result: F64 },
   "date.getUTCFullYear": { argTypes: [DATE_T], result: F64 },
   "date.getMonth": { argTypes: [DATE_T], result: F64 },

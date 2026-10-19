@@ -1297,9 +1297,9 @@ static ScrDyn *scr_dns_exception(int rc, const char *syscall, const ScrStr *host
   scr_error_set_code(e, code);
   e->system_call = scr_str_new(syscall, strlen(syscall));
   e->system_errno = errnum;
+  scr_error_set_prop(e, "hostname", 8, scr_dyn_new_str((ScrStr *)host));
   ScrDyn *d = scr_dyn_from_error(e);
   scr_error_release(e);
-  scr_dyn_obj_set(d, "hostname", 8, scr_dyn_new_str((ScrStr *)host));
   return d;
 }
 

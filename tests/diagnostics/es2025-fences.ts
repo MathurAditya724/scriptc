@@ -1,6 +1,6 @@
 // The es2025-lib surface WITHOUT a lowering fences by name: resizable
 // ArrayBuffers and transfer, SharedArrayBuffer.grow, Atomics.waitAsync,
-// first-class iterator objects, and the unlowered forms of the
+// Iterator.from over objects with their own next method, and the unlowered forms of the
 // implemented statics (Promise.try with fewer arguments than parameters,
 // groupBy's literal-union keys, a set-like non-Set argument).
 
@@ -21,8 +21,8 @@ sab.grow(16);
 const ia = new Int32Array(4);
 const waited = Atomics.waitAsync(ia, 0, 0, 1);
 
-// First-class iterator objects.
-const it = Iterator.from([1, 2, 3].values());
+// Iterator.from over an object with its own next method.
+const it = Iterator.from({ next: (): IteratorResult<number> => ({ value: 1, done: false }) });
 
 // Promise.try with fewer arguments than the callback's parameters.
 const tried = Promise.try((a: number, b?: number) => a + (b ?? 0), 1);
