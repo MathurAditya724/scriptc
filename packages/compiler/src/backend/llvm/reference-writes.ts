@@ -104,6 +104,7 @@ const INERT_LIB_CALLS = new Set([
   "regex.groupEquals",
   "regex.groupNumber",
   "regex.groupParseInt",
+  "regex.resultProp",
   "process.cwd",
   "process.argv",
   "process.execArgv",

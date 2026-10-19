@@ -63,64 +63,64 @@ import { LlvmUnsupportedError } from "./unsupported.js";
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
-  declare(decl: string): void;
   /** The hierarchy root of a class (a program class or a runtime base),
    * or undefined for classes outside the class graph. */
   classRootOf?(className: string): string | undefined;
-  /** Request the shared OOM abort helper (@sc_oom) — emitted once. */
-  needOom(): void;
+  /** Byte offset from an object pointer back to ScrCycHdr.buf. */
+  readonly cycleBufOffset: number;
+  declare(decl: string): void;
+  /** Inline the small-object allocator's fast paths (llvm/alloc.ts). */
+  readonly inlineAlloc?: boolean;
+  /** Record and class fields that store a scalar union's tag and bits
+   * inline (inline-unions.ts): they own nothing. */
+  readonly inlineUnions: InlineUnionFields;
   /** The immutable ScrMapOps descriptor (scr_map.h) of a Map or Set type:
    * a module constant holding the LLVM operands { key retain, key release,
    * key trace, value retain, value release, value trace, union key kinds },
    * or `null` when every operand is null. */
   mapOps(operands: readonly string[]): string;
-  /** The target C ABI's `size_t` / refcount integer type. */
-  readonly sizeType: "i32" | "i64";
-  /** Byte offset from an object pointer back to ScrCycHdr.buf. */
-  readonly cycleBufOffset: number;
-  readonly tracedShapes: Set<string>;
-  readonly tracedUnions: Set<string>;
+  /** Request the shared OOM abort helper (@sc_oom) — emitted once. */
+  needOom(): void;
+  /** The next collector statistics index for an emitted ScrCycType
+   * descriptor (cycTypeDescriptor), counting from FIRST_EMITTED_CYC_KIND
+   * in emission order.
+   * Absent: every descriptor gets 0, which keeps no statistics. */
+  nextCycKind?(): number;
   /** Unions represented as a nullable arm pointer (nullable-unions.ts):
    * their RC and trace entry points are the arm's NULL-tolerant ones. */
   readonly nullableUnions: NullableUnions;
-  /** Record and class fields that store a scalar union's tag and bits
-   * inline (inline-unions.ts): they own nothing. */
-  readonly inlineUnions: InlineUnionFields;
-  /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
-  unionNoneRef(): string;
-  readonly recordsById: Map<string, IrRecordShape>;
-  readonly recordCloneShapes: ReadonlySet<string>;
-  /** The program constructs lifetime regions: the ProgramLifetime classes
-   * allocate in regions and count references in their region chunk instead
-   * of being empty (llvm/regions.ts). */
-  regions?: RegionHooks | null;
-  /** The alias tag of a runtime word that lifetime-region code reads and
-   * writes outside every field: the chunk count, the chunk owner, the class
-   * cursors and scr_region_counting (", !tbaa !N", or "" in debug builds). */
-  regionAliasTag?(word: "count" | "owner" | "cursor" | "counting"): string;
   /** Emit the live-object audit notes (`scr_obj_alloc_note` /
    * `scr_obj_free_note`) in emitted new/free helpers. Only runtimes built
    * with SCR_RC_AUDIT (the sanitized lane) count them; release and dev
    * runtime packs define them empty, so plain builds omit the calls.
    * Absent means emit. */
   readonly objectAudit?: boolean;
-  /** Inline the small-object allocator's fast paths (llvm/alloc.ts). */
-  readonly inlineAlloc?: boolean;
-  /** Worker executables: the inline allocator state is thread-local. */
-  readonly threadLocalAlloc?: boolean;
   /** Inline RC fast-path helpers requested so far ("<family>:<op>"); the
    * emitter defines each once through {@link emitInlineRcHelpers}. Null
    * keeps every retain/release a runtime call. */
   readonly rcHelpers: Set<string> | null;
-  /** Which fast paths are inlined (see {@link InlineRcMode}). */
-  readonly rcMode?: InlineRcMode;
   /** Define the fast-path helpers `noinline` (see {@link inlineRcOption}). */
   readonly rcHelpersNoinline?: boolean;
-  /** The next collector statistics index for an emitted ScrCycType
-   * descriptor (cycTypeDescriptor), counting from FIRST_EMITTED_CYC_KIND
-   * in emission order.
-   * Absent: every descriptor gets 0, which keeps no statistics. */
-  nextCycKind?(): number;
+  /** Which fast paths are inlined (see {@link InlineRcMode}). */
+  readonly rcMode?: InlineRcMode;
+  readonly recordCloneShapes: ReadonlySet<string>;
+  readonly recordsById: Map<string, IrRecordShape>;
+  /** The alias tag of a runtime word that lifetime-region code reads and
+   * writes outside every field: the chunk count, the chunk owner, the class
+   * cursors and scr_region_counting (", !tbaa !N", or "" in debug builds). */
+  regionAliasTag?(word: "count" | "owner" | "cursor" | "counting"): string;
+  /** The program constructs lifetime regions: the ProgramLifetime classes
+   * allocate in regions and count references in their region chunk instead
+   * of being empty (llvm/regions.ts). */
+  regions?: RegionHooks | null;
+  /** The target C ABI's `size_t` / refcount integer type. */
+  readonly sizeType: "i32" | "i64";
+  /** Worker executables: the inline allocator state is thread-local. */
+  readonly threadLocalAlloc?: boolean;
+  readonly tracedShapes: Set<string>;
+  readonly tracedUnions: Set<string>;
+  /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
+  unionNoneRef(): string;
 }
 
 /** What class emission asks of lifetime regions (LifetimeRegions in

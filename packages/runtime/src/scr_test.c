@@ -2279,6 +2279,26 @@ double scr_test_mt_set_immediate(ScrClosure *cb /*moves*/) {
   ScrMockTimers *m = scr_mt_owner[SCR_MT_IMMEDIATE];
   return m ? scr_mt_create(m, false, cb, -1)->handle : scr_set_immediate(cb);
 }
+/* The same calls in a program that enters AsyncLocalStorage stores: a
+ * mocked timer runs in the context its tick() runs in, as in Node; a real
+ * one keeps the stores active when it was scheduled. */
+void scr_test_mt_set_timeout_als(ScrClosure *cb /*moves*/, double ms) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_TIMEOUT];
+  if (m) (void)scr_mt_create(m, false, cb, ms);
+  else scr_set_timeout_als(cb, ms);
+}
+double scr_test_mt_set_timeout_handle_als(ScrClosure *cb /*moves*/, double ms) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_TIMEOUT];
+  return m ? scr_mt_create(m, false, cb, ms)->handle : scr_set_timeout_handle_als(cb, ms);
+}
+double scr_test_mt_set_interval_als(ScrClosure *cb /*moves*/, double ms) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_INTERVAL];
+  return m ? scr_mt_create(m, true, cb, ms)->handle : scr_set_interval_als(cb, ms);
+}
+double scr_test_mt_set_immediate_als(ScrClosure *cb /*moves*/) {
+  ScrMockTimers *m = scr_mt_owner[SCR_MT_IMMEDIATE];
+  return m ? scr_mt_create(m, false, cb, -1)->handle : scr_set_immediate_als(cb);
+}
 void scr_test_mt_clear_immediate(double handle) {
   ScrMockTimers *m = scr_mt_owner[SCR_MT_IMMEDIATE];
   if (m) scr_mt_clear(m, handle);

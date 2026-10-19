@@ -39,6 +39,7 @@ import {
   iteratorSlotAdapter,
   lowerArrayIteratorValue,
   lowerBytesIteratorValue,
+  lowerCollectionIteratorValue,
   lowerStringIteratorValue,
 } from "../iterator-adapters.js";
 import { lowerArrayCallback } from "./callback-arguments.js";
@@ -157,15 +158,45 @@ export function lowerGeneratorHelperCall(
     if (call.arguments.length !== 1 || argNode === undefined || ts.isSpreadElement(argNode)) {
       lowerer.noLowering(`.${name} with ${call.arguments.length} arguments`, call);
     }
+    // A stage on m.keys()/values()/entries() (or a Set's) walks the
+    // collection inside the helper's own generator.
+    const collection = collectionIteratorCall(lowerer, access.expression);
+    if (collection !== null) {
+      const coll = lowerer.lowerExpr(collection.receiver);
+      if (coll.type.kind !== "map" && coll.type.kind !== "set")
+        lowerer.badType(collection.receiver, lowerer.typeOf(collection.receiver));
+      const source: ChainSource = { kind: "collection", type: coll.type, proj: collection.proj };
+      const elem = collectionSeed(lowerer, source);
+      const { stage, out } = lowerStage(lowerer, { name, argNode, access }, elem, loc);
+      return lowerHelperObject(lowerer, call, coll, source, elem, stage, out, loc);
+    }
     const src = lowerHelperSource(lowerer, access.expression);
     if (name !== "take" && name !== "drop") {
       const { stage, out } = lowerStage(lowerer, { name, argNode, access }, src.elem, loc);
-      return lowerHelperObject(lowerer, call, src.gen, src.elem, stage, out, loc);
+      return lowerHelperObject(
+        lowerer,
+        call,
+        src.gen,
+        { kind: "generator", type: src.gen.type, elem: src.elem },
+        src.elem,
+        stage,
+        out,
+        loc,
+      );
     }
     // The budget check closes the source, so the source is bound first.
     const bound = bindSource(lowerer, src.gen, loc);
     const { stage, out } = lowerStage(lowerer, { name, argNode, access }, src.elem, loc, bound.ref);
-    const helper = lowerHelperObject(lowerer, call, bound.ref, src.elem, stage, out, loc);
+    const helper = lowerHelperObject(
+      lowerer,
+      call,
+      bound.ref,
+      { kind: "generator", type: src.gen.type, elem: src.elem },
+      src.elem,
+      stage,
+      out,
+      loc,
+    );
     return { kind: "seqExpr", stmts: [bound.decl], result: helper, type: helper.type, loc };
   }
   // The stages before the terminal, back to the first receiver that is
@@ -281,8 +312,8 @@ function isHelperObject(lowerer: Lowerer, expr: ts.Expression): boolean {
  * iterator, which already inherits from Iterator.prototype, so Node returns
  * it rather than a wrapper. A generator (including a helper object or an
  * array iterator) is itself; an array, string or typed array gives its
- * values iterator; a Set its values and a Map its entries, adapted into a
- * generator over the live collection. The result converts into the call's
+ * values iterator; a Set its values and a Map its entries, as a generator
+ * over the live collection. The result converts into the call's
  * IteratorObject type. Null for other arguments (objects with their own
  * next method, untyped values), which keep the Iterator fence. */
 export function lowerIteratorFromCall(
@@ -317,16 +348,13 @@ export function lowerIteratorFromCall(
     iterator = lowerBytesIteratorValue(lowerer, value, "values", own(F64), loc);
   else if (t.kind === "set" || t.kind === "map") {
     const elem = t.kind === "set" ? t.elem : entryPairTypeOf(lowerer, t.key, t.value);
-    const native: IrExpr = {
-      kind: "dynInvoke",
-      recv: lowerer.coerceToExpected(value, DYN),
-      method: t.kind === "set" ? "values" : "entries",
-      calleeName: t.kind === "set" ? "set.values" : "map.entries",
-      args: [],
-      type: DYN,
+    iterator = lowerCollectionIteratorValue(
+      lowerer,
+      value,
+      t.kind === "set" ? "values" : "entries",
+      own(elem),
       loc,
-    };
-    iterator = iteratorSlotAdapter(lowerer, native, own(elem));
+    );
   }
   if (iterator === null) lowerer.badType(argNode, lowerer.typeOf(argNode));
   const result = lowerer.coerceToExpected(iterator, resultT);
@@ -686,6 +714,14 @@ function lowerHelperSource(
   )
     lowerer.badType(expr, tsType);
   const target: GenType = { kind: "generator", yieldT, retT: VOID, nextT: UNDEFINED_T };
+  // m.keys()/values()/entries() (or a Set's) on a typed collection: a
+  // generator over the collection with typed reads.
+  const collection = collectionIteratorCall(lowerer, expr);
+  if (collection !== null) {
+    const coll = lowerer.lowerExpr(collection.receiver);
+    const walk = lowerCollectionIteratorValue(lowerer, coll, collection.proj, target, locOf(expr));
+    if (walk !== null) return { gen: walk as IrExpr & { type: GenType }, elem: yieldT };
+  }
   const adapted = iteratorSlotAdapter(lowerer, lowerer.lowerExpr(expr), target);
   if (adapted === null || adapted.type.kind !== "generator") lowerer.badType(expr, tsType);
   return { gen: adapted as IrExpr & { type: GenType }, elem: yieldT };
@@ -937,7 +973,8 @@ function lowerFusedChain(
 function lowerHelperObject(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  src: IrExpr & { type: GenType },
+  src: IrExpr,
+  source: (ChainSource & { kind: "generator" }) | (ChainSource & { kind: "collection" }),
   srcElem: IrType,
   stage: StageIr,
   out: IrType,
@@ -961,21 +998,23 @@ function lowerHelperObject(
       "the helper's element type must be representable — annotate the callback's types",
     );
   }
-  if (!stepDrivable(src.type)) {
+  if (source.kind === "generator" && !stepDrivable(source.type)) {
     lowerer.noLowering(
-      `.${stage.kind} over an iterator yielding '${lowerer.fmt(src.type.yieldT)}'`,
+      `.${stage.kind} over an iterator yielding '${lowerer.fmt(source.type.yieldT)}'`,
       call,
       "helpers over iterators of numbers, booleans, strings, arrays, records and class instances are the supported forms",
     );
   }
   const arg = "budget" in stage ? stage.budget : stage.fn;
-  const key = `iterHelper:${stage.kind}:${typeKey(src.type)}:${typeKey(srcElem)}:${typeKey(arg.type)}:${typeKey(outT)}`;
+  const srcKey =
+    source.kind === "collection" ? `${source.proj}:${typeKey(source.type)}` : typeKey(source.type);
+  const key = `iterHelper:${stage.kind}:${srcKey}:${typeKey(srcElem)}:${typeKey(arg.type)}:${typeKey(outT)}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (!name) {
     name = `%iter.${stage.kind}.${lowerer.arrHofHelpers.size}`;
     lowerer.arrHofHelpers.set(key, name);
     lowerer.liftedFns.push(
-      buildHelperGenFn(lowerer, name, src.type, srcElem, stage, arg.type, outT, resultType, loc),
+      buildHelperGenFn(lowerer, name, source, srcElem, stage, arg.type, outT, resultType, loc),
     );
   }
   return { kind: "call", callee: name, args: [src, arg], type: outT, loc };
@@ -1261,6 +1300,107 @@ function driveGenerator(
           else_: null,
           loc,
         },
+      ],
+      loc,
+    },
+  ];
+}
+
+/** Statements that walk the Map or Set in local `collId` from inside a
+ * helper's generator: each pass runs `pre` (which may `break`), takes the
+ * next live entry index from the runtime's native iterator, which keeps
+ * the walk live and ends it when exhausted or released, and runs `body`
+ * over the projected element read with the typed intrinsics. */
+function driveCollectionNative(
+  lowerer: Lowerer,
+  frame: ChainFrame,
+  collId: string,
+  source: ChainSource & { kind: "collection" },
+  pre: IrStmt[],
+  body: (value: IrExpr) => IrStmt[],
+  loc: SrcLoc,
+): IrStmt[] {
+  const t = source.type;
+  const coll = (): IrExpr => varRef(collId, t, loc);
+  const nativeId = frame.local("native", DYN, false);
+  const iId = frame.local("i", F64, false);
+  const read = (method: "iterKey" | "iterValue", type: IrType): IrExpr =>
+    t.kind === "map"
+      ? { kind: "mapIntrinsic", method, receiver: coll(), args: [varRef(iId, F64, loc)], type, loc }
+      : {
+          kind: "setIntrinsic",
+          method: "iterKey",
+          receiver: coll(),
+          args: [varRef(iId, F64, loc)],
+          type,
+          loc,
+        };
+  const keyT = t.kind === "map" ? t.key : t.elem;
+  const valueT = t.kind === "map" ? t.value : t.elem;
+  const seedT = collectionSeed(lowerer, source);
+  const seed: IrExpr =
+    source.proj === "entries"
+      ? {
+          kind: "recordLit",
+          fields: [
+            { name: "0", value: read("iterKey", keyT) },
+            { name: "1", value: read("iterValue", valueT) },
+          ],
+          type: seedT,
+          loc,
+        }
+      : source.proj === "values" && t.kind === "map"
+        ? read("iterValue", valueT)
+        : read("iterKey", keyT);
+  const vId = frame.local("v", seedT, false);
+  return [
+    {
+      kind: "varDecl",
+      localId: nativeId,
+      init: {
+        kind: "dynInvoke",
+        recv: lowerer.coerceToExpected(coll(), DYN),
+        method: "values",
+        calleeName: t.kind === "map" ? "map.values" : "set.values",
+        args: [],
+        type: DYN,
+        loc,
+      },
+      loc,
+    },
+    {
+      kind: "while",
+      cond: boolLit(true, loc),
+      body: [
+        ...pre,
+        {
+          kind: "varDecl",
+          localId: iId,
+          init: {
+            kind: "libCall",
+            fn: "dyn.collectionIteratorIndex",
+            args: [varRef(nativeId, DYN, loc)],
+            type: F64,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: {
+            kind: "bin",
+            op: "<",
+            left: varRef(iId, F64, loc),
+            right: numLit(0, loc),
+            type: BOOL,
+            loc,
+          },
+          then: [{ kind: "break", loc }],
+          else_: null,
+          loc,
+        },
+        { kind: "varDecl", localId: vId, init: seed, loc },
+        ...body(varRef(vId, seedT, loc)),
       ],
       loc,
     },
@@ -1978,7 +2118,7 @@ function buildIterChainFn(
 function buildHelperGenFn(
   lowerer: Lowerer,
   name: string,
-  srcT: GenType,
+  source: (ChainSource & { kind: "generator" }) | (ChainSource & { kind: "collection" }),
   srcElem: IrType,
   stage: StageIr,
   argT: IrType,
@@ -1987,8 +2127,12 @@ function buildHelperGenFn(
   loc: SrcLoc,
 ): IrFunction {
   const frame = new LiftedFrame(loc);
-  const srcId = frame.param("src", srcT);
+  const srcId = frame.param("src", source.type);
   const argId = frame.param(stage.kind === "take" || stage.kind === "drop" ? "n" : "f", argT);
+  const drive = (pre: IrStmt[], each: (value: IrExpr) => IrStmt[], at: SrcLoc): IrStmt[] =>
+    source.kind === "generator"
+      ? driveGenerator(lowerer, frame, srcId, source.type, srcElem, pre, each, at)
+      : driveCollectionNative(lowerer, frame, srcId, source, pre, each, at);
   const yieldOf = (value: IrExpr): IrStmt => ({
     kind: "exprStmt",
     expr: {
@@ -2014,12 +2158,7 @@ function buildHelperGenFn(
   const n = (): IrExpr => varRef(argId, F64, loc);
   if (stage.kind === "map") {
     body.push(
-      ...driveGenerator(
-        lowerer,
-        frame,
-        srcId,
-        srcT,
-        srcElem,
+      ...drive(
         [],
         (value) => {
           const mId = frame.local("m", fnT!.ret, false);
@@ -2034,12 +2173,7 @@ function buildHelperGenFn(
     );
   } else if (stage.kind === "filter") {
     body.push(
-      ...driveGenerator(
-        lowerer,
-        frame,
-        srcId,
-        srcT,
-        srcElem,
+      ...drive(
         [],
         (value) => {
           const okId = frame.local("ok", BOOL, false);
@@ -2070,28 +2204,12 @@ function buildHelperGenFn(
         loc,
       },
     ];
-    body.push(
-      ...driveGenerator(
-        lowerer,
-        frame,
-        srcId,
-        srcT,
-        srcElem,
-        pre,
-        (value) => [yieldOf(value)],
-        loc,
-      ),
-    );
+    body.push(...drive(pre, (value) => [yieldOf(value)], loc));
   } else if (stage.kind === "drop") {
     const droppedId = frame.local("dropped", F64, true);
     body.push({ kind: "varDecl", localId: droppedId, init: numLit(0, loc), loc });
     body.push(
-      ...driveGenerator(
-        lowerer,
-        frame,
-        srcId,
-        srcT,
-        srcElem,
+      ...drive(
         [],
         (value) => [
           {
@@ -2115,12 +2233,7 @@ function buildHelperGenFn(
     );
   } else {
     body.push(
-      ...driveGenerator(
-        lowerer,
-        frame,
-        srcId,
-        srcT,
-        srcElem,
+      ...drive(
         [],
         (value) => {
           const innerT = fnT!.ret;
@@ -2142,7 +2255,14 @@ function buildHelperGenFn(
     returnType: VOID,
     locals: frame.locals,
     body,
-    generator: { yieldT: outT.yieldT, nextT: outT.nextT, resultType, closesSource: true },
+    generator: {
+      yieldT: outT.yieldT,
+      nextT: outT.nextT,
+      resultType,
+      tag: "Iterator Helper",
+      // A native Map or Set iterator has no return() to call.
+      ...(source.kind === "generator" ? { closesSource: true as const } : {}),
+    },
     loc,
   };
 }

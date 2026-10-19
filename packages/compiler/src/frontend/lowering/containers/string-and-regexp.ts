@@ -1,3 +1,4 @@
+import { matchAllRowsReadByElements } from "./match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import {
@@ -869,7 +870,7 @@ export function lowerRegexMethodCall(
     const re = lowerer.lowerExprExpecting(arg0, { kind: "regex" });
     return {
       kind: "regexIntrinsic",
-      method: "matchAll",
+      method: matchAllRowsReadByElements(lowerer, call, false) ? "matchAllCaptures" : "matchAll",
       receiver,
       args: [re],
       type: arrayOf(arrayOf(STRING)),

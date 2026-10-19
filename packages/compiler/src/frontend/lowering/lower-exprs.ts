@@ -2161,13 +2161,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         (lowerer.isStdlibMember(expr) || isJsSourceFile(expr.getSourceFile()))
       ) {
         const recv = represented;
-        const read: IrExpr = {
-          kind: "dynKeyGet",
-          value: lowerer.coerceToExpected(recv, DYN),
-          key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
-          type: DYN,
-          loc,
-        };
+        const key: IrExpr = { kind: "strLit", value: expr.name.text, type: STRING, loc };
+        // A plain slice answers from its match source without a dynamic copy.
+        const read: IrExpr = typeEquals(recv.type, arrayOf(STRING))
+          ? { kind: "libCall", fn: "regex.resultProp", args: [recv, key], type: DYN, loc }
+          : { kind: "dynKeyGet", value: lowerer.coerceToExpected(recv, DYN), key, type: DYN, loc };
         return lowerer.maybeNarrow(read, expr);
       }
     }
@@ -9021,6 +9019,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
     return { kind: "libCall", fn: "url.href", args: [e], type: STRING, loc: e.loc };
+  // String(date) / `${date}` / "" + date: Date's ToPrimitive prefers
+  // toString().
+  if (e.type.kind === "date")
+    return { kind: "libCall", fn: "date.toString", args: [e], type: STRING, loc: e.loc };
   if (e.type.kind === "regex") {
     return {
       kind: "regexIntrinsic",

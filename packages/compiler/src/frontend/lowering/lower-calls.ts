@@ -2800,7 +2800,8 @@ function lowerObjectPrototypeCall(
   const immediate = immediateObjectTagReceiver(lowerer, receiverNode);
   const receiver = immediate?.effect ?? lowerer.lowerExpr(receiverNode);
   const tag = immediate?.tag ?? objectToStringTag(lowerer, receiver.type);
-  if (tag === null && receiver.type.kind !== "dyn") {
+  // A generator object answers its tag through its checked capsule.
+  if (tag === null && receiver.type.kind !== "dyn" && receiver.type.kind !== "generator") {
     lowerer.noLowering(
       "Object.prototype.toString.call over a " + lowerer.fmt(receiver.type) + " receiver",
       receiverNode,
@@ -2820,7 +2821,13 @@ function lowerObjectPrototypeCall(
   }
   const result: IrExpr =
     tag === null
-      ? { kind: "libCall", fn: "dyn.objectTag", args: [ref], type: STRING, loc }
+      ? {
+          kind: "libCall",
+          fn: "dyn.objectTag",
+          args: [ref.type.kind === "generator" ? lowerer.coerceToExpected(ref, DYN) : ref],
+          type: STRING,
+          loc,
+        }
       : { kind: "strLit", value: "[object " + tag + "]", type: STRING, loc };
   return { kind: "seqExpr", stmts, result, type: STRING, loc };
 }

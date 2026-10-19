@@ -27,6 +27,11 @@ export interface RuntimeFeatures {
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
   dynTier: boolean;
+  /** The program enters AsyncLocalStorage stores (store.run, enterWith,
+   * a diagnostics_channel store binding): its timer, immediate, tick and
+   * queueMicrotask scheduling goes through the runtime's *_als entry
+   * points, which carry the active stores into each callback. */
+  asyncContext: boolean;
   inspect: boolean;
   childProcess: boolean;
   net: boolean;
@@ -111,6 +116,16 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dc.chanRunStores",
 ]);
 
+/** The libCalls that enter AsyncLocalStorage stores (RuntimeFeatures
+ * asyncContext). */
+const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "als.run",
+  "als.exitRun",
+  "als.enterWith",
+  "dc.chanBindStore",
+  "dc.chanRunStores",
+]);
+
 const LEGACY_URL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.legacyParse",
   "url.legacyFormat",
@@ -125,6 +140,166 @@ const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.callbackify",
   "util.debuglog",
 ]);
+
+/** Entry points that link the regex unit: the regex and glob matchers (fs.glob's walk compiles its patterns with the glob matcher), and readline's terminal unit (scr_readline_tty.c), which measures with the regex unit's stripVTControlCharacters. */
+const REGEX_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "dyn.nativeRegexIs",
+  "fs.callbackGlob",
+  "fs.globSync",
+  "fs.globTypesSync",
+  "fsp.globError",
+  "fsp.globStrings",
+  "fsp.globTypes",
+  "path.matchesGlob",
+  "path.win32MatchesGlob",
+  "regexp.escape",
+  "rl.cursorPos",
+  "rl.keypressStdin",
+  "rl.keypressStream",
+  "stdin.onKeypress",
+  "util.stripVTControlCharacters",
+]);
+
+/** TextDecoder entry points over the legacy encodings. */
+const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "text.decodeLegacy",
+  "text.decodeLegacyOptions",
+  "text.decodeStream",
+]);
+
+/** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
+const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "http.clientSignal",
+  "rl.createSignal",
+  "rl.questionAsyncSignal",
+  "sp.finishedOptsSignal",
+  "sp.pipelineOptsSignal",
+  "stream.addAbortSignal",
+  "stream.addAbortSignalFn",
+  "stream.finishedOptsSignal",
+  "tp.schedulerWaitSignal",
+  "tp.setImmediateSignal",
+  "tp.setTimeoutSignal",
+]);
+
+/** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
+const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "console.bind",
+  "crypto.hashStream",
+  "crypto.hashStreamPiped",
+  "fileHandle.createReadStream",
+  "fileHandle.createWriteStream",
+  "fs.createReadStream",
+  "fs.createWriteStream",
+  "sp.finished",
+  "sp.pipeline",
+  "sp.pipelineStages",
+  "stream.addAbortSignal",
+  "stream.addAbortSignalFn",
+  "stream.destroy",
+  "stream.destroyErr",
+  "stream.errored",
+  "stream.prop",
+  "stream.workerStdio",
+]);
+
+/** libCall name prefixes that link the stream unit. */
+const STREAM_LIB_PREFIXES: readonly string[] = [
+  "duplex.",
+  "fs.fsStream",
+  "passthrough.",
+  "readable.",
+  "sc.",
+  "sp.finishedOpts",
+  "sp.pipelineOpts",
+  "stream.finishedOpts",
+  "stream.pipelineStages",
+  "stream.set",
+  "transform.",
+  "writable.",
+  "zlib.stream",
+];
+
+/** The Readable operators and Readable.from over a compiled generator or a checked-dynamic iterator (scr_stream_ops.c), which await through the dyn-async unit (with READABLE_DYN_ASYNC_PREFIXES). */
+const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "readable.fromAsyncGen",
+  "readable.fromAsyncIter",
+  "readable.fromDone",
+  "readable.fromDyn",
+  "readable.fromIter",
+]);
+
+/** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
+const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "readable.op"];
+
+/** Entry points that link the dyn-invoke unit. */
+const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "dyn.arrayProtoCall",
+  "dyn.arrayPrototype",
+  "dyn.builtinMethod",
+  "dyn.defineProperty",
+  "dyn.defineProps",
+  "dyn.definePrototypeProps",
+  "dyn.functionApply",
+  "dyn.objCreateWithProperties",
+]);
+
+/** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
+const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "process.connected",
+  "process.disconnect",
+  "process.forkTarget",
+  "process.onDisconnect",
+  "process.onMessage",
+  "process.send",
+  "process.sendCb",
+]);
+
+/** libCall name prefixes that link the child-process unit. */
+const CHILD_PROCESS_LIB_PREFIXES: readonly string[] = ["child.", "cp.", "spawnRes.", "writer."];
+
+/** Entry points that link the symbol unit, besides the sym. and disposable. families. */
+const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "dyn.usingDispose",
+  "dyn.usingMethod",
+  "util.isDeepStrictEqual",
+]);
+
+/** Entry points that link the querystring unit. */
+const QS_LIB_FNS: ReadonlySet<IrLibFn> = new Set(["qs.parse", "qs.stringify", "qs.unescape"]);
+
+/** Entry points that link the parseArgs unit. */
+const PARSE_ARGS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "util.isDeepStrictEqual",
+  "util.parseArgs",
+  "util.styleText",
+]);
+
+/** String methods whose Unicode tables live in the regex unit's libunicode. */
+const CASE_MAPPING_STR_METHODS: ReadonlySet<string> = new Set([
+  "normalize",
+  "toLowerCase",
+  "toUpperCase",
+]);
+
+/** Array methods that link the copying unit. */
+const COPYING_ARR_METHODS: ReadonlySet<string> = new Set([
+  "toReversed",
+  "toSpliced",
+  "with",
+  "withUndefined",
+]);
+
+/** Typed-array methods that link the copying unit. */
+const COPYING_BYTES_METHODS: ReadonlySet<string> = new Set([
+  "join",
+  "toArray",
+  "toReversed",
+  "with",
+]);
+
+const startsWithAny = (fn: string, prefixes: readonly string[]): boolean =>
+  prefixes.some((prefix) => fn.startsWith(prefix));
 
 /** Inspect types and expressions together in one traversal. This is a fresh
  * snapshot: callers may mutate an IR module between compilation passes. */
@@ -212,6 +387,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
     dynTier: false,
+    asyncContext: false,
     inspect: false,
     childProcess: false,
     net: false,
@@ -244,127 +420,33 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     if (node.kind === "libCall") {
       const fn = node.fn;
       if (fn.startsWith("js.")) features.dynTier = true;
-      if (
-        fn === "regexp.escape" ||
-        fn === "dyn.nativeRegexIs" ||
-        fn === "util.stripVTControlCharacters" ||
-        fn === "path.matchesGlob" ||
-        fn === "path.win32MatchesGlob" ||
-        // fs.glob's walk compiles its patterns with the glob matcher.
-        fn === "fs.globSync" ||
-        fn === "fs.globTypesSync" ||
-        fn === "fs.callbackGlob" ||
-        fn === "fsp.globStrings" ||
-        fn === "fsp.globTypes" ||
-        fn === "fsp.globError"
-      )
-        features.regex = true;
-      if (
-        fn === "text.decodeLegacy" ||
-        fn === "text.decodeLegacyOptions" ||
-        fn === "text.decodeStream"
-      )
-        features.legacyTextDecoder = true;
+      if (REGEX_LIB_FNS.has(fn)) features.regex = true;
+      if (LEGACY_TEXT_DECODER_LIB_FNS.has(fn)) features.legacyTextDecoder = true;
       if (fn.startsWith("fetch.")) features.fetch = true;
       if (fn.startsWith("event.") || fn === "events.addAbortListener") features.eventTarget = true;
-      // Signal-taking readline, stream and timers/promises entry points
-      // register abort listeners.
-      if (
-        fn === "rl.createSignal" ||
-        fn === "rl.questionAsyncSignal" ||
-        fn === "http.clientSignal" ||
-        fn === "tp.setTimeoutSignal" ||
-        fn === "tp.schedulerWaitSignal" ||
-        fn === "tp.setImmediateSignal" ||
-        fn === "stream.addAbortSignal" ||
-        fn === "stream.addAbortSignalFn" ||
-        fn === "sp.finishedOptsSignal" ||
-        fn === "sp.pipelineOptsSignal" ||
-        fn === "stream.finishedOptsSignal"
-      ) {
-        features.eventTarget = true;
-      }
+      if (ABORT_SIGNAL_LIB_FNS.has(fn)) features.eventTarget = true;
       if (PROCESS_EVENT_LIB_FNS.has(fn)) features.processEvents = true;
-      // readline's terminal unit (scr_readline_tty.c) measures with the
-      // regex unit's stripVTControlCharacters; with a completer it prints
-      // completion errors through the inspect unit.
-      if (
-        fn === "rl.cursorPos" ||
-        fn === "rl.keypressStdin" ||
-        fn === "rl.keypressStream" ||
-        fn === "stdin.onKeypress"
-      )
-        features.regex = true;
+      // With a completer, readline's terminal unit prints completion errors
+      // through the inspect unit.
       if (fn === "rl.terminal") {
         features.regex = true;
         if (!isDynUndefined(node.args[3]!)) features.inspect = true;
       }
       if (fn.startsWith("emitter.")) features.emitter = true;
-      if (
-        fn.startsWith("readable.") ||
-        fn.startsWith("writable.") ||
-        fn.startsWith("duplex.") ||
-        fn.startsWith("transform.") ||
-        fn.startsWith("passthrough.") ||
-        fn.startsWith("sc.") ||
-        fn.startsWith("stream.set") ||
-        fn === "stream.destroy" ||
-        fn === "stream.destroyErr" ||
-        fn === "stream.prop" ||
-        fn === "stream.workerStdio" ||
-        fn === "stream.errored" ||
-        fn === "sp.finished" ||
-        fn === "sp.pipeline" ||
-        fn === "sp.pipelineStages" ||
-        fn.startsWith("stream.pipelineStages") ||
-        fn === "console.bind" ||
-        fn === "crypto.hashStream" ||
-        fn === "crypto.hashStreamPiped" ||
-        fn === "stream.addAbortSignal" ||
-        fn === "stream.addAbortSignalFn" ||
-        fn.startsWith("sp.finishedOpts") ||
-        fn.startsWith("sp.pipelineOpts") ||
-        fn.startsWith("stream.finishedOpts") ||
-        fn.startsWith("zlib.stream") ||
-        fn === "fs.createReadStream" ||
-        fn === "fs.createWriteStream" ||
-        fn === "fileHandle.createReadStream" ||
-        fn === "fileHandle.createWriteStream" ||
-        fn.startsWith("fs.fsStream")
-      ) {
+      if (STREAM_LIB_FNS.has(fn) || startsWithAny(fn, STREAM_LIB_PREFIXES)) {
         // the stream unit emits through the emitter unit, also when the
         // program constructs no stream (a pipeline of functions)
         features.stream = true;
         features.emitter = true;
       }
       if (fn.startsWith("zlib.")) features.zlib = true;
-      // The Readable operators and Readable.from over a compiled generator
-      // or a checked-dynamic iterator (scr_stream_ops.c) await through the
-      // dyn-async unit.
-      if (
-        fn.startsWith("readable.op") ||
-        fn.startsWith("readable.fromGen") ||
-        fn === "readable.fromDyn" ||
-        fn === "readable.fromIter" ||
-        fn === "readable.fromAsyncIter" ||
-        fn === "readable.fromAsyncGen" ||
-        fn === "readable.fromDone"
-      )
+      if (READABLE_DYN_ASYNC_LIB_FNS.has(fn) || startsWithAny(fn, READABLE_DYN_ASYNC_PREFIXES))
         features.dynAsync = true;
       if (fn.startsWith("dc.")) features.dc = true;
       if (fn.startsWith("assert.")) features.assert = true;
-      if (
-        fn === "dyn.defineProps" ||
-        fn === "dyn.definePrototypeProps" ||
-        fn === "dyn.defineProperty" ||
-        fn === "dyn.objCreateWithProperties" ||
-        fn === "dyn.arrayProtoCall" ||
-        fn === "dyn.arrayPrototype" ||
-        fn === "dyn.functionApply" ||
-        fn === "dyn.builtinMethod"
-      )
-        features.dynInvoke = true;
+      if (DYN_INVOKE_LIB_FNS.has(fn)) features.dynInvoke = true;
       if (DYN_ASYNC_LIB_FNS.has(fn)) features.dynAsync = true;
+      if (ASYNC_CONTEXT_LIB_FNS.has(fn)) features.asyncContext = true;
       if (
         fn.startsWith("insp.") ||
         fn.startsWith("console.") ||
@@ -372,19 +454,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "util.styleText"
       )
         features.inspect = true;
-      if (
-        fn.startsWith("cp.") ||
-        fn.startsWith("child.") ||
-        fn.startsWith("writer.") ||
-        fn.startsWith("spawnRes.") ||
-        fn === "process.forkTarget" ||
-        fn === "process.connected" ||
-        fn === "process.send" ||
-        fn === "process.sendCb" ||
-        fn === "process.disconnect" ||
-        fn === "process.onMessage" ||
-        fn === "process.onDisconnect"
-      )
+      if (CHILD_PROCESS_LIB_FNS.has(fn) || startsWithAny(fn, CHILD_PROCESS_LIB_PREFIXES))
         features.childProcess = true;
       if (fn.startsWith("net.")) features.net = true;
       if (fn.startsWith("http.")) {
@@ -397,18 +467,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.tls = true;
       }
       if (fn.startsWith("http2.") && !HTTP2_LEGACY_FNS.has(fn)) features.http2 = true;
-      if (
-        fn.startsWith("sym.") ||
-        fn === "util.isDeepStrictEqual" ||
-        fn === "dyn.usingMethod" ||
-        fn === "dyn.usingDispose" ||
-        fn.startsWith("disposable.")
-      )
+      if (fn.startsWith("sym.") || fn.startsWith("disposable.") || SYMBOL_LIB_FNS.has(fn))
         features.symbol = true;
       if (fn === "process.hrtimeValue") features.bigint = true;
       if (fn.startsWith("bigint.")) features.bigint = true;
       if (fn.startsWith("sp.") || fn === "url.searchParams") features.searchParams = true;
-      if (fn === "qs.parse" || fn === "qs.stringify" || fn === "qs.unescape") features.qs = true;
+      if (QS_LIB_FNS.has(fn)) features.qs = true;
       // scr_url_legacy.c lowercases and normalizes hostnames (the regex
       // unit's libunicode), parses and stringifies queries, and emits its
       // deprecation warnings through the dyn-async unit.
@@ -417,8 +481,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.qs = true;
         features.dynAsync = true;
       }
-      if (fn === "util.parseArgs" || fn === "util.isDeepStrictEqual" || fn === "util.styleText")
-        features.parseArgs = true;
+      if (PARSE_ARGS_LIB_FNS.has(fn)) features.parseArgs = true;
       if (fn === "util.styleText") features.processEvents = true;
       // scr_util_callable.c: dyn wrappers over the descriptor, inspect,
       // regex (NODE_DEBUG matching) and terminal-color units.
@@ -455,30 +518,13 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
           features.regex = true;
           break;
         case "strIntrinsic":
-          if (
-            node.method === "toLowerCase" ||
-            node.method === "toUpperCase" ||
-            node.method === "normalize"
-          )
-            features.regex = true;
+          if (CASE_MAPPING_STR_METHODS.has(node.method)) features.regex = true;
           break;
         case "arrIntrinsic":
-          if (
-            node.method === "toReversed" ||
-            node.method === "toSpliced" ||
-            node.method === "with" ||
-            node.method === "withUndefined"
-          )
-            features.copying = true;
+          if (COPYING_ARR_METHODS.has(node.method)) features.copying = true;
           break;
         case "bytesIntrinsic":
-          if (
-            node.method === "toReversed" ||
-            node.method === "with" ||
-            node.method === "join" ||
-            node.method === "toArray"
-          )
-            features.copying = true;
+          if (COPYING_BYTES_METHODS.has(node.method)) features.copying = true;
           break;
         case "dynInvoke":
           features.dynInvoke = true;

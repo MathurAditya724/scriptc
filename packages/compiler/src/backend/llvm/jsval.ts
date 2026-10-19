@@ -48,10 +48,10 @@ function ownedTemp(host: Host, v: LlValue): boolean {
  * it was a temp, retained otherwise. */
 function takeOwned(host: Host, v: LlValue): string {
   if (ownedTemp(host, v)) {
-    host.moveTemp(v);
+    host.toFrame(v);
     return v.name;
   }
-  return host.retainValue(v.name, v.type);
+  return host.retainFrame(v.name, v.type);
 }
 
 function bitsOf(host: Host, v: string): string {
@@ -241,7 +241,7 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
     case "js.toDyn": {
       const v = host.emitExpr(e.args[0]!);
       const moved = ownedTemp(host, v);
-      if (moved) host.moveTemp(v);
+      if (moved) host.toFrame(v);
       const out = withSlowPath(
         host,
         "ptr",
@@ -257,7 +257,7 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
           const addr = B.tmp();
           B.line(`${addr} = and i64 ${bits}, ${JS_BITS.payloadMask}`);
           const p = wordOf(host, addr);
-          return moved ? p : host.retainValue(p, DYN);
+          return moved ? p : host.retainFrame(p, DYN);
         },
         () =>
           call(host, "ptr", moved ? "scr_js_to_dyn" : "scr_js_to_dyn_borrow", [["ptr", v.name]]),

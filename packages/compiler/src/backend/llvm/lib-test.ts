@@ -8,7 +8,7 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
   host.usesTimers = true;
   switch (e.fn) {
     case "test.register":
-      host.moveTemp(args[3]!);
+      host.toHeap(args[3]!);
       return finishRuntimeCall(host, e, "scr_test_register", a);
     case "test.registerEmpty":
       return finishRuntimeCall(host, e, "scr_test_register", [
@@ -17,13 +17,13 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
         ...a.slice(3),
       ]);
     case "test.suite":
-      host.moveTemp(args[3]!);
+      host.toHeap(args[3]!);
       return finishRuntimeCall(host, e, "scr_test_suite", a);
     case "test.hook":
-      host.moveTemp(args[1]!);
+      host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_test_hook", a);
     case "test.sub":
-      host.moveTemp(args[4]!);
+      host.toHeap(args[4]!);
       return finishRuntimeCall(host, e, "scr_test_sub", a);
     case "test.subEmpty": {
       const promise = callRuntime(host, "scr_test_sub", "ptr", [
@@ -50,21 +50,21 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
     case "test.workerId":
       return finishRuntimeCall(host, e, "scr_test_worker_id", a);
     case "test.ctxHook":
-      host.moveTemp(args[2]!);
+      host.toHeap(args[2]!);
       return finishRuntimeCall(host, e, "scr_test_ctx_hook", a);
     case "test.ctxPlan":
       return finishRuntimeCall(host, e, "scr_test_ctx_plan", a);
     case "test.ctxCount":
       return finishRuntimeCall(host, e, "scr_test_ctx_count", a);
     case "test.mockTrack":
-      host.moveTemp(args[0]!);
+      host.toHeap(args[0]!);
       return finishRuntimeCall(host, e, "scr_test_mock_track", a);
     case "test.mockRestoreAll":
       return finishRuntimeCall(host, e, "scr_test_mock_restore_all", a);
     case "test.mockReset":
       return finishRuntimeCall(host, e, "scr_test_mock_reset", a);
     case "test.ctxMockTrack":
-      host.moveTemp(args[1]!);
+      host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_test_ctx_mock_track", a);
     case "test.ctxMockRestoreAll":
       return finishRuntimeCall(host, e, "scr_test_ctx_mock_restore_all", a);
