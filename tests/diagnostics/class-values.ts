@@ -18,9 +18,9 @@ class Unrelated {
   static tag = "unrelated";
 }
 
-// Builtin classes as values: a const alias resolves at compile time, and
-// an array of builtin classes has no element type.
-const E = Error;
+// Builtin classes with their own construction as values (Error and its
+// standard subclasses are values; AggregateError is not).
+const E = AggregateError;
 const errorClasses = [E];
 
 // Classes extending builtin bases as values (the error-message completion

@@ -162,6 +162,7 @@ typedef enum {
   SCR_DYNH_ITERATOR_HELPER = 54, /* an iterator helper object over a checked iterator (scr_json.c) */
   SCR_DYNH_KEY_OBJECT = 43, /* node:crypto secret KeyObject (scr_lib.c) */
   SCR_DYNH_MAP = 29, /* native Map<unknown, unknown>, shared backing */
+  SCR_DYNH_MATCH_SOURCE = 55, /* a match result's pending metadata (scr_regex.c) */
   SCR_DYNH_MESSAGE_EVENT = 50, /* ScrEvent with data — BroadcastChannel's 'message' */
   SCR_DYNH_MESSAGE_PORT = 36,
   SCR_DYNH_NET_BLOCK_LIST = 48, /* net.BlockList (scr_net.c) */
@@ -702,6 +703,16 @@ ScrDyn *scr_dyn_iterator_result(ScrDyn *value);
 bool scr_dyn_iterator_can_step(const ScrDyn *iterator, const ScrDyn *next);
 ScrDyn *scr_dyn_iterator_step(const ScrDyn *iterator);
 bool scr_dyn_iterator_step_done(const ScrDyn *iterator);
+/* A native Map or Set iterator stepped by the compiler's typed walk: the
+ * next live entry index of its collection, or -1 once the collection is
+ * exhausted (the iterator then ends its iteration). */
+double scr_dyn_collection_iterator_index(const ScrDyn *iterator);
+/* For util.inspect: a native iterator's kind (0 array or typed array,
+ * 1 string, 2 Map, 3 Set, 4 a handle's), its selection (0 values, 1 keys,
+ * 2 entries), its collection (NULL once exhausted, and for kinds other
+ * than 2 and 3) and the index its next step reads from. */
+void scr_dyn_native_iterator_state(const ScrDyn *iterator, unsigned *kind, unsigned *selection,
+                                   ScrMap **collection, double *index);
 /* The ordinary object snapshot plus a retained typed source. source_access
  * releases that source when materialize=false and returns a fresh snapshot
  * when true. */
@@ -881,6 +892,9 @@ ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity 
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* A named (non-index) property of an extensible, unfrozen ARR, stored as
+ * scr_dyn_key_set stores it. Takes ownership of value. */
+void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict);
 ScrDyn *scr_dyn_global_symbol_get(ScrSym *key); /* borrowed key; +1 value */

@@ -1678,6 +1678,8 @@ ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key) {
  * later, and it neither grows nor owns heap references. */
 static ScrDyn scr_dyn_small_ints[384];
 
+const char *(*scr_gen_tag_reader)(const ScrGen *g) = NULL;
+
 __attribute__((constructor)) static void scr_dyn_small_ints_init(void) {
   for (int i = 0; i < 384; i++) {
     scr_dyn_small_ints[i].rc = SIZE_MAX;
@@ -4673,6 +4675,31 @@ bool scr_dyn_iterator_step_done(const ScrDyn *value) {
   return ((ScrNativeIterator *)value->v.handle.ptr)->step_done;
 }
 
+void scr_dyn_native_iterator_state(const ScrDyn *value, unsigned *kind, unsigned *selection,
+                                   ScrMap **collection, double *index) {
+  const ScrNativeIterator *iterator = value->v.handle.ptr;
+  *kind = iterator->kind;
+  *selection = iterator->selection;
+  *collection = (iterator->kind == 2 || iterator->kind == 3) && iterator->source
+    ? iterator->source->v.handle.ptr : NULL;
+  *index = iterator->index;
+}
+
+double scr_dyn_collection_iterator_index(const ScrDyn *value) {
+  ScrNativeIterator *iterator = value->v.handle.ptr;
+  ScrDyn *source = iterator->source;
+  if (!source) return -1;
+  ScrMap *map = source->v.handle.ptr;
+  iterator->index = scr_map_iter_skip(map, iterator->index);
+  if (iterator->index >= scr_map_iter_count(map)) {
+    iterator->source = NULL;
+    scr_map_iter_exit(map);
+    scr_dyn_release(source);
+    return -1;
+  }
+  return iterator->index++;
+}
+
 static int scr_ih_method_index(const char *name, size_t len);
 static ScrDyn *scr_iterator_helper_method(ScrDyn *self, int index, ScrDyn *const *args, size_t argc);
 static ScrDyn *scr_ih_method_function(int index);
@@ -6202,6 +6229,20 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
     if (scr_dyn_ref_is_error(d)) return scr_str_new("[object Error]", 14);
+    if (scr_dyn_generator(d)) {
+      const char *gen_tag = scr_gen_tag_reader(d->v.typed_ref.ptr);
+      if (gen_tag[0] == '!') {
+        static const char message[] = "Object.prototype.toString of this iterator is not supported yet";
+        scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+        return NULL;
+      }
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, gen_tag);
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     ScrStr *out = scr_dyn_object_tag(materialized);
     scr_dyn_release(materialized);
@@ -6233,6 +6274,13 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
       scr_jb_puts(&b, scr_dyn_handle_cls(d));
       scr_jb_putc(&b, ']');
       return scr_jb_finish(&b);
+    }
+    if (d->v.handle.tag == SCR_DYNH_ITERATOR && ((const ScrNativeIterator *)d->v.handle.ptr)->kind < 4) {
+      static const char *const tags[] = {
+        "[object Array Iterator]", "[object String Iterator]", "[object Map Iterator]", "[object Set Iterator]",
+      };
+      const char *it_tag = tags[((const ScrNativeIterator *)d->v.handle.ptr)->kind];
+      return scr_str_new(it_tag, strlen(it_tag));
     }
     if (scr_dyn_handle_ops_of(d)->to_string_tag) {
       ScrJsonBuf b;
@@ -6914,6 +6962,15 @@ static bool scr_dyn_error_encoding(const ScrDyn *d) {
   return d->kind == SCR_DYN_OBJ && scr_dyn_obj_get(d, "%error", 6) != NULL;
 }
 
+static bool scr_dyn_is_date(const ScrDyn *d) {
+  return d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_DATE;
+}
+
+/* A Date's valueOf(): its time value as a number. +1. */
+static ScrDyn *scr_dyn_date_value_of(const ScrDyn *d) {
+  return scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "valueOf", NULL, 0, "valueOf");
+}
+
 /* Receiver-kind-dispatched toString() on a checked-dynamic value (the
  * dyn method surface — a stream's 'data'/for-await chunk is the common
  * receiver): bytes decode per the encoding (Node's Buffer.toString,
@@ -6952,7 +7009,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     if (scr_dyn_error_encoding(d) && !scr_dyn_property_owner(d, "toString", 8)) return scr_dyn_error_string(d);
     return scr_str_new("[object Object]", 15);
   case SCR_DYN_HANDLE:
-    if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL) {
+    if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
       if (!text) return NULL;
       ScrStr *out = scr_str_retain(text->v.str);
@@ -7376,6 +7433,14 @@ bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out) {
     return false;
   }
   default: {
+    /* A Date's valueOf answers its time value. */
+    if (scr_dyn_is_date(d)) {
+      ScrDyn *time = scr_dyn_date_value_of(d);
+      if (!time) return false;
+      *out = time->v.num;
+      scr_dyn_release(time);
+      return true;
+    }
     /* Arrays, byte views, functions, promises, and native handles inherit a
      * valueOf that returns the receiver, then use their existing JS-exact
      * string rendering for the numeric conversion. */
@@ -7396,8 +7461,14 @@ double scr_dyn_number_coerce(const ScrDyn *d) {
 
 static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d);
 
+/* ToPrimitive with the number hint, which differs from the default hint
+ * only for a Date: its time value. */
+static ScrDyn *scr_dyn_number_primitive(const ScrDyn *d) {
+  return scr_dyn_is_date(d) ? scr_dyn_date_value_of(d) : scr_dyn_add_primitive(d);
+}
+
 double scr_dyn_number_constructor(const ScrDyn *d) {
-  ScrDyn *primitive = scr_dyn_add_primitive(d);
+  ScrDyn *primitive = scr_dyn_number_primitive(d);
   if (!primitive) return NAN;
   double result = primitive->kind == SCR_DYN_BIGINT
     ? scr_bigint_to_f64(primitive->v.bigint) : scr_dyn_number_coerce(primitive);
@@ -7406,7 +7477,7 @@ double scr_dyn_number_constructor(const ScrDyn *d) {
 }
 
 static ScrBigInt *scr_dyn_bigint_convert(const ScrDyn *d, bool allow_number) {
-  ScrDyn *primitive = scr_dyn_add_primitive(d);
+  ScrDyn *primitive = scr_dyn_number_primitive(d);
   if (!primitive) return NULL;
   ScrBigInt *result = NULL;
   switch (primitive->kind) {
@@ -7539,7 +7610,7 @@ ScrDyn *scr_dyn_add(const ScrDyn *left, const ScrDyn *right) {
 }
 
 ScrDyn *scr_dyn_to_numeric(const ScrDyn *value) {
-  ScrDyn *primitive = scr_dyn_add_primitive(value);
+  ScrDyn *primitive = scr_dyn_number_primitive(value);
   if (!primitive) return NULL;
   if (primitive->kind == SCR_DYN_BIGINT) return primitive;
   double number;
@@ -7563,9 +7634,9 @@ ScrDyn *scr_dyn_increment(const ScrDyn *value, bool increment) {
 bool scr_dyn_compare(const ScrDyn *left, const ScrDyn *right, const ScrStr *operation) {
   // ToPrimitive is observable and always visits the original left operand
   // first, including the > and <= spellings of relational comparison.
-  ScrDyn *l = scr_dyn_add_primitive(left);
+  ScrDyn *l = scr_dyn_number_primitive(left);
   if (!l) return false;
-  ScrDyn *r = scr_dyn_add_primitive(right);
+  ScrDyn *r = scr_dyn_number_primitive(right);
   if (!r) { scr_dyn_release(l); return false; }
   double order = 2;
   if (l->kind == SCR_DYN_STR && r->kind == SCR_DYN_STR) {
@@ -7861,6 +7932,14 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
   }
   scr_error_sync_cause(recv, key);
   return;
+}
+
+void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value) {
+  if (!arr->v.arr.properties) {
+    scr_dyn_region_store(arr, NULL); /* a table that later holds anything */
+    arr->v.arr.properties = scr_dyn_new_obj();
+  }
+  scr_dyn_obj_set(arr->v.arr.properties, key, key_len, value);
 }
 
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {

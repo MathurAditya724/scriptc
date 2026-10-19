@@ -171,7 +171,7 @@ export function collectClassMethodMutations(
     const values = unwrap(loop.expression);
     if (!ts.isArrayLiteralExpression(values)) return null;
     const names: (string | number)[] = [];
-    for (const value of values.elements) {
+    for (const value of values.elements.nodes) {
       if (ts.isStringLiteralLike(value)) names.push(value.text);
       else if (ts.isNumericLiteral(value)) names.push(Number(value.text));
       else return null;
@@ -219,15 +219,15 @@ export function collectClassMethodMutations(
     const loop = statement.parent;
     if (!ts.isForOfStatement(loop) || loop.statement !== statement) return false;
     if (!ts.isVariableDeclarationList(loop.initializer)) return false;
-    const decl = loop.initializer.declarations[0];
+    const decl = loop.initializer.declarations.nodes[0];
     if (!decl || !ts.isIdentifier(decl.name) || !sameBinding(key, decl.name)) return false;
     const keys = unwrap(loop.expression);
     return (
       ts.isCallExpression(keys) &&
       ts.isPropertyAccessExpression(keys.expression) &&
       lowerer.stdlibGlobalMember(keys.expression, "Object") === "keys" &&
-      keys.arguments.length === 1 &&
-      sameBinding(receiver, keys.arguments[0]!)
+      keys.arguments.nodes.length === 1 &&
+      sameBinding(receiver, keys.arguments.nodes[0]!)
     );
   };
   const markKey = (key: ts.Expression, site: ts.Node, receiver?: ts.Expression): void => {
@@ -244,7 +244,7 @@ export function collectClassMethodMutations(
       computedWrites.push({ key: undefined, receiver, site });
       return;
     }
-    for (const field of value.properties) {
+    for (const field of value.properties.nodes) {
       if (ts.isSpreadAssignment(field)) markFields(field.expression, site, receiver);
       else if (field.name && (ts.isIdentifier(field.name) || ts.isStringLiteralLike(field.name)))
         markName(field.name.text, site);
@@ -265,12 +265,12 @@ export function collectClassMethodMutations(
     } else if (ts.isElementAccessExpression(target))
       markKey(target.argumentExpression, site, target.expression);
     else if (ts.isArrayLiteralExpression(target)) {
-      for (const element of target.elements) {
+      for (const element of target.elements.nodes) {
         if (ts.isSpreadElement(element)) markTarget(element.expression, site);
         else if (!ts.isOmittedExpression(element)) markTarget(element, site);
       }
     } else if (ts.isObjectLiteralExpression(target)) {
-      for (const field of target.properties) {
+      for (const field of target.properties.nodes) {
         if (ts.isPropertyAssignment(field)) markTarget(field.initializer, site);
         else if (ts.isSpreadAssignment(field)) markTarget(field.expression, site);
       }
@@ -323,7 +323,7 @@ export function collectClassMethodMutations(
         if (!ts.isPropertyAssignment(node) || !ts.isArrowFunction(unwrap(node.initializer)))
           receiverFields.add(node.name.text);
       }
-      if (ts.isParameter(node) && ts.isIdentifier(node.name) && node.modifiers?.length)
+      if (ts.isParameter(node) && ts.isIdentifier(node.name) && node.modifiers?.nodes.length)
         receiverFields.add(node.name.text);
       if (
         ts.isMethodDeclaration(node) &&
@@ -439,12 +439,12 @@ export function collectClassMethodMutations(
       unknownKey = node;
       continue;
     }
-    const receiver = call.arguments[0];
-    if (single && call.arguments[1]) markKey(call.arguments[1], call, receiver);
-    else if (objectMethod === "defineProperties" && call.arguments[1])
-      markFields(call.arguments[1], call, receiver);
+    const receiver = call.arguments.nodes[0];
+    if (single && call.arguments.nodes[1]) markKey(call.arguments.nodes[1], call, receiver);
+    else if (objectMethod === "defineProperties" && call.arguments.nodes[1])
+      markFields(call.arguments.nodes[1], call, receiver);
     else if (objectMethod === "assign")
-      for (const source of call.arguments.slice(1)) markFields(source, call, receiver);
+      for (const source of call.arguments.nodes.slice(1)) markFields(source, call, receiver);
   }
   lowerer.checker.prefetchClassCollection(
     computedWrites.flatMap((write) => [
@@ -468,7 +468,7 @@ export function collectClassMethodMutations(
     for (const cls of typedClasses) {
       const symbol = cls.name ? lowerer.checker.getSymbolAtLocation(cls.name) : undefined;
       if (!symbol) {
-        const declares = cls.members.some(
+        const declares = cls.members.nodes.some(
           (member) =>
             ts.isMethodDeclaration(member) &&
             ts.isIdentifier(member.name) &&
@@ -482,7 +482,7 @@ export function collectClassMethodMutations(
       const property = lowerer.checker.getPropertyOfType(type, name);
       if (!property || !lowerer.checker.declarationsOf(property).some(ts.isMethodDeclaration))
         continue;
-      if (cls.typeParameters !== undefined && cls.typeParameters.length > 0) {
+      if (cls.typeParameters !== undefined && cls.typeParameters.nodes.length > 0) {
         owners = null;
         break;
       }
@@ -517,7 +517,9 @@ export function collectClassMethodMutations(
         ts.isGetAccessorDeclaration(member) ||
         ts.isSetAccessorDeclaration(member)
       ) {
-        if (member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword))
+        if (
+          member.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword)
+        )
           return null;
       } else return null;
       const symbol = lowerer.checker.getSymbolAtLocation(cls.name);

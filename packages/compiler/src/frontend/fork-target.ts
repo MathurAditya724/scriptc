@@ -158,13 +158,13 @@ function staticBoolean(
   if (
     ts.isCallExpression(current) &&
     !current.questionDotToken &&
-    current.arguments.length === 1 &&
+    current.arguments.nodes.length === 1 &&
     ts.isPropertyAccessExpression(current.expression) &&
     !current.expression.questionDotToken &&
     (current.expression.name.text === "endsWith" || current.expression.name.text === "startsWith")
   ) {
     const receiver = staticString(program, current.expression.expression, seen);
-    const needle = staticString(program, current.arguments[0]!, seen);
+    const needle = staticString(program, current.arguments.nodes[0]!, seen);
     if (receiver === null || needle === null) return null;
     return current.expression.name.text === "endsWith"
       ? receiver.endsWith(needle)
@@ -194,7 +194,7 @@ function staticString(
   if (importMetaUrl(current)) return pathToFileURL(current.getSourceFile().fileName).href;
   if (ts.isTemplateExpression(current)) {
     let value = current.head.text;
-    for (const span of current.templateSpans) {
+    for (const span of current.templateSpans.nodes) {
       const part = staticString(program, span.expression, seen);
       if (part === null) return null;
       value += part + span.literal.text;
@@ -219,11 +219,11 @@ function staticString(
   if (
     ts.isCallExpression(current) &&
     !current.questionDotToken &&
-    current.arguments.length === 1 &&
+    current.arguments.nodes.length === 1 &&
     ts.isIdentifier(current.expression) &&
     isBuiltinMemberImport(program, current.expression, "url", "fileURLToPath")
   ) {
-    const href = staticString(program, current.arguments[0]!, seen);
+    const href = staticString(program, current.arguments.nodes[0]!, seen);
     if (href === null) return null;
     try {
       return fileURLToPath(href);
@@ -237,7 +237,7 @@ function staticString(
     (isBuiltinMemberImport(program, current.expression, "url", "URL") ||
       (current.expression.text === "URL" && isNodeGlobal(program, current.expression)))
   ) {
-    const args = current.arguments ?? [];
+    const args = current.arguments?.nodes ?? [];
     if (args.length < 1 || args.length > 2) return null;
     const input = staticString(program, args[0]!, seen);
     const base = args[1] === undefined ? null : staticString(program, args[1], seen);
@@ -261,7 +261,7 @@ export function staticForkModulePath(program: ts.Program, expr: ts.Expression): 
   const supported =
     (ts.isCallExpression(current) &&
       !current.questionDotToken &&
-      current.arguments.length === 1 &&
+      current.arguments.nodes.length === 1 &&
       ts.isIdentifier(current.expression) &&
       isBuiltinMemberImport(program, current.expression, "url", "fileURLToPath")) ||
     (ts.isNewExpression(current) &&
@@ -279,7 +279,7 @@ export function staticForkModulePath(program: ts.Program, expr: ts.Expression): 
 }
 
 export function forkCallModulePath(program: ts.Program, call: ts.CallExpression): string | null {
-  if (call.questionDotToken || call.arguments[0] === undefined) return null;
+  if (call.questionDotToken || call.arguments.nodes[0] === undefined) return null;
   const callee = strip(call.expression);
   const isFork =
     (ts.isIdentifier(callee) && isBuiltinMemberImport(program, callee, "child_process", "fork")) ||
@@ -291,7 +291,7 @@ export function forkCallModulePath(program: ts.Program, call: ts.CallExpression)
   if (!isFork) {
     return null;
   }
-  return staticForkModulePath(program, call.arguments[0]);
+  return staticForkModulePath(program, call.arguments.nodes[0]);
 }
 
 /** Source-order static fork targets in the supplied files, deduplicated by
@@ -304,7 +304,7 @@ export function forkTargetPaths(program: ts.Program, files: readonly ts.SourceFi
     const calls = moduleSourceCandidates(program, sourceFile).calls;
     const bindings: ts.Node[] = [];
     for (const call of calls) {
-      if (call.questionDotToken || call.arguments[0] === undefined) continue;
+      if (call.questionDotToken || call.arguments.nodes[0] === undefined) continue;
       const callee = strip(call.expression);
       if (ts.isIdentifier(callee)) bindings.push(callee);
       else if (

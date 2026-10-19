@@ -11,6 +11,7 @@ import {
   type IrStmt,
   type IrType,
   type IrUnionDef,
+  classValueConstructor,
 } from "./ir.js";
 
 /** Destination tags for a union widening that preserves every payload's
@@ -313,7 +314,7 @@ export function newValueMayThrow(
   if (!meta)
     throw new InternalCompilerError(`IR analysis bug: newValue on unknown class ${className}`);
   const any = (node: IrClassGraphNode): boolean =>
-    mayThrow.has(`%${node.def.name}.constructor`) || node.children.some(any);
+    mayThrow.has(classValueConstructor(node.def).fn) || node.children.some(any);
   return any(meta);
 }
 

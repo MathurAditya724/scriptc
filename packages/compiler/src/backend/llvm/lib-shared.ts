@@ -326,6 +326,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.getMilliseconds": "scr_date_get_milliseconds",
   "date.getUTCMilliseconds": "scr_date_get_milliseconds",
   "date.getTimezoneOffset": "scr_date_get_timezone_offset",
+  "date.toString": "scr_date_to_string",
+  "date.toDateString": "scr_date_to_date_string",
+  "date.toTimeString": "scr_date_to_time_string",
   "fs.existsSync": "scr_fs_exists",
   // ── the throwing slice (MAY_THROW_LIB_FNS members): the generic path
   // emits the standard pending check after each — exprs.ts's finish.
@@ -889,6 +892,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.iteratorCanStep": "scr_dyn_iterator_can_step",
   "dyn.iteratorStep": "scr_dyn_iterator_step",
   "dyn.iteratorStepDone": "scr_dyn_iterator_step_done",
+  "dyn.collectionIteratorIndex": "scr_dyn_collection_iterator_index",
   "dyn.mapSeedEntries": "scr_dyn_map_seed_entries",
   "dyn.mapSeedEntry": "scr_dyn_map_seed_entry",
   "dyn.arrLen": "scr_dyn_arr_len",
@@ -1410,6 +1414,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "regex.groupEquals": "scr_regex_group_eq",
   "regex.groupNumber": "scr_regex_group_number",
   "regex.groupParseInt": "scr_regex_group_parse_int",
+  "regex.resultProp": "scr_regex_result_prop",
   // queueMicrotask's checked-dynamic form (borrowed dyn; a non-function
   // throws synchronously), the minted setImmediate value, and the
   // timers/promises immediate — all mark the loop live.

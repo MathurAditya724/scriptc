@@ -47,7 +47,7 @@ export function emitConnectListener(host: LlvmEmitterContext, e: LibCallExpr): L
     type = callbackType(cb),
     arity = type.params.length,
     second = type.params[1];
-  host.moveTemp(cb);
+  host.toHeap(cb);
   let h1: string,
     h2 = "null";
   if (second?.kind === "union") {

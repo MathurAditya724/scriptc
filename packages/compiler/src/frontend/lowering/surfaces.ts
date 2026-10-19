@@ -140,7 +140,7 @@ export function sideEffectFreeOptionValue(node: ts.Expression): boolean {
     return sideEffectFreeOptionValue(e.operand);
   }
   if (ts.isObjectLiteralExpression(e)) {
-    return e.properties.every(
+    return e.properties.nodes.every(
       (p) =>
         ts.isShorthandPropertyAssignment(p) ||
         (ts.isPropertyAssignment(p) &&
@@ -149,7 +149,7 @@ export function sideEffectFreeOptionValue(node: ts.Expression): boolean {
     );
   }
   if (ts.isArrayLiteralExpression(e)) {
-    return e.elements.every((el) => !ts.isSpreadElement(el) && sideEffectFreeOptionValue(el));
+    return e.elements.nodes.every((el) => !ts.isSpreadElement(el) && sideEffectFreeOptionValue(el));
   }
   return false;
 }
@@ -2327,6 +2327,25 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "stdlib",
     name: "Date.prototype.getTimezoneOffset",
     fns: ["date.getTimezoneOffset"],
+  },
+  {
+    id: "stdlib.date.toString",
+    kind: "stdlib",
+    name: "Date.prototype.toString",
+    fns: ["date.toString"],
+    note: "local time with the host zone's long English name; String(date) and template literals use it",
+  },
+  {
+    id: "stdlib.date.toDateString",
+    kind: "stdlib",
+    name: "Date.prototype.toDateString",
+    fns: ["date.toDateString"],
+  },
+  {
+    id: "stdlib.date.toTimeString",
+    kind: "stdlib",
+    name: "Date.prototype.toTimeString",
+    fns: ["date.toTimeString"],
   },
   // ── perf_hooks (lowerPerfHooksCall): the monotonic clock.
   {

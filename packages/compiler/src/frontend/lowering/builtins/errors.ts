@@ -209,8 +209,8 @@ export function lowerErrorIsErrorCall(
 ): IrExpr | null {
   if (call.questionDotToken || access.questionDotToken) return null;
   if (lowerer.stdlibGlobalMember(access, "Error") !== "isError") return null;
-  if (call.arguments.length !== 1) return null;
-  const argNode = call.arguments[0]!;
+  if (call.arguments.nodes.length !== 1) return null;
+  const argNode = call.arguments.nodes[0]!;
   const loc = locOf(call);
   const caughtLocal = lowerer.caughtLocalOf(argNode);
   if (caughtLocal) {

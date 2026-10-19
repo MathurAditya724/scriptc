@@ -192,7 +192,7 @@ export function literalBoolOptions(
   if (!ts.isObjectLiteralExpression(node)) return null;
   const bools: Record<string, boolean> = {};
   const exprs: Record<string, ts.Expression> = {};
-  for (const p of node.properties) {
+  for (const p of node.properties.nodes) {
     if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) return null;
     if (exprKeys.includes(p.name.text)) {
       exprs[p.name.text] = p.initializer;

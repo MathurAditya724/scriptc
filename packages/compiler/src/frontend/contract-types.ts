@@ -262,7 +262,7 @@ function placeHeritage(
     return unsupported(out, node, marker);
   // `implements Acyclic<C>` would make the class implement C's own type,
   // which the lowering treats as a protocol of C.
-  if ((node.typeArguments?.length ?? 0) > 0) return unsupported(out, node, marker);
+  if ((node.typeArguments?.nodes.length ?? 0) > 0) return unsupported(out, node, marker);
   const note = (name: string): ContractNote => ({ marker, loc: locOf(node), name });
   if (
     (ts.isClassDeclaration(owner) || ts.isClassExpression(owner)) &&
@@ -324,8 +324,8 @@ function place(
       ts.isTypeReferenceNode(parent) &&
       ts.isIdentifier(parent.typeName) &&
       (parent.typeName.text === "Array" || parent.typeName.text === "ReadonlyArray") &&
-      parent.typeArguments?.length === 1 &&
-      parent.typeArguments[0] === ref
+      parent.typeArguments?.nodes.length === 1 &&
+      parent.typeArguments.nodes[0] === ref
     ) {
       node = parent;
       parent = parent.parent;
@@ -336,7 +336,7 @@ function place(
   // contract of the function the NoThrow annotates.
   if (marker !== "NoThrow" && parent !== undefined && ts.isTypeReferenceNode(parent)) {
     const wrapper = markerOf(checker, parent);
-    if (wrapper === "NoThrow" && parent.typeArguments?.[0] === node) {
+    if (wrapper === "NoThrow" && parent.typeArguments?.nodes[0] === node) {
       node = parent;
       parent = parent.parent;
     }

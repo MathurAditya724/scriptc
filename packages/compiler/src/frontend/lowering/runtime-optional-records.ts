@@ -135,8 +135,8 @@ export class RecordFlowClasses {
   parameters(): { symbol: ts.Symbol; fn: ts.Symbol; index: number }[] {
     const out: { symbol: ts.Symbol; fn: ts.Symbol; index: number }[] = [];
     for (const [fn, decl] of this.functions) {
-      for (let index = 0; index < decl.parameters.length; index++) {
-        const symbol = this.host.symbolOf(decl.parameters[index]!.name);
+      for (let index = 0; index < decl.parameters.nodes.length; index++) {
+        const symbol = this.host.symbolOf(decl.parameters.nodes[index]!.name);
         if (symbol && this.bindingSlots.has(symbol)) out.push({ symbol, fn, index });
       }
     }
@@ -287,7 +287,7 @@ export class RecordFlowClasses {
             const key = `${i}:${name}`;
             if (visitedLiterals.has(key)) continue;
             visitedLiterals.add(key);
-            for (const property of this.literalSources[i]!.literal.properties) {
+            for (const property of this.literalSources[i]!.literal.properties.nodes) {
               if (ts.isSpreadAssignment(property)) {
                 this.markOpen(field);
                 continue;
@@ -364,11 +364,11 @@ export class RecordFlowClasses {
       if (file.isDeclarationFile || isJsFile(file)) continue;
       ts.walkPreorder(file, (node) => {
         if (!ts.isFunctionDeclaration(node) || !node.name || !node.body) return undefined;
-        if (node.asteriskToken || node.typeParameters?.length) return undefined;
+        if (node.asteriskToken || node.typeParameters?.nodes.length) return undefined;
         const flags = ts.getCombinedModifierFlags(node);
         if (flags & (ts.ModifierFlags.Export | ts.ModifierFlags.Async | ts.ModifierFlags.Ambient))
           return undefined;
-        if (node.parameters.some((p) => p.dotDotDotToken || !ts.isIdentifier(p.name)))
+        if (node.parameters.nodes.some((p) => p.dotDotDotToken || !ts.isIdentifier(p.name)))
           return undefined;
         if (usesArguments(node.body)) return undefined;
         const symbol = this.host.symbolOf(node.name);
@@ -380,7 +380,7 @@ export class RecordFlowClasses {
             !!call &&
             ts.isCallExpression(call) &&
             call.expression === reference &&
-            !call.arguments.some(ts.isSpreadElement)
+            !call.arguments.nodes.some(ts.isSpreadElement)
           );
         });
         if (calledByName) {
@@ -404,10 +404,10 @@ export class RecordFlowClasses {
     for (;;) {
       if (seen.has(current)) return true;
       seen.add(current);
-      const heritage = current.heritageClauses?.find(
+      const heritage = current.heritageClauses?.nodes.find(
         (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
       );
-      const base = heritage?.types[0]?.expression;
+      const base = heritage?.types?.nodes[0]?.expression;
       if (!base) return false;
       const symbol = ts.isIdentifier(base) ? this.host.symbolOf(base) : null;
       const target = symbol ? this.host.declarationOf(symbol) : undefined;
@@ -436,13 +436,13 @@ export class RecordFlowClasses {
         // classes (`_read`, `handleEvent`) with no call site to see.
         if (PROTOCOL_METHODS.has(node.name.text) || this.extendsForeignClass(owner))
           return undefined;
-        if (node.asteriskToken || node.typeParameters?.length) return undefined;
+        if (node.asteriskToken || node.typeParameters?.nodes.length) return undefined;
         if (
           ts.getCombinedModifierFlags(node) &
           (ts.ModifierFlags.Async | ts.ModifierFlags.Abstract)
         )
           return undefined;
-        if (node.parameters.some((p) => p.dotDotDotToken || !ts.isIdentifier(p.name)))
+        if (node.parameters.nodes.some((p) => p.dotDotDotToken || !ts.isIdentifier(p.name)))
           return undefined;
         if (usesArguments(node.body)) return undefined;
         const symbol = this.host.symbolOf(node.name);
@@ -472,7 +472,7 @@ export class RecordFlowClasses {
             !!call &&
             ts.isCallExpression(call) &&
             call.expression === parent &&
-            !call.arguments.some(ts.isSpreadElement)
+            !call.arguments.nodes.some(ts.isSpreadElement)
           );
         }
         // Any other member, property or key of this name could reach the
@@ -505,7 +505,7 @@ export class RecordFlowClasses {
       if (symbol) this.bindingSlots.set(symbol, this.newSlot(name));
     }
     for (const [symbol, decl] of this.functions) {
-      for (const parameter of decl.parameters) {
+      for (const parameter of decl.parameters.nodes) {
         if (!this.host.mayBeRecord(parameter.name)) continue;
         const bound = this.host.symbolOf(parameter.name);
         if (bound) this.bindingSlots.set(bound, this.newSlot(parameter.name));
@@ -518,10 +518,12 @@ export class RecordFlowClasses {
       if (family[0] !== symbol || family.length < 2) continue;
       const decls = family.map((member) => this.functions.get(member)!);
       const first = decls[0]!;
-      for (let i = 0; i < first.parameters.length; i++) {
-        const head = this.slotOf(first.parameters[i]!.name);
+      for (let i = 0; i < first.parameters.nodes.length; i++) {
+        const head = this.slotOf(first.parameters.nodes[i]!.name);
         for (const decl of decls.slice(1)) {
-          const other = decl.parameters[i] ? this.slotOf(decl.parameters[i]!.name) : undefined;
+          const other = decl.parameters.nodes[i]
+            ? this.slotOf(decl.parameters.nodes[i]!.name)
+            : undefined;
           if (head !== undefined && other !== undefined) this.union(head, other);
           else if (head !== undefined) this.markOpen(head);
           else if (other !== undefined) this.markOpen(other);
@@ -579,10 +581,10 @@ export class RecordFlowClasses {
         if (declaration.questionToken) this.markOpen(slot);
         if (declaration.initializer) this.source(declaration.initializer, slot);
         const fn = declaration.parent as Callable;
-        const index = fn.parameters.indexOf(declaration);
+        const index = fn.parameters.nodes.indexOf(declaration);
         const fnSymbol = fn.name ? this.host.symbolOf(fn.name) : null;
         for (const call of fnSymbol ? this.callsOf(fnSymbol) : []) {
-          const arg = call.arguments[index];
+          const arg = call.arguments.nodes[index];
           if (arg) this.source(arg, slot);
           else if (!declaration.initializer) this.markOpen(slot);
         }
@@ -763,14 +765,16 @@ export class RecordFlowClasses {
           const symbol = this.host.symbolOf(callee);
           const fn = symbol ? this.functions.get(symbol) : undefined;
           if (!fn) return false;
-          const parameter = fn.parameters[user.arguments.indexOf(value as ts.Expression)];
+          const parameter =
+            fn.parameters.nodes[user.arguments.nodes.indexOf(value as ts.Expression)];
           return !!parameter && this.isMember(parameter.name);
         }
         if (ts.isPropertyAccessExpression(callee)) {
           const symbol = this.host.symbolOf(callee.name);
           const method = symbol ? this.functions.get(symbol) : undefined;
           if (method) {
-            const parameter = method.parameters[user.arguments.indexOf(value as ts.Expression)];
+            const parameter =
+              method.parameters.nodes[user.arguments.nodes.indexOf(value as ts.Expression)];
             return !!parameter && this.isMember(parameter.name);
           }
         }

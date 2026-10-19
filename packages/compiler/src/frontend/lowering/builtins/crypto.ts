@@ -47,17 +47,17 @@ export function lowerCryptoComposedCall(
   // "hex"/"base64" encoding. Anything else falls through (null): bare
   // randomBytes lowers to a real Buffer through the crypto table, and
   // the .toString rides the ordinary Buffer method lowering.
-  if (recv.arguments.length !== 1) return null;
-  const encNode = call.arguments[0];
+  if (recv.arguments.nodes.length !== 1) return null;
+  const encNode = call.arguments.nodes[0];
   const encT = encNode ? lowerer.typeOf(encNode) : undefined;
   if (
-    call.arguments.length !== 1 ||
+    call.arguments.nodes.length !== 1 ||
     !encT?.isStringLiteralType() ||
     (encT.value !== "hex" && encT.value !== "base64")
   ) {
     return null;
   }
-  const size = lowerer.lowerExprExpecting(recv.arguments[0]!, F64);
+  const size = lowerer.lowerExprExpecting(recv.arguments.nodes[0]!, F64);
   const enc = lowerer.lowerExprExpecting(encNode!, STRING);
   return {
     kind: "libCall",
@@ -96,28 +96,30 @@ function lowerHashDigestChain(
       : null;
   if (!bi || bi.module !== "crypto" || bi.member !== "createHash") return null;
   const loc = locOf(call);
-  const algT = chCall.arguments.length === 1 ? lowerer.typeOf(chCall.arguments[0]!) : undefined;
+  const algT =
+    chCall.arguments.nodes.length === 1 ? lowerer.typeOf(chCall.arguments.nodes[0]!) : undefined;
   if (!algT?.isStringLiteralType() || (algT.value !== "sha256" && algT.value !== "sha1"))
     return null;
-  if (updateCall.arguments.length !== 1) {
+  if (updateCall.arguments.nodes.length !== 1) {
     return null;
   }
-  const encT = call.arguments.length === 1 ? lowerer.typeOf(call.arguments[0]!) : undefined;
+  const encT =
+    call.arguments.nodes.length === 1 ? lowerer.typeOf(call.arguments.nodes[0]!) : undefined;
   if (!encT?.isStringLiteralType() || (encT.value !== "hex" && encT.value !== "base64")) {
     return null;
   }
   // alg and enc are proven literals (fenced above), so lowering them
   // out of source position observes nothing; the data lowers between
   // them in its own source order.
-  const alg = lowerer.lowerExprExpecting(chCall.arguments[0]!, STRING);
+  const alg = lowerer.lowerExprExpecting(chCall.arguments.nodes[0]!, STRING);
   // The data picks the runtime entry by its static type, the
   // fileURLToPath convention: strings hash their UTF-8 bytes (Node's
   // default input encoding), Buffers/typed arrays hash their bytes.
-  const dataNode = updateCall.arguments[0]!;
+  const dataNode = updateCall.arguments.nodes[0]!;
   const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
   if (dataIr?.kind === "bytes") {
     const data = cryptoByteView(lowerer, dataNode, lowerer.lowerExpr(dataNode));
-    const enc = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
+    const enc = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, STRING);
     return {
       kind: "libCall",
       fn: "crypto.hashDigestBytes",
@@ -128,7 +130,7 @@ function lowerHashDigestChain(
   }
   if (dataIr?.kind === "string") {
     const data = lowerer.lowerExprExpecting(dataNode, STRING);
-    const enc = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
+    const enc = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, STRING);
     return {
       kind: "libCall",
       fn: "crypto.hashDigestStr",
@@ -257,7 +259,7 @@ export function lowerCryptoModuleCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (bi.module !== "crypto") return null;
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`crypto.${bi.member} with spread arguments`, expr);
   }
@@ -465,8 +467,8 @@ export function lowerCryptoModuleCall(
     let options = args[2];
     // An options literal holding only a literal string-digest
     // outputEncoding is that encoding; evaluating it observes nothing.
-    if (options && ts.isObjectLiteralExpression(options) && options.properties.length === 1) {
-      const property = options.properties[0]!;
+    if (options && ts.isObjectLiteralExpression(options) && options.properties.nodes.length === 1) {
+      const property = options.properties.nodes[0]!;
       if (
         ts.isPropertyAssignment(property) &&
         ts.isIdentifier(property.name) &&
@@ -820,8 +822,8 @@ export function lowerCryptoModuleCall(
   };
   const list = own(LISTS, bi.member);
   if (bi.member !== "getFips" && list === undefined) return null;
-  if (expr.arguments.length !== 0) {
-    lowerer.noLowering(`crypto.${bi.member} with ${expr.arguments.length} arguments`, expr);
+  if (expr.arguments.nodes.length !== 0) {
+    lowerer.noLowering(`crypto.${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
   }
   if (bi.member === "getFips") {
     return { kind: "numLit", value: 0, type: F64, loc };
@@ -916,7 +918,7 @@ export function lowerCipherMethodCall(
       "update(), final(), setAAD(), setAutoPadding(), getAuthTag(), and setAuthTag() are supported; cipher streams are not",
     );
   }
-  if (call.arguments.some(ts.isSpreadElement))
+  if (call.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`Cipheriv/Decipheriv.${name} with spread arguments`, call);
   const loc = locOf(call);
   return {
@@ -924,7 +926,7 @@ export function lowerCipherMethodCall(
     recv: lowerer.lowerExprExpecting(access.expression, DYN),
     method: name,
     calleeName: v8CalleeText(access),
-    args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc,
   };
@@ -946,9 +948,9 @@ export function lowerCryptoHashMethodCall(
   // Hmac has no copy(): Node reads the member as undefined and throws a
   // TypeError once the arguments are evaluated.
   if (receiverType.kind === "cryptoHmac" && name === "copy") {
-    if (call.arguments.some(ts.isSpreadElement))
+    if (call.arguments.nodes.some(ts.isSpreadElement))
       lowerer.noLowering("Hmac.copy with spread arguments", call);
-    const evaluated = [access.expression, ...call.arguments].map((node): IrStmt => ({
+    const evaluated = [access.expression, ...call.arguments.nodes].map((node): IrStmt => ({
       kind: "exprStmt",
       expr: lowerer.lowerExpr(node),
       loc,
@@ -965,19 +967,19 @@ export function lowerCryptoHashMethodCall(
   const receiver = (): IrExpr => lowerer.lowerExprExpecting(access.expression, receiverType);
   const hash = receiverType.kind === "cryptoHash";
   const label = hash ? "Hash" : "Hmac";
-  if (call.arguments.some(ts.isSpreadElement))
+  if (call.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`${label}.${name} with spread arguments`, call);
   if (name === "update") {
-    if (call.arguments.length < 1 || call.arguments.length > 2) {
+    if (call.arguments.nodes.length < 1 || call.arguments.nodes.length > 2) {
       lowerer.noLowering(
-        `${label}.update with ${call.arguments.length} arguments`,
+        `${label}.update with ${call.arguments.nodes.length} arguments`,
         call,
         "update(data[, inputEncoding]) is supported",
       );
     }
     const target = receiver();
-    const dataNode = call.arguments[0]!;
-    const encodingNode = call.arguments[1];
+    const dataNode = call.arguments.nodes[0]!;
+    const encodingNode = call.arguments.nodes[1];
     const dataType = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
     // Indexed reads can retain optional storage after a nullish fallback
     // or narrowing. Use the proven argument type through a checked coercion.
@@ -1032,14 +1034,14 @@ export function lowerCryptoHashMethodCall(
     };
   }
   if (name === "digest") {
-    if (call.arguments.length > 1) {
+    if (call.arguments.nodes.length > 1) {
       lowerer.noLowering(
-        `${label}.digest with ${call.arguments.length} arguments`,
+        `${label}.digest with ${call.arguments.nodes.length} arguments`,
         call,
         "digest([outputEncoding]) is supported",
       );
     }
-    const encodingNode = call.arguments[0];
+    const encodingNode = call.arguments.nodes[0];
     if (encodingNode === undefined) {
       return {
         kind: "libCall",
@@ -1078,13 +1080,13 @@ export function lowerCryptoHashMethodCall(
     };
   }
   if (name === "copy" && hash) {
-    if (call.arguments.length > 1)
+    if (call.arguments.nodes.length > 1)
       lowerer.noLowering(
-        `Hash.copy with ${call.arguments.length} arguments`,
+        `Hash.copy with ${call.arguments.nodes.length} arguments`,
         call,
         "copy([options]) is supported",
       );
-    if (call.arguments.length === 0)
+    if (call.arguments.nodes.length === 0)
       return {
         kind: "libCall",
         fn: "crypto.hashCopy",
@@ -1095,7 +1097,7 @@ export function lowerCryptoHashMethodCall(
     return {
       kind: "libCall",
       fn: "crypto.hashCopyOpts",
-      args: [receiver(), lowerer.lowerExprExpecting(call.arguments[0]!, DYN)],
+      args: [receiver(), lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN)],
       type: CRYPTOHASH_T,
       loc,
     };
@@ -1138,7 +1140,7 @@ export function lowerPromisifiedCryptoCall(
   member: string,
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`the promisified crypto.${member} with spread arguments`, expr);
   }
