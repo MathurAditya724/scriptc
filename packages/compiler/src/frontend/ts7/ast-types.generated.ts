@@ -1343,7 +1343,7 @@ export interface JsxText extends Node {
 export interface SyntaxList extends Node {
   readonly flags: NodeFlags;
   readonly kind: SyntaxKind.SyntaxList;
-  readonly children: readonly Node[];
+  readonly children: NodeArray<Node>;
 }
 
 export interface JSDoc extends Node {

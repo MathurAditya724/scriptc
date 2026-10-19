@@ -504,9 +504,9 @@ export function completeFuncValueArgs(
       mode: omittedArgFor(lowerer, type, loc) ? "omittable" : "required",
     }));
     shapes.push({ type: rest, mode: "rest" });
-    return completeArgs(lowerer, call.arguments, shapes, loc, call);
+    return completeArgs(lowerer, call.arguments.nodes, shapes, loc, call);
   }
-  const args = call.arguments.map((arg, index) =>
+  const args = call.arguments.nodes.map((arg, index) =>
     lowerer.lowerExprExpecting(arg, funcType.params[index]),
   );
   for (let i = args.length; i < funcType.params.length; i++) {
@@ -553,7 +553,7 @@ export function lowerSpreadArgsCall(
     !(callee.type.kind === "func" && callee.type.rest === true && callee.type.restAbi === undefined)
   )
     return null;
-  if (!expr.arguments.some((a) => ts.isSpreadElement(a))) return null;
+  if (!expr.arguments.nodes.some((a) => ts.isSpreadElement(a))) return null;
   if (callee.type.kind !== "dyn" && callee.type.kind !== "func") return null;
   const calleeName =
     ts.isPropertyAccessExpression(expr.expression) || ts.isElementAccessExpression(expr.expression)
@@ -563,7 +563,7 @@ export function lowerSpreadArgsCall(
         : "value";
   // Lower every argument ONCE, in source order (the IR nests them in
   // exactly this order, so runtime evaluation order is JS's).
-  const parts = expr.arguments.map((a) =>
+  const parts = expr.arguments.nodes.map((a) =>
     ts.isSpreadElement(a)
       ? { spreadOf: a.expression, node: null, v: lowerer.lowerExpr(a.expression) }
       : { spreadOf: null, node: a as ts.Expression, v: lowerer.lowerExpr(a) },

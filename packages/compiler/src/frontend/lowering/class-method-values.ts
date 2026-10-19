@@ -348,7 +348,7 @@ function reflectedMethodValue(
   if (existing) return existing;
   const declaration = info.decl;
   if (!declaration) return null;
-  const member = declaration.members.find((member) => {
+  const member = declaration.members.nodes.find((member) => {
     if (
       (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) ||
       !member.name ||

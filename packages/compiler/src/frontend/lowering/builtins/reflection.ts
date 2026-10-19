@@ -23,13 +23,13 @@ export function lowerReflectCall(
     !call.questionDotToken &&
     !access.questionDotToken &&
     lowerer.stdlibGlobalMember(access, "Reflect") === "ownKeys" &&
-    call.arguments.length === 1 &&
-    !ts.isSpreadElement(call.arguments[0]!)
+    call.arguments.nodes.length === 1 &&
+    !ts.isSpreadElement(call.arguments.nodes[0]!)
   ) {
     return {
       kind: "libCall",
       fn: "dyn.ownKeys",
-      args: [lowerer.lowerExprExpecting(call.arguments[0]!, DYN)],
+      args: [lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN)],
       type: DYN,
       loc: locOf(call),
     };
@@ -39,9 +39,9 @@ export function lowerReflectCall(
   if (reflectMember === "get" || reflectMember === "set") {
     const required = reflectMember === "get" ? 2 : 3;
     if (
-      call.arguments.length < required ||
-      call.arguments.length > required + 1 ||
-      call.arguments.some(ts.isSpreadElement)
+      call.arguments.nodes.length < required ||
+      call.arguments.nodes.length > required + 1 ||
+      call.arguments.nodes.some(ts.isSpreadElement)
     ) {
       lowerer.noLowering(
         `Reflect.${reflectMember} with this argument shape`,
@@ -50,9 +50,11 @@ export function lowerReflectCall(
       );
     }
     const loc = locOf(call);
-    const args = call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+    const args = call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
     const target =
-      call.arguments.length === required ? lowerer.declareHiddenLocal("%reflectTarget", DYN) : null;
+      call.arguments.nodes.length === required
+        ? lowerer.declareHiddenLocal("%reflectTarget", DYN)
+        : null;
     const operation: IrExpr = {
       kind: "libCall",
       fn: reflectMember === "get" ? "dyn.reflectGet" : "dyn.reflectSet",
@@ -76,16 +78,16 @@ export function lowerReflectCall(
   const loc = locOf(call);
   const fenceHint =
     "the lowered form is Reflect.apply(path.join | path.resolve, <effect-free this>, args) — call other functions directly (f(...args))";
-  if (call.arguments.length !== 3 || call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.length !== 3 || call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering("Reflect.apply with this argument shape", call, fenceHint);
   }
-  const targetNode = call.arguments[0]!;
+  const targetNode = call.arguments.nodes[0]!;
   const bi = ts.isPropertyAccessExpression(targetNode) ? lowerer.builtinMemberOf(targetNode) : null;
   const fn = bi ? builtinModuleFnOf(lowerer, bi.module, bi.member) : null;
   if (!fn || fn.variadicPack !== true) {
     const target = lowerer.lowerExprExpecting(targetNode, DYN);
-    const receiver = lowerer.lowerExprExpecting(call.arguments[1]!, DYN);
-    const argumentsList = lowerer.lowerExprExpecting(call.arguments[2]!, DYN);
+    const receiver = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+    const argumentsList = lowerer.lowerExprExpecting(call.arguments.nodes[2]!, DYN);
     return {
       kind: "libCall",
       fn: "dyn.reflectApply",
@@ -94,7 +96,7 @@ export function lowerReflectCall(
       loc,
     };
   }
-  const thisNode = call.arguments[1]!;
+  const thisNode = call.arguments.nodes[1]!;
   const effectFree =
     thisNode.kind === ts.SyntaxKind.ThisKeyword ||
     ts.isIdentifier(thisNode) ||
@@ -107,6 +109,6 @@ export function lowerReflectCall(
       "the target ignores its receiver, so only effect-free spellings drop honestly (`this`, a binding, null, undefined)",
     );
   }
-  const packed = lowerer.lowerExprExpecting(call.arguments[2]!, arrayOf(STRING));
+  const packed = lowerer.lowerExprExpecting(call.arguments.nodes[2]!, arrayOf(STRING));
   return { kind: "libCall", fn: fn.fn, args: [packed], type: fn.result, loc };
 }

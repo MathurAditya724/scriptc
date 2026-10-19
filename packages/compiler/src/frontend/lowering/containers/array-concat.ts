@@ -144,7 +144,7 @@ export function arrayConcatHelper(
     },
     ...append(varRef("a.0", arrT, loc), elem, node.expression),
     ...shape.flatMap((type, i) =>
-      append(varRef(`x.${i}`, type ? arrayOf(type) : elem, loc), type, node.arguments[i]!),
+      append(varRef(`x.${i}`, type ? arrayOf(type) : elem, loc), type, node.arguments.nodes[i]!),
     ),
     { kind: "return", value: out, loc },
   ];
