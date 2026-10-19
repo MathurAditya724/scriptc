@@ -17,9 +17,9 @@ function readName(text: string): string {
   return String(data.name);
 }
 
-// An operation without a static lowering, on a parameter.
+// An operation without a static lowering (the host's default locale), on a parameter.
 function precise(n: number): string {
-  return n.toPrecision(3);
+  return n.toLocaleString();
 }
 
 console.log(readName('{"name":"a"}'), precise(1.5), new Point(1, 2).x);
