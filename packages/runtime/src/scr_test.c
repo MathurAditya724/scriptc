@@ -599,9 +599,59 @@ static void scr_test_cancel_unrun(ScrTestCtx *c) {
   scr_test_report_result(c);
 }
 
+/* A cancelled subtest's afterEach chain and t.after hooks, on their own
+ * fiber: they start at the next turn, once the runner has moved on, as
+ * Node runs them when the cancelled test's own run resumes. The afterEach
+ * chain is copied when the test is cancelled, because its ancestors drop
+ * their hooks when they finish. Then the test's hooks are dropped,
+ * releasing closures that capture its context. */
+typedef struct {
+  ScrTestCtx *test;      /* owned ref */
+  ScrTestHooks each;     /* the afterEach chain, innermost first; owned closures */
+} ScrTestCancelled;
+
+static void scr_test_cancelled_hooks_entry(ScrFiber *self, void *arg) {
+  (void)self;
+  ScrTestCancelled *job = arg;
+  ScrTestCtx *c = job->test;
+  scr_await_hop(); /* the spawn runs the fiber at once; start at the next turn */
+  for (size_t i = 0; i < job->each.n && !scr_exc_pending(); i++)
+    scr_test_call(job->each.v[i].cb, job->each.v[i].flags, c, NULL);
+  if (scr_exc_pending()) scr_exc_clear();
+  scr_test_run_hooks_of(c, SCR_HOOK_AFTER, c);
+  if (scr_exc_pending()) scr_exc_clear();
+  for (int k = 0; k < 4; k++) scr_test_hooks_free(&c->hooks[k]);
+  scr_test_hooks_free(&job->each);
+  scr_testctx_release(c);
+  free(job);
+}
+
+static void scr_test_cancelled_hooks(ScrTestCtx *c) {
+  ScrTestCancelled *job = calloc(1, sizeof *job);
+  if (!job) scr_test_oom();
+  job->test = scr_testctx_retain(c);
+  for (ScrTestCtx *p = c->parent; p; p = p->parent) {
+    ScrTestHooks *h = &p->hooks[SCR_HOOK_AFTER_EACH];
+    for (size_t i = 0; i < h->n; i++) {
+      if (job->each.n == job->each.cap) {
+        job->each.cap = job->each.cap ? job->each.cap * 2 : 4;
+        job->each.v = realloc(job->each.v, job->each.cap * sizeof *job->each.v);
+        if (!job->each.v) scr_test_oom();
+      }
+      job->each.v[job->each.n].cb = scr_closure_retain(h->v[i].cb);
+      job->each.v[job->each.n].flags = h->v[i].flags;
+      job->each.v[job->each.n].at = NULL;
+      job->each.n++;
+    }
+  }
+  scr_promise_release(scr_async_spawn(scr_test_cancelled_hooks_entry, job));
+}
+
 /* A test that timed out (Node): its subtests that are still running are
- * cancelled, innermost first, with their durations so far. Their bodies
- * keep running unobserved and report nothing when they settle. */
+ * cancelled, innermost first, with their durations so far. Each one's
+ * mocks are restored and its mock timers reset at once, and its afterEach
+ * chain and t.after hooks run once the runner yields. Their bodies keep
+ * running unobserved and report nothing when they settle. */
 static void scr_test_cancel_running(ScrTestCtx *t) {
   for (size_t i = 0; i < t->nchildren; i++) {
     ScrTestCtx *c = t->children[i];
@@ -613,6 +663,9 @@ static void scr_test_cancel_running(ScrTestCtx *t) {
     c->dur_ms = scr_now_ms() - c->start_ms;
     c->state = SCR_TS_CANCELLED;
     scr_test_report_result(c);
+    scr_test_mocks_restore(&c->mocks, true);
+    scr_mt_reset(c->mock_timers);
+    scr_test_cancelled_hooks(c);
   }
 }
 
@@ -725,7 +778,10 @@ static void scr_test_run_node(ScrTestCtx *t) {
     scr_test_call(t->cb, t->flags, t, t);
     if (t->state != SCR_TS_PENDING) {
       /* Its parent timed out and cancelled it while the body ran: the
-       * result is reported, and the runner has moved on. */
+       * result is reported, its cleanup ran at the cancellation
+       * (scr_test_cancel_running), and the runner has moved on, so the
+       * registration parent is not restored either: it belongs to the
+       * test that runs now. */
       if (scr_exc_pending()) scr_exc_clear();
       if (t->concurrency > 1) scr_test_defer--;
       return;
