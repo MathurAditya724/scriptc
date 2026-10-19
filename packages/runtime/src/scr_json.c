@@ -3651,7 +3651,7 @@ ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc) {
  * always-linked core never references gated units. A missing tag at use
  * is an internal error: emitted programs install a unit's ops whenever
  * they can box its handles. */
-static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_COUNT];
+static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_CAPACITY];
 
 /* BroadcastChannel's EventTarget table (scr_et_broadcast_install). */
 SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops = NULL;
