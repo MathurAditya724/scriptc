@@ -2042,7 +2042,8 @@ function stableCreateRequireBindingReason7(
   decl: ts.VariableDeclaration,
 ): string | null {
   const cache = program.analysis.createRequireReasons;
-  if (cache.has(decl)) return cache.get(decl)!;
+  const cached = cache.get(decl);
+  if (cached !== undefined) return cached;
   const check = (): string | null => {
     const stmt = decl.parent?.parent;
     if (

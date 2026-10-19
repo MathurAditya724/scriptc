@@ -99,7 +99,12 @@ export function applyWidthLift(
     case "discriminantWrap": {
       if (dst.kind !== "union" || value.type.kind !== "record")
         throw new InternalCompilerError("lowerer bug: record discriminator lift shape");
-      const helper = lowerer.recordUnionWrapHelper(value.type, dst.unionId, loc);
+      const helper = lowerer.recordUnionWrapHelper(
+        value.type,
+        dst.unionId,
+        loc,
+        lift.width === true,
+      );
       if (!helper)
         throw new InternalCompilerError(
           "lowerer bug: planned record discriminator lift failed to intern",

@@ -41,11 +41,15 @@ export interface RecordUnionWrapPlan {
 
 /** Recursive variants can retain distinct ids for the same field layout.
  * An independently inferred record may intern to either id, so that id
- * alone cannot select its semantic destination when wrapping into a union. */
+ * alone cannot select its semantic destination when wrapping into a union.
+ * With `widthLift`, members the record only width-lifts into are routes
+ * too: a record's own fields do not say which of them its discriminant
+ * names, so the value's discriminant selects the member at run time. */
 export function planRecordUnionWrap(
   source: IrRecordShape,
   to: IrUnionDef,
   shapeOf: (id: string) => IrRecordShape | undefined,
+  widthLift?: (src: IrType, dst: IrType) => WidthLift | null,
 ): RecordUnionWrapPlan | null {
   const discriminant = to.discriminant;
   if (!discriminant || source.tuple || source.indexValue || shapeHasAccessorSlots(source))
@@ -57,30 +61,22 @@ export function planRecordUnionWrap(
     const arm = to.arms[tag]!;
     if (arm.kind !== "record") continue;
     const target = shapeOf(arm.shapeId);
-    if (
-      !target ||
-      target.tuple ||
-      target.indexValue ||
-      target.fields.length !== source.fields.length
-    )
-      continue;
-    let same = true;
-    for (let i = 0; i < source.fields.length; i++) {
+    if (!target || target.tuple || target.indexValue) continue;
+    let same = target.fields.length === source.fields.length;
+    for (let i = 0; same && i < source.fields.length; i++) {
       const a = source.fields[i]!,
         b = target.fields[i]!;
-      if (a.name !== b.name || !typeEquals(a.type, b.type)) {
-        same = false;
-        break;
-      }
+      if (a.name !== b.name || !typeEquals(a.type, b.type)) same = false;
     }
-    if (!same) continue;
+    let lift: WidthLift | null = same
+      ? { how: arm.shapeId === source.id ? "copy" : "width" }
+      : null;
+    if (lift === null && widthLift !== undefined)
+      lift = widthLift({ kind: "record", shapeId: source.id }, arm);
+    if (lift === null) continue;
     const entry = discriminant.cases.find((candidate) => candidate.tag === tag);
     if (!entry) return null;
-    routes.push({
-      tag,
-      lift: { how: arm.shapeId === source.id ? "copy" : "width" },
-      values: entry.values,
-    });
+    routes.push({ tag, lift, values: entry.values });
   }
   if (routes.length < 2 || discriminantOwners(to, shapeOf) === null) return null;
   return { field: discriminant.field, fieldType, routes };

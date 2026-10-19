@@ -9143,8 +9143,9 @@ export class Lowerer {
     source: IrType & { kind: "record" },
     toId: string,
     loc: SrcLoc,
+    width = false,
   ): string | null {
-    return recordUnionWrapHelper(this, source, toId, loc);
+    return recordUnionWrapHelper(this, source, toId, loc, width);
   }
 
   unionRetagHelper(

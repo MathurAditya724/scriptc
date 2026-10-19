@@ -78,6 +78,22 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
       });
       if (absentOnly.length === 1) selected = absentOnly;
     }
+    // A record that width-lifts into several members of a discriminated
+    // union is converted by its discriminant's value at run time, when
+    // every candidate member is one of the routes.
+    if (selected.length > 1 && src.kind === "record" && def.discriminant) {
+      const shape = lowerer.shapes.get(src.shapeId);
+      const plan =
+        shape &&
+        planRecordUnionWrap(
+          shape,
+          def,
+          (id) => lowerer.shapes.get(id),
+          (from, to) => lowerer.widthLiftPlan(from, to),
+        );
+      if (plan && selected.every(({ tag }) => plan.routes.some((route) => route.tag === tag)))
+        return { how: "discriminantWrap", width: true };
+    }
     if (selected.length !== 1) return null;
     return { how: "liftWrap", tag: selected[0]!.tag, arm: selected[0]!.arm };
   }

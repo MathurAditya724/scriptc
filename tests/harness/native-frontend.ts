@@ -20,6 +20,7 @@ import {
   moduleUsesBigInt,
   moduleUsesCopying,
   moduleUsesDynInvoke,
+  moduleUsesDynAsync,
   moduleUsesInspect,
   moduleUsesRegex,
   moduleUsesSymbol,
@@ -65,7 +66,13 @@ export const programs = [
   "nullish-long-chain.ts",
   "class-array-optional-return.ts",
   "contextual-array-union-write.ts",
+  "2391-default-builtin-imports/main.ts",
+  "3055-default-builtin-nodenext/main.ts",
+  "5854-array-from-async.ts",
   "6020-class-extends-function-constructor.js",
+  "5585-record-results-inlined.ts",
+  "2631-create-require/main.ts",
+  "4970-int32-call-abi.ts",
 ];
 
 interface LowerRequest {
@@ -224,6 +231,7 @@ export async function checkProgram(frontend: NativeFrontend, file: string): Prom
     copying: moduleUsesCopying(module),
     inspect: moduleUsesInspect(module),
     dynInvoke: moduleUsesDynInvoke(module),
+    dynAsync: moduleUsesDynAsync(module),
     symbol: moduleUsesSymbol(module),
     bigint: moduleUsesBigInt(module),
     zlib: moduleUsesZlib(module),

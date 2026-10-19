@@ -864,9 +864,18 @@ export function lambdaSignature(
   // Union-inferred returns adopt too (a mixed-return body inferring a
   // SUB-union of the slot's union — adopting is a no-op when the two
 
+  // A synchronous object-literal method adopts its slot's return the same
+  // way: its slot is the property of that name on the literal's
+  // contextual type.
+  const literalMethod =
+    ts.isMethodDeclaration(node) &&
+    ts.isObjectLiteralExpression(node.parent) &&
+    !node.asteriskToken &&
+    node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) !== true;
   if (
-    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-    (!isAsyncLike || ret.kind === "promise")
+    ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+      (!isAsyncLike || ret.kind === "promise")) ||
+    literalMethod
   ) {
     // The slot's signature: the contextual type stripped of its nullish
     // parts (an OPTIONAL callback field's context is the whole
@@ -874,7 +883,10 @@ export function lambdaSignature(
     // declared in USER code: stdlib callback slots (flatMap's
     // `U | readonly U[]`, sort comparators) have intrinsic lowerings
     // that inspect the INFERRED type, so they must not widen.
-    const ctxType = lowerer.checker.getContextualType(node);
+    const ctxType =
+      literalMethod && ts.isMethodDeclaration(node) && node.parent
+        ? objectLiteralMethodSlot(lowerer, node, node.parent)
+        : lowerer.checker.getContextualType(node);
     const ctxSigs = ctxType
       ? lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType))
       : [];
@@ -943,6 +955,7 @@ export function lambdaSignature(
     const inferredLiteral =
       literalSlot !== undefined && (literalType === null || literalType.kind === "dyn");
     if (
+      !literalMethod &&
       !isAsyncLike &&
       !node.type &&
       !inferredLiteral &&
@@ -957,4 +970,22 @@ export function lambdaSignature(
   appendArgumentsParameter(lowerer, node, shapes, "arguments");
   const funcType = funcTypeFromParamShapes(shapes, ret);
   return { shapes, funcType };
+}
+
+/** The type of the property an object-literal method fills on the
+ * literal's contextual type; undefined when the literal has no contextual
+ * type or the method has a computed name. */
+function objectLiteralMethodSlot(
+  lowerer: Lowerer,
+  node: ts.MethodDeclaration,
+  literal: ts.Node,
+): ts.Type | undefined {
+  if (!ts.isIdentifier(node.name) && !ts.isStringLiteral(node.name)) return undefined;
+  const literalType = lowerer.checker.getContextualType(literal);
+  if (!literalType) return undefined;
+  const property = lowerer.checker.getPropertyOfType(
+    lowerer.checker.getNonNullableType(literalType),
+    node.name.text,
+  );
+  return property ? lowerer.checker.getTypeOfSymbol(property) : undefined;
 }

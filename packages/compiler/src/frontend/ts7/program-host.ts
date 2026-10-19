@@ -21,9 +21,13 @@ import { dirname, join, resolve } from "node:path";
 import { Ts7Api } from "./api.js";
 import type { Ts7TimingInfo } from "./session-timing.js";
 import type { Ts7FileSystem } from "./rpc-filesystem.js";
-import type { CompilerOptions, Diagnostic } from "./semantic-types.js";
+import type { Diagnostic } from "./semantic-types.js";
 import type { SourceFile } from "./ast-types.js";
-import type { Ts7SessionProject as Project, Ts7SessionSnapshot as Snapshot } from "./session.js";
+import type {
+  Ts7ProjectCompilerOptions,
+  Ts7SessionProject as Project,
+  Ts7SessionSnapshot as Snapshot,
+} from "./session.js";
 import { CheckerFacade } from "./checker.js";
 import {
   moduleDetectionKindName,
@@ -44,8 +48,9 @@ import {
 /** The compiler options our createProgram accepts: TS7's CompilerOptions
  * shape (numeric enums for target/module/moduleResolution — the enums module
  * generates them from the pinned SDK) with the 5.9.3 "lib.es2025.d.ts" lib
- * spelling also accepted. */
-export type Ts7CompilerOptions = CompilerOptions;
+ * spelling also accepted, plus the project options scriptc adopts that the
+ * TS7 schema no longer declares (Ts7ProjectCompilerOptions). */
+export type Ts7CompilerOptions = Ts7ProjectCompilerOptions;
 
 /* tsconfig JSON wants enum NAMES; the options object carries TS7's numeric
  * enum values. Generated name lookups preserve the SDK's reverse mappings
@@ -282,7 +287,7 @@ export class Ts7Program {
     private readonly configPath: string,
   ) {}
 
-  getCompilerOptions(): CompilerOptions {
+  getCompilerOptions(): Ts7CompilerOptions {
     return this.project.program.getCompilerOptions();
   }
 
