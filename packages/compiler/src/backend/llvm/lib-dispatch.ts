@@ -526,7 +526,13 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   }
-  const sym = mockTimerSym(host, e) ?? LIB_FN_SYMS[e.fn];
+  // queueMicrotask's checked-dynamic form carries the AsyncLocalStorage
+  // context like the static one (lib-process.ts).
+  const sym =
+    mockTimerSym(host, e) ??
+    (e.fn === "timers.queueMicrotaskDyn" && host.schedulesInContext
+      ? "scr_queue_microtask_dyn_als"
+      : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
     ? emitBorrowedInputs(host, e.args)

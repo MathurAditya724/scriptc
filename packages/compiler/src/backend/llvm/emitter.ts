@@ -968,6 +968,14 @@ export class LlEmitter {
   /** The program calls mock.timers members (moduleUsesMockTimers): timer
    * calls emit scr_test.c's mock-aware entry points. */
   readonly mockTimers: boolean;
+  private schedulesInContextValue: boolean | undefined = undefined;
+  /** Whether timer and tick scheduling goes through the *_als entry
+   * points (RuntimeFeatures asyncContext). */
+  get schedulesInContext(): boolean {
+    if (this.schedulesInContextValue === undefined)
+      this.schedulesInContextValue = moduleRuntimeFeatures(this.mod).asyncContext;
+    return this.schedulesInContextValue;
+  }
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();
