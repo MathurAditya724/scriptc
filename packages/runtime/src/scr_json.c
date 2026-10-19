@@ -2516,6 +2516,29 @@ static void scr_dispose_observers(void *object) {
   if (scr_record_source_count) scr_record_source_disposed(object);
 }
 
+/* Frees the calling thread's table and filter and releases the views they
+ * hold, when its context ends (scr_atexit): a worker thread's TLS dies with
+ * it, and a library reset starts the next session empty. An executable's
+ * main thread keeps them at exit unless the exit frees everything
+ * (scr_exit_frees, which answers true on worker threads). The table is
+ * emptied before the views are released, so records the releases free see
+ * no entries in the dispose hook. */
+static void scr_record_source_cleanup(void) {
+#ifndef SCR_LIB
+  if (!scr_exit_frees()) return;
+#endif
+  ScrRecordSource *entries = scr_record_sources;
+  size_t capacity = scr_record_source_capacity;
+  scr_record_sources = NULL;
+  scr_record_source_capacity = scr_record_source_count = scr_record_source_deleted = 0;
+  free(scr_record_source_filter);
+  scr_record_source_filter = NULL;
+  for (size_t i = 0; i < capacity; i++)
+    if (entries[i].rec && entries[i].rec != SCR_RECORD_SOURCE_DELETED)
+      scr_dyn_release(entries[i].view);
+  free(entries);
+}
+
 /* Keeps live entries plus deleted markers at most half the table: grows
  * when live entries fill a quarter, otherwise rehashes in place to drop the
  * markers. A large rehash also rebuilds the dispose filter, so stale bits
@@ -2531,6 +2554,7 @@ static void scr_record_source_reserve(void) {
                                                     : old_capacity;
   scr_record_sources = calloc(scr_record_source_capacity, sizeof *scr_record_sources);
   if (!scr_record_sources) scr_json_oom();
+  if (!old_capacity) scr_atexit(scr_record_source_cleanup);
   bool refilter = scr_record_source_filter && old_capacity >= 16384;
   if (refilter) {
     memset(scr_record_source_filter, 0, ((size_t)1 << SCR_RECORD_SOURCE_FILTER_BITS) / 8);
