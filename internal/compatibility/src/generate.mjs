@@ -203,6 +203,10 @@ function featureOf(row, entries, parentSignature) {
 
 function symbolCandidates(row) {
   const result = new Set([row.apiSymbol]);
+  // A global's own row (`WebAssembly`) matches the compiler's
+  // `globalThis.<name>` entries.
+  if (row.chapter === "globals" && row.apiSymbol && !row.apiSymbol.includes("."))
+    result.add(`globalThis.${row.apiSymbol}`);
   const aliases = [
     ["fsPromises.", "fs/promises."],
     ["dnsPromises.", "dns/promises."],

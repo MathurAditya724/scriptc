@@ -9,6 +9,7 @@ import { emitTestLibCall } from "./lib-test.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
+import type { IrExpr, IrType } from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
 import {
@@ -21,6 +22,7 @@ import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
 import { rawBytes } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
+import { regexLiteralCaptures } from "./regex-matchers.js";
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -642,8 +644,66 @@ function emitAssertFailing(
  * `a.name.localeCompare(b.name)` reads both fields without retaining). */
 const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set(["str.localeCompare"]);
 
+/** The parameter count of a replace callback the runtime can call through
+ * the closure ABI (scr_regex_replace_fn), or null when it needs the dyn
+ * box. Each declared parameter must receive a value of its declared kind
+ * in every match: the match string at 0; with more than one parameter the
+ * pattern must be a literal whose captures are known, so position i is a
+ * capture that every match sets (a string), the offset (a number) right
+ * after the captures, or the subject (a string) after that. */
+function typedReplacerArity(callback: IrType, pattern: IrExpr): number | null {
+  if (callback.kind !== "func" || callback.rest || callback.argumentsAll) return null;
+  if (callback.ret.kind !== "string") return null;
+  const params = callback.params;
+  if (params.length > 4) return null;
+  if (params.length === 0) return 0;
+  if (params[0]!.kind !== "string") return null;
+  if (params.length === 1) return 1;
+  if (pattern.kind !== "regexLit") return null;
+  const captures = regexLiteralCaptures(pattern.pattern, pattern.flags);
+  if (!captures) return null;
+  for (let i = 1; i < params.length; i++) {
+    const kind = params[i]!.kind;
+    const ok =
+      i < captures.count
+        ? kind === "string" && captures.always[i] === true
+        : i === captures.count
+          ? kind === "f64"
+          : i === captures.count + 1 && kind === "string";
+    if (!ok) return null;
+  }
+  return params.length;
+}
+
+/** `s.replace(re, fn)` / `replaceAll` with a typed callback the runtime can
+ * call directly: the dyn box the IR wraps it in is never observable (the
+ * runtime only calls it, with `this` undefined), so the closure goes to
+ * scr_regex_replace_fn as it is. Null keeps the generic path. */
+function emitTypedRegexReplace(host: LlvmEmitterContext, e: LibCallExpr): LlValue | null {
+  const [subject, pattern, callback, all] = e.args;
+  if (!subject || !pattern || callback?.kind !== "dynFrom" || all?.kind !== "boolLit") return null;
+  const arity = typedReplacerArity(callback.value.type, pattern);
+  if (arity === null) return null;
+  const B = host.B;
+  const s = host.emitExpr(subject);
+  const re = host.emitExpr(pattern);
+  const fn = host.emitExpr(callback.value);
+  host.declare(`declare ptr @scr_regex_replace_fn(ptr, ptr, ptr, i32, i1 zeroext)`);
+  const result = B.tmp();
+  B.line(
+    `${result} = call ptr @scr_regex_replace_fn(ptr ${s.name}, ptr ${re.name}, ptr ${fn.name}, i32 ${arity}, i1 zeroext ${all.value})`,
+  );
+  const output = host.own({ name: result, type: e.type });
+  host.emitPendingCheck();
+  return output;
+}
+
 export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (USES_TIMERS_LIB_FNS.has(e.fn)) host.usesTimers = true;
+  if (e.fn === "regex.replaceCallback") {
+    const typed = emitTypedRegexReplace(host, e);
+    if (typed) return typed;
+  }
   if (e.fn === "process.nextTick") return host.emitAsyncContextLibCall(e);
   if (
     e.fn === "sp.pipeline" ||

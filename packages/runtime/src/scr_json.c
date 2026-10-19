@@ -212,6 +212,8 @@ static void scr_jb_dispose(ScrJsonBuf *b) {
   scr_jb_init(b);
 }
 
+void scr_jb_abandon(ScrJsonBuf *b) { scr_jb_dispose(b); }
+
 void scr_jb_putc(ScrJsonBuf *b, char c) {
   scr_jb_grow(b, 1);
   b->data[b->len++] = c;
@@ -3649,7 +3651,7 @@ ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc) {
  * always-linked core never references gated units. A missing tag at use
  * is an internal error: emitted programs install a unit's ops whenever
  * they can box its handles. */
-static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_COUNT];
+static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_CAPACITY];
 
 /* BroadcastChannel's EventTarget table (scr_et_broadcast_install). */
 SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops = NULL;
@@ -12818,8 +12820,15 @@ static ScrDyn *scr_native_set_pack(void *ptr) {
 
 ScrDyn *scr_dyn_native_set(ScrMap *value) {
   static const ScrDynHandleOps ops = {
-    "Set", &scr_map_retain_v, &scr_map_release_v, &scr_native_set_invoke,
-    &scr_native_set_get, &scr_weak_map_write, NULL, &scr_native_set_pack,
+      .cls = "Set",
+      .retain = &scr_map_retain_v,
+      .release = &scr_map_release_v,
+      .invoke = &scr_native_set_invoke,
+      .get = &scr_native_set_get,
+      .set = &scr_weak_map_write,
+      .iter_pack = &scr_native_set_pack,
+      /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
+      .json_empty_object = true,
   };
   scr_dyn_handle_install(SCR_DYNH_SET, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_SET);
@@ -12928,8 +12937,15 @@ static ScrDyn *scr_native_map_pack(void *ptr) {
 
 ScrDyn *scr_dyn_native_map(ScrMap *value) {
   static const ScrDynHandleOps ops = {
-    "Map", &scr_map_retain_v, &scr_map_release_v, &scr_native_map_invoke,
-    &scr_native_map_get, &scr_weak_map_write, NULL, &scr_native_map_pack,
+      .cls = "Map",
+      .retain = &scr_map_retain_v,
+      .release = &scr_map_release_v,
+      .invoke = &scr_native_map_invoke,
+      .get = &scr_native_map_get,
+      .set = &scr_weak_map_write,
+      .iter_pack = &scr_native_map_pack,
+      /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
+      .json_empty_object = true,
   };
   scr_dyn_handle_install(SCR_DYNH_MAP, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_MAP);
@@ -13047,63 +13063,13 @@ double scr_buffer_byte_length_dyn(ScrDyn *value, ScrStr *encoding) {
   return 0;
 }
 
-/* Radix digit generation follows V8's DoubleToRadixStringView algorithm.
- * Copyright 2012 the V8 project authors. BSD license in
- * ../vendor/v8-number-radix/LICENSE. The decimal path retains Ryū. */
+/* toString(radix) with any radix value: undefined means 10, anything else
+ * converts with ToNumber (which can run program code) first. */
 ScrStr *scr_num_to_string_radix(double value, const ScrDyn *argument) {
   double requested = 10;
   if (argument && argument->kind != SCR_DYN_UNDEF &&
       !scr_dyn_number_coerce_js(argument, &requested)) return NULL;
-  requested = isnan(requested) ? 0 : trunc(requested);
-  if (requested < 2 || requested > 36 || !isfinite(requested)) {
-    static const char message[] = "toString() radix argument must be between 2 and 36";
-    scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
-    return NULL;
-  }
-  int radix = (int)requested;
-  if (radix == 10 || !isfinite(value) || value == 0) return scr_f64_to_scrstr(value);
-  static const char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
-  char buffer[2200];
-  const size_t middle = sizeof buffer / 2;
-  size_t begin = middle, end = middle;
-  bool negative = value < 0;
-  value = fabs(value);
-  double integer = floor(value), fraction = value - integer;
-  double tolerance = 0.5 * (nextafter(value, INFINITY) - value);
-  if (tolerance <= 0) tolerance = nextafter(0, INFINITY);
-  if (fraction >= tolerance) {
-    buffer[end++] = '.';
-    do {
-      fraction *= radix;
-      tolerance *= radix;
-      int digit = (int)fraction;
-      buffer[end++] = digits[digit];
-      fraction -= digit;
-      if ((fraction > 0.5 || (fraction == 0.5 && (digit & 1))) && fraction + tolerance > 1) {
-        for (;;) {
-          end--;
-          if (end == middle) { integer += 1; break; }
-          char last = buffer[end];
-          digit = last > '9' ? last - 'a' + 10 : last - '0';
-          if (digit + 1 < radix) { buffer[end++] = digits[digit + 1]; break; }
-        }
-        break;
-      }
-    } while (fraction >= tolerance);
-  }
-  /* V8's Double::Exponent is the unbiased exponent minus 52. Beyond
-   * that precision boundary, trailing digits are unrepresented zeros. */
-  while (integer / radix >= 0x1p53) {
-    integer /= radix;
-    buffer[--begin] = '0';
-  }
-  do {
-    double remainder = fmod(integer, radix);
-    buffer[--begin] = digits[(int)remainder];
-    integer = (integer - remainder) / radix;
-  } while (integer > 0);
-  if (negative) buffer[--begin] = '-';
-  return scr_str_new(buffer + begin, end - begin);
+  return scr_num_to_string_radix_f64(value, requested);
 }
 
 ScrDyn *scr_caught_to_dyn(const ScrCaught *c) {

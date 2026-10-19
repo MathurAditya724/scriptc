@@ -69,7 +69,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
   const hash = createHash("sha256");
   const inputs = [
     entry,
-    ...globSync(join(pilotRoot, "**/node_modules/**/*.{js,mjs,cjs,json,d.ts}")).sort(),
+    ...globSync(join(pilotRoot, "**/node_modules/**/*.{js,mjs,cjs,json,ts}")).sort(),
     ...globSync(
       join(fixturesRoot, "commander-calc/node_modules/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
@@ -1060,6 +1060,40 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
+
+  // The two resolvers must answer one file for every opted-in edge. Each
+  // shape below once left the runtime file outside tsgo's program (SC2013
+  // "did not join the type-checked program"): uuid's node condition with
+  // declarations in another tree, tldts's package-root TypeScript source
+  // beside `main`, express's same-version copies of one package (tsgo's
+  // package-id redirect), and get-intrinsic's dependency chain deeper than
+  // maxNodeModuleJsDepth.
+  test.each([
+    ["split-node-types-cli.ts", ["split-node-types"]],
+    ["ts-root-source-cli.ts", ["ts-root-source"]],
+    ["dup-install-cli.ts", ["dup-left", "dup-right", "dup-leaf"]],
+    ["deep-packages-cli.ts", Array.from({ length: 11 }, (_, i) => `hop-${i + 1}`)],
+  ])(
+    "%s joins the type-checked program and matches Node",
+    async (name, pkgs) => {
+      const entry = join(pilotRoot, name);
+      const { coverage } = analyze(entry, { npmStatic: pkgs });
+      expect(coverage.npmStatic.map((p) => [p.package, p.status]).sort()).toEqual(
+        pkgs.map((p) => [p, "static"]).sort(),
+      );
+      expect(coverage.preflightFailed).toBe(false);
+      expect(coverage.diagnostics).toHaveLength(0);
+      const binary = await buildStatic(entry, pkgs);
+      const [nodeRes, nativeRes] = await Promise.all([
+        runBinary("node", [entry]),
+        runBinary(binary, []),
+      ]);
+      expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+      expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+      expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+    },
+    180_000,
+  );
 
   test("recursive inferred JavaScript results retain their promised ABI", async () => {
     const entry = join(pilotRoot, "recursive-result-cli.ts");

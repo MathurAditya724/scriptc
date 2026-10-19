@@ -115,6 +115,16 @@ export function lowerGenMethodCall(
   if (call.arguments.some(ts.isSpreadElement)) {
     lowerer.unsupported("SC1090", call, "spread arguments");
   }
+  // Iterator helpers and the built-in iterators have no throw method; an
+  // iterator-typed value may hold one, so only a generator's own member
+  // lowers.
+  if (name === "throw" && !isGeneratorMember(lowerer, access)) {
+    lowerer.noLowering(
+      `${lowerer.checker.typeToString(lowerer.typeOf(access.expression))}.throw`,
+      call,
+      "throw() lowers on values typed as generators (iterator helpers and built-in iterators have no throw method)",
+    );
+  }
   const loc = locOf(call);
   const gen = lowerer.lowerExpr(access.expression);
   if (gen.type.kind !== "generator") return null;
@@ -185,6 +195,23 @@ export function lowerGenMethodCall(
     }
   }
   return { kind: "genResume", mode: name, gen, arg, type: resultT, loc };
+}
+
+/** Whether `access` names a member the lib declares on Generator or
+ * AsyncGenerator itself. */
+function isGeneratorMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  const member = lowerer.checker.getSymbolAtLocation(access.name);
+  return (
+    member !== undefined &&
+    lowerer.checker
+      .declarationsOf(member)
+      .some(
+        (d) =>
+          ts.isInterfaceDeclaration(d.parent) &&
+          (d.parent.name.text === "Generator" || d.parent.name.text === "AsyncGenerator") &&
+          lowerer.isStdlibFile(d.getSourceFile()),
+      )
+  );
 }
 
 /** Extraction of a suspended resume's yield value out of the result
@@ -319,7 +346,7 @@ export function genValue(gen: IrExpr & { type: GenType }, loc: SrcLoc): IrExpr {
   return { kind: "genResume", mode: "value", gen, arg: null, type: gen.type.yieldT, loc };
 }
 
-function generatorLoopBinding(
+export function generatorLoopBinding(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
   value: IrExpr,
@@ -572,7 +599,9 @@ export function lowerForOfGenerator(
           catchBody: null,
           catchLocalId: null,
           // IteratorClose: every exit that leaves the generator unfinished
-          // closes it — finallys run; the .return() result is dropped.
+          // closes it — finallys run; the .return() result is dropped, and
+          // after a throw from the body an error from the close is too.
+          dropFinallyErrors: true,
           finallyBody: [
             {
               kind: "if",
