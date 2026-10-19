@@ -763,9 +763,36 @@ ScrStr *scr_process_exec_path(void) {
   return scr_str_retain(scr_exec_path_str);
 }
 
+#if defined(SCR_WORKERS) && !defined(_WIN32)
+/* Set when a Worker starts with env: SHARE_ENV. From then on two threads
+ * can use the process environment, so process.env reads, writes and
+ * enumeration of it hold scr_env_lock (the Windows environment functions
+ * synchronize themselves). */
+static atomic_bool scr_env_shared;
+static pthread_mutex_t scr_env_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void scr_env_share(void) { atomic_store_explicit(&scr_env_shared, true, memory_order_relaxed); }
+
+static bool scr_env_lock_enter(void) {
+  if (!atomic_load_explicit(&scr_env_shared, memory_order_relaxed)) return false;
+  pthread_mutex_lock(&scr_env_lock);
+  return true;
+}
+
+static void scr_env_lock_exit(bool locked) {
+  if (locked) pthread_mutex_unlock(&scr_env_lock);
+}
+#else
+#ifdef SCR_WORKERS
+void scr_env_share(void) {}
+#endif
+static bool scr_env_lock_enter(void) { return false; }
+static void scr_env_lock_exit(bool locked) { (void)locked; }
+#endif
+
 ScrStr *scr_env_get(const ScrStr *name) {
 #ifdef SCR_WORKERS
-  if (!scr_context_is_main()) {
+  if (scr_context_env_private()) {
     const char *value = scr_context_getenv(name->data);
     return value ? scr_str_new(value, strlen(value)) : NULL;
   }
@@ -789,8 +816,11 @@ ScrStr *scr_env_get(const ScrStr *name) {
   free(buf);
   return s;
 #else
-  const char *v = scr_getenv(name->data);
-  return v ? scr_str_new(v, strlen(v)) : NULL;
+  bool locked = scr_env_lock_enter();
+  const char *v = getenv(name->data);
+  ScrStr *s = v ? scr_str_new(v, strlen(v)) : NULL;
+  scr_env_lock_exit(locked);
+  return s;
 #endif
 }
 
@@ -855,6 +885,7 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
 #ifdef SCR_WORKERS
   if (scr_context_env_set(k, v)) goto done;
 #endif
+  bool locked = scr_env_lock_enter();
 #ifdef _WIN32
   /* The WIN32 environment (see scr_env_get): an empty value stays a
    * present-but-empty variable, and children inherit the write. */
@@ -863,6 +894,7 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
   setenv(k, v, 1);
 #endif
   scr_env_tz_changed(name);
+  scr_env_lock_exit(locked);
 #ifdef SCR_WORKERS
 done:
 #endif
@@ -877,12 +909,14 @@ void scr_env_unset(const ScrStr *name) {
 #ifdef SCR_WORKERS
   if (scr_context_env_set(name->data, NULL)) return;
 #endif
+  bool locked = scr_env_lock_enter();
 #ifdef _WIN32
   SetEnvironmentVariableA(name->data, NULL);
 #else
   unsetenv(name->data);
 #endif
   scr_env_tz_changed(name);
+  scr_env_lock_exit(locked);
 }
 
 static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii);
@@ -1146,12 +1180,14 @@ ScrArr *scr_env_pairs(void) {
     FreeEnvironmentStringsA(block);
   }
 #else
+  bool locked = scr_env_lock_enter();
   for (char **e = environ; *e != NULL; e++) {
     const char *eq = strchr(*e, '=');
     if (!eq || eq == *e) continue;
     scr_arr_push_ref(out, scr_str_new(*e, (size_t)(eq - *e)));
     scr_arr_push_ref(out, scr_str_new(eq + 1, strlen(eq + 1)));
   }
+  scr_env_lock_exit(locked);
 #endif
   return out;
 }

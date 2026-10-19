@@ -111,6 +111,11 @@ const char *scr_node_debug_initial(void);
  * environ order — the compiler's process.env snapshot builds its record
  * from this. +1 fresh array. Never throws. */
 ScrArr *scr_env_pairs(void);
+#ifdef SCR_WORKERS
+/* Called before a Worker that shares the process environment starts:
+ * process.env operations on that environment then hold a lock. */
+void scr_env_share(void);
+#endif
 /* getpid(2) / getuid(2) — POSIX-only target, always answer. */
 double scr_process_pid(void);
 double scr_process_getuid(void);

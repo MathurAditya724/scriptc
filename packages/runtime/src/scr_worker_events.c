@@ -1,4 +1,5 @@
 #include "scr_worker.h"
+#include "scr_key.h"
 
 #ifdef SCR_WORKERS
 #include <stdlib.h>
@@ -1289,6 +1290,77 @@ static bool scr_worker_stack_size(ScrDyn *limits, size_t *stack_size) {
   return true;
 }
 
+/* True for worker_threads.SHARE_ENV: the symbol registered under its key
+ * (each thread's registry holds one). */
+static bool scr_worker_share_env(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_SYMBOL || !scr_dyn_symbol_key_fn) return false;
+  ScrStr *key = scr_dyn_symbol_key_fn(value->v.symbol.value);
+  if (!key) return false;
+  static const char share[] = "nodejs.worker_threads.SHARE_ENV";
+  bool same = key->len == sizeof share - 1 && !memcmp(key->data, share, sizeof share - 1);
+  scr_str_release(key);
+  return same;
+}
+
+/* The worker's process.env from options.env, as Node's constructor makes
+ * it: undefined or null copies this thread's environment, an object's own
+ * enumerable string-keyed properties other than array indices become the
+ * variables (each value converted with String()), and SHARE_ENV has the
+ * worker use this thread's
+ * environment. *out is NULL for SHARE_ENV. False with an exception pending. */
+static bool scr_worker_environment(ScrDyn *env, ScrContextEnv **out) {
+  *out = NULL;
+  if (env->kind == SCR_DYN_UNDEF || env->kind == SCR_DYN_NULL) {
+    *out = scr_context_env_capture();
+    return true;
+  }
+  if (scr_worker_share_env(env)) {
+    if (scr_context_env_private()) {
+      scr_worker_refusal("SHARE_ENV in a worker that has its own environment is not supported yet");
+      return false;
+    }
+    return true;
+  }
+  ScrStr *type = scr_dyn_typeof(env);
+  bool object = type->len == 6 && !memcmp(type->data, "object", 6);
+  scr_str_release(type);
+  if (!object) {
+    scr_dyn_prop_type_fail("options.env", "of type object or one of undefined, null, or worker_threads.SHARE_ENV", env);
+    return false;
+  }
+  ScrDynEntryPairs *pairs = scr_dyn_obj_entry_pairs(env);
+  if (!pairs) return false;
+  ScrContextEnv *environment = scr_context_env_new();
+  for (size_t i = 0; i < pairs->count; i++) {
+    ScrStr *text = environment ? scr_dyn_string_coerce_js(pairs->pairs[i].value) : NULL;
+    uint32_t index;
+    const ScrStr *key = pairs->pairs[i].key;
+    if (text && scr_key_array_index(key->data, key->len, &index)) {
+      /* converted like the others, but Node's worker environment drops
+       * array-index names */
+      scr_str_release(text);
+    } else if (text) {
+      /* The environment holds UTF-8: a lone surrogate is stored as U+FFFD. */
+      char *name_owned, *value_owned;
+      const char *name = scr_str_utf8(key, &name_owned);
+      const char *value = scr_str_utf8(text, &value_owned);
+      scr_context_env_put(environment, name, value);
+      scr_str_utf8_end(name_owned);
+      scr_str_utf8_end(value_owned);
+      scr_str_release(text);
+    } else if (environment) {
+      scr_context_env_free(environment);
+      environment = NULL;
+    }
+    /* the snapshot's pairs are owned: release each, also after a throw */
+    scr_str_release(pairs->pairs[i].key);
+    scr_dyn_release(pairs->pairs[i].value);
+  }
+  scr_dyn_entry_pairs_free(pairs);
+  *out = environment;
+  return environment != NULL;
+}
+
 static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *options) {
   if (!scr_worker_events_install()) return NULL;
   ScrDyn *data = scr_dyn_undefined();
@@ -1296,6 +1368,7 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   ScrDyn *transfer_list = scr_dyn_undefined();
   ScrDyn *limits = scr_dyn_undefined();
   ScrDyn *name = scr_dyn_undefined();
+  ScrDyn *env = scr_dyn_undefined();
   unsigned capture = 0;
   if (options->kind != SCR_DYN_UNDEF) {
     if (options->kind != SCR_DYN_OBJ) {
@@ -1310,6 +1383,7 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
       else if (entry->key_len == 12 && !memcmp(entry->key, "transferList", 12)) transfer_list = entry->value;
       else if (entry->key_len == 14 && !memcmp(entry->key, "resourceLimits", 14)) limits = entry->value;
       else if (entry->key_len == 4 && !memcmp(entry->key, "name", 4)) name = entry->value;
+      else if (entry->key_len == 3 && !memcmp(entry->key, "env", 3)) env = entry->value;
       else if (entry->key_len == 6 && !memcmp(entry->key, "stdout", 6)) capture |= scr_dyn_truthy(entry->value) ? 1 : 0;
       else if (entry->key_len == 6 && !memcmp(entry->key, "stderr", 6)) capture |= scr_dyn_truthy(entry->value) ? 2 : 0;
       else if (entry->key_len == 5 && !memcmp(entry->key, "stdin", 5)) capture |= scr_dyn_truthy(entry->value) ? 4 : 0;
@@ -1320,11 +1394,17 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   if (!scr_worker_stack_size(limits, &stack_size)) return NULL;
   ScrArr *arguments = scr_worker_arguments(filename, argv);
   if (!arguments) return NULL;
+  ScrContextEnv *environment;
+  if (!scr_worker_environment(env, &environment)) {
+    scr_arr_release(arguments);
+    return NULL;
+  }
   /* Node: a truthy name must be a string, trimmed; otherwise WorkerThread */
   ScrStr *thread_name;
   if (scr_dyn_truthy(name)) {
     if (name->kind != SCR_DYN_STR) {
       scr_arr_release(arguments);
+      scr_context_env_free(environment);
       scr_dyn_prop_type_fail("options.name", "of type string", name);
       return NULL;
     }
@@ -1333,15 +1413,26 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
     thread_name = scr_str_new("WorkerThread", 12);
   }
   ScrDyn *transfer = scr_worker_transfer_list(transfer_list);
-  if (scr_exc_pending()) { scr_arr_release(arguments); scr_str_release(thread_name); return NULL; }
+  if (scr_exc_pending()) {
+    scr_arr_release(arguments);
+    scr_str_release(thread_name);
+    scr_context_env_free(environment);
+    return NULL;
+  }
   bool environment_data;
   ScrMessage *wire = scr_worker_start_message(data, transfer, &environment_data);
   if (capture & 4) scr_worker_set_stdin_attach(scr_worker_stdin_attach);
   scr_dyn_release(transfer);
-  if (!wire) { scr_arr_release(arguments); scr_str_release(thread_name); return NULL; }
+  if (!wire) {
+    scr_arr_release(arguments);
+    scr_str_release(thread_name);
+    scr_context_env_free(environment);
+    return NULL;
+  }
+  if (!environment) scr_env_share();
   ScrWorkerThread *thread = scr_worker_thread_start(sc_worker_entry, (uint32_t)root, wire, environment_data,
                                                     scr_worker_events, arguments, stack_size, thread_name,
-                                                    capture);
+                                                    capture, environment);
   scr_str_release(thread_name);
   scr_arr_release(arguments);
   if (!thread) return NULL;

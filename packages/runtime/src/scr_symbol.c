@@ -120,7 +120,10 @@ ScrSym *scr_sym_for(ScrStr *key) {
   /* First request for this key: a fresh symbol whose description IS the
    * key (the spec's Symbol.for behavior), chained into the registry with
    * the registry's own reference. */
-  if (!g_sym_registry) scr_atexit(scr_sym_registry_cleanup);
+  if (!g_sym_registry) {
+    scr_atexit(scr_sym_registry_cleanup);
+    scr_dyn_symbol_key_fn = scr_sym_key_for;
+  }
   ScrSym *s = scr_sym_new(key);
   s->reg_key = scr_str_retain(key);
   s->reg_next = g_sym_registry;

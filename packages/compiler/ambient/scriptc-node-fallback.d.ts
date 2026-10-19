@@ -6059,7 +6059,12 @@ declare module "worker_threads" {
   export const resourceLimits: ResourceLimits;
   /* the Worker's name option, trimmed ("WorkerThread" by default); "" in the main thread */
   export const threadName: string | null;
+  /* as options.env, the worker shares this thread's process.env */
+  export const SHARE_ENV: unique symbol;
   export interface WorkerOptions {
+    /* the worker's process.env: an object's values as strings, or SHARE_ENV;
+     * a copy of this thread's process.env by default */
+    env?: { [name: string]: unknown } | typeof SHARE_ENV | null;
     workerData?: unknown;
     transferList?: readonly unknown[];
     argv?: readonly unknown[];

@@ -528,7 +528,7 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
       add("win32", moduleValue(lowerer, "path/win32", loc));
     }
     if (module === "worker_threads") {
-      for (const member of ["isInternalThread", "parentPort", "workerData"])
+      for (const member of ["SHARE_ENV", "isInternalThread", "parentPort", "workerData"])
         add(member, lowerWorkerMetadata(member, loc)!);
     }
     body.push({

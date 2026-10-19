@@ -345,7 +345,13 @@ extern SCR_TL void (*scr_context_report_error)(void);
 extern SCR_TL bool scr_context_report_rejection;
 typedef struct ScrContextEnv ScrContextEnv;
 ScrContextEnv *scr_context_env_capture(void);
+/* An empty environment, and a variable set in one (copies both strings). */
+ScrContextEnv *scr_context_env_new(void);
+void scr_context_env_put(ScrContextEnv *environment, const char *name, const char *value);
 void scr_context_env_free(ScrContextEnv *environment);
+/* True when the calling thread has its own environment; false when it uses
+ * the process environment (the main thread and SHARE_ENV workers). */
+bool scr_context_env_private(void);
 void scr_context_env_enter(ScrContextEnv *environment);
 bool scr_context_env_set(const char *name, const char *value);
 const char *scr_context_getenv(const char *name);

@@ -174,6 +174,17 @@ static void scr_child_error_sync_fields(ScrError *e, bool has_status, double sta
   scr_error_set_prop(e, "stderr", 6, err);
 }
 
+/* The [k,v,...] environment of a child whose options give none: the
+ * calling worker's process.env when the worker has its own, as Node spawns
+ * with process.env, or NULL to inherit the process environment. +1. */
+static ScrArr *scr_child_default_env(void) {
+#ifdef SCR_WORKERS
+  return scr_context_env_pairs();
+#else
+  return NULL;
+#endif
+}
+
 #ifdef _WIN32
 /* ── Windows arm: real children via CreateProcessW ────────────────────
  * The POSIX arm below owns the corresponding implementation; this arm
@@ -669,7 +680,11 @@ static void scr_win_create_process(ScrStr *cmd, ScrArr *args, ScrWinSpawn *sp,
     cwd_w[0] = L'\0';
     if (need > 0) (void)GetCurrentDirectoryW(need, cwd_w);
   }
-  WCHAR *env_block = sp->env_pairs != NULL ? scr_child_env_block(sp->env_pairs) : NULL;
+  ScrArr *inherited = sp->env_pairs != NULL ? NULL : scr_child_default_env();
+  WCHAR *env_block = sp->env_pairs != NULL ? scr_child_env_block(sp->env_pairs)
+                     : inherited != NULL  ? scr_child_env_block(inherited)
+                                          : NULL;
+  scr_arr_release(inherited);
   WCHAR *path_w = scr_child_path(env_block);
   WCHAR *file_w;
   if (shell) {
@@ -3074,6 +3089,9 @@ static bool scr_cap_read(ScrCapBuf *b, int fd) {
   return true;
 }
 
+static char **scr_exec_envp(ScrArr *pairs);
+static void scr_exec_envp_free(char **envp);
+
 /* ── spawnSync ───────────────────────────────────────────────────────── */
 
 static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
@@ -3136,10 +3154,14 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   }
 
   char **argv = scr_child_argv(cmd, args);
+  ScrArr *inherited = scr_child_default_env();
+  char **envp = inherited != NULL ? scr_exec_envp(inherited) : NULL;
+  scr_arr_release(inherited);
   pid_t pid = -1;
-  int spawn_err = posix_spawnp(&pid, cmd->data, &fa, NULL, argv, environ);
+  int spawn_err = posix_spawnp(&pid, cmd->data, &fa, NULL, argv, envp != NULL ? envp : environ);
   posix_spawn_file_actions_destroy(&fa);
   free(argv);
+  scr_exec_envp_free(envp);
   if (cap_out) close(outfd[1]);
   if (cap_err) close(errfd[1]);
 
@@ -3352,8 +3374,9 @@ static char *scr_exec_display(ScrStr *cmd, ScrArr *args, bool shell) {
 }
 
 /* Builds a NULL-terminated envp from [k,v,...] pairs ("k=v" strings, each
- * malloc'd). Free with scr_exec_envp_free. */
+ * malloc'd), or NULL for NULL pairs. Free with scr_exec_envp_free. */
 static char **scr_exec_envp(ScrArr *pairs) {
+  if (!pairs) return NULL;
   size_t n = (size_t)scr_arr_len(pairs) / 2;
   char **envp = malloc((n + 1) * sizeof(char *));
   if (!envp) scr_child_oom();
@@ -3474,7 +3497,9 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
 #endif
 
   char **argv = scr_child_argv(cmd, args);
-  char **envp = o->env_pairs != NULL ? scr_exec_envp(o->env_pairs) : NULL;
+  ScrArr *inherited = o->env_pairs != NULL ? NULL : scr_child_default_env();
+  char **envp = scr_exec_envp(o->env_pairs != NULL ? o->env_pairs : inherited);
+  scr_arr_release(inherited);
   pid_t pid = -1;
   int spawn_err = posix_spawnp(&pid, cmd->data, &fa, NULL, argv,
                                envp != NULL ? envp : environ);
@@ -5032,7 +5057,9 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
 #endif
   char *shell_argv[] = {(char *)"/bin/sh", (char *)"-c", cmd->data, NULL};
   char **argv = shell ? shell_argv : scr_child_argv(cmd, args);
-  char **envp = has_env && env_pairs != NULL ? scr_exec_envp(env_pairs) : NULL;
+  ScrArr *inherited = has_env && env_pairs != NULL ? NULL : scr_child_default_env();
+  char **envp = scr_exec_envp(has_env && env_pairs != NULL ? env_pairs : inherited);
+  scr_arr_release(inherited);
   pid_t pid = -1;
   const char *file = shell ? "/bin/sh" : cmd->data;
   int spawn_err = posix_spawnp(&pid, file, &fa, &at, argv,

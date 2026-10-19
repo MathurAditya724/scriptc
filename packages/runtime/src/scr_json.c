@@ -4013,6 +4013,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
  * references the fiber machinery (the unit-test subset links). */
 SCR_TL void (*scr_dyn_promise_release_fn)(ScrPromise *p) = NULL;
 SCR_TL bool (*scr_dyn_promise_identity_fn)(ScrPromise *a, ScrPromise *b) = NULL;
+SCR_TL ScrStr *(*scr_dyn_symbol_key_fn)(ScrSym *s) = NULL;
 
 ScrDyn *scr_dyn_alloc_promise(void (*release_fn)(ScrPromise *p)) {
   scr_dyn_promise_release_fn = release_fn;

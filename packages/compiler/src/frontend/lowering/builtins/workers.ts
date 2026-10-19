@@ -8,6 +8,7 @@ import {
   DYN,
   F64,
   STRING,
+  SYMBOL_T,
   UNDEFINED_T,
   VOID,
   isFfiCallbackParam,
@@ -32,6 +33,14 @@ export function lowerWorkerMetadata(member: string, loc: SrcLoc): IrExpr | null 
       return { kind: "libCall", fn: "worker.resourceLimits", args: [], type: DYN, loc };
     case "threadName":
       return { kind: "libCall", fn: "worker.threadName", args: [], type: DYN, loc };
+    case "SHARE_ENV":
+      return {
+        kind: "libCall",
+        fn: "sym.for",
+        args: [{ kind: "strLit", value: "nodejs.worker_threads.SHARE_ENV", type: STRING, loc }],
+        type: SYMBOL_T,
+        loc,
+      };
     default:
       return null;
   }

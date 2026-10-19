@@ -26,12 +26,14 @@ enum {
  * stack_size of 0 selects the default 8 MiB thread stack. capture (1
  * stdout, 2 stderr) posts the worker's writes to those descriptors to the
  * parent as SCR_WORKER_STDOUT/STDERR events; 4 (stdin) has the worker's
- * process.stdin read what scr_worker_thread_post_stdin sends. */
+ * process.stdin read what scr_worker_thread_post_stdin sends. Consumes
+ * environment, the worker's process.env, including on failure; NULL has
+ * the worker use the process environment. */
 ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
                                         ScrMessage *data, bool environment_data,
                                         ScrMailbox *parent, ScrArr *arguments,
                                         size_t stack_size, const ScrStr *name,
-                                        unsigned capture);
+                                        unsigned capture, ScrContextEnv *environment);
 ScrWorkerThread *scr_worker_thread_retain(ScrWorkerThread *worker);
 void scr_worker_thread_release(ScrWorkerThread *worker);
 /* Join is owner-only and idempotent. The caller holds a reference. */

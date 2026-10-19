@@ -628,6 +628,10 @@ ScrDyn *scr_dyn_freeze(ScrDyn *value);
 bool scr_dyn_is_frozen(const ScrDyn *value);
 ScrDyn *scr_dyn_new_bigint(ScrBigInt *value); /* borrows and retains value */
 ScrDyn *scr_dyn_new_symbol(ScrSym *value); /* borrows and retains value */
+/* Symbol.keyFor for units outside the optional symbol unit: the +1
+ * registry key of a symbol, or NULL. The symbol unit installs it when its
+ * registry first holds a symbol; until then no symbol is registered. */
+extern SCR_TL ScrStr *(*scr_dyn_symbol_key_fn)(ScrSym *s);
 ScrSym *scr_sym_well_known(ScrStr *name);
 ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key);
 ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool optional);

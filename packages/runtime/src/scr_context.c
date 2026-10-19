@@ -79,9 +79,7 @@ const char *scr_context_getenv(const char *name) {
   return NULL;
 }
 
-bool scr_context_env_set(const char *name, const char *value) {
-  ScrContextEnv *environment = scr_context_environment;
-  if (!environment) return false;
+static void scr_context_env_store(ScrContextEnv *environment, const char *name, const char *value) {
   for (size_t i = 0; i < environment->count; i++) {
     ScrContextEnvEntry *entry = &environment->entries[i];
     if (strcmp(entry->name, name)) continue;
@@ -92,7 +90,7 @@ bool scr_context_env_set(const char *name, const char *value) {
       free(entry->name);
       memmove(entry, entry + 1, (--environment->count - i) * sizeof(*entry));
     }
-    return true;
+    return;
   }
   if (value) {
     ScrContextEnvEntry *entries = realloc(environment->entries, (environment->count + 1) * sizeof(*entries));
@@ -100,6 +98,25 @@ bool scr_context_env_set(const char *name, const char *value) {
     environment->entries = entries;
     entries[environment->count++] = (ScrContextEnvEntry){scr_context_text_copy(name), scr_context_text_copy(value)};
   }
+}
+
+ScrContextEnv *scr_context_env_new(void) {
+  ScrContextEnv *environment = calloc(1, sizeof(*environment));
+  if (!environment) scr_trap("scriptc: out of memory\n");
+  environment->entries = calloc(1, sizeof(*environment->entries));
+  if (!environment->entries) scr_trap("scriptc: out of memory\n");
+  return environment;
+}
+
+void scr_context_env_put(ScrContextEnv *environment, const char *name, const char *value) {
+  scr_context_env_store(environment, name, value);
+}
+
+bool scr_context_env_private(void) { return scr_context_environment != NULL; }
+
+bool scr_context_env_set(const char *name, const char *value) {
+  if (!scr_context_environment) return false;
+  scr_context_env_store(scr_context_environment, name, value);
   return true;
 }
 
