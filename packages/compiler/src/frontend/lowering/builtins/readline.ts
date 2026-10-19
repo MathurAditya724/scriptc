@@ -326,7 +326,7 @@ export function lowerReadlineDisposeCall(lowerer: Lowerer, call: ts.CallExpressi
     return null;
   }
   if (!isReadlineTyped(lowerer, access.expression)) return null;
-  if (call.arguments.length > 0) {
+  if (call.arguments.nodes.length > 0) {
     lowerer.noLowering("readline.Interface[Symbol.dispose] with arguments", call);
   }
   const recv = lowerer.lowerExprExpecting(access.expression, F64);
