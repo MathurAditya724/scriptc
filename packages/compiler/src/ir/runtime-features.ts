@@ -218,12 +218,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     dc: false,
     assert: false,
     dynInvoke: mod.workers === true,
-    asyncContext: false,
     dynAsync:
       mod.workers === true ||
       mod.functions.some(
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
+    asyncContext: false,
     inspect: false,
     childProcess: false,
     net: false,
