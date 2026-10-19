@@ -685,9 +685,9 @@ export function lowerNodeTestModuleCall(
  * and code reached only through timer, immediate, nextTick and
  * queueMicrotask callbacks). */
 function lowerGetTestContext(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (expr.arguments.length > 0) {
+  if (expr.arguments.nodes.length > 0) {
     lowerer.noLowering(
-      `getTestContext with ${expr.arguments.length} arguments`,
+      `getTestContext with ${expr.arguments.nodes.length} arguments`,
       expr,
       "the supported form is getTestContext()",
     );
