@@ -64,6 +64,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * are opaque checked-dynamic handles. */
   "fetch.start": { argTypes: [STRING, DYN], result: { kind: "promise", inner: DYN } },
   "fetch.responseNew": { argTypes: [DYN, DYN], result: DYN },
+  "fetch.responseJsonStatic": { argTypes: [DYN, DYN], result: DYN },
   "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "abort.controllerNew": { argTypes: [], result: DYN },
   /** EventTarget / Event / CustomEvent construction (scr_event_target.c):
@@ -175,12 +176,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * not iterable (cannot read property Symbol(Symbol.iterator))"). In the
    * may-throw seed set. */
   "dyn.iterPack": { argTypes: [DYN, STRING], result: DYN },
+  "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
   "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
   "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },
   "dyn.iteratorResult": { argTypes: [DYN], result: DYN },
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
   "dyn.iteratorStepDone": { argTypes: [DYN], result: BOOL },
+  "dyn.setGeneratorMembers": { argTypes: [DYN, DYN], result: VOID },
+  "dyn.iteratorHelperMethod": { argTypes: [STRING], result: DYN },
+  "dyn.collectionIteratorIndex": { argTypes: [DYN], result: F64 },
   "dyn.mapSeedEntries": { argTypes: [DYN], result: DYN },
   "dyn.mapSeedEntry": { argTypes: [DYN], result: DYN },
   /** The for-of-over-dyn pack accessors — the emitted index loop drives
@@ -1477,6 +1482,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // undefined.
   "test.ctxPassed": { argTypes: [TESTCTX_T], result: BOOL },
   "test.workerId": { argTypes: [], result: F64 },
+  // getTestContext(): whether a test, suite or hook is running in the
+  // current async context, and that context.
+  "test.hasContext": { argTypes: [], result: BOOL },
+  "test.context": { argTypes: [], result: TESTCTX_T },
   // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
   // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
   "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
@@ -2285,11 +2294,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   /** execFileSync/execSync as ONE entry (args: cmd, argv, shell, input,
-   * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode — see
-   * scr_runtime.h). Throws Node's exact errors: "Command failed: <cmd>"
+   * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, buffers —
+   * see scr_child.h). Throws Node's exact errors: "Command failed: <cmd>"
    * (+ captured stderr) on non-zero exit or signal death, "spawnSync
    * <file> ENOENT" on spawn failure, "spawnSync <file> ETIMEDOUT" after
-   * the SIGTERM timeout. Result is the captured utf8 stdout (+1). */
+   * the SIGTERM timeout, with Node's status, signal, output, pid, stdout
+   * and stderr properties (Buffer outputs when buffers is set: no
+   * encoding option). Result is the captured utf8 stdout (+1). */
   "cp.execSync": {
     argTypes: [
       STRING,
@@ -2303,6 +2314,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
       F64,
       F64,
       F64,
+      BOOL,
     ],
     result: STRING,
   },
@@ -3405,6 +3417,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "regex.groupEquals": { argTypes: [arrayOf(STRING), F64, STRING], result: BOOL },
   "regex.groupNumber": { argTypes: [arrayOf(STRING), F64], result: F64 },
   "regex.groupParseInt": { argTypes: [arrayOf(STRING), F64, F64], result: F64 },
+  // `.index` / `.input` (args[1]) of a match result. Borrowed; never throws.
+  "regex.resultProp": { argTypes: [arrayOf(STRING), STRING], result: DYN },
   // node:events EventEmitter: receivers are emitter-hierarchy objects and
   // the chaining forms (on/off/removeAll/setMax) return the receiver's
   // own class — program-dependent object types, checked in the libCall
@@ -3883,7 +3897,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /* Circular references over cycle-capable composites (recursive record/
    * class types): circCheck answers a value's circular id when it is
    * already on the traversal stack (0 otherwise), seenPush/refWrap
-   * bracket the frame (refWrap adds Node's "<ref *N> " prefix to values
+   * bracket the frame (insp.end adds Node's "<ref *N> " prefix to values
    * the walk found circular), circular renders "[Circular *N]". */
   "insp.circCheck": { argTypes: [null], result: F64 },
   "insp.seenPush": { argTypes: [null], result: VOID },
@@ -4197,6 +4211,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.valueOf": { argTypes: [DATE_T], result: F64 },
   "date.toISOString": { argTypes: [F64], result: STRING },
   "date.toISOStringValue": { argTypes: [DATE_T], result: STRING },
+  /** Date.prototype.toUTCString over a stored Date ("Invalid Date" for
+   * NaN; never throws). */
+  "date.toUTCString": { argTypes: [DATE_T], result: STRING },
   "date.getFullYear": { argTypes: [DATE_T], result: F64 },
   "date.getUTCFullYear": { argTypes: [DATE_T], result: F64 },
   "date.getMonth": { argTypes: [DATE_T], result: F64 },
@@ -4214,6 +4231,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.getMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getUTCMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getTimezoneOffset": { argTypes: [DATE_T], result: F64 },
+  /** Date.prototype.toString / toDateString / toTimeString and String(date):
+   * V8's local-time formats with the host zone's long name, "Invalid Date"
+   * for an invalid date. Owned (+1) string; never throws. */
+  "date.toString": { argTypes: [DATE_T], result: STRING },
+  "date.toDateString": { argTypes: [DATE_T], result: STRING },
+  "date.toTimeString": { argTypes: [DATE_T], result: STRING },
   /** The composed `new Date(dateString).getTime()` read: one borrowed
    * string, f64 milliseconds since epoch. The parsed grammar is BOUNDED
    * (documented divergence — V8's parser accepts far more): the ASN.1

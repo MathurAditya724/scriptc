@@ -82,9 +82,9 @@ test("synthetic type roots and descendants match the pinned SDK without claiming
     const expectedRoot = sdk.program.getSourceFile(file)!;
     let checked = 0;
     for (let index = 1; index < 7; index++) {
-      const statement = root.statements[index]!;
+      const statement = root.statements.nodes[index]!;
       const expectedStatement = expectedRoot.statements[index]!;
-      const node = statement.declarationList!.declarations![0]!.name!;
+      const node = statement.declarationList!.declarations!.nodes[0]!.name!;
       const expectedNode = Reflect.get(expectedStatement, "declarationList").declarations[0]
         .name as SdkNode;
       const type = project.checker.getTypeAtLocation(node)!;
@@ -121,7 +121,7 @@ test("generic, predicate, rest and this-parameter signature fragments match the 
     const root = project.program.getSourceFile(file)!;
     const expectedRoot = sdk.program.getSourceFile(file)!;
     for (let index = 7; index < 11; index++) {
-      const node = root.statements[index]!;
+      const node = root.statements.nodes[index]!;
       const expectedNode = expectedRoot.statements[index]!;
       const signature = project.checker.getSignatureFromDeclaration(node)!;
       const expectedSignature = sdk.checker.getSignatureFromDeclaration(expectedNode)!;
@@ -138,7 +138,7 @@ test("generic, predicate, rest and this-parameter signature fragments match the 
       expect(actual.kind).toBe(SyntaxKind.FunctionType);
       expect(shape(actual)).toEqual(shape(expected));
       expect(actual.file.root).toBe(actual);
-      const parameters = actual.parameters!;
+      const parameters = actual.parameters!.nodes;
       expect(parameters.length).toBeGreaterThan(0);
       for (const parameter of parameters) {
         expect(parameter.parent).toBe(actual);

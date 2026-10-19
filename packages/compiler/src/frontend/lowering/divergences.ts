@@ -67,7 +67,7 @@ export function scanDivergences(
       node.body !== undefined &&
       node.name !== undefined &&
       ts.isIdentifier(node.name) &&
-      node.parameters.length > 0
+      node.parameters.nodes.length > 0
     ) {
       const list = fnsByName.get(node.name.text) ?? [];
       list.push(node);
@@ -78,7 +78,8 @@ export function scanDivergences(
       const callee = node.expression;
       if (ts.isPropertyAccessExpression(callee)) {
         const member = callee.name.text;
-        if (member === "localeCompare" && node.arguments.length === 1) localeCompares.push(node);
+        if (member === "localeCompare" && node.arguments.nodes.length === 1)
+          localeCompares.push(node);
         const recv = callee.expression;
         if (ts.isIdentifier(recv)) {
           if (
@@ -86,7 +87,7 @@ export function scanDivergences(
             (recv.text === "Object" &&
               (member === "keys" || member === "values" || member === "entries"))
           ) {
-            if (node.arguments[0] !== undefined) observers.push(node.arguments[0]);
+            if (node.arguments.nodes[0] !== undefined) observers.push(node.arguments.nodes[0]);
           } else if (
             recv.text === "console" &&
             (member === "log" ||
@@ -96,9 +97,10 @@ export function scanDivergences(
               member === "debug" ||
               member === "dir")
           ) {
-            for (const a of node.arguments) if (!isLiteralLike(a)) observers.push(a);
+            for (const a of node.arguments.nodes) if (!isLiteralLike(a)) observers.push(a);
           } else if (recv.text === "Date" && member === "parse") {
-            if (node.arguments[0] !== undefined) dates.push({ call: node, arg: node.arguments[0] });
+            if (node.arguments.nodes[0] !== undefined)
+              dates.push({ call: node, arg: node.arguments.nodes[0] });
           }
         }
       }
@@ -106,9 +108,9 @@ export function scanDivergences(
       if (
         ts.isIdentifier(node.expression) &&
         node.expression.text === "Date" &&
-        node.arguments?.length === 1
+        node.arguments?.nodes.length === 1
       ) {
-        dates.push({ call: node, arg: node.arguments[0]! });
+        dates.push({ call: node, arg: node.arguments.nodes[0]! });
       }
     } else if (ts.isForInStatement(node)) {
       observers.push(node.expression);
@@ -127,12 +129,12 @@ export function scanDivergences(
         if (
           element !== undefined &&
           ts.isArrayLiteralExpression(node.initializer) &&
-          node.initializer.elements.some(isExistingObjectExpression)
+          node.initializer.elements.nodes.some(isExistingObjectExpression)
         )
           arrayDecls.push({ decl: node, element });
       }
     } else if (ts.isObjectLiteralExpression(node)) {
-      if (node.properties.length >= 1 && node.properties.every(isPlainProperty))
+      if (node.properties.nodes.length >= 1 && node.properties.nodes.every(isPlainProperty))
         literals.push(node);
     } else if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
       casts.push(node);
@@ -162,7 +164,7 @@ export function scanDivergences(
   const identityUsesOf = (fn: ts.FunctionLikeDeclaration): (IdentityUse | null)[] => {
     let uses = usesByFn.get(fn);
     if (uses === undefined) {
-      uses = fn.parameters.map((p) =>
+      uses = fn.parameters.nodes.map((p) =>
         ts.isIdentifier(p.name) && fn.body !== undefined ? identityUse(fn.body, p.name.text) : null,
       );
       usesByFn.set(fn, uses);
@@ -181,9 +183,9 @@ export function scanDivergences(
     if (decl === undefined || !candidates.includes(decl as ts.FunctionLikeDeclaration)) continue;
     const fn = decl as ts.FunctionLikeDeclaration;
     const uses = identityUsesOf(fn);
-    call.arguments.forEach((arg, i) => {
+    call.arguments.nodes.forEach((arg, i) => {
       const use = uses[i];
-      const param = fn.parameters[i];
+      const param = fn.parameters.nodes[i];
       if (use === null || use === undefined || param === undefined || param.type === undefined)
         return;
       if (!isExistingObjectExpression(arg)) return;
@@ -259,7 +261,7 @@ export function scanDivergences(
     if (scope === undefined) continue;
     const use = elementWrite(scope, name, decl.end);
     if (use === null) continue;
-    for (const item of (decl.initializer as ts.ArrayLiteralExpression).elements) {
+    for (const item of (decl.initializer as ts.ArrayLiteralExpression).elements.nodes) {
       if (!isExistingObjectExpression(item)) continue;
       const copy = safely(() => widthCopyBetween(lowerer, item, element));
       if (copy === undefined || copy === null) continue;
@@ -303,7 +305,7 @@ export function scanDivergences(
       if (namedObjectDeclaration(checker, contextual) === null) continue;
       const declared = safely(() => checker.getPropertiesOfType(contextual).map((p) => p.name));
       if (declared === undefined) continue;
-      const written = lit.properties.map((p) => propertyNameText(p)!);
+      const written = lit.properties.nodes.map((p) => propertyNameText(p)!);
       const assigned =
         binding === null ? new Set<string>() : (assignedMembers.get(binding) ?? new Set<string>());
       const finding = keyOrderFinding(lowerer, contextual, declared, written, assigned);
@@ -324,7 +326,7 @@ export function scanDivergences(
   // ── one-argument localeCompare over text outside the collation table ─
   for (const call of localeCompares) {
     const access = call.expression as ts.PropertyAccessExpression;
-    for (const operand of [access.expression, call.arguments[0]!]) {
+    for (const operand of [access.expression, call.arguments.nodes[0]!]) {
       const text = stringLiteralText(operand);
       if (text !== null && !isCollationCovered(text)) {
         out.push(localeCompareDivergenceDiag(text, locOf(operand)));
@@ -348,7 +350,7 @@ export function scanDivergences(
     let fn: ts.Node | undefined = cast.parent;
     while (fn !== undefined && !ts.isFunctionLike(fn)) fn = fn.parent;
     if (fn === undefined || !ts.isFunctionLike(fn)) continue;
-    const index = fn.parameters.findIndex(
+    const index = fn.parameters.nodes.findIndex(
       (p) => ts.isIdentifier(p.name) && p.name.text === inner.text,
     );
     if (index < 0) continue;
@@ -376,7 +378,7 @@ export function scanDivergences(
       const sites = decl === undefined ? undefined : downcasts.get(decl);
       if (sites === undefined) continue;
       for (const site of sites) {
-        const arg = call.arguments[site.index];
+        const arg = call.arguments.nodes[site.index];
         if (arg === undefined) continue;
         const argType = safely(() => checker.getTypeAtLocation(arg));
         const source = argType === undefined ? null : classDeclarationOfType(checker, argType);
@@ -443,7 +445,7 @@ function dateStringLiterals(checker: ts.TypeChecker, arg: ts.Expression): ts.Exp
     iterated = init.initializer;
   }
   if (!ts.isArrayLiteralExpression(iterated)) return [];
-  return iterated.elements.filter((e) => stringLiteralText(e) !== null);
+  return iterated.elements.nodes.filter((e) => stringLiteralText(e) !== null);
 }
 
 /** A checker query that fails here only loses a warning. */
@@ -529,7 +531,7 @@ function identityUse(root: ts.Node, name: string, from = -1): IdentityUse | null
     if (
       node !== root &&
       ts.isFunctionLike(node) &&
-      node.parameters.some((p) => ts.isIdentifier(p.name) && p.name.text === name)
+      node.parameters.nodes.some((p) => ts.isIdentifier(p.name) && p.name.text === name)
     )
       return "skip";
     if (ts.isBinaryExpression(node)) {
@@ -611,9 +613,9 @@ function arrayElementTypeNode(node: ts.TypeNode): ts.TypeNode | undefined {
     ts.isTypeReferenceNode(node) &&
     ts.isIdentifier(node.typeName) &&
     (node.typeName.text === "Array" || node.typeName.text === "ReadonlyArray") &&
-    node.typeArguments?.length === 1
+    node.typeArguments?.nodes.length === 1
   )
-    return node.typeArguments[0];
+    return node.typeArguments.nodes[0];
   return undefined;
 }
 
@@ -657,7 +659,7 @@ function elementWrite(root: ts.Node, name: string, from: number): string | null 
       node.expression.text === name &&
       ts.isVariableDeclarationList(node.initializer)
     ) {
-      const binding = node.initializer.declarations[0]?.name;
+      const binding = node.initializer.declarations.nodes[0]?.name;
       if (binding !== undefined && ts.isIdentifier(binding)) {
         const use = identityUse(node.statement, binding.text);
         if (use?.kind === "write") {
@@ -850,8 +852,10 @@ function classExtends(
   let cur: ts.ClassLikeDeclaration | null = sub;
   for (let guard = 0; cur !== null && guard < 64; guard++) {
     if (cur === base) return true;
-    const heritage = cur.heritageClauses?.find((h) => h.token === ts.SyntaxKind.ExtendsKeyword);
-    const expr = heritage?.types[0]?.expression;
+    const heritage = cur.heritageClauses?.nodes.find(
+      (h) => h.token === ts.SyntaxKind.ExtendsKeyword,
+    );
+    const expr = heritage?.types?.nodes[0]?.expression;
     if (expr === undefined) return false;
     const symbol = lowerer.checker.getSymbolAtLocation(expr);
     if (symbol === undefined) return false;

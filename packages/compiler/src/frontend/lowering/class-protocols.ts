@@ -29,9 +29,10 @@ export class ClassProtocols {
       node.kind === ts.SyntaxKind.ThisKeyword || ts.forEachChild(node, usesReceiver) === true;
     const visit = (node: ts.Node): void => {
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
-        for (const clause of node.heritageClauses ?? [])
+        for (const clause of node.heritageClauses?.nodes ?? [])
           if (clause.token === ts.SyntaxKind.ImplementsKeyword)
-            for (const protocol of clause.types) add(this.checker.getTypeAtLocation(protocol));
+            for (const protocol of clause.types.nodes)
+              add(this.checker.getTypeAtLocation(protocol));
         const symbol = node.name ? this.checker.getSymbolAtLocation(node.name) : undefined;
         const instance = symbol ? this.checker.getDeclaredTypeOfSymbol(symbol) : undefined;
         for (const property of instance ? this.checker.getPropertiesOfType(instance) : []) {
@@ -41,7 +42,7 @@ export class ClassProtocols {
               .some(
                 (member) =>
                   ts.isMethodDeclaration(member) &&
-                  !member.modifiers?.some(
+                  !member.modifiers?.nodes.some(
                     (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
                   ),
               )
@@ -54,7 +55,7 @@ export class ClassProtocols {
       }
       if (
         ts.isObjectLiteralExpression(node) &&
-        node.properties.some(
+        node.properties.nodes.some(
           (property) =>
             (ts.isMethodDeclaration(property) ||
               ts.isGetAccessorDeclaration(property) ||
@@ -167,14 +168,14 @@ export class ClassProtocols {
         observed.push(node.expression);
       } else if (ts.isSwitchStatement(node)) {
         // `switch` matches its cases with ===.
-        const cases = node.caseBlock.clauses
+        const cases = node.caseBlock.clauses.nodes
           .filter(ts.isCaseClause)
           .map((clause) => clause.expression)
           .filter((expr) => !isNullishLiteral(expr) && !isPrimitiveLiteral(expr));
         if (cases.length > 0) observed.push(node.expression, ...cases);
       } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
         const callee = node.expression;
-        const args = node.arguments ?? [];
+        const args = node.arguments?.nodes ?? [];
         const member = ts.isPropertyAccessExpression(callee) ? callee.name.text : null;
         const owner =
           ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)
@@ -204,7 +205,8 @@ export class ClassProtocols {
     };
     const visit = (node: ts.Node): void => {
       observe(node);
-      if (ts.isCallExpression(node) || ts.isNewExpression(node)) node.arguments?.forEach(flow);
+      if (ts.isCallExpression(node) || ts.isNewExpression(node))
+        node.arguments?.nodes.forEach(flow);
       else if (ts.isVariableDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isPropertyDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isParameter(node) && node.type !== undefined) flow(node.initializer);
@@ -212,7 +214,7 @@ export class ClassProtocols {
       else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) flow(node.body);
       else if (ts.isYieldExpression(node)) flow(node.expression);
       else if (ts.isArrayLiteralExpression(node))
-        node.elements.forEach((element) => {
+        node.elements.nodes.forEach((element) => {
           if (!ts.isSpreadElement(element) && !ts.isOmittedExpression(element)) flow(element);
         });
       else if (ts.isPropertyAssignment(node)) flow(node.initializer);
@@ -234,7 +236,7 @@ export class ClassProtocols {
         });
       }
       if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
-        node.parameters.forEach((param, index) => {
+        node.parameters.nodes.forEach((param, index) => {
           if (param.type !== undefined) callbackParams.push({ fn: node, index, name: param.name });
         });
       ts.forEachChild(node, visit);

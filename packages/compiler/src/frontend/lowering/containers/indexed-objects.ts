@@ -92,7 +92,12 @@ export function lowerObjectIterOverIndexShape(
     member,
     argIr,
     shape,
-    objectEnumerationReceiver(lowerer, lowerer.lowerExpr(call.arguments[0]!), argIr, locOf(call)),
+    objectEnumerationReceiver(
+      lowerer,
+      lowerer.lowerExpr(call.arguments.nodes[0]!),
+      argIr,
+      locOf(call),
+    ),
     resultT,
     locOf(call),
   );
@@ -441,8 +446,8 @@ export function lowerObjectFromEntriesCall(
     callee.questionDotToken ||
     !lowerer.isStdlibGlobal(callee.expression, "Object") ||
     callee.name.text !== "fromEntries" ||
-    call.arguments.length !== 1 ||
-    ts.isSpreadElement(call.arguments[0]!)
+    call.arguments.nodes.length !== 1 ||
+    ts.isSpreadElement(call.arguments.nodes[0]!)
   )
     return null;
 
@@ -451,7 +456,7 @@ export function lowerObjectFromEntriesCall(
     fn: "dyn.fromEntries",
     type: DYN,
     loc: locOf(call),
-    args: [lowerer.lowerExprExpecting(call.arguments[0]!, DYN)],
+    args: [lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN)],
   };
 }
 
@@ -464,8 +469,9 @@ function lowerTypedObjectFromEntriesCall(
   if (call.questionDotToken || callee.questionDotToken) return null;
   if (!lowerer.isStdlibGlobal(callee.expression, "Object")) return null;
   if (callee.name.text !== "fromEntries") return null;
-  if (call.arguments.length !== 1 || ts.isSpreadElement(call.arguments[0]!)) return null;
-  const argNode = call.arguments[0]!;
+  if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!))
+    return null;
+  const argNode = call.arguments.nodes[0]!;
   const argIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
   if (argIr?.kind !== "array") return null;
   const represented = tryLowerExpression(lowerer, argNode);
@@ -1053,9 +1059,10 @@ export function lowerObjectAssignIndexShape(
   lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
-  if (call.arguments.length < 2 || call.arguments.some((a) => ts.isSpreadElement(a))) return null;
+  if (call.arguments.nodes.length < 2 || call.arguments.nodes.some((a) => ts.isSpreadElement(a)))
+    return null;
   const loc = locOf(call);
-  const targetIr = lowerer.mapTypeOf(lowerer.typeOf(call.arguments[0]!));
+  const targetIr = lowerer.mapTypeOf(lowerer.typeOf(call.arguments.nodes[0]!));
   if (targetIr?.kind !== "record") return null;
   const to = lowerer.shapes.get(targetIr.shapeId);
   if (!to?.indexValue || to.tuple) return null;
@@ -1085,7 +1092,7 @@ export function lowerObjectAssignIndexShape(
     ovfLift: (WidthLift | "dyn") | null;
   }
   const plans: SourcePlan[] = [];
-  for (const argNode of call.arguments.slice(1)) {
+  for (const argNode of call.arguments.nodes.slice(1)) {
     const srcIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
     if (srcIr?.kind !== "record") return null;
     const from = lowerer.shapes.get(srcIr.shapeId);
@@ -1254,9 +1261,9 @@ export function lowerObjectAssignIndexShape(
     lowerer.liftedFns.push(fn);
     return name;
   };
-  let acc = lowerer.lowerExprExpecting(call.arguments[0]!, targetIr);
+  let acc = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, targetIr);
   for (let i = 0; i < plans.length; i++) {
-    const src = lowerer.lowerExprExpecting(call.arguments[i + 1]!, {
+    const src = lowerer.lowerExprExpecting(call.arguments.nodes[i + 1]!, {
       kind: "record",
       shapeId: plans[i]!.fromId,
     });

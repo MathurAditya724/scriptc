@@ -173,7 +173,7 @@ function isDeferredExecutableRoot(node: Node, walk: PrefetchWalk): boolean {
   return (
     parent.kind === SyntaxKind.PropertyDeclaration &&
     parent.initializer === node &&
-    !parent.modifiers?.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
+    !parent.modifiers?.nodes.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
   );
 }
 

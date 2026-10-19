@@ -56,7 +56,7 @@ import {
   maybePromiseUnionArmsOk,
   VOID,
 } from "./ir.js";
-import { DYN_CLASS_PROPERTIES } from "./ir.js";
+import { DYN_CLASS_PROPERTIES, callSiteReturnType, classValueConstructor } from "./ir.js";
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
@@ -83,33 +83,6 @@ function isBuiltinErrorObject(t: IrType): boolean {
 export interface IrValidationError {
   message: string;
   loc: SrcLoc;
-}
-
-/** The type a CALL SITE (or function value) receives from a module
- * function: an async body's returnType is the promise's INNER type, so
- * calls and closures over it see Promise<T>; a generator body's is the
- * TReturn channel, so call sites see the generator type. The one place
- * the body/call-site split is spelled out in the validator. */
-function callSiteReturnType(fn: IrFunction): IrType {
-  if (fn.async && fn.generator !== undefined) {
-    return {
-      kind: "generator",
-      async: true,
-      yieldT: fn.generator.yieldT,
-      retT: fn.returnType,
-      nextT: fn.generator.nextT,
-    };
-  }
-  if (fn.async) return { kind: "promise", inner: fn.returnType };
-  if (fn.generator !== undefined) {
-    return {
-      kind: "generator",
-      yieldT: fn.generator.yieldT,
-      retT: fn.returnType,
-      nextT: fn.generator.nextT,
-    };
-  }
-  return fn.returnType;
 }
 
 interface VirtualCallInfo {
@@ -2964,15 +2937,21 @@ function validateFunction(
             err(`upcast: "${sub}" does not extend "${sup}"`, e.loc);
             break;
           }
-          const subCtor = functions.get(`%${sub}.constructor`);
-          const supCtor = functions.get(`%${sup}.constructor`);
-          if (!subCtor || !supCtor) {
+          const subClass = classes.get(sub);
+          const supClass = classes.get(sup);
+          const subValueCtor = subClass ? classValueConstructor(subClass) : null;
+          const supValueCtor = supClass ? classValueConstructor(supClass) : null;
+          const subCtor = subValueCtor ? functions.get(subValueCtor.fn) : undefined;
+          const supCtor = supValueCtor ? functions.get(supValueCtor.fn) : undefined;
+          if (!subCtor || !supCtor || !subValueCtor || !supValueCtor) {
             err(`classval upcast: "${sub}"/"${sup}" lack constructor functions`, e.loc);
             break;
           }
+          const subArgs = subCtor.params.slice(subValueCtor.firstArg);
+          const supArgs = supCtor.params.slice(supValueCtor.firstArg);
           const abiEqual =
-            subCtor.params.length === supCtor.params.length &&
-            subCtor.params.every((p, i) => i === 0 || typeEquals(p.type, supCtor.params[i]!.type));
+            subArgs.length === supArgs.length &&
+            subArgs.every((p, i) => typeEquals(p.type, supArgs[i]!.type));
           if (!abiEqual) {
             err(`classval upcast: "${sub}" and "${sup}" constructor ABIs differ`, e.loc);
           }
@@ -2997,16 +2976,13 @@ function validateFunction(
           err(`classRef to undeclared class "${e.className}"`, e.loc);
           break;
         }
-        if (cls.runtime) {
-          err(`classRef to runtime-provided class "${e.className}"`, e.loc);
-        }
-        if (cls.jsName === undefined) {
+        if (cls.jsName === undefined && !cls.runtime) {
           err(`classRef to "${e.className}" without a jsName (the class object's .name)`, e.loc);
         }
         // A class value can always be constructed through — the frontend
         // notes the constructor edge at every classRef, so the emitted
         // thunk has a body to call.
-        if (!functions.has(`%${e.className}.constructor`)) {
+        if (!functions.has(classValueConstructor(cls).fn)) {
           err(`classRef to "${e.className}" without its constructor function`, e.loc);
         }
         if (!typeEquals(e.type, { kind: "classval", className: e.className })) {
@@ -3035,21 +3011,24 @@ function validateFunction(
           break;
         }
         const cls = e.callee.type.className;
-        const ctor = functions.get(`%${cls}.constructor`);
-        if (!ctor) {
+        const calleeClass = classes.get(cls);
+        const valueCtor = calleeClass ? classValueConstructor(calleeClass) : null;
+        const ctor = valueCtor ? functions.get(valueCtor.fn) : undefined;
+        if (!ctor || !valueCtor) {
           err(`newValue on "${cls}": missing constructor function`, e.loc);
           break;
         }
         // Count-exact against the static class's completed ABI (every
         // value legally in the slot shares it — the upcast rule).
-        if (ctor.params.length !== e.args.length + 1) {
+        const first = valueCtor.firstArg;
+        if (ctor.params.length !== e.args.length + first) {
           err(
-            `newValue on "${cls}": ${e.args.length} args, ctor expects ${ctor.params.length - 1}`,
+            `newValue on "${cls}": ${e.args.length} args, ctor expects ${ctor.params.length - first}`,
             e.loc,
           );
         }
         e.args.forEach((a, i) => {
-          const p = ctor.params[i + 1];
+          const p = ctor.params[i + first];
           if (p) expectType(a, p.type, `newValue on "${cls}" arg ${i}`);
         });
         if (!typeEquals(e.type, { kind: "object", className: cls })) {

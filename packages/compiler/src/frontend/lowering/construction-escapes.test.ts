@@ -13,8 +13,8 @@ function analyze(source: string, options: { derived?: boolean; baseEscapes?: boo
   });
   if (!decl) throw new Error("fixture has no class");
   const cls = decl;
-  const ctor = cls.members.find(ts.isConstructorDeclaration) ?? null;
-  const fields = cls.members
+  const ctor = cls.members.nodes.find(ts.isConstructorDeclaration) ?? null;
+  const fields = cls.members.nodes
     .filter(ts.isPropertyDeclaration)
     .map((member) => ({ name: member.name.getText(), initializer: member.initializer }));
   const fieldNames = new Set(fields.map((field) => field.name));
@@ -28,7 +28,7 @@ function analyze(source: string, options: { derived?: boolean; baseEscapes?: boo
     privateMethodBody: (call) => {
       if (!ts.isPropertyAccessExpression(call.expression)) return null;
       const name = call.expression.name.text;
-      const method = cls.members.find(
+      const method = cls.members.nodes.find(
         (member): member is ts.MethodDeclaration =>
           ts.isMethodDeclaration(member) && member.name.getText() === name,
       );

@@ -96,7 +96,7 @@ export function lowerEnumAccess(
   // member (merged declarations scan in declaration order).
   if (ts.isStringLiteralLike(key)) {
     for (const d of decls) {
-      for (const member of d.members) {
+      for (const member of d.members.nodes) {
         if (memberNameText(member) === key.text) return lowerEnumMemberRead(lowerer, expr, member);
       }
     }
@@ -191,7 +191,7 @@ function lowerEnumReverseRead(
   }
   let name: string | null = null;
   for (const d of decls) {
-    for (const member of d.members) {
+    for (const member of d.members.nodes) {
       const v = lowerer.checker.getConstantValue(member);
       if (typeof v === "number" && v === idx) name = memberNameText(member);
     }
@@ -242,7 +242,7 @@ function foldConstIndex(lowerer: Lowerer, e: ts.Expression): number | null {
  * the declaration fences on that member. */
 export function lowerEnumDeclaration(lowerer: Lowerer, stmt: ts.EnumDeclaration): null {
   if (isAmbientEnumDecl(stmt)) return null;
-  for (const member of stmt.members) {
+  for (const member of stmt.members.nodes) {
     if (lowerer.checker.getConstantValue(member) === undefined) {
       lowerer.unsupported(
         "SC1090",

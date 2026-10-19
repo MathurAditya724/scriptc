@@ -26,6 +26,6 @@ export function lowerClassSymbolMethodCall(
   if (!method) return null;
   const loc = locOf(call);
   const receiver = lowerer.lowerExpr(access.expression);
-  const args = lowerer.completeArgs(call.arguments, method.sig.params, loc, call);
+  const args = lowerer.completeArgs(call.arguments.nodes, method.sig.params, loc, call);
   return accessorCall(lowerer, type.className, name, receiver, args, method.sig.ret, loc);
 }

@@ -518,6 +518,15 @@ export const NODE24_FETCH_COMPAT_PROFILE = {
         evidence: [fixture("static")],
       }),
     ),
+    {
+      id: "stdlib.response.static.json",
+      name: "Response.json",
+      kind: "static-method",
+      facets: ["webidl-conversion", "error-shape"],
+      scope:
+        "data that crosses the checked-dynamic boundary, serialized with JSON.stringify (toJSON hooks included); ResponseInit as for the constructor",
+      evidence: [fixture("static-response-json")],
+    },
     ...["json", "text", "bytes", "arrayBuffer"].map((member): FetchCompatOperation => ({
       id: `stdlib.response.${member}`,
       name: `Response.${member}`,
@@ -681,7 +690,8 @@ export const NODE24_FETCH_COMPAT_PROFILE = {
       ),
 
       staticEntry("stdlib.response.constructor", "Response", "constructor", "constructor"),
-      ...["error", "json", "redirect"].map((member) =>
+      staticEntry("stdlib.response.static.json", "Response", "json", "static"),
+      ...["error", "redirect"].map((member) =>
         unsupportedEntry(
           `stdlib.response.static.${member}`,
           "Response",

@@ -1678,6 +1678,8 @@ ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key) {
  * later, and it neither grows nor owns heap references. */
 static ScrDyn scr_dyn_small_ints[384];
 
+const char *(*scr_gen_tag_reader)(const ScrGen *g) = NULL;
+
 __attribute__((constructor)) static void scr_dyn_small_ints_init(void) {
   for (int i = 0; i < 384; i++) {
     scr_dyn_small_ints[i].rc = SIZE_MAX;
@@ -2568,10 +2570,26 @@ static bool scr_record_source_declared(const ScrRecordSource *source, const char
   return scr_record_source_index(source, key, key_len) < source->count;
 }
 
+/* Frees the table at thread exit (a worker's table dies with its thread):
+ * the storage is detached before any remaining view is released. */
+static void scr_record_source_teardown(void) {
+  ScrRecordSource *table = scr_record_sources;
+  size_t capacity = scr_record_source_capacity;
+  scr_record_sources = NULL;
+  scr_record_source_capacity = scr_record_source_count = scr_record_source_deleted = 0;
+  free(scr_record_source_filter);
+  scr_record_source_filter = NULL;
+  for (size_t i = 0; i < capacity; i++) {
+    if (table[i].rec && table[i].rec != SCR_RECORD_SOURCE_DELETED) scr_dyn_release(table[i].view);
+  }
+  free(table);
+}
+
 /* Inserts the entry of a record the caller just built; the table takes
  * the entry's view. A fresh record has no entry: the previous owner of its
  * address left the table when it was freed (the dispose hook). */
 static void scr_record_source_put(const ScrRecordSource *entry) {
+  if (!scr_record_sources) scr_atexit(scr_record_source_teardown);
   scr_record_source_reserve();
   if (!scr_record_source_filter) {
     scr_record_source_filter = calloc(((size_t)1 << SCR_RECORD_SOURCE_FILTER_BITS) / 64,
@@ -4657,9 +4675,47 @@ bool scr_dyn_iterator_step_done(const ScrDyn *value) {
   return ((ScrNativeIterator *)value->v.handle.ptr)->step_done;
 }
 
+void scr_dyn_native_iterator_state(const ScrDyn *value, unsigned *kind, unsigned *selection,
+                                   ScrMap **collection, double *index) {
+  const ScrNativeIterator *iterator = value->v.handle.ptr;
+  *kind = iterator->kind;
+  *selection = iterator->selection;
+  *collection = (iterator->kind == 2 || iterator->kind == 3) && iterator->source
+    ? iterator->source->v.handle.ptr : NULL;
+  *index = iterator->index;
+}
+
+double scr_dyn_collection_iterator_index(const ScrDyn *value) {
+  ScrNativeIterator *iterator = value->v.handle.ptr;
+  ScrDyn *source = iterator->source;
+  if (!source) return -1;
+  ScrMap *map = source->v.handle.ptr;
+  iterator->index = scr_map_iter_skip(map, iterator->index);
+  if (iterator->index >= scr_map_iter_count(map)) {
+    iterator->source = NULL;
+    scr_map_iter_exit(map);
+    scr_dyn_release(source);
+    return -1;
+  }
+  return iterator->index++;
+}
+
 static int scr_ih_method_index(const char *name, size_t len);
 static ScrDyn *scr_iterator_helper_method(ScrDyn *self, int index, ScrDyn *const *args, size_t argc);
 static ScrDyn *scr_ih_method_function(int index);
+
+static bool scr_dyn_sync_generator(const ScrDyn *value);
+extern SCR_TL ScrDyn *(*scr_generator_member_hook)(const ScrDyn *, const char *, size_t);
+
+/* scr_iterator_read of an iterator's own next or return method: a
+ * compiled generator answers through the program's registered getters. */
+static ScrDyn *scr_iterator_member(const ScrDyn *iterator, const char *key, size_t len) {
+  if (scr_generator_member_hook && scr_dyn_sync_generator(iterator)) {
+    ScrDyn *member = scr_generator_member_hook(iterator, key, len);
+    if (member) return member;
+  }
+  return scr_iterator_read(iterator, key, len);
+}
 
 static ScrDyn *scr_native_iterator_get(void *ptr, const char *key, size_t len) {
   if (len != 4 || memcmp(key, "next", 4)) {
@@ -4850,7 +4906,7 @@ static bool scr_ih_budget(const ScrDyn *limit, double *out) {
  * Node's TypeError. Answers false when an exception is pending after. */
 static bool scr_ih_close(ScrDyn *iterator, bool abrupt) {
   ScrCaught *first = abrupt ? scr_exc_take() : NULL;
-  ScrDyn *method = scr_iterator_read(iterator, "return", 6);
+  ScrDyn *method = scr_iterator_member(iterator, "return", 6);
   bool ok = method != NULL;
   if (ok && method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
     ScrDyn *result = scr_iterator_call(method, iterator, "return");
@@ -4917,7 +4973,7 @@ static ScrDyn *scr_ih_direct(const ScrDyn *self, const char *method) {
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
     return NULL;
   }
-  return scr_iterator_read(self, "next", 4);
+  return scr_iterator_member(self, "next", 4);
 }
 
 static ScrDyn *scr_ih_result(ScrDyn *value, bool done) {
@@ -4974,7 +5030,7 @@ static ScrDyn *scr_ih_flattenable(ScrDyn *value, ScrDyn **next_out) {
   }
   scr_dyn_release(method);
   if (!iterator) return NULL;
-  ScrDyn *next = scr_iterator_read(iterator, "next", 4);
+  ScrDyn *next = scr_iterator_member(iterator, "next", 4);
   if (!next) {
     scr_dyn_release(iterator);
     return NULL;
@@ -6186,6 +6242,20 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
     if (scr_dyn_ref_is_error(d)) return scr_str_new("[object Error]", 14);
+    if (scr_dyn_generator(d)) {
+      const char *gen_tag = scr_gen_tag_reader(d->v.typed_ref.ptr);
+      if (gen_tag[0] == '!') {
+        static const char message[] = "Object.prototype.toString of this iterator is not supported yet";
+        scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+        return NULL;
+      }
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, gen_tag);
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     ScrStr *out = scr_dyn_object_tag(materialized);
     scr_dyn_release(materialized);
@@ -6217,6 +6287,13 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
       scr_jb_puts(&b, scr_dyn_handle_cls(d));
       scr_jb_putc(&b, ']');
       return scr_jb_finish(&b);
+    }
+    if (d->v.handle.tag == SCR_DYNH_ITERATOR && ((const ScrNativeIterator *)d->v.handle.ptr)->kind < 4) {
+      static const char *const tags[] = {
+        "[object Array Iterator]", "[object String Iterator]", "[object Map Iterator]", "[object Set Iterator]",
+      };
+      const char *it_tag = tags[((const ScrNativeIterator *)d->v.handle.ptr)->kind];
+      return scr_str_new(it_tag, strlen(it_tag));
     }
     if (scr_dyn_handle_ops_of(d)->to_string_tag) {
       ScrJsonBuf b;
@@ -6392,10 +6469,13 @@ ScrStr *scr_dyn_format_j(const ScrDyn *d) {
  * IDENTITY-CACHED: one error instance boxes to ONE dyn node, however many
  * times it crosses (Node passes the error OBJECT through, so `found.error
  * === thrown` and re-crossings compare reference-equal — the tracing
- * suite's shape). The cache retains both sides for the process (like the
- * dc registry; released atexit before the RC audit) and the node
- * SNAPSHOTS name/message/code at first crossing — a later mutation of the
- * error is invisible through it (SEMANTICS.md). Two pointer-keyed hash
+ * suite's shape). The cache retains both sides; an entry lives while
+ * either side is referenced elsewhere, and a sweep releases the entries
+ * whose error and node only the cache still references (the rest are
+ * released atexit before the RC audit). The node also holds the error's
+ * extra own properties (scr_error_set_prop) and SNAPSHOTS name/message/
+ * code at first crossing — a later mutation of the error is invisible
+ * through it (SEMANTICS.md). Two pointer-keyed hash
  * indexes find an entry by either side: Promise.allSettled and
  * Promise.any cross every rejection reason. Both sides are unique per
  * entry (an error boxes once; an alien view enters once). */
@@ -6410,6 +6490,9 @@ static SCR_TL bool scr_errdyn_teardown_registered = false;
 /* Open-addressed indexes holding entry index + 1 (0 = empty slot). */
 static SCR_TL size_t *scr_errdyn_by_err = NULL, *scr_errdyn_by_dyn = NULL;
 static SCR_TL size_t scr_errdyn_slots = 0; /* a power of two */
+/* The entry count that triggers the next sweep: twice the entries the
+ * previous sweep kept, so sweeping costs amortized O(1) per entry. */
+static SCR_TL size_t scr_errdyn_sweep_at = 64;
 
 static size_t scr_errdyn_hash(const void *p) {
   size_t x = (size_t)(uintptr_t)p >> 4;
@@ -6445,8 +6528,70 @@ static size_t scr_errdyn_find(const void *key, bool by_err) {
 
 static void scr_errdyn_teardown(void);
 
+/* The entries of a node that hold the node itself (a spawnSync error's
+ * `error`): references the node makes to itself, not reachability. */
+static size_t scr_errdyn_self_refs(const ScrDyn *d) {
+  if (d->kind != SCR_DYN_OBJ) return 0;
+  size_t n = 0;
+  for (size_t i = 0; i < d->v.obj.len; i++) n += d->v.obj.entries[i].value == d;
+  return n;
+}
+
+/* Releases a node the cache owned, dropping its references to itself
+ * first so the release frees it. */
+static void scr_errdyn_release_node(ScrDyn *d) {
+  for (size_t i = 0; d->kind == SCR_DYN_OBJ && i < d->v.obj.len; i++) {
+    ScrDynEntry *entry = &d->v.obj.entries[i];
+    if (entry->value != d) continue;
+    entry->value = scr_dyn_retain(scr_dyn_undefined());
+    scr_dyn_release(d);
+  }
+  scr_dyn_release(d);
+}
+
+/* Releases the entries nothing but the cache references. A field node
+ * holds no reference to its error and a registered subclass box holds
+ * one, so an entry whose node has only the cache's reference and whose
+ * error has no reference beyond the cache's and its box's is
+ * unreachable. The indexes are rebuilt over the
+ * kept entries before anything is released (a teardown never sees a
+ * stale entry); an entry a released node kept alive goes in a later
+ * sweep. */
+static void scr_errdyn_sweep(void) {
+  ScrErrDynEnt *dead = NULL;
+  size_t n_dead = 0, kept = 0;
+  for (size_t i = 0; i < scr_errdyn_n; i++) {
+    ScrErrDynEnt ent = scr_errdyn_cache[i];
+    size_t boxed = ent.dyn->kind == SCR_DYN_TYPED_REF && ent.dyn->v.typed_ref.ptr == (void *)ent.err;
+    if (ent.dyn->rc == 1 + scr_errdyn_self_refs(ent.dyn) && ent.err->rc == 1 + boxed) {
+      if (dead == NULL) {
+        dead = malloc((scr_errdyn_n - i) * sizeof *dead);
+        if (!dead) scr_trap("scriptc: out of memory\n");
+      }
+      dead[n_dead++] = ent;
+    } else {
+      scr_errdyn_cache[kept++] = ent;
+    }
+  }
+  scr_errdyn_n = kept;
+  scr_errdyn_sweep_at = kept * 2 > 64 ? kept * 2 : 64;
+  if (n_dead == 0) return;
+  memset(scr_errdyn_by_err, 0, scr_errdyn_slots * sizeof *scr_errdyn_by_err);
+  memset(scr_errdyn_by_dyn, 0, scr_errdyn_slots * sizeof *scr_errdyn_by_dyn);
+  for (size_t i = 0; i < scr_errdyn_n; i++) {
+    scr_errdyn_index_put(scr_errdyn_by_err, scr_errdyn_cache[i].err, i, true);
+    scr_errdyn_index_put(scr_errdyn_by_dyn, scr_errdyn_cache[i].dyn, i, false);
+  }
+  for (size_t i = 0; i < n_dead; i++) {
+    scr_error_release(dead[i].err);
+    scr_errdyn_release_node(dead[i].dyn);
+  }
+  free(dead);
+}
+
 /* Appends an entry (both sides retained) and indexes it. */
 static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
+  if (scr_errdyn_n >= scr_errdyn_sweep_at) scr_errdyn_sweep();
   if (scr_errdyn_n == scr_errdyn_cap) {
     scr_errdyn_cap = scr_errdyn_cap ? scr_errdyn_cap * 2 : 8;
     scr_errdyn_cache = realloc(scr_errdyn_cache, scr_errdyn_cap * sizeof *scr_errdyn_cache);
@@ -6502,17 +6647,21 @@ void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *)) {
 }
 
 static void scr_errdyn_teardown(void) {
-  for (size_t i = 0; i < scr_errdyn_n; i++) {
-    scr_error_release(scr_errdyn_cache[i].err);
-    scr_dyn_release(scr_errdyn_cache[i].dyn);
-  }
-  free(scr_errdyn_cache);
+  /* Detach the storage first: no release below sees a half-torn cache. */
+  ScrErrDynEnt *cache = scr_errdyn_cache;
+  size_t n = scr_errdyn_n;
   scr_errdyn_cache = NULL;
   scr_errdyn_n = scr_errdyn_cap = 0;
   free(scr_errdyn_by_err);
   free(scr_errdyn_by_dyn);
   scr_errdyn_by_err = scr_errdyn_by_dyn = NULL;
   scr_errdyn_slots = 0;
+  scr_errdyn_sweep_at = 64;
+  for (size_t i = 0; i < n; i++) {
+    scr_error_release(cache[i].err);
+    scr_errdyn_release_node(cache[i].dyn);
+  }
+  free(cache);
 }
 
 ScrDyn *scr_error_dyn_fields(const ScrError *e) {
@@ -6540,7 +6689,11 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_obj_set(d, "message", 7, scr_dyn_new_str(e->message));
     d->v.obj.entries[d->v.obj.len - 1].enumerable = e->message_enumerable;
   }
-  if (e->stack) scr_dyn_obj_set(d, "stack", 5, scr_dyn_new_str(e->stack));
+  if (e->stack) {
+    /* Node's own `stack` is non-enumerable. */
+    scr_dyn_obj_set(d, "stack", 5, scr_dyn_new_str(e->stack));
+    d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
+  }
   if (e->system_message) {
     /* SystemError: code, the read-only `info` context ({ message, path,
      * syscall, errno, code }), then errno, syscall, path and dest. */
@@ -6615,6 +6768,23 @@ ScrDyn *scr_dyn_from_error(const ScrError *e) {
   if (!d) d = scr_error_dyn_fields(e);
   scr_errdyn_append((ScrError *)e, d);
   return d;
+}
+
+/* An own property on an error, as a throw site attaches Node's extra
+ * fields (a dns error's hostname, an exec error's status): set on the
+ * error's checked-dynamic node, which casts, the checked-dynamic surface
+ * and util.inspect read. Moves value. */
+void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value) {
+  ScrDyn *view = scr_dyn_from_error(e);
+  scr_dyn_obj_set(view, key, key_len, value);
+  scr_dyn_release(view);
+}
+
+/* The error's checked-dynamic node when it has one (borrowed), else NULL:
+ * util.inspect reads its extra own properties. */
+ScrDyn *scr_errdyn_view_of(const ScrError *e) {
+  size_t hit = scr_errdyn_find(e, true);
+  return hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].dyn;
 }
 
 /* The %Error EXTRACTION (dynCheck of `u as Error` / an instanceof-Error
@@ -6805,6 +6975,15 @@ static bool scr_dyn_error_encoding(const ScrDyn *d) {
   return d->kind == SCR_DYN_OBJ && scr_dyn_obj_get(d, "%error", 6) != NULL;
 }
 
+static bool scr_dyn_is_date(const ScrDyn *d) {
+  return d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_DATE;
+}
+
+/* A Date's valueOf(): its time value as a number. +1. */
+static ScrDyn *scr_dyn_date_value_of(const ScrDyn *d) {
+  return scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "valueOf", NULL, 0, "valueOf");
+}
+
 /* Receiver-kind-dispatched toString() on a checked-dynamic value (the
  * dyn method surface — a stream's 'data'/for-await chunk is the common
  * receiver): bytes decode per the encoding (Node's Buffer.toString,
@@ -6843,7 +7022,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     if (scr_dyn_error_encoding(d) && !scr_dyn_property_owner(d, "toString", 8)) return scr_dyn_error_string(d);
     return scr_str_new("[object Object]", 15);
   case SCR_DYN_HANDLE:
-    if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL) {
+    if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
       if (!text) return NULL;
       ScrStr *out = scr_str_retain(text->v.str);
@@ -7267,6 +7446,14 @@ bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out) {
     return false;
   }
   default: {
+    /* A Date's valueOf answers its time value. */
+    if (scr_dyn_is_date(d)) {
+      ScrDyn *time = scr_dyn_date_value_of(d);
+      if (!time) return false;
+      *out = time->v.num;
+      scr_dyn_release(time);
+      return true;
+    }
     /* Arrays, byte views, functions, promises, and native handles inherit a
      * valueOf that returns the receiver, then use their existing JS-exact
      * string rendering for the numeric conversion. */
@@ -7287,8 +7474,14 @@ double scr_dyn_number_coerce(const ScrDyn *d) {
 
 static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d);
 
+/* ToPrimitive with the number hint, which differs from the default hint
+ * only for a Date: its time value. */
+static ScrDyn *scr_dyn_number_primitive(const ScrDyn *d) {
+  return scr_dyn_is_date(d) ? scr_dyn_date_value_of(d) : scr_dyn_add_primitive(d);
+}
+
 double scr_dyn_number_constructor(const ScrDyn *d) {
-  ScrDyn *primitive = scr_dyn_add_primitive(d);
+  ScrDyn *primitive = scr_dyn_number_primitive(d);
   if (!primitive) return NAN;
   double result = primitive->kind == SCR_DYN_BIGINT
     ? scr_bigint_to_f64(primitive->v.bigint) : scr_dyn_number_coerce(primitive);
@@ -7297,7 +7490,7 @@ double scr_dyn_number_constructor(const ScrDyn *d) {
 }
 
 static ScrBigInt *scr_dyn_bigint_convert(const ScrDyn *d, bool allow_number) {
-  ScrDyn *primitive = scr_dyn_add_primitive(d);
+  ScrDyn *primitive = scr_dyn_number_primitive(d);
   if (!primitive) return NULL;
   ScrBigInt *result = NULL;
   switch (primitive->kind) {
@@ -7430,7 +7623,7 @@ ScrDyn *scr_dyn_add(const ScrDyn *left, const ScrDyn *right) {
 }
 
 ScrDyn *scr_dyn_to_numeric(const ScrDyn *value) {
-  ScrDyn *primitive = scr_dyn_add_primitive(value);
+  ScrDyn *primitive = scr_dyn_number_primitive(value);
   if (!primitive) return NULL;
   if (primitive->kind == SCR_DYN_BIGINT) return primitive;
   double number;
@@ -7454,9 +7647,9 @@ ScrDyn *scr_dyn_increment(const ScrDyn *value, bool increment) {
 bool scr_dyn_compare(const ScrDyn *left, const ScrDyn *right, const ScrStr *operation) {
   // ToPrimitive is observable and always visits the original left operand
   // first, including the > and <= spellings of relational comparison.
-  ScrDyn *l = scr_dyn_add_primitive(left);
+  ScrDyn *l = scr_dyn_number_primitive(left);
   if (!l) return false;
-  ScrDyn *r = scr_dyn_add_primitive(right);
+  ScrDyn *r = scr_dyn_number_primitive(right);
   if (!r) { scr_dyn_release(l); return false; }
   double order = 2;
   if (l->kind == SCR_DYN_STR && r->kind == SCR_DYN_STR) {
@@ -7741,9 +7934,25 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
     return;
   }
+  bool created = scr_dyn_entry(recv, key) == NULL;
   scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
+  if (created && key->len == 5 && memcmp(key->data, "stack", 5) == 0 &&
+      scr_errdyn_find(recv, false) != SIZE_MAX) {
+    /* An error's own `stack` exists from construction as a non-enumerable
+     * data property, so assigning it adds no enumerable key. */
+    ScrDynEntry *entry = scr_dyn_entry(recv, key);
+    if (entry) entry->enumerable = false;
+  }
   scr_error_sync_cause(recv, key);
   return;
+}
+
+void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value) {
+  if (!arr->v.arr.properties) {
+    scr_dyn_region_store(arr, NULL); /* a table that later holds anything */
+    arr->v.arr.properties = scr_dyn_new_obj();
+  }
+  scr_dyn_obj_set(arr->v.arr.properties, key, key_len, value);
 }
 
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
@@ -13770,4 +13979,116 @@ ScrDyn *scr_caught_to_dyn(const ScrCaught *c) {
   default:
     return scr_dyn_new_obj();
   }
+}
+
+/* ── compiled generators through untyped values ─────────────────────── */
+
+static SCR_TL ScrDyn *scr_generator_next_getter;
+static SCR_TL ScrDyn *scr_generator_return_getter;
+/* Set with the getters, so only programs that register them link the
+ * iterator helpers through these paths. External, so the compiler keeps
+ * the calls through them indirect. */
+SCR_TL ScrDyn *(*scr_generator_member_hook)(const ScrDyn *, const char *, size_t) = NULL;
+SCR_TL bool (*scr_dyn_generator_helper_hook)(ScrDyn *, const char *, ScrDyn *const *, size_t,
+                                             ScrDyn **) = NULL;
+static ScrDyn *scr_generator_member(const ScrDyn *capsule, const char *key, size_t len);
+static bool scr_generator_helper_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                        size_t argc, ScrDyn **out);
+
+static void scr_generator_members_cleanup(void) {
+  scr_dyn_release(scr_generator_next_getter);
+  scr_dyn_release(scr_generator_return_getter);
+  scr_generator_next_getter = NULL;
+  scr_generator_return_getter = NULL;
+  scr_generator_member_hook = NULL;
+  scr_dyn_generator_helper_hook = NULL;
+}
+
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter) {
+  if (!scr_generator_next_getter) scr_atexit(scr_generator_members_cleanup);
+  scr_dyn_release(scr_generator_next_getter);
+  scr_dyn_release(scr_generator_return_getter);
+  scr_generator_next_getter = scr_dyn_retain(next_getter);
+  scr_generator_return_getter = scr_dyn_retain(return_getter);
+  scr_generator_member_hook = &scr_generator_member;
+  scr_dyn_generator_helper_hook = &scr_generator_helper_invoke;
+}
+
+static bool scr_dyn_sync_generator(const ScrDyn *value) {
+  return scr_dyn_generator(value) && value->v.typed_ref.type_key[0] == 'g';
+}
+
+/* A synchronous generator capsule's next or return method (+1), read
+ * through the program's registered getters. NULL for other keys. */
+static ScrDyn *scr_generator_member(const ScrDyn *capsule, const char *key, size_t len) {
+  ScrDyn *getter = len == 4 && !memcmp(key, "next", 4) ? scr_generator_next_getter
+    : len == 6 && !memcmp(key, "return", 6) ? scr_generator_return_getter : NULL;
+  if (!getter) return NULL;
+  ScrDyn *args[1] = { (ScrDyn *)capsule };
+  return scr_dyn_call(getter, args, 1, "next");
+}
+
+static bool scr_generator_helper_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                        size_t argc, ScrDyn **out) {
+  if (!scr_dyn_sync_generator(recv)) return false;
+  int index = scr_ih_method_index(method, strlen(method));
+  if (index < 0) return false;
+  *out = scr_iterator_helper_method(recv, index, args, argc);
+  return true;
+}
+
+ScrDyn *scr_dyn_iterator_helper_method(const ScrStr *name) {
+  int index = scr_ih_method_index(name->data, name->len);
+  return index >= 0 ? scr_ih_method_function(index) : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* Destructuring over an iterable the pack walk cannot list (a compiled
+ * generator, an iterator or iterator helper, a Map or Set): GetIterator,
+ * then the first `n` values through the iterator protocol, or every value
+ * when `all`, into a fresh array. Positions past the end read undefined,
+ * and an iterator with values left closes. `spell` is the compile-time
+ * not-iterable wording, or NULL. +1, or NULL with the error pending. */
+static ScrDyn *scr_dyn_iter_steps(const ScrDyn *src, const ScrStr *spell, size_t n, bool all) {
+  ScrDyn *iterator = scr_dyn_iterator(src, spell);
+  if (!iterator) return NULL;
+  ScrDyn *next = scr_iterator_member(iterator, "next", 4);
+  if (!next) {
+    scr_dyn_release(iterator);
+    return NULL;
+  }
+  ScrDyn *out = scr_dyn_new_arr();
+  bool done = false;
+  for (size_t i = 0; all ? !done : i < n; i++) {
+    ScrDyn *value = done ? scr_dyn_retain(scr_dyn_undefined()) : scr_ih_step(iterator, next, &done);
+    if (!value) goto fail;
+    if (all && done) scr_dyn_release(value);
+    else scr_dyn_arr_push(out, value);
+  }
+  if (!done && !scr_ih_close(iterator, false)) goto fail;
+  scr_dyn_release(next);
+  scr_dyn_release(iterator);
+  return out;
+fail:
+  scr_dyn_release(out);
+  scr_dyn_release(next);
+  scr_dyn_release(iterator);
+  return NULL;
+}
+
+ScrDyn *scr_dyn_destructure_rest(const ScrDyn *src, const ScrStr *msg) {
+  bool packs = src->kind == SCR_DYN_ARR || src->kind == SCR_DYN_STR || src->kind == SCR_DYN_BYTES ||
+    (src->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(src)->iter_pack) ||
+    (src->kind == SCR_DYN_TYPED_REF && !scr_dyn_iterates_by_protocol(src));
+  return packs ? scr_dyn_iter_pack(src, msg) : scr_dyn_iter_steps(src, msg, 0, true);
+}
+
+ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell) {
+  ScrStr *spelling = spell && *spell ? scr_str_new(spell, strlen(spell)) : NULL;
+  ScrDyn *out = scr_dyn_iter_steps(src, spelling, n, false);
+  scr_str_release(spelling);
+  return out;
+}
+
+bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
+  return scr_dyn_sync_generator(value);
 }

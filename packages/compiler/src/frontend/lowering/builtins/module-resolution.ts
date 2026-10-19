@@ -54,9 +54,9 @@ export function lowerNodeModuleCall(
 ): IrExpr | null {
   if (bi.module !== "module") return null;
   if (bi.member === "syncBuiltinESMExports") {
-    if (expr.arguments.length !== 0 || expr.arguments.some(ts.isSpreadElement)) {
+    if (expr.arguments.nodes.length !== 0 || expr.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(
-        `module.syncBuiltinESMExports with ${expr.arguments.length} arguments`,
+        `module.syncBuiltinESMExports with ${expr.arguments.nodes.length} arguments`,
         expr,
         "syncBuiltinESMExports() takes no arguments",
       );
@@ -71,14 +71,14 @@ export function lowerNodeModuleCall(
     return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
   }
   if (bi.member !== "isBuiltin") return null;
-  if (expr.arguments.length !== 1 || expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.length !== 1 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
-      `module.isBuiltin with ${expr.arguments.length} arguments`,
+      `module.isBuiltin with ${expr.arguments.nodes.length} arguments`,
       expr,
       "isBuiltin(moduleName) takes one string",
     );
   }
-  const argumentNode = expr.arguments[0]!;
+  const argumentNode = expr.arguments.nodes[0]!;
   const argument = lowerer.lowerExpr(argumentNode);
   if (argument.type.kind !== "string") {
     if (argument.type.kind === "dyn" || argument.type.kind === "union") {
@@ -276,18 +276,18 @@ export function lowerImportMetaResolveCall(
   ) {
     return null;
   }
-  if (call.questionDotToken !== undefined || call.arguments.length !== 1) {
+  if (call.questionDotToken !== undefined || call.arguments.nodes.length !== 1) {
     lowerer.noLowering(
       "import.meta.resolve with this argument shape",
       call,
       'the lowered form is import.meta.resolve("<static specifier>") using the containing module as its parent',
     );
   }
-  const specifier = staticString(call.arguments[0]);
+  const specifier = staticString(call.arguments.nodes[0]);
   if (specifier === null) {
     lowerer.noLowering(
       "import.meta.resolve with a runtime-computed specifier",
-      call.arguments[0]!,
+      call.arguments.nodes[0]!,
       "a compiled binary has a fixed module graph — pass a string literal",
     );
   }
@@ -327,7 +327,7 @@ function staticResolveOptionPaths(
   if (ts.isIdentifier(value) && value.text === "undefined") return undefined;
   if (!ts.isObjectLiteralExpression(value)) return null;
   let paths: readonly string[] | undefined;
-  for (const prop of value.properties) {
+  for (const prop of value.properties.nodes) {
     if (!ts.isPropertyAssignment(prop)) return null;
     const name =
       ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : null;
@@ -335,7 +335,7 @@ function staticResolveOptionPaths(
     const init = stripTypeCasts(prop.initializer);
     if (!ts.isArrayLiteralExpression(init)) return null;
     const entries: string[] = [];
-    for (const item of init.elements) {
+    for (const item of init.elements.nodes) {
       if (!ts.isStringLiteralLike(item)) return null;
       entries.push(item.text);
     }
@@ -369,8 +369,8 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
   if (baseFile === null) return null;
   if (
     call.questionDotToken !== undefined ||
-    call.arguments.length < 1 ||
-    call.arguments.length > (pathsCall ? 1 : 2)
+    call.arguments.nodes.length < 1 ||
+    call.arguments.nodes.length > (pathsCall ? 1 : 2)
   ) {
     lowerer.noLowering(
       pathsCall
@@ -379,11 +379,11 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
       call,
     );
   }
-  const specifier = staticString(call.arguments[0]);
+  const specifier = staticString(call.arguments.nodes[0]);
   if (specifier === null) {
     lowerer.noLowering(
       `${pathsCall ? "require.resolve.paths" : "require.resolve"} with a runtime-computed request`,
-      call.arguments[0]!,
+      call.arguments.nodes[0]!,
       "a compiled binary has a fixed module graph — pass a string literal",
     );
   }
@@ -414,11 +414,11 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
           };
     return lowerer.coerceInto(call, raw, lowerer.irTypeOf(call));
   }
-  const paths = staticResolveOptionPaths(call.arguments[1]);
+  const paths = staticResolveOptionPaths(call.arguments.nodes[1]);
   if (paths === null) {
     lowerer.noLowering(
       "require.resolve with runtime-computed options",
-      call.arguments[1]!,
+      call.arguments.nodes[1]!,
       'omit options or pass { paths: ["<static directory>", ...] }',
     );
   }

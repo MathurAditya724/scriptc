@@ -35,22 +35,22 @@ export function lowerChildMethodCall(
   const loc = locOf(call);
   if (name === "send") {
     if (
-      call.arguments.length < 1 ||
-      call.arguments.length > 2 ||
-      call.arguments.some(ts.isSpreadElement)
+      call.arguments.nodes.length < 1 ||
+      call.arguments.nodes.length > 2 ||
+      call.arguments.nodes.some(ts.isSpreadElement)
     ) {
       lowerer.noLowering(
-        `child.send with ${call.arguments.length} arguments`,
+        `child.send with ${call.arguments.nodes.length} arguments`,
         call,
         "send(message[, callback]) is supported; handle transfer and options are not",
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);
-    const json = ipcJsonMessage(lowerer, call.arguments[0]!, loc);
-    if (call.arguments[1] === undefined) {
+    const json = ipcJsonMessage(lowerer, call.arguments.nodes[0]!, loc);
+    if (call.arguments.nodes[1] === undefined) {
       return { kind: "libCall", fn: "child.send", args: [receiver, json], type: BOOL, loc };
     }
-    const callback = ipcSendCallback(lowerer, call.arguments[1]);
+    const callback = ipcSendCallback(lowerer, call.arguments.nodes[1]);
     return {
       kind: "libCall",
       fn: "child.sendCb",
@@ -59,7 +59,7 @@ export function lowerChildMethodCall(
       loc,
     };
   }
-  if (name === "disconnect" && call.arguments.length === 0) {
+  if (name === "disconnect" && call.arguments.nodes.length === 0) {
     if (!ts.isExpressionStatement(call.parent)) {
       lowerer.unsupported(
         "SC1090",
@@ -75,8 +75,8 @@ export function lowerChildMethodCall(
       loc,
     };
   }
-  if ((name === "on" || name === "once") && call.arguments.length === 2) {
-    const evT = lowerer.typeOf(call.arguments[0]!);
+  if ((name === "on" || name === "once") && call.arguments.nodes.length === 2) {
+    const evT = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     if (
       event !== "spawn" &&
@@ -88,7 +88,7 @@ export function lowerChildMethodCall(
     ) {
       lowerer.noLowering(
         `child.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
-        call.arguments[0]!,
+        call.arguments.nodes[0]!,
         '"exit", "close", "error", "message", and "disconnect" are the supported child events (as literals)',
       );
     }
@@ -105,7 +105,7 @@ export function lowerChildMethodCall(
       return {
         kind: "libCall",
         fn: "child.onMessage",
-        args: [receiver, ipcMessageListener(lowerer, call.arguments[1]!), once],
+        args: [receiver, ipcMessageListener(lowerer, call.arguments.nodes[1]!), once],
         type: VOID,
         loc,
       };
@@ -114,24 +114,24 @@ export function lowerChildMethodCall(
       return {
         kind: "libCall",
         fn: "child.onDisconnect",
-        args: [receiver, ipcDisconnectListener(lowerer, call.arguments[1]!), once],
+        args: [receiver, ipcDisconnectListener(lowerer, call.arguments.nodes[1]!), once],
         type: VOID,
         loc,
       };
     }
-    const listenerNode = stripTypeCasts(call.arguments[1]!);
+    const listenerNode = stripTypeCasts(call.arguments.nodes[1]!);
     if (
       isJsSourceFile(listenerNode.getSourceFile()) &&
       (ts.isArrowFunction(listenerNode) || ts.isFunctionExpression(listenerNode)) &&
-      listenerNode.parameters.some((param) => param.dotDotDotToken) &&
-      listenerNode.parameters.every((param) => !param.type) &&
+      listenerNode.parameters.nodes.some((param) => param.dotDotDotToken) &&
+      listenerNode.parameters.nodes.every((param) => !param.type) &&
       !/@(?:param|type)\b/.test(
         listenerNode.getSourceFile().text.slice(listenerNode.pos, listenerNode.getStart()),
       )
     ) {
-      for (const param of listenerNode.parameters) lowerer.checkedCallbackParams.add(param);
+      for (const param of listenerNode.parameters.nodes) lowerer.checkedCallbackParams.add(param);
     }
-    const cb = lowerer.lowerExpr(call.arguments[1]!);
+    const cb = lowerer.lowerExpr(call.arguments.nodes[1]!);
     if (
       (isJsSourceFile(listenerNode.getSourceFile()) && cb.type.kind === "dyn") ||
       (cb.type.kind === "func" &&
@@ -149,7 +149,7 @@ export function lowerChildMethodCall(
       ) {
         lowerer.noLowering(
           "child event listeners with non-representable parameters",
-          call.arguments[1]!,
+          call.arguments.nodes[1]!,
         );
       }
       return {
@@ -168,7 +168,7 @@ export function lowerChildMethodCall(
       if (cb.type.kind !== "func" || cb.type.params.length !== 0 || cb.type.ret.kind !== "void") {
         lowerer.noLowering(
           "spawn event listeners with parameters or a returned value",
-          call.arguments[1]!,
+          call.arguments.nodes[1]!,
         );
       }
       return { kind: "libCall", fn: "child.onSpawn", args: [receiver, cb], type: VOID, loc };
@@ -176,7 +176,7 @@ export function lowerChildMethodCall(
     if (cb.type.kind !== "func" || cb.type.params.length > (event === "error" ? 1 : 2)) {
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         event !== "error"
           ? `${event} listeners with more than two parameters (use (code, signal), (code), or ())`
           : "error listeners with more than one parameter (use (err) or ())",
@@ -188,7 +188,7 @@ export function lowerChildMethodCall(
       // fenced instead of being called through the wrong ABI.
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         "listeners returning a value (make the callback body a block, or return nothing)",
       );
     }
@@ -206,7 +206,7 @@ export function lowerChildMethodCall(
       if (!armsOk) {
         lowerer.unsupported(
           "SC1090",
-          call.arguments[1]!,
+          call.arguments.nodes[1]!,
           `${event} listeners whose parameter is not 'number | null' (got '${lowerer.fmt(param!)}')`,
         );
       }
@@ -228,7 +228,7 @@ export function lowerChildMethodCall(
       if (!sigOk) {
         lowerer.unsupported(
           "SC1090",
-          call.arguments[1]!,
+          call.arguments.nodes[1]!,
           `${event} listeners whose signal parameter is not 'Signals | null' (got '${lowerer.fmt(sigParam!)}')`,
         );
       }
@@ -243,7 +243,7 @@ export function lowerChildMethodCall(
     if (param !== undefined && !(param.kind === "object" && param.className === "%Error")) {
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         `error listeners whose parameter is not 'Error' (got '${lowerer.fmt(param)}')`,
       );
     }
@@ -256,11 +256,11 @@ export function lowerChildMethodCall(
   // reaped or never spawned (Node's null-handle answer), and a successful
   // send sets `killed`.
   if (name === "kill") {
-    if (call.arguments.length > 1) {
-      lowerer.noLowering(`child.kill with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length > 1) {
+      lowerer.noLowering(`child.kill with ${call.arguments.nodes.length} arguments`, call);
     }
     const receiver = lowerer.lowerExpr(access.expression);
-    const sigNode = call.arguments[0];
+    const sigNode = call.arguments.nodes[0];
     if (!sigNode) {
       const dflt: IrExpr = { kind: "strLit", value: "SIGTERM", type: STRING, loc };
       return { kind: "libCall", fn: "child.kill", args: [receiver, dflt], type: BOOL, loc };
@@ -281,7 +281,7 @@ export function lowerChildMethodCall(
   // child.unref(): drops the child from the event loop's keep-alive set
   // (the process may exit while the child runs — Node's semantics; the
   // child is still reaped while the loop runs for other reasons).
-  if ((name === "unref" || name === "ref") && call.arguments.length === 0) {
+  if ((name === "unref" || name === "ref") && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExpr(access.expression);
     return {
       kind: "libCall",
@@ -320,9 +320,9 @@ export function lowerChildStreamMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  if (name === "setEncoding" && call.arguments.length === 1) {
+  if (name === "setEncoding" && call.arguments.nodes.length === 1) {
     const receiver = lowerer.lowerExprExpecting(access.expression, CHILDSTREAM_T);
-    const enc = bufEncoding(lowerer, "child stream setEncoding", call.arguments[0]!);
+    const enc = bufEncoding(lowerer, "child stream setEncoding", call.arguments.nodes[0]!);
     return {
       kind: "libCall",
       fn: "stream.childSetEncoding",
@@ -331,13 +331,13 @@ export function lowerChildStreamMethodCall(
       loc,
     };
   }
-  if ((name === "on" || name === "once") && call.arguments.length === 2) {
-    const evT = lowerer.typeOf(call.arguments[0]!);
+  if ((name === "on" || name === "once") && call.arguments.nodes.length === 2) {
+    const evT = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     if (event !== "data" && event !== "end") {
       lowerer.noLowering(
         `stream.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
-        call.arguments[0]!,
+        call.arguments.nodes[0]!,
         '"data" and "end" are the supported child-stream events (as literals)',
       );
     }
@@ -349,7 +349,7 @@ export function lowerChildStreamMethodCall(
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);
-    const cb = lowerer.lowerExpr(call.arguments[1]!);
+    const cb = lowerer.lowerExpr(call.arguments.nodes[1]!);
     const once: IrExpr = { kind: "boolLit", value: name === "once", type: BOOL, loc };
     if (
       cb.type.kind !== "func" ||
@@ -358,7 +358,7 @@ export function lowerChildStreamMethodCall(
     ) {
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         event === "data"
           ? "data listeners with more than one parameter or a return value (use (chunk) or ())"
           : "end listeners with parameters or a return value (use ())",
@@ -381,7 +381,7 @@ export function lowerChildStreamMethodCall(
     ) {
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         `data listeners whose parameter is not 'Buffer', 'string', or a Buffer-armed union (got '${lowerer.fmt(param)}')`,
       );
     }
@@ -417,15 +417,15 @@ export function lowerChildWriterMethodCall(
   const loc = locOf(call);
 
   if (name === "write") {
-    if (call.arguments.length !== 1 || call.arguments.some(ts.isSpreadElement)) {
+    if (call.arguments.nodes.length !== 1 || call.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(
-        `child stdin write with ${call.arguments.length} arguments`,
+        `child stdin write with ${call.arguments.nodes.length} arguments`,
         call,
         "write(string | Uint8Array) with no encoding or callback is supported",
       );
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, CHILDWRITER_T);
-    const data = lowerer.lowerExpr(call.arguments[0]!);
+    const data = lowerer.lowerExpr(call.arguments.nodes[0]!);
     if (data.type.kind === "string") {
       return { kind: "libCall", fn: "writer.writeString", args: [receiver, data], type: BOOL, loc };
     }
@@ -434,12 +434,12 @@ export function lowerChildWriterMethodCall(
     }
     lowerer.noLowering(
       `child stdin write of '${lowerer.fmt(data.type)}'`,
-      call.arguments[0]!,
+      call.arguments.nodes[0]!,
       "write one string, Buffer, or Uint8Array value (narrow unions first)",
     );
   }
 
-  if ((name === "end" || name === "destroy") && call.arguments.length === 0) {
+  if ((name === "end" || name === "destroy") && call.arguments.nodes.length === 0) {
     if (!ts.isExpressionStatement(call.parent)) {
       lowerer.unsupported(
         "SC1090",
@@ -457,13 +457,13 @@ export function lowerChildWriterMethodCall(
     };
   }
 
-  if ((name === "on" || name === "once") && call.arguments.length === 2) {
-    const eventType = lowerer.typeOf(call.arguments[0]!);
+  if ((name === "on" || name === "once") && call.arguments.nodes.length === 2) {
+    const eventType = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = eventType.isStringLiteralType() ? eventType.value : null;
     if (event !== "drain" && event !== "finish" && event !== "error") {
       lowerer.noLowering(
         `child stdin ${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
-        call.arguments[0]!,
+        call.arguments.nodes[0]!,
         '"drain", "finish", and "error" are the supported child stdin events',
       );
     }
@@ -471,7 +471,7 @@ export function lowerChildWriterMethodCall(
       lowerer.unsupported("SC1090", call, "chaining child stdin listener registration");
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, CHILDWRITER_T);
-    const cb = lowerer.lowerExpr(call.arguments[1]!);
+    const cb = lowerer.lowerExpr(call.arguments.nodes[1]!);
     const maxParams = event === "error" ? 1 : 0;
     if (
       cb.type.kind !== "func" ||
@@ -480,7 +480,7 @@ export function lowerChildWriterMethodCall(
     ) {
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         event === "error"
           ? "error listeners with at most one Error parameter and no return value"
           : `${event} listeners with no parameters or return value`,
@@ -493,7 +493,7 @@ export function lowerChildWriterMethodCall(
     ) {
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         "child stdin error listeners whose parameter is Error",
       );
     }

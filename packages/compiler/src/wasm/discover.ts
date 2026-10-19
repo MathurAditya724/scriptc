@@ -182,13 +182,13 @@ class Discovery {
     const dir = dirname(sf.fileName);
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
-      const first = node.arguments[0];
+      const first = node.arguments.nodes[0];
       if (first === undefined) return null;
       // require.resolve / createRequire(...).resolve / import.meta.resolve
       if (ts.isPropertyAccessExpression(callee) && callee.name.text === "resolve") {
         const specifier = wasmLiteral(first);
         if (specifier === null) {
-          return this.joinedPath(dir, node.arguments);
+          return this.joinedPath(dir, node.arguments.nodes);
         }
         const receiver = callee.expression;
         if (ts.isMetaProperty(receiver) || isRequireLike(receiver)) {
@@ -206,14 +206,14 @@ class Discovery {
           (callee.name.text === "join" || callee.name.text === "resolve")) ||
         (ts.isIdentifier(callee) && (callee.text === "join" || callee.text === "resolve"))
       ) {
-        return this.joinedPath(dir, node.arguments);
+        return this.joinedPath(dir, node.arguments.nodes);
       }
       return null;
     }
     if (ts.isNewExpression(node)) {
       // new URL("./x.wasm", import.meta.url)
       if (!ts.isIdentifier(node.expression) || node.expression.text !== "URL") return null;
-      const args = node.arguments;
+      const args = node.arguments?.nodes;
       if (args === undefined || args.length !== 2) return null;
       const specifier = wasmLiteral(args[0]!);
       const base = args[1]!;
@@ -339,7 +339,7 @@ function isRequireLike(node: ts.Expression): boolean {
 
 /** The bytes of an array literal of integer literals, or null. */
 function byteArrayLiteral(node: ts.ArrayLiteralExpression): Uint8Array | null {
-  const elements = node.elements;
+  const elements = node.elements.nodes;
   const out = new Uint8Array(elements.length);
   for (let i = 0; i < elements.length; i++) {
     const element = elements[i]!;

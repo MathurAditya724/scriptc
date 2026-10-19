@@ -4,6 +4,8 @@ import { DYN, STRING, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../..
 import type { IrExpr, IrStmt, SrcLoc } from "../../../ir/ir.js";
 import { isNodeEsmFile, locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
+import { tryLowerExpression } from "./try-lower-expression.js";
+import { constituentTypes } from "../../ts7/checker.js";
 
 /** One optional-chain STEP: `a?.b`, `a?.m(...)`, `a?.[i]` (the token on
  * the member access) and `f?.()` (the token on the call). The receiver
@@ -135,6 +137,31 @@ export function hasOptionalChainGuard(expr: ts.Expression): boolean {
   }
 }
 
+/** `recv.m` where `m` is a required method the standard library declares
+ * and `recv` itself is a non-optional, never-nullish typed receiver. */
+function alwaysPresentStdlibMethod(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isPropertyAccessExpression(node) || node.questionDotToken) return false;
+  if (hasOptionalChainGuard(node.expression)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(node.name);
+  if (!symbol || !(symbol.flags & ts.SymbolFlags.Method) || symbol.flags & ts.SymbolFlags.Optional)
+    return false;
+  if (!lowerer.isStdlibSymbol(symbol)) return false;
+  const nullable =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Void;
+  const receiverType = lowerer.checker.getTypeAtLocation(node.expression);
+  const calleeType = lowerer.checker.getTypeAtLocation(node);
+  const parts = (type: ts.Type): readonly ts.Type[] =>
+    type.flags & ts.TypeFlags.Union ? constituentTypes(type) : [type];
+  return (
+    parts(receiverType).every((part) => !(part.flags & nullable)) &&
+    parts(calleeType).every((part) => !(part.flags & nullable))
+  );
+}
+
 export function lowerOptionalChain(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.PropertyAccessExpression | ts.ElementAccessExpression,
@@ -181,7 +208,25 @@ export function lowerOptionalChain(
     dotNode = tail;
     recvNode = tail.expression;
   }
-  const loweredReceiver = lowerer.lowerExpr(recvNode);
+  // `h.getSetCookie?.()`: a required standard-library METHOD on a
+  // never-nullish receiver always exists, so `?.()` is the plain call.
+  // Native handle methods have no first-class value to guard; when the
+  // method read itself has no lowering, re-dispatch the plain call (which
+  // reports its own diagnostics) instead of failing on the value read.
+  let loweredReceiver: IrExpr | null;
+  if (dotNode === expr && alwaysPresentStdlibMethod(lowerer, recvNode)) {
+    loweredReceiver = tryLowerExpression(lowerer, recvNode);
+    if (loweredReceiver === null) {
+      lowerer.chainHandled.add(dotNode);
+      try {
+        return lowerer.lowerExpr(expr);
+      } finally {
+        lowerer.chainHandled.delete(dotNode);
+      }
+    }
+  } else {
+    loweredReceiver = lowerer.lowerExpr(recvNode);
+  }
   const receiver = lowerer.runtimeOptionalSourceValue(recvNode, loweredReceiver) ?? loweredReceiver;
   if (receiver.type.kind === "dyn") {
     if (dotNode === expr && ts.isCallExpression(expr)) {
@@ -208,7 +253,7 @@ export function lowerOptionalChain(
         }
       }
       const spreads: { arg: number; what: string }[] = [];
-      const args = expr.arguments.map((arg, index) => {
+      const args = expr.arguments.nodes.map((arg, index) => {
         if (!ts.isSpreadElement(arg)) return lowerer.lowerExprExpecting(arg, DYN);
         spreads.push({ arg: index, what: arg.expression.getText() });
         return lowerer.lowerExprExpecting(arg.expression, DYN);
@@ -384,7 +429,7 @@ export function lowerOptionalChain(
   if (dotNode === expr && ts.isCallExpression(expr)) {
     if (narrowed.kind !== "func") lowerer.badType(recvNode, lowerer.typeOf(recvNode));
     const params = narrowed.params;
-    const args = expr.arguments.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
+    const args = expr.arguments.nodes.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
     const body: IrExpr = { kind: "callValue", callee: recvRef, args, type: narrowed.ret, loc };
     return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
   }

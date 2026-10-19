@@ -23,8 +23,11 @@ export class DeferredModuleInitializers {
 
   defer(lowerer: Lowerer, statement: ts.Statement): IrStmt | null {
     let key: string;
-    if (ts.isVariableStatement(statement) && statement.declarationList.declarations.length === 1) {
-      const declaration = statement.declarationList.declarations[0]!;
+    if (
+      ts.isVariableStatement(statement) &&
+      statement.declarationList.declarations.nodes.length === 1
+    ) {
+      const declaration = statement.declarationList.declarations.nodes[0]!;
       if (!ts.isIdentifier(declaration.name) || !declaration.initializer) return null;
       const symbol = lowerer.checker.getSymbolAtLocation(declaration.name);
       const global = symbol && lowerer.globalsBySymbol.get(symbol);
@@ -34,7 +37,7 @@ export class DeferredModuleInitializers {
       key = global.id;
       if (
         ts.isObjectLiteralExpression(declaration.initializer) &&
-        declaration.initializer.properties.every(
+        declaration.initializer.properties.nodes.every(
           (property) =>
             (ts.isPropertyAssignment(property) &&
               !ts.isComputedPropertyName(property.name) &&
@@ -260,11 +263,11 @@ function registryInitializer(
     if (
       !ts.isPropertyAccessExpression(expression.expression) ||
       lowerer.stdlibGlobalMember(expression.expression, "Object") !== "freeze" ||
-      expression.arguments.length !== 1 ||
-      !ts.isObjectLiteralExpression(expression.arguments[0]!)
+      expression.arguments.nodes.length !== 1 ||
+      !ts.isObjectLiteralExpression(expression.arguments.nodes[0]!)
     )
       return false;
-    expression = expression.arguments[0]!;
+    expression = expression.arguments.nodes[0]!;
   }
   const packageSource = npmStaticPackageOfPath(statement.getSourceFile().fileName) !== null;
   const initialized = (declaration: ts.Node): boolean => {
@@ -324,7 +327,7 @@ function registryInitializer(
       const trivia = node.getSourceFile().text.slice(node.pos, node.getStart());
       if (!/[@#]__PURE__/.test(trivia)) return false;
       if (!callable(node.expression)) return false;
-      return (node.arguments ?? []).every((argument) => value(argument, depth + 1));
+      return (node.arguments?.nodes ?? []).every((argument) => value(argument, depth + 1));
     }
     if (
       ts.isPropertyAccessExpression(node) &&
@@ -358,11 +361,11 @@ function registryInitializer(
       );
     }
     if (ts.isArrayLiteralExpression(node))
-      return node.elements.every(
+      return node.elements.nodes.every(
         (element) => !ts.isSpreadElement(element) && value(element, depth + 1),
       );
     if (ts.isObjectLiteralExpression(node))
-      return node.properties.every((property) => {
+      return node.properties.nodes.every((property) => {
         if (
           ts.isMethodDeclaration(property) ||
           ts.isGetAccessorDeclaration(property) ||
@@ -459,11 +462,11 @@ function registryOwnerIsData(
     ts.isCallExpression(initializer) &&
     ts.isPropertyAccessExpression(initializer.expression) &&
     lowerer.stdlibGlobalMember(initializer.expression, "Object") === "freeze" &&
-    initializer.arguments.length === 1;
-  if (frozen) initializer = (initializer as ts.CallExpression).arguments[0]!;
+    initializer.arguments.nodes.length === 1;
+  if (frozen) initializer = (initializer as ts.CallExpression).arguments.nodes[0]!;
   if (
     !ts.isObjectLiteralExpression(initializer) ||
-    !initializer.properties.every(
+    !initializer.properties.nodes.every(
       (property) =>
         ts.isShorthandPropertyAssignment(property) ||
         (ts.isPropertyAssignment(property) &&
@@ -527,7 +530,7 @@ function classWriteIsUnobserved(
   const source = statement.getSourceFile();
   const declaration = info.decl!;
   if (
-    declaration.members.some(
+    declaration.members.nodes.some(
       (member) =>
         ts.isClassStaticBlockDeclaration(member) ||
         (ts.isPropertyDeclaration(member) &&
@@ -539,7 +542,7 @@ function classWriteIsUnobserved(
     )
   )
     return false;
-  for (const earlier of source.statements) {
+  for (const earlier of source.statements.nodes) {
     if (earlier.getStart() <= declaration.getStart() || earlier.getStart() >= statement.getStart())
       continue;
     if (
@@ -551,7 +554,7 @@ function classWriteIsUnobserved(
       continue;
     if (
       ts.isVariableStatement(earlier) &&
-      earlier.declarationList.declarations.every(
+      earlier.declarationList.declarations.nodes.every(
         (binding) =>
           !binding.initializer || registryInitializer(lowerer, binding.initializer, earlier),
       )
