@@ -117,75 +117,81 @@ typedef enum {
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
  * HANDLE kinds whose member surfaces already have complete static
  * lowerings (the http/net receiver surface); new kinds join by adding a
- * tag + an ops registration in their owning unit. */
+ * tag + an ops registration in their owning unit.
+ *
+ * Tags are sorted by name and every value is explicit and permanent: the
+ * LLVM backend hardcodes some of them (DYN_HANDLE_TAG_NUM in
+ * packages/compiler/src/backend/llvm/dyn.ts). A new tag goes in its sorted
+ * place with the next value after the largest one in use, below
+ * SCR_DYNH_CAPACITY. packages/compiler/src/backend/llvm/dyn-handle-tags.test.ts
+ * checks that values are unique and in range and that the backend's
+ * numbers match. */
 typedef enum {
-  SCR_DYNH_HTTP_REQ,   /* ScrHttpReq — IncomingMessage (server req & client res) */
-  SCR_DYNH_HTTP_RES,   /* ScrHttpRes — ServerResponse */
-  SCR_DYNH_NET_SOCKET, /* ScrNetSocket — net.Socket */
-  SCR_DYNH_NET_SERVER, /* ScrNetServer — net.Server (http.Server rides the same handle) */
-  SCR_DYNH_H2_SESSION, /* ScrH2Session — Http2Session (client & server) */
-  SCR_DYNH_H2_STREAM,  /* ScrH2Stream — Http2Stream (client & server) */
-  SCR_DYNH_HTTP_CLIENT, /* ScrHttpClientReq — http.ClientRequest */
-  SCR_DYNH_HTTP_AGENT,  /* ScrHttpAgent — http.Agent / https.Agent */
-  SCR_DYNH_ABORT_SIGNAL, /* native static-fetch AbortSignal */
-  SCR_DYNH_WEB_STREAM,   /* native WHATWG ReadableStream */
-  SCR_DYNH_WEB_READER,   /* native ReadableStreamDefaultReader */
-  SCR_DYNH_WEB_CONTROLLER, /* native ReadableStreamDefaultController */
-  SCR_DYNH_FETCH_RESPONSE, /* native static-fetch Response */
-  SCR_DYNH_FETCH_HEADERS, /* native static-fetch response Headers */
-  SCR_DYNH_EVENT,          /* ScrEvent — new Event() and AbortSignal's abort events */
-  SCR_DYNH_ABORT_CONTROLLER, /* native static-fetch AbortController */
-  SCR_DYNH_CHILD,          /* child_process.ChildProcess */
-  SCR_DYNH_FILE_HANDLE,    /* fs/promises.FileHandle */
-  SCR_DYNH_ARRAY_BUFFER,   /* fixed-length ArrayBuffer storage */
-  SCR_DYNH_SEGMENTER,     /* default Unicode grapheme segmentation */
-  SCR_DYNH_SEGMENTS,      /* iterable immutable segmentation result */
-  SCR_DYNH_BUILTIN_MODULE, /* native builtin export object */
-  SCR_DYNH_GLOBAL,         /* native global object identity */
-  SCR_DYNH_WEAK_MAP,       /* native weak-key metadata */
-  SCR_DYNH_WEAK_SET,       /* native weak membership */
-  SCR_DYNH_SET,            /* native Set<unknown>, shared backing map */
-  SCR_DYNH_REGEXP,         /* native RegExp, shared compiled pattern */
-  SCR_DYNH_STDIO,          /* stable process stdin/stdout/stderr values */
-  SCR_DYNH_URL,            /* native WHATWG URL */
-  SCR_DYNH_MAP,            /* native Map<unknown, unknown>, shared backing */
-  SCR_DYNH_DATE,           /* JavaScript Date with stable native identity */
-  SCR_DYNH_ITERATOR,       /* live native array/string/byte iterator */
-  SCR_DYNH_CONSOLE,        /* stored global console value */
-  SCR_DYNH_SEARCH_PARAMS,  /* live WHATWG URLSearchParams */
-  SCR_DYNH_FETCH_REQUEST,
-  SCR_DYNH_WORKER,
-  SCR_DYNH_MESSAGE_PORT,
-  SCR_DYNH_SHARED_ARRAY_BUFFER,
-  SCR_DYNH_CONSOLE_INSTANCE, /* node:console Console instance */
-  SCR_DYNH_EVENT_TARGET,   /* ScrEventTarget — new EventTarget() */
-  SCR_DYNH_CUSTOM_EVENT,   /* ScrEvent with detail — new CustomEvent() */
-  SCR_DYNH_BLOB,           /* ScrBlob — new Blob() and Blob#slice() */
-  SCR_DYNH_FILE,           /* ScrBlob with a name — new File() */
-  SCR_DYNH_KEY_OBJECT,     /* node:crypto secret KeyObject (scr_lib.c) */
-  SCR_DYNH_DIR,            /* fs.Dir (scr_lib.c) */
-  SCR_DYNH_CIPHER,         /* node:crypto Cipheriv (scr_cipher.c) */
-  SCR_DYNH_DECIPHER,       /* node:crypto Decipheriv (scr_cipher.c) */
-  SCR_DYNH_NET_SOCKET_ADDRESS, /* net.SocketAddress (scr_net.c) */
-  SCR_DYNH_NET_BLOCK_LIST, /* net.BlockList (scr_net.c) */
-  SCR_DYNH_DISPOSABLE_STACK, /* DisposableStack (scr_symbol.c) */
-  SCR_DYNH_MESSAGE_EVENT,  /* ScrEvent with data — BroadcastChannel's 'message' */
-  SCR_DYNH_BROADCAST_CHANNEL, /* worker_threads BroadcastChannel (scr_worker_events.c) */
-  SCR_DYNH_HASH,           /* node:crypto Hash (scr_lib.c) */
-  SCR_DYNH_HMAC,           /* node:crypto Hmac (scr_lib.c) */
-  SCR_DYNH_COUNT,
+  SCR_DYNH_ABORT_CONTROLLER = 15, /* native static-fetch AbortController */
+  SCR_DYNH_ABORT_SIGNAL = 8, /* native static-fetch AbortSignal */
+  SCR_DYNH_ARRAY_BUFFER = 18, /* fixed-length ArrayBuffer storage */
+  SCR_DYNH_BLOB = 41, /* ScrBlob — new Blob() and Blob#slice() */
+  SCR_DYNH_BROADCAST_CHANNEL = 51, /* worker_threads BroadcastChannel (scr_worker_events.c) */
+  SCR_DYNH_BUILTIN_MODULE = 21, /* native builtin export object */
+  SCR_DYNH_CHILD = 16, /* child_process.ChildProcess */
+  SCR_DYNH_CIPHER = 45, /* node:crypto Cipheriv (scr_cipher.c) */
+  SCR_DYNH_CONSOLE = 32, /* stored global console value */
+  SCR_DYNH_CONSOLE_INSTANCE = 38, /* node:console Console instance */
+  SCR_DYNH_CUSTOM_EVENT = 40, /* ScrEvent with detail — new CustomEvent() */
+  SCR_DYNH_DATE = 30, /* JavaScript Date with stable native identity */
+  SCR_DYNH_DECIPHER = 46, /* node:crypto Decipheriv (scr_cipher.c) */
+  SCR_DYNH_DIR = 44, /* fs.Dir (scr_lib.c) */
+  SCR_DYNH_DISPOSABLE_STACK = 49, /* DisposableStack (scr_symbol.c) */
+  SCR_DYNH_EVENT = 14, /* ScrEvent — new Event() and AbortSignal's abort events */
+  SCR_DYNH_EVENT_TARGET = 39, /* ScrEventTarget — new EventTarget() */
+  SCR_DYNH_FETCH_HEADERS = 13, /* native static-fetch response Headers */
+  SCR_DYNH_FETCH_REQUEST = 34,
+  SCR_DYNH_FETCH_RESPONSE = 12, /* native static-fetch Response */
+  SCR_DYNH_FILE = 42, /* ScrBlob with a name — new File() */
+  SCR_DYNH_FILE_HANDLE = 17, /* fs/promises.FileHandle */
+  SCR_DYNH_GLOBAL = 22, /* native global object identity */
+  SCR_DYNH_H2_SESSION = 4, /* ScrH2Session — Http2Session (client & server) */
+  SCR_DYNH_H2_STREAM = 5, /* ScrH2Stream — Http2Stream (client & server) */
+  SCR_DYNH_HASH = 52, /* node:crypto Hash (scr_lib.c) */
+  SCR_DYNH_HMAC = 53, /* node:crypto Hmac (scr_lib.c) */
+  SCR_DYNH_HTTP_AGENT = 7, /* ScrHttpAgent — http.Agent / https.Agent */
+  SCR_DYNH_HTTP_CLIENT = 6, /* ScrHttpClientReq — http.ClientRequest */
+  SCR_DYNH_HTTP_REQ = 0, /* ScrHttpReq — IncomingMessage (server req & client res) */
+  SCR_DYNH_HTTP_RES = 1, /* ScrHttpRes — ServerResponse */
+  SCR_DYNH_ITERATOR = 31, /* live native array/string/byte iterator */
+  SCR_DYNH_ITERATOR_HELPER = 54, /* an iterator helper object over a checked iterator (scr_json.c) */
+  SCR_DYNH_KEY_OBJECT = 43, /* node:crypto secret KeyObject (scr_lib.c) */
+  SCR_DYNH_MAP = 29, /* native Map<unknown, unknown>, shared backing */
+  SCR_DYNH_MESSAGE_EVENT = 50, /* ScrEvent with data — BroadcastChannel's 'message' */
+  SCR_DYNH_MESSAGE_PORT = 36,
+  SCR_DYNH_NET_BLOCK_LIST = 48, /* net.BlockList (scr_net.c) */
+  SCR_DYNH_NET_SERVER = 3, /* ScrNetServer — net.Server (http.Server rides the same handle) */
+  SCR_DYNH_NET_SOCKET = 2, /* ScrNetSocket — net.Socket */
+  SCR_DYNH_NET_SOCKET_ADDRESS = 47, /* net.SocketAddress (scr_net.c) */
+  SCR_DYNH_REGEXP = 26, /* native RegExp, shared compiled pattern */
+  SCR_DYNH_SEARCH_PARAMS = 33, /* live WHATWG URLSearchParams */
+  SCR_DYNH_SEGMENTER = 19, /* default Unicode grapheme segmentation */
+  SCR_DYNH_SEGMENTS = 20, /* iterable immutable segmentation result */
+  SCR_DYNH_SET = 25, /* native Set<unknown>, shared backing map */
+  SCR_DYNH_SHARED_ARRAY_BUFFER = 37,
+  SCR_DYNH_STDIO = 27, /* stable process stdin/stdout/stderr values */
+  SCR_DYNH_URL = 28, /* native WHATWG URL */
+  SCR_DYNH_WEAK_MAP = 23, /* native weak-key metadata */
+  SCR_DYNH_WEAK_SET = 24, /* native weak membership */
+  SCR_DYNH_WEB_CONTROLLER = 11, /* native ReadableStreamDefaultController */
+  SCR_DYNH_WEB_READER = 10, /* native ReadableStreamDefaultReader */
+  SCR_DYNH_WEB_STREAM = 9, /* native WHATWG ReadableStream */
+  SCR_DYNH_WORKER = 35,
 } ScrDynHandleTag;
 
 /* Every per-tag table (scr_dynh_ops in scr_json.c, the message clone hooks
- * in scr_message.c) is sized by this fixed capacity, never by
- * SCR_DYNH_COUNT. Appending a tag for a link-gated unit therefore changes
- * no always-linked storage or code: a program that never boxes the new
- * handle links byte-identical objects. Raising the capacity is a
- * program-wide layout change; do it in a change of its own, measured as
- * neutral, and only when the enum outgrows it. */
+ * in scr_message.c) is sized by this fixed capacity, never by the number of
+ * tags. Adding a tag for a link-gated unit therefore changes no
+ * always-linked storage or code: a program that never boxes the new handle
+ * links byte-identical objects. Raising the capacity is a program-wide
+ * layout change; do it in a change of its own, measured as neutral, and
+ * only when the tags outgrow it. */
 #define SCR_DYNH_CAPACITY 128
-_Static_assert(SCR_DYNH_COUNT <= SCR_DYNH_CAPACITY,
-               "ScrDynHandleTag outgrew SCR_DYNH_CAPACITY: raise it in its own change");
 
 typedef struct ScrDyn ScrDyn;
 typedef struct ScrBytes ScrBytes; /* full definition below (C11 repeat) */
@@ -997,6 +1003,10 @@ ScrError *scr_error_from_dyn(const ScrDyn *d); /* scr_async_dyn.c (gated) */
  * the gated extraction reads/writes through these). */
 ScrError *scr_errdyn_err_of(const ScrDyn *d); /* +1 or NULL */
 void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
+/* Sets an own property on an error: its checked-dynamic node, which casts
+ * and util.inspect read. Moves value. */
+void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value);
+ScrDyn *scr_errdyn_view_of(const ScrError *e); /* borrowed or NULL */
 /* ToBoolean over the dyn kind (JS-exact); borrowed, never throws. */
 bool scr_dyn_truthy(const ScrDyn *d);
 /* JS String() over a dyn value (arrays join, [object Object], the error

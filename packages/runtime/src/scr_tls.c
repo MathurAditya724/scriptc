@@ -1089,6 +1089,53 @@ void scr_tls_fetch_client_wrap(ScrNetSocket *sock, void *ctx) {
   scr_tls_cli_wrap(sock, ctx);
 }
 
+/* https.request's `servername` option: the request's lowering stores it
+ * just before the construction call, which takes it (+1, NULL = none). */
+static SCR_TL ScrStr *scr_https_next_servername = NULL;
+
+void scr_https_set_next_servername(ScrStr *name /*borrowed*/) {
+  scr_str_release(scr_https_next_servername);
+  scr_https_next_servername = scr_str_retain(name);
+}
+
+static ScrStr *scr_https_take_servername(void) {
+  ScrStr *name = scr_https_next_servername;
+  scr_https_next_servername = NULL;
+  return name;
+}
+
+/* The client config with the servername (when given) as the name the
+ * handshake sends and verifies, in place of the host. "" sends no SNI,
+ * and the certificate is still checked against the host, as Node's
+ * checkServerIdentity does. */
+static ScrTlsCli *scr_tls_cli_for(ScrStr *host, bool reject_unauthorized, const char *ca,
+                                  size_t ca_len, const ScrStr *servername) {
+  ScrTlsCli *cli = scr_tls_cli_new(host, reject_unauthorized, ca, ca_len);
+  if (servername != NULL) scr_tls_cli_set_servername(cli, servername);
+  return cli;
+}
+
+/* The TLS options a pooled https socket was set up with: an agent reuses
+ * the socket only for a request with the same verification settings and
+ * servername, as Node's https getName keys them (a servername that is
+ * empty or equal to the host keys like none). +1. */
+static ScrStr *scr_tls_pool_key(ScrStr *host, bool reject_unauthorized, const char *ca,
+                                size_t ca_len, ScrStr *servername) {
+  uint64_t h = 1469598103934665603ull;
+  for (size_t i = 0; i < ca_len; i++) h = (h ^ (unsigned char)ca[i]) * 1099511628211ull;
+  char buf[64];
+  int n = snprintf(buf, sizeof buf, "%d:%zu:%016llx:", reject_unauthorized ? 1 : 0, ca_len,
+                   (unsigned long long)h);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_write(&b, buf, (size_t)n);
+  if (servername != NULL && servername->len > 0 && !scr_str_eq(servername, host)) {
+    scr_jb_putc(&b, 's');
+    scr_jb_write(&b, servername->data, servername->len);
+  }
+  return scr_jb_finish(&b);
+}
+
 /* ── the fetch tunnel through an https:// proxy ───────────────────────
  * One transport carries three stages over the proxy socket: the TLS
  * session to the proxy (verified against the proxy host), the CONNECT
@@ -1323,9 +1370,15 @@ ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                      bool auto_end, bool reject_unauthorized,
                                      const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
                                      ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
-  ScrTlsCli *cli = scr_tls_cli_new(host, reject_unauthorized, ca, ca_len);
-  return scr_http_request_ex(host, port, path, method, timeout_ms, header_pairs, auto_end, cb,
-                              fn, 443, &scr_tls_cli_wrap, cli);
+  ScrStr *servername = scr_https_take_servername();
+  ScrTlsCli *cli = scr_tls_cli_for(host, reject_unauthorized, ca, ca_len, servername);
+  ScrStr *key = scr_tls_pool_key(host, reject_unauthorized, ca, ca_len, servername);
+  scr_str_release(servername);
+  ScrHttpClientReq *c = scr_http_request_agent_ex(host, port, path, method, timeout_ms, header_pairs,
+                                                  auto_end, NULL, cb, fn, 443, &scr_tls_cli_wrap,
+                                                  cli, key);
+  scr_str_release(key);
+  return c;
 }
 
 /* https.get('https://host/path') — the URL-string spelling, sharing
@@ -1359,9 +1412,15 @@ ScrHttpClientReq *scr_https_request_agent(ScrStr *host /*borrowed*/, double port
                                            const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
                                            const ScrDyn *agent /*borrowed*/,
                                            ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
-  ScrTlsCli *cli = scr_tls_cli_new(host, reject_unauthorized, ca, ca_len);
-  return scr_http_request_agent_ex(host, port, path, method, timeout_ms, header_pairs, auto_end,
-                                    agent, cb, fn, 443, &scr_tls_cli_wrap, cli);
+  ScrStr *servername = scr_https_take_servername();
+  ScrTlsCli *cli = scr_tls_cli_for(host, reject_unauthorized, ca, ca_len, servername);
+  ScrStr *key = scr_tls_pool_key(host, reject_unauthorized, ca, ca_len, servername);
+  scr_str_release(servername);
+  ScrHttpClientReq *c = scr_http_request_agent_ex(host, port, path, method, timeout_ms, header_pairs,
+                                                  auto_end, agent, cb, fn, 443, &scr_tls_cli_wrap,
+                                                  cli, key);
+  scr_str_release(key);
+  return c;
 }
 
 /* ── RUNTIME options records (the divergence-66 stance) ────────────────
@@ -1963,21 +2022,6 @@ static ScrTlsSock *scr_tls_sock_of(ScrNetSocket *s) {
   return (ScrTlsSock *)scr_net_sock_transport_ctx_for(s, &SCR_TLS_OPS);
 }
 
-/* https.request's `servername` option: the TLS name the handshake sends
- * (SNI) and verifies the certificate against, in place of the host. An
- * empty servername sends no SNI, and the certificate is still checked
- * against the host, as Node's checkServerIdentity does. The handshake
- * starts once the dial connects, after this runs. */
-void scr_https_client_servername(ScrHttpClientReq *c, ScrStr *name /*borrowed*/) {
-  ScrNetSocket *sock = scr_http_client_socket(c);
-  if (sock == NULL) return;
-  ScrTlsSock *t = scr_tls_sock_of(sock);
-  if (t != NULL && t->cli != NULL) {
-    scr_tls_cli_set_servername(t->cli, name);
-    (void)mbedtls_ssl_set_hostname(&t->ssl, t->cli->hostname);
-  }
-  scr_net_sock_release(sock);
-}
 
 /* The client 'session' event: fires ONCE per socket with the serialized
  * mbedTLS session — a real ticket where one arrived (the 1.3 receipt

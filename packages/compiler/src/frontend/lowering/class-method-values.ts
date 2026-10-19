@@ -379,12 +379,48 @@ function reflectedMethodValue(
       needsNativeReceiver = true;
   });
   if (needsNativeReceiver) return null;
+  // The method reads itself as a value inside its own body: it is the
+  // closure its lowering in progress produces.
+  if (lowerer.methodLambdasInProgress.has(member)) {
+    const pending = lowerer.methodLambdasInProgress.get(member);
+    if (!pending) {
+      lowerer.unsupported(
+        "SC1090",
+        member,
+        "class methods that read their own value while their signature is computed",
+      );
+    }
+    pending.selfReads++;
+    return {
+      kind: "closure",
+      fnName: pending.fnName,
+      captures: [],
+      type: pending.type,
+      loc: locOf(member),
+    };
+  }
   const context = newFnCtx(false, null, null, DYN);
   const previousClass = lowerer.currentClass;
   lowerer.currentClass = info;
   lowerer.fnStack.push(context);
+  lowerer.methodLambdasInProgress.set(member, null);
   try {
     const value = lowerer.lowerLambda(member);
+    const pending = lowerer.methodLambdasInProgress.get(member);
+    if (
+      pending &&
+      pending.selfReads > 0 &&
+      (value.kind !== "closure" ||
+        value.fnName !== pending.fnName ||
+        value.captures.length > 0 ||
+        !typeEquals(value.type, pending.type))
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        member,
+        "class methods that read their own value inside their body when the method's value type is only settled by its body",
+      );
+    }
     if (value.kind === "closure" && value.captures.length === 0) {
       const body = lowerer.liftedFns.find((fn) => fn.name === value.fnName);
       if (body?.captures?.length === 0) delete body.captures;
@@ -395,6 +431,7 @@ function reflectedMethodValue(
     cache.set(method, value);
     return value;
   } finally {
+    lowerer.methodLambdasInProgress.delete(member);
     lowerer.fnStack.pop();
     lowerer.currentClass = previousClass;
   }
