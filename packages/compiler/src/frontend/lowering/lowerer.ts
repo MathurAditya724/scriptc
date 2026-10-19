@@ -2584,6 +2584,10 @@ export class Lowerer {
   /** Named method slots observed before class collection need a callable
    * ABI and shared prototype descriptors instead of call-site specialization. */
   readonly prototypeMethodAccesses = new Map<string, ts.Node>();
+  /** Well-known symbol methods (`sym:iterator`) the program may replace
+   * through a symbol-keyed write: an instance or prototype property, or a
+   * reflection call. */
+  readonly replacedSymbolMethods = new Set<string>();
   /** Typed calls through class-backed protocols, by signature; class
    * dynamic dispatch adds their native arms (class-protocol-dispatch.ts). */
   readonly protocolDispatches = new Map<string, ProtocolDispatch>();

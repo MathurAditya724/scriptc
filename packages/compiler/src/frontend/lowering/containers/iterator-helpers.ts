@@ -34,6 +34,7 @@ import {
   genValue,
   stepDrivable,
 } from "../lower-generators.js";
+import { classGeneratorIterable, iteratesThroughGenerator } from "../class-iterables.js";
 import { exitBeforeReturns } from "./for-of.js";
 import {
   iteratorSlotAdapter,
@@ -317,9 +318,11 @@ function isHelperObject(lowerer: Lowerer, expr: ts.Expression): boolean {
  * it rather than a wrapper. A generator (including a helper object or an
  * array iterator) is itself; an array, string or typed array gives its
  * values iterator; a Set its values and a Map its entries, as a generator
- * over the live collection. The result converts into the call's
- * IteratorObject type. Null for other arguments (objects with their own
- * next method, untyped values), which keep the Iterator fence. */
+ * over the live collection; a class instance whose `[Symbol.iterator]` is
+ * a generator method gives the generator it returns. The result converts
+ * into the call's IteratorObject type. Null for other arguments (objects
+ * with their own next method, untyped values), which keep the Iterator
+ * fence. */
 export function lowerIteratorFromCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -332,7 +335,9 @@ export function lowerIteratorFromCall(
   const argT = lowerer.mapTypeOf(lowerer.typeOf(argNode));
   if (resultT?.kind !== "generator" || resultT.async || argT === null) return null;
   const iterableKinds = ["generator", "array", "string", "bytes", "set", "map"];
-  if (!iterableKinds.includes(argT.kind) || (argT.kind === "generator" && argT.async)) return null;
+  const classIterable = iteratesThroughGenerator(lowerer, argT);
+  if (!classIterable && !iterableKinds.includes(argT.kind)) return null;
+  if (argT.kind === "generator" && argT.async) return null;
   const loc = locOf(call);
   const value = lowerer.lowerExpr(argNode);
   const own = (yieldT: IrType): GenType => ({
@@ -344,6 +349,7 @@ export function lowerIteratorFromCall(
   let iterator: IrExpr | null = null;
   const t = value.type;
   if (t.kind === "generator") iterator = value;
+  else if (classIterable) iterator = classGeneratorIterable(lowerer, value);
   else if (t.kind === "array")
     iterator = lowerArrayIteratorValue(lowerer, value, "values", own(t.elem), loc);
   else if (t.kind === "string")

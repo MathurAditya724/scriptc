@@ -224,6 +224,7 @@ import {
 } from "./expressions/optional-chains.js";
 import { foldedStringKeyOf } from "./expressions/object-literals.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { classGeneratorIterable } from "./class-iterables.js";
 import {
   classToNumberConversion,
   classToStringConversion,
@@ -6244,6 +6245,9 @@ export function lowerArrayLiteral(
           loc: locOf(el),
         };
       }
+      // `[...obj]` over a class whose [Symbol.iterator] is a generator
+      // method spreads the generator that method returns.
+      src = classGeneratorIterable(lowerer, src) ?? src;
       // `[...it]` over a generator (or an iterator adapted into one):
       // drain it once, in order, into a fresh element array.
       if (src.type.kind === "generator") {
