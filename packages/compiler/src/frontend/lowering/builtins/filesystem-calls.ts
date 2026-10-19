@@ -23,6 +23,7 @@ import {
   VOID,
   arrayOf,
   funcOf,
+  typeEquals,
 } from "../../../ir/ir.js";
 import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
 import {
@@ -603,6 +604,14 @@ export function lowerFsReadDescriptorCall(
   return { kind: "libCall", fn: "fs.readFdSync", args: [fd, enc], type: STRING, loc };
 }
 
+/** The `{ encoding }` options record. A literal whose value is checked-
+ * dynamic (an encoding variable reassigned from an untyped source) lowers
+ * to a dynamic object: check it into the record the checker describes. */
+function encodingOptions(lowerer: Lowerer, options: ts.Expression, type: IrType): IrExpr {
+  const value = lowerer.lowerExpr(options);
+  return typeEquals(value.type, type) ? value : lowerer.coerceInto(options, value, type);
+}
+
 /** Encoding-bearing reads share Buffer's decoder and runtime alias checks.
  * Keep the read and encoding evaluation in source order in one helper. */
 export function lowerFsEncodedRead(
@@ -631,7 +640,7 @@ export function lowerFsEncodedRead(
       ? lowerer.lowerExprExpecting(options, STRING)
       : {
           kind: "recordGet",
-          obj: lowerer.lowerExpr(options),
+          obj: encodingOptions(lowerer, options, optionsType),
           shapeId: optionsType.shapeId,
           field: "encoding",
           type: STRING,
@@ -692,7 +701,7 @@ export function lowerFsPromisesEncodedRead(
       ? lowerer.lowerExprExpecting(options, STRING)
       : {
           kind: "recordGet",
-          obj: lowerer.lowerExpr(options),
+          obj: encodingOptions(lowerer, options, optionsType),
           shapeId: optionsType.shapeId,
           field: "encoding",
           type: STRING,

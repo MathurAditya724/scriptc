@@ -167,19 +167,16 @@ static ScrDyn *scr_assert_dyn_text(const char *text) {
   return d;
 }
 
-/* Sets the properties on the error's view in Node's order. The values
- * move in. */
+/* Sets the error's own properties in Node's order. The values move in. */
 static void scr_assert_attach_values(ScrError *e, bool generated, ScrDyn *actual, ScrDyn *expected,
                                      ScrDyn *op, ScrDyn *diff) {
-  ScrDyn *view = scr_dyn_from_error(e);
-  scr_dyn_obj_set(view, "generatedMessage", 16, scr_dyn_new_bool(generated));
+  scr_error_set_prop(e, "generatedMessage", 16, scr_dyn_new_bool(generated));
   scr_error_set_code(e, "ERR_ASSERTION");
-  scr_dyn_obj_set(view, "code", 4, scr_assert_dyn_text("ERR_ASSERTION"));
-  scr_dyn_obj_set(view, "actual", 6, actual);
-  scr_dyn_obj_set(view, "expected", 8, expected);
-  scr_dyn_obj_set(view, "operator", 8, op);
-  scr_dyn_obj_set(view, "diff", 4, diff);
-  scr_dyn_release(view);
+  scr_error_set_prop(e, "code", 4, scr_assert_dyn_text("ERR_ASSERTION"));
+  scr_error_set_prop(e, "actual", 6, actual);
+  scr_error_set_prop(e, "expected", 8, expected);
+  scr_error_set_prop(e, "operator", 8, op);
+  scr_error_set_prop(e, "diff", 4, diff);
 }
 
 static ScrError *scr_assert_error(ScrStr *message, bool generated, const char *diff) {

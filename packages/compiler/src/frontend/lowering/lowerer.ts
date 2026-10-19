@@ -5,6 +5,7 @@ import {
   lowerLifetimeRegionNew,
 } from "./lifetime-regions.js";
 import { internTableType, lowerInternTableCall, lowerInternTableNew } from "./intern-tables.js";
+import { lowerThreadSlotsCall, lowerThreadSlotsNew, threadSlotsType } from "./thread-slots.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   checkCycleBindingAccesses,
@@ -241,6 +242,7 @@ import {
   isOverloadedCallableMemberType,
   isUnitOnlyTsType,
   isWorkerHandleType,
+  isFetchHandleType,
   jsOpenObjectType,
   mapType,
   ShapeRegistry,
@@ -2006,6 +2008,10 @@ export class Lowerer {
    * declared optional binding to that read's bare type, so presence tests
    * on these bindings consult the stored tag instead. */
   readonly runtimeOptionalAssignedSymbols = new Set<ts.Symbol>();
+  /** Generic function declarations whose body can return an indexed read
+   * that misses.
+   * Each instance's result admits undefined (generic-functions.ts). */
+  readonly runtimeOptionalGenericReturns = new Set<ts.Node>();
   /** Concise callback/lambda returns promoted by the HOF callback prepass;
    * arrows have no declaration symbol to key in fnSigsBySymbol. */
   readonly runtimeOptionalFunctionReturns = new Map<ts.Node, IrType>();
@@ -2464,6 +2470,15 @@ export class Lowerer {
   /** Method adapter names are owned by class-method-values. Looking them
    * up must not scan and retain every unrelated lifted function. */
   readonly classMethodValueHelpers = new Set<string>();
+  /** Reflected class methods whose lambda is lowering right now (null
+   * until lowerLambda named it), with the closure it will produce: a
+   * method that reads itself as a value inside its own body
+   * (`o.create = K.create`) takes this closure instead of lowering the
+   * method again. */
+  readonly methodLambdasInProgress = new Map<
+    ts.Node,
+    { fnName: string; type: IrType; selfReads: number } | null
+  >();
   readonly classMethodValueSelections = new Map<
     string,
     import("./class-method-values.js").ClassMethodValueSelection
@@ -2664,6 +2679,15 @@ export class Lowerer {
   readonly internTableHelpers = new Map<string, string>();
   /** Each InternTable name's type arguments and first construction site. */
   readonly internTableNames = new Map<string, { key: string; node: ts.Node }>();
+  /** Each ThreadSlots name's type arguments (thread-slots.ts). */
+  readonly threadSlotNames = new Map<string, string>();
+  /** The family each `new ThreadSlots(...)` opens. */
+  readonly threadSlotFamilies = new Map<
+    ts.NewExpression,
+    { name: string; key: IrType; value: IrType }
+  >();
+  /** Classes used as ThreadSlots keys: their hierarchies carry a slot word. */
+  readonly threadSlotKeys = new Set<string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -3044,6 +3068,10 @@ export class Lowerer {
         isExperimentalDeclarationFile(decl.getSourceFile(), this.experimentalFiles)
           ? internTableType(this)
           : null,
+      threadSlotsClass: (decl) =>
+        isExperimentalDeclarationFile(decl.getSourceFile(), this.experimentalFiles)
+          ? threadSlotsType(this)
+          : null,
       moduleNamespaceId: (type) => this.moduleNamespaceIdOfType(type),
     };
     // Modules reachable only through literal import() joined
@@ -3088,12 +3116,14 @@ export class Lowerer {
   /** Declared class fields may store a DYN value only when its static type
    * is `unknown` or `object` (also with `null` or `undefined`, or an array
    * of those), names checked protocol identity, or is an owned runtime
-   * handle (a Worker or MessagePort); `any` fields stay refused. */
+   * handle (a Worker or MessagePort, or a fetch Headers/Request/Response);
+   * `any` fields stay refused. */
   classFieldStoresDyn(type: ts.Type): boolean {
     return (
       this.opaqueValueType(type) ||
       this.classImplementedProtocol(type) ||
-      isWorkerHandleType(type, this.typeCtx)
+      isWorkerHandleType(type, this.typeCtx) ||
+      isFetchHandleType(type, this.typeCtx)
     );
   }
 
@@ -4573,6 +4603,79 @@ export class Lowerer {
       const read = this.mapTypeOf(this.typeOf(e));
       return !(read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0);
     };
+    /** An optional value in a generic body, where element types are type
+     * parameters with no IR mapping yet: an element read of an array or a
+     * read of a string index signature, judged on checker types. */
+    const genericClassMethods: ts.MethodDeclaration[] = [];
+    for (const sf of sourceFiles) {
+      if (isJsSourceFile(sf) || sf.isDeclarationFile) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (!ts.isClassDeclaration(node)) return undefined;
+        const genericClass = (node.typeParameters?.length ?? 0) > 0;
+        for (const member of node.members)
+          if (
+            ts.isMethodDeclaration(member) &&
+            member.body &&
+            (genericClass || (member.typeParameters?.length ?? 0) > 0)
+          )
+            genericClassMethods.push(member);
+        return undefined;
+      });
+    }
+    const genericMayBeOptional = (node: ts.Expression): boolean => {
+      if (explicitlyNonNull(node)) return false;
+      if (mayBeOptional(node)) return true;
+      const e = peel(node);
+      if (ts.isConditionalExpression(e))
+        return genericMayBeOptional(e.whenTrue) || genericMayBeOptional(e.whenFalse);
+      if (ts.isBinaryExpression(e)) {
+        const op = e.operatorToken.kind;
+        if (op === ts.SyntaxKind.BarBarToken || op === ts.SyntaxKind.QuestionQuestionToken)
+          return genericMayBeOptional(e.right);
+        if (op === ts.SyntaxKind.AmpersandAmpersandToken)
+          return genericMayBeOptional(e.left) || genericMayBeOptional(e.right);
+        return false;
+      }
+      if (ts.isIdentifier(e)) {
+        // A binding initialized from such a read and never reassigned.
+        const symbol = symbolOf(e);
+        const decl = symbol ? this.checker.valueDeclarationOf(symbol) : undefined;
+        return (
+          symbol !== null &&
+          !reassigned.has(symbol) &&
+          decl !== undefined &&
+          ts.isVariableDeclaration(decl) &&
+          decl.initializer !== undefined &&
+          ts.isIdentifier(decl.name) &&
+          !provenPresent(e, symbol) &&
+          genericIndexedRead(decl.initializer)
+        );
+      }
+      return genericIndexedRead(e);
+    };
+    const genericIndexedRead = (node: ts.Expression): boolean => {
+      const e = peel(node);
+      if (!ts.isElementAccessExpression(e) || explicitlyNonNull(node)) return false;
+      const read = typeOrNull(e);
+      if (!read || (read.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Any)) !== 0) return false;
+      if (
+        read.isUnionType() &&
+        ts.constituentTypes(read).some((t) => (t.flags & ts.TypeFlags.Undefined) !== 0)
+      )
+        return false;
+      const receiver = typeOrNull(e.expression);
+      if (!receiver || this.checker.isTupleType(receiver)) return false;
+      if (this.checker.isArrayType(receiver)) return true;
+      const key = e.argumentExpression;
+      if (
+        (ts.isStringLiteral(key) || ts.isNumericLiteral(key)) &&
+        this.checker.getPropertyOfType(receiver, key.text) !== undefined
+      )
+        return false;
+      return this.checker
+        .getIndexInfosOfType(receiver)
+        .some((info) => (info.keyType.flags & ts.TypeFlags.StringLike) !== 0);
+    };
     const isDynamicObjectEntryRead = (node: ts.Expression): boolean => {
       const read = peel(node);
       if (!ts.isElementAccessExpression(read) || !ts.isIdentifier(read.expression)) return false;
@@ -4595,7 +4698,11 @@ export class Lowerer {
     const addUndefined = (t: IrType): IrType => {
       if (t.kind === "union")
         return this.armTag(t.unionId, UNDEFINED_T) >= 0 ? t : (this.withUndefinedArmOf(t) ?? t);
-      if (t.kind === "void" || t.kind === "dyn" || t.kind === "generator") return t;
+      // A Date has no undefined-armed union (it is not a union arm kind):
+      // like a generator it keeps its type, and the site that would store
+      // undefined into it keeps its own diagnostic.
+      if (t.kind === "void" || t.kind === "dyn" || t.kind === "generator" || t.kind === "date")
+        return t;
       return this.withUndefinedArm(t);
     };
     const fieldName = (node: ts.PropertyAccessExpression): string => node.name.text;
@@ -6099,6 +6206,21 @@ export class Lowerer {
       for (const sf of sourceFiles) if (scanFile(sf)) changed = true;
       for (const [symbol, decl] of functionDeclBySymbol)
         if (scanReturns(symbol, decl)) changed = true;
+      const noteGenericReturn = (symbol: ts.Symbol, decl: ts.FunctionLikeDeclaration): void => {
+        if (optionalReturns.has(symbol) || isJsSourceFile(decl.getSourceFile())) return;
+        if (!returnsOf(decl).some(genericMayBeOptional)) return;
+        optionalReturns.add(symbol);
+        this.runtimeOptionalGenericReturns.add(decl);
+        provenance?.note("return", decl.name ?? decl, decl);
+        changed = true;
+      };
+      for (const [symbol, info] of this.genericFnsBySymbol) noteGenericReturn(symbol, info.decl);
+      // Generic methods and methods of a generic class collect with their
+      // class, after this analysis; their result admits undefined there.
+      for (const method of genericClassMethods) {
+        const symbol = method.name ? symbolOf(method.name) : null;
+        if (symbol) noteGenericReturn(symbol, method);
+      }
       for (const fn of tsLambdas) {
         // An annotated return is the author's contract, as for parameters,
         // except that a var read before its first store is undefined
@@ -6740,6 +6862,9 @@ export class Lowerer {
             entry: ENTRY_NAME,
             ...(this.usesWorkers ? { workers: true } : {}),
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
+            ...(this.threadSlotKeys.size > 0
+              ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
+              : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
@@ -6948,7 +7073,7 @@ export class Lowerer {
     }
     for (const info of this.classes.values()) {
       if (info.builtinError) continue; // runtime-provided; nothing lowers
-      if (info.lifetimeRegion || info.internTable) continue; // synthesized with the class
+      if (info.lifetimeRegion || info.internTable || info.threadSlots) continue; // synthesized with the class
       // Generic-class INSTANTIATIONS (and mixin instantiations) are
       // demand-driven, not units: their members lower unconditionally in
       // the instance drain below — the generic-fn instance rule.
@@ -8033,7 +8158,13 @@ export class Lowerer {
       if (part.isUnionType()) return ts.constituentTypes(part).every(visit);
       return false;
     };
-    return visit(t);
+    // A union typescript-go cannot describe is not proven an array.
+    try {
+      return visit(t);
+    } catch (e) {
+      if (ts.isUnreadableConstituentsPanic(e)) return false;
+      throw e;
+    }
   }
 
   /** The lowered static array/tuple value behind checkerAnyArray's
@@ -11527,6 +11658,7 @@ export class Lowerer {
     return (
       lowerLifetimeRegionCall(this, expr) ??
       lowerInternTableCall(this, expr) ??
+      lowerThreadSlotsCall(this, expr) ??
       lowerFfiCall(this, expr) ??
       lowerFetchCall(this, expr) ??
       lowerStaticFetchCompanionCall(this, expr) ??
@@ -11753,6 +11885,7 @@ export class Lowerer {
     const builtin =
       lowerLifetimeRegionNew(this, expr) ??
       lowerInternTableNew(this, expr) ??
+      lowerThreadSlotsNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
       lowerDisposableStackNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??
@@ -12117,6 +12250,15 @@ export class Lowerer {
     }
     if (bi.module === "http" && bi.member === "METHODS") {
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
+    }
+    if ((bi.module === "http" || bi.module === "https") && bi.member === "globalAgent") {
+      return {
+        kind: "libCall",
+        fn: "http.globalAgent",
+        args: [{ kind: "boolLit", value: bi.module === "https", type: BOOL, loc }],
+        type: DYN,
+        loc,
+      };
     }
     if (bi.module === "http" && bi.member === "STATUS_CODES") {
       return { kind: "libCall", fn: "http.statusCodes", args: [], type: DYN, loc };
