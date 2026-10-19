@@ -222,6 +222,11 @@ import {
 import { foldedStringKeyOf } from "./expressions/object-literals.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import {
+  classToNumberConversion,
+  classToStringConversion,
+  classUnionToString,
+} from "./class-to-primitive.js";
+import {
   fenceNodeModuleMutation,
   isNodeModuleValue,
   lowerCjsTopLevelThis,
@@ -8107,7 +8112,7 @@ function lowerElementCompoundParts(
     const appended: IrExpr = {
       kind: "strConcat",
       left: oldValue,
-      right: lowerer.ensureString(rhs, expr.right),
+      right: concatOperand(lowerer, rhs, expr.right),
       type: STRING,
       loc,
     };
@@ -8125,7 +8130,7 @@ function lowerElementCompoundParts(
     computed = {
       kind: "strConcat",
       left: lowerer.ensureString(oldRef(), target),
-      right: lowerer.ensureString(rhs, expr.right),
+      right: concatOperand(lowerer, rhs, expr.right),
       type: STRING,
       loc,
     };
@@ -8876,6 +8881,16 @@ export function lowerEnvironmentKey(lowerer: Lowerer, node: ts.Expression): IrEx
   return lowerRecordPropertyKey(lowerer, key, node);
 }
 
+/** An operand of `+` with a string: ToString of ToPrimitive with the
+ * default hint, which tries a class instance's valueOf before toString. */
+function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+  return (
+    classToStringConversion(lowerer, e, "default", node) ??
+    classUnionToString(lowerer, e, "default", node) ??
+    lowerer.ensureString(e, node)
+  );
+}
+
 export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
@@ -8919,6 +8934,9 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
         return errorToStringCall(lowerer, e);
       }
     }
+    // A program class instance converts through its own methods.
+    const converted = classToStringConversion(lowerer, e, "string", node);
+    if (converted) return converted;
   }
   if (e.type.kind === "union") {
     // `${u}` — the arm's ToString via a per-union interned helper
@@ -8977,6 +8995,8 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
           node,
         );
     }
+    const viaClasses = classUnionToString(lowerer, e, "string", node);
+    if (viaClasses) return viaClasses;
     lowerer.unsupported(
       "SC1090",
       node,
@@ -9450,6 +9470,8 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       if (raw.type.kind === "string") {
         return { kind: "libCall", fn: "num.fromString", args: [raw], type: F64, loc };
       }
+      const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
+      if (classNumber) return classNumber;
       const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "+", [raw.type]);
       return operand;
@@ -9918,7 +9940,7 @@ export function lowerCompoundValueToTarget(
       {
         kind: "strConcat",
         left: lowerer.ensureString(read, expr.left),
-        right: lowerer.ensureString(rhs, expr.right),
+        right: concatOperand(lowerer, rhs, expr.right),
         type: STRING,
         loc,
       },
@@ -10981,8 +11003,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       if (left.type.kind === "string" || right.type.kind === "string") {
         return {
           kind: "strConcat",
-          left: lowerer.ensureString(left, expr.left),
-          right: lowerer.ensureString(right, expr.right),
+          left: concatOperand(lowerer, left, expr.left),
+          right: concatOperand(lowerer, right, expr.right),
           type: STRING,
           loc,
         };
@@ -16310,7 +16332,7 @@ function lowerFieldCompoundValue(
   const numericRead = lowerOptionalNumber(lowerer, read, loc, access);
   const bigintValue = rhsNode ? bigintCompoundValue(op, read, rhs, loc) : null;
   if (op === "+" && read.type.kind === "string") {
-    appended = lowerer.ensureString(rhs, rhsNode ?? access);
+    appended = concatOperand(lowerer, rhs, rhsNode ?? access);
     value = { kind: "strConcat", left: read, right: appended, type: STRING, loc };
   } else if (numericRead.type.kind === "f64" && numericRhs.type.kind === "f64") {
     value = { kind: "bin", op, left: numericRead, right: numericRhs, type: F64, loc };

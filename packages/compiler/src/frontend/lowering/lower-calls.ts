@@ -157,6 +157,7 @@ import {
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import {
   httpClientFnBindingOf,
@@ -2134,6 +2135,9 @@ function lowerNumberConstructorValue(
     };
   const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
   if (optionalNumber) return optionalNumber;
+  // A program class instance converts through its own methods.
+  const classNumber = classToNumberConversion(lowerer, arg, argNode);
+  if (classNumber) return classNumber;
   const scalarUnionNumber = lowerScalarUnionNumber(lowerer, arg, argNode, loc);
   if (scalarUnionNumber) return scalarUnionNumber;
   return lowerer.noLowering(
