@@ -25,7 +25,8 @@ export interface RuntimeFeatures {
   dynInvoke: boolean;
   dynAsync: boolean;
   /** The program enters AsyncLocalStorage stores (store.run, enterWith,
-   * a diagnostics_channel store binding): its timer, immediate, tick and
+   * a diagnostics_channel store binding) or reads the test runner's
+   * context (getTestContext): its timer, immediate, tick and
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: boolean;
@@ -121,6 +122,9 @@ const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.enterWith",
   "dc.chanBindStore",
   "dc.chanRunStores",
+  // getTestContext() reads the test runner's entry in the same snapshot.
+  "test.hasContext",
+  "test.context",
 ]);
 
 const LEGACY_URL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([

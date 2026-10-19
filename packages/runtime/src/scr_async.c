@@ -665,8 +665,9 @@ struct ScrFiber {
 
 /* The ScrAlsCtx layout and the API over it live in scr_runtime.h /
  * scr_async_dyn.c (gated — the size-class stance); this always-linked
- * core keeps only what the fiber machinery itself touches: the active
- * slot, the snapshot RC pair, and the switch/spawn/destroy wiring. */
+ * core keeps only what the fiber machinery and the test runner touch: the
+ * active slot, the snapshot RC pair, enter/restore, and the
+ * switch/spawn/destroy wiring. */
 static SCR_TL ScrAlsCtx *scr_als_main_slot = NULL;
 #ifdef SCR_WORKERS
 SCR_TL ScrAlsCtx **scr_als_active;
@@ -692,6 +693,56 @@ void scr_als_ctx_release(ScrAlsCtx *c) {
 static inline void *scr_fiber_region_capture(void) {
   const ScrRgnFiberHooks *regions = atomic_load_explicit(&scr_region_fiber_hooks, memory_order_relaxed);
   return regions != NULL ? regions->capture() : NULL;
+}
+
+/* Fresh snapshot storage. */
+ScrAlsCtx *scr_als_ctx_alloc(size_t len) {
+  ScrAlsCtx *c = malloc(sizeof *c + len * sizeof(ScrAlsEntry));
+  if (!c) scr_oom();
+  c->rc = 1;
+  c->len = len;
+  return c;
+}
+
+/* Fresh snapshot with (id → value) replaced-or-appended (value borrowed,
+ * retained in), installed as the active context; the PREVIOUS snapshot
+ * returns (ownership moves out) for scr_als_restore. The test runner
+ * enters its own entry through this too, so it lives in the core. */
+ScrAlsCtx *scr_als_enter(double id, ScrDyn *value) {
+  ScrAlsCtx *prev = *SCR_ALS_SLOT();
+  size_t n = prev ? prev->len : 0;
+  bool have = false;
+  for (size_t i = 0; i < n; i++) {
+    if (prev->entries[i].id == id) { have = true; break; }
+  }
+  ScrAlsCtx *next = scr_als_ctx_alloc(have ? n : n + 1);
+  size_t w = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (prev->entries[i].id == id) continue;
+    next->entries[w].id = prev->entries[i].id;
+    next->entries[w].value = scr_dyn_retain(prev->entries[i].value);
+    w++;
+  }
+  next->entries[w].id = id;
+  next->entries[w].value = scr_dyn_retain(value);
+  *SCR_ALS_SLOT() = next;
+  return prev; /* ownership moves to the caller */
+}
+
+void scr_als_restore(ScrAlsCtx *prev) {
+  scr_als_ctx_release(*SCR_ALS_SLOT());
+  *SCR_ALS_SLOT() = prev; /* ownership moves back in */
+}
+
+/* The value of `id` in the active snapshot (borrowed), or NULL. */
+ScrDyn *scr_als_peek(double id) {
+  const ScrAlsCtx *c = *SCR_ALS_SLOT();
+  if (c) {
+    for (size_t i = 0; i < c->len; i++) {
+      if (c->entries[i].id == id) return c->entries[i].value;
+    }
+  }
+  return NULL;
 }
 
 /* enterWith on the main stack lasts until that code returns to the loop,
