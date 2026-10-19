@@ -54,10 +54,10 @@ export function lowerNumberStaticCall(
   const loc = locOf(call);
   const fn = own(NUMBER_STATIC_PREDICATES, member);
   if (fn !== undefined) {
-    if (call.arguments.length !== 1) {
-      lowerer.noLowering(`Number.${member} with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 1) {
+      lowerer.noLowering(`Number.${member} with ${call.arguments.nodes.length} arguments`, call);
     }
-    const argNode = call.arguments[0]!;
+    const argNode = call.arguments.nodes[0]!;
     const arg = lowerBuiltinValuePreservingUndefined(lowerer, argNode);
 
     const optional = lowerOptionalNumberPredicate(lowerer, arg, fn, loc);
@@ -73,9 +73,9 @@ export function lowerNumberStaticCall(
   }
   if (member === "parseFloat" || member === "parseInt") {
     const want = member === "parseFloat" ? 1 : 2;
-    if (call.arguments.length !== want) {
+    if (call.arguments.nodes.length !== want) {
       lowerer.noLowering(
-        `Number.${member} with ${call.arguments.length} argument${call.arguments.length === 1 ? "" : "s"}`,
+        `Number.${member} with ${call.arguments.nodes.length} argument${call.arguments.nodes.length === 1 ? "" : "s"}`,
         call,
         member === "parseInt" ? "pass an explicit radix: Number.parseInt(s, 10)" : undefined,
       );
@@ -83,9 +83,9 @@ export function lowerNumberStaticCall(
     // Number.parseFloat/Number.parseInt ARE the global parsers: over a
     // string argument they lower to the same static parse (parseInt with
     // its explicit radix); only the coercing argument shapes are refused.
-    const probed = tryLowerExpression(lowerer, call.arguments[0]!);
+    const probed = tryLowerExpression(lowerer, call.arguments.nodes[0]!);
     if (probed !== null && isStringLike(lowerer, probed.type)) {
-      const parsed = lowerStaticNumberGlobal(lowerer, member, call, call.arguments, loc);
+      const parsed = lowerStaticNumberGlobal(lowerer, member, call, call.arguments.nodes, loc);
       if (parsed !== null) return parsed;
     }
     // A checked-dynamic argument (`Number.parseInt(env.FORCE_COLOR, 10)`
@@ -101,13 +101,13 @@ export function lowerNumberStaticCall(
       };
       if (member === "parseFloat")
         return { kind: "libCall", fn: "num.parseFloat", args: [text], type: F64, loc };
-      const radix = lowerer.lowerExprExpecting(call.arguments[1]!, F64);
+      const radix = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, F64);
       return { kind: "libCall", fn: "num.parseInt", args: [text, radix], type: F64, loc };
     }
     const argText =
       probed !== null
         ? lowerer.fmt(probed.type)
-        : lowerer.checker.typeToString(lowerer.checker.getTypeAtLocation(call.arguments[0]!));
+        : lowerer.checker.typeToString(lowerer.checker.getTypeAtLocation(call.arguments.nodes[0]!));
     lowerer.refuseUnsupportedApi(
       `'Number.${member}' with a '${argText}' argument`,
       call,

@@ -175,7 +175,7 @@ static void check_documents(void) {
 /* A link-gated unit's handle crosses threads through the transfer hooks in
  * its ops: share on the sender, adopt on the receiver, drop with the
  * message. The test borrows the last capacity slot, which no unit uses, so
- * it also proves that slots past SCR_DYNH_COUNT work. */
+ * it also proves that slots past the tags in use work. */
 #define TRANSFER_TAG ((ScrDynHandleTag)(SCR_DYNH_CAPACITY - 1))
 typedef struct {
   _Atomic size_t rc;

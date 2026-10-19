@@ -11,6 +11,7 @@ import {
   RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
+  classValueConstructor,
 } from "../../ir/ir.js";
 import { streamRooted, undefinedArmTag } from "../../ir/analysis.js";
 import {
@@ -51,6 +52,7 @@ import {
   retainBody,
   traceAdapter,
   type ShapeHost,
+  youngEntryLines,
 } from "./shapes.js";
 
 /** One virtual method slot of a hierarchy: the ROOT-MOST declaring class
@@ -75,6 +77,10 @@ export class LlClassMeta {
   membership: { pre: number; post: number }[] = [];
   /** Type-only references retain layouts without retaining construction. */
   constructorRetained = false;
+  /** The hierarchy holds ThreadSlots keys (IrModule.threadSlotKeys): every
+   * member's struct carries the i32 slot word before its fields
+   * (classSlotWordIndex). */
+  threadSlot = false;
 
   constructor(readonly def: IrClassDef) {
     this.root = this;
@@ -116,6 +122,12 @@ export function buildClassGraph(
     if (meta.base === null) number(meta, meta);
     meta.hierarchy = meta.base !== null || meta.children.length > 0;
   }
+  const slotRoots = new Set<LlClassMeta>();
+  for (const key of mod.threadSlotKeys ?? []) {
+    const meta = metaMap.get(key);
+    if (meta !== undefined) slotRoots.add(meta.root);
+  }
+  for (const meta of metaMap.values()) meta.threadSlot = slotRoots.has(meta.root);
   const declares = (m: LlClassMeta, method: string): boolean =>
     m.def.methods?.includes(method) ?? false;
   const declaredBelow = (m: LlClassMeta, method: string): boolean =>
@@ -323,14 +335,29 @@ function runtimePrefixOf(meta: LlClassMeta): RuntimePrefix | null {
   return RUNTIME_PREFIXES.get(meta.root.def.name) ?? null;
 }
 
-/** The GEP index where a class's own fields start: rc at 0, the vtable
- * word at 1 on hierarchy members, then a runtime prefix (state + display
- * name) on classes rooted at a runtime base, then the stream-state slot
- * on stream-rooted ones. */
-function fieldBase(meta: LlClassMeta): number {
+/** The GEP index after a class's header words: rc at 0, the vtable word
+ * at 1 on hierarchy members, then a runtime prefix (state + display name)
+ * on classes rooted at a runtime base, then the stream-state slot on
+ * stream-rooted ones. */
+function headerEnd(meta: LlClassMeta): number {
   if (!meta.hierarchy) return 1;
   if (streamRooted(meta)) return 5;
   return runtimePrefixOf(meta) ? 4 : 2;
+}
+
+/** The GEP index of the ThreadSlots slot word (an i32) in a class whose
+ * hierarchy holds ThreadSlots keys: right after the header words, so every
+ * member of the hierarchy has it at the same offset. */
+export function classSlotWordIndex(meta: LlClassMeta): number {
+  if (!meta.threadSlot)
+    throw new InternalCompilerError(`llvm emitter bug: class ${meta.def.name} has no slot word`);
+  return headerEnd(meta);
+}
+
+/** The GEP index where a class's own fields start: after the header words
+ * and the slot word. */
+export function classFieldBase(meta: LlClassMeta): number {
+  return headerEnd(meta) + (meta.threadSlot ? 1 : 0);
 }
 
 /** Append the lexical environment after inherited fields to preserve base layouts. */
@@ -346,7 +373,28 @@ export function classFieldIndex(meta: LlClassMeta, field: string): { index: numb
     throw new InternalCompilerError(
       `llvm emitter bug: unknown field ${field} on class ${meta.def.name}`,
     );
-  return { index: fieldBase(meta) + idx, type: meta.def.fields[idx]!.type };
+  return { index: classFieldBase(meta) + idx, type: meta.def.fields[idx]!.type };
+}
+
+/** Lines that release the ThreadSlots values of the object `%o` before it
+ * is freed: its slot word is 0 unless a value was ever set for it. */
+function slotForgetLines(
+  host: ClassHost,
+  struct: string,
+  meta: LlClassMeta,
+  tag: string,
+): string[] {
+  host.declare(`declare void @scr_slots_forget(i32)`);
+  return [
+    `  %${tag}p = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${classSlotWordIndex(meta)}`,
+    `  %${tag} = load i32, ptr %${tag}p, align 4`,
+    `  %${tag}.set = icmp ne i32 %${tag}, 0`,
+    `  br i1 %${tag}.set, label %${tag}.forget, label %${tag}.done`,
+    `${tag}.forget: ; release its ThreadSlots values`,
+    `  call void @scr_slots_forget(i32 %${tag})`,
+    `  br label %${tag}.done`,
+    `${tag}.done:`,
+  ];
 }
 
 /** What class emission needs beyond ShapeHost: interned unit instances for
@@ -483,7 +531,7 @@ export function emitClassShapes(
           ? ["ptr", "ptr", "ptr"]
           : ["ptr"]
       : [];
-    const members = [...prefix, ...fieldTys];
+    const members = [...prefix, ...(meta.threadSlot ? ["i32"] : []), ...fieldTys];
     typeDefs.push(
       `%${mangleClassStruct(cls.name)} = type { ${host.sizeType}${members.length ? ", " + members.join(", ") : ""} } ` +
         `; class ${cls.name}${meta.hierarchy ? " (vt at 1)" : ""}${streamRooted(meta) ? " (ScrStream prefix at 2)" : runtimePrefix ? ` (${runtimePrefix.struct} prefix at 2)` : ""} { ${cls.fields.map((f) => llvmCommentText(f.name)).join("; ")} }`,
@@ -569,7 +617,7 @@ export function emitClassShapes(
     const traced = host.tracedShapes.has(`object:${cls.name}`);
     const runtimePrefix = runtimePrefixOf(meta);
     const isStreamRooted = streamRooted(meta);
-    const fieldIndex = (i: number): number => fieldBase(meta) + i;
+    const fieldIndex = (i: number): number => classFieldBase(meta) + i;
     // Teardown, trace and gcFree see each slot's storage type: a nullable
     // class field holds the instance pointer (NULL for the unit arm), and
     // every class retain/release/visit entry point is NULL-tolerant.
@@ -640,6 +688,7 @@ export function emitClassShapes(
       });
       if (runtimePrefix) lines.push(...regCall("td", runtimePrefix.drop, ""));
       if (isStreamRooted) lines.push(...stCall("tds", "scr_stream_st_release", ""));
+      if (meta.threadSlot) lines.push(...slotForgetLines(host, struct, meta, "tdw"));
       lines.push(...emitObjectFree(host, traced));
     };
 
@@ -803,6 +852,11 @@ export function emitClassShapes(
       );
     }
     nw.push(...undefFieldInits(host, meta, nullable));
+    // Young instances: program-owned traced classes. Classes rooted at a
+    // runtime base (errors, emitters, events, streams) carry runtime state
+    // and stay with trial deletion, like every runtime family.
+    if (traced && !lifetime && (!meta.hierarchy || meta.root.def.runtime !== true))
+      nw.push(...youngEntryLines(host));
     nw.push(`  ret ptr ${meta.hierarchy ? "%o.vt" : "%o"}`, `}`, ``);
     defs.push(...nw);
 
@@ -841,6 +895,7 @@ export function emitClassShapes(
           `  call void ${releaseSym(host, f.type)}(ptr %v${i}) ; ${llvmCommentText(f.name)} (acyclic)`,
         );
       });
+      if (meta.threadSlot) gf.push(...slotForgetLines(host, struct, meta, "gfw"));
       gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
@@ -878,14 +933,32 @@ export function emitClassObjDefs(
         `llvm emitter bug: class object for ${className} names unknown family ${meta.def.genericOf ?? ""}`,
       );
     }
-    const ctor = fnByName.get(`%${className}.constructor`);
+    const valueCtor = classValueConstructor(meta.def);
+    const ctor = fnByName.get(valueCtor.fn);
     if (!ctor)
       throw new InternalCompilerError(
         `llvm emitter bug: class object for ${className} without a constructor`,
       );
-    const params = ctor.params.slice(1);
+    const params = ctor.params.slice(valueCtor.firstArg);
     const paramDecls = params.map((p, i) => `${llType(p.type)} %a${i}`).join(", ");
     const ctorArgs = params.map((p, i) => `${llType(p.type)} %a${i}`);
+    const classObj =
+      `@${mangleClassObj(className)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClassObj ` +
+      `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? (meta.def.runtime ? 1 : 0)}, ptr null, ptr null } ; class ${className}`;
+    if (meta.def.runtime) {
+      // A runtime-provided class: %C.construct allocates through the
+      // runtime and returns the instance.
+      out.push(
+        `define internal ptr @${mangleCtorThunk(className)}(ptr %class${paramDecls ? ", " + paramDecls : ""}) ${FN_ATTRS} { ; construct thunk ${className}`,
+        `entry:`,
+        `  %o = call ptr @${mangleFunction(valueCtor.fn)}(${ctorArgs.join(", ")})`,
+        `  ret ptr %o`,
+        `}`,
+        classObj,
+        ``,
+      );
+      continue;
+    }
     if (meta.def.localCaptures !== undefined)
       host.declare(`declare ptr @scr_classobj_retain_v(ptr)`);
     const localBaseInits: string[] = [];
@@ -944,8 +1017,7 @@ export function emitClassObjDefs(
       `  call void @${mangleFunction(`%${className}.constructor`)}(${[`ptr %r`, ...ctorArgs].join(", ")})`,
       `  ret ptr %o`,
       `}`,
-      `@${mangleClassObj(className)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClassObj ` +
-        `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? 0}, ptr null, ptr null } ; class ${className}`,
+      classObj,
       ``,
     );
   }

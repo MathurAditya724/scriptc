@@ -316,6 +316,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.getUTCDate": "scr_date_get_date_utc",
   "date.getDay": "scr_date_get_day_local",
   "date.getUTCDay": "scr_date_get_day_utc",
+  "date.toUTCString": "scr_date_to_utc_string",
   "date.getHours": "scr_date_get_hours_local",
   "date.getUTCHours": "scr_date_get_hours_utc",
   "date.getMinutes": "scr_date_get_minutes_local",
@@ -325,6 +326,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.getMilliseconds": "scr_date_get_milliseconds",
   "date.getUTCMilliseconds": "scr_date_get_milliseconds",
   "date.getTimezoneOffset": "scr_date_get_timezone_offset",
+  "date.toString": "scr_date_to_string",
+  "date.toDateString": "scr_date_to_date_string",
+  "date.toTimeString": "scr_date_to_time_string",
   "fs.existsSync": "scr_fs_exists",
   // ── the throwing slice (MAY_THROW_LIB_FNS members): the generic path
   // emits the standard pending check after each — exprs.ts's finish.
@@ -820,6 +824,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // ambient-this read never throw. The fs dyn read is the sync-fs story.
   "fetch.start": "scr_fetch_static",
   "fetch.responseNew": "scr_fetch_response_new",
+  "fetch.responseJsonStatic": "scr_fetch_response_json_static",
   "fetch.input": "scr_fetch_input",
   "abort.controllerNew": "scr_fetch_abort_controller_new",
   "event.targetNew": "scr_event_target_new",
@@ -881,12 +886,16 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.typedRefIs": "scr_dyn_typed_ref_is_key",
   "dyn.classIs": "scr_dyn_class_is_key",
   "dyn.iterPack": "scr_dyn_iter_pack",
+  "dyn.destructureRest": "scr_dyn_destructure_rest",
   "dyn.iterator": "scr_dyn_iterator",
   "dyn.arrayFromIterator": "scr_dyn_array_from_iterator",
   "dyn.iteratorResult": "scr_dyn_iterator_result",
   "dyn.iteratorCanStep": "scr_dyn_iterator_can_step",
   "dyn.iteratorStep": "scr_dyn_iterator_step",
   "dyn.iteratorStepDone": "scr_dyn_iterator_step_done",
+  "dyn.setGeneratorMembers": "scr_dyn_set_generator_members",
+  "dyn.iteratorHelperMethod": "scr_dyn_iterator_helper_method",
+  "dyn.collectionIteratorIndex": "scr_dyn_collection_iterator_index",
   "dyn.mapSeedEntries": "scr_dyn_map_seed_entries",
   "dyn.mapSeedEntry": "scr_dyn_map_seed_entry",
   "dyn.arrLen": "scr_dyn_arr_len",
@@ -1242,9 +1251,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqSetTimeout": "scr_http_req_set_timeout_plain",
   "http.clientDestroy": "scr_http_client_destroy",
   "http.clientDestroyError": "scr_http_client_destroy_error",
+  "http.globalAgent": "scr_http_global_agent_value",
   "http.serverMaxHeaderSize": "scr_http_server_max_header_size",
   "http.clientMaxHeaderSize": "scr_http_client_max_header_size",
-  "https.clientServername": "scr_https_client_servername",
+  "http.clientSignalCheck": "scr_http_client_signal_check",
+  "https.nextServername": "scr_https_set_next_servername",
   "http.clientAbort": "scr_http_client_abort",
   "http.clientAborted": "scr_http_client_aborted",
   "http.clientDestroyed": "scr_http_client_destroyed",
@@ -1405,6 +1416,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "regex.groupEquals": "scr_regex_group_eq",
   "regex.groupNumber": "scr_regex_group_number",
   "regex.groupParseInt": "scr_regex_group_parse_int",
+  "regex.resultProp": "scr_regex_result_prop",
   // queueMicrotask's checked-dynamic form (borrowed dyn; a non-function
   // throws synchronously), the minted setImmediate value, and the
   // timers/promises immediate — all mark the loop live.

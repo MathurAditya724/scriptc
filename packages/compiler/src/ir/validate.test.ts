@@ -288,17 +288,25 @@ test.each([mapOf(STRING, F64), setOf(STRING), { kind: "promise", inner: F64 } as
   },
 );
 
-test.each([{ kind: "promise", inner: F64 } as IrType])(
-  "%j payloads still refuse unrelated data siblings",
-  (type) => {
-    const mod = expressionModule({ kind: "numLit", value: 0, type: F64, loc }, [
-      { id: "mixed", arms: [type, STRING, UNDEFINED_T] },
-    ]);
-    expect(validateModule(mod).map((error) => error.message)).toContain(
-      `union mixed: ${type.kind} arm 0 beside non-unit arms`,
-    );
-  },
-);
+test("a maybe-promise union holds one promise arm beside data arms", () => {
+  const mod = expressionModule({ kind: "numLit", value: 0, type: F64, loc }, [
+    { id: "maybe", arms: [{ kind: "promise", inner: F64 }, STRING, UNDEFINED_T] },
+  ]);
+  expect(validateModule(mod)).toEqual([]);
+  expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+});
+
+test("a union refuses a second promise arm", () => {
+  const mod = expressionModule({ kind: "numLit", value: 0, type: F64, loc }, [
+    {
+      id: "mixed",
+      arms: [BOOL, { kind: "promise", inner: F64 }, { kind: "promise", inner: STRING }],
+    },
+  ]);
+  expect(validateModule(mod).map((error) => error.message)).toContain(
+    "union mixed: promise arm 1 beside another promise arm",
+  );
+});
 
 test("differently typed collection payloads preserve separate union tags", () => {
   const mod = expressionModule({ kind: "numLit", value: 0, type: F64, loc }, [

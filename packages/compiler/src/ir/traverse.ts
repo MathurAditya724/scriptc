@@ -128,21 +128,54 @@ export function everyExprChild(
   expr: (expr: IrExpr) => boolean,
   stmt: (stmt: IrStmt) => boolean,
 ): boolean {
+  // The most common node kinds come first: the engine tests string cases
+  // one after another, in source order.
   switch (node.kind) {
-    case "numLit":
+    case "varRef":
       return true;
+    case "call":
+      return node.args.every((child) => expr(child));
+    case "dynFrom":
+      return expr(node.value);
     case "strLit":
       return true;
-    case "moduleNsRef":
+    case "libCall":
+      return node.args.every((child) => expr(child));
+    case "dynCheck":
+      return expr(node.value);
+    case "strEq":
+      return expr(node.left) && expr(node.right);
+    case "fieldGet":
+      return expr(node.obj);
+    case "ternary":
+      return expr(node.cond) && expr(node.then) && expr(node.else_);
+    case "closure":
       return true;
     case "boolLit":
       return true;
+    case "numLit":
+      return true;
     case "unitLit":
       return true;
-    case "varRef":
-      return true;
+    case "seqExpr":
+      return node.stmts.every((child) => stmt(child)) && expr(node.result);
+    case "dynCall":
+      return (
+        expr(node.callee) &&
+        (node.receiver === undefined || expr(node.receiver)) &&
+        (node.calleeNameValue === undefined || expr(node.calleeNameValue)) &&
+        node.args.every((child) => expr(child))
+      );
+    case "dynTest":
+      return expr(node.value);
+    case "dynScalarEq":
+      return expr(node.left) && expr(node.right);
+    case "upcast":
+      return expr(node.value);
     case "bin":
       return expr(node.left) && expr(node.right);
+    case "moduleNsRef":
+      return true;
     case "unary":
       return expr(node.operand);
     case "incDec":
@@ -157,14 +190,10 @@ export function everyExprChild(
       return expr(node.left) && expr(node.right);
     case "strConcat":
       return expr(node.left) && expr(node.right);
-    case "strEq":
-      return expr(node.left) && expr(node.right);
     case "strCmp":
       return expr(node.left) && expr(node.right);
     case "toString":
       return expr(node.operand);
-    case "ternary":
-      return expr(node.cond) && expr(node.then) && expr(node.else_);
     case "nullish":
       return expr(node.left) && expr(node.right);
     case "orDefault":
@@ -207,12 +236,8 @@ export function everyExprChild(
       return node.seed === undefined || expr(node.seed);
     case "setIntrinsic":
       return expr(node.receiver) && node.args.every((child) => expr(child));
-    case "call":
-      return node.args.every((child) => expr(child));
     case "ffiCall":
       return node.args.every((child) => expr(child));
-    case "closure":
-      return true;
     case "callValue":
       return (
         expr(node.callee) &&
@@ -241,8 +266,6 @@ export function everyExprChild(
       return expr(node.callee) && node.args.every((child) => expr(child));
     case "instanceOfValue":
       return expr(node.value) && expr(node.classValue);
-    case "upcast":
-      return expr(node.value);
     case "promiseVoidWiden":
       return expr(node.value);
     case "downcast":
@@ -251,8 +274,6 @@ export function everyExprChild(
       return expr(node.value);
     case "virtualCall":
       return node.args.every((child) => expr(child));
-    case "fieldGet":
-      return expr(node.obj);
     case "recordLit":
       return node.fields.every((child) => expr(child.value));
     case "recordClone":
@@ -261,15 +282,6 @@ export function everyExprChild(
       return expr(node.obj);
     case "recordKeyGet":
       return expr(node.obj) && expr(node.key);
-    case "dynFrom":
-      return expr(node.value);
-    case "dynCall":
-      return (
-        expr(node.callee) &&
-        (node.receiver === undefined || expr(node.receiver)) &&
-        (node.calleeNameValue === undefined || expr(node.calleeNameValue)) &&
-        node.args.every((child) => expr(child))
-      );
     case "dynInvoke":
       return (
         expr(node.recv) &&
@@ -283,16 +295,10 @@ export function everyExprChild(
         node.fields === undefined ||
         node.fields.every((child) => expr(child.key) && expr(child.value))
       );
-    case "dynTest":
-      return expr(node.value);
     case "dynKeyGet":
       return expr(node.key) && expr(node.value);
     case "dynHasKey":
       return expr(node.value);
-    case "dynScalarEq":
-      return expr(node.left) && expr(node.right);
-    case "seqExpr":
-      return node.stmts.every((child) => stmt(child)) && expr(node.result);
     case "dynDestrCheck":
       return expr(node.value);
     case "dynIterN":
@@ -333,11 +339,7 @@ export function everyExprChild(
       return expr(node.left) && expr(node.right);
     case "intrinsic":
       return node.args.every((child) => expr(child));
-    case "libCall":
-      return node.args.every((child) => expr(child));
     case "jsonStringify":
-      return expr(node.value);
-    case "dynCheck":
       return expr(node.value);
   }
   node satisfies never;
@@ -350,19 +352,27 @@ export function everyStmtChild(
   expr: (expr: IrExpr) => boolean,
   stmt: (stmt: IrStmt) => boolean,
 ): boolean {
+  // The most common node kinds come first: the engine tests string cases
+  // one after another, in source order.
   switch (node.kind) {
-    case "varDecl":
-      return node.init === null || expr(node.init);
-    case "assign":
-      return expr(node.value);
-    case "exprStmt":
-      return expr(node.expr);
+    case "return":
+      return node.value === null || expr(node.value);
     case "if":
       return (
         expr(node.cond) &&
         node.then.every((child) => stmt(child)) &&
         (node.else_ === null || node.else_.every((child) => stmt(child)))
       );
+    case "varDecl":
+      return node.init === null || expr(node.init);
+    case "exprStmt":
+      return expr(node.expr);
+    case "assign":
+      return expr(node.value);
+    case "block":
+      return node.body.every((child) => stmt(child));
+    case "fieldSet":
+      return expr(node.obj) && expr(node.value);
     case "while":
       return expr(node.cond) && node.body.every((child) => stmt(child));
     case "doWhile":
@@ -394,10 +404,6 @@ export function everyStmtChild(
       return expr(node.arr) && expr(node.index) && expr(node.value);
     case "forOf":
       return expr(node.iterable) && node.body.every((child) => stmt(child));
-    case "return":
-      return node.value === null || expr(node.value);
-    case "fieldSet":
-      return expr(node.obj) && expr(node.value);
     case "recordSet":
       return expr(node.obj) && expr(node.value);
     case "recordKeySet":
@@ -408,8 +414,6 @@ export function everyStmtChild(
       return true;
     case "continue":
       return true;
-    case "block":
-      return node.body.every((child) => stmt(child));
     case "throw":
       return expr(node.value);
     case "runtimeFence":
@@ -433,21 +437,54 @@ export function mapExprChildren(
   expr: (expr: IrExpr) => IrExpr,
   stmt: (stmt: IrStmt) => IrStmt,
 ): IrExpr {
+  // The most common node kinds come first: the engine tests string cases
+  // one after another, in source order.
   switch (node.kind) {
-    case "numLit":
+    case "varRef":
       return node;
+    case "call":
+      return { ...node, args: node.args.map((child) => expr(child)) };
+    case "dynFrom":
+      return { ...node, value: expr(node.value) };
     case "strLit":
       return node;
-    case "moduleNsRef":
+    case "libCall":
+      return { ...node, args: node.args.map((child) => expr(child)) };
+    case "dynCheck":
+      return { ...node, value: expr(node.value) };
+    case "strEq":
+      return { ...node, left: expr(node.left), right: expr(node.right) };
+    case "fieldGet":
+      return { ...node, obj: expr(node.obj) };
+    case "ternary":
+      return { ...node, cond: expr(node.cond), then: expr(node.then), else_: expr(node.else_) };
+    case "closure":
       return node;
     case "boolLit":
       return node;
+    case "numLit":
+      return node;
     case "unitLit":
       return node;
-    case "varRef":
-      return node;
+    case "seqExpr":
+      return { ...node, stmts: node.stmts.map((child) => stmt(child)), result: expr(node.result) };
+    case "dynCall": {
+      const result: Extract<IrExpr, { kind: "dynCall" }> = { ...node, callee: expr(node.callee) };
+      if (node.receiver !== undefined) result.receiver = expr(node.receiver);
+      if (node.calleeNameValue !== undefined) result.calleeNameValue = expr(node.calleeNameValue);
+      result.args = node.args.map((child) => expr(child));
+      return result;
+    }
+    case "dynTest":
+      return { ...node, value: expr(node.value) };
+    case "dynScalarEq":
+      return { ...node, left: expr(node.left), right: expr(node.right) };
+    case "upcast":
+      return { ...node, value: expr(node.value) };
     case "bin":
       return { ...node, left: expr(node.left), right: expr(node.right) };
+    case "moduleNsRef":
+      return node;
     case "unary":
       return { ...node, operand: expr(node.operand) };
     case "incDec":
@@ -462,14 +499,10 @@ export function mapExprChildren(
       return { ...node, left: expr(node.left), right: expr(node.right) };
     case "strConcat":
       return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "strEq":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
     case "strCmp":
       return { ...node, left: expr(node.left), right: expr(node.right) };
     case "toString":
       return { ...node, operand: expr(node.operand) };
-    case "ternary":
-      return { ...node, cond: expr(node.cond), then: expr(node.then), else_: expr(node.else_) };
     case "nullish":
       return { ...node, left: expr(node.left), right: expr(node.right) };
     case "orDefault":
@@ -543,12 +576,8 @@ export function mapExprChildren(
         receiver: expr(node.receiver),
         args: node.args.map((child) => expr(child)),
       };
-    case "call":
-      return { ...node, args: node.args.map((child) => expr(child)) };
     case "ffiCall":
       return { ...node, args: node.args.map((child) => expr(child)) };
-    case "closure":
-      return node;
     case "callValue": {
       const callee = expr(node.callee);
       if (node.receiver === undefined)
@@ -582,8 +611,6 @@ export function mapExprChildren(
       return { ...node, callee: expr(node.callee), args: node.args.map((child) => expr(child)) };
     case "instanceOfValue":
       return { ...node, value: expr(node.value), classValue: expr(node.classValue) };
-    case "upcast":
-      return { ...node, value: expr(node.value) };
     case "promiseVoidWiden":
       return { ...node, value: expr(node.value) };
     case "downcast":
@@ -592,8 +619,6 @@ export function mapExprChildren(
       return { ...node, value: expr(node.value) };
     case "virtualCall":
       return { ...node, args: node.args.map((child) => expr(child)) };
-    case "fieldGet":
-      return { ...node, obj: expr(node.obj) };
     case "recordLit":
       return {
         ...node,
@@ -609,15 +634,6 @@ export function mapExprChildren(
       return { ...node, obj: expr(node.obj) };
     case "recordKeyGet":
       return { ...node, obj: expr(node.obj), key: expr(node.key) };
-    case "dynFrom":
-      return { ...node, value: expr(node.value) };
-    case "dynCall": {
-      const result: Extract<IrExpr, { kind: "dynCall" }> = { ...node, callee: expr(node.callee) };
-      if (node.receiver !== undefined) result.receiver = expr(node.receiver);
-      if (node.calleeNameValue !== undefined) result.calleeNameValue = expr(node.calleeNameValue);
-      result.args = node.args.map((child) => expr(child));
-      return result;
-    }
     case "dynInvoke": {
       const result: Extract<IrExpr, { kind: "dynInvoke" }> = { ...node, recv: expr(node.recv) };
       if (node.calleeNameValue !== undefined) result.calleeNameValue = expr(node.calleeNameValue);
@@ -637,16 +653,10 @@ export function mapExprChildren(
               value: expr(child.value),
             })),
           };
-    case "dynTest":
-      return { ...node, value: expr(node.value) };
     case "dynKeyGet":
       return { ...node, key: expr(node.key), value: expr(node.value) };
     case "dynHasKey":
       return { ...node, value: expr(node.value) };
-    case "dynScalarEq":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "seqExpr":
-      return { ...node, stmts: node.stmts.map((child) => stmt(child)), result: expr(node.result) };
     case "dynDestrCheck":
       return { ...node, value: expr(node.value) };
     case "dynIterN":
@@ -687,11 +697,7 @@ export function mapExprChildren(
       return { ...node, left: expr(node.left), right: expr(node.right) };
     case "intrinsic":
       return { ...node, args: node.args.map((child) => expr(child)) };
-    case "libCall":
-      return { ...node, args: node.args.map((child) => expr(child)) };
     case "jsonStringify":
-      return { ...node, value: expr(node.value) };
-    case "dynCheck":
       return { ...node, value: expr(node.value) };
   }
   node satisfies never;
@@ -704,13 +710,11 @@ export function mapStmtChildren(
   expr: (expr: IrExpr) => IrExpr,
   stmt: (stmt: IrStmt) => IrStmt,
 ): IrStmt {
+  // The most common node kinds come first: the engine tests string cases
+  // one after another, in source order.
   switch (node.kind) {
-    case "varDecl":
-      return { ...node, init: node.init === null ? null : expr(node.init) };
-    case "assign":
-      return { ...node, value: expr(node.value) };
-    case "exprStmt":
-      return { ...node, expr: expr(node.expr) };
+    case "return":
+      return { ...node, value: node.value === null ? null : expr(node.value) };
     case "if":
       return {
         ...node,
@@ -718,6 +722,16 @@ export function mapStmtChildren(
         then: node.then.map((child) => stmt(child)),
         else_: node.else_ === null ? null : node.else_.map((child) => stmt(child)),
       };
+    case "varDecl":
+      return { ...node, init: node.init === null ? null : expr(node.init) };
+    case "exprStmt":
+      return { ...node, expr: expr(node.expr) };
+    case "assign":
+      return { ...node, value: expr(node.value) };
+    case "block":
+      return { ...node, body: node.body.map((child) => stmt(child)) };
+    case "fieldSet":
+      return { ...node, obj: expr(node.obj), value: expr(node.value) };
     case "while":
       return { ...node, cond: expr(node.cond), body: node.body.map((child) => stmt(child)) };
     case "doWhile":
@@ -756,10 +770,6 @@ export function mapStmtChildren(
         iterable: expr(node.iterable),
         body: node.body.map((child) => stmt(child)),
       };
-    case "return":
-      return { ...node, value: node.value === null ? null : expr(node.value) };
-    case "fieldSet":
-      return { ...node, obj: expr(node.obj), value: expr(node.value) };
     case "recordSet":
       return { ...node, obj: expr(node.obj), value: expr(node.value) };
     case "recordKeySet":
@@ -770,8 +780,6 @@ export function mapStmtChildren(
       return node;
     case "continue":
       return node;
-    case "block":
-      return { ...node, body: node.body.map((child) => stmt(child)) };
     case "throw":
       return { ...node, value: expr(node.value) };
     case "runtimeFence":

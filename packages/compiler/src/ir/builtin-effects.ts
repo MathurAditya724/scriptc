@@ -119,6 +119,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.requestNew",
   "fetch.headersNew",
   "fetch.responseNew",
+  "fetch.responseJsonStatic",
   "fetch.abortTimeout",
   "fetch.abortAny",
   "abort.timeout",
@@ -167,6 +168,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteHeadDyn",
   "http.resSetHeaderDyn",
   "http.clientSignal",
+  "http.clientSignalCheck",
   "http.serverMaxHeaderSize",
   "http.clientMaxHeaderSize",
   "http.resAppendHeader",
@@ -577,6 +579,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
   "dyn.iterPack",
+  "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",
   "dyn.iteratorResult",

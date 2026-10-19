@@ -40,7 +40,7 @@ export function lowerWorkerMetadata(member: string, loc: SrcLoc): IrExpr | null 
 export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): IrExpr | null {
   const constructor = expression.expression;
   if (!isWorkerConstructor(lowerer.program, constructor)) return null;
-  const args = expression.arguments ?? [];
+  const args = expression.arguments?.nodes ?? [];
   if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       "Worker constructor arguments",
@@ -125,7 +125,7 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
 function capturesStdio(options: ts.Expression | undefined): boolean {
   if (!options) return false;
   if (!ts.isObjectLiteralExpression(options)) return true;
-  return options.properties.some((option) => {
+  return options.properties.nodes.some((option) => {
     if (ts.isSpreadAssignment(option)) return true;
     if (!option.name) return false;
     const name = propertyNameText(option.name);
@@ -146,11 +146,11 @@ const HEAP_LIMITS = new Set([
  * with numbers (Node ignores other values; the runtime refuses the rest). */
 function refuseHeapLimits(lowerer: Lowerer, options: ts.Expression | undefined): void {
   if (!options || !ts.isObjectLiteralExpression(options)) return;
-  for (const option of options.properties) {
+  for (const option of options.properties.nodes) {
     if (!ts.isPropertyAssignment(option) || propertyNameText(option.name) !== "resourceLimits")
       continue;
     if (!ts.isObjectLiteralExpression(option.initializer)) continue;
-    for (const limit of option.initializer.properties) {
+    for (const limit of option.initializer.properties.nodes) {
       if (!ts.isPropertyAssignment(limit)) continue;
       const name = propertyNameText(limit.name);
       if (name === undefined || !HEAP_LIMITS.has(name)) continue;
@@ -194,7 +194,7 @@ export function lowerMessageChannelNew(
   expression: ts.NewExpression,
 ): IrExpr | null {
   if (!isWorkerThreadsClass(lowerer, expression, "MessageChannel")) return null;
-  if ((expression.arguments ?? []).length > 0) {
+  if ((expression.arguments?.nodes ?? []).length > 0) {
     lowerer.noLowering(
       "MessageChannel constructor arguments",
       expression,
@@ -214,7 +214,7 @@ export function lowerMessageChannelNew(
 
 /** receiveMessageOnPort(port): { message } or undefined. */
 export function lowerReceiveMessageOnPort(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length > 1 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`receiveMessageOnPort with ${args.length} arguments`, call);
   }
@@ -244,7 +244,7 @@ export function lowerBroadcastChannelNew(
   expression: ts.NewExpression,
 ): IrExpr | null {
   if (!isWorkerThreadsClass(lowerer, expression, "BroadcastChannel")) return null;
-  const args = expression.arguments ?? [];
+  const args = expression.arguments?.nodes ?? [];
   if (args.length > 1 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `BroadcastChannel constructor with ${args.length} arguments`,
@@ -296,7 +296,7 @@ export function lowerEnvironmentData(
   call: ts.CallExpression,
   member: "setEnvironmentData" | "getEnvironmentData",
 ): IrExpr {
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const arity = member === "setEnvironmentData" ? 2 : 1;
   if (args.length > arity || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`${member} with ${args.length} arguments`, call);
@@ -331,7 +331,7 @@ export function lowerEnvironmentData(
 /** markAsUncloneable(value): structuredClone and postMessage then throw
  * DataCloneError for the value (scr_json.c). It needs no worker runtime. */
 export function lowerUncloneable(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length > 1 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`markAsUncloneable with ${args.length} arguments`, call);
   }
@@ -354,7 +354,7 @@ export function lowerUntransferable(
   call: ts.CallExpression,
   member: "markAsUntransferable" | "isMarkedAsUntransferable",
 ): IrExpr {
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length > 1 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`${member} with ${args.length} arguments`, call);
   }

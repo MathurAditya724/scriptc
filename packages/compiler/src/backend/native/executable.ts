@@ -448,6 +448,7 @@ export async function compileCInternal(
     // Checked objects carry the dynamic tier's shapes (scr_json.c's
     // SCR_JS_TIER build); only programs with dynamic-tier code select it.
     ...(opts.dynTier === true ? ["-DSCR_JS_TIER"] : []),
+    ...(opts.youngNursery ? ["-DSCR_YIN"] : []),
     "-fno-math-errno",
     // The runtime object model uses type-punned C: a hierarchy
     // upcast is a raw pointer cast, so one object's header (rc, vt) and
@@ -652,6 +653,7 @@ export async function compileCInternal(
     // Checked objects carry the dynamic tier's shapes (scr_json.c's
     // SCR_JS_TIER build); only programs with dynamic-tier code select it.
     ...(opts.dynTier === true ? ["-DSCR_JS_TIER"] : []),
+    ...(opts.youngNursery ? ["-DSCR_YIN"] : []),
     "-fno-math-errno",
     "-fno-strict-aliasing", // the emitted object model type-puns — see buildArgs
     "-Wno-deprecated-declarations",

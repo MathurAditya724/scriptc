@@ -40,7 +40,7 @@ function direntArray(lowerer: Lowerer, type: IrType | null | undefined): boolean
 /** An exclude function receives Node's Dirent objects when withFileTypes is
  * set, which have no native representation here. */
 function fenceDirentExclude(lowerer: Lowerer, call: ts.CallExpression, what: string): void {
-  const options = call.arguments[1];
+  const options = call.arguments.nodes[1];
   if (!options) return;
   const exclude = lowerer.checker.getPropertyOfType(lowerer.typeOf(options), "exclude");
   if (!exclude) return;
@@ -54,10 +54,10 @@ function fenceDirentExclude(lowerer: Lowerer, call: ts.CallExpression, what: str
 }
 
 function globArgs(lowerer: Lowerer, call: ts.CallExpression, what: string): IrExpr[] {
-  if (call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`${what} with spread arguments`, call, "write the arguments positionally");
   }
-  return call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  return call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
 }
 
 /** `globSync(pattern, options?)`: string[] or Dirent[]. */

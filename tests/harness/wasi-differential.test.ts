@@ -310,6 +310,9 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "5721-intern-table-values.ts",
     // Array key sizes are checked in 32-bit size_t arithmetic.
     "5726-intern-table-key-limits.ts",
+    // ThreadSlots blocks and pages hold 32-bit pointers.
+    "5727-thread-slots-basics.ts",
+    "5729-thread-slots-values.ts",
   ])("the LLVM target runs %s byte-identically to Node", async (fixture) => {
     const entry = join(repoRoot, "tests/corpus", fixture);
     const outDir = await mkdtemp("/tmp/scriptc-wasi-");

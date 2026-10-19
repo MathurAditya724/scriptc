@@ -11,7 +11,7 @@ import {
 } from "../../scripts/zero-cost-compare.mjs";
 
 const ir = (functions: object[], globals: object[]) =>
-  Buffer.from(JSON.stringify({ irVersion: 16, functions, globals, sourceFile: "/p/main.ts" }));
+  Buffer.from(JSON.stringify({ irVersion: 17, functions, globals, sourceFile: "/p/main.ts" }));
 
 const llvm = (body: string, extra = "") =>
   Buffer.from(

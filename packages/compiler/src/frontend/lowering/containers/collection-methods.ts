@@ -80,16 +80,16 @@ export function lowerMapMethodCall(
     );
   }
   // The lib declares a thisArg parameter on forEach; unlowered — fenced.
-  if (name === "forEach" && call.arguments.length !== 1) {
+  if (name === "forEach" && call.arguments.nodes.length !== 1) {
     lowerer.noLowering(
-      `.forEach with ${call.arguments.length} arguments`,
+      `.forEach with ${call.arguments.nodes.length} arguments`,
       call,
       "the thisArg parameter has no lowering — use an arrow function",
     );
   }
 
   if (name === "get") {
-    const k = lowerer.lowerCollectionKey(call.arguments[0]!, receiverIr.key);
+    const k = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.key);
     // The checker types the call `V | undefined`, which interns the
     // result union. `undefined` sorts LAST among all possible arm
     // typeKeys, so when V is itself a union its arms keep their tags in
@@ -109,11 +109,11 @@ export function lowerMapMethodCall(
     return { kind: "mapIntrinsic", method: "get", receiver, args: [k], type, loc };
   }
   if (name === "set") {
-    const k = lowerer.lowerCollectionKey(call.arguments[0]!, receiverIr.key);
+    const k = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.key);
     const v =
       receiverIr.value.kind === "dyn"
-        ? lowerer.lowerCollectionKey(call.arguments[1]!, receiverIr.value)
-        : lowerer.lowerExprExpecting(call.arguments[1]!, receiverIr.value);
+        ? lowerer.lowerCollectionKey(call.arguments.nodes[1]!, receiverIr.value)
+        : lowerer.lowerExprExpecting(call.arguments.nodes[1]!, receiverIr.value);
     // A discarded set result needs no second receiver read or identity
     // owner. Keep the ordinary operand order: receiver, key, then value.
     let parent: ts.Node | undefined = call.parent;
@@ -146,7 +146,7 @@ export function lowerMapMethodCall(
     };
   }
   if (name === "has" || name === "delete") {
-    const k = lowerer.lowerCollectionKey(call.arguments[0]!, receiverIr.key);
+    const k = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.key);
     return { kind: "mapIntrinsic", method: name, receiver, args: [k], type: BOOL, loc };
   }
   if (name === "clear") {
@@ -452,14 +452,14 @@ export function lowerMapForEachCall(
   bindUntyped = false,
 ): IrExpr {
   const loc = locOf(call);
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const previousRuntime: { symbol: ts.Symbol; type: IrType | undefined }[] = [];
   const previousImplicit = lowerer.implicitParamTypes;
   let contextualTs: Map<ts.Symbol, ts.Type> | null = null;
   if (bindUntyped && (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode))) {
     const expected = [mapT.value, mapT.key];
-    argNode.parameters.slice(0, 2).forEach((param, i) => {
+    argNode.parameters.nodes.slice(0, 2).forEach((param, i) => {
       const type = expected[i];
       if (
         type === undefined ||
@@ -567,9 +567,9 @@ export function lowerSetMethodCall(
       "the lowered add() produces no value — call each add(v) as its own statement",
     );
   }
-  if (name === "forEach" && call.arguments.length !== 1) {
+  if (name === "forEach" && call.arguments.nodes.length !== 1) {
     lowerer.noLowering(
-      `.forEach with ${call.arguments.length} arguments`,
+      `.forEach with ${call.arguments.nodes.length} arguments`,
       call,
       "the thisArg parameter has no lowering — use an arrow function",
     );
@@ -581,11 +581,11 @@ export function lowerSetMethodCall(
     return lowerSetCombineCall(lowerer, call, name, receiver, receiverIr);
   }
   if (name === "add") {
-    const v = lowerer.lowerCollectionKey(call.arguments[0]!, receiverIr.elem);
+    const v = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.elem);
     return { kind: "setIntrinsic", method: "add", receiver, args: [v], type: VOID, loc };
   }
   if (name === "has" || name === "delete") {
-    const v = lowerer.lowerCollectionKey(call.arguments[0]!, receiverIr.elem);
+    const v = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.elem);
     return { kind: "setIntrinsic", method: name, receiver, args: [v], type: BOOL, loc };
   }
   if (name === "clear") {
@@ -606,7 +606,7 @@ export function lowerSetForEachCall(
   setT: IrType & { kind: "set" },
 ): IrExpr {
   const loc = locOf(call);
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const fnArg = lowerer.lowerExpr(argNode);
   if (
@@ -644,10 +644,10 @@ function lowerSetCombineCall(
   setT: IrType & { kind: "set" },
 ): IrExpr {
   const loc = locOf(call);
-  const argNode = call.arguments[0];
-  if (call.arguments.length !== 1 || argNode === undefined || ts.isSpreadElement(argNode)) {
+  const argNode = call.arguments.nodes[0];
+  if (call.arguments.nodes.length !== 1 || argNode === undefined || ts.isSpreadElement(argNode)) {
     lowerer.noLowering(
-      `Set.prototype.${name} with ${call.arguments.length} arguments`,
+      `Set.prototype.${name} with ${call.arguments.nodes.length} arguments`,
       call,
       "exactly one Set argument is the supported form",
     );
@@ -918,8 +918,10 @@ export function lowerSetSeedNew(
   }
   // Constructor contextual types include Iterable<T>, which has no value
   // representation. Build a literal at the actual Set element ABI instead.
-  if (ts.isArrayLiteralExpression(node) && !node.elements.some(ts.isSpreadElement)) {
-    const elems = node.elements.map((element) => lowerer.lowerCollectionKey(element, setT.elem));
+  if (ts.isArrayLiteralExpression(node) && !node.elements.nodes.some(ts.isSpreadElement)) {
+    const elems = node.elements.nodes.map((element) =>
+      lowerer.lowerCollectionKey(element, setT.elem),
+    );
     return {
       kind: "setNew",
       seed: { kind: "arrayLit", elems, type: arrayOf(setT.elem), loc },
@@ -1154,7 +1156,7 @@ export function lowerMapSeedNew(
   if (ts.isArrayLiteralExpression(argNode)) {
     if (
       isJsSourceFile(argNode.getSourceFile()) &&
-      argNode.elements.some((entry) => !ts.isArrayLiteralExpression(entry))
+      argNode.elements.nodes.some((entry) => !ts.isArrayLiteralExpression(entry))
     ) {
       return mapFromSeedValue(lowerer, lowerer.lowerExprExpecting(argNode, DYN), mapT);
     }

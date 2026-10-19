@@ -52,7 +52,7 @@ export function earlyReadVarSymbols(
         ts.getModifiers(statement)?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)
       )
         return undefined;
-      for (const declaration of node.declarations) {
+      for (const declaration of node.declarations.nodes) {
         for (const name of boundIdentifiersOf(declaration.name)) {
           const symbol = checker.getSymbolAtLocation(name);
           if (symbol === undefined || !excludesUndefined(lowerer, name)) continue;
@@ -101,9 +101,9 @@ function hoistingScopeOf(node: ts.Node): Scope {
 }
 
 function statementsOf(scope: Scope): readonly ts.Statement[] {
-  if (ts.isSourceFile(scope)) return scope.statements;
+  if (ts.isSourceFile(scope)) return scope.statements.nodes;
   const body = scope.body;
-  return body !== undefined && ts.isBlock(body) ? body.statements : [];
+  return body !== undefined && ts.isBlock(body) ? body.statements.nodes : [];
 }
 
 /** Whether the binding's declared type has no undefined value. */
@@ -197,7 +197,7 @@ class ScopeAnalysis {
           : null;
       if (list !== null) {
         const loop = !ts.isVariableStatement(s) && !ts.isForStatement(s);
-        for (const d of list.declarations) {
+        for (const d of list.declarations.nodes) {
           if (
             (d.initializer !== undefined || loop) &&
             boundIdentifiersOf(d.name).some((n) => checker.getSymbolAtLocation(n) === symbol)

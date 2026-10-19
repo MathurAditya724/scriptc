@@ -255,13 +255,13 @@ function asResult(host: Host, cell: string, e: IrExpr, owned: boolean | string):
   /** Retains the cell unless the caller owns it. */
   const hold = (): string => {
     if (owned === true) return cell;
-    if (owned === false) return host.retainValue(cell, DYN);
+    if (owned === false) return host.retainFrame(cell, DYN);
     const borrowed = B.newLabel("icr.b");
     const done = B.newLabel("icr.h");
     const from = B.currentLabel();
     B.condBr(owned, done, borrowed);
     B.startBlock(borrowed);
-    const retained = host.retainValue(cell, DYN);
+    const retained = host.retainFrame(cell, DYN);
     const retainedEnd = B.currentLabel();
     B.br(done);
     B.startBlock(done);
@@ -285,13 +285,13 @@ function asResult(host: Host, cell: string, e: IrExpr, owned: boolean | string):
   const immediate = B.tmp();
   B.line(`${immediate} = inttoptr i64 ${bits} to ptr`);
   if (owned === true) {
-    host.releaseValue(cell, DYN);
+    host.releaseFrame(cell, DYN);
   } else if (owned !== false) {
     const release = B.newLabel("icr.r");
     const released = B.newLabel("icr.rd");
     B.condBr(owned, release, released);
     B.startBlock(release);
-    host.releaseValue(cell, DYN);
+    host.releaseFrame(cell, DYN);
     B.br(released);
     B.startBlock(released);
   }
@@ -322,7 +322,7 @@ function helperCall(host: Host, e: ExprOf<"call">, callee: IrFunction, args: LlV
   const argList = args
     .map((a, i) => {
       const type = callee.params[i]!.type;
-      const value = borrowed?.has(i) ? a.name : host.retainValue(a.name, a.type);
+      const value = borrowed?.has(i) ? a.name : host.retainFrame(a.name, a.type);
       return `${host.llType(type)} ${value}`;
     })
     .join(", ");
@@ -336,7 +336,7 @@ function helperCall(host: Host, e: ExprOf<"call">, callee: IrFunction, args: LlV
   let t = B.tmp();
   B.line(`${t} = call ${host.llType(e.type)} ${target}(${argList}) noinline cold`);
   if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
-  if (borrowed && host.borrowedReturns.has(e.callee)) t = host.retainValue(t, e.type);
+  if (borrowed && host.borrowedReturns.has(e.callee)) t = host.retainFrame(t, e.type);
   return t;
 }
 
@@ -484,8 +484,8 @@ function emitSet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
       const old = B.tmp();
       B.line(`${old} = load ptr, ptr ${slot}`);
       if (word === null) {
-        B.line(`store ptr ${host.retainValue(value!.name, DYN)}, ptr ${slot}`);
-        host.releaseValue(old, DYN);
+        B.line(`store ptr ${host.retainHeap(value!.name, DYN)}, ptr ${slot}`);
+        host.releaseHeap(old, DYN);
         B.br(join);
         return;
       }
@@ -516,7 +516,7 @@ function emitSet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
       const cell = B.tmp();
       B.line(`${cell} = call ptr @scr_js_to_dyn_borrow(ptr ${word})`);
       B.line(`store ptr ${cell}, ptr ${slot}`);
-      host.releaseValue(old, DYN);
+      host.releaseHeap(old, DYN);
       B.br(join);
     },
     probe,
@@ -604,7 +604,7 @@ function numberKey(host: Host, key: IrExpr): NumberKey | null {
     loc: key.loc,
   });
   B.line(`store double ${d.name}, ptr ${slot}`);
-  host.releaseFrame(host.frames.pop()!);
+  host.releaseTemps(host.frames.pop()!);
   B.br(done);
   B.startBlock(done);
   const value = B.tmp();
@@ -616,8 +616,8 @@ function numberKey(host: Host, key: IrExpr): NumberKey | null {
       // The local is a plain read: boxing it again evaluates nothing else.
       host.frames.push([]);
       const boxed = host.emitExpr(key);
-      host.moveTemp(boxed);
-      host.releaseFrame(host.frames.pop()!);
+      host.toFrame(boxed);
+      host.releaseTemps(host.frames.pop()!);
       return boxed.name;
     },
   };
@@ -753,7 +753,7 @@ export function emitJsIcMethod(host: Host, e: ExprOf<"dynInvoke">, receiver: str
     ic,
     INLINE_WAYS,
     INLINE_PROTO,
-    (cell) => host.retainValue(cell, DYN),
+    (cell) => host.retainFrame(cell, DYN),
     incoming,
     join,
     probe,

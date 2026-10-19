@@ -45,9 +45,9 @@ export function lowerAtomicsCall(
           : 3;
   const maximum = member === "wait" ? 4 : member === "notify" ? 3 : minimum;
   if (
-    call.arguments.length < minimum ||
-    call.arguments.length > maximum ||
-    call.arguments.some(ts.isSpreadElement)
+    call.arguments.nodes.length < minimum ||
+    call.arguments.nodes.length > maximum ||
+    call.arguments.nodes.some(ts.isSpreadElement)
   ) {
     lowerer.noLowering(
       `Atomics.${member} arguments`,
@@ -55,7 +55,7 @@ export function lowerAtomicsCall(
       `use ${minimum}${maximum > minimum ? `–${maximum}` : ""} arguments`,
     );
   }
-  const source = call.arguments[0]!;
+  const source = call.arguments.nodes[0]!;
   // Generic constraints can remain unions in the checker while this body
   // has a concrete typed-array binding. Validate the actual lowered storage.
   const array = lowerer.lowerExpr(source);
@@ -75,8 +75,8 @@ export function lowerAtomicsCall(
   }
   const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
   const arg = (index: number, fallback: number): IrExpr =>
-    call.arguments[index]
-      ? lowerOptionalArgument(lowerer, call.arguments[index]!, F64, number(fallback))
+    call.arguments.nodes[index]
+      ? lowerOptionalArgument(lowerer, call.arguments.nodes[index]!, F64, number(fallback))
       : number(fallback);
   const index = arg(1, 0);
   if (member === "wait")

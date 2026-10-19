@@ -43,6 +43,7 @@ const BASE_RUNTIME_SOURCES = [
   "scr_publish.c",
   "scr_region.c",
   "scr_itable.c",
+  "scr_slots.c",
   "scr_alloc.c",
 ];
 
@@ -122,6 +123,15 @@ function variantsFor(source) {
       id: "text-decoder-legacy",
       when: { textDecoderLegacy: true },
       defines: ["SCR_TEXT_DECODER_LEGACY"],
+    });
+  }
+  if (source === "scr_cycle.c") {
+    // The young-in nursery (SCRIPTC_YOUNG_NURSERY=1): the collector with
+    // nursery collections; programs built without it link the default.
+    variants.push({
+      id: "young-nursery",
+      when: { youngNursery: true },
+      defines: ["SCR_YIN"],
     });
   }
   return variants;

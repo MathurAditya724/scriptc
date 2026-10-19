@@ -52,6 +52,10 @@ ScrStr *scr_test_ctx_full_name(ScrTestCtx *t);
 bool scr_test_ctx_passed(ScrTestCtx *t);
 double scr_test_worker_id(void);
 ScrStr *scr_test_ctx_name(ScrTestCtx *t); /* +1 */
+/* getTestContext(): whether a test, suite or hook is running in the
+ * current async context, and its context (+1; call when has_context). */
+bool scr_test_has_context(void);
+ScrTestCtx *scr_test_context(void);
 /* Mock trackers: the module's `mock` and each test's t.mock. track keeps
  * the closure that restores one mock; restore_all calls them in creation
  * order; reset calls them and forgets them. A test's t.mock is reset when
@@ -110,6 +114,12 @@ void scr_test_mt_clear_immediate(double handle);
 void scr_test_mt_immediate_unref(double handle);
 void scr_test_mt_immediate_ref(double handle);
 bool scr_test_mt_immediate_has_ref(double handle);
+/* The setters of programs that also enter AsyncLocalStorage stores: an
+ * unmocked call uses the loop's *_als function. */
+void scr_test_mt_set_timeout_als(ScrClosure *cb, double ms);
+double scr_test_mt_set_timeout_handle_als(ScrClosure *cb, double ms);
+double scr_test_mt_set_interval_als(ScrClosure *cb, double ms);
+double scr_test_mt_set_immediate_als(ScrClosure *cb);
 double scr_test_mt_date_now(void);
 /* timers/promises scheduler.wait(delay) (+1 promise; NULL after a throw). */
 ScrPromise *scr_test_mt_scheduler_wait(double ms);

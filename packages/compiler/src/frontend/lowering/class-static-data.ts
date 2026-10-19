@@ -46,7 +46,7 @@ export function classStaticDataFor(
   if (findStaticOn(lowerer, info, name) || findGenericStaticOn(lowerer, info, name)) return null;
   for (let c: ClassInfo | null = info; c; c = c.base) {
     if (
-      c.decl?.members.some(
+      c.decl?.members?.nodes.some(
         (m) =>
           m.name &&
           ts.canHaveModifiers(m) &&
