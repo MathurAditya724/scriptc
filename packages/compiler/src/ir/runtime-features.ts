@@ -16,11 +16,13 @@ export interface RuntimeFeatures {
   fileHandle: boolean;
   fetch: boolean;
   eventTarget: boolean;
-  /** process.emitWarning is assigned (process.setEmitWarning). */
+  processEvents: boolean;
+  /** process.emitWarning is assigned (process.setEmitWarning). Declared
+   * in the literal's order: JSON.stringify of the features record must
+   * match between the Node-run and self-hosted compilers. */
   warningReplace: boolean;
   /** stdin setEncoding / string data listeners / stdio 'resize' events. */
   stdioExtended: boolean;
-  processEvents: boolean;
   emitter: boolean;
   stream: boolean;
   zlib: boolean;
