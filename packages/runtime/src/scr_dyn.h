@@ -702,6 +702,10 @@ ScrDyn *scr_dyn_iterator_result(ScrDyn *value);
 bool scr_dyn_iterator_can_step(const ScrDyn *iterator, const ScrDyn *next);
 ScrDyn *scr_dyn_iterator_step(const ScrDyn *iterator);
 bool scr_dyn_iterator_step_done(const ScrDyn *iterator);
+/* A native Map or Set iterator stepped by the compiler's typed walk: the
+ * next live entry index of its collection, or -1 once the collection is
+ * exhausted (the iterator then ends its iteration). */
+double scr_dyn_collection_iterator_index(const ScrDyn *iterator);
 /* The ordinary object snapshot plus a retained typed source. source_access
  * releases that source when materialize=false and returns a fresh snapshot
  * when true. */
