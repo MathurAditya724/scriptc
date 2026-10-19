@@ -13682,6 +13682,49 @@ function lowerPrivateIn(
       );
     }
   }
+  // A checked value (`#x in this` inside a JavaScript method, whose
+  // receiver is the actual call-site value): the brand is present exactly
+  // when the value is a class instance at or below the declarer. A typed
+  // reference carries the class it was boxed under: the declarer or a
+  // descendant answers true; an ancestor answers per instance.
+  if (recv.type.kind === "dyn" && recv.kind === "varRef") {
+    const typedRefIs = (className: string): IrExpr => ({
+      kind: "libCall",
+      fn: "dyn.typedRefIs",
+      args: [
+        recv,
+        { kind: "strLit", value: typeKey({ kind: "object", className }), type: STRING, loc },
+      ],
+      type: BOOL,
+      loc,
+    });
+    const or = (left: IrExpr | null, right: IrExpr): IrExpr =>
+      left === null ? right : { kind: "logical", op: "||", left, right, type: BOOL, loc };
+    let test: IrExpr | null = null;
+    const below = (c: ClassInfo): void => {
+      test = or(test, typedRefIs(c.def.name));
+      for (const sub of c.subclasses) below(sub);
+    };
+    below(info);
+    for (let base = info.base; base; base = base.base) {
+      const baseType: IrType = { kind: "object", className: base.def.name };
+      test = or(test, {
+        kind: "logical",
+        op: "&&",
+        left: typedRefIs(base.def.name),
+        right: {
+          kind: "instanceOf",
+          value: { kind: "dynCheck", value: recv, type: baseType, loc },
+          className: declName,
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      });
+    }
+    return test!;
+  }
   if (recv.type.kind !== "object") {
     lowerer.unsupported(
       "SC1090",
