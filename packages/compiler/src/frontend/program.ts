@@ -6023,6 +6023,57 @@ export function orderedImportsOf(
   return out;
 }
 
+/** The files a compiled program can load: the module order closed over
+ * every literal require() and import() call it contains (deferred and
+ * nested ones included) and, for opted-in package JavaScript, over every
+ * import and export declaration as well. A package file outside this set
+ * is reachable only through types, so whatever it spells cannot affect
+ * the compiled program. Null when a reachable file loads a computed
+ * specifier: then any file may load. */
+export function npmStaticLoadableFiles(
+  program: ts.Program,
+  moduleOrder: readonly ts.SourceFile[],
+): Set<string> | null {
+  const seen = new Set<ts.SourceFile>();
+  const work: ts.SourceFile[] = [];
+  const add = (sf: ts.SourceFile | null | undefined): void => {
+    if (sf === null || sf === undefined || seen.has(sf) || sf.isDeclarationFile) return;
+    seen.add(sf);
+    work.push(sf);
+  };
+  for (const sf of moduleOrder) add(sf);
+  let computed = false;
+  while (work.length > 0 && !computed) {
+    const sf = work.pop()!;
+    const packageJs = npmStaticPackageOfPath(sf.fileName) !== null && isJsSourceFileName(sf.fileName);
+    const follow = (spec: string, kind: "import" | "require"): void => {
+      if (canonicalBuiltinModule(spec) !== null) return;
+      add(resolveImport7(program, sf, spec, kind) ?? npmStaticDepSf7(program, sf, spec, kind));
+    };
+    ts.walkPreorder(sf, (n) => {
+      if (computed) return "stop";
+      if (ts.isCallExpression(n)) {
+        const isImport = n.expression.kind === ts.SyntaxKind.ImportKeyword;
+        const isRequire = ts.isIdentifier(n.expression) && n.expression.text === "require";
+        if (!isImport && !isRequire) return undefined;
+        const arg = n.arguments.nodes[0];
+        if (arg !== undefined && ts.isStringLiteralLike(arg))
+          follow(arg.text, isImport ? "import" : "require");
+        else if (packageJs || isImport) computed = true;
+      } else if (
+        packageJs &&
+        (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) &&
+        n.moduleSpecifier !== undefined &&
+        ts.isStringLiteral(n.moduleSpecifier)
+      ) {
+        follow(n.moduleSpecifier.text, "import");
+      }
+      return undefined;
+    });
+  }
+  return computed ? null : new Set([...seen].map((sf) => sf.fileName.split("\\").join("/")));
+}
+
 /** The program source file a bare specifier reaches when it names an
  * opted-in --npm-static package (the shipped-JS entry preflight admitted
  * as a module edge), else null. No offender reporting here — preflight

@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2561)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2562)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
@@ -1405,8 +1405,11 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       runBinary("node", [entry]),
       runBinary(binary, []),
     ]);
-    nativeRes.stderr = comparableStderr(nativeRes.stderr);
-    expect(nativeRes).toEqual(nodeRes);
+    // Node's stderr carries its type-stripping warning; the programs write
+    // only to stdout.
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(comparableStderr(nativeRes.stderr).toString("utf8")).toBe("");
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
     expect(nativeRes.exitCode).toBe(0);
   }
 
@@ -1422,6 +1425,14 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       "gtcore",
     ]);
   }, 180_000);
+
+  // A whitespace/syntax-minified bundle whose helpers keep their names is
+  // judged by the recognizers, not refused up front as minified.
+  test("--npm-static=auto opts a minified bundle with named helpers in", () => {
+    const entry = join(fixturesRoot, "npm/cases/2558-bundled-chunks/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: "auto" });
+    expect(coverage.npmStatic).toContainEqual({ package: "gtchunkws", status: "static" });
+  }, 120_000);
 
   test.each(["2559-cjs-cycle", "2560-cjs-cycle-partner-first"])(
     "the esbuild CommonJS cycle %s compiles statically and byte-matches Node",
@@ -1445,6 +1456,15 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       },
     ]);
   }, 120_000);
+
+  // 2562: a file with unverifiable interop that no compiled code can load
+  // (the program imports a leaf data module and only a type from the
+  // main entry) leaves its package static.
+  test("a package is judged by the files its imported subpaths can load", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2562-subpath-leaf/main.ts"), [
+      "gtsubpath",
+    ]);
+  }, 180_000);
 
   test("published type-only declarations coexist with a static runtime bundle", async () => {
     const entry = join(fixturesRoot, "npm/cases/2469-bundle-offender/main.ts");

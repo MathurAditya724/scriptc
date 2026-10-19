@@ -48,6 +48,7 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   declarationOverloads = new Map();
   declarationProperties = new Map();
   offenders.clear();
+  fileDegrades.clear();
   rewriteCache.clear();
   liveExportFiles.clear();
   clearVirtualSources();
@@ -96,6 +97,21 @@ export function reportNpmStaticOffender(pkg: string, reason: string): void {
 
 export function npmStaticOffenders(): ReadonlyMap<string, string> {
   return offenders;
+}
+
+/** Files whose bundler interop the rewrite could not finish this attempt,
+ * with their package and reason. A file refuses its package only when
+ * the compiled program can load it (npmStaticLoadableFiles): a package is
+ * judged by what its imported subpaths reach, not by every file it ships. */
+const fileDegrades = new Map<string, { pkg: string; reason: string }>();
+
+export function npmStaticFileDegrades(): ReadonlyMap<string, { pkg: string; reason: string }> {
+  return fileDegrades;
+}
+
+function reportFileDegrade(path: string, pkg: string, reason: string): void {
+  const key = path.split("\\").join("/");
+  if (!fileDegrades.has(key)) fileDegrades.set(key, { pkg, reason });
 }
 
 /** The DefinitelyTyped name mangling ("@scope/pkg" → "scope__pkg") — the
@@ -385,7 +401,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // CommonJS module text.
           const split = original === null ? null : services.splitCjsChunks(original, path);
           if (split !== null && "degrade" in split) {
-            reportNpmStaticOffender(target.pkg, split.degrade);
+            reportFileDegrade(path, target.pkg, split.degrade);
             original = null;
           } else if (split !== null) {
             for (const chunk of split.chunks) setVirtualSource(chunk.path, chunk.source);
@@ -416,7 +432,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
               (live) => liveExportFiles.add(live.split("\\").join("/")),
             );
             if (answer !== null && typeof answer === "object") {
-              reportNpmStaticOffender(target.pkg, answer.degrade);
+              reportFileDegrade(path, target.pkg, answer.degrade);
             } else {
               rewritten =
                 answer ??
@@ -464,6 +480,14 @@ function looksUnminified(source: string): boolean {
   return source.length / lines.length <= 200;
 }
 
+/** A whitespace/syntax-minified bundler dist whose interop helpers keep
+ * their names (`var __toESM=…,__toCommonJS=mod=>…`): the recognizers
+ * verify those shapes and refuse the package precisely when they cannot,
+ * so the minification heuristic need not refuse it up front. */
+function namedBundlerHelpers(source: string): boolean {
+  return /\b__(?:toCommonJS|commonJS|toESM)\d*\s*=\s*(?:\(|[A-Za-z_$][\w$]*\s*=>)/.test(source);
+}
+
 function hasTransformMarkers(source: string): boolean {
   return TRANSFORM_MARKERS.some((m) => source.includes(m));
 }
@@ -486,7 +510,8 @@ export function npmStaticIneligibleReason(
   if (jsEntry === null) return "no runtime JS entry resolves";
   const source = trackedReadFile(jsEntry);
   if (source === null) return `its runtime entry ${jsEntry} cannot be read`;
-  if (!looksUnminified(source)) return "its shipped JS looks minified";
+  if (!looksUnminified(source) && !namedBundlerHelpers(source))
+    return "its shipped JS looks minified";
   if (hasTransformMarkers(source)) {
     return "its shipped JS carries build-transform markers (bundled/transpiled dist)";
   }

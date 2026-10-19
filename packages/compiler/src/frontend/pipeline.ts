@@ -10,11 +10,13 @@ import {
   checkPreflight,
   isNodeTypesPath,
   locOf,
+  npmStaticLoadableFiles,
   requiresOf,
   resolveNpmImport,
   type LoadResult,
 } from "./program.js";
 import {
+  npmStaticFileDegrades,
   npmStaticIneligibleReason,
   npmStaticOffenders,
   npmStaticPackageOfPath,
@@ -458,6 +460,14 @@ function loadFrontend(
   const typecheckRefused = new Set<string>();
   while (effective.size > 0) {
     const reasons = new Map<string, string>(npmStaticOffenders());
+    // Bundler interop the rewrite could not finish refuses its package
+    // only where the compiled program can load the file.
+    if (npmStaticFileDegrades().size > 0) {
+      const loadable = npmStaticLoadableFiles(load.program, load.moduleOrder);
+      for (const [file, { pkg, reason }] of npmStaticFileDegrades()) {
+        if (!reasons.has(pkg) && (loadable === null || loadable.has(file))) reasons.set(pkg, reason);
+      }
+    }
     for (const d of preflight) {
       const pkg = npmStaticPackageOfPath(d.loc.file);
       if (pkg !== null && !reasons.has(pkg))
