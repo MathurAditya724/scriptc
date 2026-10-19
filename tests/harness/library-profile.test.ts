@@ -481,7 +481,7 @@ describe("library profile fences", () => {
         determinism: {
           remediations: { SC2012: "the explicit map key wins" },
           fences: [
-            { id: "stdlib.number.toPrecision", remediation: "request it as an effect" },
+            { id: "diagnostic.sc2012", remediation: "request it as an effect" },
             { id: "node-builtin.crypto.createSign", remediation: "signatures come from the host" },
           ],
         },
