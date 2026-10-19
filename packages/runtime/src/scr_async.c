@@ -4890,6 +4890,8 @@ struct ScrGen {
   /* The never-started teardown: drops the packed (already-retained)
    * arguments the spawn wrapper built. Emitted per generator function. */
   void (*drop_args)(void *);
+  /* scr_gen_set_unstarted_return's hook; NULL for most generators. */
+  void (*unstarted_return)(void *);
   bool is_async;
   void (*settle_async)(ScrGen *, ScrPromise *);
   ScrAsyncGenRequest *requests_head;
@@ -5449,6 +5451,8 @@ void scr_gen_resume(ScrGen *g) {
   }
 }
 
+void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *)) { g->unstarted_return = hook; }
+
 void scr_gen_close(ScrGen *g) {
   scr_gen_slot_reset(&g->ret);
   scr_gen_resume_return(g);
@@ -5483,13 +5487,16 @@ void scr_gen_resume_return(ScrGen *g) {
     return;
   case SCR_GEN_UNSTARTED:
     /* The body never runs: tear the fiber down cleanly (drop the packed
-     * arguments) and complete with the parked value. */
+     * arguments) and complete with the parked value. The generator is
+     * done before the hook runs, so a resume from inside it answers done;
+     * an exception the hook raises stays pending for the caller. */
+    g->state = SCR_GEN_DONE;
+    if (g->unstarted_return != NULL) g->unstarted_return(g->fiber->argpack);
     if (g->drop_args != NULL) g->drop_args(g->fiber->argpack);
     else free(g->fiber->argpack);
     scr_fiber_destroy(g->fiber);
     g->fiber = NULL;
     scr_fibers_live--;
-    g->state = SCR_GEN_DONE;
     scr_gen_ret_to_out(g);
     return;
   default:

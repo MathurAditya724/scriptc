@@ -755,6 +755,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "num.toFixed0": { argTypes: [F64], result: STRING },
   "num.toFixed": { argTypes: [F64, F64], result: STRING },
   "num.toStringRadix": { argTypes: [F64, DYN], result: STRING },
+  /** toString(radix) with a number radix (scr_lib.c): truncates it as
+   * ToIntegerOrInfinity does, THROWS RangeError outside 2..36. */
+  "num.toStringRadixF64": { argTypes: [F64, F64], result: STRING },
   /** Object.is over two numbers — the spec's SameValue on doubles: NaN
    * equals NaN, +0 differs from -0, everything else is `===`. Plain bool
    * result; never throws. (Union-armed operands take unionEq's sameValue

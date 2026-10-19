@@ -38,7 +38,7 @@ import { InternalCompilerError } from "../errors.js";
  * harness asserts refusals match entry codes. renderSurfaceManifest is
  * byte-deterministic: entries sort by id, keys are emitted in one fixed
  * order, and the output carries no timestamps or absolute paths. */
-import { FENCE_CODES, UNSUPPORTED } from "../diagnostics/diagnostic.js";
+import { FENCE_CODES, UNSUPPORTED, webAssemblyDiag } from "../diagnostics/diagnostic.js";
 import { NODE24_FETCH_COMPAT_PROFILE } from "../compat/fetch-profile.js";
 import { SUPPORTED_BUILTIN_MODULES, SUPPORTED_NODE_MODULES } from "../frontend/builtin-modules.js";
 import {
@@ -275,7 +275,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
       status: "static",
       ...(COLLECTION_ITERATOR_METHODS.has(name)
         ? {
-            note: "live native iterators support next(), for...of, and drains; iterator helper methods are refused",
+            note: "live native iterators support next(), for...of, drains, and the iterator helper methods",
           }
         : {}),
     });
@@ -288,7 +288,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
       status: "static",
       ...(COLLECTION_ITERATOR_METHODS.has(name)
         ? {
-            note: "live native iterators support next(), for...of, and drains; iterator helper methods are refused",
+            note: "live native iterators support next(), for...of, drains, and the iterator helper methods",
           }
         : {}),
     });
@@ -442,6 +442,19 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
         ...(hint !== undefined ? { note: hint } : {}),
       });
     }
+  }
+
+  // ── the WebAssembly global: every reached use refuses (webAssemblyDiag) ─
+  {
+    const refusal = webAssemblyDiag("WebAssembly", { file: "", start: 0, end: 0 });
+    add({
+      id: "stdlib.webassembly",
+      kind: "stdlib",
+      name: "globalThis.WebAssembly",
+      status: "unsupported",
+      code: refusal.code,
+      ...(refusal.hint !== undefined ? { note: refusal.hint } : {}),
+    });
   }
 
   // ── fetch/Web platform: one explicit, versioned compatibility profile ─

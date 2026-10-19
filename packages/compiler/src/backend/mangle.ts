@@ -204,6 +204,11 @@ export function mangleGenSpawn(fnName: string): string {
 export function mangleGenDrop(fnName: string): string {
   return `sc_gd_${sanitize(fnName)}`;
 }
+/** The never-started return() hook of a generator that closes its source
+ * argument (an iterator helper). */
+export function mangleGenSourceClose(fnName: string): string {
+  return `sc_gc_${sanitize(fnName)}`;
+}
 /** Emitted ref-kind resolve thunk, interned per inner-type key. */
 export function mangleResolveThunk(n: number): string {
   return `sc_rslv_${n}`;

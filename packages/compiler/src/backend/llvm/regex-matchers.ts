@@ -1639,6 +1639,40 @@ function parseSubset(pattern: string, flags: string): { root: RxNode; ncap: numb
   }
 }
 
+/** The capture count of a regex literal (the whole match included) and,
+ * per capture, whether every match sets it: no alternation of several
+ * branches and no repetition that can run zero times encloses it. Null
+ * when the pattern is outside the parsed subset. */
+export function regexLiteralCaptures(
+  pattern: string,
+  flags: string,
+): { count: number; always: boolean[] } | null {
+  const parsed = parseSubset(pattern, flags);
+  if (!parsed) return null;
+  const always = Array.from({ length: parsed.ncap }, (_, i) => i === 0);
+  const walk = (node: RxNode, sure: boolean): void => {
+    switch (node.kind) {
+      case "cap":
+        always[node.index] = sure;
+        walk(node.body, sure);
+        return;
+      case "seq":
+        for (const item of node.items) walk(item, sure);
+        return;
+      case "alt":
+        for (const alt of node.alts) walk(alt, sure && node.alts.length === 1);
+        return;
+      case "rep":
+        walk(node.body, sure && node.min > 0);
+        return;
+      default:
+        return;
+    }
+  };
+  walk(parsed.root, true);
+  return { count: parsed.ncap, always };
+}
+
 /** Whether a literal compiles to a native matcher (tests and size caps). */
 export function regexLiteralCompiles(pattern: string, flags: string): boolean {
   return parseSubset(pattern, flags) !== null;
