@@ -25,6 +25,7 @@ import {
   DYN,
   F64,
   STRING,
+  TESTCTX_T,
   VOID,
   isUnitType,
 } from "../../ir/ir.js";
@@ -652,6 +653,8 @@ export function lowerNodeTestModuleCall(
     case "beforeEach":
     case "afterEach":
       return lowerHook(lowerer, expr, HOOK_WHICH[bi.member]!, `${bi.member}(...)`, loc);
+    case "getTestContext":
+      return lowerGetTestContext(lowerer, expr, loc);
     case "run":
       lowerer.noLowering(
         "test.run",
@@ -670,11 +673,45 @@ export function lowerNodeTestModuleCall(
       lowerer.noLowering(
         `test.${bi.member}`,
         expr,
-        "test/it, describe/suite, before/after/beforeEach/afterEach, and the skip/todo/only twins are the lowered node:test members",
+        "test/it, describe/suite, before/after/beforeEach/afterEach, getTestContext, and the skip/todo/only twins are the lowered node:test members",
         ts.isIdentifier(expr.expression) ? lowerer.resolveValueSymbol(expr.expression) : undefined,
       );
   }
   return null; // unreachable — noLowering throws
+}
+
+/** getTestContext(): the context of the test, suite or hook running in
+ * the current async context, or undefined outside one (module top level,
+ * and code reached only through timer, immediate, nextTick and
+ * queueMicrotask callbacks). */
+function lowerGetTestContext(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  if (expr.arguments.length > 0) {
+    lowerer.noLowering(
+      `getTestContext with ${expr.arguments.length} arguments`,
+      expr,
+      "the supported form is getTestContext()",
+    );
+  }
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const missing = declared ? lowerer.wrappedUndefined(declared, loc) : null;
+  if (!declared || !missing) {
+    lowerer.noLowering(
+      "getTestContext() of this type",
+      expr,
+      "getTestContext() lowers as TestContext | SuiteContext | undefined",
+    );
+  }
+  return {
+    kind: "ternary",
+    cond: { kind: "libCall", fn: "test.hasContext", args: [], type: BOOL, loc },
+    then: lowerer.coerceToExpected(
+      { kind: "libCall", fn: "test.context", args: [], type: TESTCTX_T, loc },
+      declared,
+    ),
+    else_: missing,
+    type: declared,
+    loc,
+  };
 }
 
 /** The callable-module form: `test(...)` where the callee identifier IS
@@ -902,7 +939,8 @@ export function lowerTestMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  if (call.questionDotToken || (access.questionDotToken && !lowerer.chainHandled.has(access)))
+    return null;
   const loc = locOf(call);
   const member = access.name.text;
   // fn.mock.callCount() and the other mock context members.
@@ -1182,7 +1220,9 @@ export function lowerTestCtxProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (expr.questionDotToken) return null;
+  // `getTestContext()?.name`: the optional-chain step re-enters here with
+  // the receiver narrowed.
+  if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
   const mockCalls = lowerMockContextProperty(lowerer, expr);
   if (mockCalls) return mockCalls;
   if (lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind !== "testCtx") return null;
