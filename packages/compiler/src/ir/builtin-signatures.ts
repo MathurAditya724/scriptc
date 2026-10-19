@@ -64,6 +64,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * are opaque checked-dynamic handles. */
   "fetch.start": { argTypes: [STRING, DYN], result: { kind: "promise", inner: DYN } },
   "fetch.responseNew": { argTypes: [DYN, DYN], result: DYN },
+  "fetch.responseJsonStatic": { argTypes: [DYN, DYN], result: DYN },
   "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "abort.controllerNew": { argTypes: [], result: DYN },
   /** EventTarget / Event / CustomEvent construction (scr_event_target.c):
@@ -4197,6 +4198,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.valueOf": { argTypes: [DATE_T], result: F64 },
   "date.toISOString": { argTypes: [F64], result: STRING },
   "date.toISOStringValue": { argTypes: [DATE_T], result: STRING },
+  /** Date.prototype.toUTCString over a stored Date ("Invalid Date" for
+   * NaN; never throws). */
+  "date.toUTCString": { argTypes: [DATE_T], result: STRING },
   "date.getFullYear": { argTypes: [DATE_T], result: F64 },
   "date.getUTCFullYear": { argTypes: [DATE_T], result: F64 },
   "date.getMonth": { argTypes: [DATE_T], result: F64 },

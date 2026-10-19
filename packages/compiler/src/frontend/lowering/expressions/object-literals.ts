@@ -823,7 +823,7 @@ export function lowerObjectLiteral(
       // `k?: ...` — which desugar to one conditional field at the
       // spread's own position (any position: they introduce one fresh
       // name, collision-fenced below). Everything else stays fenced.
-      const cs = conditionalSpreadOf(prop.expression);
+      const cs = conditionalSpreadOf(prop.expression) ?? andSpreadOf(lowerer, prop.expression);
       if (cs === "unsupported" || (cs && cs.props.length !== 1)) {
         lowerer.unsupported(
           "SC1090",
@@ -1264,6 +1264,7 @@ export function lowerObjectLiteral(
     expr.properties.length >= 2 &&
     ts.isSpreadAssignment(expr.properties[0]!) &&
     !conditionalSpreadOf(expr.properties[0]!.expression) &&
+    !andSpreadOf(lowerer, expr.properties[0]!.expression) &&
     expr.properties
       .slice(1)
       .every(
@@ -1340,7 +1341,7 @@ export function lowerObjectLiteral(
     let mergeable = true;
     for (const prop of expr.properties) {
       if (ts.isSpreadAssignment(prop)) {
-        const cs = conditionalSpreadOf(prop.expression);
+        const cs = conditionalSpreadOf(prop.expression) ?? andSpreadOf(lowerer, prop.expression);
         if (cs === "unsupported" || (cs && cs.props.length !== 1)) {
           lowerer.unsupported(
             "SC1090",
@@ -1481,7 +1482,12 @@ export function lowerObjectLiteral(
     !shape.tuple &&
     shape.fields.length > 0 &&
     expr.properties.length > 0 &&
-    expr.properties.every((p) => ts.isSpreadAssignment(p) && !conditionalSpreadOf(p.expression)) &&
+    expr.properties.every(
+      (p) =>
+        ts.isSpreadAssignment(p) &&
+        !conditionalSpreadOf(p.expression) &&
+        !andSpreadOf(lowerer, p.expression),
+    ) &&
     expr.properties.some((p) => {
       const t = lowerer.mapTypeOf(lowerer.typeOf((p as ts.SpreadAssignment).expression));
       return (
@@ -1599,7 +1605,7 @@ export function lowerObjectLiteral(
       }
     }
     if (ts.isSpreadAssignment(prop)) {
-      const cs = conditionalSpreadOf(prop.expression);
+      const cs = conditionalSpreadOf(prop.expression) ?? andSpreadOf(lowerer, prop.expression);
       if (cs && cs !== "unsupported") {
         // `...(c ? { k: v } : {})` — ONE conditional field at the
         // spread's own position: cond evaluates exactly once, `v` only
@@ -1728,7 +1734,8 @@ export function lowerObjectLiteral(
         const laterNames = new Set<string>();
         for (const later of expr.properties.slice(expr.properties.indexOf(prop) + 1)) {
           if (ts.isSpreadAssignment(later)) {
-            if (conditionalSpreadOf(later.expression)) continue;
+            if (conditionalSpreadOf(later.expression) || andSpreadOf(lowerer, later.expression))
+              continue;
             const lt = laterSpreadType(lowerer, later.expression);
             if (lt?.kind === "record") {
               // A field the later source may lack defines nothing.
@@ -1963,7 +1970,8 @@ export function lowerObjectLiteral(
       const laterNames = new Set<string>();
       for (const later of expr.properties.slice(expr.properties.indexOf(prop) + 1)) {
         if (ts.isSpreadAssignment(later)) {
-          if (conditionalSpreadOf(later.expression)) continue;
+          if (conditionalSpreadOf(later.expression) || andSpreadOf(lowerer, later.expression))
+            continue;
           const lt = laterSpreadType(lowerer, later.expression);
           if (lt?.kind === "record") {
             // A field the later source may lack defines nothing.
@@ -2515,6 +2523,54 @@ function lowerUnionRecordClone(lowerer: Lowerer, expr: ts.ObjectLiteralExpressio
     type: sourceType,
     loc,
   };
+}
+
+/** `...(c && { k: v })`: spreading a falsy primitive (false, 0, "", NaN)
+ * copies nothing, so the idiom is `...(c ? { k: v } : {})` with `c`
+ * evaluated once. Recognized only where the spread's own type mixes the
+ * record with primitive arms; a record or record-or-unit spread keeps the
+ * ordinary source-copy path. */
+export function andSpreadOf(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): { cond: ts.Expression; props: CondSpreadProp[]; whenTrue: boolean } | "unsupported" | null {
+  let e: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken)
+    return null;
+  let right: ts.Expression = e.right;
+  while (ts.isParenthesizedExpression(right)) right = right.expression;
+  if (!ts.isObjectLiteralExpression(right)) return null;
+  const spreadType = lowerer.mapTypeOf(lowerer.typeOf(e));
+  if (spreadType?.kind !== "union") return null;
+  const arms = lowerer.unions.get(spreadType.unionId)?.arms ?? [];
+  if (
+    arms.filter((arm) => arm.kind === "record").length !== 1 ||
+    !arms.some((arm) => arm.kind === "bool" || arm.kind === "f64" || arm.kind === "string") ||
+    !arms.every(
+      (arm) =>
+        arm.kind === "record" ||
+        arm.kind === "bool" ||
+        arm.kind === "f64" ||
+        arm.kind === "string" ||
+        isUnitType(arm),
+    )
+  )
+    return null;
+  if (right.properties.length === 0) return "unsupported";
+  const props: CondSpreadProp[] = [];
+  for (const p of right.properties) {
+    if (
+      (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+      p.name &&
+      (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
+    ) {
+      props.push(p as CondSpreadProp);
+    } else {
+      return "unsupported";
+    }
+  }
+  return { cond: e.left, props, whenTrue: true };
 }
 
 /** A conditional spread's carrier property: `name: value` or shorthand,
