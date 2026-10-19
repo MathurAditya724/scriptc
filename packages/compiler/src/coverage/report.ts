@@ -24,6 +24,7 @@ import { renderDiagnostics } from "../diagnostics/render.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
 import type { DemotionUnit, TierReport } from "../frontend/tier-analysis.js";
+import type { WasmModuleReport } from "../wasm/discover.js";
 
 export interface CoverageInput {
   file: string;
@@ -57,6 +58,9 @@ export interface CoverageInput {
   /** --explain-dynamic: the report-only tier assignment (which bindings,
    * fields, functions, classes and modules the dynamic tier would take). */
   tiers?: TierReport;
+  /** The WebAssembly modules the build can see (wasm/discover.ts): their
+   * size, validity and the proposals they use. */
+  wasmModules?: WasmModuleReport[];
   /** True when tsc preflight failed — no coverage can be computed. */
   preflightFailed: boolean;
 }
@@ -67,6 +71,8 @@ export interface NpmStaticStatus {
   status: "static" | "refused";
   /** The first refusal reason for a refused package. */
   detail?: string;
+  /** How to act on the refusal, when there is a specific remedy. */
+  hint?: string;
 }
 
 const GREEN = "\x1b[32m";
@@ -215,6 +221,51 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     out.push("");
   }
 
+  // The WebAssembly modules the build can see: what translating them would
+  // take (wasm/discover.ts). No module compiles to native code yet; the
+  // sites that load one are blockers or deferred fences above.
+  const wasm = input.wasmModules ?? [];
+  if (wasm.length > 0) {
+    out.push(
+      `  ${c(DIM, "WebAssembly modules:")} ${c(DIM, "(found at build time; none compile to native code yet)")}`,
+    );
+    for (const m of wasm) {
+      const name = m.path !== undefined ? displayPath(m.path, opts.root) : "inline module";
+      const state =
+        m.status === "valid"
+          ? c(GREEN, "valid")
+          : m.status === "unsupported"
+            ? c(YELLOW, `uses ${m.unsupported.join(", ")}`)
+            : c(RED, `${m.status}: ${m.error ?? ""}`);
+      out.push(`    ${name}  ${c(DIM, `${groupDigits(m.size)} bytes`)}  ${state}`);
+      const imports = m.importModules.length > 0 ? ` (${m.importModules.join(", ")})` : "";
+      out.push(
+        `      ${c(DIM, `${counted(m.functions, "function")}, ${counted(m.imports, "import")}${imports}, ${counted(m.exports, "export")}`)}`,
+      );
+      if (m.features.length > 0) out.push(`      ${c(DIM, `features: ${m.features.join(", ")}`)}`);
+      const shown = m.sources.slice(0, SITES_SHOWN);
+      for (const s of shown) {
+        const at =
+          s.line !== undefined
+            ? `${displayPath(s.file, opts.root)}:${s.line}`
+            : displayPath(s.file, opts.root);
+        const how =
+          s.kind === "path"
+            ? `path at ${at}`
+            : s.kind === "inline"
+              ? `inline at ${at}`
+              : s.kind === "package"
+                ? `shipped by the package at ${displayPath(dirOf(s.file), opts.root)}`
+                : `configured by ${at}`;
+        out.push(`      ${c(DIM, `found: ${how}`)}`);
+      }
+      if (m.sources.length > shown.length) {
+        out.push(`      ${c(DIM, `found: +${m.sources.length - shown.length} more`)}`);
+      }
+    }
+    out.push("");
+  }
+
   // --provenance-sources: per-package attribution — the answer to "did
   // the DEPENDENCY's statements compile static?", computed by summing
   // statsByFile entries under each package's source dir. Elided
@@ -331,6 +382,27 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     renderDivergences();
   }
   return out.join("\n");
+}
+
+/** "1 function", "1,698 functions". */
+function counted(n: number, noun: string): string {
+  return `${groupDigits(n)} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+/** 637405 → "637,405". */
+function groupDigits(n: number): string {
+  const digits = String(n);
+  let out = "";
+  for (let i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 === 0) out += ",";
+    out += digits[i];
+  }
+  return out;
+}
+
+function dirOf(file: string): string {
+  const slash = file.lastIndexOf("/");
+  return slash <= 0 ? file : file.slice(0, slash);
 }
 
 function DIMPath(file: string, color: boolean): string {
@@ -451,6 +523,7 @@ export function coverageEnvelope(
           },
         }),
     ...(input.tiers !== undefined ? { tiers: tiersEnvelope(input.tiers, locator) } : {}),
+    ...(input.wasmModules !== undefined ? { wasmModules: input.wasmModules } : {}),
     groups,
     diagnostics: located,
   };

@@ -171,6 +171,9 @@ export interface AnalyzeOptions {
   /** `--explain-dynamic`: attach the tier-assignment report
    * (CoverageInput.tiers). Such analyses bypass the verdict cache. */
   explainDynamic?: boolean;
+  /** `--wasm <file>`: WebAssembly module files the program loads that its
+   * sources do not name (absolute paths); reported with the discovered ones. */
+  wasm?: readonly string[];
 }
 
 export interface AnalyzeResult {
