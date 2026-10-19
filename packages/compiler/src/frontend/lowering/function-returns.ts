@@ -157,6 +157,13 @@ export function declaredReturnType(
   }
   if (mappedReturn && isJsSourceFile(decl.getSourceFile()) && functionCanReturnUndefined(decl))
     mappedReturn = lowerer.withUndefinedArmOf(mappedReturn) ?? mappedReturn;
+  // A generic-class method body that can return an indexed read that
+  // misses returns undefined there, whatever the declared result says.
+  if (mappedReturn && lowerer.runtimeOptionalGenericReturns.has(decl))
+    mappedReturn =
+      mappedReturn.kind === "promise"
+        ? { kind: "promise", inner: lowerer.runtimeOptionalType(mappedReturn.inner) }
+        : lowerer.runtimeOptionalType(mappedReturn);
   if (isJsSourceFile(decl.getSourceFile()) && mappedReturn?.kind === "void") {
     let returnsValue = false;
     const scan = (node: ts.Node): void => {

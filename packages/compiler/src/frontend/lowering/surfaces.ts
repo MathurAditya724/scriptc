@@ -276,8 +276,8 @@ export const HTTP_SERVER_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
 /** new http.Agent(options)'s documented keys (Node v24 — the Agent
  * constructor table plus the socket.connect() options it forwards into
  * each dial). The lowered set is keepAlive/keepAliveMsecs/maxSockets/
- * maxFreeSockets/timeout/port (+ scheduling, dropped: no free pool
- * exists); the rest fence by name and unknown keys drop like Node. */
+ * maxFreeSockets/timeout/port/scheduling; the rest fence by name and
+ * unknown keys drop like Node. */
 export const AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "family",
   "hints",
@@ -2223,6 +2223,13 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     name: "Date.prototype.toISOString",
     fns: ["date.toISOString", "date.toISOStringValue"],
     note: "UTC ISO formatting over constructed and stored Date values",
+  },
+  {
+    id: "stdlib.date.toUTCString",
+    kind: "stdlib",
+    name: "Date.prototype.toUTCString",
+    fns: ["date.toUTCString"],
+    note: "RFC 7231 IMF-fixdate formatting over stored Date values",
   },
   {
     id: "stdlib.date.getFullYear",

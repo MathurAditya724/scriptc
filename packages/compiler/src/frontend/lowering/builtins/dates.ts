@@ -40,7 +40,7 @@ const DATE_TEXT_FNS: ReadonlyMap<string, IrLibFn> = new Map([
 ]);
 
 const DATE_METHOD_HINT =
-  "getTime(), valueOf(), toISOString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters, toUTCString() and locale formatters have no lowering";
+  "getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale formatters have no lowering";
 
 /** The Date slice: statics plus read-only Date values backed by one
  * TimeClip'd millisecond scalar. Construction lives in lowerNew;
@@ -118,6 +118,9 @@ export function lowerDateCall(
   }
   if (name === "toISOString") {
     return { kind: "libCall", fn: "date.toISOStringValue", args: [receiver], type: STRING, loc };
+  }
+  if (name === "toUTCString") {
+    return { kind: "libCall", fn: "date.toUTCString", args: [receiver], type: STRING, loc };
   }
   const fn = own(DATE_GETTER_FNS, name);
   if (fn !== undefined) {

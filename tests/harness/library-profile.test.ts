@@ -555,6 +555,7 @@ describe("library profile fences", () => {
       "stdlib.date.toISOString",
       "stdlib.date.toString",
       "stdlib.date.toTimeString",
+      "stdlib.date.toUTCString",
       "stdlib.date.valueOf",
     ]);
     expect(r.profile.fences[0]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);

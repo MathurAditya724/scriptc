@@ -66,7 +66,7 @@ stdlib-fence.ts:25:1 - error SC2020: 'Date.prototype.setUTCFullYear with argumen
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   26 | const sameDate = mutableDate === mutableDate; // scalar storage must not fake object identity
 
-  hint: getTime(), valueOf(), toISOString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters, toUTCString() and locale formatters have no lowering
+  hint: getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale formatters have no lowering
 
 stdlib-fence.ts:26:18 - error SC1043: comparing non-number, non-string values are not supported yet
 
