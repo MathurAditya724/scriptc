@@ -125,6 +125,7 @@ struct ScrTestCtx {
   struct ScrMockTimers *mock_timers; /* t.mock.timers, made on first use; freed at exit */
   bool passed; /* t.passed: set when the body passes, as Node's pass() does */
   bool listed; /* a suite listed in the failing section (a failing root before) */
+  double start_ms; /* when the test started running; NaN before */
 };
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
@@ -230,6 +231,7 @@ static ScrTestCtx *scr_test_node_new(ScrStr *name /*borrowed*/, int mode,
   t->plan = -1;
   t->timeout = INFINITY;
   t->concurrency = 1;
+  t->start_ms = NAN;
 #ifdef SCR_RC_AUDIT
   scr_testctx_live++;
 #endif
@@ -597,6 +599,23 @@ static void scr_test_cancel_unrun(ScrTestCtx *c) {
   scr_test_report_result(c);
 }
 
+/* A test that timed out (Node): its subtests that are still running are
+ * cancelled, innermost first, with their durations so far. Their bodies
+ * keep running unobserved and report nothing when they settle. */
+static void scr_test_cancel_running(ScrTestCtx *t) {
+  for (size_t i = 0; i < t->nchildren; i++) {
+    ScrTestCtx *c = t->children[i];
+    if (c->is_suite || c->state != SCR_TS_PENDING || isnan(c->start_ms)) continue;
+    scr_test_cancel_running(c);
+    static const char msg[] = "test did not finish before its parent and was cancelled";
+    scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+    c->err = scr_exc_take();
+    c->dur_ms = scr_now_ms() - c->start_ms;
+    c->state = SCR_TS_CANCELLED;
+    scr_test_report_result(c);
+  }
+}
+
 static void scr_test_fail_unrun(ScrTestCtx *c, ScrCaught *err) {
   double start = scr_now_ms();
   c->err = scr_caught_retain(err);
@@ -689,6 +708,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
    * afterEach chain. */
   ScrTestCtx *prev_parent = scr_test_parent_get();
   scr_test_parent_set(t);
+  t->start_ms = start;
   if (t->concurrency > 1) scr_test_defer++;
   bool hooked = scr_test_run_each_hooks(t, SCR_HOOK_BEFORE_EACH, true);
   /* A concurrent subtest resumes after its beforeEach hooks as many turns
@@ -703,10 +723,18 @@ static void scr_test_run_node(ScrTestCtx *t) {
     failed = true;
   } else if (t->cb) {
     scr_test_call(t->cb, t->flags, t, t);
+    if (t->state != SCR_TS_PENDING) {
+      /* Its parent timed out and cancelled it while the body ran: the
+       * result is reported, and the runner has moved on. */
+      if (scr_exc_pending()) scr_exc_clear();
+      if (t->concurrency > 1) scr_test_defer--;
+      return;
+    }
     if (scr_exc_pending()) {
       t->err = scr_exc_take();
       failed = true;
     }
+    if (failed && t->timed_out) scr_test_cancel_running(t);
   }
   /* Children a passing body registered without running (bare test() in
    * the body): run them now, before the parent completes — Node holds
