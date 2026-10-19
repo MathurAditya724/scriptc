@@ -33,6 +33,11 @@ typedef struct ScrEventTargetCore {
   const char *cls;         /* the warning's target name ("EventTarget") */
   bool tracked;            /* in the exit teardown registry */
   struct ScrEventTargetCore *tracked_prev, *tracked_next;
+  /* Called after a listener of `type` is added or removed, with the
+   * type's listener count (Node's kNewListener and kRemoveListener);
+   * NULL when nothing observes the core. */
+  void (*observe)(void *ctx, const ScrStr *type, size_t size, bool added);
+  void *observe_ctx;
 } ScrEventTargetCore;
 
 typedef struct ScrEvent {
@@ -82,21 +87,42 @@ extern SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool
  * which reaches the class's compiled methods. Without it a capsule's own
  * view answers. */
 void scr_event_handle_event_reader(ScrDyn *reader);
-/* BroadcastChannel's EventTarget side, which the worker events unit
- * reaches through this table (that unit links without this one): a core
- * of its own, dispatching a 'message' MessageEvent with the data, the
+/* BroadcastChannel's and MessagePort's EventTarget side, which the worker
+ * events unit reaches through this table: a core of its own, the
  * EventTarget methods (false: not one of them), and the on<type>
- * attributes. scr_et_broadcast_install sets the table (defined in
- * scr_json.c, which every program links). */
+ * attributes. A MessagePort is Node's NodeEventTarget: node_method adds on, once, off, emit and the other
+ * NodeEventTarget members (false: not one of them), dispatch_value is
+ * this[kHybridDispatch](value, type) on the target handle (ptr, tag), which
+ * it boxes only for listeners that need the target value (on/once
+ * listeners receive the
+ * value, the others a MessageEvent for 'message' and 'messageerror' and a
+ * CustomEvent otherwise; BroadcastChannel delivers its MessageEvents
+ * through it too), node_native adds an on() listener that runs
+ * native code (registered once per identity) and node_native_remove
+ * removes it by identity, count answers listenerCount(type), and port_close
+ * dispatches the port's MessagePortCloseEvent. trace and gcfree are the
+ * collector's view of a core. scr_et_broadcast_install sets the table
+ * (defined in scr_json.c, which every program links). */
 typedef struct {
   ScrEventTargetCore *(*core_new)(const char *cls);
   void (*core_free)(ScrEventTargetCore *core);
-  void (*dispatch_message)(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *data);
   bool (*method)(ScrEventTargetCore *core, ScrDyn *self, const char *method, ScrDyn *const *args,
                  size_t argc, ScrDyn **out);
   ScrDyn *(*method_value)(const char *name, size_t length);
   ScrDyn *(*handler_get)(ScrEventTargetCore *core, const char *type);
   void (*handler_set)(ScrEventTargetCore *core, const char *type, const ScrDyn *value);
+  bool (*node_method)(ScrEventTargetCore *core, ScrDyn *self, const char *method,
+                      ScrDyn *const *args, size_t argc, ScrDyn **out);
+  void (*dispatch_value)(ScrEventTargetCore *core, void *ptr, ScrDynHandleTag tag, const ScrStr *type,
+                         ScrDyn *value);
+  bool (*node_native)(ScrEventTargetCore *core, const ScrStr *type,
+                      void (*fn)(void *ctx, ScrDyn *self, ScrDyn *value), void *ctx,
+                      void (*ctx_release)(void *ctx), const void *identity, bool once);
+  void (*node_native_remove)(ScrEventTargetCore *core, const ScrStr *type, const void *identity);
+  double (*count)(ScrEventTargetCore *core, const ScrStr *type);
+  void (*port_close)(ScrEventTargetCore *core, ScrDyn *self);
+  void (*trace)(ScrEventTargetCore *core, ScrTraceVisit visit, void *ctx);
+  void (*gcfree)(ScrEventTargetCore *core);
 } ScrEtBroadcastOps;
 extern SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops;
 void scr_et_broadcast_install(void);

@@ -6100,24 +6100,31 @@ declare module "worker_threads" {
     removeAllListeners(event?: string): this;
     listenerCount(event: string, listener?: (...args: any[]) => void): number;
   }
-  export class MessagePort {
+  /* A NodeEventTarget: on/once listeners and addEventListener listeners
+   * share one list per event type, and a listener is registered once. */
+  export class MessagePort extends EventTarget {
     on(event: "message", listener: (value: any) => void): this;
-    on(event: "close", listener: () => void): this;
-    on(event: string, listener: (...args: any[]) => void): this;
-    once(event: string, listener: (...args: any[]) => void): this;
-    off(event: string, listener: (...args: any[]) => void): this;
-    addListener(event: string, listener: (...args: any[]) => void): this;
-    removeListener(event: string, listener: (...args: any[]) => void): this;
-    prependListener(event: string, listener: (...args: any[]) => void): this;
-    prependOnceListener(event: string, listener: (...args: any[]) => void): this;
+    on(event: "messageerror", listener: (error: Error) => void): this;
+    on(event: "close", listener: (event: Event) => void): this;
+    on(event: string, listener: (arg: any) => void): this;
+    once(event: string, listener: (arg: any) => void): this;
+    off(event: string, listener: (arg: any) => void): this;
+    addListener(event: string, listener: (arg: any) => void): this;
+    removeListener(event: string, listener: (arg: any) => void): this;
+    onmessage: ((event: MessageEvent) => void) | null;
+    onmessageerror: ((event: MessageEvent) => void) | null;
     postMessage(value: unknown, transferList?: readonly unknown[]): void;
     start(): void;
     close(callback?: () => void): void;
     ref(): void;
     unref(): void;
     hasRef(): boolean;
+    emit(event: string, arg?: any): boolean;
+    eventNames(): string[];
+    setMaxListeners(n: number): void;
+    getMaxListeners(): number;
     removeAllListeners(event?: string): this;
-    listenerCount(event: string, listener?: (...args: any[]) => void): number;
+    listenerCount(event: string): number;
   }
   /* Two entangled ports; a port moves to another thread through a
    * postMessage or workerData transferList. */

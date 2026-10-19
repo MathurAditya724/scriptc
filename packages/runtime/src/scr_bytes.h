@@ -104,6 +104,15 @@ ScrDyn *scr_worker_parent_port(void);
  * (scr_worker_events.c). */
 ScrDyn *scr_worker_message_channel(void);
 ScrDyn *scr_worker_receive_message_on_port(ScrDyn *port);
+/* A typed listener on a MessagePort (`port` is the port handle's view):
+ * listen adds `listener` (moved in) to the type's listeners in order with
+ * the port's other listeners, and dispatch calls adapter(listener, value)
+ * with the value on() listeners receive (the message for 'message'). It
+ * compares by closure identity: false, with the closure released, when
+ * the type already has it. unlisten removes it (listener borrowed). */
+bool scr_worker_port_listen(void *port, const ScrStr *type, ScrClosure *listener, void *adapter,
+                            bool once);
+void scr_worker_port_unlisten(void *port, const ScrStr *type, ScrClosure *listener);
 /* new BroadcastChannel(...args) (scr_worker_events.c): args is the argument
  * vector as one array (borrowed); may throw. */
 ScrDyn *scr_worker_broadcast_channel(ScrDyn *args);

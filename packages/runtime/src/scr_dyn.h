@@ -165,6 +165,7 @@ typedef enum {
   SCR_DYNH_MATCH_SOURCE = 55, /* a match result's pending metadata (scr_regex.c) */
   SCR_DYNH_MESSAGE_EVENT = 50, /* ScrEvent with data — BroadcastChannel's 'message' */
   SCR_DYNH_MESSAGE_PORT = 36,
+  SCR_DYNH_MESSAGE_PORT_CLOSE_EVENT = 56, /* MessagePort's 'close' Event (scr_event_target.c) */
   SCR_DYNH_NET_BLOCK_LIST = 48, /* net.BlockList (scr_net.c) */
   SCR_DYNH_NET_SERVER = 3, /* ScrNetServer — net.Server (http.Server rides the same handle) */
   SCR_DYNH_NET_SOCKET = 2, /* ScrNetSocket — net.Socket */

@@ -371,9 +371,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     fetch: false,
     // Subclasses of the runtime EventTarget/Event bases tear down and box
     // through the EventTarget unit even when no event.* libCall survives.
-    eventTarget: (mod.classes ?? []).some(
-      (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
-    ),
+    // MessagePorts keep their listeners in EventTarget cores.
+    eventTarget:
+      mod.workers === true ||
+      (mod.classes ?? []).some(
+        (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
+      ),
     processEvents: false,
     emitter:
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),

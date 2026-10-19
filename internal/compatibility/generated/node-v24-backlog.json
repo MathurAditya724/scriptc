@@ -7,8 +7,8 @@
     "tierItemCount": 3454,
     "tiers": {
       "static": {
-        "audit-partial": 1165,
-        "verify-gap": 2161,
+        "audit-partial": 1168,
+        "verify-gap": 2158,
         "replace-refusal": 41,
         "classify": 2,
         "implement": 85
@@ -84088,12 +84088,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.onmessageerror",
+          "tests": [
+            "tests/corpus/5800-broadcast-channel.ts",
+            "tests/corpus/6301-message-port-event-handlers.ts"
+          ]
         }
       }
     },
@@ -84344,7 +84347,10 @@
           "source": "compiler-feature:worker_threads.'close'",
           "tests": [
             "tests/corpus/native-worker-port-lifetime.ts",
-            "tests/corpus/native-worker-messages.ts"
+            "tests/corpus/native-worker-messages.ts",
+            "tests/corpus/6300-message-port-listeners.mjs",
+            "tests/corpus/6301-message-port-event-handlers.ts",
+            "tests/corpus/6302-parent-port-event-target.cjs"
           ]
         }
       }
@@ -84372,7 +84378,10 @@
           "source": "compiler-feature:worker_threads.'message'",
           "tests": [
             "tests/corpus/native-worker-port-lifetime.ts",
-            "tests/corpus/native-worker-messages.ts"
+            "tests/corpus/native-worker-messages.ts",
+            "tests/corpus/6300-message-port-listeners.mjs",
+            "tests/corpus/6301-message-port-event-handlers.ts",
+            "tests/corpus/6302-parent-port-event-target.cjs"
           ]
         }
       }
@@ -84393,12 +84402,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.'messageerror'",
+          "tests": [
+            "tests/corpus/native-worker-port-lifetime.ts",
+            "tests/corpus/native-worker-messages.ts",
+            "tests/corpus/6300-message-port-listeners.mjs",
+            "tests/corpus/6301-message-port-event-handlers.ts",
+            "tests/corpus/6302-parent-port-event-target.cjs"
+          ]
         }
       }
     },
@@ -84945,7 +84960,8 @@
             "tests/corpus/native-worker-error.ts",
             "tests/corpus/native-worker-exit-listeners.ts",
             "tests/corpus/5807-worker-error-values.ts",
-            "tests/corpus/5808-worker-unhandled-rejections.ts"
+            "tests/corpus/5808-worker-unhandled-rejections.ts",
+            "tests/corpus/6302-parent-port-event-target.cjs"
           ]
         }
       }
@@ -84976,7 +84992,8 @@
             "tests/corpus/native-worker-error.ts",
             "tests/corpus/native-worker-exit-listeners.ts",
             "tests/corpus/5807-worker-error-values.ts",
-            "tests/corpus/5808-worker-unhandled-rejections.ts"
+            "tests/corpus/5808-worker-unhandled-rejections.ts",
+            "tests/corpus/6302-parent-port-event-target.cjs"
           ]
         }
       }
@@ -85007,7 +85024,8 @@
             "tests/corpus/native-worker-error.ts",
             "tests/corpus/native-worker-exit-listeners.ts",
             "tests/corpus/5807-worker-error-values.ts",
-            "tests/corpus/5808-worker-unhandled-rejections.ts"
+            "tests/corpus/5808-worker-unhandled-rejections.ts",
+            "tests/corpus/6302-parent-port-event-target.cjs"
           ]
         }
       }
@@ -85028,12 +85046,19 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.'messageerror'",
+          "tests": [
+            "tests/corpus/native-worker-references.ts",
+            "tests/corpus/native-worker-error.ts",
+            "tests/corpus/native-worker-exit-listeners.ts",
+            "tests/corpus/5807-worker-error-values.ts",
+            "tests/corpus/5808-worker-unhandled-rejections.ts",
+            "tests/corpus/6302-parent-port-event-target.cjs"
+          ]
         }
       }
     },
@@ -85063,7 +85088,8 @@
             "tests/corpus/native-worker-error.ts",
             "tests/corpus/native-worker-exit-listeners.ts",
             "tests/corpus/5807-worker-error-values.ts",
-            "tests/corpus/5808-worker-unhandled-rejections.ts"
+            "tests/corpus/5808-worker-unhandled-rejections.ts",
+            "tests/corpus/6302-parent-port-event-target.cjs"
           ]
         }
       }

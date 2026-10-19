@@ -30,6 +30,7 @@ enum {
   SCR_ET_PASSIVE = 1 << 2,
   SCR_ET_RESIST = 1 << 3, /* runs after stopImmediatePropagation */
   SCR_ET_REMOVED = 1 << 4,
+  SCR_ET_NODE = 1 << 5, /* NodeEventTarget's on/once: receives the node value */
 };
 
 typedef struct ScrEtListener ScrEtListener;
@@ -46,6 +47,9 @@ struct ScrEtListener {
   void (*native)(void *ctx, ScrDyn *self, ScrDyn *event);
   void *ctx;
   void (*ctx_release)(void *ctx);
+  /* A native on() listener's identity (NULL: none): registered once, and
+   * what removal matches. */
+  const void *identity;
 };
 
 struct ScrEtRoot {
@@ -343,6 +347,12 @@ static void scr_et_new_listener(ScrEventTargetCore *core, ScrEtRoot *root) {
   scr_et_warn("MaxListenersExceededWarning", message);
 }
 
+/* this[kNewListener] and this[kRemoveListener]: the core's observer sees
+ * the type's listener count after each change. */
+static void scr_et_observe(ScrEventTargetCore *core, const ScrStr *type, size_t size, bool added) {
+  if (core->observe) core->observe(core->observe_ctx, type, size, added);
+}
+
 /* ── the core ──────────────────────────────────────────────────────── */
 
 void scr_et_core_init(ScrEventTargetCore *core, double max_listeners, const char *cls) {
@@ -446,6 +456,7 @@ static void scr_et_remove_matching(ScrEventTargetCore *core, const ScrStr *type,
         scr_et_listener_same(h->listener, listener)) {
       scr_et_listener_remove(h);
       root->size--;
+      scr_et_observe(core, type, root->size, false);
       if (root->size == 0) scr_et_root_unmap(core, root);
       return;
     }
@@ -503,13 +514,24 @@ static bool scr_et_read_options(const ScrDyn *options, ScrEtOptions *out) {
 
 SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool *aborted) = NULL;
 
+static ScrDyn *scr_et_add(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                          unsigned node_flags);
+
 ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
   if (argc < 2) {
     scr_et_type_error("The \"type\" and \"listener\" arguments must be specified", "ERR_MISSING_ARGS");
     return NULL;
   }
+  return scr_et_add(core, args, argc, 0);
+}
+
+/* addEventListener's body. node_flags is nonzero for NodeEventTarget's
+ * on/addListener/once (SCR_ET_NODE, with SCR_ET_ONCE for once), whose
+ * options object carries no other option. */
+static ScrDyn *scr_et_add(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                          unsigned node_flags) {
   ScrEtOptions opts;
-  if (!scr_et_read_options(argc > 2 ? args[2] : NULL, &opts)) return NULL;
+  if (!scr_et_read_options(node_flags || argc <= 2 ? NULL : args[2], &opts)) return NULL;
   if (opts.signal) {
     bool aborted = false;
     ScrEventTargetCore *signal_core =
@@ -550,10 +572,13 @@ ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_
   ScrStr *type = scr_dyn_string_coerce_js(args[0]);
   if (!type) return NULL;
   unsigned flags = (opts.once ? SCR_ET_ONCE : 0) | (opts.capture ? SCR_ET_CAPTURE : 0) |
-                   (opts.passive ? SCR_ET_PASSIVE : 0);
+                   (opts.passive ? SCR_ET_PASSIVE : 0) | node_flags;
   bool duplicate;
   ScrEtListener *l = scr_et_append(core, type, args[1], flags, &duplicate);
-  if (l) scr_et_new_listener(core, l->root);
+  if (l) {
+    scr_et_new_listener(core, l->root);
+    scr_et_observe(core, type, l->root->size, true);
+  }
   scr_str_release(type);
   return scr_dyn_retain(scr_dyn_undefined());
 }
@@ -694,6 +719,8 @@ void scr_event_handle_event_reader(ScrDyn *reader) {
 static void scr_et_invoke(ScrEtListener *l, ScrDyn *self, ScrDyn *event) {
   if (l->native) {
     l->native(l->ctx, self, event);
+    /* a typed listener's exception, reported as a listener's is */
+    if (scr_exc_pending()) scr_et_report(scr_exc_take());
     return;
   }
   ScrDyn *listener = l->listener;
@@ -784,7 +811,7 @@ static ScrEventObj *scr_event_obj_of(const ScrDyn *d);
 static ScrEvent *scr_event_of(const ScrDyn *d) {
   if (d && d->kind == SCR_DYN_HANDLE &&
       (d->v.handle.tag == SCR_DYNH_EVENT || d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT ||
-       d->v.handle.tag == SCR_DYNH_MESSAGE_EVENT)) {
+       d->v.handle.tag == SCR_DYNH_MESSAGE_EVENT || d->v.handle.tag == SCR_DYNH_MESSAGE_PORT_CLOSE_EVENT)) {
     return (ScrEvent *)d->v.handle.ptr;
   }
   ScrEventObj *obj = scr_event_obj_of(d);
@@ -824,6 +851,7 @@ void scr_et_dispatch(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *event) {
     if (handler->flags & SCR_ET_ONCE) {
       scr_et_listener_remove(handler);
       root->size--;
+      scr_et_observe(core, root->type, root->size, false);
     }
     bool passive = (handler->flags & SCR_ET_PASSIVE) != 0;
     if (passive) ev->in_passive = true;
@@ -916,10 +944,14 @@ void scr_et_handler_set(ScrEventTargetCore *core, const char *type, const ScrDyn
     h->handler = next;
     scr_dyn_release(old);
     if (root) {
-      if (was) root->size--;
+      if (was) {
+        root->size--;
+        scr_et_observe(core, root->type, root->size, false);
+      }
       if (now) {
         root->size++;
         scr_et_new_listener(core, root);
+        scr_et_observe(core, root->type, root->size, true);
       }
     }
     return;
@@ -937,6 +969,7 @@ void scr_et_handler_set(ScrEventTargetCore *core, const char *type, const ScrDyn
   l->ctx = h;
   l->ctx_release = scr_et_handler_release;
   scr_et_new_listener(core, l->root);
+  scr_et_observe(core, l->root->type, l->root->size, true);
 }
 
 /* ── Event handles ─────────────────────────────────────────────────── */
@@ -1184,6 +1217,16 @@ static const ScrDynHandleOps scr_event_ops = {
 
 static const ScrDynHandleOps scr_message_event_ops = {
     .cls = "MessageEvent",
+    .retain = scr_event_retain_v,
+    .release = scr_event_release_v,
+    .invoke = scr_event_invoke,
+    .get = scr_event_get,
+    .set = scr_event_set,
+    .inspect_view = scr_event_inspect_view,
+};
+
+static const ScrDynHandleOps scr_port_close_event_ops = {
+    .cls = "MessagePortCloseEvent",
     .retain = scr_event_retain_v,
     .release = scr_event_release_v,
     .invoke = scr_event_invoke,
@@ -1514,6 +1557,7 @@ static void scr_et_install(void) {
   scr_dyn_handle_install(SCR_DYNH_EVENT, &scr_event_ops);
   scr_dyn_handle_install(SCR_DYNH_CUSTOM_EVENT, &scr_custom_event_ops);
   scr_dyn_handle_install(SCR_DYNH_MESSAGE_EVENT, &scr_message_event_ops);
+  scr_dyn_handle_install(SCR_DYNH_MESSAGE_PORT_CLOSE_EVENT, &scr_port_close_event_ops);
   scr_dyn_handle_install(SCR_DYNH_EVENT_TARGET, &scr_event_target_ops);
   scr_event_ref_hooks = &scr_event_obj_ref_hooks;
   scr_et_register_teardown();
@@ -1613,6 +1657,238 @@ ScrDyn *scr_custom_event_new(ScrDyn *args) {
   return out;
 }
 
+
+/* ── NodeEventTarget (MessagePort) ─────────────────────────────────── */
+
+/* MessagePort's kCreateEvent: a MessageEvent with the value as its data
+ * for 'message' and 'messageerror', otherwise a CustomEvent with the value
+ * as its detail. +1. */
+static ScrDyn *scr_et_port_event(const ScrStr *type, ScrDyn *value) {
+  bool message = scr_et_eq(type, "message") || scr_et_eq(type, "messageerror");
+  ScrEvent *ev = scr_event_alloc(scr_str_retain((ScrStr *)type), !message);
+  ev->message = message;
+  if (message || (value->kind != SCR_DYN_UNDEF && value->kind != SCR_DYN_NULL))
+    ev->detail = scr_dyn_retain(value);
+  scr_event_track(ev);
+  ScrDyn *event = scr_dyn_new_handle(ev, message ? SCR_DYNH_MESSAGE_EVENT : SCR_DYNH_CUSTOM_EVENT);
+  scr_event_release_v(ev);
+  return event;
+}
+
+/* An on/once function listener: `callback.call(target, value)`. The
+ * receiver is the target's handle, so no box is made for `this`. */
+static void scr_et_invoke_node(ScrEtListener *l, void *ptr, ScrDynHandleTag tag, ScrDyn *value) {
+  ScrDyn *args[1] = {value};
+  scr_dyn_this_push(ptr, tag);
+  ScrDyn *result = scr_dyn_call(l->listener, args, 1, "listener");
+  scr_dyn_this_pop();
+  if (!result) {
+    scr_et_report(scr_exc_take());
+    return;
+  }
+  if (result->kind != SCR_DYN_UNDEF && result->kind != SCR_DYN_NULL) scr_et_add_catch(result);
+  scr_dyn_release(result);
+}
+
+/* this[kHybridDispatch](value, type, undefined) on the handle (ptr, tag):
+ * on/once listeners receive `value`; the others receive one event, made
+ * when the first of them runs. The target's dyn value is made only when
+ * a listener needs it. `value` borrowed. */
+static void scr_et_dispatch_value(ScrEventTargetCore *core, void *ptr, ScrDynHandleTag tag,
+                                  const ScrStr *type, ScrDyn *value) {
+  ScrEtRoot *root = scr_et_root_find(core, type);
+  if (!root || !root->head) return;
+  ScrDyn *self = NULL;
+  scr_et_root_retain(root);
+  ScrDyn *event = NULL;
+  ScrEvent *ev = NULL;
+  ScrEtListener *handler = scr_et_listener_retain(root->head);
+  while (handler && (root->resist || (handler->flags & SCR_ET_PASSIVE) || !(ev && ev->stop))) {
+    ScrEtListener *next = scr_et_listener_retain(handler->next);
+    if ((handler->flags & SCR_ET_REMOVED) || (ev && ev->stop && !(handler->flags & SCR_ET_RESIST))) {
+      scr_et_listener_release(handler);
+      handler = next;
+      continue;
+    }
+    if (handler->flags & SCR_ET_ONCE) {
+      scr_et_listener_remove(handler);
+      root->size--;
+      scr_et_observe(core, root->type, root->size, false);
+    }
+    if ((handler->flags & SCR_ET_NODE) && handler->listener &&
+        (handler->listener->kind == SCR_DYN_FUNC ||
+         (handler->listener->kind == SCR_DYN_TYPED_REF &&
+          scr_dyn_ref_typeof_is(handler->listener, "function")))) {
+      scr_et_invoke_node(handler, ptr, tag, value);
+    } else if (handler->flags & SCR_ET_NODE) {
+      if (!self && !handler->native) self = scr_dyn_new_handle(ptr, tag);
+      scr_et_invoke(handler, self, value);
+    } else {
+      if (!self) self = scr_dyn_new_handle(ptr, tag);
+      if (!event) {
+        event = scr_et_port_event(type, value);
+        ev = scr_event_of(event);
+        scr_event_set_target(ev, self);
+        ev->dispatching = true;
+      }
+      if (handler->flags & SCR_ET_PASSIVE) ev->in_passive = true;
+      scr_et_invoke(handler, self, event);
+      ev->dispatching = false;
+      ev->in_passive = false;
+    }
+    scr_et_listener_release(handler);
+    handler = next;
+  }
+  scr_et_listener_release(handler);
+  scr_et_root_release(root);
+  scr_dyn_release(event);
+  scr_dyn_release(self);
+}
+
+/* An on/once listener that runs native code: MessagePort's newListener
+ * and removeListener listeners, and typed listeners. ctx_release (NULL:
+ * not owned) releases ctx with the listener. A listener with an identity
+ * is added once: false when the type already has a listener with it, and
+ * ctx is then the caller's. */
+static bool scr_et_node_native(ScrEventTargetCore *core, const ScrStr *type,
+                               void (*fn)(void *ctx, ScrDyn *self, ScrDyn *value), void *ctx,
+                               void (*ctx_release)(void *ctx), const void *identity, bool once) {
+  ScrEtRoot *existing = identity ? scr_et_root_find(core, type) : NULL;
+  for (ScrEtListener *h = existing ? existing->head : NULL; h; h = h->next)
+    if (h->identity == identity) return false;
+  bool duplicate;
+  ScrEtListener *l =
+      scr_et_append(core, (ScrStr *)type, NULL, SCR_ET_NODE | (once ? SCR_ET_ONCE : 0), &duplicate);
+  l->native = fn;
+  l->ctx = ctx;
+  l->ctx_release = ctx_release;
+  l->identity = identity;
+  scr_et_new_listener(core, l->root);
+  scr_et_observe(core, type, l->root->size, true);
+  return true;
+}
+
+/* Removes the native listener with `identity` (removeEventListener). */
+static void scr_et_node_native_remove(ScrEventTargetCore *core, const ScrStr *type,
+                                      const void *identity) {
+  ScrEtRoot *root = scr_et_root_find(core, type);
+  if (!root || !identity) return;
+  for (ScrEtListener *h = root->head; h; h = h->next) {
+    if (h->identity != identity) continue;
+    scr_et_listener_remove(h);
+    root->size--;
+    scr_et_observe(core, type, root->size, false);
+    if (root->size == 0) scr_et_root_unmap(core, root);
+    return;
+  }
+}
+
+static double scr_et_count(ScrEventTargetCore *core, const ScrStr *type) {
+  ScrEtRoot *root = scr_et_root_find(core, type);
+  return root ? (double)root->size : 0;
+}
+
+/* NodeEventTarget's members over a core, and EventTarget's: false when
+ * `method` is none of them. on/once listeners share the type's list with
+ * addEventListener's, so a listener added both ways runs once. */
+static bool scr_et_node_method(ScrEventTargetCore *core, ScrDyn *self, const char *method,
+                               ScrDyn *const *args, size_t argc, ScrDyn **out) {
+  ScrDyn *undefined = scr_dyn_undefined();
+  ScrDyn *given[3] = {argc > 0 ? args[0] : undefined, argc > 1 ? args[1] : undefined,
+                      argc > 2 ? args[2] : undefined};
+  bool once = strcmp(method, "once") == 0;
+  if (once || strcmp(method, "on") == 0 || strcmp(method, "addListener") == 0) {
+    ScrDyn *result = scr_et_add(core, given, 2, SCR_ET_NODE | (once ? SCR_ET_ONCE : 0));
+    *out = result ? scr_dyn_retain(self) : NULL;
+    scr_dyn_release(result);
+    return true;
+  }
+  if (strcmp(method, "off") == 0 || strcmp(method, "removeListener") == 0) {
+    ScrDyn *result = scr_et_remove_listener(core, given, 3);
+    *out = result ? scr_dyn_retain(self) : NULL;
+    scr_dyn_release(result);
+    return true;
+  }
+  if (strcmp(method, "removeAllListeners") == 0) {
+    /* this[kEvents].delete(type) or .clear(): no kRemoveListener */
+    if (given[0]->kind == SCR_DYN_UNDEF) {
+      while (core->roots) scr_et_root_unmap(core, core->roots);
+    } else {
+      ScrStr *type = scr_dyn_string_coerce_js(given[0]);
+      if (!type) {
+        *out = NULL;
+        return true;
+      }
+      ScrEtRoot *root = scr_et_root_find(core, type);
+      scr_str_release(type);
+      if (root) scr_et_root_unmap(core, root);
+    }
+    *out = scr_dyn_retain(self);
+    return true;
+  }
+  if (strcmp(method, "listenerCount") == 0) {
+    ScrStr *type = scr_dyn_string_coerce_js(given[0]);
+    *out = type ? scr_dyn_new_num(scr_et_count(core, type)) : NULL;
+    scr_str_release(type);
+    return true;
+  }
+  if (strcmp(method, "eventNames") == 0) {
+    ScrDyn *names = scr_dyn_new_arr();
+    for (ScrEtRoot *root = core->roots; root; root = root->map_next)
+      scr_dyn_arr_push(names, scr_dyn_new_str(root->type));
+    *out = names;
+    return true;
+  }
+  if (strcmp(method, "emit") == 0) {
+    if (given[0]->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("type", "of type string", given[0]);
+      *out = NULL;
+      return true;
+    }
+    bool had = scr_et_count(core, given[0]->v.str) > 0;
+    scr_et_dispatch_value(core, self->v.handle.ptr, self->v.handle.tag, given[0]->v.str, given[1]);
+    *out = scr_dyn_new_bool(had);
+    return true;
+  }
+  if (strcmp(method, "setMaxListeners") == 0) {
+    ScrDyn *n = given[0];
+    if (n->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("setMaxListeners", "of type number", n);
+      *out = NULL;
+      return true;
+    }
+    if (!(n->v.num >= 0)) {
+      char received[48];
+      size_t length = scr_num_received(n->v.num, received);
+      char message[160];
+      int written = snprintf(message, sizeof message,
+                             "The value of \"setMaxListeners\" is out of range. It must be >= 0. Received %.*s",
+                             (int)length, received);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)written, "ERR_OUT_OF_RANGE");
+      *out = NULL;
+      return true;
+    }
+    core->max_listeners = n->v.num;
+    core->warned = false;
+    *out = scr_dyn_retain(undefined);
+    return true;
+  }
+  if (strcmp(method, "getMaxListeners") == 0) {
+    *out = scr_dyn_new_num(core->max_listeners);
+    return true;
+  }
+  return scr_et_target_method(core, self, method, args, argc, out);
+}
+
+/* MessagePort's close: dispatchEvent(new MessagePortCloseEvent()). */
+static void scr_et_port_close(ScrEventTargetCore *core, ScrDyn *self) {
+  ScrEvent *ev = scr_event_alloc(scr_str_new("close", 5), false);
+  ScrDyn *event = scr_dyn_new_handle(ev, SCR_DYNH_MESSAGE_PORT_CLOSE_EVENT);
+  scr_event_release_v(ev);
+  scr_et_dispatch(core, self, event);
+  scr_dyn_release(event);
+}
+
 /* ── BroadcastChannel's EventTarget side ───────────────────────────── */
 
 static ScrEventTargetCore *scr_et_broadcast_core_new(const char *cls) {
@@ -1626,26 +1902,25 @@ static void scr_et_broadcast_core_free(ScrEventTargetCore *core) {
   free(core);
 }
 
-/* the 'message' MessageEvent (not trusted, as in Node) with the data */
-static void scr_et_broadcast_dispatch(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *data) {
-  ScrEvent *ev = scr_event_alloc(scr_str_new("message", 7), false);
-  ev->message = true;
-  ev->detail = scr_dyn_retain(data);
-  scr_event_track(ev);
-  ScrDyn *event = scr_dyn_new_handle(ev, SCR_DYNH_MESSAGE_EVENT);
-  scr_event_release_v(ev);
-  scr_et_dispatch(core, self, event);
-  scr_dyn_release(event);
-}
-
 static ScrDyn *scr_et_broadcast_method_value(const char *name, size_t length) {
   return scr_et_method_value(name, length, true);
 }
 
 static const ScrEtBroadcastOps scr_et_broadcast_table = {
-    &scr_et_broadcast_core_new,     &scr_et_broadcast_core_free, &scr_et_broadcast_dispatch,
-    &scr_et_target_method,          &scr_et_broadcast_method_value,
-    &scr_et_handler_get,            &scr_et_handler_set,
+    .core_new = &scr_et_broadcast_core_new,
+    .core_free = &scr_et_broadcast_core_free,
+    .method = &scr_et_target_method,
+    .method_value = &scr_et_broadcast_method_value,
+    .handler_get = &scr_et_handler_get,
+    .handler_set = &scr_et_handler_set,
+    .node_method = &scr_et_node_method,
+    .dispatch_value = &scr_et_dispatch_value,
+    .node_native = &scr_et_node_native,
+    .node_native_remove = &scr_et_node_native_remove,
+    .count = &scr_et_count,
+    .port_close = &scr_et_port_close,
+    .trace = &scr_event_target_state_trace,
+    .gcfree = &scr_event_target_state_gcfree,
 };
 
 void scr_et_broadcast_install(void) {
@@ -1662,7 +1937,8 @@ bool scr_event_is(const ScrDyn *v, double kind) {
   if (v->kind != SCR_DYN_HANDLE) return false;
   ScrDynHandleTag tag = v->v.handle.tag;
   if (kind == 0)
-    return tag == SCR_DYNH_EVENT || tag == SCR_DYNH_CUSTOM_EVENT || tag == SCR_DYNH_MESSAGE_EVENT;
+    return tag == SCR_DYNH_EVENT || tag == SCR_DYNH_CUSTOM_EVENT || tag == SCR_DYNH_MESSAGE_EVENT ||
+           tag == SCR_DYNH_MESSAGE_PORT_CLOSE_EVENT;
   if (kind == 1) return tag == SCR_DYNH_CUSTOM_EVENT;
   return tag == SCR_DYNH_EVENT_TARGET ||
          (scr_et_signal_core_fn != NULL && tag == SCR_DYNH_ABORT_SIGNAL);
