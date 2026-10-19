@@ -263,6 +263,7 @@ export function lowerCryptoModuleCall(
   if (args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`crypto.${bi.member} with spread arguments`, expr);
   }
+  if (bi.member === "getRandomValues") return lowerCryptoGetRandomValues(lowerer, expr);
   if (bi.member === "randomBytes") {
     if (args.length === 1) return null;
     if (args.length !== 2) {
@@ -1283,4 +1284,50 @@ export function lowerPromisifiedCryptoCall(
     (t) => t.kind === "dyn",
     "KeyObject",
   );
+}
+
+/** `crypto.getRandomValues(view)` — the WebCrypto global, node:crypto's
+ * export and `webcrypto.getRandomValues`: a typed view fills in place and
+ * returns itself at its own type (float views, DataViews and views over
+ * 65536 bytes throw Node's DOMExceptions at run time); any other value
+ * takes the checked form. Null for other arities (the member fence keeps
+ * them). */
+export function lowerCryptoGetRandomValues(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!))
+    return null;
+  const loc = locOf(call);
+  const value = lowerer.lowerExpr(call.arguments.nodes[0]!);
+  if (value.type.kind === "bytes")
+    return { kind: "libCall", fn: "crypto.getRandomValues", args: [value], type: value.type, loc };
+  return {
+    kind: "libCall",
+    fn: "crypto.getRandomValuesDyn",
+    args: [lowerer.coerceInto(call.arguments.nodes[0]!, value, DYN)],
+    type: DYN,
+    loc,
+  };
+}
+
+/** Whether `receiver` names a WebCrypto Crypto object: the `crypto`
+ * global (also through globalThis) or node:crypto's `webcrypto`. */
+export function isWebCryptoReceiver(lowerer: Lowerer, receiver: ts.Expression): boolean {
+  if (ts.isIdentifier(receiver)) {
+    if (receiver.text === "crypto" && lowerer.isStdlibGlobal(receiver, "crypto")) return true;
+    const imported = lowerer.builtinImportOf(receiver);
+    return imported?.module === "crypto" && imported.member === "webcrypto";
+  }
+  if (ts.isPropertyAccessExpression(receiver) && !receiver.questionDotToken) {
+    if (
+      receiver.name.text === "crypto" &&
+      ts.isIdentifier(receiver.expression) &&
+      lowerer.isStdlibGlobal(receiver.expression, "globalThis")
+    )
+      return true;
+    const member = lowerer.builtinMemberOf(receiver);
+    return member?.module === "crypto" && member.member === "webcrypto";
+  }
+  return false;
 }

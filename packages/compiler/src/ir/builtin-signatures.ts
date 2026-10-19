@@ -569,6 +569,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** os.constants: the per-thread null-prototype constants object (dlopen,
    * errno, signals, priority, UV_UDP_REUSEADDR). Never throws. */
   "os.constants": { argTypes: [], result: DYN },
+  /** fs.constants: the target's cached null-prototype constants object. */
+  "fs.constants": { argTypes: [], result: DYN },
   /** The deprecated node:constants object (scr_os.c): the os groups and
    * fs.constants merged with the borrowed baked crypto.constants table,
    * frozen, one per thread. */
@@ -696,6 +698,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** `a.localeCompare(b)`: -1/0/1 in Node's root-locale collation for
    * Latin-script text (scr_str_locale_compare). Never throws. */
   "str.localeCompare": { argTypes: [STRING, STRING], result: F64 },
+  /** Annex B substr(start, length) with start ToNumber'd and length's
+   * presence; never throws. */
+  "str.substr": { argTypes: [STRING, F64, F64, BOOL], result: STRING },
+  /** toLocaleLowerCase/toLocaleUpperCase (scr_regex.c): the locales value
+   * as written, upper=true for toLocaleUpperCase. Throws for null and for
+   * locale forms with no native rules. */
+  "str.localeCase": { argTypes: [STRING, DYN, BOOL], result: STRING },
   "str.replaceLiteral": { argTypes: [STRING, STRING, STRING, BOOL], result: STRING },
   // (subject, characters, NUL-separated replacement texts): the fused
   // chain of global one-character replacements.
@@ -760,6 +769,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "num.toExponential": { argTypes: [F64], result: STRING },
   "num.toFixed0": { argTypes: [F64], result: STRING },
   "num.toFixed": { argTypes: [F64, F64], result: STRING },
+  /** toPrecision(precision) with the argument ToNumber'd and its presence
+   * (undefined answers ToString); toExponential with a DEFINED
+   * fractionDigits. Both throw V8's RangeError for out-of-range digits. */
+  "num.toPrecision": { argTypes: [F64, F64, BOOL], result: STRING },
+  "num.toExponentialDigits": { argTypes: [F64, F64], result: STRING },
   "num.toStringRadix": { argTypes: [F64, DYN], result: STRING },
   /** toString(radix) with a number radix (scr_lib.c): truncates it as
    * ToIntegerOrInfinity does, THROWS RangeError outside 2..36. */
@@ -2606,6 +2620,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * whether min was given. */
   "crypto.randomFillView": { argTypes: [null, F64, F64], result: BYTES_U8 },
   "crypto.randomFillViewRest": { argTypes: [null, F64], result: BYTES_U8 },
+  /** crypto.getRandomValues: a view returns itself at its own type (the
+   * float/size DOMExceptions are thrown at run time); any other value
+   * takes the checked form. */
+  "crypto.getRandomValues": { argTypes: [null], result: BYTES_U8 },
+  "crypto.getRandomValuesDyn": { argTypes: [DYN], result: DYN },
   "crypto.randomFillSyncDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
   "crypto.randomFillCb": { argTypes: [null, F64, F64, F64, null], result: VOID },
   "crypto.randomFillCbDyn": { argTypes: [DYN, DYN, DYN, F64, null], result: VOID },
@@ -2656,6 +2675,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "buffer.fromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
   "buffer.fromStrChecked": { argTypes: [STRING, STRING], result: BYTES_U8 },
   "buffer.brand": { argTypes: [BYTES_U8], result: BYTES_U8 },
+  /** Buffer.isBuffer over a typed view: whether the view carries the
+   * Buffer brand (any element kind; only Buffers do). Never throws. */
+  "buffer.isBranded": { argTypes: [null], result: BOOL },
   /** Buffer.from on checked-native strings, bytes, arrays and data-only
    * array-like/Buffer-JSON objects. The encoding is a normalized literal;
    * non-string inputs ignore it. Copies the input and may throw during
