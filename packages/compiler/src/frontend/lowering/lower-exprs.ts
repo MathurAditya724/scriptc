@@ -13682,12 +13682,12 @@ function lowerPrivateIn(
       );
     }
   }
-  // A checked value (`#x in this` inside a JavaScript method, whose
+  // A checked value in JavaScript (`#x in this` inside a method, whose
   // receiver is the actual call-site value): the brand is present exactly
   // when the value is a class instance at or below the declarer. A typed
   // reference carries the class it was boxed under: the declarer or a
   // descendant answers true; an ancestor answers per instance.
-  if (recv.type.kind === "dyn" && recv.kind === "varRef") {
+  if (recv.type.kind === "dyn" && recv.kind === "varRef" && isJsSourceFile(expr.getSourceFile())) {
     const typedRefIs = (className: string): IrExpr => ({
       kind: "libCall",
       fn: "dyn.typedRefIs",
