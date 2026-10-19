@@ -28,7 +28,8 @@ import { constituentTypes } from "../../ts7/checker.js";
  * deeper — `x?.trim().toLowerCase()` reads nothing past the guard when x
  * is nullish, so the whole tail must lower inside it. Walks
  * property/element accesses and call steps only (parens and `!` break
- * the chain per the grammar: `(a?.b).c` throws on undefined in JS);
+ * the chain per the grammar: `(a?.b).c` throws on undefined in JS, while
+ * an unparenthesized `a?.b!.c` stays one chain, as TypeScript emits it);
  * the node's OWN token — and a call's immediate callee token — are the
  * plain entries' cases, not tails, and handled markers make the chain
  * lowering's re-dispatch walk past its own step. `f?.()` steps stay out
@@ -43,6 +44,10 @@ function chainTailDot(
     // An active chain's bound receiver read is a LEAF — its own token
     // was consumed by the chain that bound it.
     if (lowerer.chainRecvByNode.has(cur)) return null;
+    if (ts.isNonNullExpression(cur)) {
+      cur = cur.expression;
+      continue;
+    }
     if (ts.isCallExpression(cur)) {
       // `f?.()` steps route through their own entry (or are being
       // handled); a deeper token under one is that chain's business.
@@ -93,20 +98,29 @@ export function isOptionalChainTail(lowerer: Lowerer, expr: ts.Expression): bool
   if (!tail) return false;
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(tail.expression));
   if (recvT?.kind === "dyn") return true;
-  if (recvT?.kind !== "union") return false;
-  const def = lowerer.unions.get(recvT.unionId);
-  return !!def && def.arms.some(isUnitType);
+  if (recvT?.kind === "union") {
+    const def = lowerer.unions.get(recvT.unionId);
+    if (def?.arms.some(isUnitType)) return true;
+  }
+  // The checker calls the receiver present, but an unchecked read (`a[0]`
+  // past the end, a missing index-signature key) can still lower to an
+  // undefined-armed value, and `a[0]?.b.c` must then short-circuit `.c`
+  // too. The chain lowering inspects the lowered receiver: a present value
+  // re-dispatches the plain lowering, so only genuinely optional receivers
+  // change shape.
+  return lowerer.isRuntimeOptionalOrigin(tail.expression);
 }
 
 /** True when an EARLIER step of this access chain carries `?.` — JS
  * short-circuits the whole tail (`a?.b.c` reads nothing when a is
  * nullish), so a dyn tail read must answer undefined instead of
  * throwing. Walks the receiver spine only; the argument of the access
- * itself is not part of the guard. */
+ * itself is not part of the guard. Parentheses end the chain
+ * (`(a?.b).c` reads `.c` from undefined); `!` does not. */
 export function hasOptionalChainGuard(expr: ts.Expression): boolean {
   let cur: ts.Expression = expr;
   for (;;) {
-    if (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur)) {
+    if (ts.isNonNullExpression(cur)) {
       cur = cur.expression;
       continue;
     }
@@ -438,7 +452,8 @@ export function lowerOptionalChain(
     for (let cur: ts.Expression = expr; cur !== dotNode;) {
       const next: ts.Expression = ts.isCallExpression(cur)
         ? cur.expression
-        : (cur as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression;
+        : (cur as ts.PropertyAccessExpression | ts.ElementAccessExpression | ts.NonNullExpression)
+            .expression;
       if (next === dotNode) break;
       if (!lowerer.chainNarrowedType.has(next)) {
         lowerer.chainNarrowedType.set(

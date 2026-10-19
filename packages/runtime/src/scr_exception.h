@@ -84,6 +84,10 @@ typedef struct ScrExcCell {
   ScrTraceFn trace_fn;
   ScrStackFrame *stack; /* execution state; never moves with an exception */
 } ScrExcCell;
+/* Executables push and pop source frames inline (emitter.ts, stack-trace
+ * mode) at this offset on 64-bit targets. */
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrExcCell, stack) == 56,
+               "ScrExcCell.stack moved: update the emitter's inline frame push");
 
 /* Runtime-internal (fiber machinery in scr_async.c) — never emitted. */
 ScrExcCell *scr_exc_swap_cell(ScrExcCell *cell); /* NULL = main's cell */
@@ -172,6 +176,10 @@ void scr_caught_trace_v(void *c, ScrTraceVisit visit, void *ctx);
  * when scr_json.c builds its dyn view, and scr_exc_suppressed_forget
  * releases them. */
 void scr_exc_suppress(ScrCaught *suppressed);
+/* An iterator close that threw while `first` was propagating: the close's
+ * error is dropped and `first` is raised again (consumed). A generator
+ * .return() in flight is replaced by the close's error instead. */
+void scr_exc_keep_first(ScrCaught *first);
 bool scr_exc_suppressed_values(const void *error_object, const ScrCaught **error,
                                const ScrCaught **suppressed);
 void scr_exc_suppressed_forget(const void *error_object);

@@ -2586,7 +2586,7 @@ static SfResponse *sf_response_retain(SfResponse *r) {
 
 static void sf_response_release(SfResponse *r) {
   if (!r || --r->rc > 0) return;
-  scr_weak_dispose(r);
+  scr_weak_dispose_inline(r);
   sf_stream_release(r->body);
   sf_headers_release(r->headers);
   scr_str_release(r->url);
@@ -4900,7 +4900,7 @@ static void *sf_request_retain_v(void *ptr) {
 static void sf_request_release_v(void *ptr) {
   SfRequest *r = ptr;
   if (--r->rc) return;
-  scr_weak_dispose(r);
+  scr_weak_dispose_inline(r);
   sf_response_release(r->payload);
   scr_str_release(r->url); scr_str_release(r->method); scr_str_release(r->redirect);
   sf_signal_release(r->signal); free(r);

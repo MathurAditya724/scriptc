@@ -1,9 +1,12 @@
-// @deferred-fences: 9
+// @deferred-fences: 1
 // Function expressions lowered speculatively — the `.call(this)` and
 // `.apply` receivers of CommonJS wrappers, and a computed class base — keep
-// every statement of their bodies. A statement with no static lowering
-// (here `module.exports` read as a value) compiles to its runtime fence
-// instead of vanishing; these never run, so the binary matches Node.
+// every statement of their bodies. The wrappers' `root === module.exports`
+// and `typeof module.exports` compile; a statement with no static lowering
+// (here `module.exports` passed as a value in the class base) compiles to
+// its runtime fence instead of vanishing. It never runs, so the binary
+// matches Node. Coverage counts that one fenced statement once: the class
+// base's body is lowered once.
 const verbose = process.argv.length > 99;
 (function () {
   var root = this;

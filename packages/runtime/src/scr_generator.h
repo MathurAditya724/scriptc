@@ -60,6 +60,9 @@ void scr_gen_coro_finish(ScrFiber *self);
 ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                           void (*drop_args)(void *),
                           void (*settle)(ScrGen *, ScrPromise *));
+/* Runs when return() reaches the generator before its first resume, with
+ * the packed arguments still alive: an iterator helper closes its source. */
+void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *));
 ScrGen *scr_gen_retain(ScrGen *g);
 void scr_gen_release(ScrGen *g); /* NULL-tolerant */
 void *scr_gen_retain_v(void *g);

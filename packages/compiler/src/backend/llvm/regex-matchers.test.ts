@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   compileRegexMatcher,
   regexLiteralBailReason,
+  regexLiteralCaptures,
   regexLiteralCompiles,
 } from "./regex-matchers.js";
 
@@ -10,6 +11,30 @@ function body(pattern: string, flags = "", vector = true): string {
   if (code === null) throw new Error(`/${pattern}/${flags} did not compile`);
   return code.lines.join("\n");
 }
+
+describe("regex literal captures", () => {
+  test("counts captures with the whole match and marks the ones every match sets", () => {
+    expect(regexLiteralCaptures("[&<>]", "g")).toEqual({ count: 1, always: [true] });
+    expect(regexLiteralCaptures("(\\w+)=(\\d)+", "")).toEqual({
+      count: 3,
+      always: [true, true, true],
+    });
+    expect(regexLiteralCaptures("(?<k>a)(b)?|(c)", "")).toEqual({
+      count: 4,
+      always: [true, false, false, false],
+    });
+    expect(regexLiteralCaptures("x(?:(a)|(b))y(c)*(d){0,2}(e){1,3}", "")).toEqual({
+      count: 6,
+      always: [true, false, false, false, false, true],
+    });
+  });
+
+  test("answers null outside the parsed subset", () => {
+    expect(regexLiteralCaptures("(?=a)(b)", "")).toBeNull();
+    expect(regexLiteralCaptures("(a)\\1", "")).toBeNull();
+    expect(regexLiteralCaptures("a", "v")).toBeNull();
+  });
+});
 
 describe("regex literal matcher subset", () => {
   test.each([

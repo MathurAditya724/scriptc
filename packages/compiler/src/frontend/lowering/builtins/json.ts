@@ -8,6 +8,10 @@ import {
   isJsonStringifyDynamicType,
   BOOL,
   DYN,
+  type IrType,
+  classDynViewSupported,
+  isClassOwnEnumerableFieldName,
+  isDynTypedRefType,
   type IrExpr,
   STRING,
   type SrcLoc,
@@ -167,6 +171,16 @@ export function lowerJsonMethodCall(
         (id) => lowerer.unions.get(id),
       )
     ) {
+      const unreadable = classFieldWithoutJsonView(lowerer, value.type, new Set());
+      if (unreadable !== null) {
+        lowerer.unsupported(
+          "SC1090",
+          argNode,
+          `JSON.stringify of '${lowerer.fmt(value.type)}' values (field '${unreadable.field}' of class ` +
+            `'${unreadable.className}' has type '${lowerer.fmt(unreadable.type)}', which the runtime JSON ` +
+            `traversal cannot ${unreadable.reason})`,
+        );
+      }
       // Keep the original containers live while the runtime visits them:
       // a toJSON callback can mutate a later field, and shared/cyclic
       // references must retain their identities throughout traversal.
@@ -386,6 +400,100 @@ function observesUndefined(expr: ts.Expression): boolean {
     }
   }
   return false;
+}
+
+/** True when a class field type holds a RegExp or a Promise outside a
+ * nested class instance (whose own fields are checked separately): Node
+ * writes both as {}, and the runtime JSON traversal has no writer for them. */
+function holdsUnwritable(lowerer: Lowerer, t: IrType, visiting: Set<string>): boolean {
+  switch (t.kind) {
+    case "regex":
+    case "promise":
+      return true;
+    case "array":
+      return holdsUnwritable(lowerer, t.elem, visiting);
+    case "record": {
+      if (visiting.has(t.shapeId)) return false;
+      visiting.add(t.shapeId);
+      const shape = lowerer.shapes.get(t.shapeId);
+      return (
+        (shape?.fields ?? []).some((field) => holdsUnwritable(lowerer, field.type, visiting)) ||
+        (shape?.indexValue !== undefined && holdsUnwritable(lowerer, shape.indexValue, visiting))
+      );
+    }
+    case "union": {
+      if (visiting.has(t.unionId)) return false;
+      visiting.add(t.unionId);
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).some((arm) =>
+        holdsUnwritable(lowerer, arm, visiting),
+      );
+    }
+    default:
+      return false;
+  }
+}
+
+/** The first class field reachable from a stringify input that the class's
+ * checked-dynamic property view cannot represent, or that holds a RegExp or
+ * a Promise, which the runtime JSON traversal cannot write. The traversal
+ * reads class instances through that view, so such a class is refused at
+ * compile time instead of throwing when the view is built or written. */
+function classFieldWithoutJsonView(
+  lowerer: Lowerer,
+  t: IrType,
+  visiting: Set<string>,
+): { className: string; field: string; type: IrType; reason: "read" | "write" } | null {
+  const getRecord = (id: string) => lowerer.shapes.get(id);
+  const getUnion = (id: string) => lowerer.unions.get(id);
+  switch (t.kind) {
+    case "array":
+      return classFieldWithoutJsonView(lowerer, t.elem, visiting);
+    case "record": {
+      if (visiting.has(t.shapeId)) return null;
+      visiting.add(t.shapeId);
+      const shape = getRecord(t.shapeId);
+      for (const field of shape?.fields ?? []) {
+        const found = classFieldWithoutJsonView(lowerer, field.type, visiting);
+        if (found) return found;
+      }
+      return shape?.indexValue
+        ? classFieldWithoutJsonView(lowerer, shape.indexValue, visiting)
+        : null;
+    }
+    case "union": {
+      if (visiting.has(t.unionId)) return null;
+      visiting.add(t.unionId);
+      for (const arm of getUnion(t.unionId)?.arms ?? []) {
+        const found = classFieldWithoutJsonView(lowerer, arm, visiting);
+        if (found) return found;
+      }
+      return null;
+    }
+    case "object": {
+      if (!isDynTypedRefType(t) || visiting.has(t.className)) return null;
+      visiting.add(t.className);
+      const info = lowerer.classes.get(t.className);
+      for (const field of info?.def.fields ?? []) {
+        if (!isClassOwnEnumerableFieldName(field.name)) continue;
+        const unreadable = !classDynViewSupported([field], getRecord, getUnion);
+        if (unreadable || holdsUnwritable(lowerer, field.type, new Set())) {
+          const className =
+            info?.def.jsName ?? info?.decl?.name?.text ?? t.className.replace(/^%/, "");
+          return {
+            className,
+            field: field.name,
+            type: field.type,
+            reason: unreadable ? "read" : "write",
+          };
+        }
+        const found = classFieldWithoutJsonView(lowerer, field.type, visiting);
+        if (found) return found;
+      }
+      return null;
+    }
+    default:
+      return null;
+  }
 }
 
 /** Only explicit null/undefined select the no-callback path. */

@@ -18,6 +18,7 @@ import {
   builtinClassRefOf,
 } from "./builtins/class-values.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
+import { inlineNamespaceRequireOf, lowerWithInlineRequireInit } from "./cjs-inline-require.js";
 import {
   BOOL,
   DATE_T,
@@ -50,6 +51,7 @@ import {
   implicitAnyParamSymbolsOf,
   implicitCallInstance,
   implicitMonoFile,
+  genericLocalClassResult,
   type GenericFnInfo,
 } from "./generic-functions.js";
 import {
@@ -227,6 +229,11 @@ export function storedClassValueType(
       const value = storedClassValueType(lowerer, declaration.initializer, visiting);
       if (value?.kind === "classval") return value;
     }
+  }
+  // A generic factory's own local class has one class per instance.
+  if (ts.isCallExpression(expression)) {
+    const local = genericLocalClassResult(lowerer, expression);
+    if (local?.kind === "classval") return local;
   }
   const type = lowerer.typeOf(expression);
   const mapped = lowerer.mapTypeOf(type);
@@ -8512,6 +8519,14 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // `new (require("./x").C)()`: the module's %init at the require's
+  // position, then construction through the member as for a binding.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const req = inlineNamespaceRequireOf(lowerer, expr.expression.expression);
+    if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
+      return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
+    }
+  }
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr);
