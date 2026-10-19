@@ -76,17 +76,6 @@
 #define SCR_WASM_ASAN 1
 #endif
 
-ScrPromise *scr_wasm_compile(ScrDyn *bytes);
-bool scr_wasm_validate(ScrDyn *bytes);
-ScrPromise *scr_wasm_instantiate(ScrDyn *source, ScrDyn *imports);
-ScrDyn *scr_wasm_module_new(ScrDyn *bytes);
-ScrDyn *scr_wasm_instance_new(ScrDyn *module, ScrDyn *imports);
-bool scr_wasm_is(const ScrDyn *value, double kind);
-ScrDyn *scr_wasm_error_new(double kind, ScrDyn *message, ScrDyn *options);
-ScrDyn *scr_wasm_function(double kind);
-ScrDyn *scr_wasm_namespace(void);
-ScrDyn *scr_wasm_global_view(void);
-
 /* Entry points of translated code. */
 /* Sanitized builds do not declare it noreturn: AddressSanitizer would
  * call __asan_handle_no_return before every call, which warns on the

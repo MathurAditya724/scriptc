@@ -1171,7 +1171,8 @@ typedef struct ScrDynHandleOps {
    * inspector returns `this`) instead of the bare class name. */
   bool inspect_bracketed_past_depth;
   /* The @@toStringTag when it differs from cls: String() answers
-   * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`. */
+   * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`, or
+   * `<tag> <view>` when the tag ends with "." and cls, as Node does. */
   const char *to_string_tag;
   /* The view has no properties, so util.inspect prints it in full at any
    * depth, as Node prints `{}`. */
