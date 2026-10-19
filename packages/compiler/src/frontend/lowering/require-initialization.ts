@@ -52,7 +52,7 @@ export interface EarlyReference {
 function boundNames(name: ts.BindingName): ts.Identifier[] {
   if (ts.isIdentifier(name)) return [name];
   const out: ts.Identifier[] = [];
-  for (const el of name.elements) {
+  for (const el of name.elements.nodes) {
     if (ts.isOmittedExpression(el) || el.name === undefined) continue;
     out.push(...boundNames(el.name));
   }
@@ -105,10 +105,10 @@ export function markRequireEarlyBindings(lowerer: Lowerer): void {
   for (const sf of lowerer.moduleOrder) {
     if (sf.isDeclarationFile || !isCjsJsFile(sf, lowerer.program)) continue;
     const declared: { decl: ts.VariableDeclaration; stmt: ts.VariableStatement }[] = [];
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (!ts.isVariableStatement(stmt)) continue;
       if ((stmt.declarationList.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let)) === 0) continue;
-      for (const decl of stmt.declarationList.declarations) {
+      for (const decl of stmt.declarationList.declarations.nodes) {
         if (decl.initializer === undefined || requireSpecOf(decl.initializer) === null) continue;
         if (requireEarlyReference(lowerer.program, decl) === null) continue;
         declared.push({ decl, stmt });

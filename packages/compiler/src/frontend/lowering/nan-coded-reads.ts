@@ -213,15 +213,15 @@ function adjacentDeclarations(a: ts.VariableDeclaration, b: ts.VariableDeclarati
   const lb = b.parent;
   if (!ts.isVariableDeclarationList(la) || !ts.isVariableDeclarationList(lb)) return false;
   if (la === lb) {
-    const ia = la.declarations.indexOf(a);
-    const ib = la.declarations.indexOf(b);
+    const ia = la.declarations.nodes.indexOf(a);
+    const ib = la.declarations.nodes.indexOf(b);
     return Math.abs(ia - ib) === 1;
   }
   const sa = la.parent;
   const sb = lb.parent;
   if (!ts.isVariableStatement(sa) || !ts.isVariableStatement(sb) || sa.parent !== sb.parent)
     return false;
-  if (la.declarations.length !== 1 || lb.declarations.length !== 1) return false;
+  if (la.declarations.nodes.length !== 1 || lb.declarations.nodes.length !== 1) return false;
   const list = sa.parent;
   if (
     !ts.isBlock(list) &&
@@ -230,7 +230,7 @@ function adjacentDeclarations(a: ts.VariableDeclaration, b: ts.VariableDeclarati
     !ts.isDefaultClause(list)
   )
     return false;
-  const statements = (list as { statements: ts.NodeArray<ts.Statement> }).statements;
+  const statements = (list as { statements: ts.NodeArray<ts.Statement> }).statements.nodes;
   return Math.abs(statements.indexOf(sa) - statements.indexOf(sb)) === 1;
 }
 
@@ -609,8 +609,8 @@ export class NanCodedReads {
     const na = this.fixedLength(sa);
     const nb = this.fixedLength(sb);
     if (!na || !nb) return false;
-    const la = na.arguments![0]!;
-    const lb = nb.arguments![0]!;
+    const la = na.arguments!.nodes[0]!;
+    const lb = nb.arguments!.nodes[0]!;
     // The same literal length.
     const literal = (e: ts.Expression): number | null => {
       const x = peelTransparent(e);
@@ -695,10 +695,10 @@ export class NanCodedReads {
       !ts.isIdentifier(init.expression) ||
       !TYPED_ARRAYS.has(init.expression.text) ||
       !this.host.isStdlibGlobal(init.expression, init.expression.text) ||
-      init.typeArguments ||
-      init.arguments?.length !== 1 ||
-      ts.isSpreadElement(init.arguments[0]!) ||
-      !this.host.isNumber(init.arguments[0]!)
+      init.typeArguments?.nodes ||
+      init.arguments?.nodes.length !== 1 ||
+      ts.isSpreadElement(init.arguments.nodes[0]!) ||
+      !this.host.isNumber(init.arguments.nodes[0]!)
     )
       return null;
     const name = decl.name;
@@ -753,7 +753,7 @@ export class NanCodedReads {
     this.fnEligibility.set(symbol, null);
     const decl = this.host.declarationOf(symbol);
     if (!decl || (!ts.isFunctionDeclaration(decl) && !ts.isMethodDeclaration(decl))) return null;
-    if (!decl.body || decl.asteriskToken || decl.typeParameters || !decl.name) return null;
+    if (!decl.body || decl.asteriskToken || decl.typeParameters?.nodes || !decl.name) return null;
     if (!ts.isIdentifier(decl.name)) return null;
     const sf = decl.getSourceFile();
     if (isJsSourceFile(sf) || sf.isDeclarationFile) return null;
@@ -762,7 +762,7 @@ export class NanCodedReads {
       return null;
     if (ts.isMethodDeclaration(decl)) {
       const cls = decl.parent;
-      if (!ts.isClassDeclaration(cls) || (cls.heritageClauses?.length ?? 0) > 0) return null;
+      if (!ts.isClassDeclaration(cls) || (cls.heritageClauses?.nodes.length ?? 0) > 0) return null;
       if (this.host.methodOverridden(symbol)) return null;
     }
     // Sloppy-mode `arguments` aliases parameters.
@@ -806,7 +806,7 @@ export class NanCodedReads {
         !ts.isCallExpression(call) ||
         call.expression !== callee ||
         call.questionDotToken ||
-        call.arguments.some((a) => ts.isSpreadElement(a))
+        call.arguments.nodes.some((a) => ts.isSpreadElement(a))
       ) {
         ok = false;
         break;
@@ -863,12 +863,12 @@ export class NanCodedReads {
       if (!ts.isFunctionDeclaration(fn) && !ts.isMethodDeclaration(fn)) return null;
       const fnSymbol = fn.name ? this.symbolOf(fn.name) : null;
       if (!fnSymbol || !this.eligibleFunction(fnSymbol)) return null;
-      const index = fn.parameters.indexOf(decl);
+      const index = fn.parameters.nodes.indexOf(decl);
       if (index < 0 || !this.host.paramIsNumber(fnSymbol, index)) return null;
       nameNode = decl.name;
       if (decl.initializer) slot.sources.push(decl.initializer);
       for (const call of this.callSites.get(fnSymbol) ?? []) {
-        const arg = call.arguments[index];
+        const arg = call.arguments.nodes[index];
         if (arg) slot.sources.push(arg);
         else if (!decl.initializer) slot.sources.push(null);
       }
@@ -1020,11 +1020,11 @@ export class NanCodedReads {
       return symbol ? this.returnSlot(symbol) : null;
     }
     if (ts.isCallExpression(p) && p.expression !== e) {
-      const index = p.arguments.indexOf(e);
+      const index = p.arguments.nodes.indexOf(e);
       const fn = this.calleeSymbol(p);
       if (index < 0 || !fn) return null;
       const decl = this.eligibleFunction(fn);
-      const param = decl?.parameters[index];
+      const param = decl?.parameters?.nodes[index];
       if (!param || !ts.isIdentifier(param.name)) return null;
       const symbol = this.symbolOf(param.name);
       return symbol ? this.bindingSlot(symbol) : null;
@@ -1493,7 +1493,7 @@ export class NanCodedReads {
     )
       return true;
     if (ts.isSwitchStatement(p)) {
-      return p.caseBlock.clauses.every(
+      return p.caseBlock.clauses.nodes.every(
         (clause) => !ts.isCaseClause(clause) || this.plainNumber(clause.expression, 0) !== null,
       );
     }

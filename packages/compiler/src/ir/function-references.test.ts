@@ -143,6 +143,7 @@ const FUNCTION_FIELDS: Record<StringFields<Omit<IrFunction, "body">>, Role> = {
   "captures[].localId": "other",
   "classCaptures[].name": "other",
   "classCaptures[].localId": "other",
+  "generator.tag": "other",
 };
 
 const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
@@ -209,6 +210,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "contracts.acyclic[]": "other",
   "contracts.immortalGlobals[]": "other",
   "contracts.programLifetime[]": "other",
+  "threadSlotKeys[]": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };

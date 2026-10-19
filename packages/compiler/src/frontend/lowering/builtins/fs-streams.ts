@@ -87,7 +87,7 @@ export function lowerFsStreamMethodCall(
 ): IrExpr | null {
   if (access.name.text !== "close") return null;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.some(ts.isSpreadElement)) lowerer.noLowering("close with spread arguments", call);
   if (args.length > 1) lowerer.noLowering(`close with ${args.length} arguments`, call);
   const receiver = lowerer.lowerExpr(access.expression);
@@ -171,7 +171,7 @@ export function lowerFsStreamNew(
 ): IrExpr {
   return fsStreamCreateExpr(
     lowerer,
-    expr.arguments ?? [],
+    expr.arguments?.nodes ?? [],
     cls === "ReadStream",
     `new fs.${cls}`,
     expr,

@@ -45,7 +45,7 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
     !bindingNeverReassigned(lowerer, symbol, owner) ||
     !isJsSourceFile(declaration.getSourceFile()) ||
     declaration.asteriskToken ||
-    declaration.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+    declaration.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
   )
     return false;
   const objectReturn = (expression: ts.Expression): boolean =>
@@ -54,7 +54,7 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
     ts.isArrowFunction(expression) ||
     ts.isFunctionExpression(expression) ||
     ts.isNewExpression(expression);
-  const last = declaration.body.statements.at(-1);
+  const last = declaration.body.statements.nodes.at(-1);
   if (!last || !ts.isReturnStatement(last) || !last.expression || !objectReturn(last.expression))
     return false;
   let safe = true;
@@ -76,7 +76,7 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
       safe = false;
     ts.forEachChild(node, (child) => visit(child, nestedArrow));
   };
-  for (const parameter of declaration.parameters) visit(parameter);
+  for (const parameter of declaration.parameters.nodes) visit(parameter);
   visit(declaration.body);
   return safe;
 }
@@ -104,7 +104,7 @@ export function lowerObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression):
   return {
     kind: "call",
     callee: signature.name,
-    args: lowerer.completeArgs(expr.arguments ?? [], signature.params, loc, expr),
+    args: lowerer.completeArgs(expr.arguments?.nodes ?? [], signature.params, loc, expr),
     type: signature.returnType,
     loc,
   };

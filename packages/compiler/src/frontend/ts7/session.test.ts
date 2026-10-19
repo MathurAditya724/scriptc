@@ -289,7 +289,7 @@ test("a released latest snapshot cannot lend stale ASTs to the same project", ()
     source = "export const third = true;";
     const third = session.updateSnapshot({ fileChanges: { created: [file] } });
     expect(third.getProject(config)!.program.getSourceFile(file)!.text).toBe(source);
-    expect(old.statements[0]!.getText()).toBe("export const value = 1;");
+    expect(old.statements.nodes[0]!.getText()).toBe("export const value = 1;");
   } finally {
     session.close();
     rmSync(dir, { recursive: true, force: true });

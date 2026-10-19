@@ -206,7 +206,7 @@ export function builtinNamespaceDestructureModuleOf(
     module = lowerer.builtinNamespaceModuleOf(init);
   }
   if (module === null) return null;
-  for (const el of decl.name.elements) {
+  for (const el of decl.name.elements.nodes) {
     if (
       el.dotDotDotToken ||
       el.initializer !== undefined ||
@@ -231,8 +231,8 @@ function createRequireBaseCallOf(lowerer: Lowerer, expr: ts.Expression): ts.Call
   if (!ts.isIdentifier(e.expression)) return null;
   const bi = builtinImportOf(lowerer, e.expression);
   if (!bi || bi.module !== "module" || bi.member !== "createRequire") return null;
-  if (e.arguments.length !== 1) return null;
-  const base = stripTypeCasts(e.arguments[0]!);
+  if (e.arguments.nodes.length !== 1) return null;
+  const base = stripTypeCasts(e.arguments.nodes[0]!);
   if (ts.isIdentifier(base) && lowerer.isStdlibGlobal(base, "__filename")) return e;
   if (
     ts.isPropertyAccessExpression(base) &&
@@ -310,8 +310,8 @@ export function createRequireSpecOf(
   if (call.questionDotToken) return null;
   const baseFile = createRequireCalleeFileOf(lowerer, call.expression);
   if (baseFile === null) return null;
-  if (call.arguments.length !== 1) return { spec: null, baseFile };
-  const a = call.arguments[0]!;
+  if (call.arguments.nodes.length !== 1) return { spec: null, baseFile };
+  const a = call.arguments.nodes[0]!;
   return { spec: ts.isStringLiteralLike(a) ? a.text : null, baseFile };
 }
 
@@ -372,7 +372,7 @@ export function createRequireProgramModuleDecl(
   if (createRequireProgramModuleOf(lowerer, init) === null) return false;
   if (ts.isIdentifier(nameNode)) return true;
   if (!ts.isObjectBindingPattern(nameNode)) return false;
-  return nameNode.elements.every(
+  return nameNode.elements.nodes.every(
     (element) =>
       element.name !== undefined &&
       element.dotDotDotToken === undefined &&

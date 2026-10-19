@@ -408,6 +408,7 @@ export class SemanticType {
   private trueType: number | false = false;
   private falseType: number | false = false;
   private constituents: SemanticType[] | undefined;
+  private constituentsPanic: Error | undefined;
 
   constructor(
     private readonly data: TypeResponse,
@@ -497,12 +498,27 @@ export class SemanticType {
     this.project.ensureActive();
     if ((this.flags & (TypeFlags.UnionOrIntersection | TypeFlags.TemplateLiteral)) === 0)
       return undefined;
-    if (this.constituents === undefined)
-      this.constituents = this.project.fetchTypes(this.id, "getTypesOfType");
+    if (this.constituentsPanic !== undefined) throw this.constituentsPanic;
+    if (this.constituents === undefined) {
+      try {
+        this.constituents = this.project.fetchTypes(this.id, "getTypesOfType");
+      } catch (e) {
+        // typescript-go panics serializing some constituents (an empty
+        // tuple cloned as an array literal): answer every later read of
+        // this snapshot's type with the same panic instead of a new
+        // request.
+        if (e instanceof Error && e.message.startsWith("panic:")) {
+          (e as { unreadableConstituents?: true }).unreadableConstituents = true;
+          this.constituentsPanic = e;
+        }
+        throw e;
+      }
+    }
     return this.constituents;
   }
   dispose(): void {
     this.constituents = undefined;
+    this.constituentsPanic = undefined;
   }
   getBaseTypes(): SemanticType[] | undefined {
     this.project.ensureActive();
