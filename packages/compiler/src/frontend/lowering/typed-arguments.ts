@@ -1,16 +1,8 @@
 import * as ts from "../ts7/adapter.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { unitOnlyUnion } from "../type-mapper.js";
-import {
-  DYN,
-  type IrExpr,
-  type IrLocal,
-  type IrStmt,
-  type IrType,
-  arrayOf,
-  typeEquals,
-} from "../../ir/ir.js";
+import { restTupleElementTypes, unitOnlyUnion } from "../type-mapper.js";
+import { DYN, type IrExpr, type IrLocal, type IrStmt, type IrType, arrayOf } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import { captureContextArguments } from "./function-context.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
@@ -325,7 +317,9 @@ export function forwardedTupleType(lowerer: Lowerer, node: ts.Expression): IrTyp
     ts.isParameter(decl) &&
     decl.dotDotDotToken !== undefined &&
     ts.isIdentifier(decl.name) &&
-    !isJsSourceFile(decl.getSourceFile())
+    !isJsSourceFile(decl.getSourceFile()) &&
+    // Checker-only probe first: an ordinary array rest never maps here.
+    restTupleElementTypes(lowerer.typeOf(operand), lowerer.typeCtx) !== null
   ) {
     const t = lowerer.mapTypeOf(lowerer.typeOf(operand));
     if (t && isTupleValueType(lowerer, t)) return t;
@@ -335,8 +329,17 @@ export function forwardedTupleType(lowerer: Lowerer, node: ts.Expression): IrTyp
 
 function isTupleValueType(lowerer: Lowerer, t: IrType): boolean {
   if (t.kind === "record") return lowerer.shapes.get(t.shapeId)?.tuple === true;
-  // The empty tuple's representation (mapType's `[]` rule).
-  return typeEquals(t, arrayOf(unitOnlyUnion(lowerer.unions)));
+  // The empty tuple's representation (mapType's `[]` rule): an array over
+  // the unit-only union. Looked up, never interned, so probing a value
+  // leaves the registries untouched.
+  if (t.kind !== "array" || t.elem.kind !== "union") return false;
+  const arms = lowerer.unions.get(t.elem.unionId)?.arms;
+  return (
+    arms !== undefined &&
+    arms.length === 2 &&
+    arms.some((a) => a.kind === "nullT") &&
+    arms.some((a) => a.kind === "undefinedT")
+  );
 }
 
 /** The positional reads of a forwarded tuple value (already saved in a
