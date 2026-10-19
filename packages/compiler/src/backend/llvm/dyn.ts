@@ -72,8 +72,8 @@ export function recordDynKeepsIdentity(shape: IrRecordShape): boolean {
 }
 
 /** ScrDynKind values (scr_runtime.h). */
-/** ScrDynHandleTag numeric values (scr_runtime.h's enum order). */
-const DYN_HANDLE_TAG_NUM: Record<string, number> = {
+/** ScrDynHandleTag values (scr_dyn.h's explicit values; dyn-handle-tags.test.ts checks them). */
+export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   httpReq: 0,
   httpRes: 1,
   netSocket: 2,

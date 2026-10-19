@@ -102,6 +102,8 @@ export function lowerExecSyncCall(
   let stdoutMode = 1;
   let stderrMode = 0;
   let stdinInherit = false;
+  // Without an encoding option, a failure's error carries Buffer outputs.
+  let encodingGiven = false;
   // A conditional env spread (`...(c ? { env: ... } : {})`): the call
   // itself splits into a ternary of the two env-nesses at the tail.
   let condEnvSpread: { cond: IrExpr; pairs: IrExpr; whenTrue: boolean } | null = null;
@@ -134,6 +136,8 @@ export function lowerExecSyncCall(
             runtime.timeout,
             runtime.stdoutMode,
             runtime.stderrMode,
+            // The runtime options carry a utf8 encoding (others throw).
+            boolLit(false, loc),
           ],
           type: STRING,
           loc,
@@ -251,6 +255,7 @@ export function lowerExecSyncCall(
               'outputs are captured as utf8 — pass { encoding: "utf8" }',
             );
           }
+          encodingGiven = true;
           break;
         }
         case "cwd":
@@ -395,6 +400,7 @@ export function lowerExecSyncCall(
       timeout,
       numLit(stdoutMode + (stdinInherit ? 4 : 0), loc),
       numLit(stderrMode, loc),
+      boolLit(!encodingGiven, loc),
     ],
     type: STRING,
     loc,
