@@ -4384,10 +4384,13 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
     // params). Declaration files keep their existing paths: library
     // callback slots such as String#replace's `(substring, ...args: any[])`
     // have intrinsic lowerings that inspect the unmapped type.
+    // node:test's default mock function type, `(...args: any[]) =>
+    // undefined` (the type parameter default of mock.fn), takes the same
+    // ABI: mock.fn() without an original records whatever its callers pass.
     if (
       rest &&
       decl !== undefined &&
-      !decl.getSourceFile().isDeclarationFile &&
+      (!decl.getSourceFile().isDeclarationFile || isNodeTestDefaultFunctionParam(decl, ctx)) &&
       (pt?.kind === "dyn" || (!pt && isAnyArrayType(checker.getTypeOfSymbol(p), checker)))
     ) {
       dynRest = true;
@@ -6362,6 +6365,23 @@ function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
     default:
       return false;
   }
+}
+
+/** A parameter of a function type that is the default of a type parameter
+ * declared in node:test's standard-library declarations (MockTracker.fn's
+ * `F extends Function = (...args: any[]) => undefined`). */
+function isNodeTestDefaultFunctionParam(decl: ts.Declaration, ctx: TypeMapperCtx): boolean {
+  const fnType = decl.parent;
+  return (
+    ts.isParameter(decl) &&
+    fnType !== undefined &&
+    ts.isFunctionTypeNode(fnType) &&
+    fnType.parent !== undefined &&
+    ts.isTypeParameterDeclaration(fnType.parent) &&
+    fnType.parent.defaultType === fnType &&
+    ctx.isStdlibFile(decl.getSourceFile()) &&
+    isDeclaredInAmbientModule(decl, "test")
+  );
 }
 
 /** `any[]` (or `readonly any[]`): an array type whose element is `any`. */

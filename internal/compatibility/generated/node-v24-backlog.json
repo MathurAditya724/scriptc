@@ -66502,6 +66502,7 @@
           "source": "compiler-feature:test.mock.fn",
           "tests": [
             "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/fixtures/node-test/cases/mock-fn-default.ts",
             "tests/harness/node-test.test.ts"
           ]
         }
