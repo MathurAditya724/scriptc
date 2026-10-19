@@ -114,6 +114,9 @@ import {
   lowerStringMethodCall,
   lowerStringPaddingCall,
   lowerStringSplitCall,
+  isDynPrimitiveKindMethod,
+  lowerDynPrimitiveMethodCall,
+  lowerExtraNumberMethodCall,
 } from "./containers/string-and-regexp.js";
 import { createRequireSpecOf } from "./builtins/module-bindings.js";
 import {
@@ -126,7 +129,9 @@ import {
   lowerRequireResolveCall,
 } from "./builtins/module-resolution.js";
 import {
+  isWebCryptoReceiver,
   lowerCipherMethodCall,
+  lowerCryptoGetRandomValues,
   lowerCryptoHashMethodCall,
   lowerPromisifiedCryptoCall,
 } from "./builtins/crypto.js";
@@ -1500,6 +1505,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.fenceStaticReadableStreamMember(expr.expression, "call") ??
       lowerDisposableStackUseCall(lowerer, expr, expr.expression) ??
       lowerer.lowerStdlibMethodCall(expr, expr.expression) ??
+      // crypto.getRandomValues on the WebCrypto global (untyped in
+      // fallback builds, so before the dyn receiver path) or webcrypto.
+      lowerWebCryptoGetRandomValues(lowerer, expr, expr.expression) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
       lowerDynReceiverMethodCall(lowerer, expr, expr.expression) ??
@@ -3427,6 +3435,23 @@ function lowerDynReceiverMethodCall(
       lowerStringMethodCall(lowerer, call, access, () => recv)
     );
   }
+  // A checker-untyped JS binding holding `string | undefined` (string-
+  // width's `const visibleSegment = baseVisible(segment)` after an
+  // `=== undefined` guard the checker cannot see through): no typed
+  // lowering claims the union, so a String method boxes it and takes the
+  // dyn receiver path, whose undefined/null arms throw Node's read errors.
+  if (
+    checkerUntyped &&
+    recv.type.kind === "union" &&
+    isJsSourceFile(call.getSourceFile()) &&
+    isStringMethodName(access.name.text) &&
+    lowerer.unions
+      .get(recv.type.unionId)
+      ?.arms.every((arm) => arm.kind === "string" || isUnitType(arm)) === true &&
+    lowerer.dynConvertible(recv.type)
+  ) {
+    recv = lowerer.coerceToExpected(recv, DYN);
+  }
   // A native handle read through `as any` (`(hash as any).update(x)`)
   // dispatches through the handle, as the same value held in an
   // 'unknown' slot does.
@@ -3550,6 +3575,26 @@ function lowerDynReceiverMethodCall(
       lowerRegexMethodCall(lowerer, call, access, checked) ??
       lowerStringMethodCall(lowerer, call, access, checked)
     );
+  }
+  // String/Number methods the runtime dispatch has no answer for
+  // (codePointAt, substr, toLocaleLowerCase, toPrecision, ...): a string
+  // or number receiver runs the typed lowering, every other kind keeps the
+  // runtime dispatch.
+  if (
+    !ownCallable &&
+    !call.questionDotToken &&
+    !access.questionDotToken &&
+    isDynPrimitiveKindMethod(access.name.text) &&
+    !lowerer.chainBlocked(access, call)
+  ) {
+    const primitive = lowerDynPrimitiveMethodCall(
+      lowerer,
+      call,
+      access.name.text,
+      access.getText(),
+      recv,
+    );
+    if (primitive) return primitive;
   }
   // The argument is a radix for bigint and an encoding for Buffer.
   // Preserve its runtime value so receiver dispatch can choose correctly.
@@ -4128,6 +4173,19 @@ export function lowerDynDispatchMethodCall(
   };
 }
 
+/** Every String.prototype method name a typed or dyn string lowering
+ * answers. */
+function isStringMethodName(name: string): boolean {
+  return (
+    Object.hasOwn(STR_METHODS, name) ||
+    STRING_INDEX_METHODS.has(name) ||
+    DYN_STRING_ONLY_METHODS.has(name) ||
+    isDynPrimitiveKindMethod(name) ||
+    name === "normalize" ||
+    name === "lastIndexOf"
+  );
+}
+
 /** STR_METHODS ∪ the regex-form names, MINUS everything Array (or any
  * other dyn kind's prototype) also declares. */
 const DYN_STRING_ONLY_METHODS = new Set([
@@ -4600,6 +4658,21 @@ function lowerPrimitiveProtoCall(
   ) {
     const operand = lowerer.lowerExpr(recv);
     if (
+      name === "toExponential" &&
+      call.arguments.nodes.length === 1 &&
+      (operand.type.kind === "dyn" ||
+        (operand.type.kind === "union" && lowerer.dynConvertible(operand.type)))
+    ) {
+      const dispatched = lowerDynPrimitiveMethodCall(
+        lowerer,
+        call,
+        name,
+        `${recv.getText()}.${name}`,
+        lowerer.coerceToExpected(operand, DYN),
+      );
+      if (dispatched) return dispatched;
+    }
+    if (
       operand.type.kind === "dyn" ||
       (operand.type.kind === "union" && lowerer.dynConvertible(operand.type))
     )
@@ -4612,6 +4685,32 @@ function lowerPrimitiveProtoCall(
         type: DYN,
         loc: locOf(call),
       };
+  }
+  if (
+    name === "toPrecision" &&
+    call.arguments.nodes.length <= 1 &&
+    !call.arguments.nodes.some(ts.isSpreadElement) &&
+    isJsSourceFile(call.getSourceFile()) &&
+    recvKind === "union"
+  ) {
+    const operand = lowerer.lowerExpr(recv);
+    if (operand.type.kind === "union" && lowerer.dynConvertible(operand.type)) {
+      const dispatched = lowerDynPrimitiveMethodCall(
+        lowerer,
+        call,
+        name,
+        `${recv.getText()}.${name}`,
+        lowerer.coerceToExpected(operand, DYN),
+      );
+      if (dispatched) return dispatched;
+    }
+  }
+  if (
+    recvKind === "f64" &&
+    (name === "toPrecision" || (name === "toExponential" && call.arguments.nodes.length === 1))
+  ) {
+    const typed = lowerExtraNumberMethodCall(lowerer, call, name, lowerer.lowerExpr(recv));
+    if (typed) return typed;
   }
   if (recvKind !== "f64" && recvKind !== "bool" && recvKind !== "string") return null;
   const loc = locOf(call);
@@ -9894,6 +9993,22 @@ export function lowerStaticNumberGlobal(
     }
   }
   return null;
+}
+
+/** `crypto.getRandomValues(view)` on the WebCrypto global or webcrypto. */
+function lowerWebCryptoGetRandomValues(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (
+    access.name.text !== "getRandomValues" ||
+    call.questionDotToken ||
+    access.questionDotToken ||
+    !isWebCryptoReceiver(lowerer, access.expression)
+  )
+    return null;
+  return lowerCryptoGetRandomValues(lowerer, call);
 }
 
 /** A then handler's promise-armed result (`.then(() => cached ?? load())`
