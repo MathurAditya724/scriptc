@@ -1,3 +1,6 @@
-String constructors and `Date.parse` accept ECMAScript date-only forms, date-times with an explicit `Z` or numeric offset, and GMT certificate-validity strings from the supported X509 APIs. Other V8-specific forms and offset-less local date-times produce an Invalid Date or `NaN`; `SC6005` reports string literals in those forms.
+String constructors and `Date.parse` accept ECMAScript date-only forms, date-times with an explicit `Z` or numeric offset, and GMT certificate-validity strings from the supported X509 APIs.
+Other V8-specific forms and offset-less local date-times produce an Invalid Date or `NaN`; `SC6005` reports string literals in those forms.
 
-Local calendar getters use the operating system's timezone database. Historical results can differ from Node.js when timezone data differs. For valid extreme years outside a platform calendar API's range, scriptc uses a calendar-equivalent year in the 400-year Gregorian cycle to obtain the timezone rule.
+Local calendar getters use the operating system's timezone database.
+Historical results can differ from Node.js when timezone data differs.
+For valid extreme years outside a platform calendar API's range, scriptc uses a calendar-equivalent year in the 400-year Gregorian cycle to obtain the timezone rule.
