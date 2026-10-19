@@ -747,7 +747,7 @@ function lowerForOfMapOrSet(
  * Recurses through every nested statement list; nested functions are
  * lifted elsewhere and never appear here, so every return found exits
  * THIS function through the active iteration. */
-function exitBeforeReturns(stmts: IrStmt[], make: () => IrStmt): IrStmt[] {
+export function exitBeforeReturns(stmts: IrStmt[], make: () => IrStmt): IrStmt[] {
   const walk = (list: IrStmt[]): IrStmt[] =>
     list.flatMap((s): IrStmt[] => {
       switch (s.kind) {

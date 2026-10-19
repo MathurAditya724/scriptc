@@ -79,6 +79,17 @@ function threadLocalState(host: AllocHost, prefix: string, lines: string[]): str
   return [...preamble, ...text.split("\n")];
 }
 
+/** Lines that load the runtime's dispose hook into `dest`, or null on
+ * targets without the inline allocator, where the hook's storage is not
+ * addressed from emitted code. The hook is NULL until a weak collection
+ * or a kept record source installs it, and then never NULL again. */
+export function disposeHookLoadLines(host: AllocHost, dest: string): string[] | null {
+  if (host.inlineAlloc !== true) return null;
+  declareGlobal(host, `@scr_weak_dispose_hook = external global ptr`);
+  const prefix = dest.replace(/^%/, "").replace(/[^-$._A-Za-z0-9]/g, "_");
+  return threadLocalState(host, prefix, [`  ${dest} = load ptr, ptr @scr_weak_dispose_hook`]);
+}
+
 /** Worker executables: the calling script thread's ScrThreadHot block into
  * `dest`. Its address also identifies the thread (the owner word of a
  * lifetime-region chunk; llvm/regions.ts). */
@@ -325,20 +336,56 @@ function allocLines(
   return lines;
 }
 
+/* ── dispose observers ────────────────────────────────────────────────
+ * The runtime's dispose hook (scr_weak_dispose_hook) has two clients: weak
+ * collections, whose keys can be any object, and the kept sources of
+ * checked records (scr_record_source_note and the JSON schema parser),
+ * keyed by closed records. A program without either can never install the
+ * hook, so its frees need not test it. Whether the program has them is
+ * known only once every helper is emitted (dynCheck builders and JSON
+ * schemas are requested lazily), so the emitted frees and record writers
+ * test these two module constants, which the emitter defines last
+ * (LlvmEmitter.emitParts) and LLVM folds away. */
+
+/** True when the program constructs a WeakMap or WeakSet. */
+export const WEAK_KEYS_GATE = "@sc_weak_keys";
+/** True when a checked conversion can keep a record's undeclared source. */
+export const RECORD_SOURCES_GATE = "@sc_record_sources";
+
+/** Which dispose observers an object type can have: weak-collection keys
+ * only, or (closed record layouts) kept record sources too. */
+export type FreeObservers = "weak" | "weak-or-source";
+
 /**
  * Lines that free the object `%o` after its members were released: the
- * RC-audit free note, the weak-collection dispose hook, and the block —
- * `scr_cyc_free` for collector-headered objects, `scr_rt_free` otherwise.
- * Labels use the `sf.` prefix; the lines end in an open block.
+ * RC-audit free note, the dispose hook (when the program can observe this
+ * type's disposals), and the block — `scr_cyc_free` for collector-headered
+ * objects, `scr_rt_free` otherwise. Labels use the `sf.` prefix; the lines
+ * end in an open block.
  */
-export function emitObjectFree(host: AllocHost, cyc: boolean): string[] {
-  const lines = threadLocalState(host, "sf", freeLines(host, cyc));
+export function emitObjectFree(
+  host: AllocHost,
+  cyc: boolean,
+  observers: FreeObservers = "weak",
+): string[] {
+  const lines = threadLocalState(host, "sf", freeLines(host, cyc, observers));
   if (host.objectAudit === false) return lines.filter((line) => line !== FREE_NOTE);
   host.declare(`declare void @scr_obj_free_note()`);
   return lines;
 }
 
-function freeLines(host: AllocHost, cyc: boolean): string[] {
+/** Lines that leave in `%<prefix>.obs` whether the program can observe a
+ * disposal of this type (folds to a constant). */
+function observedLines(prefix: string, observers: FreeObservers): string[] {
+  if (observers === "weak") return [`  %${prefix}.obs = load i1, ptr ${WEAK_KEYS_GATE}`];
+  return [
+    `  %${prefix}.obsw = load i1, ptr ${WEAK_KEYS_GATE}`,
+    `  %${prefix}.obss = load i1, ptr ${RECORD_SOURCES_GATE}`,
+    `  %${prefix}.obs = or i1 %${prefix}.obsw, %${prefix}.obss`,
+  ];
+}
+
+function freeLines(host: AllocHost, cyc: boolean, observers: FreeObservers): string[] {
   if (host.inlineAlloc !== true) {
     if (cyc) {
       host.declare(`declare void @scr_cyc_free(ptr)`);
@@ -348,7 +395,12 @@ function freeLines(host: AllocHost, cyc: boolean): string[] {
     host.declare(`declare void @scr_weak_dispose(ptr)`);
     return [
       `  call void @scr_obj_free_note()`,
+      ...observedLines("sf", observers),
+      `  br i1 %sf.obs, label %sf.observe, label %sf.block`,
+      `sf.observe:`,
       `  call void @scr_weak_dispose(ptr %o)`,
+      `  br label %sf.block`,
+      `sf.block:`,
       `  call void @scr_rt_free(ptr %o)`,
     ];
   }
@@ -356,11 +408,14 @@ function freeLines(host: AllocHost, cyc: boolean): string[] {
   host.declare(`declare void @scr_rt_free(ptr)`);
   declareGlobal(host, `@scr_weak_dispose_hook = external global ptr`);
   const lines = [
+    ...observedLines("sf", observers),
+    `  br i1 %sf.obs, label %sf.hooked, label %sf.block`,
+    `sf.hooked:`,
     `  %sf.hook = load ptr, ptr @scr_weak_dispose_hook`,
     `  %sf.has = icmp ne ptr %sf.hook, null`,
     `  %sf.hasx = call i1 @llvm.expect.i1(i1 %sf.has, i1 false)`,
     `  br i1 %sf.hasx, label %sf.observe, label %sf.block`,
-    `sf.observe: ; weak collections observe the disposal`,
+    `sf.observe: ; a weak collection or a kept record source observes the disposal`,
     `  call void %sf.hook(ptr %o)`,
     `  br label %sf.block`,
     `sf.block:`,

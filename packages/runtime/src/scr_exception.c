@@ -389,6 +389,17 @@ void scr_exc_suppressed_forget(const void *error_object) {
   }
 }
 
+void scr_exc_keep_first(ScrCaught *first) {
+  if (first->kind == SCR_EXC_GENRET) {
+    scr_caught_release(first);
+    return;
+  }
+  ScrCaught *dropped = scr_exc_take();
+  if (dropped) scr_caught_release(dropped);
+  scr_rethrow(first);
+  scr_caught_release(first);
+}
+
 void scr_exc_suppress(ScrCaught *suppressed) {
   if (suppressed->kind == SCR_EXC_GENRET) {
     /* A generator .return() is a return completion, not a thrown error.

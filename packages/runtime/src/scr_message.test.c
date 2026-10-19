@@ -172,6 +172,115 @@ static void check_documents(void) {
   scr_message_free(message);
 }
 
+/* A link-gated unit's handle crosses threads through the transfer hooks in
+ * its ops: share on the sender, adopt on the receiver, drop with the
+ * message. The test borrows the last capacity slot, which no unit uses, so
+ * it also proves that slots past SCR_DYNH_COUNT work. */
+#define TRANSFER_TAG ((ScrDynHandleTag)(SCR_DYNH_CAPACITY - 1))
+typedef struct {
+  _Atomic size_t rc;
+  int value;
+} TransferBox;
+static _Atomic int transfer_shares, transfer_adopts, transfer_drops;
+static void *transfer_retain(void *h) {
+  ((TransferBox *)h)->rc++;
+  return h;
+}
+static void transfer_release(void *h) {
+  if (--((TransferBox *)h)->rc == 0) free(h);
+}
+static void *transfer_share(void *h) {
+  TransferBox *source = h;
+  if (source->value < 0) return NULL;
+  transfer_shares++;
+  TransferBox *copy = malloc(sizeof *copy);
+  copy->rc = 1;
+  copy->value = source->value;
+  return copy;
+}
+static ScrDyn *transfer_adopt(void *payload) {
+  transfer_adopts++;
+  return scr_dyn_new_handle(payload, TRANSFER_TAG);
+}
+static void transfer_drop(void *payload) {
+  transfer_drops++;
+  transfer_release(payload);
+}
+static const ScrDynHandleTransfer transfer_hooks = {transfer_share, transfer_adopt, transfer_drop};
+static const ScrDynHandleOps transfer_ops = {
+    .cls = "Transferable",
+    .retain = transfer_retain,
+    .release = transfer_release,
+    .transfer = &transfer_hooks,
+};
+static const ScrDynHandleOps opaque_ops = {
+    .cls = "Opaque",
+    .retain = transfer_retain,
+    .release = transfer_release,
+};
+
+static void *receive_handles(void *data) {
+  scr_context_enter(1);
+  scr_init();
+  scr_lib_init(0, NULL);
+  scr_dyn_handle_install(TRANSFER_TAG, &transfer_ops);
+  ScrDyn *root = scr_message_decode(data);
+  assert(root && !scr_exc_pending());
+  ScrDyn *first = scr_dyn_obj_get(root, "first", 5);
+  assert(first->kind == SCR_DYN_HANDLE && first->v.handle.tag == TRANSFER_TAG);
+  assert(((TransferBox *)first->v.handle.ptr)->value == 7);
+  /* One handle reached twice decodes to one box. */
+  assert(first == scr_dyn_obj_get(root, "again", 5));
+  assert(transfer_adopts == 1);
+  scr_dyn_release(root);
+  scr_collect_cycles();
+  scr_context_cleanup();
+  return NULL;
+}
+
+static ScrDyn *transfer_handle(int value, const ScrDynHandleOps *ops) {
+  scr_dyn_handle_install(TRANSFER_TAG, ops);
+  TransferBox *box = malloc(sizeof *box);
+  box->rc = 1;
+  box->value = value;
+  ScrDyn *handle = scr_dyn_new_handle(box, TRANSFER_TAG);
+  transfer_release(box);
+  return handle;
+}
+
+static void check_handle_transfer(void) {
+  ScrDyn *root = scr_dyn_new_obj();
+  ScrDyn *handle = transfer_handle(7, &transfer_ops);
+  scr_dyn_obj_set(root, "first", 5, scr_dyn_retain(handle));
+  scr_dyn_obj_set(root, "again", 5, handle);
+  ScrMessage *message = scr_message_encode(root);
+  assert(message && !scr_exc_pending());
+  assert(transfer_shares == 1);
+  scr_dyn_release(root);
+  pthread_t receiver;
+  assert(pthread_create(&receiver, NULL, receive_handles, message) == 0);
+  assert(pthread_join(receiver, NULL) == 0);
+  assert(transfer_drops == 0);
+  scr_message_free(message);
+  assert(transfer_drops == 1);
+
+  /* A handle whose unit declines (share answers NULL) and a handle with no
+   * transfer hooks both throw DataCloneError, releasing what was shared. */
+  root = scr_dyn_new_arr();
+  scr_dyn_arr_push(root, transfer_handle(1, &transfer_ops));
+  scr_dyn_arr_push(root, transfer_handle(-1, &transfer_ops));
+  assert(!scr_message_encode(root) && scr_exc_pending());
+  scr_exc_clear();
+  assert(transfer_shares == 2 && transfer_drops == 2);
+  scr_dyn_release(root);
+  root = transfer_handle(3, &opaque_ops);
+  assert(!scr_message_encode(root) && scr_exc_pending());
+  scr_exc_clear();
+  assert(transfer_shares == 2);
+  scr_dyn_release(root);
+  scr_collect_cycles();
+}
+
 int main(void) {
   scr_init();
   scr_lib_init(0, NULL);
@@ -188,6 +297,8 @@ int main(void) {
   check_getters();
   check_rejection();
   check_documents();
+  check_handle_transfer();
   scr_context_cleanup();
   puts("message graphs preserve identity, sparse values, byte aliases and getter order");
+  puts("native handles cross threads through their transfer hooks");
 }
