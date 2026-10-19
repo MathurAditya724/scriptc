@@ -722,6 +722,31 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         }
       }
     }
+    // `typeof globalThis.AbortSignal` / `typeof Headers`: Node 24's Web
+    // platform constructor globals are functions. JavaScript sources
+    // represent such a value as an identity token, and the fallback
+    // declarations type some (AbortSignal) without a construct signature,
+    // so neither the operand nor the type can answer; the read has no
+    // effects.
+    if (constructorGlobalTypeof(lowerer, tested) !== null)
+      return { kind: "strLit", value: "function", type: STRING, loc };
+    // `typeof globalThis.AbortSignal.any` (ky's feature probe): a static
+    // member of a standard-library global, declared callable, whose value
+    // has no representation. The read has no effects and Node's answer
+    // for every such function is "function"; members that lower as values
+    // keep their own answer.
+    if (ts.isPropertyAccessExpression(tested) && !tested.questionDotToken) {
+      const owner = stdlibGlobalNameOf(lowerer, tested.expression);
+      if (owner !== null && lowerer.isStdlibMember(tested)) {
+        const t = lowerer.typeOf(tested);
+        if (
+          (lowerer.checker.getCallSignatures(t).length > 0 ||
+            lowerer.checker.getConstructSignatures(t).length > 0) &&
+          tryLowerExpression(lowerer, tested) === null
+        )
+          return { kind: "strLit", value: "function", type: STRING, loc };
+      }
+    }
     if (ts.isIdentifier(tested)) {
       const sym = lowerer.checker.getSymbolAtLocation(tested);
       if (!sym) {
@@ -1315,6 +1340,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         if (bi.module === "os" && bi.member === "constants") {
           return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
         }
+        if (bi.module === "fs" && bi.member === "constants")
+          return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
         // `import { O_RDONLY } from "constants"`: the member of the frozen
         // module object.
         if (bi.module === "constants") {
@@ -9024,6 +9051,76 @@ export function lowerEnvironmentKey(lowerer: Lowerer, node: ts.Expression): IrEx
   return lowerRecordPropertyKey(lowerer, key, node);
 }
 
+/** `typeof` of a Node 24 Web-platform constructor global or one of its
+ * static methods: "function", decided by name. The read has no effects.
+ * Static methods answer by name because after a `typeof
+ * globalThis.AbortSignal === "function" &&` guard the checker narrows a
+ * fallback-typed receiver to never, hiding the member's declaration. */
+function constructorGlobalTypeof(lowerer: Lowerer, tested: ts.Expression): string | null {
+  while (ts.isParenthesizedExpression(tested)) tested = tested.expression;
+  const globalName = stdlibGlobalNameOf(lowerer, tested);
+  if (globalName !== null && NODE_CONSTRUCTOR_GLOBALS.has(globalName)) return "function";
+  if (!ts.isPropertyAccessExpression(tested) || tested.questionDotToken) return null;
+  const owner = stdlibGlobalNameOf(lowerer, tested.expression);
+  return owner !== null &&
+    Object.hasOwn(NODE_CONSTRUCTOR_STATICS, owner) &&
+    NODE_CONSTRUCTOR_STATICS[owner]!.includes(tested.name.text)
+    ? "function"
+    : null;
+}
+
+/** `typeof globalThis.AbortSignal.any === "function"`: the comparison
+ * folds with constructorGlobalTypeof's answer. */
+function lowerConstructorGlobalTypeofTest(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const negated = expr.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  for (const [a, b] of operandPairs(expr)) {
+    if (!ts.isTypeOfExpression(a) || !ts.isStringLiteral(b)) continue;
+    const answer = constructorGlobalTypeof(lowerer, a.expression);
+    if (answer !== null)
+      return { kind: "boolLit", value: (answer === b.text) !== negated, type: BOOL, loc };
+  }
+  return null;
+}
+
+/** Static methods of Node 24's Web-platform constructor globals. */
+const NODE_CONSTRUCTOR_STATICS: Readonly<Record<string, readonly string[]>> = {
+  AbortSignal: ["abort", "any", "timeout"],
+  Response: ["error", "json", "redirect"],
+  URL: ["canParse", "createObjectURL", "parse", "revokeObjectURL"],
+};
+
+/** Node 24's Web-platform constructor globals: `typeof` answers
+ * "function" for each. */
+const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
+  "AbortController",
+  "AbortSignal",
+  "Blob",
+  "BroadcastChannel",
+  "CustomEvent",
+  "DOMException",
+  "Event",
+  "EventTarget",
+  "File",
+  "FormData",
+  "Headers",
+  "MessageChannel",
+  "MessageEvent",
+  "MessagePort",
+  "ReadableStream",
+  "Request",
+  "Response",
+  "TextDecoder",
+  "TextEncoder",
+  "TransformStream",
+  "URL",
+  "URLSearchParams",
+  "WritableStream",
+]);
+
 /** An operand of `+` with a string: ToString of ToPrimitive with the
  * default hint, which tries a class instance's valueOf before toString. */
 function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
@@ -10592,6 +10689,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     op === ts.SyntaxKind.ExclamationEqualsEqualsToken
   ) {
     const test =
+      lowerConstructorGlobalTypeofTest(lowerer, expr, loc) ??
       lowerWebAssemblyTypeofTest(lowerer, expr, loc) ??
       lowerErrorCodeTypeofTest(lowerer, expr, loc) ??
       lowerer.lowerCaughtTypeofTest(expr, loc) ??
