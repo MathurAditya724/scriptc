@@ -68,6 +68,7 @@ import {
   isNpmStaticPackage,
   npmStaticActive,
   npmStaticFsShadow,
+  npmStaticLiveExportTable,
   npmStaticPackageOfPath,
   reportNpmStaticOffender,
   setNpmStaticDeclarationOverloads,
@@ -1438,6 +1439,8 @@ export function requireBindingEarlyUse7(
   k: number,
   decl: ts.VariableDeclaration,
   precedingDecls: readonly ts.VariableDeclaration[],
+  /** A reference of the binding whose early evaluation is known exact. */
+  exactEarlyRead?: (reference: ts.Identifier) => boolean,
 ): ts.Identifier | null {
   const checker = program.getTypeChecker();
   const bindings = new Set<ts.Symbol>();
@@ -1669,6 +1672,7 @@ export function requireBindingEarlyUse7(
       const sym = symbolOf(n);
       if (sym === undefined) return undefined;
       if (bindings.has(sym)) {
+        if (exactEarlyRead?.(n) === true) return undefined;
         hit = n;
         return "stop";
       }
@@ -3121,6 +3125,16 @@ function cjsCycleRefusal7(
     // anything else can change what a module of the cycle observes.
     let stray: ts.Node | null = null;
     const settled = new Set(stmts.slice(0, firstEntry).filter(exportStatement));
+    // A bundler export table the rewrite certified (npmStaticLiveExportTable)
+    // stands for the live getter object the original installed before its
+    // first require: the tail table settles as if it ran there.
+    const tail = stmts[stmts.length - 1];
+    if (
+      tail !== undefined &&
+      npmStaticLiveExportTable(m.fileName) &&
+      cjsExportAssignmentOf(tail)?.kind === "table"
+    )
+      settled.add(tail);
     ts.walkPreorder(m, (n) => {
       if (stray !== null) return "stop";
       if (ts.isStatement(n) && settled.has(n)) return "skip";
@@ -3173,7 +3187,9 @@ function cjsCycleRefusal7(
         if (req.decl === null) continue;
         const dep = resolveImport7(program, m, req.spec, "require");
         if (dep === null || !members.has(dep)) continue;
-        const reached = requireBindingEarlyUse7(program, m, stmts.length, req.decl, []);
+        const reached = requireBindingEarlyUse7(program, m, stmts.length, req.decl, [], (id) =>
+          functionExportRead7(program, id, members),
+        );
         if (reached !== null) {
           return `the top-level code of ${m.fileName} can use its binding '${reached.text}' of a module of the cycle (${lineOf(reached)}) while the cycle initializes`;
         }
@@ -3181,6 +3197,66 @@ function cjsCycleRefusal7(
     }
   }
   return null;
+}
+
+/** True for a plain read `binding.name` (not a call, not a write) whose
+ * export resolves to a top-level function declaration of a module of the
+ * cycle that nothing reassigns. Every member settles its exports before
+ * entering the cycle, so Node reads that same function whenever the read
+ * runs, and the compiled read resolves to the declaration itself. */
+function functionExportRead7(
+  program: ts.Program,
+  id: ts.Identifier,
+  members: ReadonlySet<ts.SourceFile>,
+): boolean {
+  const access = id.parent;
+  if (!ts.isPropertyAccessExpression(access) || access.expression !== id) return false;
+  let use: ts.Node = access;
+  while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+  const parent = use.parent;
+  if (
+    (ts.isCallExpression(parent) && parent.expression === use) ||
+    ts.isDeleteExpression(parent) ||
+    ((ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
+      (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+        parent.operator === ts.SyntaxKind.MinusMinusToken)) ||
+    (ts.isBinaryExpression(parent) &&
+      parent.left === use &&
+      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
+  )
+    return false;
+  const checker = program.getTypeChecker();
+  const resolved = (sym: ts.Symbol | undefined, depth: number): ts.FunctionDeclaration | null => {
+    if (sym === undefined || depth > 4) return null;
+    if ((sym.flags & ts.SymbolFlags.Alias) !== 0) sym = checker.getAliasedSymbol(sym);
+    for (const d of checker.declarationsOf(sym)) {
+      if (ts.isFunctionDeclaration(d)) return d;
+      if (ts.isPropertyAssignment(d) && ts.isIdentifier(d.initializer))
+        return resolved(checker.getSymbolAtLocation(d.initializer), depth + 1);
+      if (ts.isShorthandPropertyAssignment(d))
+        return resolved(checker.getShorthandAssignmentValueSymbol(d), depth + 1);
+    }
+    return null;
+  };
+  const fn = resolved(checker.getSymbolAtLocation(access.name), 0);
+  if (fn === null || fn.name === undefined || !members.has(fn.getSourceFile())) return false;
+  if (!ts.isSourceFile(fn.parent)) return false;
+  const name = fn.name.text;
+  let reassigned = false;
+  ts.walkPreorder(fn.getSourceFile(), (n) => {
+    if (reassigned) return "stop";
+    if (
+      ts.isBinaryExpression(n) &&
+      ts.isIdentifier(n.left) &&
+      n.left.text === name &&
+      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    )
+      reassigned = true;
+    return undefined;
+  });
+  return !reassigned;
 }
 
 /* ── exact cyclic initialization ─────────────────────────────────────────

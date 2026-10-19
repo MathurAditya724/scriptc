@@ -34,12 +34,22 @@ const offenders = new Map<string, string>();
  * the host probes the same file many times, and the rewrite parses. */
 const rewriteCache = new Map<string, string | null>();
 
+/** Rewritten files whose tail export table stands for a live getter table
+ * installed before the file could run another module's code (the rewrite
+ * certifies it; require-cycle admission consults it). */
+const liveExportFiles = new Set<string>();
+
+export function npmStaticLiveExportTable(path: string): boolean {
+  return liveExportFiles.has(path.split("\\").join("/"));
+}
+
 export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): void {
   activePackages = new Set(packages);
   declarationOverloads = new Map();
   declarationProperties = new Map();
   offenders.clear();
   rewriteCache.clear();
+  liveExportFiles.clear();
   clearVirtualSources();
   untypedPkgCache.clear();
   realpathProbed.clear();
@@ -403,6 +413,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 classFields?.text ??
                 source,
               path,
+              (live) => liveExportFiles.add(live.split("\\").join("/")),
             );
             if (answer !== null && typeof answer === "object") {
               reportNpmStaticOffender(target.pkg, answer.degrade);

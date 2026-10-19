@@ -56,10 +56,14 @@ export class FrontendServices {
     this.ensureOpen();
     return new Ts7Host(this.createApi, { ...options, cwd: options?.cwd ?? this.cwd });
   }
-  rewriteCjs(source: string, path: string): string | { degrade: string } | null {
+  rewriteCjs(
+    source: string,
+    path: string,
+    liveExportTable?: (path: string) => void,
+  ): string | { degrade: string } | null {
     this.ensureOpen();
     if (!isBundlerCjsCandidate(source)) return null;
-    return rewriteBundlerCjsWithParser(this.sourceParser(), source, path);
+    return rewriteBundlerCjsWithParser(this.sourceParser(), source, path, liveExportTable);
   }
   /** A CommonJS bundle's __commonJS chunks as their own modules (null: no
    * chunks; a degrade reason: chunks the recognizer cannot move). */

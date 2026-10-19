@@ -163,9 +163,11 @@ export function rewriteBundlerCjsWithParser(
   parser: Ts7SourceParser,
   source: string,
   filePath: string,
+  liveExportTable?: (filePath: string) => void,
 ): string | { degrade: string } | null {
   if (!isBundlerCjsCandidate(source)) return null;
   return rewriteBundlerCjsSyntax(parser.parse(filePath, source, "js"), filePath, {
+    liveExportTable,
     requireTargetEsModuleStamped: (from, spec) => requireTargetEsModuleStamped(parser, from, spec),
     starTargetNames: (from, spec) => {
       const target = resolveRelativeCjs(from, spec);

@@ -12,6 +12,65 @@ import { rewriteBundledFunctionImports } from "./npm-static-bundled-cjs.js";
 export interface CjsRewriteHost {
   requireTargetEsModuleStamped(fromFile: string, specifier: string): boolean;
   starTargetNames(fromFile: string, specifier: string): Set<string>;
+  /** Told when the rewritten file's tail export table stands for a live
+   * getter table the original installed before it could run another
+   * module's code (liveExportTableFirst): a module of a require cycle that
+   * captured the export object early observes exactly that table. */
+  liveExportTable?: ((filePath: string) => void) | undefined;
+}
+
+/** True when esbuild's export object (`module.exports = __toCommonJS(T)`
+ * over a getter table `__export(T, {...})`) is installed before anything
+ * that can run another module's code, and nothing else writes the export
+ * object. Every statement before the installation is then a declaration,
+ * a directive, or the getter-table call (whose getters run only when
+ * read), and variable initializers evaluate no calls outside function
+ * bodies. The getters read live bindings, so the object a cycle partner
+ * captures early answers every later read exactly like the final table. */
+function liveExportTableFirst(
+  sf: ts.SourceFile,
+  installAt: number,
+  target: string,
+  exportTables: readonly { target: string }[],
+): boolean {
+  if (!exportTables.some((t) => t.target === target)) return false;
+  let callsOutsideFunctions = false;
+  const noCalls = (root: ts.Node): boolean => {
+    callsOutsideFunctions = false;
+    ts.walkPreorder(root, (n) => {
+      if (callsOutsideFunctions) return "stop";
+      if (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n))
+        return "skip";
+      if (ts.isCallExpression(n) || ts.isNewExpression(n) || ts.isTaggedTemplateExpression(n))
+        callsOutsideFunctions = true;
+      return undefined;
+    });
+    return !callsOutsideFunctions;
+  };
+  let sawTable = false;
+  for (const stmt of sf.statements.nodes) {
+    if (stmt.getStart(sf) >= installAt) return sawTable;
+    if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) continue;
+    if (ts.isExpressionStatement(stmt) && ts.isStringLiteral(stmt.expression)) continue;
+    if (ts.isVariableStatement(stmt)) {
+      if (
+        stmt.declarationList.declarations.nodes.every(
+          (d) => ts.isIdentifier(d.name) && (d.initializer === undefined || noCalls(d.initializer)),
+        )
+      )
+        continue;
+      return false;
+    }
+    if (ts.isExpressionStatement(stmt) && ts.isCallExpression(stmt.expression)) {
+      const table = exportCallOf(stmt.expression);
+      if (table !== null && table.target === target) {
+        sawTable = true;
+        continue;
+      }
+    }
+    return false;
+  }
+  return false;
 }
 
 export function isBundlerCjsCandidate(source: string): boolean {
@@ -927,6 +986,15 @@ export function rewriteBundlerCjsSyntax(
   }
 
   if (!emitTable) return text; // interop pads only — nothing appends
+
+  if (
+    esbuildMainTarget !== null &&
+    tablePos !== null &&
+    memberStmts.length === 0 &&
+    definePropEntries.length === 0 &&
+    liveExportTableFirst(sf, tablePos, esbuildMainTarget, exportTables)
+  )
+    host.liveExportTable?.(filePath);
 
   const lines: string[] = [""];
   const hasAnyFallback = [...entries.values()].some((s) => s.kind === "any");
