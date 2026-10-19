@@ -109,7 +109,6 @@ const KNOWN: Record<string, Known> = {
   "web-streams": { build: "SC2013" },
   "workspace-copied": { build: "SC2013" },
   "workspace-unclean": { build: "SC2013" },
-  "zlib-shims": { run: "SC2020" },
 };
 
 const cases = shardSelect(npmCases(fixturesRoot), (c) => c.name);

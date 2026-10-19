@@ -5980,6 +5980,67 @@ export function cjsExportAssignmentOf(
   return null;
 }
 
+/** The tsc VOID-INIT PREAMBLE (`exports.a = exports.b = void 0;` with the
+ * real `exports.a = a;` further down; every tsc-emitted dist file opens its
+ * exports this way): when every name in the chain has a later real
+ * assignment, the export takes its value there and the preamble lowers to
+ * nothing. Returns those later assignments by name, or null when this is
+ * not such a preamble (a preamble with no later real assignment keeps the
+ * ordinary path: the export IS undefined then). */
+export function cjsVoidInitPreambleReals(
+  cjs: Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "member" }>,
+): Map<string, Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "member" }>> | null {
+  if (!ts.isIdentifier(cjs.name)) return null;
+  const isExportsMember = (e: ts.Expression): e is ts.PropertyAccessExpression =>
+    ts.isPropertyAccessExpression(e) &&
+    ts.isIdentifier(e.name) &&
+    ((ts.isIdentifier(e.expression) && e.expression.text === "exports") ||
+      (ts.isPropertyAccessExpression(e.expression) &&
+        ts.isIdentifier(e.expression.expression) &&
+        e.expression.expression.text === "module" &&
+        ts.isIdentifier(e.expression.name) &&
+        e.expression.name.text === "exports"));
+  const isVoid = (e: ts.Expression): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    return (
+      e.kind === ts.SyntaxKind.VoidExpression || (ts.isIdentifier(e) && e.text === "undefined")
+    );
+  };
+  // chains: `exports.a = exports.b = void 0;` collects every name
+  const names: string[] = [cjs.name.text];
+  let tail: ts.Expression = cjs.value;
+  while (
+    ts.isBinaryExpression(tail) &&
+    tail.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    isExportsMember(tail.left)
+  ) {
+    names.push((tail.left.name as ts.Identifier).text);
+    tail = tail.right;
+  }
+  if (!isVoid(tail)) return null;
+  const sf = cjs.expr.getSourceFile();
+  const myPos = cjs.expr.getStart(sf);
+  const reals = new Map<
+    string,
+    Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "member" }>
+  >();
+  for (const name of names) {
+    const real = sf.statements
+      .map((s) => cjsExportAssignmentOf(s))
+      .find(
+        (other) =>
+          other?.kind === "member" &&
+          ts.isIdentifier(other.name) &&
+          other.name.text === name &&
+          other.expr.getStart(sf) > myPos &&
+          !isVoid(other.value),
+      );
+    if (real?.kind !== "member") return null;
+    reals.set(name, real);
+  }
+  return reals;
+}
+
 /** The members and shared value of a CHAINED member export
  * `exports.a = exports.b = module.exports.c = value` (outermost name
  * first), or null when the assignment is not a chain of at least two

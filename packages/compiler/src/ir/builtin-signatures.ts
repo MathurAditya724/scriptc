@@ -1811,15 +1811,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * socket POOLING is not modeled (one dial per request); maxSockets
    * accounting is real: over-limit requests defer their dial and queue.
    * MAY THROW. */
-  "http.agentNew": { argTypes: [BOOL, BOOL, F64, F64, F64, F64, F64], result: DYN },
+  "http.agentNew": { argTypes: [BOOL, BOOL, F64, F64, F64, F64, F64, DYN], result: DYN },
+  /** http.globalAgent / https.globalAgent (true): Node's keepAlive global
+   * agent, the one requests without an agent option use. */
+  "http.globalAgent": { argTypes: [BOOL], result: DYN },
   /** http.request's `signal` option over the fresh request: an aborted
    * signal destroys it with Node's AbortError now, a later abort event
    * does the same. A falsy value is ignored; a non-signal throws
    * ERR_INVALID_ARG_TYPE. */
   "http.clientSignal": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
-  /** https.request's servername option: the TLS name sent and verified.
-   * The "https." prefix keeps the TLS unit linked. */
-  "https.clientServername": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
+  /** options.signal checked before the request is built (ERR_INVALID_ARG_TYPE). */
+  "http.clientSignalCheck": { argTypes: [DYN], result: VOID },
+  /** https.request's servername option, stored for the construction call
+   * that follows: the TLS name sent and verified, and part of the pooled
+   * socket key. The "https." prefix keeps the TLS unit linked. */
+  "https.nextServername": { argTypes: [STRING], result: VOID },
   /** The maxHeaderSize option of createServer / http.request: Node's
    * validateInteger (ERR_OUT_OF_RANGE) then the header size bound.
    * MAY THROW. */
@@ -2666,6 +2672,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * opaque reference inputs retain explicit runtime refusals. */
   "buffer.fromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
   "buffer.concat": { argTypes: [arrayOf(BYTES_U8)], result: BYTES_U8 },
+  "buffer.concatDyn": { argTypes: [DYN], result: BYTES_U8 },
   /** The pooled Buffer factories (Node's allocate/fromStringFast/
    * fromArrayLike): allocUnsafe, Buffer.from of strings, Uint8Arrays,
    * number[] and checked values, and concat return views into the
@@ -2692,6 +2699,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * zero-padded to the total. THROWS Node's 'length' RangeError on a
    * negative/non-integer total (may-throw seed). */
   "buffer.concatLen": { argTypes: [arrayOf(BYTES_U8), F64], result: BYTES_U8 },
+  "buffer.concatLenDyn": { argTypes: [DYN, F64], result: BYTES_U8 },
   // The checked-dynamic compare/equals validators (Node's argument
   // ladders over dyn-boxed invalid-input probes).
   /** The checked-dynamic compare/equals validators (scr_bytes_io.c) —

@@ -19,6 +19,7 @@ import {
   canonicalBuiltinModule,
   cjsExportAssignmentOf,
   cjsExportChainOf,
+  cjsVoidInitPreambleReals,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   entryPackageFilePredicate,
@@ -1421,6 +1422,11 @@ export function collectGlobals(
           for (const nameNode of chain.names) registerExport(nameNode, nameNode.text, chain.value);
           continue;
         }
+        // A dropped tsc void-init preamble whose real assignment is such a
+        // class alias registers nothing either: storage here would never
+        // be assigned, and importers would read it instead of the class.
+        const real = cjsVoidInitPreambleReals(cjs)?.get(cjs.name.text);
+        if (real && lowerer.cjsMemberExportClassSymbol(real.expr) !== null) continue;
         registerExport(cjs.name, cjs.name.text, cjs.value);
         continue;
       }
@@ -2877,7 +2883,16 @@ export function lowerFileInit(
       const wrapped =
         g.type.kind === "dyn" ? dynUndefinedExpr(loc0) : lowerer.unassignedSlotInit(g.type, loc0);
       if (wrapped) {
-        header.push({ kind: "assign", localId: g.id, value: wrapped, loc: loc0 });
+        // A let global whose early reads are checked (initFlag) only
+        // gets its storage filled here: this is not the source write, so
+        // it must neither run the TDZ check nor set the flag.
+        header.push({
+          kind: "assign",
+          localId: g.id,
+          value: wrapped,
+          ...(g.initFlag !== undefined ? { initializes: true as const } : {}),
+          loc: loc0,
+        });
       }
     }
     const prelude = lowerer.jsonInitActions.get(sf) ?? [];
