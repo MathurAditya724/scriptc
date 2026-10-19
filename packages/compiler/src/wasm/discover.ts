@@ -28,6 +28,9 @@ import {
   trackedReadFile,
 } from "../frontend/input-tracker.js";
 import { analyzeWasm, isWasmHeader, type WasmModuleSummary } from "./binary.js";
+import { decodeBase64 } from "./base64.js";
+
+export { decodeBase64 };
 
 export type WasmSourceKind = "path" | "inline" | "package" | "config";
 
@@ -56,6 +59,9 @@ export interface WasmDiscoveryInput {
   configured: readonly string[];
   /** require.resolve from `fromFile`, or null when it does not resolve. */
   resolveRequest: (fromFile: string, specifier: string) => string | null;
+  /** Receives each distinct module's bytes once, when it is first found
+   * (builds translate them). */
+  onModule?: (sha256: string, bytes: Uint8Array) => void;
 }
 
 const SCAN_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([
@@ -110,6 +116,7 @@ class Discovery {
       };
       this.byHash.set(sha256, report);
       this.order.push(sha256);
+      this.input.onModule?.(sha256, bytes);
     }
     if (report.path === undefined && path !== undefined) report.path = path;
     addSource(report, source);
@@ -349,40 +356,6 @@ function byteArrayLiteral(node: ts.ArrayLiteralExpression): Uint8Array | null {
     out[i] = value;
   }
   return out;
-}
-
-const BASE64_VALUES = (() => {
-  const table = new Int16Array(128).fill(-1);
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  for (let i = 0; i < alphabet.length; i++) table[alphabet.charCodeAt(i)] = i;
-  // base64url spellings
-  table["-".charCodeAt(0)] = 62;
-  table["_".charCodeAt(0)] = 63;
-  return table;
-})();
-
-/** Decodes standard or URL-safe base64 (padding optional); null when the
- * text is not base64. */
-export function decodeBase64(text: string): Uint8Array | null {
-  let end = text.length;
-  while (end > 0 && text.charCodeAt(end - 1) === 61) end--;
-  if (text.length - end > 2 || end % 4 === 1) return null;
-  const out = new Uint8Array(Math.floor((end * 3) / 4));
-  let acc = 0;
-  let bits = 0;
-  let j = 0;
-  for (let i = 0; i < end; i++) {
-    const c = text.charCodeAt(i);
-    const v = c < 128 ? BASE64_VALUES[c]! : -1;
-    if (v < 0) return null;
-    acc = ((acc << 6) | v) & 0xffffff;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      out[j++] = (acc >> bits) & 0xff;
-    }
-  }
-  return j === out.length ? out : out.subarray(0, j);
 }
 
 /** The root directory of the npm package that contains `file` (the

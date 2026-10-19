@@ -1446,6 +1446,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // option) holds that dynamic value too, so the whole union is dynamic.
   if (type.isUnionType() && ts.constituentTypes(type).some((t) => isWebAssemblyType(t, ctx)))
     return DYN;
+  // JavaScript inference merges WebAssembly.instantiate's overloads into
+  // `Promise<WebAssemblyInstantiatedSource> & Promise<Instance>`: a promise
+  // of a WebAssembly value either way.
+  if (
+    type.isIntersectionType() &&
+    ts.constituentTypes(type).every((t) => {
+      if (t.getSymbol()?.name !== "Promise") return false;
+      const arg = ctx.checker.getTypeArguments(t as ts.TypeReference)[0];
+      return arg !== undefined && isWebAssemblyType(arg, ctx);
+    })
+  )
+    return { kind: "promise", inner: DYN };
   // Immutable<T> (@scriptc/types) is a deep-readonly view: the value is
   // still the T it maps.
   const immutableSource = immutableSourceType(type, ctx);

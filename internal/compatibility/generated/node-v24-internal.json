@@ -341,8 +341,8 @@
       "apiEntries": 92,
       "static": {
         "supported": 0,
-        "partial": 12,
-        "refused": 1,
+        "partial": 13,
+        "refused": 0,
         "not-implemented": 79,
         "by-design": 0,
         "unreviewed": 0,
@@ -52218,6 +52218,14 @@
           "tests/corpus/5290-blob-dynamic.js",
           "tests/corpus/5830-timers-promises-signal.ts",
           "tests/corpus/text-codec-values/main.ts",
+          "tests/corpus/webassembly-api.mjs",
+          "tests/corpus/webassembly-spec-control/main.mjs",
+          "tests/corpus/webassembly-spec-float/main.mjs",
+          "tests/corpus/webassembly-spec-int/main.mjs",
+          "tests/corpus/webassembly-spec-memory/main.mjs",
+          "tests/corpus/webassembly-spec-table/main.mjs",
+          "tests/corpus/webassembly-typed.ts",
+          "tests/corpus/webassembly-worker.ts",
           "tests/harness/fetch-conformance.test.ts"
         ]
       },
@@ -53553,8 +53561,18 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:stdlib.webassembly"
+        "status": "partial",
+        "evidence": "surface-manifest:stdlib.webassembly",
+        "tests": [
+          "tests/corpus/webassembly-api.mjs",
+          "tests/corpus/webassembly-typed.ts",
+          "tests/corpus/webassembly-worker.ts",
+          "tests/corpus/webassembly-spec-int/main.mjs",
+          "tests/corpus/webassembly-spec-float/main.mjs",
+          "tests/corpus/webassembly-spec-control/main.mjs",
+          "tests/corpus/webassembly-spec-memory/main.mjs",
+          "tests/corpus/webassembly-spec-table/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -112,6 +112,8 @@ export interface CcOptions {
    * native fetch AbortSignal built on the same engine: compiles
    * scr_event_target.c. */
   eventTarget?: boolean;
+  /** The WebAssembly API: compiles scr_wasm.c. */
+  wasm?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep

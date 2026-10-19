@@ -1,3 +1,4 @@
+import { emitWasmModules, wasmBoundsChecks } from "./wasm-modules.js";
 import { type ArraySearchKind, emitArraySearchHelpers } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitLlvmLayouts } from "./layouts.js";
@@ -500,6 +501,9 @@ export interface LlvmTargetOptions {
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
   detachedExit?: boolean;
+  /** Translated WebAssembly memories check bounds explicitly instead of
+   * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
+  wasmBoundsChecks?: boolean;
 }
 
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
@@ -775,6 +779,7 @@ export class LlEmitter {
   private readonly emitLibraryIdentity: boolean;
   private readonly runtimeAbiMarker: boolean;
   private readonly detachedExit: boolean;
+  private readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
   private readonly literals = new Map<string, { sym: string; len: number }>();
@@ -1247,6 +1252,13 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
+    this.wasmBoundsChecks =
+      options.wasmBoundsChecks === true ||
+      wasmBoundsChecks({
+        sanitize: false,
+        pointerBits: options.pointerBits ?? 64,
+        targetTriple: options.targetTriple ?? "",
+      });
     this.rcHelpers = options.inlineRc !== undefined ? new Set() : null;
     this.rcMode = options.inlineRc;
     this.rcHelpersNoinline = options.rcHelpersNoinline === true;
@@ -2686,6 +2698,9 @@ export class LlEmitter {
     out.push(fnDefs[0] ?? "");
     for (let i = 1; i < fnDefs.length; i++) out.push("", fnDefs[i]!);
     out.push("");
+    // WebAssembly modules translated into this program, and the registry.
+    for (const line of emitWasmModules(this.mod, flushedDecls, this.wasmBoundsChecks))
+      out.push(line);
 
     // main(): scr_init, the program-dependent error-vt interval stamps,
     // scr_lib_init(argc, argv), then the entry function. An uncaught

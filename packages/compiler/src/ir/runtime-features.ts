@@ -43,6 +43,8 @@ export interface RuntimeFeatures {
   tls: boolean;
   tlsCa: boolean;
   cipher: boolean;
+  /** The WebAssembly API (scr_wasm.c). */
+  wasm: boolean;
 }
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -217,6 +219,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     tls: false,
     tlsCa: false,
     cipher: false,
+    wasm: false,
   };
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   let tables: TypeTables | undefined;
@@ -427,6 +430,13 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
       // process-warning unit, and unknown output encodings render through
       // the inspect unit.
+      // scr_wasm.c boxes its handles and promises through the dyn-async
+      // unit and converts i64 values through BigInt.
+      if (fn.startsWith("wasm.")) {
+        features.wasm = true;
+        features.dynAsync = true;
+        features.bigint = true;
+      }
       if (fn === "crypto.cipherNew") {
         features.cipher = true;
         features.dynAsync = true;

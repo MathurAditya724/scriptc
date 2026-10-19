@@ -14,6 +14,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
+    ...(features.wasm ? { wasm: true } : {}),
     zlib: features.zlib,
     assert: features.assert,
     inspect: features.inspect,

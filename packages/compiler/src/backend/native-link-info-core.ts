@@ -22,6 +22,9 @@ export interface NativeLinkFeatures {
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
+  /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
+   * without it keep their link identity. */
+  wasm?: boolean;
   zlib: boolean;
   assert: boolean;
   inspect: boolean;

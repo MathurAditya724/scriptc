@@ -173,6 +173,11 @@ typedef enum {
   SCR_DYNH_BROADCAST_CHANNEL, /* worker_threads BroadcastChannel (scr_worker_events.c) */
   SCR_DYNH_HASH,           /* node:crypto Hash (scr_lib.c) */
   SCR_DYNH_HMAC,           /* node:crypto Hmac (scr_lib.c) */
+  SCR_DYNH_WASM_MODULE,    /* WebAssembly.Module (scr_wasm.c) */
+  SCR_DYNH_WASM_INSTANCE,  /* WebAssembly.Instance */
+  SCR_DYNH_WASM_MEMORY,    /* WebAssembly.Memory */
+  SCR_DYNH_WASM_TABLE,     /* WebAssembly.Table */
+  SCR_DYNH_WASM_GLOBAL,    /* WebAssembly.Global */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 

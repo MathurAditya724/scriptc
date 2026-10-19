@@ -102,6 +102,7 @@ const OPTIONAL = [
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
+  ["scr_wasm.c", "wasm"],
   ["scr_fetch.c", "nativeFetch"],
 ];
 

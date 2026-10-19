@@ -11,7 +11,12 @@ import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { esmImportBindingKind } from "./builtins/module-bindings.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
-import { lowerWebAssemblyTypeof, refuseWebAssemblyUse } from "./builtins/webassembly.js";
+import {
+  lowerWebAssemblyInstanceof,
+  lowerWebAssemblyTypeof,
+  lowerWebAssemblyValue,
+  refuseWebAssemblyUse,
+} from "./builtins/webassembly.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
 import { lowerNetAddressInstanceof, lowerNetAddressStaticRead } from "./builtins/net-address.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "./builtins/errors.js";
@@ -464,7 +469,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (externalTypeSpecifier !== null) {
     lowerer.externalHostFence(externalTypeSpecifier, expr);
   }
-  // Every reached use of the WebAssembly API fences at its expression.
+  // WebAssembly API values lower; every other reached use of the API
+  // fences at its expression.
+  const webAssemblyValue = lowerWebAssemblyValue(lowerer, expr);
+  if (webAssemblyValue !== null) return webAssemblyValue;
   refuseWebAssemblyUse(lowerer, expr);
 
   if (ts.isNumericLiteral(expr)) {
@@ -12514,6 +12522,8 @@ export function caughtLocalOf(lowerer: Lowerer, node: ts.Expression): IrLocal | 
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const webAssembly = lowerWebAssemblyInstanceof(lowerer, expr);
+  if (webAssembly !== null) return webAssembly;
   refuseWebAssemblyUse(lowerer, expr.right);
   // `x instanceof net.Socket` over a union with a netSocket arm — the
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.

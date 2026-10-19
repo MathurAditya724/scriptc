@@ -832,6 +832,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "event":
     case "events":
     case "blob":
+    case "wasm":
     case "record":
     case "disposable":
     case "punycode":

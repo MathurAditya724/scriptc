@@ -7,9 +7,9 @@
     "tierItemCount": 3456,
     "tiers": {
       "static": {
-        "audit-partial": 1162,
+        "audit-partial": 1163,
         "verify-gap": 2166,
-        "replace-refusal": 41,
+        "replace-refusal": 40,
         "classify": 2,
         "implement": 85
       }
@@ -34202,12 +34202,21 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:stdlib.webassembly",
-          "tests": []
+          "source": "surface-manifest:stdlib.webassembly",
+          "tests": [
+            "tests/corpus/webassembly-api.mjs",
+            "tests/corpus/webassembly-typed.ts",
+            "tests/corpus/webassembly-worker.ts",
+            "tests/corpus/webassembly-spec-int/main.mjs",
+            "tests/corpus/webassembly-spec-float/main.mjs",
+            "tests/corpus/webassembly-spec-control/main.mjs",
+            "tests/corpus/webassembly-spec-memory/main.mjs",
+            "tests/corpus/webassembly-spec-table/main.mjs"
+          ]
         }
       }
     },

@@ -81,6 +81,7 @@ export interface RuntimePackManifest {
 export interface RuntimeFeatureSet extends NativeLinkFeatures {
   workers: boolean;
   eventTarget: boolean;
+  wasm: boolean;
   nativeFetch: boolean;
   netEffective: boolean;
   httpEffective: boolean;
@@ -267,6 +268,7 @@ export function effectiveRuntimeFeatures(
     ...features,
     workers: features.workers === true,
     eventTarget: features.eventTarget === true,
+    wasm: features.wasm === true,
     nativeFetch,
     netEffective,
     httpEffective,

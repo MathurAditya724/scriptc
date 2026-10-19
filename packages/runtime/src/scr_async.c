@@ -88,14 +88,6 @@ void __lsan_unregister_root_region(const void *p, size_t size) __attribute__((we
 #endif
 #endif
 
-#ifdef SCR_ASAN_FIBERS
-#define SCR_FIBER_STACK (8 * 1024 * 1024)
-#else
-/* Deep enough for ordinary recursion inside async bodies and generators
- * once the overflow guard's reserve is taken off; idle and shallow fibers
- * only touch the pages they use. */
-#define SCR_FIBER_STACK (512 * 1024)
-#endif
 
 #if !defined(_WIN32) && !defined(__wasi__)
 /* Keep stacks out of malloc's size classes. Reuse a bounded number during
