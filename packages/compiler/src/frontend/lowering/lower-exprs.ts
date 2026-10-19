@@ -19,6 +19,7 @@ import { STATS_TYPE_TESTS } from "./builtins/filesystem.js";
 import { threadsImportOf } from "../threads-import.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
 import { lowerInternTableProperty } from "./intern-tables.js";
+import { lowerThreadSlotsProperty } from "./thread-slots.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import { SYMBOL_T } from "../../ir/ir.js";
@@ -1246,6 +1247,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           expr,
           'open tables with new InternTable("name")',
         );
+      if (experimentalImportOf(lowerer.program, expr) === "ThreadSlots")
+        lowerer.noLowering(
+          "ThreadSlots (@scriptc/experimental) as a value",
+          expr,
+          'open slots with new ThreadSlots("name")',
+        );
     }
     {
       const bi = lowerer.builtinImportOf(expr);
@@ -1926,6 +1933,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const table = lowerInternTableProperty(lowerer, expr);
       if (table) return table;
     }
+    lowerThreadSlotsProperty(lowerer, expr);
     // `EventEmitter.name`, `zlib.Gzip.name`, `C.name` over a builtin
     // class alias.
     if (expr.name.text === "name" && !expr.questionDotToken) {

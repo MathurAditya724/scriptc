@@ -1,6 +1,7 @@
 import { type ArraySearchKind, emitArraySearchHelpers } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitLlvmLayouts } from "./layouts.js";
+import { emitThreadSlotsIntrinsic, threadSlotsBlockDefinitions } from "./thread-slots.js";
 import { compileRegexMatcher, type RegexMatcherCode } from "./regex-matchers.js";
 import {
   CYC_BUF,
@@ -914,6 +915,8 @@ export class LlEmitter {
   /** Constant-key reads on checked-dynamic objects, each with its own
    * zero-initialized ScrDynReadIc (scr_runtime.h). */
   private dynReadIcSites = 0;
+  /** ThreadSlots blocks by family name (thread-slots.ts). */
+  private readonly threadSlotsBlocks = new Map<string, string>();
   /** May-throw analysis (computeMayThrow): pending
    * checks are emitted only after calls that can actually raise. */
   readonly mayThrow: Set<string>;
@@ -2507,6 +2510,7 @@ export class LlEmitter {
     {
       const tl =
         this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : "";
+      out.push(...threadSlotsBlockDefinitions(this.threadSlotsBlocks, tl !== ""));
       for (let site = 0; site < this.dynReadIcSites; site++)
         out.push(
           `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${this.sizeType}, ${this.sizeType}, ptr } zeroinitializer`,
@@ -10179,7 +10183,18 @@ export class LlEmitter {
     )
       return this.emitRegionIntrinsic(e);
     if (e.name.startsWith("itable.")) return this.emitInternTableIntrinsic(e);
+    if (e.name.startsWith("slots.")) return emitThreadSlotsIntrinsic(this, e);
     return emitIntrinsicExpr(this, e);
+  }
+
+  /** The ScrSlots block of the ThreadSlots family `name`. */
+  threadSlotsBlock(name: string): string {
+    let sym = this.threadSlotsBlocks.get(name);
+    if (sym === undefined) {
+      sym = `@sc_slots_${this.threadSlotsBlocks.size}`;
+      this.threadSlotsBlocks.set(name, sym);
+    }
+    return sym;
   }
 
   /** InternTable's runtime calls (scr_itable.c). Table and entry handles

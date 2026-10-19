@@ -977,6 +977,10 @@ export interface IrModule {
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
   lifetimeRegions?: true;
+  /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
+   * each one's hierarchy carries a slot word (the slots.* intrinsics;
+   * backend/llvm/thread-slots.ts). */
+  threadSlotKeys?: string[];
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
@@ -3614,7 +3618,19 @@ export type IrExpr =
         | "itable.find"
         | "itable.insert"
         | "itable.value"
-        | "itable.size";
+        | "itable.size"
+        /* ThreadSlots (@scriptc/experimental; scr_slots.c). Every one takes
+         * the family name (a string literal), the family's %ThreadSlots
+         * value (read for its effects only) and the key, a class instance
+         * whose hierarchy is in IrModule.threadSlotKeys:
+         * slots.get → V | undefined, a nullable union, owned (+1);
+         * slots.has → bool; slots.delete → bool, releasing the value;
+         * slots.set (…, V value) → void, or the %ThreadSlots value when the
+         * result is used. Nothing throws. */
+        | "slots.get"
+        | "slots.has"
+        | "slots.set"
+        | "slots.delete";
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;

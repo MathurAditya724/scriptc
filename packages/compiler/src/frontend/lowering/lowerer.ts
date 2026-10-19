@@ -5,6 +5,7 @@ import {
   lowerLifetimeRegionNew,
 } from "./lifetime-regions.js";
 import { internTableType, lowerInternTableCall, lowerInternTableNew } from "./intern-tables.js";
+import { lowerThreadSlotsCall, lowerThreadSlotsNew, threadSlotsType } from "./thread-slots.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   checkCycleBindingAccesses,
@@ -2662,6 +2663,15 @@ export class Lowerer {
   readonly internTableHelpers = new Map<string, string>();
   /** Each InternTable name's type arguments and first construction site. */
   readonly internTableNames = new Map<string, { key: string; node: ts.Node }>();
+  /** Each ThreadSlots name's type arguments (thread-slots.ts). */
+  readonly threadSlotNames = new Map<string, string>();
+  /** The family each `new ThreadSlots(...)` opens. */
+  readonly threadSlotFamilies = new Map<
+    ts.NewExpression,
+    { name: string; key: IrType; value: IrType }
+  >();
+  /** Classes used as ThreadSlots keys: their hierarchies carry a slot word. */
+  readonly threadSlotKeys = new Set<string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -3041,6 +3051,10 @@ export class Lowerer {
       internTableClass: (decl) =>
         isExperimentalDeclarationFile(decl.getSourceFile(), this.experimentalFiles)
           ? internTableType(this)
+          : null,
+      threadSlotsClass: (decl) =>
+        isExperimentalDeclarationFile(decl.getSourceFile(), this.experimentalFiles)
+          ? threadSlotsType(this)
           : null,
       moduleNamespaceId: (type) => this.moduleNamespaceIdOfType(type),
     };
@@ -6726,6 +6740,9 @@ export class Lowerer {
             entry: ENTRY_NAME,
             ...(this.usesWorkers ? { workers: true } : {}),
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
+            ...(this.threadSlotKeys.size > 0
+              ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
+              : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
@@ -6934,7 +6951,7 @@ export class Lowerer {
     }
     for (const info of this.classes.values()) {
       if (info.builtinError) continue; // runtime-provided; nothing lowers
-      if (info.lifetimeRegion || info.internTable) continue; // synthesized with the class
+      if (info.lifetimeRegion || info.internTable || info.threadSlots) continue; // synthesized with the class
       // Generic-class INSTANTIATIONS (and mixin instantiations) are
       // demand-driven, not units: their members lower unconditionally in
       // the instance drain below — the generic-fn instance rule.
@@ -11513,6 +11530,7 @@ export class Lowerer {
     return (
       lowerLifetimeRegionCall(this, expr) ??
       lowerInternTableCall(this, expr) ??
+      lowerThreadSlotsCall(this, expr) ??
       lowerFfiCall(this, expr) ??
       lowerFetchCall(this, expr) ??
       lowerStaticFetchCompanionCall(this, expr) ??
@@ -11739,6 +11757,7 @@ export class Lowerer {
     const builtin =
       lowerLifetimeRegionNew(this, expr) ??
       lowerInternTableNew(this, expr) ??
+      lowerThreadSlotsNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
       lowerDisposableStackNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??

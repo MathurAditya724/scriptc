@@ -998,6 +998,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       errors,
       mod.workers === true,
       mod.lifetimeRegions === true,
+      new Set(mod.threadSlotKeys ?? []),
     );
   }
   return errors;
@@ -1016,6 +1017,7 @@ function validateFunction(
   errors: IrValidationError[],
   workers: boolean,
   lifetimeRegions: boolean,
+  threadSlotKeys: ReadonlySet<string>,
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
@@ -3892,6 +3894,44 @@ function validateFunction(
         if (!isSupportedMapValue(e.type))
           err(`itable.value type ${typeKey(e.type)} is not a table value type`, e.loc);
       } else if (e.type.kind !== "f64") err(`${e.name} has type f64`, e.loc);
+      return;
+    }
+    if (
+      e.name === "slots.get" ||
+      e.name === "slots.has" ||
+      e.name === "slots.set" ||
+      e.name === "slots.delete"
+    ) {
+      for (const a of e.args) checkExpr(a);
+      const [name, slots, key, value] = e.args;
+      const arity = e.name === "slots.set" ? 4 : 3;
+      const isSlots = (t: IrType): boolean => t.kind === "object" && t.className === "%ThreadSlots";
+      // The key's class or one of its bases is a declared key.
+      const keyed = (className: string): boolean => {
+        for (let c: string | undefined = className; c !== undefined; c = classes.get(c)?.base)
+          if (threadSlotKeys.has(c)) return true;
+        return false;
+      };
+      if (e.args.length !== arity) err(`${e.name} takes ${arity} arguments`, e.loc);
+      else if (name!.kind !== "strLit" || !isSlots(slots!.type))
+        err(`${e.name} takes a name literal and a %ThreadSlots value`, e.loc);
+      else if (key!.type.kind !== "object" || !keyed(key!.type.className))
+        err(`${e.name} key ${typeKey(key!.type)} is not a ThreadSlots key class`, e.loc);
+      else if (e.name === "slots.set") {
+        const kind = value!.type.kind;
+        if (
+          kind !== "object" &&
+          kind !== "record" &&
+          kind !== "array" &&
+          kind !== "map" &&
+          kind !== "set"
+        )
+          err(`slots.set value ${typeKey(value!.type)} is not a ThreadSlots value type`, e.loc);
+        if (e.type.kind !== "void" && !isSlots(e.type))
+          err("slots.set has type void or %ThreadSlots", e.loc);
+      } else if (e.name === "slots.get") {
+        if (e.type.kind !== "union") err("slots.get has a V | undefined union type", e.loc);
+      } else if (e.type.kind !== "bool") err(`${e.name} has type bool`, e.loc);
       return;
     }
     if (e.name === "threads.publish") {
