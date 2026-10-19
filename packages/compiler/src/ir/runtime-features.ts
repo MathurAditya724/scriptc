@@ -141,7 +141,7 @@ export function moduleRuntimeFeatures(mod: IrModule): RuntimeFeatures {
   return scanRuntimeFeatures(mod);
 }
 
-/** The module's record shapes and unions by id. */
+/** The module's record shapes, unions and class layouts by id. */
 interface TypeTables {
   records: Map<string, IrRecordShape>;
   unions: Map<string, IrUnionDef>;
@@ -177,8 +177,10 @@ function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean
       return def?.arms.some((a) => boxesPromise(a, tables, seen)) ?? false;
     }
     case "object": {
-      // A boxed class instance materializes its fields, inherited ones
-      // included, and the instance can be any subclass.
+      // A boxed class instance exposes its fields as dyn values (Object.keys,
+      // spread, inspection), boxing a promise any field holds. It
+      // materializes inherited fields too, and the instance can be any
+      // subclass.
       const key = `class:${t.className}`;
       if (seen.has(key)) return false;
       seen.add(key);

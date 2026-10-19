@@ -35,6 +35,7 @@ import {
   SYMBOL_T,
   typeEquals,
   typeKey,
+  maybePromiseUnionArmsOk,
   unionContainerArmsOk,
   UNDEFINED_T,
   VOID,
@@ -920,6 +921,24 @@ function isDeclaredInAmbientNamespace(d: ts.Declaration, name: string): boolean 
   return false;
 }
 
+/** A type declared in the shipped WebAssembly namespace (scriptc.d.ts):
+ * its modules, instances, memories, tables, globals, error classes and the
+ * Exports/Imports records. */
+export function isWebAssemblyType(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  const symbol = type.getAliasSymbol() ?? type.getSymbol();
+  if (!symbol) return false;
+  return ctx.checker
+    .declarationsOf(symbol)
+    .some(
+      (d) =>
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientNamespace(d as ts.Declaration, "WebAssembly"),
+    );
+}
+
 /** True when a type contains a record anywhere (the trigger for the
  * shape-mismatch diagnostic SC2002 — non-record mismatches are tsc's or
  * the validator's business). */
@@ -1035,7 +1054,7 @@ export interface TypeMapperCtx {
    * inside members, self-referential member types), null outside any
    * mixin context (the type alone cannot name a call site). */
   mixinClassInstance?: (decl: ts.ClassLikeDeclaration) => IrType | null;
-  localClassInstance?: (decl: ts.ClassLikeDeclaration) => IrType | null;
+  localClassInstance?: (decl: ts.ClassLikeDeclaration, instanceType?: ts.Type) => IrType | null;
   /** Live class protocols retain identity and receiver dispatch rather than
    * copying an instance into an unrelated record layout. */
   classImplementedProtocol?: (type: ts.Type) => boolean;
@@ -1080,6 +1099,9 @@ export interface TypeMapperCtx {
   /** The InternTable instance type (@scriptc/experimental), when `decl` is
    * that package's class declaration (lowering/intern-tables.ts). */
   internTableClass?: (decl: ts.ClassDeclaration) => IrType | null;
+  /** The ThreadSlots instance type (@scriptc/experimental), when `decl` is
+   * that package's class declaration (lowering/thread-slots.ts). */
+  threadSlotsClass?: (decl: ts.ClassDeclaration) => IrType | null;
 }
 /** A generator type's normalized value channels (Generator<T, TReturn,
  * TNext> and the IteratorResult alias share this):
@@ -1363,7 +1385,16 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const sensitivityAtEntry = contextResolutions;
   mapTypeDepth++;
   try {
-    const mapped = mapTypeInner(type, ctx);
+    let mapped: IrType | null;
+    try {
+      mapped = mapTypeInner(type, ctx);
+    } catch (e) {
+      // typescript-go's API can panic serializing a union's members (an
+      // empty tuple cloned as an array literal, `s.match(re) || []`): a
+      // union the checker cannot describe has no representation.
+      if (!topLevel || !ts.isUnreadableConstituentsPanic(e)) throw e;
+      mapped = null;
+    }
     if (
       mapped !== null &&
       memoKey !== null &&
@@ -1445,6 +1476,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "object", className: "%Error" };
   }
   if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
+  // The WebAssembly API's values have the checked-dynamic representation, so
+  // declarations that merely mention them compile; each reached use of the
+  // API itself is refused at its site (builtins/webassembly.ts).
+  if (isWebAssemblyType(type, ctx)) return DYN;
+  // A union over one of them (quickjs-wasi's `BufferSource | WebAssembly.Module`
+  // option) holds that dynamic value too, so the whole union is dynamic.
+  if (type.isUnionType() && ts.constituentTypes(type).some((t) => isWebAssemblyType(t, ctx)))
+    return DYN;
   // Immutable<T> (@scriptc/types) is a deep-readonly view: the value is
   // still the T it maps.
   const immutableSource = immutableSourceType(type, ctx);
@@ -1711,16 +1750,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return hasStr ? STRING : F64;
     }
   }
-  // @scriptc/experimental's LifetimeRegion and InternTable: synthetic
-  // program classes, provenance-checked by the package's declaration file.
+  // @scriptc/experimental's LifetimeRegion, InternTable and ThreadSlots:
+  // synthetic program classes, provenance-checked by the package's
+  // declaration file.
   {
     const classSym = widened.getSymbol();
     const name = classSym?.name;
-    if (name === "LifetimeRegion" || name === "InternTable") {
+    if (name === "LifetimeRegion" || name === "InternTable" || name === "ThreadSlots") {
       for (const d of checker.declarationsOf(classSym!)) {
         if (!ts.isClassDeclaration(d)) continue;
         const synthetic =
-          name === "LifetimeRegion" ? ctx.lifetimeRegionClass?.(d) : ctx.internTableClass?.(d);
+          name === "LifetimeRegion"
+            ? ctx.lifetimeRegionClass?.(d)
+            : name === "InternTable"
+              ? ctx.internTableClass?.(d)
+              : ctx.threadSlotsClass?.(d);
         if (synthetic) return synthetic;
       }
     }
@@ -1976,7 +2020,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       }
     }
     if (classExprNeedsContext(classDecl)) {
-      const local = ctx.localClassInstance?.(classDecl);
+      const local = ctx.localClassInstance?.(classDecl, widened);
       if (local) contextResolutions++;
       return local ?? null;
     }
@@ -2015,7 +2059,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       }
     }
     if (classExprNeedsContext(classDecl)) {
-      const local = ctx.localClassInstance?.(classDecl);
+      const ctorSigs = checker.getConstructSignatures(widened);
+      const local = ctx.localClassInstance?.(
+        classDecl,
+        ctorSigs.length === 1 ? checker.getReturnTypeOfSignature(ctorSigs[0]!) : undefined,
+      );
       if (local?.kind === "object") {
         contextResolutions++;
         return { kind: "classval", className: local.className };
@@ -3246,7 +3294,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("IterableIterator") ||
     // An Iterator<T> annotation holds a single-pass iterator object: a
     // generator, or a native iterator adapted into one.
-    isStdlibInterface("Iterator")
+    isStdlibInterface("Iterator") ||
+    // IteratorObject<T> is what the iterator helpers return: a helper
+    // generator over its source (containers/iterator-helpers.ts).
+    isStdlibInterface("IteratorObject")
   ) {
     const args = checker.getTypeArguments(widened as ts.TypeReference);
     const channels = genChannels(args[0], args[1], args[2], ctx);
@@ -4188,7 +4239,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
             a.kind === "dyn" ||
             a.kind === "generator",
         ) ||
-        !unionContainerArmsOk(arms)
+        !maybePromiseUnionOk(parts, arms, ctx)
       ) {
         return null;
       }
@@ -4246,6 +4297,7 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
   }
   const params: IrType[] = [];
   let typedRest = false;
+  let dynRest = false;
   for (const p of sig.getParameters()) {
     const decl = checker.valueDeclarationOf(p);
     const rest = decl !== undefined && ts.isParameter(decl) && decl.dotDotDotToken !== undefined;
@@ -4308,6 +4360,21 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
       if (!armed) return null;
       pt = armed;
     }
+    // `...args: unknown[]` / `...args: any[]` declared in program source:
+    // the checked-dynamic variadic ABI (no typed slot; the callee's hidden
+    // trailing dyn array receives every surplus argument, as for JS rest
+    // params). Declaration files keep their existing paths: library
+    // callback slots such as String#replace's `(substring, ...args: any[])`
+    // have intrinsic lowerings that inspect the unmapped type.
+    if (
+      rest &&
+      decl !== undefined &&
+      !decl.getSourceFile().isDeclarationFile &&
+      (pt?.kind === "dyn" || (!pt && isAnyArrayType(checker.getTypeOfSymbol(p), checker)))
+    ) {
+      dynRest = true;
+      continue;
+    }
     if (!pt) return null;
     if (rest) {
       if (pt.kind !== "array") return null;
@@ -4368,7 +4435,9 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
   if (!ret) return null;
   return typedRest
     ? { kind: "func", params, ret, rest: true, restAbi: "typed" }
-    : funcOf(params, ret);
+    : dynRest
+      ? { kind: "func", params, ret, rest: true }
+      : funcOf(params, ret);
 }
 
 /** Retain a literal discriminator before widening erases its values. A
@@ -6272,9 +6341,49 @@ function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
   }
 }
 
+/** `any[]` (or `readonly any[]`): an array type whose element is `any`. */
+export function isAnyArrayType(t: ts.Type, checker: ts.TypeChecker): boolean {
+  if (!checker.isArrayType(t)) return false;
+  const elem = checker.getTypeArguments(t as ts.TypeReference)[0];
+  return elem !== undefined && (elem.flags & ts.TypeFlags.Any) !== 0;
+}
+
+/** The maybe-promise union rule (mapTypeInner's union rule; IR
+ * maybePromiseUnionArmsOk): at most one promise arm, and when it has data
+ * siblings none of them may be thenable — `await` and async `return`
+ * dispatch on the union tag, so a data arm whose type declares `then`
+ * would skip the thenable adoption JS performs. */
+function maybePromiseUnionOk(
+  parts: readonly ts.Type[],
+  arms: IrType[],
+  ctx: TypeMapperCtx,
+): boolean {
+  if (unionContainerArmsOk(arms)) return true;
+  if (!maybePromiseUnionArmsOk(arms)) return false;
+  // A function beside a promise (`Promise<T> | (() => Promise<T>)`, the
+  // assert.rejects argument) keeps its existing representation: callers
+  // dispatch on callability, not on a then-able promise.
+  if (arms.some((arm) => arm.kind === "func")) return false;
+  return maybePromiseThenableArm(parts, ctx) === null;
+}
+
+/** The first non-promise constituent of a promise-armed union whose type
+ * has a `then` member (a thenable data arm), or null. */
+function maybePromiseThenableArm(parts: readonly ts.Type[], ctx: TypeMapperCtx): ts.Type | null {
+  const { checker } = ctx;
+  for (const part of parts) {
+    if (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) continue;
+    if (mapType(part, ctx)?.kind === "promise") continue;
+    // Primitive arms answer through their wrapper prototypes, none of
+    // which has `then`; object arms answer through their own members.
+    if (checker.getPropertyOfType(part, "then")) return part;
+  }
+  return null;
+}
+
 /** Arm kinds with no home in a compiled union (mapTypeInner's union rule):
  * no runtime narrowing test exists against sibling data arms. */
-function armHasUnionHome(arm: IrType, siblingCount: number): boolean {
+function armHasUnionHome(arm: IrType): boolean {
   switch (arm.kind) {
     case "void":
     case "union":
@@ -6283,9 +6392,6 @@ function armHasUnionHome(arm: IrType, siblingCount: number): boolean {
     case "generator":
     case "dyn":
       return false;
-    // Promise data siblings still lack a supported narrowing contract.
-    case "promise":
-      return siblingCount === 0;
     default:
       return true;
   }
@@ -6410,8 +6516,22 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
       if (!mapped) {
         return `the union shape is supported, but its arm '${text(part)}' does not compile`;
       }
-      if (!armHasUnionHome(mapped, dataArms.length - 1)) {
+      if (!armHasUnionHome(mapped)) {
         return `the union shape is supported, but '${text(part)}' arms have no home in a compiled union yet (no runtime narrowing test exists against sibling arms)`;
+      }
+    }
+    const promiseArms = mappedArms.filter(({ mapped }) => mapped?.kind === "promise");
+    if (promiseArms.length > 1) {
+      return `the union shape is supported, but it has several promise arms ('${text(promiseArms[0]!.p)}' and '${text(promiseArms[1]!.p)}'), and a compiled union holds at most one (the union tag is the 'instanceof Promise' test)`;
+    }
+    if (promiseArms.length === 1 && dataArms.length > 1) {
+      const callable = mappedArms.find(({ mapped }) => mapped?.kind === "func");
+      if (callable) {
+        return `the union shape is supported, but its function arm '${text(callable.p)}' sits beside a promise arm, and a maybe-promise union holds only data arms beside its promise`;
+      }
+      const thenable = maybePromiseThenableArm(parts, ctx);
+      if (thenable) {
+        return `the union shape is supported, but its arm '${text(thenable)}' declares 'then' beside a promise arm, so 'await' would have to adopt it as a thenable (a maybe-promise union's data arms must not be thenable)`;
       }
     }
     return null;

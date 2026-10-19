@@ -338,6 +338,12 @@ export interface LoadResult {
    * last. Empty until checkPreflight runs (and empty when preflight fails
    * structurally). */
   moduleOrder: ts.SourceFile[];
+  /** Inline require() calls whose edge closes a require cycle. Node answers
+   * them with the still-evaluating module's partial exports, which the
+   * static export globals do not model; their lowering refuses them by name
+   * at run time instead of refusing the whole program. Filled by
+   * checkPreflight. */
+  inlineRequireCycleCalls?: ReadonlySet<ts.Node>;
   /** Node's startup refusal, when the graph carries an import edge Node
    * rejects before ANY module evaluates — a RESOLUTION refusal (a bare
    * specifier nothing installed resolves, an exports/imports map that
@@ -1028,9 +1034,10 @@ export function loadProgram(
  * preflight diagnostics. Preserve the caller's complete load shape when
  * mutating it, including its owned services and disposal callback. */
 export function checkPreflight<T extends LoadResult>(load: T): ScrDiagnostic[] {
-  const { diags, moduleOrder, startupCrash } = preflight7(load);
+  const { diags, moduleOrder, startupCrash, inlineRequireCycleCalls } = preflight7(load);
   load.moduleOrder = moduleOrder;
   load.startupCrash = startupCrash;
+  load.inlineRequireCycleCalls = inlineRequireCycleCalls;
   return diags;
 }
 
@@ -1895,6 +1902,36 @@ function nestedBareRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
   return out;
 }
 
+/** INLINE `require("...")` calls in expression position anywhere in a file
+ * (`require("./x").f`, `require("debug")("ns")`, `module.exports =
+ * require("./y")`, `{ v: require("./v") }`): each evaluates its module at
+ * that position, exactly like a bare require statement. Top-level require
+ * statements and bare require statements are collected by their own
+ * scans; a require that initializes a nested declaration keeps its
+ * lowering fence and is not an edge. */
+function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
+  const out: ts.CallExpression[] = [];
+  ts.walkPreorder(sf, (n) => {
+    if (!ts.isCallExpression(n) || requireSpecOf7(n) === null) return;
+    let outer: ts.Node = n;
+    while (
+      outer.parent !== undefined &&
+      (ts.isParenthesizedExpression(outer.parent) ||
+        ts.isAsExpression(outer.parent) ||
+        ts.isTypeAssertion(outer.parent) ||
+        ts.isNonNullExpression(outer.parent))
+    ) {
+      outer = outer.parent;
+    }
+    const parent = outer.parent;
+    if (parent !== undefined && ts.isExpressionStatement(parent)) return;
+    if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === outer)
+      return;
+    out.push(n);
+  });
+  return out;
+}
+
 type RequireCallBindingKind7 = "ambient" | "createRequire" | "source";
 
 function stripRequireCasts7(expr: ts.Expression): ts.Expression {
@@ -2461,6 +2498,13 @@ function nsBindingUsesAreBareStatements7(
 export interface CycleEdge {
   dep: ts.SourceFile;
   stmt?: ts.ImportDeclaration | ts.ExportDeclaration;
+  /** An inline require() in a deferred position (a function body): Node
+   * evaluates the dependency when that code runs, after this module's own
+   * top level, so the edge orders the dependency after the module and
+   * never closes a cycle through the module's initialization. */
+  lazy?: true;
+  /** The inline require() call behind the edge (inline edges only). */
+  call?: ts.CallExpression;
 }
 
 /** True when the reference at `node` can only evaluate AFTER the module
@@ -4151,6 +4195,7 @@ function preflight7(load: LoadResult): {
   diags: ScrDiagnostic[];
   moduleOrder: ts.SourceFile[];
   startupCrash: StartupCrash | null;
+  inlineRequireCycleCalls: ReadonlySet<ts.Node>;
 } {
   const { program, entry } = load;
   const diags: ScrDiagnostic[] = [...load.configDiags];
@@ -4951,6 +4996,21 @@ function preflight7(load: LoadResult): {
               pattern.elements.every((e) => {
                 if (e.initializer !== undefined || e.dotDotDotToken !== undefined) return false;
                 if (e.name !== undefined && ts.isIdentifier(e.name)) return true;
+                // A nested pattern under a named export of a program module
+                // destructures that export's VALUE at the require
+                // (`const { codes: { ERR_X } } = require("./errors")`): the
+                // inner bindings are ordinary destructured storage.
+                if (
+                  module === null &&
+                  builtin === null &&
+                  bindingKind !== "createRequire" &&
+                  pattern === req.decl!.name &&
+                  e.name !== undefined &&
+                  ts.isObjectBindingPattern(e.name) &&
+                  e.propertyName !== undefined &&
+                  ts.isIdentifier(e.propertyName)
+                )
+                  return true;
                 if (module === null || e.name === undefined || !ts.isObjectBindingPattern(e.name))
                   return false;
                 const key = e.propertyName;
@@ -5064,6 +5124,32 @@ function preflight7(load: LoadResult): {
           continue;
         }
       }
+      // Inline requires of program modules are module edges like the bare
+      // statements above (cjs-inline-require.ts lowers each to the module's
+      // %init at its position). Only the CommonJS global in a CommonJS file
+      // counts, and targets outside the compiled graph add nothing here:
+      // their use sites keep their existing lowering fences.
+      if (jsRequireFile && !isNodeEsmFile7(sf, program)) {
+        for (const call of inlineRequiresOf7(sf)) {
+          if (requireCallBindingKind7(program, call) !== "ambient") continue;
+          const spec = requireSpecOf7(call)!;
+          if (load.externalTypes.has(spec) || canonicalBuiltinModule(spec) !== null) continue;
+          const lazy = inDeferredPosition7(call);
+          const edgeTo = (dep: ts.SourceFile): CycleEdge =>
+            lazy ? { dep, lazy: true, call } : { dep, call };
+          const projectDep = resolveImport7(program, sf, spec, "require");
+          if (projectDep !== null) {
+            if (!projectDep.fileName.endsWith(".json")) deps.push(edgeTo(projectDep));
+            continue;
+          }
+          if (isRelativeSpecifier(spec) || spec.startsWith("#")) continue;
+          const npmReq = resolveNpmImport7(sf.fileName, spec, "require");
+          if (npmReq !== null && isNpmStaticPackage(npmReq.packageName)) {
+            const nDep = npmStaticProgramDep(program, npmReq.packageName, npmReq.typesFile);
+            if (nDep !== null) deps.push(edgeTo(nDep));
+          }
+        }
+      }
     }
   }
 
@@ -5090,8 +5176,12 @@ function preflight7(load: LoadResult): {
   //    reads are all let/const bindings with module storage — the
   //    lowering checks each one (cycleEarlyBindings) and throws Node's
   //    ReferenceError on a read before the declaration ran.
-  const cycleAdmissionReason = makeCycleAdmission(program, (sf) => edges.get(sf) ?? []);
+  const cycleAdmissionReason = makeCycleAdmission(program, (sf) => {
+    const all = edges.get(sf) ?? [];
+    return all.some((e) => e.call !== undefined) ? all.filter((e) => e.call === undefined) : all;
+  });
   const order: ts.SourceFile[] = [];
+  const inlineRequireCycleCalls = new Set<ts.Node>();
   const state = new Map<ts.SourceFile, "visiting" | "done">();
   const stack: string[] = [];
   const visit = (sf: ts.SourceFile): void => {
@@ -5099,9 +5189,14 @@ function preflight7(load: LoadResult): {
     stack.push(sf.fileName);
     for (const e of edges.get(sf) ?? []) {
       if (e.dep === sf) continue; // self-import: a Node cache hit, not a cycle
+      if (e.lazy === true) continue; // visited after this module completes
       const s = state.get(e.dep);
       if (s === "done") continue;
       if (s === "visiting") {
+        if (e.call !== undefined) {
+          inlineRequireCycleCalls.add(e.call);
+          continue;
+        }
         // A back-edge: Node answers it from the cache (the module is
         // already evaluating) — admitted by the cheap per-edge rule, the
         // declaration-only init window rule, or the exact initialization
@@ -5125,6 +5220,11 @@ function preflight7(load: LoadResult): {
     stack.pop();
     state.set(sf, "done");
     order.push(sf);
+    // Lazy inline requires run after this module's top level: their
+    // modules join the order afterwards (cache hits when already loaded).
+    for (const e of edges.get(sf) ?? []) {
+      if (e.lazy === true && state.get(e.dep) === undefined) visit(e.dep);
+    }
   };
   visit(entry);
 
@@ -5178,7 +5278,12 @@ function preflight7(load: LoadResult): {
           esmNamedImportLinkCheck(program, entry, order, diags),
         );
 
-  return { diags, moduleOrder: order, startupCrash: resolveCrash ?? linkCrash };
+  return {
+    diags,
+    moduleOrder: order,
+    startupCrash: resolveCrash ?? linkCrash,
+    inlineRequireCycleCalls,
+  };
 }
 
 /* ── the CJS named-import link check ─────────────────────────────────────
@@ -5879,6 +5984,98 @@ export function cjsExportAssignmentOf(
     }
   }
   return null;
+}
+
+/** The tsc VOID-INIT PREAMBLE (`exports.a = exports.b = void 0;` with the
+ * real `exports.a = a;` further down; every tsc-emitted dist file opens its
+ * exports this way): when every name in the chain has a later real
+ * assignment, the export takes its value there and the preamble lowers to
+ * nothing. Returns those later assignments by name, or null when this is
+ * not such a preamble (a preamble with no later real assignment keeps the
+ * ordinary path: the export IS undefined then). */
+export function cjsVoidInitPreambleReals(
+  cjs: Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "member" }>,
+): Map<string, Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "member" }>> | null {
+  if (!ts.isIdentifier(cjs.name)) return null;
+  const isExportsMember = (e: ts.Expression): e is ts.PropertyAccessExpression =>
+    ts.isPropertyAccessExpression(e) &&
+    ts.isIdentifier(e.name) &&
+    ((ts.isIdentifier(e.expression) && e.expression.text === "exports") ||
+      (ts.isPropertyAccessExpression(e.expression) &&
+        ts.isIdentifier(e.expression.expression) &&
+        e.expression.expression.text === "module" &&
+        ts.isIdentifier(e.expression.name) &&
+        e.expression.name.text === "exports"));
+  const isVoid = (e: ts.Expression): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    return (
+      e.kind === ts.SyntaxKind.VoidExpression || (ts.isIdentifier(e) && e.text === "undefined")
+    );
+  };
+  // chains: `exports.a = exports.b = void 0;` collects every name
+  const names: string[] = [cjs.name.text];
+  let tail: ts.Expression = cjs.value;
+  while (
+    ts.isBinaryExpression(tail) &&
+    tail.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    isExportsMember(tail.left)
+  ) {
+    names.push((tail.left.name as ts.Identifier).text);
+    tail = tail.right;
+  }
+  if (!isVoid(tail)) return null;
+  const sf = cjs.expr.getSourceFile();
+  const myPos = cjs.expr.getStart(sf);
+  const reals = new Map<
+    string,
+    Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "member" }>
+  >();
+  for (const name of names) {
+    const real = sf.statements
+      .map((s) => cjsExportAssignmentOf(s))
+      .find(
+        (other) =>
+          other?.kind === "member" &&
+          ts.isIdentifier(other.name) &&
+          other.name.text === name &&
+          other.expr.getStart(sf) > myPos &&
+          !isVoid(other.value),
+      );
+    if (real?.kind !== "member") return null;
+    reals.set(name, real);
+  }
+  return reals;
+}
+
+/** The members and shared value of a CHAINED member export
+ * `exports.a = exports.b = module.exports.c = value` (outermost name
+ * first), or null when the assignment is not a chain of at least two
+ * identifier-named export members or its value is undefined. */
+export function cjsExportChainOf(
+  e: ts.BinaryExpression,
+): { names: ts.Identifier[]; value: ts.Expression } | null {
+  const names: ts.Identifier[] = [];
+  let cur: ts.Expression = e;
+  for (;;) {
+    while (ts.isParenthesizedExpression(cur)) cur = cur.expression;
+    if (!ts.isBinaryExpression(cur) || cur.operatorToken.kind !== ts.SyntaxKind.EqualsToken) break;
+    const left = cur.left;
+    if (
+      !ts.isPropertyAccessExpression(left) ||
+      left.questionDotToken ||
+      !ts.isIdentifier(left.name)
+    )
+      break;
+    const recv = left.expression;
+    if (!((ts.isIdentifier(recv) && recv.text === "exports") || isModuleExportsAccess(recv))) break;
+    names.push(left.name);
+    cur = cur.right;
+  }
+  // tsc's `exports.a = exports.b = void 0;` preamble is not a value chain
+  // (the export-statement lowering owns it).
+  const isVoid =
+    cur.kind === ts.SyntaxKind.VoidExpression || (ts.isIdentifier(cur) && cur.text === "undefined");
+  return names.length >= 2 && !isVoid ? { names, value: cur } : null;
 }
 
 /** Why Node would DISCARD this CommonJS export statement, or null when it

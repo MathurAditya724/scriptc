@@ -18,6 +18,7 @@ import {
   builtinClassRefOf,
 } from "./builtins/class-values.js";
 import type { FnCtx, Lowerer } from "./lowerer.js";
+import { inlineNamespaceRequireOf, lowerWithInlineRequireInit } from "./cjs-inline-require.js";
 import {
   BOOL,
   DATE_T,
@@ -50,6 +51,7 @@ import {
   implicitAnyParamSymbolsOf,
   implicitCallInstance,
   implicitMonoFile,
+  genericLocalClassResult,
   type GenericFnInfo,
 } from "./generic-functions.js";
 import {
@@ -227,6 +229,11 @@ export function storedClassValueType(
       const value = storedClassValueType(lowerer, declaration.initializer, visiting);
       if (value?.kind === "classval") return value;
     }
+  }
+  // A generic factory's own local class has one class per instance.
+  if (ts.isCallExpression(expression)) {
+    const local = genericLocalClassResult(lowerer, expression);
+    if (local?.kind === "classval") return local;
   }
   const type = lowerer.typeOf(expression);
   const mapped = lowerer.mapTypeOf(type);
@@ -510,6 +517,9 @@ export interface ClassInfo {
   /** The synthetic InternTable class (@scriptc/experimental,
    * intern-tables.ts): synthesized like lifetimeRegion. */
   internTable?: true;
+  /** The synthetic ThreadSlots class (@scriptc/experimental,
+   * thread-slots.ts): synthesized like lifetimeRegion. */
+  threadSlots?: true;
   /** This class's own `emit` override in the FORWARDING SHAPE (the one
    * EventEmitter member a subclass may re-declare): never in `methods` —
    * emit calls keep routing through the emitter spoke, which lowers the
@@ -1566,7 +1576,14 @@ function inferredEmptyCollectionFieldType(
   const mappedArgument = (argument: ts.Expression): IrType | null => {
     const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(argument));
     const mapped = lowerer.mapTypeOf(type);
-    if (!mapped || mapped.kind === "dyn" || mapped.kind === "void" || isUnitType(mapped))
+    // Inferred JS collection fields keep functions in checked slots.
+    if (
+      !mapped ||
+      mapped.kind === "dyn" ||
+      mapped.kind === "void" ||
+      mapped.kind === "func" ||
+      isUnitType(mapped)
+    )
       return null;
     return mapped;
   };
@@ -3625,11 +3642,26 @@ export function collectClassShapeInner(
     }
 
     if (escape.assigned && !inst) {
+      let earlyReads: Set<string> | null = null;
       for (const f of fieldOrder) {
         if (f.redeclared || escape.assigned.has(f.name) || deferredInitFields.has(f.name)) continue;
         if (paramProps.some((pp) => pp.name === f.name)) continue;
         const declared = fields.get(f.name);
-        if (declared?.kind !== "object" || lowerer.classes.get(declared.className)?.def.runtime)
+        // Records, arrays and strings are pointer slots that start empty
+        // too, but only take the checked slot when a method the
+        // constructor calls actually reads them: their other early
+        // exposures keep the plain slot.
+        if (
+          declared?.kind === "record" ||
+          declared?.kind === "array" ||
+          declared?.kind === "string"
+        ) {
+          earlyReads ??= constructorMethodReads(decl, base, ctor ?? undefined);
+          if (!earlyReads.has(f.name)) continue;
+        } else if (
+          declared?.kind !== "object" ||
+          lowerer.classes.get(declared.className)?.def.runtime
+        )
           continue;
         const armed = lowerer.withUndefinedArm(declared);
         if (armed === null || armed.kind !== "union") continue;
@@ -4859,6 +4891,58 @@ export function staticShadowBelow(info: ClassInfo, name: string): boolean {
       s.genericStatics?.has(name) === true ||
       staticShadowBelow(s, name),
   );
+}
+
+/** The `this` members read by the methods and accessors a constructor
+ * calls through `this` (transitively, over the class and its bases),
+ * outside nested functions. The constructor's own reads are not included:
+ * they run where the constructor's statements put them. */
+function constructorMethodReads(
+  decl: ts.ClassLikeDeclaration,
+  base: ClassInfo | null,
+  ctor: ts.ConstructorDeclaration | undefined,
+): Set<string> {
+  const reads = new Set<string>();
+  const visited = new Set<string>();
+  const bodies = (name: string): ts.Node[] => {
+    const out: ts.Node[] = [];
+    let owner: ts.ClassLikeDeclaration | undefined = decl;
+    for (let next = base; owner; owner = next?.decl ?? undefined, next = next?.base ?? null) {
+      for (const member of owner.members) {
+        if (
+          (ts.isMethodDeclaration(member) || ts.isAccessor(member)) &&
+          member.body &&
+          (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
+          member.name.text === name
+        )
+          out.push(member.body);
+      }
+    }
+    return out;
+  };
+  const enter = (name: string): void => {
+    if (visited.has(name)) return;
+    visited.add(name);
+    for (const body of bodies(name)) scan(body, true);
+  };
+  // Nested functions (callbacks handed elsewhere) are not followed: only
+  // the straight-line code of the constructor and the methods it calls.
+  const scan = (node: ts.Node, inMethod: boolean): void => {
+    ts.walkPreorder(node, (n) => {
+      if (n !== node && ts.isFunctionLike(n)) return "skip";
+      if (
+        ts.isPropertyAccessExpression(n) &&
+        n.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        (ts.isIdentifier(n.name) || ts.isPrivateIdentifier(n.name))
+      ) {
+        if (inMethod) reads.add(n.name.text);
+        enter(n.name.text);
+      }
+      return undefined;
+    });
+  };
+  if (ctor?.body) scan(ctor.body, false);
+  return reads;
 }
 
 /** The nearest GENERIC static declaration of `name` at/above `info` —
@@ -7698,6 +7782,24 @@ function paramPropInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrLoca
   return out;
 }
 
+/** Whether a super() call's value is discarded by its statement: the call
+ * is the expression statement itself, or an operand of a comma chain that
+ * is (`super(m, o), this.code = c;`, as minifiers join statements). The
+ * statement lowering runs each comma operand as its own statement in
+ * source order, so the chain lowers exactly like `super(m, o); this.code =
+ * c;`. Parentheses are transparent to both. */
+function superCallInStatementPosition(call: ts.CallExpression): boolean {
+  let node: ts.Node = call;
+  for (;;) {
+    const parent = node.parent;
+    if (ts.isExpressionStatement(parent)) return true;
+    const comma =
+      ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken;
+    if (!comma && !ts.isParenthesizedExpression(parent)) return false;
+    node = parent;
+  }
+}
+
 /** Super statements initialize the base and then the derived fields on
  * whichever control-flow path executes. Repeated calls are explicitly
  * refused until native layouts can allocate a second receiver. */
@@ -7715,7 +7817,7 @@ export function lowerDerivedCtorBody(
   const previousInitialized = context.superInitialized;
   context.superInitialized = initialized;
   context.superCall = (superCall) => {
-    if (!ts.isExpressionStatement(superCall.parent))
+    if (!superCallInStatementPosition(superCall))
       lowerer.unsupported("SC1090", superCall, "super() in an expression position");
     superSeen = true;
     const loc = locOf(superCall);
@@ -8468,6 +8570,14 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // `new (require("./x").C)()`: the module's %init at the require's
+  // position, then construction through the member as for a binding.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const req = inlineNamespaceRequireOf(lowerer, expr.expression.expression);
+    if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
+      return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
+    }
+  }
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr);
@@ -9231,7 +9341,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           "SC1090",
           expr,
           `Map values of type '${lowerer.checker.typeToString(targs[1])}' ` +
-            `(Map values must be number, string, boolean, records, class instances, ` +
+            `(Map values must be number, string, boolean, records, class instances, functions, ` +
             `typed arrays, arrays, promises, Maps, Sets, or supported unions and checked values)`,
         );
       }
