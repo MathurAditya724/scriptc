@@ -2,7 +2,11 @@ import { Ts7SourceParser, type Ts7SourceKind } from "./ts7/source-parser.js";
 import { Ts7Host, type Ts7ApiFactory, type Ts7HostOptions } from "./ts7/program-host.js";
 import { rewriteBundlerCjsWithParser } from "./npm-static-rewrite-host.js";
 import { isBundlerCjsCandidate } from "./npm-static-rewrite-syntax.js";
-import { splitBundledChunks, type BundledChunkSplit } from "./npm-static-bundled-chunks.js";
+import {
+  mayBundleChunks,
+  splitBundledChunks,
+  type BundledChunkSplit,
+} from "./npm-static-bundled-chunks.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
 import type { SourceFile } from "./ts7/ast-types.js";
 
@@ -69,7 +73,7 @@ export class FrontendServices {
    * chunks; a degrade reason: chunks the recognizer cannot move). */
   splitCjsChunks(source: string, path: string): BundledChunkSplit | { degrade: string } | null {
     this.ensureOpen();
-    if (!source.includes("__commonJS")) return null;
+    if (!mayBundleChunks(source)) return null;
     return splitBundledChunks(this.parse(path, source, "js"), path);
   }
   nullableClassFields(path: string, source: string): syntax.NpmStaticOverloadRewrite | null {

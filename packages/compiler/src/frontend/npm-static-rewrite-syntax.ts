@@ -542,13 +542,14 @@ export function rewriteBundlerCjsSyntax(
   if (!filePath.endsWith(".cjs") && ts.isExternalModule(sf)) {
     const bundled = rewriteBundledFunctionImports(source, sf);
     if (bundled !== null) return bundled;
-    return source.includes("__toESM(")
-      ? {
-          degrade:
-            "its ES-module dist routes an external dependency through the __toESM " +
-            "bundler-interop helper, which cannot compile natively in ESM output",
-        }
-      : null;
+    if (!source.includes("__toESM(")) return null;
+    return {
+      degrade: source.includes("__commonJS")
+        ? "its ES-module bundle reaches bundled CommonJS modules through the __commonJS and " +
+          "__toESM bundler-interop helpers, which cannot compile natively in ESM output"
+        : "its ES-module dist routes an external dependency through the __toESM " +
+          "bundler-interop helper, which cannot compile natively in ESM output",
+    };
   }
 
   // The __toESM interop pass (see the section header): wrapper call sites

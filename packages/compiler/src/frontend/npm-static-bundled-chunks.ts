@@ -245,6 +245,12 @@ function strictPrologue(stmts: readonly ts.Statement[]): boolean {
   return false;
 }
 
+/** A cheap text probe: the helper's name, or its minified body's
+ * `(m={exports:{}}).exports,m` fragment. */
+export function mayBundleChunks(source: string): boolean {
+  return source.includes("__commonJS") || /\{\s*exports\s*:\s*\{\s*\}\s*\}\s*\)\s*\.exports\s*,/.test(source);
+}
+
 /** Splits a CommonJS bundle's __commonJS chunks into virtual modules (see
  * the header). Null: no chunks (or not a CommonJS bundle) — serve the file
  * unchanged. */
@@ -253,7 +259,7 @@ export function splitBundledChunks(
   filePath: string,
 ): BundledChunkSplit | { degrade: string } | null {
   const source = sf.text;
-  if (!source.includes("__commonJS")) return null;
+  if (!mayBundleChunks(source)) return null;
   // ES-module bundles have no require: their chunks keep the existing
   // treatment (the Bun factory recognizer, or the ESM interop refusal).
   if (!filePath.endsWith(".cjs") && ts.isExternalModule(sf)) return null;
@@ -273,7 +279,6 @@ export function splitBundledChunks(
     }
   }
   const helperNames = [...top.keys()].filter((n) => helperBase(n) === "__commonJS");
-  if (helperNames.length === 0) return null;
 
   // Every name a recognizer relies on is written nowhere and declared
   // once at the top level; `Object` itself is never rebound.
@@ -293,6 +298,20 @@ export function splitBundledChunks(
       helperTokens(init.getText(sf)) === helperTokens("Object.getOwnPropertyNames")
     );
   };
+  if (helperNames.length === 0) {
+    // The helper's shape under another name: an identifier-minified bundle,
+    // whose other interop helpers lost their names as well.
+    for (const [name, t] of top) {
+      const init = ts.isVariableDeclaration(t.node) ? t.node.initializer : undefined;
+      if (init !== undefined && stable(name) && helperForm(init, sf, ownNames) !== null)
+        return {
+          degrade:
+            "its shipped JS is an identifier-minified bundle whose bundler-interop helpers " +
+            "(__commonJS and the rest) have lost the names the recognizers verify",
+        };
+    }
+    return null;
+  }
   const forms = new Map<string, HelperForm>();
   for (const name of helperNames) {
     const t = top.get(name)!;

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterAll, expect, test } from "vitest";
 import { nodeFrontendServices } from "./services-node.js";
+import { rewriteBundlerCjsExports } from "./npm-static-rewrite.js";
 import type { BundledChunkSplit } from "./npm-static-bundled-chunks.js";
 
 const keyedHelper = `var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -157,4 +158,25 @@ test("files without chunks and ES-module bundles are left alone", () => {
 export default require_f();
 `),
   ).toBeNull();
+});
+
+test("an identifier-minified bundle names its lost helper names", () => {
+  // esbuild --minify output: the helper shapes survive, their names do not.
+  const result = split(
+    `var c=(r,e)=>()=>(e||r((e={exports:{}}).exports,e),e.exports);` +
+      `var x=c((t,m)=>{m.exports={v:1}});console.log(x().v);`,
+  );
+  expect(result).toEqual({ degrade: expect.stringContaining("identifier-minified") as string });
+});
+
+test("an ES-module bundle of CommonJS chunks names the chunk interop", () => {
+  const result = rewriteBundlerCjsExports(
+    `${keyedHelper}var __toESM = (mod) => mod;
+var require_g = __commonJS({ "g.js"(exports) { exports.g = 1; } });
+var import_g = __toESM(require_g());
+export const g = import_g.g;
+`,
+    "/pkg/dist/index.js",
+  );
+  expect(result).toEqual({ degrade: expect.stringContaining("bundled CommonJS modules") as string });
 });
