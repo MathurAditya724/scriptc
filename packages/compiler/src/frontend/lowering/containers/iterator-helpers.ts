@@ -1779,9 +1779,15 @@ function foldStages(
         ...inner(value),
       ];
     } else {
+      // A take before this stage sets `done` as it delivers its last
+      // value, which still flattens in full: the inner walk runs with the
+      // flag clear, and keeps it set afterwards.
+      const afterTake = slots.slice(0, si).some((slot) => slot.kind === "take");
       emit = (value) => {
         const innerT = s.fnT!.ret;
         const innerId = frame.local("fm", innerT, false);
+        const heldId = afterTake ? frame.local("held", BOOL, false) : undefined;
+        const walk = walkInner(lowerer, frame, innerId, innerT, done(), inner, loc);
         return [
           {
             kind: "varDecl",
@@ -1790,7 +1796,26 @@ function foldStages(
             loc,
           },
           ...(s.cntId !== undefined ? [frame.bump(s.cntId)] : []),
-          ...walkInner(lowerer, frame, innerId, innerT, done(), inner, loc),
+          ...(heldId === undefined
+            ? walk
+            : [
+                { kind: "varDecl", localId: heldId, init: done(), loc } as IrStmt,
+                { kind: "assign", localId: doneId, value: boolLit(false, loc), loc } as IrStmt,
+                ...walk,
+                {
+                  kind: "assign",
+                  localId: doneId,
+                  value: {
+                    kind: "logical",
+                    op: "||",
+                    left: varRef(heldId, BOOL, loc),
+                    right: done(),
+                    type: BOOL,
+                    loc,
+                  },
+                  loc,
+                } as IrStmt,
+              ]),
         ];
       };
     }
