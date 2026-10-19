@@ -132,6 +132,9 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
   // Set once a followed function stores the receiver where other code can
   // reach it: from then on, any code that runs may read its fields.
   let leaked = false;
+  // The `this.m()` call of the statement being walked that runs whenever
+  // the statement does (see unconditionalCall).
+  let definiteCall: ts.Node | null = null;
   const stop = (): ConstructionEscape => ({ escapes: true, assigned });
   const readable = (name: string): boolean =>
     (assigned.has(name) || inputs.inherited.has(name)) &&
@@ -180,7 +183,17 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
       if (node.arguments.some((arg) => mentionsReceiver(arg) && exposes(arg, depth))) return true;
       const body = depth < HELPER_DEPTH ? inputs.ownMethodBody(node) : null;
       if (!body) return true;
-      return !followStatements(body.statements, depth + 1, true);
+      // The helper's field writes are definite only where the call is
+      // (a loop, a branch or a short circuit may skip it), and there they
+      // may leave a field holding its earlier, capturing value.
+      if (node === definiteCall) return !followStatements(body.statements, depth + 1, true);
+      const assignedBefore = new Set(assigned);
+      const capturedBefore = new Set(capturing);
+      const followed = followStatements(body.statements, depth + 1, true);
+      assigned.clear();
+      for (const name of assignedBefore) assigned.add(name);
+      for (const name of capturedBefore) capturing.add(name);
+      return !followed;
     }
     if (thisMember(node)) return !(ts.isIdentifier(node.name) && readable(node.name.text));
     let found = false;
@@ -188,6 +201,17 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
       if (!found && mentionsReceiver(child)) found = exposes(child, depth);
     });
     return found;
+  };
+  /** The `this.m()` call a statement always makes: the whole statement,
+   * a plain field write's value, or a single declaration's initializer. */
+  const unconditionalCall = (stmt: ts.Statement): ts.CallExpression | null => {
+    let e: ts.Expression | undefined;
+    if (ts.isExpressionStatement(stmt))
+      e = plainFieldWrite(stmt.expression) ? stmt.expression.right : stmt.expression;
+    else if (ts.isVariableStatement(stmt) && stmt.declarationList.declarations.length === 1)
+      e = stmt.declarationList.declarations[0]!.initializer;
+    while (e && ts.isParenthesizedExpression(e)) e = e.expression;
+    return e && ts.isCallExpression(e) && thisMember(e.expression) ? e : null;
   };
   /** Walk straight-line statements; false at the first exposure. In a
    * method body (`helper`), a return ends the walk, and writes after a
@@ -200,6 +224,7 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
     let definite = true;
     for (const stmt of statements) {
       if (leaked && runsCode(stmt)) return false;
+      definiteCall = definite ? unconditionalCall(stmt) : null;
       if (helper && ts.isReturnStatement(stmt))
         return !stmt.expression || !mentionsReceiver(stmt) || !exposes(stmt.expression, depth);
       if (helper && containsReturn(stmt)) {
@@ -226,6 +251,7 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
       // leaves unassigned stays unassigned after it.
       if (ts.isIfStatement(stmt) && !exposes(stmt.expression, depth)) {
         const before = new Set(assigned);
+        const capturedBefore = new Set(capturing);
         const leakedBefore = leaked;
         if (!followStatements(branchStatements(stmt.thenStatement), depth, helper)) return false;
         const afterThen = new Set(assigned);
@@ -234,6 +260,8 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
         leaked = leakedBefore;
         assigned.clear();
         for (const name of before) assigned.add(name);
+        capturing.clear();
+        for (const name of capturedBefore) capturing.add(name);
         if (
           stmt.elseStatement &&
           !followStatements(branchStatements(stmt.elseStatement), depth, helper)

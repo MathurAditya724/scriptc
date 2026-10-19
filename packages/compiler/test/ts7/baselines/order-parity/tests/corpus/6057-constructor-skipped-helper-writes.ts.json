@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6057-constructor-skipped-helper-writes.ts"
+ ],
+ "diags": []
+}

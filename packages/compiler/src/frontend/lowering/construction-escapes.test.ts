@@ -208,6 +208,56 @@ test("branches that only write fields assign what both branches assign", () => {
   expect(sorted(result.assigned)).toEqual(["a"]);
 });
 
+test("helper calls that may not run leave their fields unassigned", () => {
+  const result = analyze(`
+    class A {
+      a!: B; b!: B; c!: B; d!: B; e!: B;
+      constructor(n: number, flag: boolean) {
+        for (let i = 0; i < n; i++) this.setA();
+        flag && this.setB();
+        const c = flag ? this.setC() : null;
+        this.e = this.setD();
+      }
+      private setA(): void { this.a = new B(); }
+      private setB(): void { this.b = new B(); }
+      private setC(): void { this.c = new B(); }
+      private setD(): B { this.d = new B(); return this.d; }
+    }`);
+  expect(result.escapes).toBe(false);
+  expect(sorted(result.assigned)).toEqual(["d", "e"]);
+});
+
+test("a branch that overwrites a capturing field leaves it capturing", () => {
+  const result = analyze(`
+    class A {
+      f!: () => number; a!: number;
+      constructor(flag: boolean) {
+        this.f = () => this.a;
+        if (flag) this.f = () => 1;
+        const g = this.f;
+        this.a = 1;
+      }
+    }`);
+  expect(result.escapes).toBe(true);
+  expect(sorted(result.assigned)).toEqual(["f"]);
+});
+
+test("a helper call that may not run leaves an overwritten field capturing", () => {
+  const result = analyze(`
+    class A {
+      f!: () => number; a!: number;
+      constructor(n: number) {
+        this.f = () => this.a;
+        for (let i = 0; i < n; i++) this.reset();
+        const g = this.f;
+        this.a = 1;
+      }
+      private reset(): void { this.f = () => 1; }
+    }`);
+  expect(result.escapes).toBe(true);
+  expect(sorted(result.assigned)).toEqual(["f"]);
+});
+
 test("own methods are followed only for classes nothing extends", () => {
   const source = `
     class A {
