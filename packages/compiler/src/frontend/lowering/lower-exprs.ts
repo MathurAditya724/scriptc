@@ -6,7 +6,7 @@ import { lowerEventObjectProperty, lowerEventObjectPropertyWrite } from "./lower
 import { lowerDisposableStackInstanceOf } from "./builtins/disposable-stack.js";
 import { lowerEventStaticProperty } from "./builtins/numbers.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
-import { isOptionalProcessStreamProperty } from "./builtins/process.js";
+import { isOptionalProcessStreamProperty, NODE_COMPAT_VERSION } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { esmImportBindingKind } from "./builtins/module-bindings.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
@@ -216,6 +216,7 @@ import { errorPropertyRead, errorPropertyWrite, errorToStringCall } from "./erro
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "./lower-stream.js";
 import { unionWideningTags } from "../../ir/analysis.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
+import { isNavigatorGlobal, lowerNavigatorMember, refuseNavigator } from "./builtins/navigator.js";
 import { globalSymbolKey } from "./expressions/global-symbols.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
 import {
@@ -667,6 +668,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       return { kind: "strLit", value: "object", type: STRING, loc };
     if (lowerer.isStdlibGlobal(expr.expression, "fetch"))
       return { kind: "strLit", value: "function", type: STRING, loc };
+    if (isNavigatorGlobal(lowerer, expr.expression))
+      return { kind: "strLit", value: "object", type: STRING, loc };
     const performance = lowerPerfHooksTypeof(lowerer, expr.expression);
     if (performance) return performance;
     if (isNodeModuleValue(lowerer, expr.expression)) {
@@ -1687,6 +1690,14 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const ns = lowerNsIdentifierValue(lowerer, expr);
       if (ns) return ns;
     }
+    if (isNavigatorGlobal(lowerer, expr)) {
+      refuseNavigator(
+        lowerer,
+        expr,
+        "the navigator object as a value",
+        lowerer.checker.getSymbolAtLocation(expr),
+      );
+    }
     // Preflight guarantees no unresolved identifiers; anything else here
     // is a blocked declaration's binding (the SC2004 cascade) or a
     // binding form we don't model yet.
@@ -1950,6 +1961,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isConditionalExpression(expr)) return lowerTernary(lowerer, expr);
 
   if (ts.isPropertyAccessExpression(expr)) {
+    if (!expr.questionDotToken) {
+      const navigator = lowerNavigatorMember(lowerer, expr, NODE_COMPAT_VERSION);
+      if (navigator) return navigator;
+    }
     // `require("./x").member` over a program module's export table: the
     // module's %init at this position, then the member read exactly like
     // a `const m = require("./x")` binding's (cjs-inline-require.ts).
@@ -7085,6 +7100,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           }
         }
       }
+      if (key.type.kind === "f64") {
+        const safe = lowerOptionalArrayIndexRead(lowerer, expr, value, key);
+        if (safe) return safe;
+      }
       if (key.type.kind === "string" || key.type.kind === "f64") {
         const lit = ts.isStringLiteral(expr.argumentExpression)
           ? expr.argumentExpression.text
@@ -8045,6 +8064,22 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
       return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
     }
     return null;
+  }
+  // `m[2]` on a JavaScript `RegExpExecArray | null` that a previous
+  // statement ruled non-null without narrowing it (jose's secs()).
+  if (
+    receiverT?.kind === "union" &&
+    isJsSourceFile(expr.getSourceFile()) &&
+    !expr.questionDotToken &&
+    !hasOptionalChainGuard(expr.expression)
+  ) {
+    const arms = lowerer.unions.get(receiverT.unionId)?.arms ?? [];
+    const present = arms.filter((arm) => !isUnitType(arm));
+    if (present.length !== 1 || present[0]!.kind !== "array") return null;
+    const value = lowerer.lowerExpr(expr.expression);
+    const index = lowerer.lowerExpr(expr.argumentExpression);
+    if (index.type.kind !== "f64") return null;
+    return lowerOptionalArrayIndexRead(lowerer, expr, value, index);
   }
   if (receiverT?.kind !== "array") return null;
   const arr = lowerer.lowerExpr(expr.expression);
@@ -15321,6 +15356,62 @@ export function lowerUnionProperty(
       `with a same-typed field '${field}'; ` +
       `${NARROW_FIRST})`,
   );
+}
+
+/** A number-keyed read in JavaScript on an array that may be undefined or
+ * null outside an optional chain (`m[1]` on a `RegExpExecArray | null`
+ * that an earlier statement ruled non-null without narrowing it): the
+ * array arm is an ordinary JavaScript element read, so a hole, a present
+ * undefined (a regex group that did not participate) or an invalid index
+ * answers undefined, as lowerSafeIndexRead does for a plain array. The
+ * unit arms keep the keyed read's answer. The receiver and key evaluate
+ * once, in source order. Null when the union is not exactly one array arm
+ * beside unit arms; optional-chain tails and TypeScript keep the keyed
+ * read. */
+function lowerOptionalArrayIndexRead(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+  value: IrExpr,
+  key: IrExpr,
+): IrExpr | null {
+  if (
+    !isJsSourceFile(expr.getSourceFile()) ||
+    expr.questionDotToken ||
+    hasOptionalChainGuard(expr.expression)
+  )
+    return null;
+  if (value.type.kind !== "union") return null;
+  const unionId = value.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (!arms) return null;
+  const present = arms.filter((arm) => !isUnitType(arm));
+  const arm = present[0];
+  if (present.length !== 1 || arm?.kind !== "array" || arm.elem.kind === "void") return null;
+  const tag = arms.indexOf(arm);
+  const loc = locOf(expr);
+  const stmts: IrStmt[] = [];
+  const stable = (e: IrExpr, name: string): IrExpr => {
+    if (e.kind === "varRef" || e.kind === "numLit") return e;
+    const local = lowerer.declareHiddenLocal(name, e.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: e, loc });
+    return varRef(local.id, e.type, loc);
+  };
+  if (lowerUnionKeyedRead(lowerer, expr, unionId, value, key, null) === null) return null;
+  const recv = stable(value, "%indexReceiver");
+  const index = stable(key, "%indexKey");
+  const keyed = lowerUnionKeyedRead(lowerer, expr, unionId, recv, index, null)!;
+  const narrowed: IrExpr = { kind: "unionNarrow", unionId, tag, value: recv, type: arm, loc };
+  const read = lowerSafeIndexRead(lowerer, narrowed, index, loc);
+  if (read === null) return null;
+  const result: IrExpr = {
+    kind: "ternary",
+    cond: { kind: "unionIsTag", unionId, tag, value: recv, negated: false, type: BOOL, loc },
+    then: lowerer.coerceToExpected(read, keyed.type),
+    else_: keyed,
+    type: keyed.type,
+    loc,
+  };
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: keyed.type, loc };
 }
 
 /** The unionDisc generalization: a keyed read on a union receiver whose

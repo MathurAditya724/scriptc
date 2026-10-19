@@ -222,3 +222,12 @@ fenced.ts:104:9 - error SC2020: 'crypto.subtle.encrypt' is part of the standard 
   105 | }
 
   hint: the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
+
+fenced.ts:109:15 - error SC2020: 'navigator.hardwareConcurrency' is typed by @types/node but has no scriptc lowering yet
+
+  108 |  * compile; the other members fence by name. */
+  109 | const cores = navigator.hardwareConcurrency;
+      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  110 | void cores;
+
+  hint: of Node's navigator global only typeof navigator and navigator.userAgent compile

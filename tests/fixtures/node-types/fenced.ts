@@ -104,4 +104,8 @@ async function encryptWithWebCrypto(key: import("node:crypto").webcrypto.CryptoK
   await crypto.subtle.encrypt({ name: "AES-GCM", iv: new Uint8Array(12) }, key, new Uint8Array(1));
 }
 void encryptWithWebCrypto;
+/* Node's navigator global: typeof navigator and navigator.userAgent
+ * compile; the other members fence by name. */
+const cores = navigator.hardwareConcurrency;
+void cores;
 // End of the declared-but-not-lowered surface.

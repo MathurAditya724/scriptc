@@ -178,6 +178,39 @@ export function returnsOnlyThis(member: ts.MethodDeclaration): boolean {
   return valid;
 }
 
+/** returnsOnlyThis, also accepting a comma expression whose last operand
+ * is `this` (the minifier's `return a(), this.x = v, this`, jose's fluent
+ * claim setters). Used only to narrow a call's result back to the
+ * receiver's class. */
+export function returnsOnlyThisValue(member: ts.MethodDeclaration): boolean {
+  const body = member.body;
+  const last = body?.statements?.nodes.at(-1);
+  if (!body || !last || !ts.isReturnStatement(last)) return false;
+  let valid = true;
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node)) {
+      let value = node.expression;
+      for (;;) {
+        while (value && ts.isParenthesizedExpression(value)) value = value.expression;
+        if (
+          value &&
+          ts.isBinaryExpression(value) &&
+          value.operatorToken.kind === ts.SyntaxKind.CommaToken
+        ) {
+          value = value.right;
+          continue;
+        }
+        break;
+      }
+      if (!value || value.kind !== ts.SyntaxKind.ThisKeyword) valid = false;
+    }
+    node.forEachChild(visit);
+  };
+  body.forEachChild(visit);
+  return valid;
+}
+
 function functionLocalClass(decl: ts.ClassLikeDeclaration): boolean {
   for (
     let parent: ts.Node | undefined = decl.parent;
@@ -6988,19 +7021,43 @@ export function lowerClassGenericMethodCall(
         }
       : upcastTo(lowerer, receiver, declarer.def.name);
   const args = lowerer.completeArgs(call.arguments.nodes, instance.params, loc, call);
-  return {
+  const result: IrExpr = {
     kind: "call",
     callee: instance.name,
     args: [thisArg, ...args],
     type: instance.returnType,
     loc,
   };
+  // A fluent JavaScript method (every return ends in `this`, jose's claim
+  // setters) answers the receiver: the instance returns the declarer's
+  // class, a used result's checker type is the receiver's subclass.
+  if (
+    result.type.kind === "object" &&
+    !ts.isExpressionStatement(call.parent) &&
+    ts.isMethodDeclaration(info.decl) &&
+    isJsSourceFile(info.decl.getSourceFile()) &&
+    returnsOnlyThisValue(info.decl)
+  ) {
+    return lowerer.maybeNarrow(result, call);
+  }
+  return result;
 }
 
 /** Wraps a derived-class expression in an upcast when the target base
  * class differs (a no-op reinterpret at runtime; keeps IR types exact). */
 export function upcastTo(lowerer: Lowerer, expr: IrExpr, className: string): IrExpr {
   if (expr.type.kind === "object" && expr.type.className !== className) {
+    // A value lowered at an ANCESTOR of the class the site needs (a
+    // fluent `this` result whose lowering kept the method's declaring
+    // class, the receiver of the next call in a chain): the checker
+    // vouches for the subclass, so the bridge is the verified downcast,
+    // never an upcast the validator rejects (an internal error before).
+    if (
+      !lowerer.isSubclassOf(expr.type.className, className) &&
+      lowerer.isSubclassOf(className, expr.type.className)
+    ) {
+      return { kind: "downcast", value: expr, type: { kind: "object", className }, loc: expr.loc };
+    }
     return { kind: "upcast", value: expr, type: { kind: "object", className }, loc: expr.loc };
   }
   return expr;

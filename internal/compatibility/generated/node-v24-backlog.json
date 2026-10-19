@@ -3,12 +3,12 @@
   "nodeVersion": "24.22.0",
   "nodeCommit": "f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93",
   "summary": {
-    "taskCount": 3456,
-    "tierItemCount": 3456,
+    "taskCount": 3455,
+    "tierItemCount": 3455,
     "tiers": {
       "static": {
-        "audit-partial": 1176,
-        "verify-gap": 2152,
+        "audit-partial": 1177,
+        "verify-gap": 2150,
         "replace-refusal": 41,
         "classify": 2,
         "implement": 85
@@ -17,7 +17,7 @@
     "priorities": {
       "high": 2289,
       "normal": 694,
-      "low": 473
+      "low": 472
     }
   },
   "tasks": [
@@ -34884,12 +34884,16 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:globals",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:globals.navigator",
+          "tests": [
+            "tests/fixtures/node-types/navigator.ts",
+            "tests/harness/project-config.test.ts",
+            "tests/corpus/6331-jose-root-entry/main.ts"
+          ]
         }
       }
     },
@@ -34999,31 +35003,6 @@
       "label": "platform",
       "signature": "`platform` Type: {string}",
       "apiSymbol": "platform",
-      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/globals.html#navigator",
-      "nodeStability": {
-        "index": "1.1",
-        "level": 1,
-        "text": "Active development. Disable this API with the [`--no-experimental-global-navigator`][] CLI flag.",
-        "inherited": true
-      },
-      "priority": "low",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:globals",
-          "tests": []
-        }
-      }
-    },
-    {
-      "id": "globals:fc0a32e8c26f",
-      "chapter": "globals",
-      "label": "userAgent",
-      "signature": "`userAgent` Type: {string}",
-      "apiSymbol": "userAgent",
       "docsUrl": "https://nodejs.org/docs/v24.22.0/api/globals.html#navigator",
       "nodeStability": {
         "index": "1.1",

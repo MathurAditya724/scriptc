@@ -340,10 +340,10 @@
       "entries": 94,
       "apiEntries": 92,
       "static": {
-        "supported": 0,
-        "partial": 14,
+        "supported": 1,
+        "partial": 15,
         "refused": 1,
-        "not-implemented": 77,
+        "not-implemented": 75,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -52231,8 +52231,11 @@
           "tests/corpus/6293-webcrypto-digest.ts",
           "tests/corpus/6294-webcrypto-js-values.mjs",
           "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/corpus/6331-jose-root-entry/main.ts",
           "tests/corpus/text-codec-values/main.ts",
-          "tests/harness/fetch-conformance.test.ts"
+          "tests/fixtures/node-types/navigator.ts",
+          "tests/harness/fetch-conformance.test.ts",
+          "tests/harness/project-config.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -54247,8 +54250,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.navigator",
+        "tests": [
+          "tests/fixtures/node-types/navigator.ts",
+          "tests/harness/project-config.test.ts",
+          "tests/corpus/6331-jose-root-entry/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -54385,8 +54393,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.userAgent",
+        "tests": [
+          "tests/fixtures/node-types/navigator.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
