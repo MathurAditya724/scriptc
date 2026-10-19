@@ -25,6 +25,10 @@ ScrCryptoHash *scr_crypto_hash_retain(ScrCryptoHash *h);
 void scr_crypto_hash_release(ScrCryptoHash *h);
 void *scr_crypto_hash_retain_v(void *p);
 void scr_crypto_hash_release_v(void *p);
+/* A Hash or Hmac boxed as a checked-dynamic handle (+1; retains h). The
+ * emitted to-dyn conversion calls it, and it installs the handle ops on
+ * first use, so programs that never box a Hash do not link them. */
+ScrDyn *scr_crypto_hash_to_dyn(ScrCryptoHash *h);
 ScrCryptoHash *scr_crypto_hash_update_str(ScrCryptoHash *h, ScrStr *data);
 ScrCryptoHash *scr_crypto_hash_update_bytes(ScrCryptoHash *h, ScrBytes *data);
 ScrCryptoHash *scr_crypto_hash_copy(ScrCryptoHash *h);

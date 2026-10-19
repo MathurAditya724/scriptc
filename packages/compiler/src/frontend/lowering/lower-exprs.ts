@@ -11,6 +11,7 @@ import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { esmImportBindingKind } from "./builtins/module-bindings.js";
 import { lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
+import { lowerWebAssemblyTypeof, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
 import { lowerNetAddressInstanceof, lowerNetAddressStaticRead } from "./builtins/net-address.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "./builtins/errors.js";
@@ -458,6 +459,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (externalTypeSpecifier !== null) {
     lowerer.externalHostFence(externalTypeSpecifier, expr);
   }
+  // Every reached use of the WebAssembly API fences at its expression.
+  refuseWebAssemblyUse(lowerer, expr);
 
   if (ts.isNumericLiteral(expr)) {
     const value = Number(expr.text.replace(/_/g, ""));
@@ -623,6 +626,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     );
   }
   if (ts.isTypeOfExpression(expr)) {
+    const webAssembly = lowerWebAssemblyTypeof(lowerer, expr.expression);
+    if (webAssembly) return webAssembly;
     if (lowerer.isStdlibGlobal(expr.expression, "process"))
       return { kind: "strLit", value: "object", type: STRING, loc };
     if (lowerer.isStdlibGlobal(expr.expression, "fetch"))
@@ -10438,6 +10443,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   ) {
     const test =
       lowerConstructorGlobalTypeofTest(lowerer, expr, loc) ??
+      lowerWebAssemblyTypeofTest(lowerer, expr, loc) ??
       lowerErrorCodeTypeofTest(lowerer, expr, loc) ??
       lowerer.lowerCaughtTypeofTest(expr, loc) ??
       lowerDynTypeofTest(lowerer, expr, loc) ??
@@ -11830,6 +11836,24 @@ function errorRootedObjectOf(lowerer: Lowerer, t: ts.Type): IrType | null {
   return null;
 }
 
+/** `typeof WebAssembly === "object"` and `typeof WebAssembly.<member> ===
+ * "function"`: the operand needs no value, so the test folds as bare typeof
+ * does (builtins/webassembly.ts) before any dyn-typed operand lowers. */
+function lowerWebAssemblyTypeofTest(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const negated = expr.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  for (const [a, b] of operandPairs(expr)) {
+    if (!ts.isTypeOfExpression(a) || !ts.isStringLiteral(b)) continue;
+    const folded = lowerWebAssemblyTypeof(lowerer, a.expression);
+    if (folded?.kind !== "strLit") continue;
+    return { kind: "boolLit", value: (folded.value === b.text) !== negated, type: BOOL, loc };
+  }
+  return null;
+}
+
 /** `typeof e.code === "string"` / `"undefined"` (and the `!==` forms)
  * where e — through parens and as-casts — is a catch binding or a value
  * of %Error-rooted type: the runtime error's code slot is a string
@@ -12527,6 +12551,7 @@ export function caughtLocalOf(lowerer: Lowerer, node: ts.Expression): IrLocal | 
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  refuseWebAssemblyUse(lowerer, expr.right);
   // `x instanceof net.Socket` over a union with a netSocket arm — the
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
   const sockTest = lowerSocketInstanceOf(lowerer, expr, loc);
@@ -12883,42 +12908,68 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       "'instanceof' right-hand sides other than classes declared in the program",
     );
   }
+  // `x instanceof Writable`: Node's Writable[Symbol.hasInstance] also
+  // answers true for streams with a writable side that do not inherit from
+  // Writable, which are Duplex and its subclasses (Transform, PassThrough,
+  // the zlib streams). Subclasses of Writable keep the prototype test.
+  const duplex =
+    target.def.name === "%Writable" && target.builtinStream !== undefined
+      ? lowerer.classes.get("%Duplex")
+      : undefined;
+  // The classes whose interval test can answer true for a value of static
+  // class `className`: Writable and Duplex are disjoint, so a value typed
+  // as one side needs only that side's test.
+  const runtimeTests = (className: string): ClassInfo[] => {
+    if (!duplex) return [target];
+    const mayHold = (info: ClassInfo): boolean =>
+      className === info.def.name ||
+      lowerer.isSubclassOf(className, info.def.name) ||
+      lowerer.isSubclassOf(info.def.name, className);
+    const tests = [target, duplex].filter(mayHold);
+    return tests.length > 0 ? tests : [target];
+  };
   // A catch binding on the left: the runtime test against the class's
   // preorder interval (false for non-hierarchy-object payloads). tsc's
   // narrowing then types the branches; reads bridge through caughtRead.
   const caughtLocal = lowerer.caughtLocalOf(expr.left);
   if (caughtLocal) {
-    if (!lowerer.inHierarchy(target)) {
-      const value = varRef(caughtLocal.id, CAUGHT, loc);
-      return {
-        kind: "ternary",
-        cond: {
-          kind: "caughtTest",
-          value,
-          test: "instanceof",
-          className: target.def.name,
+    const caughtInstanceOf = (info: ClassInfo): IrExpr => {
+      if (!lowerer.inHierarchy(info)) {
+        const value = varRef(caughtLocal.id, CAUGHT, loc);
+        return {
+          kind: "ternary",
+          cond: {
+            kind: "caughtTest",
+            value,
+            test: "instanceof",
+            className: info.def.name,
+            type: BOOL,
+            loc,
+          },
+          then: { kind: "boolLit", value: true, type: BOOL, loc },
+          else_: classInstanceOf(
+            lowerer,
+            { kind: "caughtToDyn", value, type: DYN, loc },
+            info,
+            loc,
+          ),
           type: BOOL,
           loc,
-        },
-        then: { kind: "boolLit", value: true, type: BOOL, loc },
-        else_: classInstanceOf(
-          lowerer,
-          { kind: "caughtToDyn", value, type: DYN, loc },
-          target,
-          loc,
-        ),
+        };
+      }
+      return {
+        kind: "caughtTest",
+        value: { kind: "varRef", localId: caughtLocal.id, type: CAUGHT, loc },
+        test: "instanceof",
+        className: info.def.name,
         type: BOOL,
         loc,
       };
-    }
-    return {
-      kind: "caughtTest",
-      value: { kind: "varRef", localId: caughtLocal.id, type: CAUGHT, loc },
-      test: "instanceof",
-      className: target.def.name,
-      type: BOOL,
-      loc,
     };
+    const test = caughtInstanceOf(target);
+    return duplex
+      ? { kind: "logical", op: "||", left: test, right: caughtInstanceOf(duplex), type: BOOL, loc }
+      : test;
   }
   const left = lowerer.lowerExpr(expr.left);
   // `u instanceof Error` on an `unknown` value: the checked-dynamic tree's error encoding
@@ -12998,23 +13049,33 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           const lhsInfo = lowerer.classes.get(arm.className);
           if (!lhsInfo)
             throw new InternalCompilerError(`lowerer bug: unknown class ${arm.className}`);
-          const result: IrExpr =
-            lowerer.inHierarchy(lhsInfo) && lowerer.inHierarchy(target)
+          const armTest = (info: ClassInfo): IrExpr =>
+            lowerer.inHierarchy(lhsInfo) && lowerer.inHierarchy(info)
               ? {
                   kind: "instanceOf",
                   value: { kind: "unionNarrow", unionId, tag, value, type: arm, loc },
-                  className: target.def.name,
+                  className: info.def.name,
                   type: BOOL,
                   loc,
                 }
               : {
                   kind: "boolLit",
                   value:
-                    arm.className === target.def.name ||
-                    lowerer.isSubclassOf(arm.className, target.def.name),
+                    arm.className === info.def.name ||
+                    lowerer.isSubclassOf(arm.className, info.def.name),
                   type: BOOL,
                   loc,
                 };
+          const result = runtimeTests(arm.className)
+            .map(armTest)
+            .reduce((left: IrExpr, right: IrExpr): IrExpr => ({
+              kind: "logical",
+              op: "||",
+              left,
+              right,
+              type: BOOL,
+              loc,
+            }));
           body.push({
             kind: "if",
             cond: { kind: "unionIsTag", unionId, tag, negated: false, value, type: BOOL, loc },
@@ -13060,11 +13121,39 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (!lhsInfo)
     throw new InternalCompilerError(`lowerer bug: unknown class ${left.type.className}`);
   if (lowerer.inHierarchy(lhsInfo) && lowerer.inHierarchy(target)) {
-    return { kind: "instanceOf", value: left, className: target.def.name, type: BOOL, loc };
+    const tests = runtimeTests(left.type.className);
+    if (tests.length === 1) {
+      return { kind: "instanceOf", value: left, className: tests[0]!.def.name, type: BOOL, loc };
+    }
+    const local = lowerer.declareHiddenLocal("%writableTest", left.type);
+    const ref = varRef(local.id, left.type, loc);
+    const test = (className: string): IrExpr => ({
+      kind: "instanceOf",
+      value: ref,
+      className,
+      type: BOOL,
+      loc,
+    });
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: left, loc }],
+      result: {
+        kind: "logical",
+        op: "||",
+        left: test(tests[0]!.def.name),
+        right: test(tests[1]!.def.name),
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
   }
+  const leftClass = left.type.className;
+  const isInstance = (className: string): boolean =>
+    leftClass === className || lowerer.isSubclassOf(leftClass, className);
   const value =
-    left.type.className === target.def.name ||
-    lowerer.isSubclassOf(left.type.className, target.def.name);
+    isInstance(target.def.name) || (duplex !== undefined && isInstance(duplex.def.name));
   if (left.kind === "varRef") {
     return readsClassAfter(lowerer, target, expr.right, [], {
       kind: "boolLit",

@@ -1,6 +1,6 @@
 import { lowerBuiltinByteInput, errorFirstBytesCallback, errorFirstCallback } from "./arguments.js";
 import { isKeyObjectValue } from "./key-object.js";
-import { boolLit, dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import { boolLit, dynUndefinedExpr, nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { locOf } from "../../program.js";
@@ -942,9 +942,27 @@ export function lowerCryptoHashMethodCall(
   if (call.questionDotToken || access.questionDotToken) return null;
   const receiverType = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   if (receiverType?.kind !== "cryptoHash" && receiverType?.kind !== "cryptoHmac") return null;
-  if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
+  // Hmac has no copy(): Node reads the member as undefined and throws a
+  // TypeError once the arguments are evaluated.
+  if (receiverType.kind === "cryptoHmac" && name === "copy") {
+    if (call.arguments.some(ts.isSpreadElement))
+      lowerer.noLowering("Hmac.copy with spread arguments", call);
+    const evaluated = [access.expression, ...call.arguments].map((node): IrStmt => ({
+      kind: "exprStmt",
+      expr: lowerer.lowerExpr(node),
+      loc,
+    }));
+    return {
+      kind: "seqExpr",
+      stmts: evaluated,
+      result: nodeThrowExpr(1, "", `${access.getText()} is not a function`, DYN, loc),
+      type: DYN,
+      loc,
+    };
+  }
+  if (!lowerer.isStdlibMember(access)) return null;
   const receiver = (): IrExpr => lowerer.lowerExprExpecting(access.expression, receiverType);
   const hash = receiverType.kind === "cryptoHash";
   const label = hash ? "Hash" : "Hmac";

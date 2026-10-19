@@ -113,6 +113,7 @@ import {
   lowerForOfSearchParams,
   lowerForOfSet,
 } from "./containers/for-of.js";
+import { lowerForOfHelperChain } from "./containers/iterator-helpers.js";
 import { objectIterOverIndexShape } from "./containers/indexed-objects.js";
 import { strCharsCall } from "./containers/array-construction.js";
 import {
@@ -680,10 +681,14 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
     out,
   };
   lowerer.activeStmtLists.push(entry);
+  const inFunction = stmts.length > 0 && enclosedByFunction(stmts[0]!);
+  let unreachable = false;
   try {
     for (let i = 0; i < stmts.length; i++) {
       const stmt = stmts[i]!;
       entry.index = i;
+      if (unreachable && skipsWhenUnreachable(stmt)) continue;
+      if (inFunction && isAbruptStatement(stmt)) unreachable = true;
       if (!lowerer.suppressStats) {
         lowerer.stats.statementsTotal++;
         if (sf !== undefined) lowerer.bumpFileStat(sf.fileName, "total");
@@ -803,6 +808,54 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
     lowerer.activeStmtLists.pop();
   }
   return out;
+}
+
+/** Whether a statement list belongs to a function body (at any block
+ * depth) rather than to a module's top level. */
+function enclosedByFunction(stmt: ts.Statement): boolean {
+  let owner: ts.Node | undefined = stmt.parent;
+  while (owner !== undefined && !ts.isFunctionLike(owner) && !ts.isSourceFile(owner))
+    owner = owner.parent;
+  return owner !== undefined && ts.isFunctionLike(owner);
+}
+
+/** `return`, `throw`, `break` and `continue`: the rest of the enclosing
+ * statement list never runs. */
+function isAbruptStatement(stmt: ts.Statement): boolean {
+  return (
+    ts.isReturnStatement(stmt) ||
+    ts.isThrowStatement(stmt) ||
+    ts.isBreakStatement(stmt) ||
+    ts.isContinueStatement(stmt)
+  );
+}
+
+/** Statements after an abrupt statement in a function body that lowering
+ * skips: they never execute, so neither their unsupported constructs nor the
+ * functions they reference become part of the program (production builds of
+ * libraries keep development-only code behind `throw` stubs this way).
+ * Hoisting keeps its meaning: a reference above the abrupt statement to a
+ * later function declaration lowers that declaration eagerly
+ * (predeclareForwardFnDecl), and references to a later `var`, `let` or
+ * `const` binding resolve through the forward-hoisting machinery to its
+ * undefined or TDZ state, which skipping its initializer preserves. Class,
+ * enum, module and import/export declarations and generic function
+ * declarations still lower. */
+function skipsWhenUnreachable(stmt: ts.Statement): boolean {
+  if (ts.isFunctionDeclaration(stmt)) return stmt.typeParameters === undefined;
+  if (ts.isVariableStatement(stmt))
+    return !(stmt.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+  return !(
+    ts.isClassDeclaration(stmt) ||
+    ts.isEnumDeclaration(stmt) ||
+    ts.isModuleDeclaration(stmt) ||
+    ts.isImportDeclaration(stmt) ||
+    ts.isImportEqualsDeclaration(stmt) ||
+    ts.isExportDeclaration(stmt) ||
+    ts.isExportAssignment(stmt) ||
+    ts.isInterfaceDeclaration(stmt) ||
+    ts.isTypeAliasDeclaration(stmt)
+  );
 }
 
 const TDZ_KINDS = new Set<IrType["kind"]>([
@@ -8496,6 +8549,12 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         return lowerForOfStoredNumericIterator(lowerer, stmt, state, labels);
       }
     }
+  }
+  // A head that is a chain of iterator-helper stages runs as one loop
+  // over the chain's source.
+  {
+    const fused = lowerForOfHelperChain(lowerer, stmt, labels);
+    if (fused) return fused;
   }
   // `for (const k of m.keys())` / `.values()` / `.entries()`: the
   // iterator methods consumed DIRECTLY by a for-of head ride the

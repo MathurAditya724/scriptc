@@ -4477,7 +4477,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.entries",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.map.forEach",
@@ -4502,7 +4502,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.keys",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.map.set",
@@ -4515,7 +4515,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.values",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.math.E",
@@ -5384,7 +5384,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.entries",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.set.forEach",
@@ -5431,7 +5431,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.keys",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.set.symmetricDifference",
@@ -5452,7 +5452,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.values",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.sharedArrayBuffer",
@@ -5642,6 +5642,14 @@
       "name": "string.prototype.trimStart",
       "status": "static",
       "note": "the lowered call form takes no arguments"
+    },
+    {
+      "id": "stdlib.webassembly",
+      "kind": "stdlib",
+      "name": "globalThis.WebAssembly",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "WebAssembly support is planned as translation of each module whose bytes the build can see (an inline literal, or a file read from a path the compiler resolves) into native code; 'scriptc coverage' lists the modules this program would load (https://scriptc.dev/limitations)"
     },
     {
       "id": "syntax.async-generators",
