@@ -5,6 +5,7 @@ import type { Lowerer } from "../lowerer.js";
 import {
   BOOL,
   CAUGHT,
+  DYN,
   F64,
   type IrMapIntrinsicMethod,
   type IrSetIntrinsicMethod,
@@ -28,12 +29,18 @@ import { concatStrings, throwTypeError } from "./dynamic-receivers.js";
 import {
   type GenType,
   generatorLoopBinding,
+  resultRecordOf,
   genStep,
   genValue,
   stepDrivable,
 } from "../lower-generators.js";
 import { exitBeforeReturns } from "./for-of.js";
-import { iteratorSlotAdapter } from "../iterator-adapters.js";
+import {
+  iteratorSlotAdapter,
+  lowerArrayIteratorValue,
+  lowerBytesIteratorValue,
+  lowerStringIteratorValue,
+} from "../iterator-adapters.js";
 import { lowerArrayCallback } from "./callback-arguments.js";
 
 /* ── iterator helpers (ES2025) ─────────────────────────────────────────── */
@@ -189,6 +196,24 @@ export function lowerGeneratorHelperCall(
       collectionSeed(lowerer, source),
     );
   }
+  // Iterator.from(arr) walks the array by index.
+  const arrayRoot = arrayIteratorCall(lowerer, cur);
+  if (arrayRoot !== null) {
+    const items = lowerer.lowerExpr(arrayRoot.receiver);
+    if (items.type.kind !== "array")
+      lowerer.badType(arrayRoot.receiver, lowerer.typeOf(arrayRoot.receiver));
+    const elem =
+      arrayRoot.proj === "entries" ? entryPairType(lowerer, items.type.elem) : items.type.elem;
+    return lowerFusedChain(
+      lowerer,
+      call,
+      name,
+      stages,
+      { kind: "array", type: items.type, proj: arrayRoot.proj },
+      items,
+      elem,
+    );
+  }
   const src = lowerHelperSource(lowerer, cur);
   return lowerFusedChain(
     lowerer,
@@ -199,6 +224,128 @@ export function lowerGeneratorHelperCall(
     src.gen,
     src.elem,
   );
+}
+
+/** `h.return!()` or `h.return?.()` on a helper object. The lib declares
+ * return() as optional on iterator objects, and a helper object always
+ * has one, so both spellings are the call: the helper completes and closes
+ * its source, and the result is `{ value: undefined, done: true }`. The
+ * receiver must be provably a helper object — a helper stage call, or a
+ * const binding initialized with one — since other iterator objects (the
+ * array, string, Map and Set iterators) have no return(). Null otherwise,
+ * and for the plain `h.return()` spelling (lowerGenMethodCall's). */
+export function lowerHelperReturnCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  let callee: ts.Expression = call.expression;
+  const nonNull = ts.isNonNullExpression(callee);
+  if (nonNull) callee = (callee as ts.NonNullExpression).expression;
+  if (!nonNull && call.questionDotToken === undefined) return null;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return null;
+  if (callee.name.text !== "return" || call.arguments.length !== 0) return null;
+  if (!isHelperObject(lowerer, callee.expression) || !lowerer.isStdlibMember(callee)) return null;
+  const callT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const gen = lowerer.lowerExpr(callee.expression);
+  if (gen.type.kind !== "generator" || gen.type.async) return null;
+  const loc = locOf(call);
+  const recT = resultRecordOf(lowerer, gen.type);
+  const resume: IrExpr = { kind: "genResume", mode: "return", gen, arg: null, type: recT, loc };
+  // `?.` types the call `IteratorResult | undefined`, which has no mapping
+  // as a whole; the result is never undefined, so it is the record itself.
+  if (callT === null || typeEquals(callT, recT)) return resume;
+  const result = lowerer.coerceToExpected(resume, callT);
+  if (!typeEquals(result.type, callT)) lowerer.badType(call, lowerer.typeOf(call));
+  return result;
+}
+
+/** Whether `expr` is a helper stage call, or a const binding initialized
+ * with one. */
+function isHelperObject(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (isStageCall(lowerer, expr)) return true;
+  if (!ts.isIdentifier(expr)) return false;
+  const symbol = lowerer.resolveValueSymbol(expr);
+  const decl = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+  if (
+    !decl ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer === undefined ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return false;
+  let init: ts.Expression = decl.initializer;
+  while (ts.isParenthesizedExpression(init)) init = init.expression;
+  return isStageCall(lowerer, init);
+}
+
+/** `Iterator.from(value)` over a typed built-in iterable: the value's own
+ * iterator, which already inherits from Iterator.prototype, so Node returns
+ * it rather than a wrapper. A generator (including a helper object or an
+ * array iterator) is itself; an array, string or typed array gives its
+ * values iterator; a Set its values and a Map its entries, adapted into a
+ * generator over the live collection. The result converts into the call's
+ * IteratorObject type. Null for other arguments (objects with their own
+ * next method, untyped values), which keep the Iterator fence. */
+export function lowerIteratorFromCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.name.text !== "from" || call.arguments.length !== 1) return null;
+  const argNode = call.arguments[0]!;
+  if (ts.isSpreadElement(argNode)) return null;
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const argT = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+  if (resultT?.kind !== "generator" || resultT.async || argT === null) return null;
+  const iterableKinds = ["generator", "array", "string", "bytes", "set", "map"];
+  if (!iterableKinds.includes(argT.kind) || (argT.kind === "generator" && argT.async)) return null;
+  const loc = locOf(call);
+  const value = lowerer.lowerExpr(argNode);
+  const own = (yieldT: IrType): GenType => ({
+    kind: "generator",
+    yieldT,
+    retT: VOID,
+    nextT: UNDEFINED_T,
+  });
+  let iterator: IrExpr | null = null;
+  const t = value.type;
+  if (t.kind === "generator") iterator = value;
+  else if (t.kind === "array")
+    iterator = lowerArrayIteratorValue(lowerer, value, "values", own(t.elem), loc);
+  else if (t.kind === "string")
+    iterator = lowerStringIteratorValue(lowerer, value, own(STRING), loc);
+  else if (t.kind === "bytes")
+    iterator = lowerBytesIteratorValue(lowerer, value, "values", own(F64), loc);
+  else if (t.kind === "set" || t.kind === "map") {
+    const elem = t.kind === "set" ? t.elem : entryPairTypeOf(lowerer, t.key, t.value);
+    const native: IrExpr = {
+      kind: "dynInvoke",
+      recv: lowerer.coerceToExpected(value, DYN),
+      method: t.kind === "set" ? "values" : "entries",
+      calleeName: t.kind === "set" ? "set.values" : "map.entries",
+      args: [],
+      type: DYN,
+      loc,
+    };
+    iterator = iteratorSlotAdapter(lowerer, native, own(elem));
+  }
+  if (iterator === null) lowerer.badType(argNode, lowerer.typeOf(argNode));
+  const result = lowerer.coerceToExpected(iterator, resultT);
+  if (!typeEquals(result.type, resultT)) lowerer.badType(call, lowerer.typeOf(call));
+  return result;
+}
+
+/** The interned [K, V] pair a Map's entries yield. */
+function entryPairTypeOf(lowerer: Lowerer, keyT: IrType, valueT: IrType): IrType {
+  return {
+    kind: "record",
+    shapeId: lowerer.shapes.intern(
+      [
+        { name: "0", type: keyT },
+        { name: "1", type: valueT },
+      ],
+      true,
+    ),
+  };
 }
 
 const ITER_STAGES = new Set(["map", "filter", "take", "drop", "flatMap"]);
@@ -353,12 +500,30 @@ export function lowerForOfHelperChain(
   }
 }
 
-/** `arr.values()` or `arr.entries()` on an array value, as the root of a
- * helper chain. */
+/** The argument of an `Iterator.from(x)` call, or null. As a chain's root,
+ * the call is the argument's own iterator, so the chain can walk the
+ * argument directly. */
+function iteratorFromArgument(lowerer: Lowerer, expr: ts.Expression): ts.Expression | null {
+  if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) return null;
+  if (expr.questionDotToken || expr.expression.questionDotToken || expr.arguments.length !== 1)
+    return null;
+  const arg = expr.arguments[0]!;
+  if (ts.isSpreadElement(arg) || expr.expression.name.text !== "from") return null;
+  if (!lowerer.isStdlibGlobal(expr.expression.expression, "Iterator")) return null;
+  return lowerer.isStdlibMember(expr.expression) ? arg : null;
+}
+
+/** `arr.values()`, `arr.entries()` or `Iterator.from(arr)` on an array value,
+ * as the root of a helper chain. */
 function arrayIteratorCall(
   lowerer: Lowerer,
   expr: ts.Expression,
 ): { receiver: ts.Expression; proj: "values" | "entries" } | null {
+  const fromArg = iteratorFromArgument(lowerer, expr);
+  if (fromArg !== null)
+    return lowerer.mapTypeOf(lowerer.typeOf(fromArg))?.kind === "array"
+      ? { receiver: fromArg, proj: "values" }
+      : null;
   if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) return null;
   if (expr.questionDotToken || expr.expression.questionDotToken || expr.arguments.length !== 0)
     return null;
@@ -401,6 +566,17 @@ function collectionIteratorCall(
   lowerer: Lowerer,
   expr: ts.Expression,
 ): { receiver: ts.Expression; proj: "keys" | "values" | "entries" } | null {
+  // Iterator.from(set) is the Set's values iterator, Iterator.from(map) the
+  // Map's entries iterator.
+  const fromArg = iteratorFromArgument(lowerer, expr);
+  if (fromArg !== null) {
+    const kind = lowerer.mapTypeOf(lowerer.typeOf(fromArg))?.kind;
+    return kind === "set"
+      ? { receiver: fromArg, proj: "values" }
+      : kind === "map"
+        ? { receiver: fromArg, proj: "entries" }
+        : null;
+  }
   if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) return null;
   if (expr.questionDotToken || expr.expression.questionDotToken || expr.arguments.length !== 0)
     return null;
@@ -480,6 +656,11 @@ function lowerHelperSource(
   lowerer: Lowerer,
   expr: ts.Expression,
 ): { gen: IrExpr & { type: GenType }; elem: IrType } {
+  // Iterator.from(gen) is the generator itself; the call's IteratorObject
+  // type would add an adapter generator over it.
+  const fromArg = iteratorFromArgument(lowerer, expr);
+  if (fromArg !== null && lowerer.mapTypeOf(lowerer.typeOf(fromArg))?.kind === "generator")
+    return lowerHelperSource(lowerer, fromArg);
   const tsType = lowerer.typeOf(expr);
   const mapped = lowerer.mapTypeOf(tsType);
   const arg = lowerer.checker.getTypeArguments(tsType as ts.TypeReference)[0];
@@ -577,10 +758,17 @@ function lowerStage(
   if (ret.kind === "array") return { stage: { kind: "flatMap", fn }, out: ret.elem };
   if (ret.kind === "generator" && ret.async !== true && stepDrivable(ret))
     return { stage: { kind: "flatMap", fn }, out: ret.yieldT };
+  // A Set flattens its values and a Map its entries, walked live. A string
+  // is rejected at run time with Node's TypeError (strings are not
+  // iterator objects).
+  if (ret.kind === "set") return { stage: { kind: "flatMap", fn }, out: ret.elem };
+  if (ret.kind === "map")
+    return { stage: { kind: "flatMap", fn }, out: entryPairTypeOf(lowerer, ret.key, ret.value) };
+  if (ret.kind === "string") return { stage: { kind: "flatMap", fn }, out: STRING };
   lowerer.noLowering(
     `.flatMap over a callback returning '${lowerer.fmt(ret)}'`,
     s.argNode,
-    "callbacks returning an array or a generator are the supported forms",
+    "callbacks returning an array, a generator, a Set or a Map are the supported forms",
   );
 }
 
@@ -1245,8 +1433,9 @@ function walkCollection(
 }
 
 /** A flatMap stage's inner walk over the callback's result in local
- * `innerId`: an array by index, or a generator driven (and closed on
- * early exit) like the source. `stop` ends the walk early. */
+ * `innerId`: an array by index, a Set's values or a Map's entries walked
+ * live, or a generator driven (and closed on early exit) like the source.
+ * A string result throws Node's TypeError. `stop` ends the walk early. */
 function walkInner(
   lowerer: Lowerer,
   frame: ChainFrame,
@@ -1257,6 +1446,27 @@ function walkInner(
   loc: SrcLoc,
 ): IrStmt[] {
   if (innerT.kind === "array") return [walkArray(frame, innerId, innerT, stop, body, loc)];
+  if (innerT.kind === "set" || innerT.kind === "map") {
+    const source: ChainSource = {
+      kind: "collection",
+      type: innerT,
+      proj: innerT.kind === "set" ? "values" : "entries",
+    };
+    return walkCollection(lowerer, frame, innerId, source, stop ?? boolLit(false, loc), body, loc);
+  }
+  if (innerT.kind === "string") {
+    return [
+      throwTypeError(
+        {
+          kind: "strLit",
+          value: "Iterator.prototype.flatMap called on non-object",
+          type: STRING,
+          loc,
+        },
+        loc,
+      ),
+    ];
+  }
   if (innerT.kind !== "generator")
     throw new InternalCompilerError("lowerer bug: flatMap over a non-iterable result");
   const pre: IrStmt[] =
