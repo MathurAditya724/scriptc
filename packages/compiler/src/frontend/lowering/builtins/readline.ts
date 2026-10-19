@@ -88,7 +88,7 @@ function questionSignal(lowerer: Lowerer, node: ts.Expression | undefined): ts.E
     );
   }
   let signal: ts.Expression | null = null;
-  for (const p of node.properties) {
+  for (const p of node.properties.nodes) {
     if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "signal") {
       signal = p.initializer;
       continue;
@@ -129,7 +129,7 @@ function processOutputOf(lowerer: Lowerer, node: ts.Expression): 0 | 1 | 2 {
 export function lowerReadlineUiNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   if (!isReadlineUiTyped(lowerer, expr)) return null;
   const loc = locOf(expr);
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`new Readline with ${args.length} arguments`, expr);
   }
@@ -158,7 +158,7 @@ export function lowerReadlineUiNew(lowerer: Lowerer, expr: ts.NewExpression): Ir
         "write the options inline: new Readline(stream, { autoCommit: true })",
       );
     }
-    for (const p of opts.properties) {
+    for (const p of opts.properties.nodes) {
       if (
         ts.isPropertyAssignment(p) &&
         ts.isIdentifier(p.name) &&
@@ -199,7 +199,7 @@ function lowerReadlineUiCall(
 ): IrExpr {
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const plan: Record<string, [IrLibFn, number, number]> = {
     cursorTo: ["rl.uiCursorTo", 1, 2],
     moveCursor: ["rl.uiMoveCursor", 2, 2],
@@ -294,7 +294,7 @@ export function lowerReadlineMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const receiver = (): IrExpr => lowerer.lowerExprExpecting(access.expression, F64);
   if (
     name === "question" &&
@@ -521,7 +521,7 @@ function lowerWriteKey(
       );
     }
     hasKey = true;
-    for (const p of keyNode.properties) {
+    for (const p of keyNode.properties.nodes) {
       const member = ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) ? p.name.text : null;
       const value = member !== null ? (p as ts.PropertyAssignment).initializer : null;
       if (member === "name" && value !== null && !isNullish(value)) {
@@ -568,7 +568,7 @@ function lowerWriteKey(
  * take the interface handle (0 for none) and the timeout (NaN: the
  * interface's, or 500). */
 function lowerEmitKeypressEvents(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`readline.emitKeypressEvents with ${args.length} arguments`, expr);
   }
@@ -601,7 +601,7 @@ function lowerEmitKeypressEvents(lowerer: Lowerer, expr: ts.CallExpression, loc:
     if (isReadlineTyped(lowerer, ifaceNode)) {
       iface = lowerer.lowerExprExpecting(ifaceNode, F64);
     } else if (ts.isObjectLiteralExpression(ifaceNode)) {
-      for (const p of ifaceNode.properties) {
+      for (const p of ifaceNode.properties.nodes) {
         if (
           ts.isPropertyAssignment(p) &&
           ts.isIdentifier(p.name) &&
@@ -708,7 +708,7 @@ export function lowerReadlineCursorCall(
   if (member === "emitKeypressEvents") return lowerEmitKeypressEvents(lowerer, expr, loc);
   const kind = CURSOR_HELPERS[member];
   if (kind === undefined) return null;
-  const args = [...expr.arguments];
+  const args = [...expr.arguments.nodes];
   if (args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`readline.${member} with a spread argument`, expr);
   }
@@ -983,7 +983,7 @@ export function lowerReadlineCreateCall(
     });
     terminal = { kind: "varRef", localId: local.id, type: BOOL, loc };
   };
-  const optsNode = expr.arguments[0];
+  const optsNode = expr.arguments.nodes[0];
   if (optsNode === undefined) {
     lowerer.noLowering(
       "createInterface without arguments",
@@ -993,33 +993,34 @@ export function lowerReadlineCreateCall(
   }
   if (!ts.isObjectLiteralExpression(optsNode)) {
     // createInterface(input, output?, completer?, terminal?)
-    if (expr.arguments.length > 4) {
+    if (expr.arguments.nodes.length > 4) {
       lowerer.noLowering(
-        `createInterface with ${expr.arguments.length} arguments`,
-        expr.arguments[4]!,
+        `createInterface with ${expr.arguments.nodes.length} arguments`,
+        expr.arguments.nodes[4]!,
         "pass createInterface(input, output, completer, terminal) or one options object",
       );
     }
     input = lowerInput(lowerer, optsNode);
-    if (expr.arguments[1] !== undefined) output = lowerOutput(lowerer, expr.arguments[1]);
-    const completerNode = expr.arguments[2];
+    if (expr.arguments.nodes[1] !== undefined)
+      output = lowerOutput(lowerer, expr.arguments.nodes[1]);
+    const completerNode = expr.arguments.nodes[2];
     if (
       completerNode !== undefined &&
       !(ts.isIdentifier(completerNode) && completerNode.text === "undefined")
     ) {
       setCompleter(completerNode);
     }
-    if (expr.arguments[3] !== undefined) setTerminal(expr.arguments[3]);
+    if (expr.arguments.nodes[3] !== undefined) setTerminal(expr.arguments.nodes[3]);
   } else {
-    if (expr.arguments.length > 1) {
+    if (expr.arguments.nodes.length > 1) {
       lowerer.noLowering(
         "createInterface with more than one argument",
-        expr.arguments[1]!,
+        expr.arguments.nodes[1]!,
         "pass every option in the one options object",
       );
     }
     let sawInput = false;
-    for (const p of optsNode.properties) {
+    for (const p of optsNode.properties.nodes) {
       const shorthand = ts.isShorthandPropertyAssignment(p);
       if (!(shorthand || (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name)))) {
         lowerer.noLowering(

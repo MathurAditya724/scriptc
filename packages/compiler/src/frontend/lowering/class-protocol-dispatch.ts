@@ -205,14 +205,15 @@ function protocolSignature(
     !signature ||
     !declaration ||
     !(ts.isMethodSignatureDeclaration(declaration) || ts.isMethodDeclaration(declaration)) ||
-    (declaration.typeParameters?.length ?? 0) > 0
+    (declaration.typeParameters?.nodes.length ?? 0) > 0
   )
     return null;
-  const declared = (declaration.parameters ?? []).filter(
+  const declared = (declaration.parameters.nodes ?? []).filter(
     (param) => !(ts.isIdentifier(param.name) && param.name.text === "this"),
   );
   const symbols = signature.getParameters();
-  if (symbols.length !== declared.length || call.arguments.length !== declared.length) return null;
+  if (symbols.length !== declared.length || call.arguments.nodes.length !== declared.length)
+    return null;
   const records = (id: string) => lowerer.shapes.get(id);
   const unions = (id: string) => lowerer.unions.get(id);
   const params: IrType[] = [];
@@ -243,7 +244,7 @@ export function lowerProtocolMethodCall(
     recv.type.kind !== "dyn" ||
     call.questionDotToken ||
     access.questionDotToken ||
-    call.arguments.some(ts.isSpreadElement)
+    call.arguments.nodes.some(ts.isSpreadElement)
   )
     return null;
   let signature: ProtocolSignature | null;
@@ -266,11 +267,11 @@ export function lowerProtocolMethodCall(
   const stmts: IrStmt[] = receiverLocal
     ? [{ kind: "varDecl", localId: receiverLocal.id, init: recv, loc }]
     : [];
-  const args = call.arguments.map((arg, i) =>
+  const args = call.arguments.nodes.map((arg, i) =>
     lowerer.coerceToExpected(lowerer.lowerExprExpecting(arg, params[i]!), params[i]!),
   );
   const probed =
-    !args.every(effectFree) || !call.arguments.every((arg) => stableArgument(lowerer, arg));
+    !args.every(effectFree) || !call.arguments.nodes.every((arg) => stableArgument(lowerer, arg));
   const key = JSON.stringify([method, params.map(typeKey), typeKey(result), returnsVoid, probed]);
   let dispatch = lowerer.protocolDispatches.get(key);
   if (!dispatch) {

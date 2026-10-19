@@ -30,7 +30,7 @@ export function lowerDisposableStackNew(lowerer: Lowerer, expr: ts.NewExpression
   if (!name) return null;
   const symbol = lowerer.resolveValueSymbol(expr.expression);
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
-  if ((expr.arguments ?? []).length !== 0) return null;
+  if ((expr.arguments?.nodes ?? []).length !== 0) return null;
   return {
     kind: "libCall",
     fn: name === "DisposableStack" ? "disposable.stackNew" : "disposable.asyncStackNew",
@@ -71,8 +71,8 @@ export function lowerDisposableStackUseCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken || access.questionDotToken) return null;
-  if (access.name.text !== "use" || call.arguments.length !== 1) return null;
-  const argNode = call.arguments[0]!;
+  if (access.name.text !== "use" || call.arguments.nodes.length !== 1) return null;
+  const argNode = call.arguments.nodes[0]!;
   if (ts.isSpreadElement(argNode)) return null;
   const stackClass = stdlibStackClassOf(lowerer, access.expression);
   if (!stackClass) return null;

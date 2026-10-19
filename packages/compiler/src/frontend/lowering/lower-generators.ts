@@ -112,7 +112,7 @@ export function lowerGenMethodCall(
   const name = access.name.text;
   if (name !== "next" && name !== "return" && name !== "throw") return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "generator") return null;
-  if (call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.unsupported("SC1090", call, "spread arguments");
   }
   // Iterator helpers and the built-in iterators have no throw method; an
@@ -131,7 +131,7 @@ export function lowerGenMethodCall(
   const genT = gen.type;
   const recT = resultRecordOf(lowerer, genT);
   const resultT: IrType = genT.async ? { kind: "promise", inner: recT } : recT;
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   let arg: IrExpr | null = null;
   if (name === "next") {
     if (argNode === undefined) {
@@ -379,7 +379,7 @@ export function generatorLoopBinding(
     lowerer.unsupported("SC1090", stmt.initializer, "for-of assignment to this target");
   }
   const list = stmt.initializer;
-  const decl = list.declarations[0]!;
+  const decl = list.declarations.nodes[0]!;
   const isLet = (list.flags & ts.NodeFlags.Let) !== 0;
   // The iterator result uses checked storage when its return channel is
   // unknown. After the done test, restore the declared yield shape for

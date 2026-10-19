@@ -88,23 +88,27 @@ test("production RPC bridge preserves pinned SDK parser/checker behavior", () =>
     expect(symbol!.declarations[0]!.resolve()).toBe(symbol!.declarations[0]!.resolve());
     const declaration = symbol!.declarations[0]!.resolve()!;
     expect(declaration).toBeInstanceOf(AstNode);
-    const variable = source
-      .statements[0]! as import("../../src/frontend/ts7/ast-types.js").VariableStatement;
-    expect(variable.declarationList.declarations[0]).toBe(declaration);
+    const variable = source.statements
+      .nodes[0]! as import("../../src/frontend/ts7/ast-types.js").VariableStatement;
+    expect(variable.declarationList.declarations.nodes[0]).toBe(declaration);
     expect(
-      project.checker.getSymbolAtLocation(variable.declarationList.declarations[0]!.name),
+      project.checker.getSymbolAtLocation(variable.declarationList.declarations.nodes[0]!.name),
     ).toBe(symbol);
-    expect(project.checker.getTypeAtLocation(variable.declarationList.declarations[0]!.name)).toBe(
-      first,
-    );
+    expect(
+      project.checker.getTypeAtLocation(variable.declarationList.declarations.nodes[0]!.name),
+    ).toBe(first);
     const expectedSource = expected.getProject(config)!.program.getSourceFile(path)!;
-    expect(source.statements.map((node) => [node.kind, node.pos, node.end])).toEqual(
+    expect(source.statements.nodes.map((node) => [node.kind, node.pos, node.end])).toEqual(
       expectedSource.statements.map((node) => [node.kind, node.pos, node.end]),
     );
-    // Native arrays retain element identity; SDK-only properties no longer
-    // need a JavaScript Object.assign adapter on production source lists.
-    expect(Array.isArray(source.statements)).toBe(true);
-    expect(Object.hasOwn(source.statements, "pos")).toBe(false);
+    // A list carries its own position, as tsc-ts's NodeList does, and its
+    // nodes are a plain array that retains element identity.
+    expect([source.statements.pos, source.statements.end]).toEqual([
+      expectedSource.statements.pos,
+      expectedSource.statements.end,
+    ]);
+    expect(Array.isArray(source.statements.nodes)).toBe(true);
+    expect(Object.hasOwn(source.statements.nodes, "pos")).toBe(false);
     expect(Object.hasOwn(source.statements, "transformFlags")).toBe(false);
     expect(source.referencedFiles).toBe(source.referencedFiles);
     expect(source.imports).toBe(source.imports);
@@ -180,6 +184,10 @@ test("native semantic registries preserve project scope and snapshot lifetimes",
   writeFileSync(path, source);
   const api = new Ts7Api({ cwd: dir, fs: fallback });
   const sdk = new API({ cwd: dir });
+  // scriptc's node lists keep their nodes in `nodes`; the SDK's lists are arrays.
+  type SdkNode = import("typescript/unstable/ast").Node;
+  const nodesOf = (list: unknown): readonly SdkNode[] =>
+    Array.isArray(list) ? list : (list as { nodes: readonly SdkNode[] }).nodes;
   function facts(snapshot: Snapshot) {
     const a = snapshot.getProject(firstConfig)!;
     const b = snapshot.getProject(secondConfig)!;
@@ -190,8 +198,8 @@ test("native semantic registries preserve project scope and snapshot lifetimes",
     const typeB = b.checker.getTypeAtPosition(path, answer)!;
     const fileA = a.program.getSourceFile(path)!;
     const fileB = b.program.getSourceFile(path)!;
-    const signatureA = a.checker.getSignatureFromDeclaration(fileA.statements[0]!)!;
-    const signatureB = b.checker.getSignatureFromDeclaration(fileB.statements[0]!)!;
+    const signatureA = a.checker.getSignatureFromDeclaration(nodesOf(fileA.statements)[0]!)!;
+    const signatureB = b.checker.getSignatureFromDeclaration(nodesOf(fileB.statements)[0]!)!;
     return {
       shape: {
         sharedSymbol: symbolA === symbolB,
@@ -200,8 +208,10 @@ test("native semantic registries preserve project scope and snapshot lifetimes",
         sameDeclaration: symbolA.declarations[0]!.resolve() === symbolB.declarations[0]!.resolve(),
         explicitDeclaration:
           symbolB.declarations[0]!.resolve(b) ===
-          (fileB.statements[1] as import("typescript/unstable/ast").VariableStatement)
-            .declarationList.declarations[0],
+          nodesOf(
+            (nodesOf(fileB.statements)[1] as import("typescript/unstable/ast").VariableStatement)
+              .declarationList.declarations,
+          )[0],
         texts: [a.checker.typeToString(typeA), b.checker.typeToString(typeB)],
         parameters: signatureA.getParameters().map((symbol) => symbol.name),
       },

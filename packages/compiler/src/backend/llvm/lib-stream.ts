@@ -48,7 +48,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const s0 = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     const once = host.emitExpr(e.args[2]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     const param = cbT.params[0];
     let adapter: string;
     if (param === undefined) {
@@ -70,7 +70,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const s0 = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     const once = host.emitExpr(e.args[2]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     host.declare(`declare void @scr_child_stream_on_end(ptr, ptr, i1 zeroext)`);
     B.line(`call void @scr_child_stream_on_end(ptr ${s0.name}, ptr ${cb.name}, i1 ${once.name})`);
     return { name: "", type: e.type };
@@ -86,7 +86,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const s0 = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     const once = host.emitExpr(e.args[2]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     host.declare(`declare void @scr_child_stream_thunk_str(ptr, ptr)`);
     host.declare(`declare void @scr_child_stream_on_data_str(ptr, ptr, ptr, i1 zeroext)`);
     B.line(
@@ -127,7 +127,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       }
       const cb = args[at]!;
       const cbT = e.args[at]!.type;
-      host.moveTemp(cb); // the callback closure MOVES into the stream
+      host.toHeap(cb); // the callback closure MOVES into the stream
       cbArgs.push(`ptr ${cb.name}`, `ptr @${host.streamCbThunkFor(canonical[i]!, cbT)}`);
       at++;
     }
@@ -182,7 +182,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const recv = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     const cbT = e.args[1]!.type;
-    host.moveTemp(cb); // the callback closure MOVES into the stream
+    host.toHeap(cb); // the callback closure MOVES into the stream
     const sym = symOf[e.fn]!;
     host.declare(`declare void @${sym}(ptr, ptr, ptr)`);
     B.line(
@@ -210,7 +210,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       }
       const cb = args[at]!;
       const cbT = e.args[at]!.type;
-      host.moveTemp(cb);
+      host.toHeap(cb);
       cbArgs.push(`ptr ${cb.name}`, `ptr @${host.streamCbThunkFor(canonical[i]!, cbT)}`);
       at++;
     }
@@ -321,7 +321,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     B.line(`${raw} = call ptr @scr_stream_read(ptr ${args[0]!.name}, double ${args[1]!.name})`);
     const b = host.own({ name: raw, type: def!.arms[bytesTag]! });
     host.emitPendingCheck();
-    host.moveTemp(b); // moves into the union arm when present
+    host.toHeap(b); // moves into the union arm when present
     return host.wrapNullable(raw, raw, def!.arms[bytesTag]!, bytesTag, e.type, nullTag);
   }
   if (e.fn === "readable.flowing") {
@@ -383,7 +383,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const args = e.args.map((a) => host.emitExpr(a));
     let cb = "null";
     if (e.fn !== "writable.writeDyn" && e.args.length > 2) {
-      host.moveTemp(args[2]!);
+      host.toHeap(args[2]!);
       cb = args[2]!.name;
     }
     host.declare(`declare zeroext i1 @${entry}(ptr, ptr, ptr)`);
@@ -412,7 +412,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     else if (flags & 8) chunkD = args[at++]!.name;
     let cbName = "null";
     if (flags & 4) {
-      host.moveTemp(args[at]!);
+      host.toHeap(args[at]!);
       cbName = args[at]!.name;
     }
     if (chunkD !== null) {
@@ -490,7 +490,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       const cbT = e.args[1]!.type;
       if (cbT.kind !== "func")
         throw new InternalCompilerError("llvm emitter bug: stream.finished callback not a func");
-      host.moveTemp(args[1]!); // the watcher closure MOVES into the stream
+      host.toHeap(args[1]!); // the watcher closure MOVES into the stream
       const thunk = host.streamCbThunkFor("e", cbT);
       host.declare(`declare ptr @scr_stream_finished(ptr, ptr, ptr)`);
       B.line(
@@ -599,7 +599,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
         throw new InternalCompilerError(
           "llvm emitter bug: stream.finishedOpts callback not a func",
         );
-      host.moveTemp(args[cbIdx]!);
+      host.toHeap(args[cbIdx]!);
       const thunk = host.streamCbThunkFor("e", cbT);
       host.declare(
         `declare ptr @scr_stream_finished_opts(ptr, ptr, ptr, double, double, i1, ptr, ptr)`,
@@ -696,7 +696,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
         throw new InternalCompilerError(
           "llvm emitter bug: stream.pipelineStages callback not a func",
         );
-      host.moveTemp(args[args.length - 1]!);
+      host.toHeap(args[args.length - 1]!);
       const thunk = host.streamCbThunkFor("e", cbT);
       host.declare(`declare ptr @scr_stream_pipeline_stages(${params}, ptr, ptr)`);
       B.line(
@@ -732,7 +732,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       const cbT = e.args[1 + n]!.type;
       if (cbT.kind !== "func")
         throw new InternalCompilerError("llvm emitter bug: stream.pipeline callback not a func");
-      host.moveTemp(args[1 + n]!);
+      host.toHeap(args[1 + n]!);
       const thunk = host.streamCbThunkFor("e", cbT);
       host.declare(`declare ptr @scr_stream_pipeline(double, ptr, ptr, ptr)`);
       B.line(

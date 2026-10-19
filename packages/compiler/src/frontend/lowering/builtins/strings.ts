@@ -29,13 +29,16 @@ export function lowerStringStaticCall(
   // literal, the fromCharCode convention. The runtime interleaves per
   // the spec's loop.
   if (member === "raw") {
-    if (call.arguments.length < 1 || call.arguments.some((a) => ts.isSpreadElement(a))) {
+    if (
+      call.arguments.nodes.length < 1 ||
+      call.arguments.nodes.some((a) => ts.isSpreadElement(a))
+    ) {
       lowerer.noLowering(
-        `String.raw with ${call.arguments.length === 0 ? "no template" : "spread substitutions"}`,
+        `String.raw with ${call.arguments.nodes.length === 0 ? "no template" : "spread substitutions"}`,
         call,
       );
     }
-    const tmplNode = call.arguments[0]!;
+    const tmplNode = call.arguments.nodes[0]!;
     const tmpl = lowerer.lowerExpr(tmplNode);
     const rawT = arrayOf(STRING);
     let raw: IrExpr | null = null;
@@ -60,7 +63,7 @@ export function lowerStringStaticCall(
         "the template must carry a string[] `raw` member: String.raw({ raw: [...] }, ...subs)",
       );
     }
-    const subs = call.arguments.slice(1).map((a): IrExpr => {
+    const subs = call.arguments.nodes.slice(1).map((a): IrExpr => {
       const v = lowerer.lowerExpr(a);
       if (isUnitType(v.type)) return lowerer.ensureString(v, a);
       if (v.type.kind === "string") return v;
@@ -76,9 +79,9 @@ export function lowerStringStaticCall(
     const packedSubs: IrExpr = { kind: "arrayLit", elems: subs, type: rawT, loc };
     return { kind: "libCall", fn: "string.raw", args: [raw, packedSubs], type: STRING, loc };
   }
-  const spread = call.arguments.find(ts.isSpreadElement);
+  const spread = call.arguments.nodes.find(ts.isSpreadElement);
   if (spread) {
-    if (call.arguments.length !== 1) {
+    if (call.arguments.nodes.length !== 1) {
       lowerer.noLowering(
         `String.${member} with a mixed spread call`,
         call,
@@ -100,7 +103,7 @@ export function lowerStringStaticCall(
   }
   // Each code converts with ToNumber: a missing value is NaN (code unit 0
   // for fromCharCode, a RangeError for fromCodePoint), exactly Node.
-  const elems = call.arguments.map((a) => lowerToNumberArgument(lowerer, a));
+  const elems = call.arguments.nodes.map((a) => lowerToNumberArgument(lowerer, a));
   const packed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(F64), loc };
   return { kind: "libCall", fn: `string.${member}`, args: [packed], type: STRING, loc };
 }
@@ -119,7 +122,7 @@ export function lowerStringLastIndexOfCall(
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "string") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const loc = locOf(call);
-  if (call.arguments.length > 2 || call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.length > 2 || call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       "lastIndexOf with this argument shape",
       call,
@@ -127,12 +130,12 @@ export function lowerStringLastIndexOfCall(
     );
   }
   const receiver = lowerer.lowerExprExpecting(access.expression, STRING);
-  const positionNode = call.arguments[1];
+  const positionNode = call.arguments.nodes[1];
   if (!positionNode) {
-    const needle = lowerStringSearchArgument(lowerer, call.arguments[0], loc);
+    const needle = lowerStringSearchArgument(lowerer, call.arguments.nodes[0], loc);
     return { kind: "libCall", fn: "string.lastIndexOf", args: [receiver, needle], type: F64, loc };
   }
-  const needle = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
+  const needle = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, STRING);
   const position = lowerOptionalArgument(
     lowerer,
     positionNode,

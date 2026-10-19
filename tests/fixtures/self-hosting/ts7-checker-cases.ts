@@ -21,9 +21,9 @@ function check(value: boolean, message: string): void {
 }
 
 function declaration(root: SourceFile, name: string): AstNode {
-  for (const statement of root.statements) {
+  for (const statement of root.statements.nodes) {
     if (statement.name?.text === name) return statement;
-    for (const variable of statement.declarationList?.declarations ?? []) {
+    for (const variable of statement.declarationList?.declarations?.nodes ?? []) {
       if (variable.name?.text === name) return variable;
     }
   }
@@ -87,12 +87,12 @@ export function checkCheckerFacade(raw: SemanticChecker, root: SourceFile, reque
   check(facade.signatureDeclaration(resolved) === identity, "instantiated signature declaration");
   check(facade.typeToString(facade.getReturnTypeOfSignature(resolved)).includes("n: number"), "instantiated return type");
 
-  const ref = declaration(root, "ref").initializer!.properties![0]!;
+  const ref = declaration(root, "ref").initializer!.properties?.nodes[0]!;
   check(facade.getShorthandAssignmentValueSymbol(ref) === answerSymbol, "shorthand value symbol");
-  const renamed = root.statements.find((statement) => statement.kind === SyntaxKind.ExportDeclaration)!.exportClause!.elements![0]!;
+  const renamed = root.statements.nodes.find((statement) => statement.kind === SyntaxKind.ExportDeclaration)!.exportClause!.elements?.nodes[0]!;
   const alias = facade.getSymbolAtLocation(renamed.name!)!;
   check(facade.getAliasedSymbol(alias) === answerSymbol, "export alias");
-  const member = declaration(root, "Mode").members![0]!;
+  const member = declaration(root, "Mode").members?.nodes[0]!;
   check(facade.getConstantValue(member) === 3, "enum constant");
   check(facade.getConstantValue(answer) === undefined, "absent constant");
   const contextual = declaration(root, "contextual").initializer!;
@@ -173,7 +173,7 @@ export function checkCheckerFacade(raw: SemanticChecker, root: SourceFile, reque
   batch.prefetchSymbolRoots([identity, identity]);
   batch.prefetchSymbolNodesExact([answerName, answerName]);
   batch.prefetchCollectionTypes([call, call]);
-  batch.prefetchClassCollection([box.members![0]!.initializer!], [box]);
+  batch.prefetchClassCollection([box.members?.nodes[0]!.initializer!], [box]);
   batch.prefetchRoots([identity.body!, identity.body!]);
   batch.prefetchSourceFile(root);
   check(batch.getTypeAtLocation(answerName) === answerType && batch.getSymbolAtLocation(answerName) === answerSymbol, "prefetched semantic identity");

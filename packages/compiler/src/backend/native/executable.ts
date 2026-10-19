@@ -445,6 +445,7 @@ export async function compileCInternal(
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
+    ...(opts.youngNursery ? ["-DSCR_YIN"] : []),
     "-fno-math-errno",
     // The runtime object model uses type-punned C: a hierarchy
     // upcast is a raw pointer cast, so one object's header (rc, vt) and
@@ -645,6 +646,7 @@ export async function compileCInternal(
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
+    ...(opts.youngNursery ? ["-DSCR_YIN"] : []),
     "-fno-math-errno",
     "-fno-strict-aliasing", // the emitted object model type-puns — see buildArgs
     "-Wno-deprecated-declarations",

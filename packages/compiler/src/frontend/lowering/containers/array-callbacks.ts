@@ -74,7 +74,7 @@ export function lowerArrayHofCall(
 ): IrExpr {
   const loc = locOf(call);
   const receiver = lowerer.lowerExpr(access.expression);
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const booleanFilter =
     method === "filter" &&
@@ -341,7 +341,7 @@ function lowerFastCallback(
   // The optional-read prepass binds an unannotated element parameter to
   // the array's runtime value type. Rebind it to the plain element for
   // this lowering only.
-  const param = argNode.parameters[elemIndex];
+  const param = argNode.parameters.nodes[elemIndex];
   if (!param || param.initializer || param.dotDotDotToken || !ts.isIdentifier(param.name))
     return null;
   const symbol = param.type ? undefined : lowerer.checker.getSymbolAtLocation(param.name);
@@ -563,7 +563,7 @@ export function lowerArrayUnionHofCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const def = lowerer.unions.get(receiverT.unionId);
   if (!def || def.arms.length < 2 || !def.arms.every((arm) => arm.kind === "array")) return null;
-  if (call.arguments.length !== 1 || !call.arguments[0]) return null;
+  if (call.arguments.nodes.length !== 1 || !call.arguments.nodes[0]) return null;
   const arrays = def.arms as (IrType & { kind: "array" })[];
   const valueArms: IrType[] = [];
   const addValueArm = (type: IrType): boolean => {
@@ -586,7 +586,7 @@ export function lowerArrayUnionHofCall(
     valueArms.length === 1
       ? valueArms[0]!
       : { kind: "union", unionId: lowerer.unions.intern(valueArms) };
-  const argNode = call.arguments[0]!;
+  const argNode = call.arguments.nodes[0]!;
   const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [valueT], receiverT);
   const fnRet = fnArg.type.ret;
   if (method === "map" && (fnRet.kind === "void" || fnRet.kind === "func")) {
@@ -1025,7 +1025,7 @@ export function lowerArrayFindLikeCall(
   const loc = locOf(call);
   const receiver = lowerer.lowerExpr(access.expression);
   const arrT = arrayOf(elem);
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   // find's result must be reachable from the element itself; a predicate
   // that narrows to another layout keeps the optional element visit.
@@ -1495,7 +1495,7 @@ export function lowerArrayFlatMapCall(
   const loc = locOf(call);
   const receiver = lowerer.lowerExpr(access.expression);
   const arrT = arrayOf(elem);
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const present = presentElements(lowerer, call, elem);
   const { fnArg, arity } = lowerArrayCallback(
@@ -1779,9 +1779,9 @@ export function lowerArrayReduceCall(
   const loc = locOf(call);
   const receiver = lowerer.lowerExpr(access.expression);
   const arrT = arrayOf(elem);
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
-  const hasInit = call.arguments.length === 2;
+  const hasInit = call.arguments.nodes.length === 2;
   const accT =
     lowerer.runtimeOptionalReduceTypes.get(call) ??
     (hasInit ? lowerer.irTypeOf(call) : arrayValueType(lowerer, elem));
@@ -1818,7 +1818,7 @@ export function lowerArrayReduceCall(
     fast?.type ?? null,
   );
   const args: IrExpr[] = [receiver, fnArg];
-  if (hasInit) args.push(lowerer.lowerExprExpecting(call.arguments[1]!, accT));
+  if (hasInit) args.push(lowerer.lowerExprExpecting(call.arguments.nodes[1]!, accT));
   // The fast closure is created last; making a closure has no observable
   // effect, so the initial value still evaluates right after the callback.
   if (fast) args.push(fast);
@@ -2037,7 +2037,7 @@ export function lowerArraySortCall(
   const method = access.name.text === "toSorted" ? "toSorted" : "sort";
   const copyFirst = method === "toSorted";
   if (
-    call.arguments.length === 0 &&
+    call.arguments.nodes.length === 0 &&
     (elem.kind === "string" || elem.kind === "f64" || elem.kind === "bool")
   ) {
     return {
@@ -2049,15 +2049,15 @@ export function lowerArraySortCall(
       loc,
     };
   }
-  if (call.arguments.length !== 1) {
+  if (call.arguments.nodes.length !== 1) {
     lowerer.noLowering(
-      `.${method} with ${call.arguments.length} arguments`,
+      `.${method} with ${call.arguments.nodes.length} arguments`,
       call,
       "default ordering supports string[], number[] and boolean[]; other element types need a comparator",
     );
   }
   const receiver = lowerer.lowerExpr(access.expression);
-  const argNode = call.arguments[0]!;
+  const argNode = call.arguments.nodes[0]!;
   const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, argNode);
   let unwrappedArg = argNode;
   while (
@@ -2205,8 +2205,8 @@ export function lowerDynArrayFilterCall(
   access: ts.PropertyAccessExpression,
   recv: IrExpr,
 ): IrExpr | null {
-  if (call.arguments.length !== 1) return null;
-  const argNode = call.arguments[0]!;
+  if (call.arguments.nodes.length !== 1) return null;
+  const argNode = call.arguments.nodes[0]!;
   const loc = locOf(call);
   // The result element type, from what the call flows INTO: the
   // contextual array (or the single array arm of a contextual union —
@@ -2270,8 +2270,8 @@ export function lowerDynArrayFlatMapCall(
   access: ts.PropertyAccessExpression,
   recv: IrExpr,
 ): IrExpr | null {
-  if (call.arguments.length !== 1) return null;
-  const argNode = call.arguments[0]!;
+  if (call.arguments.nodes.length !== 1) return null;
+  const argNode = call.arguments.nodes[0]!;
   const loc = locOf(call);
   const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [DYN], DYN);
   const ret = fnArg.type.ret;
@@ -2631,7 +2631,7 @@ export function lowerTuplePredicateCall(
   reads: IrExpr[],
 ): IrExpr {
   const loc = locOf(call);
-  const argNode = call.arguments[0]!;
+  const argNode = call.arguments.nodes[0]!;
   const booleanFilter =
     method === "filter" &&
     ts.isIdentifier(argNode) &&

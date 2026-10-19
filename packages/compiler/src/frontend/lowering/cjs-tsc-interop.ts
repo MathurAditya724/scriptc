@@ -47,7 +47,7 @@ export interface TscInteropBinding {
  * level: the tsc helper declaration shape. */
 function tscHelperDeclName(stmt: ts.Statement): string | null {
   if (!ts.isVariableStatement(stmt)) return null;
-  const decls = stmt.declarationList.declarations;
+  const decls = stmt.declarationList.declarations.nodes;
   if (decls.length !== 1) return null;
   const d = decls[0]!;
   if (!ts.isIdentifier(d.name) || !HELPERS.has(d.name.text) || d.initializer === undefined)
@@ -74,7 +74,7 @@ function tscHelperDeclName(stmt: ts.Statement): string | null {
 
 /** True when the dependency stamps itself as an ES module translation. */
 function stampsEsModule(dep: ts.SourceFile): boolean {
-  return dep.statements.some((s) => {
+  return dep.statements.nodes.some((s) => {
     if (!ts.isExpressionStatement(s)) return false;
     if (isEsModuleStamp(s.expression)) return true;
     const e = s.expression;
@@ -106,12 +106,12 @@ export function tscInteropBindingOfDecl(
   if (!isCjsJsFile(sf, lowerer.program)) return null;
   let init: ts.Expression = decl.initializer;
   while (ts.isParenthesizedExpression(init)) init = init.expression;
-  if (!ts.isCallExpression(init) || init.arguments.length !== 1) return null;
+  if (!ts.isCallExpression(init) || init.arguments.nodes.length !== 1) return null;
   const callee = init.expression;
   if (!ts.isIdentifier(callee)) return null;
   if (callee.text !== "__importDefault" && callee.text !== "__importStar") return null;
-  if (!sf.statements.some((s) => tscHelperDeclName(s) === callee.text)) return null;
-  const spec = requireSpecOf(init.arguments[0]!);
+  if (!sf.statements.nodes.some((s) => tscHelperDeclName(s) === callee.text)) return null;
+  const spec = requireSpecOf(init.arguments.nodes[0]!);
   if (spec === null) return null;
   const dep =
     resolveImport(lowerer.program, sf, spec, "require") ??
@@ -177,7 +177,7 @@ export function isDeadTscHelperDecl(lowerer: Lowerer, stmt: ts.Statement): boole
   if (name === null) return false;
   const sf = stmt.getSourceFile();
   const helperSpans = new Map<string, ts.Statement>();
-  for (const s of sf.statements) {
+  for (const s of sf.statements.nodes) {
     const n = tscHelperDeclName(s);
     if (n !== null) helperSpans.set(n, s);
   }
