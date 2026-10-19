@@ -320,7 +320,7 @@ test("unconstructed narrowing layouts may omit abstract slots while live classes
 test("the young-in nursery flag adds the nursery entry to traced constructors only", () => {
   const linked = { kind: "object" as const, className: "Linked" };
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [{ name: "main", params: [], returnType: VOID, locals: [], body: [], loc }],
