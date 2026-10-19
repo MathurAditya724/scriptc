@@ -294,6 +294,7 @@ import {
 import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
 import {
   cjsNamespaceModule,
+  cjsWholeExportValueOf,
   inlineNamespaceRequireOf,
   inlineProgramRequireOf,
 } from "./cjs-inline-require.js";
@@ -3672,14 +3673,35 @@ export class Lowerer {
         ? d.parent
         : null;
     if (!assign || assign.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
-    if (!ts.isIdentifier(assign.right)) return null;
     const stmt = assign.parent;
     if (!stmt || !ts.isExpressionStatement(stmt) || !ts.isSourceFile(stmt.parent)) return null;
     if (!isJsSourceFile(stmt.parent)) return null;
     const cjs = cjsExportAssignmentOf(stmt);
     if (cjs?.kind !== "member" || cjs.expr !== assign) return null;
     if (cjsExportDiscardReason(stmt) !== null) return null;
+    // `module.exports.C = require('./c')` over a module whose whole export
+    // is a class identifier: the same alias plumbing; the statement keeps
+    // the require's module evaluation at its position.
+    const required = this.memberExportRequiredClass(assign.right);
+    if (required !== undefined) return required;
+    if (!ts.isIdentifier(assign.right)) return null;
     let value = this.checker.getSymbolAtLocation(assign.right);
+    if (!value) return null;
+    if (value.flags & ts.SymbolFlags.Alias) value = this.checker.getAliasedSymbol(value);
+    const isClass = this.checker.declarationsOf(value).some((decl) => ts.isClassDeclaration(decl));
+    return isClass ? value : null;
+  }
+
+  /** For an inline program `require("./c")`: the class symbol its module's
+   * kept `module.exports = <class identifier>` names, or null when the
+   * whole export is something else. Undefined when `expr` is not such a
+   * require. */
+  memberExportRequiredClass(expr: ts.Expression): ts.Symbol | null | undefined {
+    const req = inlineProgramRequireOf(this, expr);
+    if (req === null) return undefined;
+    const whole = cjsWholeExportValueOf(req.dep);
+    if (whole === null || !ts.isIdentifier(whole.rhs)) return null;
+    let value = this.checker.getSymbolAtLocation(whole.rhs);
     if (!value) return null;
     if (value.flags & ts.SymbolFlags.Alias) value = this.checker.getAliasedSymbol(value);
     const isClass = this.checker.declarationsOf(value).some((decl) => ts.isClassDeclaration(decl));
