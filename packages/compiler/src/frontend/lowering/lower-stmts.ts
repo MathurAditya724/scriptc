@@ -193,6 +193,7 @@ import {
 import { globalSymbolKey } from "./expressions/global-symbols.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
 import {
+  jsHoldsDynObject,
   lowerEnvironmentKey,
   lowerNativeFunctionAssignment,
   lowerStrictEquality,
@@ -1069,13 +1070,124 @@ function hostVariableDeclarationOf(name: ts.Identifier): ts.VariableDeclaration 
 export function forOfVarTarget(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
+  valueType?: IrType,
 ): { id: string; type: IrType } | null {
   if (!ts.isIdentifier(decl.name) || !isVarDeclared(decl)) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
   if (!symbol) return null;
   const g = lowerer.globalsBySymbol.get(symbol);
-  if (g) return g;
-  return hoistVarBinding(lowerer, symbol, decl.name);
+  if (g) {
+    if (valueType?.kind === "dyn" && jsBindingKeepsCheckedObject(lowerer, decl.name, g.type))
+      g.type = DYN;
+    return g;
+  }
+  return hoistVarBinding(lowerer, symbol, decl.name, valueType);
+}
+
+/** JavaScript: whether an unannotated variable binding whose static type
+ * is `type` keeps a checked-dynamic value unconverted. The checker types
+ * such a binding by the object it receives (an element of an evolving
+ * `[]`, a `find` result, a member of a checked-dynamic object), but the
+ * value is an existing checked-dynamic object or array: a record- or
+ * array-typed slot would hold a converted copy, so writes through the
+ * binding would miss the object other references see, and `===` against
+ * them would fail. Block-scoped bindings with an identifier name keep such
+ * values by the same rule in lowerVarDecl (preservesObjectIdentity). */
+function jsBindingKeepsCheckedObject(
+  lowerer: Lowerer,
+  nameNode: ts.Identifier,
+  type: IrType,
+): boolean {
+  if (!isJsSourceFile(nameNode.getSourceFile())) return false;
+  const host = hostVariableDeclarationOf(nameNode);
+  if (!host || host.type || hasJsTypeAnnotation(host)) return false;
+  const arms = type.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? []) : [type];
+  return (
+    arms.some((arm) => arm.kind === "record" || arm.kind === "array") &&
+    arms.every((arm) => arm.kind === "record" || arm.kind === "array" || isUnitType(arm))
+  );
+}
+
+/** Whether `node` mentions the binding `symbol` anywhere, nested functions
+ * included. */
+function mentionsSymbol(lowerer: Lowerer, node: ts.Node, symbol: ts.Symbol): boolean {
+  if (ts.isIdentifier(node)) return lowerer.checker.getSymbolAtLocation(node) === symbol;
+  return (
+    node.forEachChild((child) => (mentionsSymbol(lowerer, child, symbol) ? true : undefined)) ===
+    true
+  );
+}
+
+/** Whether `node` evaluates to an existing value rather than constructing
+ * one whose layout a destination directs: not a literal, `new`, function
+ * or class expression, nor a conditional with such an arm (an arm that
+ * is `null` or `undefined` constructs nothing). */
+function existingValueForm(node: ts.Expression, armOfConditional = false): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (ts.isConditionalExpression(node))
+    return existingValueForm(node.whenTrue, true) && existingValueForm(node.whenFalse, true);
+  if (
+    armOfConditional &&
+    (node.kind === ts.SyntaxKind.NullKeyword ||
+      (ts.isIdentifier(node) && node.text === "undefined"))
+  )
+    return true;
+  return !(
+    ts.isObjectLiteralExpression(node) ||
+    ts.isArrayLiteralExpression(node) ||
+    ts.isNewExpression(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isClassExpression(node) ||
+    ts.isLiteralExpression(node) ||
+    node.kind === ts.SyntaxKind.NullKeyword
+  );
+}
+
+/** JavaScript `var x = e` whose binding could hold an existing
+ * checked-dynamic object (jsBindingKeepsCheckedObject): lowers `e` BEFORE
+ * minting the hoisted slot, as a block-scoped declaration does, so a
+ * checked-dynamic value gets a checked-dynamic slot instead of a converted
+ * copy. Other values coerce into the planned slot exactly as
+ * lowerExprExpecting would. Null when the declaration does not qualify:
+ * the slot already exists, the initializer is fresh construction whose
+ * layout the slot type directs (existingValueForm; a literal holding an
+ * existing checked-dynamic object qualifies), or it refers to the binding
+ * itself (hoist-before-init resolves that reference). */
+function lowerJsVarFromExisting(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  symbol: ts.Symbol,
+): IrStmt | null {
+  if (!ts.isIdentifier(decl.name) || !decl.initializer) return null;
+  if (!isJsSourceFile(decl.getSourceFile()) || lowerer.ctx.hoistedVars.has(symbol)) return null;
+  if (lowerer.bindingIn(lowerer.ctx, symbol)) return null;
+  let node: ts.Expression = decl.initializer;
+  while (ts.isParenthesizedExpression(node) || ts.isSatisfiesExpression(node))
+    node = node.expression;
+  // A literal holding an existing checked-dynamic object builds as a
+  // checked-dynamic literal without a destination (lowerArrayLiteral,
+  // lowerObjectLiteral): a record- or array-typed slot would copy it.
+  const holdsChecked =
+    (ts.isArrayLiteralExpression(node) || ts.isObjectLiteralExpression(node)) &&
+    jsHoldsDynObject(lowerer, node);
+  if (!holdsChecked && !existingValueForm(node)) return null;
+  const planned = varBindingType(lowerer, decl.name);
+  if (!planned || !jsBindingKeepsCheckedObject(lowerer, decl.name, planned)) return null;
+  if (mentionsSymbol(lowerer, node, symbol)) return null;
+  const value = lowerer.lowerExpr(node);
+  const local = hoistVarBinding(
+    lowerer,
+    symbol,
+    decl.name,
+    value.type.kind === "dyn" ? DYN : undefined,
+  );
+  return {
+    kind: "assign",
+    localId: local.id,
+    value: lowerer.coerceExistingInto(node, value, local.type),
+    loc: locOf(decl),
+  };
 }
 
 /** The `var` symbol's function-scoped binding TYPE — the declared type at
@@ -1131,7 +1243,12 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
  * a loop re-ASSIGNS the one binding per pass and never resets it — the
  * classic capture semantics fall out: closures made in a loop share the
  * single boxed binding, where `let` gets a fresh box per iteration. */
-function hoistVarBinding(lowerer: Lowerer, symbol: ts.Symbol, nameNode: ts.Identifier): IrLocal {
+function hoistVarBinding(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+  nameNode: ts.Identifier,
+  valueType?: IrType,
+): IrLocal {
   const existing = lowerer.ctx.hoistedVars.get(symbol);
   if (existing) return existing;
   // The parameter merge: the symbol already binds a function-root local.
@@ -1140,7 +1257,15 @@ function hoistVarBinding(lowerer: Lowerer, symbol: ts.Symbol, nameNode: ts.Ident
     lowerer.ctx.hoistedVars.set(symbol, bound);
     return bound;
   }
-  const type = varBindingType(lowerer, nameNode);
+  let type = varBindingType(lowerer, nameNode);
+  // The first value stored is an existing checked-dynamic object: keep it
+  // (jsBindingKeepsCheckedObject). A checked-dynamic slot holds undefined
+  // natively, so no runtime-optional widening applies.
+  const keepsChecked =
+    valueType?.kind === "dyn" &&
+    type !== null &&
+    jsBindingKeepsCheckedObject(lowerer, nameNode, type);
+  if (keepsChecked) type = DYN;
   if (!type) lowerer.badType(nameNode, lowerer.typeOf(nameNode));
   const root = lowerer.activeStmtLists.find((e) => e.ctx === lowerer.ctx);
   if (!root)
@@ -1157,7 +1282,7 @@ function hoistVarBinding(lowerer: Lowerer, symbol: ts.Symbol, nameNode: ts.Ident
   };
   lowerer.ctx.locals.push(local);
   lowerer.ctx.scopes[0]!.set(symbol, local);
-  noteEarlyReadVar(lowerer, symbol, local);
+  if (!keepsChecked) noteEarlyReadVar(lowerer, symbol, local);
   // A checked-dynamic slot holds the dyn undefined (a NULL dyn is a
   // trap); everything else rides unassignedSlotInit (interned union arm,
 
@@ -4199,6 +4324,8 @@ export function bindPatternTarget(
     const symbol = lowerer.checker.getSymbolAtLocation(name);
     const g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
     if (g) {
+      if (value.type.kind === "dyn" && jsBindingKeepsCheckedObject(lowerer, name, g.type))
+        g.type = DYN;
       out.push({
         kind: "assign",
         localId: g.id,
@@ -4215,7 +4342,7 @@ export function bindPatternTarget(
     // here by declareParams) carry no block-scope flag either, but their
     // bindings are the parameters' own.
     if (symbol && hostVariableDeclarationOf(name) !== null && isVarDeclared(name)) {
-      const hoisted = hoistVarBinding(lowerer, symbol, name);
+      const hoisted = hoistVarBinding(lowerer, symbol, name, value.type);
       out.push({
         kind: "assign",
         localId: hoisted.id,
@@ -4230,7 +4357,7 @@ export function bindPatternTarget(
       value.type.kind === "dyn" &&
       (() => {
         const mapped = lowerer.mapTypeOf(lowerer.typeOf(name));
-        return mapped === null;
+        return mapped === null || jsBindingKeepsCheckedObject(lowerer, name, mapped);
       })();
     let type = dynStays
       ? DYN
@@ -4714,7 +4841,11 @@ export function lowerVarDecl(
       !decl.type &&
       !hasJsTypeAnnotation(decl) &&
       raw.type.kind === "dyn" &&
-      (g.type.kind === "record" || g.type.kind === "object")
+      (g.type.kind === "record" ||
+        g.type.kind === "object" ||
+        (ts.isIdentifier(decl.name) &&
+          jsBindingKeepsCheckedObject(lowerer, decl.name, g.type) &&
+          (existingValueForm(decl.initializer) || jsHoldsDynObject(lowerer, decl.initializer))))
     )
       g.type = DYN;
     g.type = inferredOptionalRecordType(lowerer, decl, g.type, raw.type);
@@ -4761,6 +4892,8 @@ export function lowerVarDecl(
   // types already hold the interned undefined arm), and a declaration
   // re-run in a loop must not reset the persisting value.
   if (isVarDeclared(decl) && declSymbol) {
+    const fromExisting = lowerJsVarFromExisting(lowerer, decl, declSymbol);
+    if (fromExisting) return fromExisting;
     const local = hoistVarBinding(lowerer, declSymbol, decl.name);
     if (!decl.initializer) return null;
     const init = lowerer.lowerExprExpecting(decl.initializer, local.type);
@@ -9223,7 +9356,7 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     // local and the body opens by ASSIGNING it into the one hoisted
     // binding — closures capture the shared slot, and the value persists
     // after the loop (both Node-exact for var).
-    const varTarget = forOfVarTarget(lowerer, decl);
+    const varTarget = forOfVarTarget(lowerer, decl, elemValueT);
     if (varTarget) {
       const elemType = elemValueT;
       const loc = locOf(decl.name);
@@ -9959,7 +10092,7 @@ function lowerForOfDyn(
           binds,
         );
       } else if (ts.isIdentifier(decl.name)) {
-        const varTarget = forOfVarTarget(lowerer, decl);
+        const varTarget = forOfVarTarget(lowerer, decl, DYN);
         if (varTarget) {
           // `for (var x of d)`: the element mechanics stay on a hidden
           // per-iteration local; the body opens by assigning the ONE

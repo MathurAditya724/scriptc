@@ -9647,16 +9647,23 @@ export class Lowerer {
         }
       }
     }
-    let e = this.lowerExpr(node);
+    const e = this.lowerExpr(node);
+    return expected ? this.coerceExistingInto(node, e, expected) : e;
+  }
+
+  /** The conversion lowerExprExpecting applies to `e`, the lowered value
+   * of `node` when it is not fresh construction the destination directs
+   * (a literal, conditional, or empty collection). */
+  coerceExistingInto(node: ts.Expression, e: IrExpr, expected: IrType): IrExpr {
     if (
-      (expected?.kind === "union" && this.armTag(expected.unionId, UNDEFINED_T) >= 0) ||
-      (expected?.kind === "dyn" && isJsSourceFile(node.getSourceFile()))
+      (expected.kind === "union" && this.armTag(expected.unionId, UNDEFINED_T) >= 0) ||
+      (expected.kind === "dyn" && isJsSourceFile(node.getSourceFile()))
     ) {
       // A destination that accepts undefined must retain an unchecked
       // read's storage value even when the checker still calls it present.
       e = this.runtimeOptionalSourceValue(node, e) ?? e;
     }
-    return expected ? this.coerceInto(node, e, expected) : e;
+    return this.coerceInto(node, e, expected);
   }
 
   /** An unannotated empty collection has no existing elements or aliases
