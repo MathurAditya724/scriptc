@@ -9,7 +9,7 @@ import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.j
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { esmImportBindingKind } from "./builtins/module-bindings.js";
-import { lowerReadlineProperty } from "./builtins/readline.js";
+import { lowerReadlineInstanceof, lowerReadlineProperty } from "./builtins/readline.js";
 import { lowerBlobInstanceof } from "./builtins/blob.js";
 import { lowerWebAssemblyTypeof, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { lowerKeyObjectInstanceof } from "./builtins/key-object.js";
@@ -12816,6 +12816,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (keyObject) return keyObject;
     const netAddress = lowerNetAddressInstanceof(lowerer, expr);
     if (netAddress) return netAddress;
+    const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
+    if (readlineInterface) return readlineInterface;
   }
   if (lowerer.isStdlibGlobal(expr.right, "SharedArrayBuffer")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
