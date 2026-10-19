@@ -40,7 +40,6 @@ const KNOWN: Record<string, Known> = {
   "bytes-exit": { build: "SC2004" },
   "cjs-esm-named": { build: "SC2013" },
   "cjs-lexer-aligned": { build: "SC2013" },
-  "cjs-lexer-invisible": { build: "SC2013" },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },
   "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
   "create-require": { run: "SC1090" },
@@ -53,7 +52,6 @@ const KNOWN: Record<string, Known> = {
   "esm-missing-export": { build: "SC1090" },
   "fetch-destructure": { run: "SC1031" },
   "fs-shims": { run: "SC2020" },
-  "hoisted-workspace": { build: "SC2013" },
   "import-refusal": { build: "SC2020" },
   "island-registry": { build: "SC2011" },
   "island-timers": {
