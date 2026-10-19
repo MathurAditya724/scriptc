@@ -5243,7 +5243,11 @@ function validateFunction(
   }
 
   function checkLibSpecialCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "crypto.randomFillView" || e.fn === "crypto.randomFillViewRest") {
+    if (
+      e.fn === "crypto.randomFillView" ||
+      e.fn === "crypto.randomFillViewRest" ||
+      e.fn === "crypto.getRandomValues"
+    ) {
       // The filled view is the result, at its own element type.
       const view = e.args[0]?.type;
       if (view?.kind !== "bytes" || !typeEquals(e.type, view)) {

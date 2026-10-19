@@ -87,6 +87,7 @@ import {
   isJsSourceFile,
   isNodeEsmFile,
   locOf,
+  requireEarlyReference,
   requireSpecOf,
 } from "../program.js";
 import {
@@ -98,6 +99,7 @@ import {
   sideEffectFreeOptionValue,
   stdlibGlobalAliasDecl,
   stdlibGlobalAliasNameOf,
+  bufferNamespaceMember,
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
@@ -4564,6 +4566,7 @@ export function lowerVarDecl(
   // alias plumbing (see stdlibGlobalAliasDecl), no storage, no code.
   const stableStdlibAlias =
     !isLet ||
+    stdlibBufferVarAlias(lowerer, decl) ||
     (ts.isVariableDeclarationList(decl.parent) &&
       (decl.parent.flags & ts.NodeFlags.Let) !== 0 &&
       ts.isIdentifier(decl.name) &&
@@ -10851,4 +10854,26 @@ export function lowerForStatement(lowerer: Lowerer, stmt: ts.ForStatement): IrSt
   } finally {
     lowerer.scopes.pop();
   }
+}
+
+/** safe-buffer's `var Buffer = buffer.Buffer` at file scope: a `var` alias
+ * of the global Buffer is the same alias plumbing as the const spelling
+ * when nothing reassigns it and no code that runs before the declaration
+ * can read it (the require-binding early-reference analysis), so the
+ * hoisted undefined is unobservable. */
+export function stdlibBufferVarAlias(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (
+    !ts.isIdentifier(decl.name) ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    (decl.parent.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0 ||
+    decl.initializer === undefined ||
+    !bufferNamespaceMember(lowerer, decl.initializer)
+  )
+    return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+  return (
+    symbol !== undefined &&
+    bindingNeverReassigned(lowerer, symbol, decl) &&
+    requireEarlyReference(lowerer.program, decl) === null
+  );
 }
