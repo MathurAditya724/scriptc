@@ -559,10 +559,8 @@ static ScrDyn *scr_dynh_dispatch(ScrDyn *recv, const char *method, ScrDyn *const
  * reaching the comparator. The ordered list writes back index by index, so
  * a comparator that mutates the receiver mid-sort never dangles the items
  * being ordered. The default comparator compares ToString images
- * (scr_dyn_display_buf — join's conversion) bytewise: code-POINT order,
- * where JS orders UTF-16 code units — identical through the BMP, divergent
- * only across the surrogate boundary (SEMANTICS.md). A comparator result
- * converts with ToNumber; NaN counts as 0. */
+ * (scr_dyn_display_buf — join's conversion) in UTF-16 code-unit order. A
+ * comparator result converts with ToNumber; NaN counts as 0. */
 static ScrStr *dyn_sort_str(const ScrDyn *e) {
   ScrJsonBuf b;
   scr_jb_init(&b);
@@ -584,7 +582,7 @@ static bool dyn_sort_less(void *ctx, uint64_t xs, uint64_t ys, bool *failed) {
   }
   ScrStr *xstr = dyn_sort_str(x);
   ScrStr *ystr = dyn_sort_str(y);
-  int c = scr_str_cmp(xstr, ystr);
+  int c = scr_str_cmp_u16(xstr, ystr);
   scr_str_release(xstr);
   scr_str_release(ystr);
   return c < 0;

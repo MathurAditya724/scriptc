@@ -68,6 +68,7 @@ export const programs = [
   "6020-class-extends-function-constructor.js",
   // Re-chosen key orders rebuild the inspect helpers after lowering.
   "key-order-late-optional.ts",
+  "5888-inspect-sorted.ts",
 ];
 
 interface LowerRequest {
