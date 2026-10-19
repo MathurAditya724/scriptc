@@ -4317,11 +4317,16 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
       if (!armed) return null;
       pt = armed;
     }
-    // `...args: unknown[]` / `...args: any[]`: the checked-dynamic
-    // variadic ABI (no typed slot; the callee's hidden trailing dyn
-    // array receives every surplus argument, as for JS rest params).
+    // `...args: unknown[]` / `...args: any[]` declared in program source:
+    // the checked-dynamic variadic ABI (no typed slot; the callee's hidden
+    // trailing dyn array receives every surplus argument, as for JS rest
+    // params). Declaration files keep their existing paths: library
+    // callback slots such as String#replace's `(substring, ...args: any[])`
+    // have intrinsic lowerings that inspect the unmapped type.
     if (
       rest &&
+      decl !== undefined &&
+      !decl.getSourceFile().isDeclarationFile &&
       (pt?.kind === "dyn" || (!pt && isAnyArrayType(checker.getTypeOfSymbol(p), checker)))
     ) {
       dynRest = true;
