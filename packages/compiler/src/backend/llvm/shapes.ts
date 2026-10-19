@@ -29,7 +29,15 @@ import {
   mangleRecordStruct,
   mangleRecordTrace,
 } from "../mangle.js";
-import { cycTypeDescriptor, emitObjectAlloc, emitObjectFree } from "./alloc.js";
+import {
+  cycTypeDescriptor,
+  emitObjectAlloc,
+  emitObjectFree,
+  CYC_APPEND,
+  cycleAppendDecls,
+  cycleAppendHelper,
+  inlineBufferingSupported,
+} from "./alloc.js";
 import type { BlockBuilder } from "./blocks.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
@@ -55,64 +63,64 @@ import { LlvmUnsupportedError } from "./unsupported.js";
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
-  declare(decl: string): void;
   /** The hierarchy root of a class (a program class or a runtime base),
    * or undefined for classes outside the class graph. */
   classRootOf?(className: string): string | undefined;
-  /** Request the shared OOM abort helper (@sc_oom) — emitted once. */
-  needOom(): void;
+  /** Byte offset from an object pointer back to ScrCycHdr.buf. */
+  readonly cycleBufOffset: number;
+  declare(decl: string): void;
+  /** Inline the small-object allocator's fast paths (llvm/alloc.ts). */
+  readonly inlineAlloc?: boolean;
+  /** Record and class fields that store a scalar union's tag and bits
+   * inline (inline-unions.ts): they own nothing. */
+  readonly inlineUnions: InlineUnionFields;
   /** The immutable ScrMapOps descriptor (scr_map.h) of a Map or Set type:
    * a module constant holding the LLVM operands { key retain, key release,
    * key trace, value retain, value release, value trace, union key kinds },
    * or `null` when every operand is null. */
   mapOps(operands: readonly string[]): string;
-  /** The target C ABI's `size_t` / refcount integer type. */
-  readonly sizeType: "i32" | "i64";
-  /** Byte offset from an object pointer back to ScrCycHdr.buf. */
-  readonly cycleBufOffset: number;
-  readonly tracedShapes: Set<string>;
-  readonly tracedUnions: Set<string>;
+  /** Request the shared OOM abort helper (@sc_oom) — emitted once. */
+  needOom(): void;
+  /** The next collector statistics index for an emitted ScrCycType
+   * descriptor (cycTypeDescriptor), counting from FIRST_EMITTED_CYC_KIND
+   * in emission order.
+   * Absent: every descriptor gets 0, which keeps no statistics. */
+  nextCycKind?(): number;
   /** Unions represented as a nullable arm pointer (nullable-unions.ts):
    * their RC and trace entry points are the arm's NULL-tolerant ones. */
   readonly nullableUnions: NullableUnions;
-  /** Record and class fields that store a scalar union's tag and bits
-   * inline (inline-unions.ts): they own nothing. */
-  readonly inlineUnions: InlineUnionFields;
-  /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
-  unionNoneRef(): string;
-  readonly recordsById: Map<string, IrRecordShape>;
-  readonly recordCloneShapes: ReadonlySet<string>;
-  /** The program constructs lifetime regions: the ProgramLifetime classes
-   * allocate in regions and count references in their region chunk instead
-   * of being empty (llvm/regions.ts). */
-  regions?: RegionHooks | null;
-  /** The alias tag of a runtime word that lifetime-region code reads and
-   * writes outside every field: the chunk count, the chunk owner, the class
-   * cursors and scr_region_counting (", !tbaa !N", or "" in debug builds). */
-  regionAliasTag?(word: "count" | "owner" | "cursor" | "counting"): string;
   /** Emit the live-object audit notes (`scr_obj_alloc_note` /
    * `scr_obj_free_note`) in emitted new/free helpers. Only runtimes built
    * with SCR_RC_AUDIT (the sanitized lane) count them; release and dev
    * runtime packs define them empty, so plain builds omit the calls.
    * Absent means emit. */
   readonly objectAudit?: boolean;
-  /** Inline the small-object allocator's fast paths (llvm/alloc.ts). */
-  readonly inlineAlloc?: boolean;
-  /** Worker executables: the inline allocator state is thread-local. */
-  readonly threadLocalAlloc?: boolean;
   /** Inline RC fast-path helpers requested so far ("<family>:<op>"); the
    * emitter defines each once through {@link emitInlineRcHelpers}. Null
    * keeps every retain/release a runtime call. */
   readonly rcHelpers: Set<string> | null;
-  /** Which fast paths are inlined (see {@link InlineRcMode}). */
-  readonly rcMode?: InlineRcMode;
   /** Define the fast-path helpers `noinline` (see {@link inlineRcOption}). */
   readonly rcHelpersNoinline?: boolean;
-  /** The next collector statistics index for an emitted ScrCycType
-   * descriptor (cycTypeDescriptor), counting from FIRST_EMITTED_CYC_KIND
-   * in emission order.
-   * Absent: every descriptor gets 0, which keeps no statistics. */
-  nextCycKind?(): number;
+  /** Which fast paths are inlined (see {@link InlineRcMode}). */
+  readonly rcMode?: InlineRcMode;
+  readonly recordCloneShapes: ReadonlySet<string>;
+  readonly recordsById: Map<string, IrRecordShape>;
+  /** The alias tag of a runtime word that lifetime-region code reads and
+   * writes outside every field: the chunk count, the chunk owner, the class
+   * cursors and scr_region_counting (", !tbaa !N", or "" in debug builds). */
+  regionAliasTag?(word: "count" | "owner" | "cursor" | "counting"): string;
+  /** The program constructs lifetime regions: the ProgramLifetime classes
+   * allocate in regions and count references in their region chunk instead
+   * of being empty (llvm/regions.ts). */
+  regions?: RegionHooks | null;
+  /** The target C ABI's `size_t` / refcount integer type. */
+  readonly sizeType: "i32" | "i64";
+  /** Worker executables: the inline allocator state is thread-local. */
+  readonly threadLocalAlloc?: boolean;
+  readonly tracedShapes: Set<string>;
+  readonly tracedUnions: Set<string>;
+  /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
+  unionNoneRef(): string;
 }
 
 /** What class emission asks of lifetime regions (LifetimeRegions in
@@ -479,6 +487,10 @@ export const INLINE_RC_FAMILIES: Readonly<Record<string, InlineRcFamily>> = {
 
 type RcOp = "retain" | "release";
 
+/** The helper key (with the "family:op" keys) of the module's candidate
+ * append helper (alloc.ts cycleAppendHelper). */
+const CYC_APPEND_KEY = "cyc:append";
+
 /** The mirrored family for an RC operation on a runtime stem (`scr_str`),
  * or null when it stays a call. */
 export function inlineRcFamily(host: ShapeHost, stem: string, op: RcOp): InlineRcFamily | null {
@@ -547,11 +559,17 @@ export function boxReleaseSym(host: ShapeHost): string {
 /** Record the helper and declare the runtime symbols it calls now, so they
  * land in the extern block. */
 function requestRcHelper(host: ShapeHost, family: string, op: RcOp): string {
-  if (host.rcHelpers === null || mirroredFamily(host, family, op) === null) {
+  const row = host.rcHelpers === null ? null : mirroredFamily(host, family, op);
+  if (host.rcHelpers === null || row === null) {
     throw new LlvmUnsupportedError(`inline rc:${family}:${op}`);
   }
   host.rcHelpers.add(`${family}:${op}`);
   for (const decl of rcHelperDecls(family, op)) host.declare(decl);
+  // Its body is written last (emitInlineRcHelpers), after the requests are
+  // collected: a release that can buffer a candidate requests the append
+  // helper now. The jsval row (JS_RC_ROW) has no collector header; its
+  // cells release through dyn's helper, which makes its own request.
+  if (op === "release" && row.cycle === "always") requestCycleAppend(host);
   return `@${inlineRcName(family, op)}`;
 }
 
@@ -653,6 +671,10 @@ function rcHelperKeys(host: ShapeHost): string[] {
 export function inlineRcDecls(host: ShapeHost): string[] {
   const decls = new Set<string>();
   for (const key of rcHelperKeys(host)) {
+    if (key === CYC_APPEND_KEY) {
+      for (const decl of cycleAppendDecls()) decls.add(decl);
+      continue;
+    }
     const [family, op] = key.split(":") as [string, RcOp];
     for (const decl of rcHelperDecls(family, op)) decls.add(decl);
   }
@@ -798,6 +820,10 @@ function releaseHelper(host: ShapeHost, family: string, row: InlineRcFamily): st
 export function emitInlineRcHelpers(host: ShapeHost): string[] {
   const out: string[] = [];
   for (const key of rcHelperKeys(host).sort()) {
+    if (key === CYC_APPEND_KEY) {
+      out.push(...cycleAppendHelper());
+      continue;
+    }
     const [family, op] = key.split(":") as [string, RcOp];
     if (family === "js") {
       out.push(...jsvalRcHelper(host, op, rcHelperAttrs(host)));
@@ -1454,12 +1480,6 @@ export function releaseFastPath(
   ];
 }
 
-/** The possible-cycle-root step of a release that left a headered object
- * alive: scr_cyc_on_release with its early return inlined. Test the sign
- * of `buf` (the i32 at obj-4; negative for a queued candidate or a tenured
- * object) and call the runtime only to enqueue a new candidate.
- * Every emitted release of a headered object shares this sequence
- * (scr_runtime.h asserts the offset); it ends by branching to `done`. */
 /** One traced field of an emitted trace function: load the slot and visit
  * it unless it is null. Every collector visitor ignores null children, and
  * most traced slots of a typical heap are empty (optional links, unset
@@ -1483,16 +1503,39 @@ export function traceFieldVisitLines(
   ];
 }
 
+/** Whether candidate buffering goes through the module's append helper
+ * (alloc.ts cycleAppendHelper), requesting its definition if so: in
+ * optimized builds (those with inline RC helpers) that support it. */
+function requestCycleAppend(host: ShapeHost): boolean {
+  if (host.rcHelpers === null || !inlineBufferingSupported(host)) return false;
+  if (!host.rcHelpers.has(CYC_APPEND_KEY)) {
+    host.rcHelpers.add(CYC_APPEND_KEY);
+    for (const decl of cycleAppendDecls()) host.declare(decl);
+  }
+  return true;
+}
+
+/** The possible-cycle-root step of a release that left a headered object
+ * alive: scr_cyc_on_release with its early return inlined. Test the sign
+ * of `buf` (the i32 at obj-4; negative for a queued candidate or a tenured
+ * object), and buffer a new candidate: through the module's
+ * cycleAppendHelper in optimized builds that support it, through
+ * scr_cyc_on_release otherwise. Every emitted release of a headered object
+ * shares this sequence (scr_runtime.h asserts the offsets); it ends by
+ * branching to `done`. */
 export function cycleRootLines(host: ShapeHost, done: string): string[] {
   const S = host.sizeType;
   host.declare(`declare void @scr_cyc_on_release(ptr)`);
+  const append = requestCycleAppend(host);
   return [
     `  %bufp = getelementptr i8, ptr %o, ${S} -${host.cycleBufOffset}`,
     `  %buf = load i32, ptr %bufp`,
     `  %queued = icmp slt i32 %buf, 0`,
     `  br i1 %queued, label %${done}, label %enqueue`,
     `enqueue:`,
-    `  call void @scr_cyc_on_release(ptr %o) ; buffer the candidate; may collect`,
+    append
+      ? `  call preserve_mostcc void @${CYC_APPEND}(ptr %o) ; buffer the candidate; may collect`
+      : `  call void @scr_cyc_on_release(ptr %o) ; buffer the candidate; may collect`,
     `  br label %${done}`,
   ];
 }

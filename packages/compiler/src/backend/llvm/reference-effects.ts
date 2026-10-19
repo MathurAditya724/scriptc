@@ -29,6 +29,7 @@ export function preservesRegexInputs(method: string): boolean {
     case "match":
     case "search":
     case "matchAll":
+    case "matchAllCaptures":
     case "replace":
     case "replaceAll":
     case "split":
