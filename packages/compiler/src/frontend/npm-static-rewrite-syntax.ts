@@ -24,14 +24,29 @@ export function isBundlerCjsCandidate(source: string): boolean {
   );
 }
 
+/** The helper a bundler-emitted name spells. esbuild suffixes a helper
+ * that a bundled module declares again with a counter (a bundled esbuild
+ * dist inside another bundle carries `__export2`, `__toCommonJS2`, …); the
+ * recognizers below verify each call's shape, so the counter carries no
+ * meaning beyond the name collision it avoided. */
+export function bundlerHelperBase(name: string): string {
+  return /^__[A-Za-z]+\d+$/.test(name) ? name.replace(/\d+$/, "") : name;
+}
+
 /** The last NAME of a callee: bare identifier or any member chain's final
- * name (`tslib_1.__exportStar` → "__exportStar"). */
+ * name (`tslib_1.__exportStar` → "__exportStar"), helper counters dropped. */
 function calleeNameOf(call: ts.CallExpression): string | null {
   const callee = call.expression;
-  if (ts.isIdentifier(callee)) return callee.text;
+  if (ts.isIdentifier(callee)) return bundlerHelperBase(callee.text);
   if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name))
-    return callee.name.text;
+    return bundlerHelperBase(callee.name.text);
   return null;
+}
+
+/** True for an identifier spelling the named helper (counter-suffixed
+ * spellings included). */
+function isHelperIdent(node: ts.Node, base: string): node is ts.Identifier {
+  return ts.isIdentifier(node) && bundlerHelperBase(node.text) === base;
 }
 
 /** An entry the canonical table can carry. */
@@ -194,13 +209,8 @@ interface ToEsmPlan {
  * __copyProps(…, mod) call copying onto a conditional that tests
  * isNodeMode/__esModule and defines "default" with value mod. Comments and
  * formatting are free; the SHAPE is the contract. */
-function recognizedToEsmDecl(stmt: ts.Statement): boolean {
-  if (!ts.isVariableStatement(stmt)) return false;
-  const decls = stmt.declarationList.declarations.nodes;
-  if (decls.length !== 1) return false;
-  const d = decls[0]!;
-  if (!ts.isIdentifier(d.name) || d.name.text !== "__toESM" || d.initializer === undefined)
-    return false;
+function recognizedToEsmDecl(d: ts.VariableDeclaration): boolean {
+  if (!isHelperIdent(d.name, "__toESM") || d.initializer === undefined) return false;
   let init: ts.Expression = d.initializer;
   while (ts.isParenthesizedExpression(init)) init = init.expression;
   if (!ts.isArrowFunction(init)) return false;
@@ -218,12 +228,7 @@ function recognizedToEsmDecl(stmt: ts.Statement): boolean {
     expr = expr.right;
   }
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
-  if (
-    !ts.isCallExpression(expr) ||
-    !ts.isIdentifier(expr.expression) ||
-    expr.expression.text !== "__copyProps"
-  )
-    return false;
+  if (!ts.isCallExpression(expr) || !isHelperIdent(expr.expression, "__copyProps")) return false;
   if (expr.arguments.nodes.length < 2) return false;
   const from = expr.arguments.nodes[1]!;
   if (!ts.isIdentifier(from) || from.text !== mod) return false;
@@ -234,12 +239,7 @@ function recognizedToEsmDecl(stmt: ts.Statement): boolean {
   if (!condText.includes(isNodeMode) || !condText.includes("__esModule")) return false;
   let stamp: ts.Expression = to.whenTrue;
   while (ts.isParenthesizedExpression(stamp)) stamp = stamp.expression;
-  if (
-    !ts.isCallExpression(stamp) ||
-    !ts.isIdentifier(stamp.expression) ||
-    stamp.expression.text !== "__defProp"
-  )
-    return false;
+  if (!ts.isCallExpression(stamp) || !isHelperIdent(stamp.expression, "__defProp")) return false;
   if (stamp.arguments.nodes.length !== 3) return false;
   const nameArg = stamp.arguments.nodes[1]!;
   if (!ts.isStringLiteral(nameArg) || nameArg.text !== "default") return false;
@@ -278,19 +278,23 @@ function planToEsmInterop(sf: ts.SourceFile, filePath: string, host: CjsRewriteH
     degrade: reason,
   });
 
-  const declStmts = sf.statements.nodes.filter(
-    (s) =>
-      ts.isVariableStatement(s) &&
-      s.declarationList.declarations.nodes.some(
-        (d) => ts.isIdentifier(d.name) && d.name.text === "__toESM",
-      ),
-  );
+  // Top-level declarators of the helper, any statement shape (minified
+  // dists share one `var` among several helpers), by spelling.
+  const decls = new Map<string, ts.VariableDeclaration[]>();
+  for (const s of sf.statements.nodes) {
+    if (!ts.isVariableStatement(s)) continue;
+    for (const d of s.declarationList.declarations.nodes) {
+      if (!isHelperIdent(d.name, "__toESM")) continue;
+      const list = decls.get(d.name.text);
+      if (list === undefined) decls.set(d.name.text, [d]);
+      else list.push(d);
+    }
+  }
   const refs: ts.Identifier[] = [];
   const calls: ts.CallExpression[] = [];
   const collect = (n: ts.Node): void => {
-    if (ts.isIdentifier(n) && n.text === "__toESM") refs.push(n);
-    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "__toESM")
-      calls.push(n);
+    if (isHelperIdent(n, "__toESM")) refs.push(n);
+    if (ts.isCallExpression(n) && isHelperIdent(n.expression, "__toESM")) calls.push(n);
   };
   ts.walkPreorder(sf, collect);
   if (calls.length === 0 && refs.length === 0) return plan;
@@ -298,15 +302,16 @@ function planToEsmInterop(sf: ts.SourceFile, filePath: string, host: CjsRewriteH
   // a helper that escapes as a VALUE is outside the recognized shape.
   const callees = new Set<ts.Node>(calls.map((c) => c.expression));
   const declNames = new Set<ts.Node>();
-  for (const s of declStmts) {
-    for (const d of (s as ts.VariableStatement).declarationList.declarations.nodes) {
-      if (ts.isIdentifier(d.name) && d.name.text === "__toESM") declNames.add(d.name);
-    }
-  }
+  for (const list of decls.values()) for (const d of list) declNames.add(d.name);
   if (refs.some((r) => !callees.has(r) && !declNames.has(r))) return fail(TO_ESM_ESCAPE_DEGRADE);
   if (calls.length === 0) return plan; // declared but never called — dead helper
-  if (declStmts.length !== 1 || !recognizedToEsmDecl(declStmts[0]!))
-    return fail(TO_ESM_SHAPE_DEGRADE);
+  // Every spelling a call uses must be declared exactly once, in the
+  // recognized shape.
+  for (const call of calls) {
+    const list = decls.get((call.expression as ts.Identifier).text);
+    if (list === undefined || list.length !== 1 || !recognizedToEsmDecl(list[0]!))
+      return fail(TO_ESM_SHAPE_DEGRADE);
+  }
 
   /** Module-scope interop bindings: name → whether `.default` IS the
    * module (pad the access) rather than a member read of its `default`. */
@@ -467,7 +472,10 @@ export function rewriteBundlerCjsSyntax(
 
   // ESM bundles can contain closed CommonJS function factories. Recognize
   // those before refusing interop that needs a dynamic module namespace.
-  if (ts.isExternalModule(sf)) {
+  // TypeScript forces every `.cjs` file to be an external module
+  // (isFileForcedToBeModuleByFormat), yet Node always loads one as
+  // CommonJS: the extension, not that flag, decides the format there.
+  if (!/\.cjs$/.test(filePath) && ts.isExternalModule(sf)) {
     const bundled = rewriteBundledFunctionImports(source, sf);
     if (bundled !== null) return bundled;
     return source.includes("__toESM(")
@@ -814,21 +822,35 @@ export function rewriteBundlerCjsSyntax(
       "__reExport",
       "__toESM",
       "__toCommonJS",
+      "__commonJS",
       "__exportStar",
       "__createBinding",
       "__setModuleDefault",
       "__importStar",
       "__importDefault",
     ]);
+    /* Helper declarators by name. A minified dist shares one `var` among
+     * several helpers (`var __getProtoOf=…,__hasOwnProp=…;`): each
+     * declarator is its own candidate, and the statement pads whole only
+     * once every declarator in it is dead. */
     const helperDecls = new Map<string, { start: number; end: number }>();
+    const helperStmts: ts.VariableStatement[] = [];
     for (const stmt of sf.statements.nodes) {
       if (!ts.isVariableStatement(stmt)) continue;
       const decls = stmt.declarationList.declarations.nodes;
-      if (decls.length !== 1) continue;
-      const d = decls[0]!;
-      if (ts.isIdentifier(d.name) && HELPER_NAMES.has(d.name.text)) {
-        helperDecls.set(d.name.text, { start: stmt.getStart(sf), end: stmt.getEnd() });
+      let anyHelper = false;
+      for (const d of decls) {
+        if (!ts.isIdentifier(d.name) || !HELPER_NAMES.has(bundlerHelperBase(d.name.text))) continue;
+        if (helperDecls.has(d.name.text)) continue; // redeclared: keep the first, never sweep twice
+        anyHelper = true;
+        helperDecls.set(
+          d.name.text,
+          decls.length === 1
+            ? { start: stmt.getStart(sf), end: stmt.getEnd() }
+            : { start: d.getStart(sf), end: d.getEnd() },
+        );
       }
+      if (anyHelper && decls.length > 1) helperStmts.push(stmt);
     }
     // every identifier occurrence of a helper name outside its own
     // declarator name node, position-recorded for the span test
@@ -862,8 +884,39 @@ export function rewriteBundlerCjsSyntax(
         }
       }
     }
+    // A swept declarator of a shared statement pads with its separating
+    // comma, and the statement pads whole once every declarator is dead:
+    // padding the bare declarator span would leave a dangling comma.
+    const declaratorSpans = new Set<{ start: number; end: number }>();
+    const declaratorPads: { start: number; end: number }[] = [];
+    for (const stmt of helperStmts) {
+      const decls = stmt.declarationList.declarations.nodes;
+      const deadAt = decls.map((d) => {
+        if (!ts.isIdentifier(d.name) || !removed.has(d.name.text)) return false;
+        const span = helperDecls.get(d.name.text)!;
+        if (span.start !== d.getStart(sf)) return false;
+        declaratorSpans.add(span);
+        return true;
+      });
+      if (deadAt.every((x) => x)) {
+        declaratorPads.push({ start: stmt.getStart(sf), end: stmt.getEnd() });
+        continue;
+      }
+      // Dead declarators before the last live one take their trailing
+      // comma; the dead tail after it pads from that declarator's end.
+      const lastLive = deadAt.lastIndexOf(false);
+      for (let i = 0; i < decls.length; i++) {
+        if (!deadAt[i]) continue;
+        const d = decls[i]!;
+        declaratorPads.push(
+          i < lastLive
+            ? { start: d.getStart(sf), end: decls[i + 1]!.getStart(sf) }
+            : { start: decls[lastLive]!.getEnd(), end: d.getEnd() },
+        );
+      }
+    }
     neutralize.length = 0;
-    neutralize.push(...dead);
+    neutralize.push(...dead.filter((span) => !declaratorSpans.has(span)), ...declaratorPads);
   }
 
   /* ── emission ─────────────────────────────────────────────────────── */

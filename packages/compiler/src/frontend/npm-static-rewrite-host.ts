@@ -134,7 +134,7 @@ function requireTargetEsModuleStamped(
   } catch {
     /* unlexable — keep probing */
   }
-  if (src.includes("__toCommonJS(")) return true;
+  if (/__toCommonJS\d*\(/.test(src)) return true;
   const fwd = /module\.exports\s*=\s*require\(\s*["']([^"']+)["']\s*\)/.exec(src);
   if (fwd !== null) return requireTargetEsModuleStamped(parser, file, fwd[1]!, depth + 1);
   return false;

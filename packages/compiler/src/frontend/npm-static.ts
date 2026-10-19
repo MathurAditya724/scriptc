@@ -13,7 +13,13 @@ import {
   registerWorkspacePackage,
   workspacePackageOfPath,
 } from "./workspace-registry.js";
-import { trackedExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import {
+  clearVirtualSources,
+  setVirtualSource,
+  trackedExists,
+  trackedReadFile,
+  trackedRealpath,
+} from "./input-tracker.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -34,6 +40,7 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   declarationProperties = new Map();
   offenders.clear();
   rewriteCache.clear();
+  clearVirtualSources();
   untypedPkgCache.clear();
   realpathProbed.clear();
 }
@@ -362,7 +369,18 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
         if (hit !== undefined) return hit ?? undefined;
         let rewritten: string | null = null;
         try {
-          const original = trackedReadFile(path);
+          let original = trackedReadFile(path);
+          // A bundle's CommonJS chunks move to their own modules first, so
+          // every later pass (and this shadow, for each chunk) sees plain
+          // CommonJS module text.
+          const split = original === null ? null : services.splitCjsChunks(original, path);
+          if (split !== null && "degrade" in split) {
+            reportNpmStaticOffender(target.pkg, split.degrade);
+            original = null;
+          } else if (split !== null) {
+            for (const chunk of split.chunks) setVirtualSource(chunk.path, chunk.source);
+            original = split.text;
+          }
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;
@@ -395,7 +413,8 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 propertyProjected?.text ??
                 findWidened?.text ??
                 classFields?.text ??
-                namepaths;
+                namepaths ??
+                (split !== null ? original : null);
             }
           }
         } catch {
