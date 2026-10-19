@@ -12595,7 +12595,12 @@ function cjsAccessorSnapshotOf(
   const call = cjsAccessorCall(lowerer, getter, locOf(getter));
   if (call === null) return null;
   const snapshot = { id: `%g.cjsSnapshot.${lowerer.cjsAccessorSnapshots.size}`, type: call.type };
-  lowerer.globalsList.push({ id: snapshot.id, name: "%cjsSnapshot", type: call.type, mutable: true });
+  lowerer.globalsList.push({
+    id: snapshot.id,
+    name: "%cjsSnapshot",
+    type: call.type,
+    mutable: true,
+  });
   lowerer.cjsAccessorSnapshots.set(getter, snapshot);
   return snapshot;
 }
@@ -12619,7 +12624,12 @@ export function cjsAccessorSnapshotStores(
     lowerer.cjsSnapshotReady.set(dep, readyId);
   }
   const stores: IrStmt[] = [
-    { kind: "assign", localId: readyId, value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
+    {
+      kind: "assign",
+      localId: readyId,
+      value: { kind: "boolLit", value: true, type: BOOL, loc },
+      loc,
+    },
   ];
   for (const getter of getters) {
     const snapshot = cjsAccessorSnapshotOf(lowerer, getter);

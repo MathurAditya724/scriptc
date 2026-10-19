@@ -980,7 +980,7 @@ export function resolveBareModule(
  * the nearest node_modules/<dirName>/package.json declares when it
  * differs from the directory name, else null. */
 function aliasedPackageOf(fromFile: string, dirName: string): string | null {
-  for (let dir = dirname(resolve(fromFile)); ; ) {
+  for (let dir = dirname(resolve(fromFile)); ;) {
     const pkgDir = join(dir, "node_modules", dirName);
     if (isDirectory(pkgDir)) {
       const name = pkgJsonOf(pkgDir)?.name;

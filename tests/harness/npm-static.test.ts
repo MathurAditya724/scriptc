@@ -1486,9 +1486,13 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test.each([
     ["2564-lazy-barrel", ["gtlazy", "gtlazyws"]],
     ["2565-lazy-barrel-require", ["gtlazyuser", "gtlazy"]],
-  ])("the lazy barrel %s compiles statically and byte-matches Node", async (name, packages) => {
-    await expectNodeParity(join(fixturesRoot, `npm/cases/${name}/main.ts`), packages);
-  }, 180_000);
+  ])(
+    "the lazy barrel %s compiles statically and byte-matches Node",
+    async (name, packages) => {
+      await expectNodeParity(join(fixturesRoot, `npm/cases/${name}/main.ts`), packages);
+    },
+    180_000,
+  );
 
   // 2566: two releases of one package in a pnpm store, the newer through
   // an npm alias directory; the default selection compiles both copies.

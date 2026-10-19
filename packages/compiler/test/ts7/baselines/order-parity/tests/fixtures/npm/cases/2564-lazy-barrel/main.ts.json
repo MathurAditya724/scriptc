@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2564-lazy-barrel/main.ts"
+ ],
+ "diags": []
+}
