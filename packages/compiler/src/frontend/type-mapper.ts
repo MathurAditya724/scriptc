@@ -1099,6 +1099,9 @@ export interface TypeMapperCtx {
   /** The InternTable instance type (@scriptc/experimental), when `decl` is
    * that package's class declaration (lowering/intern-tables.ts). */
   internTableClass?: (decl: ts.ClassDeclaration) => IrType | null;
+  /** The ThreadSlots instance type (@scriptc/experimental), when `decl` is
+   * that package's class declaration (lowering/thread-slots.ts). */
+  threadSlotsClass?: (decl: ts.ClassDeclaration) => IrType | null;
 }
 /** A generator type's normalized value channels (Generator<T, TReturn,
  * TNext> and the IteratorResult alias share this):
@@ -1333,6 +1336,40 @@ export function isWorkerHandleType(
   return handle;
 }
 
+/** The native fetch handles (Headers, Request, Response), optionally in
+ * arrays or with null/undefined: checked-dynamic handles wherever they are
+ * stored, like the worker handles above. */
+export function isFetchHandleType(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  const members = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  let handle = false;
+  for (const member of members) {
+    if (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) continue;
+    if (ctx.checker.isArrayType(member)) {
+      const element = ctx.checker.getTypeArguments(member as ts.TypeReference)[0];
+      if (element === undefined || !isFetchHandleType(element, ctx)) return false;
+    } else {
+      const symbol = member.getSymbol();
+      if (
+        !symbol ||
+        (symbol.name !== "Headers" && symbol.name !== "Request" && symbol.name !== "Response") ||
+        !ctx.checker
+          .declarationsOf(symbol)
+          .some(
+            (d) =>
+              (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+              ctx.isStdlibFile(d.getSourceFile()),
+          )
+      )
+        return false;
+    }
+    handle = true;
+  }
+  return handle;
+}
+
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
   // These intrinsic domains cannot depend on generic bindings, declaration
@@ -1356,7 +1393,16 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const sensitivityAtEntry = contextResolutions;
   mapTypeDepth++;
   try {
-    const mapped = mapTypeInner(type, ctx);
+    let mapped: IrType | null;
+    try {
+      mapped = mapTypeInner(type, ctx);
+    } catch (e) {
+      // typescript-go's API can panic serializing a union's members (an
+      // empty tuple cloned as an array literal, `s.match(re) || []`): a
+      // union the checker cannot describe has no representation.
+      if (!topLevel || !ts.isUnreadableConstituentsPanic(e)) throw e;
+      mapped = null;
+    }
     if (
       mapped !== null &&
       memoKey !== null &&
@@ -1712,16 +1758,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return hasStr ? STRING : F64;
     }
   }
-  // @scriptc/experimental's LifetimeRegion and InternTable: synthetic
-  // program classes, provenance-checked by the package's declaration file.
+  // @scriptc/experimental's LifetimeRegion, InternTable and ThreadSlots:
+  // synthetic program classes, provenance-checked by the package's
+  // declaration file.
   {
     const classSym = widened.getSymbol();
     const name = classSym?.name;
-    if (name === "LifetimeRegion" || name === "InternTable") {
+    if (name === "LifetimeRegion" || name === "InternTable" || name === "ThreadSlots") {
       for (const d of checker.declarationsOf(classSym!)) {
         if (!ts.isClassDeclaration(d)) continue;
         const synthetic =
-          name === "LifetimeRegion" ? ctx.lifetimeRegionClass?.(d) : ctx.internTableClass?.(d);
+          name === "LifetimeRegion"
+            ? ctx.lifetimeRegionClass?.(d)
+            : name === "InternTable"
+              ? ctx.internTableClass?.(d)
+              : ctx.threadSlotsClass?.(d);
         if (synthetic) return synthetic;
       }
     }
@@ -3216,8 +3267,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Native collection iterators use checked runtime iterator objects.
   if (isStdlibInterface("MapIterator") || isStdlibInterface("SetIterator")) return DYN;
   // Array iterators (`list.values()` and friends) are generators over the
-  // live array: each step reads the current length and element.
-  if (isStdlibInterface("ArrayIterator")) {
+  // live array: each step reads the current length and element. String
+  // iterators (`s[Symbol.iterator]()`) are generators over the code points.
+  if (isStdlibInterface("ArrayIterator") || isStdlibInterface("StringIterator")) {
     const arg = checker.getTypeArguments(widened as ts.TypeReference)[0];
     const yieldT = arg ? mapType(arg, ctx) : null;
     if (!yieldT || yieldT.kind === "void" || isUnitType(yieldT)) return null;

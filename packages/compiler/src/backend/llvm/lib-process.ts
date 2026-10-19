@@ -374,16 +374,18 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
     host.usesTimers = true;
     const cb = host.emitExpr(e.args[0]!);
     host.moveTemp(cb);
+    // Programs that enter AsyncLocalStorage stores schedule through the
+    // *_als entry points, which carry the active stores into the callback.
     const sym =
-      mockTimerSym(host, e) ??
-      {
-        "timers.setTimeout": "scr_set_timeout",
-        "timers.setInterval": "scr_set_interval",
-        "timers.setTimeoutHandle": "scr_set_timeout_handle",
-        "timers.setImmediate": "scr_set_immediate",
-        "process.nextTick": "scr_next_tick",
-        "timers.queueMicrotask": "scr_queue_microtask",
-      }[e.fn];
+      (mockTimerSym(host, e) ??
+        {
+          "timers.setTimeout": "scr_set_timeout",
+          "timers.setInterval": "scr_set_interval",
+          "timers.setTimeoutHandle": "scr_set_timeout_handle",
+          "timers.setImmediate": "scr_set_immediate",
+          "process.nextTick": "scr_next_tick",
+          "timers.queueMicrotask": "scr_queue_microtask",
+        }[e.fn]!) + (host.schedulesInContext ? "_als" : "");
     const rest = e.args.slice(1).map((a) => host.emitExpr(a));
     const argList = [`ptr ${cb.name}`, ...rest.map((a) => `${host.llType(a.type)} ${a.name}`)].join(
       ", ",

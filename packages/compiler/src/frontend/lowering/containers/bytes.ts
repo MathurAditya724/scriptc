@@ -35,6 +35,7 @@ import {
 } from "../optional-arguments.js";
 import { lowerCheckedArrayFrom } from "./array-construction.js";
 import { lowerToNumberArgument } from "../lower-exprs.js";
+import { lowerBytesIteratorValue } from "../iterator-adapters.js";
 
 /** TypedArray.prototype.sort and toSorted. The receiver and comparator
  * expressions are evaluated before entering the helper (buildBytesSortFn).
@@ -461,6 +462,21 @@ export function lowerBytesMethodCall(
   }
   if (name === "sort" || name === "toSorted") {
     return lowerBytesSortCall(lowerer, call, access, receiverIr);
+  }
+  // values()/keys()/entries() as iterator objects (for...of heads and
+  // stored numeric iterators lower before this).
+  if ((name === "values" || name === "keys" || name === "entries") && nArgs === 0) {
+    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (type?.kind === "generator") {
+      const value = lowerBytesIteratorValue(
+        lowerer,
+        lowerer.lowerExpr(access.expression),
+        name,
+        type,
+        loc,
+      );
+      if (value) return value;
+    }
   }
   if (name === "toReversed") {
     if (nArgs !== 0) {

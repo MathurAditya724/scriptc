@@ -13,7 +13,13 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import { isJsSourceFile, isNodeEsmFile } from "../program.js";
-import { genResultRecord, isAnyArrayType, jsOpenObjectType } from "../type-mapper.js";
+import {
+  genResultRecord,
+  isAnyArrayType,
+  isUnitOnlyTsType,
+  jsOpenObjectType,
+  unitOnlyUnion,
+} from "../type-mapper.js";
 import { dynFallbackType } from "./lowerer.js";
 import { builtinModuleFnOf } from "./surfaces.js";
 import { mixinFnShapeOf } from "./lower-mixins.js";
@@ -380,7 +386,7 @@ export function paramShapes(
     const tsType = symbol
       ? lowerer.checker.getTypeOfSymbol(symbol)
       : lowerer.typeOf(declParam.name);
-    const mapped = jsOpenObjectType(
+    let mapped = jsOpenObjectType(
       declParam,
       lowerer.runtimeOptionalBindingType(
         declParam.name,
@@ -389,6 +395,11 @@ export function paramShapes(
       lowerer.shapes,
       lowerer.unions,
     );
+    // An instantiation with a literal `undefined` argument (`id(undefined)`
+    // binds T = undefined): standalone undefined maps to VOID (the return
+    // convention), and a parameter is a value position, so it takes the
+    // unit-only slot like a declared `v: undefined` parameter.
+    if (mapped?.kind === "void" && isUnitOnlyTsType(tsType)) mapped = unitOnlyUnion(lowerer.unions);
     if (!mapped || mapped.kind === "void")
       lowerer.badType(blameOf?.(declParam, i) ?? declParam.name, tsType);
     if (declParam.dotDotDotToken) {

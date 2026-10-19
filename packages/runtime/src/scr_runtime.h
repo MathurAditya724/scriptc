@@ -56,6 +56,7 @@
 #include "scr_object.h"
 #include "scr_region.h"
 #include "scr_itable.h"
+#include "scr_slots.h"
 #include "scr_async.h"
 #include "scr_events.h"
 #include "scr_readline.h"

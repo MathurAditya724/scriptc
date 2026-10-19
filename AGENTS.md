@@ -140,7 +140,6 @@ Never hand-edit these files:
 - `internal/compatibility/generated/node-v24-internal.json`
 - `internal/compatibility/generated/node-v24-backlog.json`
 - `docs/src/generated/node-v24-compatibility.json`
-- `docs/src/generated/node-v24-compatibility-meta.json`
 
 Change compiler decision sources or the implementation-owned compatibility manifests, then regenerate. Use `pnpm manifest` when compiler decision tables change and `pnpm node-compat` whenever the Node pin, compatibility manifests, compiler surface manifest, changes.
 

@@ -5,8 +5,7 @@
 // and `typeof module.exports` compile; a statement with no static lowering
 // (here `module.exports` passed as a value in the class base) compiles to
 // its runtime fence instead of vanishing. It never runs, so the binary
-// matches Node. Coverage counts that one fenced statement once: the class
-// base's body is lowered once.
+// matches Node.
 const verbose = process.argv.length > 99;
 (function () {
   var root = this;

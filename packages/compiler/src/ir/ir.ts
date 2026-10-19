@@ -879,6 +879,33 @@ export function typeKey(t: IrType): string {
   }
 }
 
+/** The type a CALL SITE (or function value) receives from a module
+ * function: an async body's returnType is the promise's INNER type, so
+ * calls and closures over it see Promise<T>; a generator body's is the
+ * TReturn channel, so call sites see the generator type. The one place
+ * the body/call-site split is spelled out, for the validator and lowering. */
+export function callSiteReturnType(fn: IrFunction): IrType {
+  if (fn.async && fn.generator !== undefined) {
+    return {
+      kind: "generator",
+      async: true,
+      yieldT: fn.generator.yieldT,
+      retT: fn.returnType,
+      nextT: fn.generator.nextT,
+    };
+  }
+  if (fn.async) return { kind: "promise", inner: fn.returnType };
+  if (fn.generator !== undefined) {
+    return {
+      kind: "generator",
+      yieldT: fn.generator.yieldT,
+      retT: fn.returnType,
+      nextT: fn.generator.nextT,
+    };
+  }
+  return fn.returnType;
+}
+
 export function typeEquals(a: IrType, b: IrType): boolean {
   // Dispatch once: a chain of negative narrowing checks repeatedly retags
   // the remaining variants when this comparator runs in the native compiler.
@@ -977,6 +1004,10 @@ export interface IrModule {
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
   lifetimeRegions?: true;
+  /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
+   * each one's hierarchy carries a slot word (the slots.* intrinsics;
+   * backend/llvm/thread-slots.ts). */
+  threadSlotKeys?: string[];
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
@@ -3614,7 +3645,19 @@ export type IrExpr =
         | "itable.find"
         | "itable.insert"
         | "itable.value"
-        | "itable.size";
+        | "itable.size"
+        /* ThreadSlots (@scriptc/experimental; scr_slots.c). Every one takes
+         * the family name (a string literal), the family's %ThreadSlots
+         * value (read for its effects only) and the key, a class instance
+         * whose hierarchy is in IrModule.threadSlotKeys:
+         * slots.get → V | undefined, a nullable union, owned (+1);
+         * slots.has → bool; slots.delete → bool, releasing the value;
+         * slots.set (…, V value) → void, or the %ThreadSlots value when the
+         * result is used. Nothing throws. */
+        | "slots.get"
+        | "slots.has"
+        | "slots.set"
+        | "slots.delete";
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;
