@@ -7705,6 +7705,24 @@ function paramPropInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrLoca
   return out;
 }
 
+/** Whether a super() call's value is discarded by its statement: the call
+ * is the expression statement itself, or an operand of a comma chain that
+ * is (`super(m, o), this.code = c;`, as minifiers join statements). The
+ * statement lowering runs each comma operand as its own statement in
+ * source order, so the chain lowers exactly like `super(m, o); this.code =
+ * c;`. Parentheses are transparent to both. */
+function superCallInStatementPosition(call: ts.CallExpression): boolean {
+  let node: ts.Node = call;
+  for (;;) {
+    const parent = node.parent;
+    if (ts.isExpressionStatement(parent)) return true;
+    const comma =
+      ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken;
+    if (!comma && !ts.isParenthesizedExpression(parent)) return false;
+    node = parent;
+  }
+}
+
 /** Super statements initialize the base and then the derived fields on
  * whichever control-flow path executes. Repeated calls are explicitly
  * refused until native layouts can allocate a second receiver. */
@@ -7722,7 +7740,7 @@ export function lowerDerivedCtorBody(
   const previousInitialized = context.superInitialized;
   context.superInitialized = initialized;
   context.superCall = (superCall) => {
-    if (!ts.isExpressionStatement(superCall.parent))
+    if (!superCallInStatementPosition(superCall))
       lowerer.unsupported("SC1090", superCall, "super() in an expression position");
     superSeen = true;
     const loc = locOf(superCall);
