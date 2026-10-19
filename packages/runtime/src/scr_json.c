@@ -1678,6 +1678,8 @@ ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key) {
  * later, and it neither grows nor owns heap references. */
 static ScrDyn scr_dyn_small_ints[384];
 
+const char *(*scr_gen_tag_reader)(const ScrGen *g) = NULL;
+
 __attribute__((constructor)) static void scr_dyn_small_ints_init(void) {
   for (int i = 0; i < 384; i++) {
     scr_dyn_small_ints[i].rc = SIZE_MAX;
@@ -4673,6 +4675,31 @@ bool scr_dyn_iterator_step_done(const ScrDyn *value) {
   return ((ScrNativeIterator *)value->v.handle.ptr)->step_done;
 }
 
+void scr_dyn_native_iterator_state(const ScrDyn *value, unsigned *kind, unsigned *selection,
+                                   ScrMap **collection, double *index) {
+  const ScrNativeIterator *iterator = value->v.handle.ptr;
+  *kind = iterator->kind;
+  *selection = iterator->selection;
+  *collection = (iterator->kind == 2 || iterator->kind == 3) && iterator->source
+    ? iterator->source->v.handle.ptr : NULL;
+  *index = iterator->index;
+}
+
+double scr_dyn_collection_iterator_index(const ScrDyn *value) {
+  ScrNativeIterator *iterator = value->v.handle.ptr;
+  ScrDyn *source = iterator->source;
+  if (!source) return -1;
+  ScrMap *map = source->v.handle.ptr;
+  iterator->index = scr_map_iter_skip(map, iterator->index);
+  if (iterator->index >= scr_map_iter_count(map)) {
+    iterator->source = NULL;
+    scr_map_iter_exit(map);
+    scr_dyn_release(source);
+    return -1;
+  }
+  return iterator->index++;
+}
+
 static int scr_ih_method_index(const char *name, size_t len);
 static ScrDyn *scr_iterator_helper_method(ScrDyn *self, int index, ScrDyn *const *args, size_t argc);
 static ScrDyn *scr_ih_method_function(int index);
@@ -6202,6 +6229,20 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
     if (scr_dyn_ref_is_error(d)) return scr_str_new("[object Error]", 14);
+    if (scr_dyn_generator(d)) {
+      const char *gen_tag = scr_gen_tag_reader(d->v.typed_ref.ptr);
+      if (gen_tag[0] == '!') {
+        static const char message[] = "Object.prototype.toString of this iterator is not supported yet";
+        scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+        return NULL;
+      }
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, gen_tag);
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     ScrStr *out = scr_dyn_object_tag(materialized);
     scr_dyn_release(materialized);
@@ -6233,6 +6274,13 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
       scr_jb_puts(&b, scr_dyn_handle_cls(d));
       scr_jb_putc(&b, ']');
       return scr_jb_finish(&b);
+    }
+    if (d->v.handle.tag == SCR_DYNH_ITERATOR && ((const ScrNativeIterator *)d->v.handle.ptr)->kind < 4) {
+      static const char *const tags[] = {
+        "[object Array Iterator]", "[object String Iterator]", "[object Map Iterator]", "[object Set Iterator]",
+      };
+      const char *it_tag = tags[((const ScrNativeIterator *)d->v.handle.ptr)->kind];
+      return scr_str_new(it_tag, strlen(it_tag));
     }
     if (scr_dyn_handle_ops_of(d)->to_string_tag) {
       ScrJsonBuf b;
@@ -7861,6 +7909,14 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
   }
   scr_error_sync_cause(recv, key);
   return;
+}
+
+void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value) {
+  if (!arr->v.arr.properties) {
+    scr_dyn_region_store(arr, NULL); /* a table that later holds anything */
+    arr->v.arr.properties = scr_dyn_new_obj();
+  }
+  scr_dyn_obj_set(arr->v.arr.properties, key, key_len, value);
 }
 
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {

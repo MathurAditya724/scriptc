@@ -1,3 +1,7 @@
+import {
+  matchAllRowsReadByElements,
+  storedMatchAllRowsReadByElements,
+} from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -690,10 +694,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       entry.index = i;
       if (unreachable && skipsWhenUnreachable(stmt)) continue;
       if (inFunction && isAbruptStatement(stmt)) unreachable = true;
-      if (!lowerer.suppressStats) {
-        lowerer.stats.statementsTotal++;
-        if (sf !== undefined) lowerer.bumpFileStat(sf.fileName, "total");
-      }
+      if (!lowerer.suppressStats) lowerer.countStatement(stmt, sf?.fileName);
       const diagsBefore = lowerer.diags.length;
       const sinkMark = lowerer.diagSinkMark();
       try {
@@ -758,10 +759,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
         } else if (!(e instanceof PoisonError)) {
           throw e;
         }
-        if (!lowerer.suppressStats) {
-          lowerer.stats.statementsFailed++;
-          if (sf !== undefined) lowerer.bumpFileStat(sf.fileName, "failed");
-        }
+        if (!lowerer.suppressStats) lowerer.countStatementFailed(stmt, sf?.fileName);
         lowerer.noteBlockedBindings(stmt);
         // The runtime-fence conversion (JS sources, direct diagnostics
         // only — a capture wrapper in force means collection owns the
@@ -1892,7 +1890,9 @@ function lowerMatchAllDrainDecl(
       localId: local.id,
       init: {
         kind: "regexIntrinsic",
-        method: "matchAllInto",
+        method: storedMatchAllRowsReadByElements(lowerer, decl)
+          ? "matchAllCapturesInto"
+          : "matchAllInto",
         receiver,
         args: [re, { kind: "varRef", localId: idxs.id, type: idxsT, loc }],
         type: rowsT,
@@ -9568,7 +9568,9 @@ function lowerForOfMatchAll(
     });
     rowsInit = {
       kind: "regexIntrinsic",
-      method: "matchAllInto",
+      method: matchAllRowsReadByElements(lowerer, call, true)
+        ? "matchAllCapturesInto"
+        : "matchAllInto",
       receiver,
       args: [re, { kind: "varRef", localId: idxs.id, type: idxsT, loc }],
       type: rowsT,

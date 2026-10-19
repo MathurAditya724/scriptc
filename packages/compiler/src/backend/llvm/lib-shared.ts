@@ -890,6 +890,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.iteratorCanStep": "scr_dyn_iterator_can_step",
   "dyn.iteratorStep": "scr_dyn_iterator_step",
   "dyn.iteratorStepDone": "scr_dyn_iterator_step_done",
+  "dyn.collectionIteratorIndex": "scr_dyn_collection_iterator_index",
   "dyn.mapSeedEntries": "scr_dyn_map_seed_entries",
   "dyn.mapSeedEntry": "scr_dyn_map_seed_entry",
   "dyn.arrLen": "scr_dyn_arr_len",
@@ -1414,6 +1415,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "regex.groupEquals": "scr_regex_group_eq",
   "regex.groupNumber": "scr_regex_group_number",
   "regex.groupParseInt": "scr_regex_group_parse_int",
+  "regex.resultProp": "scr_regex_result_prop",
   // queueMicrotask's checked-dynamic form (borrowed dyn; a non-function
   // throws synchronously), the minted setImmediate value, and the
   // timers/promises immediate — all mark the loop live.

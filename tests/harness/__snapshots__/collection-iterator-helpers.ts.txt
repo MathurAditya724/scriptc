@@ -1,17 +1,17 @@
-collection-iterator-helpers.ts:5:22 - error SC2020: '.flatMap over a callback returning 'Set<number>'' is part of the standard library types but has no scriptc lowering yet
+collection-iterator-helpers.ts:8:3 - error SC2020: 'IteratorObject<number, unknown, unknown>.return' is part of the standard library types but has no scriptc lowering yet
 
-  4 | // flatMap callbacks return arrays or generators.
-  5 | set.values().flatMap((value) => new Set([value, value + 1]));
-    |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  6 | // return() on a helper object.
+  7 | function close(it: IteratorObject<number>): void {
+  8 |   it.return!();
+    |   ^~~~~~~~~
+  9 | }
 
-  hint: callbacks returning an array or a generator are the supported forms
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-collection-iterator-helpers.ts:8:1 - error SC2020: 'IteratorObject<number, undefined, unknown>.return' is part of the standard library types but has no scriptc lowering yet
+collection-iterator-helpers.ts:12:1 - error SC2020: 'IteratorObject<number, undefined, unknown>.throw' is part of the standard library types but has no scriptc lowering yet
 
-  7 | const mapped = set.values().map((value) => value * 2);
-  8 | mapped.return!();
-    | ^~~~~~~~~~~~~
-  9 | // Each helper call must produce a diagnostic.
+  11 | // throw() on a helper object (helpers have no throw method).
+  12 | set.values().map((value) => value + 1).throw!(new Error("stop"));
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  13 | // Each helper call must produce a diagnostic.
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)

@@ -94,6 +94,8 @@ import { lowerDynArrayFilterCall, lowerDynArrayFlatMapCall } from "./containers/
 import { lowerGroupByStaticCall } from "./containers/collection-grouping.js";
 import {
   lowerGeneratorHelperCall,
+  lowerHelperReturnCall,
+  lowerIteratorFromCall,
   lowerIteratorHelperCall,
 } from "./containers/iterator-helpers.js";
 import {
@@ -223,6 +225,7 @@ import {
   completeArgs,
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
+import { lowerStringIteratorValue } from "./iterator-adapters.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import { maybePromiseReturnStmt, promiseArmedUnionOf } from "./maybe-promise.js";
 import {
@@ -365,6 +368,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // machinery (the member always exists on a POSIX target, so the
   // optional call IS the call; `process.getuid` itself has no value
   // lowering for the chain to guard).
+  // `h.return!()` / `h.return?.()` on a helper object: the method exists.
+  const helperReturn = lowerHelperReturnCall(lowerer, expr);
+  if (helperReturn) return helperReturn;
   const processOptional = lowerer.lowerProcessOptionalMethodCall(expr);
   if (processOptional) return processOptional;
   const reqStreamOptional = lowerCompatReqStreamOptionalCall(lowerer, expr);
@@ -1616,6 +1622,17 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     lowerer.unsupported("SC1090", expr, `method calls like '${expr.expression.getText()}'`);
   }
 
+  // `s[Symbol.iterator]()` on a string: the string iterator as a value.
+  if (
+    ts.isElementAccessExpression(expr.expression) &&
+    !expr.expression.questionDotToken &&
+    !expr.questionDotToken &&
+    expr.arguments.length === 0
+  ) {
+    const iterator = lowerStringIteratorCall(lowerer, expr, expr.expression);
+    if (iterator) return iterator;
+  }
+
   // The element spelling of an unsupported native Web method must fence
   // before lowering the callee into a checked-dynamic keyed read.
   if (ts.isElementAccessExpression(expr.expression)) {
@@ -2783,7 +2800,8 @@ function lowerObjectPrototypeCall(
   const immediate = immediateObjectTagReceiver(lowerer, receiverNode);
   const receiver = immediate?.effect ?? lowerer.lowerExpr(receiverNode);
   const tag = immediate?.tag ?? objectToStringTag(lowerer, receiver.type);
-  if (tag === null && receiver.type.kind !== "dyn") {
+  // A generator object answers its tag through its checked capsule.
+  if (tag === null && receiver.type.kind !== "dyn" && receiver.type.kind !== "generator") {
     lowerer.noLowering(
       "Object.prototype.toString.call over a " + lowerer.fmt(receiver.type) + " receiver",
       receiverNode,
@@ -2803,7 +2821,13 @@ function lowerObjectPrototypeCall(
   }
   const result: IrExpr =
     tag === null
-      ? { kind: "libCall", fn: "dyn.objectTag", args: [ref], type: STRING, loc }
+      ? {
+          kind: "libCall",
+          fn: "dyn.objectTag",
+          args: [ref.type.kind === "generator" ? lowerer.coerceToExpected(ref, DYN) : ref],
+          type: STRING,
+          loc,
+        }
       : { kind: "strLit", value: "[object " + tag + "]", type: STRING, loc };
   return { kind: "seqExpr", stmts, result, type: STRING, loc };
 }
@@ -3157,10 +3181,32 @@ function lowerOptionalStringNumber(
   return { kind: "call", callee: helper, args: [arg], type: F64, loc };
 }
 
-/** Iterator types with checked runtime receivers: Map/Set iterators'
- * helper calls lower in lowerGeneratorHelperCall; the string iterator's
- * have no lowering. */
-const UNLOWERED_ITERATOR_TYPES = new Set(["MapIterator", "SetIterator", "StringIterator"]);
+/** `s[Symbol.iterator]()` on a string-typed receiver: the generator over
+ * its code points. Null for other element calls. */
+function lowerStringIteratorCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.ElementAccessExpression,
+): IrExpr | null {
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (
+    !ts.isPropertyAccessExpression(key) ||
+    lowerer.stdlibGlobalMember(key, "Symbol") !== "iterator"
+  )
+    return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "string") return null;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (type?.kind !== "generator") return null;
+  const receiver = lowerer.lowerExpr(access.expression);
+  const value = lowerStringIteratorValue(lowerer, receiver, type, locOf(call));
+  if (!value) lowerer.unsupported("SC1090", call, "this string iterator type");
+  return value;
+}
+
+/** Iterator types with checked runtime receivers, whose helper calls lower
+ * in lowerGeneratorHelperCall. */
+const CHECKED_ITERATOR_TYPES = new Set(["MapIterator", "SetIterator"]);
 const ITERATOR_HELPER_METHODS = new Set([
   "map",
   "filter",
@@ -3220,25 +3266,17 @@ function lowerDynReceiverMethodCall(
   const recvSymbol = recvTs.getSymbol();
   if (
     recvSymbol &&
-    UNLOWERED_ITERATOR_TYPES.has(recvSymbol.name) &&
+    CHECKED_ITERATOR_TYPES.has(recvSymbol.name) &&
     lowerer.isStdlibSymbol(recvSymbol) &&
     ITERATOR_HELPER_METHODS.has(access.name.text) &&
     lowerer.isStdlibMember(access)
   ) {
-    if (recvSymbol.name === "MapIterator" || recvSymbol.name === "SetIterator") {
-      const helper = lowerGeneratorHelperCall(lowerer, call, access);
-      if (helper) return helper;
-      lowerer.noLowering(
-        `collection iterator .${access.name.text}()`,
-        call,
-        "stored Map/Set iterators support .next() and iteration; iterator helper methods have no lowering",
-      );
-    }
-    // The checked runtime's string iterator has no helper methods.
+    const helper = lowerGeneratorHelperCall(lowerer, call, access);
+    if (helper) return helper;
     lowerer.noLowering(
-      `${recvSymbol.name}.${access.name.text}`,
+      `collection iterator .${access.name.text}()`,
       call,
-      "iterator helpers lower on generators and on array, Map and Set iterators — spread the string first: [...s].values()",
+      "iterator helpers on Map/Set iterators are called directly on the iterator, without optional chaining",
     );
   }
   const arrayReceiver = lowerer.checker.isArrayType(recvTs);
@@ -6644,10 +6682,10 @@ function recordAssignHelper(
   return helper;
 }
 
-/** The `Iterator` global's statics (ES2025 — Iterator.from, and the
- * abstract constructor as a value) have no lowering: every member fences
- * with the working spelling named instead of the generic-method fence's
- * monomorphization wording. */
+/** The `Iterator` global's statics (ES2025): `Iterator.from` over a typed
+ * built-in iterable lowers (lowerIteratorFromCall); every other member,
+ * and other arguments, fence with the working spelling named instead of
+ * the generic-method fence's monomorphization wording. */
 function lowerIteratorStaticFence(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -6655,11 +6693,15 @@ function lowerIteratorStaticFence(
 ): IrExpr | null {
   if (!lowerer.isStdlibGlobal(access.expression, "Iterator")) return null;
   if (!lowerer.isStdlibMember(access)) return null;
+  const from = lowerIteratorFromCall(lowerer, call, access);
+  if (from) return from;
   lowerer.noLowering(
     `Iterator.${access.name.text}`,
     call,
-    "iterator helpers apply directly to generators and to array, Map and Set iterators: " +
-      "arr.values().map(f).take(n).toArray()",
+    access.name.text === "from"
+      ? "Iterator.from accepts arrays, strings, typed arrays, Sets, Maps and iterator objects such as generators"
+      : "iterator helpers apply directly to generators and to array, Map and Set iterators: " +
+          "arr.values().map(f).take(n).toArray()",
   );
 }
 

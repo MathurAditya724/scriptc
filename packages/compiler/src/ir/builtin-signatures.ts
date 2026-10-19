@@ -182,6 +182,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
   "dyn.iteratorStepDone": { argTypes: [DYN], result: BOOL },
+  "dyn.collectionIteratorIndex": { argTypes: [DYN], result: F64 },
   "dyn.mapSeedEntries": { argTypes: [DYN], result: DYN },
   "dyn.mapSeedEntry": { argTypes: [DYN], result: DYN },
   /** The for-of-over-dyn pack accessors — the emitted index loop drives
@@ -3427,6 +3428,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "regex.groupEquals": { argTypes: [arrayOf(STRING), F64, STRING], result: BOOL },
   "regex.groupNumber": { argTypes: [arrayOf(STRING), F64], result: F64 },
   "regex.groupParseInt": { argTypes: [arrayOf(STRING), F64, F64], result: F64 },
+  // `.index` / `.input` (args[1]) of a match result. Borrowed; never throws.
+  "regex.resultProp": { argTypes: [arrayOf(STRING), STRING], result: DYN },
   // node:events EventEmitter: receivers are emitter-hierarchy objects and
   // the chaining forms (on/off/removeAll/setMax) return the receiver's
   // own class — program-dependent object types, checked in the libCall
