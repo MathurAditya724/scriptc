@@ -1,6 +1,7 @@
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
+import { lowerWebAssemblyValueOf } from "./builtins/webassembly.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
@@ -3497,6 +3498,8 @@ function lowerDynReceiverMethodCall(
   // answers each kind's own: primitives and plain objects themselves, a
   // Date its time value, an own or inherited valueOf member its result.
   if (access.name.text === "valueOf" && call.arguments.length === 0) {
+    const webAssembly = lowerWebAssemblyValueOf(lowerer, access.expression, recv, locOf(call));
+    if (webAssembly !== null) return webAssembly;
     return {
       kind: "libCall",
       fn: "dyn.valueOf",

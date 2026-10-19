@@ -10,10 +10,10 @@
  *     --spec <WebAssembly/spec at tag wg-2.0>/test/core
  *
  * Left out: modules given as text, modules the decoder does not accept
- * within the translatable feature level, modules that import a spectest
- * memory or table (the Memory and Table constructors are not supported
- * yet) and every command that targets them, and commands with v128
- * values. Also left out, because they test NaN payloads, which neither
+ * within the translatable feature level and every command that targets
+ * them, and commands with v128 values. The runner's spectest module
+ * provides the harness's memory and table (new WebAssembly.Memory and
+ * Table), so modules that import them run. Also left out, because they test NaN payloads, which neither
  * side preserves the way the other does: actions whose f32 or f64
  * arguments are NaNs other than the canonical quiet NaN (V8 and scriptc
  * carry NaN payloads through JavaScript numbers differently), and
@@ -113,6 +113,7 @@ export const GROUPS = {
     "exports",
     "linking",
   ],
+  imports: ["imports", "table", "names"],
 };
 
 const MAX_ACTIONS = 400;
@@ -204,13 +205,7 @@ for (const [group, names] of Object.entries(GROUPS)) {
           }
           const bytes = readFileSync(join(dir, c.filename));
           const summary = analyzeWasm(new Uint8Array(bytes));
-          const imports = WebAssembly.Module.imports(new WebAssembly.Module(bytes));
-          const usable =
-            summary.status === "valid" &&
-            !imports.some(
-              (i) => i.module === "spectest" && (i.kind === "memory" || i.kind === "table"),
-            );
-          if (!usable) {
+          if (summary.status !== "valid") {
             if (c.type === "module") {
               currentSkipped = true;
               if (c.name) skipped.add(c.name);

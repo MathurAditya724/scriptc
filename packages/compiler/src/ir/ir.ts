@@ -1003,6 +1003,10 @@ export interface IrModule {
    * API (possibly empty). The backend appends each module's translation
    * and emits the registry the runtime looks modules up in. */
   wasmModules?: IrWasmModule[];
+  /** The program calls WebAssembly.Module.customSections, so translated
+   * modules keep their custom sections (otherwise they carry none, and
+   * debug sections cost nothing). */
+  wasmCustomSections?: boolean;
 }
 
 /** A WebAssembly module whose bytes the build saw, validated within the

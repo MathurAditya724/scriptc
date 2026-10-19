@@ -5635,7 +5635,7 @@
       "kind": "stdlib",
       "name": "globalThis.WebAssembly",
       "status": "static",
-      "note": "compile, instantiate, validate, Module, Instance, instanceof, the error classes, exports, memories, tables, globals and Module transfer to workers, over the modules translated at build time; the rest refuses with SC2020 (the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations))"
+      "note": "compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, instanceof, the error classes, exports, imports and Module transfer to workers, over the modules translated at build time; the rest refuses with SC2020 (the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations))"
     },
     {
       "id": "syntax.async-generators",

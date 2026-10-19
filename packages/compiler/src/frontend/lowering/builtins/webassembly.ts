@@ -6,6 +6,7 @@ import { BOOL, DYN, F64, STRING, type IrExpr } from "../../../ir/ir.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import { lowerDynObjectLiteral } from "../expressions/object-literals.js";
 import { stdlibGlobalNameOf } from "../surfaces.js";
+import { isWebAssemblyType } from "../../type-mapper.js";
 
 /* The WebAssembly API. scriptc.d.ts declares its types (lib.dom's
  * namespace) and the type mapper gives them the checked-dynamic
@@ -13,16 +14,18 @@ import { stdlibGlobalNameOf } from "../surfaces.js";
  * native code (wasm/translate.ts) and found at run time by the SHA-256 of
  * their bytes (scr_wasm.c):
  *   - WebAssembly.compile, instantiate and validate calls, new
- *     WebAssembly.Module and new WebAssembly.Instance lower to wasm.*
- *     libCalls; members of the values they produce (exports, memory
+ *     WebAssembly.Module, Instance, Memory, Table and Global, and
+ *     WebAssembly.Module.imports, exports and customSections lower to
+ *     wasm.* libCalls; members of the values they produce (exports, memory
  *     buffers, globals, tables) dispatch through the native handles;
+ *   - the classes called without `new` throw Node's TypeError
+ *     (wasm.withoutNew);
  *   - `v instanceof WebAssembly.<Class>` lowers to wasm.is;
  *   - the error classes construct with or without `new` (wasm.errorNew).
- * Every other reached use of the API value (the bare namespace, the
- * Memory, Table and Global constructors, Module.imports and friends, the
- * streaming functions) still fences at its expression with
- * webAssemblyDiag: a build error in TypeScript sources, a located runtime
- * fence in JavaScript ones. typeof needs no value and folds to Node's
+ * Every other reached use of the API value (the classes as values, the
+ * streaming functions, Tag and Exception) still fences at its expression
+ * with webAssemblyDiag: a build error in TypeScript sources, a located
+ * runtime fence in JavaScript ones. typeof needs no value and folds to Node's
  * answer. A lowering marks the lowerer, so the build translates the
  * modules it discovers (lowerToIr). */
 
@@ -170,15 +173,38 @@ function lowerArg(lowerer: Lowerer, arg: ts.Expression): IrExpr {
     : lowerer.lowerExprExpecting(arg, DYN);
 }
 
-/** The arguments, padded with undefined to `count`; null for spreads or
- * extra arguments (they stay refused). */
+/** An argument whose evaluation has no effect: a literal, a plain
+ * identifier, or an empty object or array literal. */
+function isInert(arg: ts.Expression): boolean {
+  const node = bare(arg);
+  if (ts.isObjectLiteralExpression(node)) return node.properties.length === 0;
+  if (ts.isArrayLiteralExpression(node)) return node.elements.length === 0;
+  return (
+    ts.isIdentifier(node) ||
+    ts.isNumericLiteral(node) ||
+    node.kind === ts.SyntaxKind.BigIntLiteral ||
+    ts.isStringLiteral(node) ||
+    ts.isNoSubstitutionTemplateLiteral(node) ||
+    node.kind === ts.SyntaxKind.NullKeyword ||
+    node.kind === ts.SyntaxKind.TrueKeyword ||
+    node.kind === ts.SyntaxKind.FalseKeyword
+  );
+}
+
+/** The arguments, padded with undefined to `count`. Extra arguments are
+ * ignored, as the API ignores them, when evaluating them has no effect;
+ * null for spreads or other extra arguments (they stay refused). */
 function lowerArgs(
   lowerer: Lowerer,
   args: readonly ts.Expression[],
   count: number,
   loc: IrExpr["loc"],
 ): IrExpr[] | null {
-  if (args.length > count || args.some(ts.isSpreadElement)) return null;
+  if (args.some(ts.isSpreadElement)) return null;
+  if (args.length > count) {
+    if (!args.slice(count).every(isInert)) return null;
+    args = args.slice(0, count);
+  }
   const out = args.map((arg) => lowerArg(lowerer, arg));
   while (out.length < count) out.push(dynUndefinedExpr(loc));
   return out;
@@ -195,14 +221,57 @@ function errorNew(member: string, args: IrExpr[], loc: IrExpr["loc"]): IrExpr {
   };
 }
 
+/** The classes that require `new`, in wasm.withoutNew's numbering. */
+const NEW_ONLY = ["Module", "Instance", "Memory", "Table", "Global"];
+
+/** `WebAssembly.Module.imports(module)`, `exports(module)` and
+ * `customSections(module, name)`. Their results are arrays of descriptors
+ * or ArrayBuffers built as checked-dynamic values, then taken into the
+ * call's own type. Null for anything else. */
+function lowerModuleStatic(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const surface = webAssemblySurface(lowerer, call.expression);
+  const name = surface?.startsWith("WebAssembly.Module.")
+    ? surface.slice("WebAssembly.Module.".length)
+    : null;
+  if (name !== "imports" && name !== "exports" && name !== "customSections") return null;
+  const loc = locOf(call);
+  const args = lowerArgs(lowerer, call.arguments, name === "customSections" ? 2 : 1, loc);
+  if (args === null) return null;
+  lowerer.usesWebAssembly = true;
+  if (name === "customSections") lowerer.usesWasmCustomSections = true;
+  const fn =
+    name === "imports"
+      ? "wasm.moduleImports"
+      : name === "exports"
+        ? "wasm.moduleExports"
+        : "wasm.moduleCustomSections";
+  const result: IrExpr = { kind: "libCall", fn, args, type: DYN, loc };
+  return lowerer.coerceInto(call, result, lowerer.irTypeOf(call));
+}
+
 /** `WebAssembly.compile(bytes)`, `WebAssembly.instantiate(source,
- * imports?)`, `WebAssembly.validate(bytes)`, and the error classes called
- * without `new`. Null for anything else. */
+ * imports?)`, `WebAssembly.validate(bytes)`, the error classes called
+ * without `new`, the other classes called without `new` (a TypeError), and
+ * Module's static functions. Null for anything else. */
 export function lowerWebAssemblyCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.questionDotToken) return null;
   const member = webAssemblyMember(lowerer, call.expression);
-  if (member === null) return null;
+  if (member === null) return lowerModuleStatic(lowerer, call);
   const loc = locOf(call);
+  const newOnly = NEW_ONLY.indexOf(member);
+  if (newOnly >= 0) {
+    // The arguments evaluate, then the call throws.
+    const args = lowerArgs(lowerer, call.arguments, 2, loc);
+    if (args === null) return null;
+    lowerer.usesWebAssembly = true;
+    return {
+      kind: "libCall",
+      fn: "wasm.withoutNew",
+      args: [{ kind: "numLit", value: newOnly, type: F64, loc }, args[0]!, args[1]!],
+      type: DYN,
+      loc,
+    };
+  }
   const isError = member === "CompileError" || member === "LinkError" || member === "RuntimeError";
   if (member !== "compile" && member !== "instantiate" && member !== "validate" && !isError)
     return null;
@@ -234,14 +303,17 @@ export function lowerWebAssemblyCall(lowerer: Lowerer, call: ts.CallExpression):
 }
 
 /** `new WebAssembly.Module(bytes)`, `new WebAssembly.Instance(module,
- * imports?)` and the error classes. Null for anything else. */
+ * imports?)`, `new WebAssembly.Memory(descriptor)`, `new
+ * WebAssembly.Table(descriptor, value?)`, `new
+ * WebAssembly.Global(descriptor, value?)` and the error classes. Null for
+ * anything else. */
 export function lowerWebAssemblyNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   const member = webAssemblyMember(lowerer, expr.expression);
   if (member === null) return null;
   const isError = member === "CompileError" || member === "LinkError" || member === "RuntimeError";
-  if (member !== "Module" && member !== "Instance" && !isError) return null;
+  if (!NEW_ONLY.includes(member) && !isError) return null;
   const loc = locOf(expr);
-  const used = member === "Module" ? 1 : 2;
+  const used = member === "Module" || member === "Memory" ? 1 : 2;
   const args = lowerArgs(lowerer, expr.arguments ?? [], used, loc);
   if (args === null) return null;
   lowerer.usesWebAssembly = true;
@@ -249,6 +321,12 @@ export function lowerWebAssemblyNew(lowerer: Lowerer, expr: ts.NewExpression): I
   if (isError) result = errorNew(member, args, loc);
   else if (member === "Module")
     result = { kind: "libCall", fn: "wasm.moduleNew", args: [args[0]!], type: DYN, loc };
+  else if (member === "Memory")
+    result = { kind: "libCall", fn: "wasm.memoryNew", args: [args[0]!], type: DYN, loc };
+  else if (member === "Table")
+    result = { kind: "libCall", fn: "wasm.tableNew", args: [args[0]!, args[1]!], type: DYN, loc };
+  else if (member === "Global")
+    result = { kind: "libCall", fn: "wasm.globalNew", args: [args[0]!, args[1]!], type: DYN, loc };
   else
     result = {
       kind: "libCall",
@@ -308,4 +386,19 @@ export function lowerWebAssemblyValue(lowerer: Lowerer, expr: ts.Expression): Ir
   );
   if (index < 0 || !ts.isPropertyAccessExpression(node)) return null;
   return fn("wasm.function", [{ kind: "numLit", value: index, type: F64, loc }]);
+}
+
+/** `global.valueOf()` on a receiver typed as a WebAssembly value: a
+ * Global answers its value (the generic dyn.valueOf answers the object
+ * itself for native handles other than Date). Null for other receivers. */
+export function lowerWebAssemblyValueOf(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  recv: IrExpr,
+  loc: IrExpr["loc"],
+): IrExpr | null {
+  const ctx = { checker: lowerer.checker, isStdlibFile: lowerer.isStdlibFile };
+  if (!isWebAssemblyType(lowerer.typeOf(receiver), ctx)) return null;
+  lowerer.usesWebAssembly = true;
+  return { kind: "libCall", fn: "wasm.valueOf", args: [recv], type: DYN, loc };
 }

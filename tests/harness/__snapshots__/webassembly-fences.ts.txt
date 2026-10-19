@@ -1,71 +1,26 @@
-webassembly-fences.ts:6:22 - error SC2020: 'new WebAssembly.Memory' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, Module, Instance and the error classes over modules translated at build time, but not this part of the API
+webassembly-fences.ts:9:26 - error SC2020: 'WebAssembly.instantiateStreaming' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, and the error classes over modules translated at build time, but not this part of the API
 
-  5 |   const module = await WebAssembly.compile(bytes);
-  6 |   const memory = new WebAssembly.Memory({ initial: 1 });
-    |                      ^~~~~~~~~~~~~~~~~~
-  7 |   const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
-
-  hint: the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
-
-webassembly-fences.ts:7:21 - error SC2020: 'new WebAssembly.Table' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, Module, Instance and the error classes over modules translated at build time, but not this part of the API
-
-  6 |   const memory = new WebAssembly.Memory({ initial: 1 });
-  7 |   const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
-    |                     ^~~~~~~~~~~~~~~~~
-  8 |   const global = new WebAssembly.Global({ value: "i32", mutable: true }, 1);
-
-  hint: the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
-
-webassembly-fences.ts:8:22 - error SC2020: 'new WebAssembly.Global' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, Module, Instance and the error classes over modules translated at build time, but not this part of the API
-
-  7 |   const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
-  8 |   const global = new WebAssembly.Global({ value: "i32", mutable: true }, 1);
-    |                      ^~~~~~~~~~~~~~~~~~
-  9 |   console.log(memory.buffer.byteLength, table.length, global.value);
-
-  hint: the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
-
-webassembly-fences.ts:9:15 - error SC2004: uses of 'memory' inherit the blocker on its declaration
-
-   8 |   const global = new WebAssembly.Global({ value: "i32", mutable: true }, 1);
-   9 |   console.log(memory.buffer.byteLength, table.length, global.value);
-     |               ^~~~~~~~~~~~~~~~~~~~~~~~
-  10 |   console.log(WebAssembly.Module.imports(module).length);
-
-  hint: the declaration of 'memory' did not compile — fix the diagnostic reported there and these sites clear with it
-
-webassembly-fences.ts:10:15 - error SC2020: 'WebAssembly.Module.imports' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, Module, Instance and the error classes over modules translated at build time, but not this part of the API
-
-   9 |   console.log(memory.buffer.byteLength, table.length, global.value);
-  10 |   console.log(WebAssembly.Module.imports(module).length);
-     |               ^~~~~~~~~~~~~~~~~~~~~~~~~~
-  11 |   console.log(WebAssembly.Module.customSections(module, "name").length);
-
-  hint: the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
-
-webassembly-fences.ts:11:15 - error SC2020: 'WebAssembly.Module.customSections' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, Module, Instance and the error classes over modules translated at build time, but not this part of the API
-
-  10 |   console.log(WebAssembly.Module.imports(module).length);
-  11 |   console.log(WebAssembly.Module.customSections(module, "name").length);
-     |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  12 |   const streamed = await WebAssembly.instantiateStreaming(fetch("https://example.com/x.wasm"));
-
-  hint: the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
-
-webassembly-fences.ts:12:26 - error SC2020: 'WebAssembly.instantiateStreaming' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, Module, Instance and the error classes over modules translated at build time, but not this part of the API
-
-  11 |   console.log(WebAssembly.Module.customSections(module, "name").length);
-  12 |   const streamed = await WebAssembly.instantiateStreaming(fetch("https://example.com/x.wasm"));
+   8 |   console.log(WebAssembly.Module.imports(module).length);
+   9 |   const streamed = await WebAssembly.instantiateStreaming(fetch("https://example.com/x.wasm"));
      |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  13 |   console.log(streamed.instance);
+  10 |   console.log(streamed.instance);
 
-  hint: the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
+  hint: the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
 
-webassembly-fences.ts:14:16 - error SC2020: 'WebAssembly.Module' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, Module, Instance and the error classes over modules translated at build time, but not this part of the API
+webassembly-fences.ts:11:16 - error SC2020: 'WebAssembly.Module' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, and the error classes over modules translated at build time, but not this part of the API
 
-  13 |   console.log(streamed.instance);
-  14 |   const Ctor = WebAssembly.Module;
+  10 |   console.log(streamed.instance);
+  11 |   const Ctor = WebAssembly.Module;
      |                ^~~~~~~~~~~~~~~~~~
-  15 |   console.log(Ctor);
+  12 |   console.log(Ctor);
 
-  hint: the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
+  hint: the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
+
+webassembly-fences.ts:13:18 - error SC2020: 'WebAssembly.Memory' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, and the error classes over modules translated at build time, but not this part of the API
+
+  12 |   console.log(Ctor);
+  13 |   const Memory = WebAssembly.Memory;
+     |                  ^~~~~~~~~~~~~~~~~~
+  14 |   console.log(new Memory({ initial: 1 }));
+
+  hint: the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)

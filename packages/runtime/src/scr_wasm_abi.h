@@ -33,7 +33,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_WASM_ABI_VERSION 1
+#define SCR_WASM_ABI_VERSION 2
 
 enum { SCR_WASM_FUNC = 0, SCR_WASM_TABLE = 1, SCR_WASM_MEMORY = 2, SCR_WASM_GLOBAL = 3 };
 
@@ -61,6 +61,9 @@ enum {
 #define SCR_WASM_DESC_BOUNDS_CHECKS 1u
 
 typedef void (*ScrWasmThunk)(void *inst, const uint64_t *args, uint64_t *results);
+/* A signature's call thunk: calls `code` (a function of that signature,
+ * `(inst, params...) -> results`) with the arguments in slots. */
+typedef void (*ScrWasmCallThunk)(void *code, void *inst, const uint64_t *args, uint64_t *results);
 
 typedef struct {
   const char *module;
@@ -111,6 +114,16 @@ typedef struct {
   const int64_t *items;
 } ScrWasmElemDesc;
 
+/* A custom section: its name and payload, in module order. Only programs
+ * that call WebAssembly.Module.customSections carry them (the translator
+ * emits none otherwise, so debug sections cost nothing). */
+typedef struct {
+  const char *name;
+  uint64_t name_len;
+  const uint8_t *data;
+  uint64_t len;
+} ScrWasmCustomDesc;
+
 typedef struct ScrWasmModuleDesc {
   uint8_t sha256[32];
   uint64_t byte_length;
@@ -143,6 +156,12 @@ typedef struct ScrWasmModuleDesc {
    * guard; then the start function `void (inst)`, or NULL. */
   void (*init)(void *inst);
   void (*start)(void *inst);
+  uint64_t custom_count;
+  const ScrWasmCustomDesc *customs;
+  /* Per function: the call thunk of its signature for referenced
+   * functions the module does not export (NULL otherwise), so any
+   * function reference can be called from JavaScript. */
+  const ScrWasmCallThunk *func_call_thunks;
 } ScrWasmModuleDesc;
 
 /* The registry the compiler emits in the program module of every program
@@ -163,6 +182,12 @@ typedef struct ScrWasmMemory {
   bool guarded;
   struct ScrDyn *buffer; /* the cached ArrayBuffer */
   uint64_t buffer_size;  /* the size it was created at */
+  uint64_t declared_max; /* pages; UINT64_MAX when the memory has no maximum */
+  /* Explicit-bounds memories (not guarded): the blocks grow replaced.
+   * ArrayBuffers created before a growth still point into them, so they
+   * live as long as the memory. */
+  uint8_t **retired;
+  size_t retired_count;
 } ScrWasmMemory;
 
 typedef struct ScrWasmFuncRef {
@@ -178,6 +203,7 @@ typedef struct ScrWasmTable {
   uint32_t max;
   size_t rc;
   char elem; /* 'r' or 'x' */
+  uint64_t declared_max; /* UINT64_MAX when the table has no maximum */
 } ScrWasmTable;
 
 /* A global's cell: the value in the low bytes of `value`. */

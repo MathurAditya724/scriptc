@@ -5,7 +5,8 @@
  * error. Module bytes are inline base64 literals in each program's
  * data.mjs, which the build translates. */
 
-/** The spec harness's `spectest` module, without its memory and table. */
+/** The spec harness's `spectest` module (the reference interpreter's JS
+ * harness), with its memory and table. */
 function spectestImports(log) {
   return {
     print() {
@@ -33,6 +34,8 @@ function spectestImports(log) {
     global_i64: 666n,
     global_f32: 666.6,
     global_f64: 666.6,
+    table: new WebAssembly.Table({ initial: 10, maximum: 20, element: "anyfunc" }),
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 2 }),
   };
 }
 

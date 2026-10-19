@@ -48,7 +48,10 @@ export function emitWasmModules(
     if (bytes === null) continue;
     let translation;
     try {
-      translation = translateWasmModule(bytes, hexBytes(module.sha256), { boundsChecks });
+      translation = translateWasmModule(bytes, hexBytes(module.sha256), {
+        boundsChecks,
+        customSections: mod.wasmCustomSections === true,
+      });
     } catch (error) {
       if (error instanceof WasmTranslateError) continue;
       throw error;

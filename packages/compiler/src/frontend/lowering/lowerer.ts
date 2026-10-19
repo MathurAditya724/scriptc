@@ -1122,6 +1122,7 @@ export function lowerToIr(
       wasmModules.push({ sha256: report.sha256, bytes: encodeBase64(bytes) });
     }
     result.module.wasmModules = wasmModules;
+    if (resultLowerer.usesWasmCustomSections) result.module.wasmCustomSections = true;
     timing("wasm-discovery", { modules: wasmModules.length });
   }
   if (options.coverage !== true) return result;
@@ -2681,6 +2682,9 @@ export class Lowerer {
   /** The program uses the WebAssembly API (builtins/webassembly.ts): the
    * build translates the modules it discovers. */
   usesWebAssembly = false;
+  /** The program calls WebAssembly.Module.customSections: translated
+   * modules keep their custom sections. */
+  usesWasmCustomSections = false;
   /** The program constructs a LifetimeRegion (lifetime-regions.ts). */
   usesLifetimeRegions = false;
   /** Per-directory answers of experimental-import.ts's declaration-file test. */

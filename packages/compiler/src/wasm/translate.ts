@@ -68,7 +68,7 @@ export const TRAP_NULL = 9;
 export const TRAP_EXHAUSTION = 100;
 
 /** The descriptor ABI version both sides agree on. */
-export const WASM_ABI_VERSION = 1;
+export const WASM_ABI_VERSION = 2;
 
 /** Instance slot offsets (bytes). */
 const OFF_MEMBASE = 8;
@@ -81,6 +81,8 @@ const FUNCREF_SIZE = 24;
 export interface WasmTranslateOptions {
   /** Explicit bounds checks instead of guard pages. */
   boundsChecks: boolean;
+  /** Keep the custom sections, for WebAssembly.Module.customSections. */
+  customSections?: boolean;
 }
 
 export interface WasmTranslation {
@@ -387,6 +389,44 @@ class ModuleTranslator {
     return name;
   }
 
+  /** A call thunk for signature `type`: `(code, inst, args, results)`
+   * calls `code` (a function of that signature) with the arguments in
+   * 64-bit slots. The runtime calls a function reference that reaches
+   * JavaScript through it when the module does not export the function. */
+  callThunk(type: number): string {
+    const name = `@${this.p}_k${type}`;
+    const ft = this.m.types[type]!;
+    const out: string[] = [];
+    out.push(`define internal void ${name}(ptr %code, ptr %inst, ptr %a, ptr %r) nounwind {`);
+    out.push(`entry:`);
+    const args: string[] = ["ptr %inst"];
+    for (let i = 0; i < ft.params.length; i++) {
+      out.push(`  %ap${i} = getelementptr i64, ptr %a, i64 ${i}`);
+      out.push(`  %as${i} = load i64, ptr %ap${i}`);
+      args.push(`${llType(ft.params[i]!)} ${fromSlot(out, ft.params[i]!, `%as${i}`, `a${i}`)}`);
+    }
+    const ret = retType(ft.results);
+    if (ft.results.length === 0) {
+      out.push(`  call void %code(${args.join(", ")})`);
+    } else {
+      out.push(`  %res = call ${ret} %code(${args.join(", ")})`);
+      for (let i = 0; i < ft.results.length; i++) {
+        let v = "%res";
+        if (ft.results.length > 1) {
+          out.push(`  %rv${i} = extractvalue ${ret} %res, ${i}`);
+          v = `%rv${i}`;
+        }
+        const slot = toSlot(out, ft.results[i]!, v, `r${i}`);
+        out.push(`  %rp${i} = getelementptr i64, ptr %r, i64 ${i}`);
+        out.push(`  store i64 ${slot}, ptr %rp${i}`);
+      }
+    }
+    out.push(`  ret void`);
+    out.push(`}`);
+    this.text.push(out.join("\n"));
+    return name;
+  }
+
   /** Emits the init function: globals, table initializers and segments,
    * in the specification's order. The runtime calls the start function
    * (which takes and returns nothing) separately. */
@@ -537,12 +577,27 @@ class ModuleTranslator {
     // every function a reference can name.
     const nf = m.funcTypes.length;
     const codes: string[] = [];
+    const callThunks: string[] = [];
+    const callThunkSyms = new Map<number, string>();
     const types: string[] = [];
     const sigs: string[] = [];
     const sigSyms = new Map<string, string>();
     for (let f = 0; f < nf; f++) {
       const referenced = this.refs.has(f);
       codes.push(referenced ? `ptr ${this.fn(f)}` : "ptr null");
+      // Referenced functions the module does not export reach JavaScript
+      // through their signature's call thunk.
+      if (referenced && !thunks.has(f)) {
+        const type = m.funcTypes[f]!;
+        let thunk = callThunkSyms.get(type);
+        if (thunk === undefined) {
+          thunk = this.callThunk(type);
+          callThunkSyms.set(type, thunk);
+        }
+        callThunks.push(`ptr ${thunk}`);
+      } else {
+        callThunks.push("ptr null");
+      }
       types.push(`i64 ${this.typeHashes[m.funcTypes[f]!]!}`);
       const sig = sigString(this.funcType(f));
       let sym = sigSyms.get(sig);
@@ -555,7 +610,9 @@ class ModuleTranslator {
     const codesSym = `@${p}_codes`;
     const typesSym = `@${p}_types`;
     const sigsSym = `@${p}_sigs`;
+    const callThunksSym = `@${p}_calls`;
     lines.push(`${codesSym} = private constant [${nf} x ptr] [${codes.join(", ")}]`);
+    lines.push(`${callThunksSym} = private constant [${nf} x ptr] [${callThunks.join(", ")}]`);
     lines.push(`${typesSym} = private constant [${nf} x i64] [${types.join(", ")}]`);
     lines.push(`${sigsSym} = private constant [${nf} x ptr] [${sigs.join(", ")}]`);
     // Tables.
@@ -623,6 +680,30 @@ class ModuleTranslator {
     lines.push(
       `${elemsSym} = private constant [${elemRows.length} x { i64, i64, ptr }] [${elemRows.join(", ")}]`,
     );
+    // Custom sections, when the program reads them.
+    const customRows: string[] = [];
+    if (this.opts.customSections === true) {
+      for (let s = 0; s < m.customs.length; s++) {
+        const custom = m.customs[s]!;
+        const name = textStr(custom.name);
+        const len = custom.payload.end - custom.payload.start;
+        let data = "ptr null";
+        if (len > 0) {
+          const sym = `@${p}_c${s}`;
+          lines.push(
+            `${sym} = private unnamed_addr constant [${len} x i8] c"${cBytes(m.bytes, custom.payload.start, custom.payload.end)}", align 1`,
+          );
+          data = `ptr ${sym}`;
+        }
+        customRows.push(
+          `{ ptr, i64, ptr, i64 } { ptr ${name.sym}, i64 ${name.len}, ${data}, i64 ${len} }`,
+        );
+      }
+    }
+    const customsSym = `@${p}_customs`;
+    lines.push(
+      `${customsSym} = private constant [${customRows.length} x { ptr, i64, ptr, i64 }] [${customRows.join(", ")}]`,
+    );
     const memory = m.memories[0];
     const sha: string[] = [];
     for (let i = 0; i < 32; i++) sha.push(`i8 ${sha256[i]!}`);
@@ -654,9 +735,12 @@ class ModuleTranslator {
       `ptr ${elemsSym}`,
       `ptr ${init}`,
       `ptr ${m.start === null ? "null" : this.fn(m.start)}`,
+      `i64 ${customRows.length}`,
+      `ptr ${customsSym}`,
+      `ptr ${callThunksSym}`,
     ];
     const descType =
-      "{ [32 x i8], i64, i64, i64, i64, ptr, i64, ptr, i64, i64, ptr, ptr, ptr, i64, ptr, i64, i64, i64, i64, ptr, i64, ptr, i64, ptr, ptr, ptr }";
+      "{ [32 x i8], i64, i64, i64, i64, ptr, i64, ptr, i64, i64, ptr, ptr, ptr, i64, ptr, i64, i64, i64, i64, ptr, i64, ptr, i64, ptr, ptr, ptr, i64, ptr, ptr }";
     lines.push(`${desc} = internal constant ${descType} { ${fields.join(", ")} }`);
     this.text.push(lines.join("\n"));
     return desc;

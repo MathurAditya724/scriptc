@@ -60,6 +60,37 @@ describe("translateWasmModule", () => {
     for (const decl of out.decls) expect(decl).toMatch(/^declare /);
   });
 
+  test("keeps custom sections only when asked, and gives unexported table functions call thunks", () => {
+    // (module (type $t (func (param i32) (result i32))) (table 2 funcref)
+    //   (elem (i32.const 0) $hidden $shown) (func $hidden (type $t) local.get 0)
+    //   (func $shown (export "shown") (type $t) local.get 0)), plus a custom
+    //   section "meta" with "hi".
+    const refs = new Uint8Array([
+      0, 97, 115, 109, 1, 0, 0, 0, 1, 6, 1, 96, 1, 127, 1, 127, 3, 3, 2, 0, 0, 4, 4, 1, 112, 0, 2, 7, 9,
+      1, 5, 115, 104, 111, 119, 110, 0, 1, 9, 8, 1, 0, 65, 0, 11, 2, 0, 1, 10, 11, 2, 4, 0, 32, 0, 11, 4,
+      0, 32, 0, 11, 0, 7, 4, 109, 101, 116, 97, 104, 105,
+    ]);
+    const prefix = wasmSymbolPrefix(SHA);
+    const plain = translateWasmModule(refs, SHA, { boundsChecks: false }).text.join("\n");
+    expect(plain).toContain(`@${prefix}_customs = private constant [0 x { ptr, i64, ptr, i64 }] []`);
+    expect(plain).not.toContain(`c"hi"`);
+    const kept = translateWasmModule(refs, SHA, { boundsChecks: false, customSections: true });
+    const text = kept.text.join("\n");
+    expect(text).toContain(`@${prefix}_c0 = private unnamed_addr constant [2 x i8] c"hi", align 1`);
+    expect(text).toContain(`@${prefix}_customs = private constant [1 x { ptr, i64, ptr, i64 }]`);
+    // One call thunk for the signature, used by the unexported function
+    // only (the exported one has its export thunk).
+    expect(text).toContain(`define internal void @${prefix}_k0(ptr %code, ptr %inst, ptr %a, ptr %r)`);
+    expect(text).toContain(`%res = call i32 %code(ptr %inst, i32 `);
+    expect(text).toContain(`@${prefix}_calls = private constant [2 x ptr] [ptr @${prefix}_k0, ptr null]`);
+    for (const line of topLevelLines(kept.text)) {
+      expect(
+        line === "" || /^(define internal |@[\w.$-]+ = (private|internal) )/.test(line),
+        line,
+      ).toBe(true);
+    }
+  });
+
   test("checks memory accesses explicitly only when asked", () => {
     const guarded = translateWasmModule(ADD, SHA, { boundsChecks: false }).text.join("\n");
     const checked = translateWasmModule(ADD, SHA, { boundsChecks: true }).text.join("\n");
