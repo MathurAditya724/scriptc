@@ -2386,6 +2386,19 @@ typedef enum {
   SCR_HTTP_BODY_EOF, /* RESPONSE mode: no framing header — body until EOF */
 } ScrHttpParseState;
 
+/* agent.totalSocketCount: the sockets an agent dialed that have not
+ * closed yet, idle pooled ones included. The agent and each counted
+ * connection hold the cell (+1), so a socket that closes after the agent
+ * is gone still lowers a live count. */
+typedef struct ScrHttpSockCount {
+  size_t rc;
+  size_t n;
+} ScrHttpSockCount;
+
+static void scr_http_sock_count_release(ScrHttpSockCount *k) {
+  if (k != NULL && --k->rc == 0) free(k);
+}
+
 typedef struct ScrHttpConn {
   ScrNetSocket *sock;  /* BORROWED: the ctx lives and dies with the socket
                         * (a retained ref here would be a cycle the RC
@@ -2408,6 +2421,8 @@ typedef struct ScrHttpConn {
   bool pumping; /* inside scr_http_conn_pump */
   bool keep_alive_timer; /* the socket's idle timer is the keep-alive timeout */
   size_t max_header_size; /* maxHeaderSize option; 0 = SCR_HTTP_MAX_HEADER_SIZE */
+  struct ScrHttpSockCount *sock_count; /* client mode: the agent count that includes
+                                        * this socket (+1), or NULL */
   struct ScrHttpAgent *pool_agent; /* client mode: the agent whose free list holds
                                     * this idle socket (borrowed), or NULL */
   bool header_overflow; /* client mode: the response head exceeded a bound */
@@ -2419,6 +2434,23 @@ typedef struct ScrHttpConn {
                              * runs below the client struct's definition) */
   struct ScrHttpClientReq *client; /* +1 in client mode; released at close */
 } ScrHttpConn;
+
+/* The connection's socket joins an agent's totalSocketCount when it starts
+ * to dial, and leaves it when it closes. */
+static void scr_http_conn_count(ScrHttpConn *conn, ScrHttpSockCount *k) {
+  if (conn == NULL || conn->sock_count != NULL) return;
+  k->rc++;
+  k->n++;
+  conn->sock_count = k;
+}
+
+static void scr_http_conn_uncount(ScrHttpConn *conn) {
+  ScrHttpSockCount *k = conn != NULL ? conn->sock_count : NULL;
+  if (k == NULL) return;
+  conn->sock_count = NULL;
+  k->n--;
+  scr_http_sock_count_release(k);
+}
 
 /* Client-mode forward declarations (implementations live with the client
  * below the server parser). */
@@ -3878,6 +3910,10 @@ static void scr_http_client_settle(struct ScrHttpClientReq *c) {
   c->destroyed = true;
   scr_http_client_signal_detach(c);
   scr_http_client_agent_detach(c); /* usually already detached at socket close */
+  /* a socket that does not go back to the pool leaves totalSocketCount
+   * before the request's 'close', as Node's agent removes it at the
+   * socket's 'close' (c->sock keeps c->conn alive) */
+  if (c->sock != NULL && !c->sock_pooled) scr_http_conn_uncount(c->conn);
   scr_net_fire0(&c->close_ls);
   scr_net_ls_drop(&c->resp_ls);
   scr_net_ls_drop(&c->err_ls);
@@ -4857,6 +4893,7 @@ static void scr_http_client_agent_detach(ScrHttpClientReq *c) {
 }
 
 static void scr_http_client_closed(ScrHttpConn *conn) {
+  scr_http_conn_uncount(conn);
   if (conn->pool_agent != NULL) scr_http_agent_free_remove(conn->pool_agent, conn);
   ScrHttpClientReq *c = conn->client;
   if (!c) return;
@@ -4931,6 +4968,7 @@ static void scr_http_client_sock_established(void *ctx) {
 }
 
 static void scr_http_client_conn_free(ScrHttpConn *conn) {
+  scr_http_conn_uncount(conn);
   if (conn->pool_agent != NULL) scr_http_agent_free_remove(conn->pool_agent, conn);
   if (conn->req) {
     scr_http_req_finish(conn->req, false);
@@ -5138,6 +5176,7 @@ typedef struct ScrHttpAgent {
   bool destroyed;
   ScrHttpAgentEnt *ents; /* append order — Node's FIFO queue */
   struct ScrHttpAgentFree *free_socks; /* keepAlive: idle sockets, most recent first */
+  ScrHttpSockCount *sock_count; /* totalSocketCount (+1) */
   bool in_registry;
   struct ScrHttpAgent *next;
 } ScrHttpAgent;
@@ -5183,6 +5222,7 @@ static void scr_http_agent_release(ScrHttpAgent *a) {
     free(e);
     e = next;
   }
+  scr_http_sock_count_release(a->sock_count);
   free(a);
 }
 
@@ -5276,6 +5316,7 @@ static void scr_http_client_rebind(ScrHttpClientReq *c, ScrHttpAgentFree *f, boo
   scr_net_sock_set_native_established(old, NULL);
   scr_net_sock_move_writes(old, f->sock);
   if (oldconn != NULL) {
+    scr_http_conn_uncount(oldconn);
     if (oldconn->client) scr_http_client_release(oldconn->client);
     free(oldconn->buf);
     free(oldconn);
@@ -5413,7 +5454,10 @@ static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpCl
           scr_http_client_rebind(e->client, f, false);
         } else if (scr_http_agent_active(ag, name) < ag->max_sockets) {
           e->queued = false;
-          if (e->client->sock) scr_net_sock_dial_start(e->client->sock);
+          if (e->client->sock) {
+            scr_http_conn_count(e->client->conn, ag->sock_count);
+            scr_net_sock_dial_start(e->client->sock);
+          }
         }
         break;
       }
@@ -5463,6 +5507,9 @@ ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
   ScrHttpAgent *a = calloc(1, sizeof *a);
   if (!a) scr_http_oom();
   a->rc = 1;
+  a->sock_count = calloc(1, sizeof *a->sock_count);
+  if (!a->sock_count) scr_http_oom();
+  a->sock_count->rc = 1;
   a->secure = secure;
   a->keep_alive = keep_alive;
   a->fifo = fifo;
@@ -5601,6 +5648,7 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
     scr_net_sock_set_timeout(c->sock, ag->timeout_ms);
   }
   if (reuse != NULL) scr_http_client_rebind(c, reuse, true);
+  else if (!queue) scr_http_conn_count(c->conn, ag->sock_count); /* dialed now */
   c->agent = scr_http_agent_retain(ag);
   ScrHttpAgentEnt *e = calloc(1, sizeof *e);
   if (!e) scr_http_oom();
@@ -6772,13 +6820,7 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
     }
     return obj;
   }
-  if (strcmp(key, "totalSocketCount") == 0) {
-    size_t n = 0;
-    for (ScrHttpAgentEnt *e = a->ents; e; e = e->next) {
-      if (!e->queued) n++;
-    }
-    return scr_dyn_new_num((double)n);
-  }
+  if (strcmp(key, "totalSocketCount") == 0) return scr_dyn_new_num((double)a->sock_count->n);
   {
     static const char *const known[] = { "options", "maxTotalSockets", NULL };
     if (scr_http_dynh_in(key, known)) {
