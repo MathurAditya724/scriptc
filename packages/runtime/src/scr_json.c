@@ -3651,7 +3651,7 @@ ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc) {
  * always-linked core never references gated units. A missing tag at use
  * is an internal error: emitted programs install a unit's ops whenever
  * they can box its handles. */
-static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_COUNT];
+static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_CAPACITY];
 
 /* BroadcastChannel's EventTarget table (scr_et_broadcast_install). */
 SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops = NULL;
@@ -12818,8 +12818,15 @@ static ScrDyn *scr_native_set_pack(void *ptr) {
 
 ScrDyn *scr_dyn_native_set(ScrMap *value) {
   static const ScrDynHandleOps ops = {
-    "Set", &scr_map_retain_v, &scr_map_release_v, &scr_native_set_invoke,
-    &scr_native_set_get, &scr_weak_map_write, NULL, &scr_native_set_pack,
+      .cls = "Set",
+      .retain = &scr_map_retain_v,
+      .release = &scr_map_release_v,
+      .invoke = &scr_native_set_invoke,
+      .get = &scr_native_set_get,
+      .set = &scr_weak_map_write,
+      .iter_pack = &scr_native_set_pack,
+      /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
+      .json_empty_object = true,
   };
   scr_dyn_handle_install(SCR_DYNH_SET, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_SET);
@@ -12928,8 +12935,15 @@ static ScrDyn *scr_native_map_pack(void *ptr) {
 
 ScrDyn *scr_dyn_native_map(ScrMap *value) {
   static const ScrDynHandleOps ops = {
-    "Map", &scr_map_retain_v, &scr_map_release_v, &scr_native_map_invoke,
-    &scr_native_map_get, &scr_weak_map_write, NULL, &scr_native_map_pack,
+      .cls = "Map",
+      .retain = &scr_map_retain_v,
+      .release = &scr_map_release_v,
+      .invoke = &scr_native_map_invoke,
+      .get = &scr_native_map_get,
+      .set = &scr_weak_map_write,
+      .iter_pack = &scr_native_map_pack,
+      /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
+      .json_empty_object = true,
   };
   scr_dyn_handle_install(SCR_DYNH_MAP, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_MAP);

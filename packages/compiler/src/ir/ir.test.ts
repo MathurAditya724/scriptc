@@ -159,6 +159,17 @@ describe("checked records with opaque payloads", () => {
       isJsonStringifyDynamicType(arrayOf({ kind: "union", unionId: "optional" }), record, union),
     ).toBe(true);
   });
+
+  test("class instances stringify through the runtime JSON traversal only", () => {
+    const point: IrType = { kind: "object", className: "Point" };
+    const failure: IrType = { kind: "object", className: "%Error" };
+    expect(isJsonStringifyDynamicType(point, record, union)).toBe(true);
+    expect(isJsonStringifyDynamicType(arrayOf(point), record, union)).toBe(true);
+    expect(isJsonStringifyDynamicType(failure, record, union)).toBe(false);
+    expect(isJsonStringifySafeType(point, record, union)).toBe(false);
+    expect(isJsonSafeType(point, record, union)).toBe(false);
+    expect(canDynCheckTo(arrayOf(point), record, union)).toBe(true);
+  });
 });
 
 describe("native typed-array boundaries", () => {

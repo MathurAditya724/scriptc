@@ -26,6 +26,9 @@ import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
+import { refuseWebAssemblyUse } from "./builtins/webassembly.js";
+import { discoverWasmModules, type WasmModuleReport } from "../../wasm/discover.js";
+import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { hashStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
@@ -725,6 +728,8 @@ export interface LowerResult {
   /** Coverage only (LowerOptions.coverage): the unreached remainder,
    * lowered in a throwaway pass — blockers in it can never fail a build. */
   unreached?: { diagnostics: ScrDiagnostic[]; stats: LowerStats; runtimeFences?: ScrDiagnostic[] };
+  /** Coverage only: the WebAssembly modules the build can see (wasm/discover.ts). */
+  wasmModules?: WasmModuleReport[];
   /** Compile-time-detectable behavior differences from Node (SC6xxx
    * divergence warnings) in the program's own modules. Never failures. */
   divergences?: ScrDiagnostic[];
@@ -745,6 +750,8 @@ export interface LowerOptions {
    * diagnostics and stats under `unreached` — the whole-program analysis
    * builds deliberately gave up. */
   coverage?: boolean;
+  /** Coverage only: module files named by --wasm (absolute). */
+  wasmFiles?: readonly string[];
   /** The platform the build TARGETS ("win32" under a windows cross triple,
    * the host platform otherwise — see buildTargetPlatform in index.ts).
    * The whole program compiles for one platform, so the platform-keyed
@@ -1126,6 +1133,23 @@ export function lowerToIr(
     },
   };
   if (tiers !== undefined) covered.tiers = tiers;
+  const wasmModules = discoverWasmModules({
+    files: moduleOrder.includes(entry) ? moduleOrder : [...moduleOrder, entry],
+    entry: entry.fileName,
+    configured: options.wasmFiles ?? [],
+    resolveRequest: (fromFile, specifier) => {
+      const resolved = resolveRequireRuntime(
+        fromFile,
+        specifier,
+        targetPlatform,
+        undefined,
+        options.frontendServices,
+      );
+      return resolved.ok ? resolved.value : null;
+    },
+  });
+  timing("wasm-discovery", { modules: wasmModules.length });
+  if (wasmModules.length > 0) covered.wasmModules = wasmModules;
   return covered;
 }
 
@@ -11410,6 +11434,7 @@ export class Lowerer {
     // dispatch. The general identifier-call paths have no lowering for a
     // promise-returning ambient global, and `import` is a keyword callee no
     // identifier path matches.
+    refuseWebAssemblyUse(this, expr.expression);
     return (
       lowerLifetimeRegionCall(this, expr) ??
       lowerInternTableCall(this, expr) ??
@@ -11635,6 +11660,7 @@ export class Lowerer {
   }
 
   lowerNew(expr: ts.NewExpression): IrExpr {
+    refuseWebAssemblyUse(this, expr.expression, "new ");
     const builtin =
       lowerLifetimeRegionNew(this, expr) ??
       lowerInternTableNew(this, expr) ??
