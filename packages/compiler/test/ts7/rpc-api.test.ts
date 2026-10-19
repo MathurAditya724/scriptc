@@ -62,7 +62,16 @@ test("production RPC bridge preserves pinned SDK parser/checker behavior", () =>
     JSON.stringify({ compilerOptions: { strict: true, noEmit: true, types: [] }, files: [path] }),
   );
   writeFileSync(path, 'export const answer = 42;\nexport const invalid: number = "wrong";\n');
-  const nativeClient = new Ts7Api({ cwd: dir, fs: fallback });
+  // Compared with the pinned SDK, which runs tsgo, so the bridge runs tsgo too.
+  const checker = process.env["SCRIPTC_CHECKER"];
+  process.env["SCRIPTC_CHECKER"] = "tsgo";
+  let nativeClient: Ts7Api;
+  try {
+    nativeClient = new Ts7Api({ cwd: dir, fs: fallback });
+  } finally {
+    if (checker === undefined) delete process.env["SCRIPTC_CHECKER"];
+    else process.env["SCRIPTC_CHECKER"] = checker;
+  }
   const sdk = new API({ cwd: dir });
   try {
     expect(nativeClient.parseConfigFile(config)).toEqual(sdk.parseConfigFile(config));
