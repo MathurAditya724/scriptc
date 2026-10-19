@@ -37,9 +37,9 @@ function check(value: boolean, message: string): void {
 }
 
 function declaration(root: AstNode, name: string): AstNode {
-  for (const statement of root.statements ?? []) {
+  for (const statement of root.statements?.nodes ?? []) {
     if (statement.name?.text === name) return statement;
-    for (const variable of statement.declarationList?.declarations ?? []) {
+    for (const variable of statement.declarationList?.declarations?.nodes ?? []) {
       if (variable.name?.text === name) return variable;
     }
   }
@@ -135,7 +135,7 @@ export function checkSemanticModel(snapshot: SemanticSnapshot, checker: Semantic
   const dict = checker.getDeclaredTypeOfSymbol(symbolAt(checker, declaration(root, "Dict").name!));
   const index = checker.getIndexInfosOfType(dict)[0]!;
   check(index.keyType === intrinsicString && index.valueType === intrinsicNumber && index.isReadonly, "index signature types");
-  check(index.declaration!.resolve() === declaration(root, "Dict").members![0], "index signature declaration");
+  check(index.declaration!.resolve() === declaration(root, "Dict").members?.nodes[0], "index signature declaration");
   const generic = checker.getDeclaredTypeOfSymbol(symbolAt(checker, declaration(root, "Generic").name!));
   const genericParameter = generic.getTypeParameters()[0]!;
   check(genericParameter.isTypeParameter() && generic.getLocalTypeParameters()[0] === genericParameter && generic.getOuterTypeParameters().length === 0, "interface type parameters");
@@ -147,7 +147,7 @@ export function checkSemanticModel(snapshot: SemanticSnapshot, checker: Semantic
   const signature = signatureAt(checker, identity);
   const signatureTypes = signature.getTypeParameters();
   check(signatureTypes.length === 1 && signatureTypes[0]!.isTypeParameter(), "signature type parameters");
-  check(signature.getParameters()[0]!.name === "value" && signature.getParameters()[0]!.declarations[0]!.resolve() === identity.parameters![0], "signature parameters");
+  check(signature.getParameters()[0]!.name === "value" && signature.getParameters()[0]!.declarations[0]!.resolve() === identity.parameters?.nodes[0], "signature parameters");
   check(signature.declaration!.resolve() === identity, "signature declaration");
   check(checker.getReturnTypeOfSignature(signature) === signatureTypes[0], "generic return identity");
   check(checker.getParameterType(signature, 0) === signatureTypes[0], "parameter type query");
@@ -177,11 +177,11 @@ export function checkSemanticModel(snapshot: SemanticSnapshot, checker: Semantic
   check(!checker.isUnknownSymbol(answerSymbol) && !checker.isUndefinedSymbol(answerSymbol) && !checker.isArgumentsSymbol(answerSymbol), "well-known symbol exclusion");
   const undefinedSymbol = checker.resolveName("undefined", SemanticSymbolFlags.Value, answerName)!;
   check(checker.isUndefinedSymbol(undefinedSymbol), "well-known undefined symbol");
-  const shorthand = declaration(root, "ref").initializer!.properties![0]!;
+  const shorthand = declaration(root, "ref").initializer!.properties?.nodes[0]!;
   check(checker.getShorthandAssignmentValueSymbol(shorthand) === answerSymbol, "shorthand symbol");
   const exportSpecifier = renamed.declarations[0]!.resolve()!;
   check(checker.getExportSpecifierLocalTargetSymbol(exportSpecifier) === answerSymbol, "export specifier symbol");
-  check(checker.getConstantValue(declaration(root, "Mode").members![0]!) === 3, "enum constant");
+  check(checker.getConstantValue(declaration(root, "Mode").members?.nodes[0]!) === 3, "enum constant");
   check(checker.getConstantValue(answerName) === undefined, "missing constant");
   check(checker.getContextualType(declaration(root, "pair").initializer!) === pair, "contextual tuple type");
   check(checker.getTypeFromTypeNode(declaration(root, "Choice").type!) === choice, "type-node query identity");
@@ -206,7 +206,7 @@ export function checkSemanticModel(snapshot: SemanticSnapshot, checker: Semantic
   check(syntheticType.file.node(1) === syntheticType, "synthetic root identity");
   const syntheticSignature = checker.signatureToSignatureDeclaration(signature, AstKind.FunctionType, identity)!;
   check(syntheticSignature.kind === AstKind.FunctionType, "binary signature node");
-  check(syntheticSignature.parameters!.length === 1 && syntheticSignature.parameters![0]!.name!.text === "value", "synthetic signature children");
+  check(syntheticSignature.parameters?.nodes.length === 1 && syntheticSignature.parameters?.nodes[0]!.name!.text === "value", "synthetic signature children");
   let syntheticRefusals = 0;
   try { syntheticType.getSourceFile(); } catch { syntheticRefusals++; }
   try { syntheticSignature.file.sourceFile; } catch { syntheticRefusals++; }
@@ -218,7 +218,7 @@ export function checkSemanticModel(snapshot: SemanticSnapshot, checker: Semantic
   check(usages.length === 1 && usages[0]!.name.resolve()!.text === "identity" && usages[0]!.call!.resolve() === declaration(root, "called").initializer, "signature usage handles");
   const completions = checker.getCompletionsAtPosition(root.fileName, root.text!.indexOf("Mode.Ready") + 5, { includeSymbol: true })!;
   const ready = completions.entries.find((entry) => entry.name === "Ready")!;
-  check(ready.symbol === symbolAt(checker, declaration(root, "Mode").members![0]!.name!), "completion symbol identity");
+  check(ready.symbol === symbolAt(checker, declaration(root, "Mode").members?.nodes[0]!.name!), "completion symbol identity");
   check(checker.getCompletionsAtPosition(root.fileName, answerName.getStart()) === undefined, "absent completions");
   check(answerType.flags === SemanticTypeFlags.NumberLiteral, "literal flags pin");
   check(checkSemanticRefinements(answerType) === "number:43", "native number literal refinement");

@@ -316,7 +316,9 @@ const definedFunctions = (binary) =>
  * b14377864 (DYNAMIC_TIER_PREFIXES in zero-cost-compare.mjs): JSON.parse
  * trees, worker messages, regex exec metadata (two-tier §3.3 L5), and a
  * shared scr_dyn_call/scr_dyn_define_property core not yet traced to its
- * typed root. Every other bench workload is fully typed and must link none.
+ * typed root. bench/thread-slots, added later, links them through worker
+ * messages: node:worker_threads values are dyn objects. Every other bench
+ * workload is fully typed and must link none.
  * Remove a workload here when a leak fix makes its binary clean. */
 const DYNAMIC_WORKLOADS = new Set([
   "bench/json-records",
@@ -326,6 +328,7 @@ const DYNAMIC_WORKLOADS = new Set([
   "bench/regex-logs",
   "bench/atomics-contended",
   "bench/intern-table",
+  "bench/thread-slots",
   "bench/typed-array-scan-workers",
   "bench/log-summary",
   "bench/inventory-report",

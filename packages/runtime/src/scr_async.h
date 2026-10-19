@@ -172,6 +172,10 @@ ScrAlsCtx **scr_als_slot(void);
 #endif
 ScrAlsCtx *scr_als_ctx_retain(ScrAlsCtx *c);
 void scr_als_ctx_release(ScrAlsCtx *c);
+/* After an enterWith: on the main stack, queues the tick that ends it. */
+void scr_als_entered_with(void);
+ScrAlsCtx *scr_als_ctx_alloc(size_t len);
+ScrDyn *scr_als_peek(double id); /* borrowed; NULL when unset */
 double scr_als_new(void);
 ScrDyn *scr_als_get(double id); /* +1; the undefined value when unset */
 ScrAlsCtx *scr_als_enter(double id, ScrDyn *value); /* borrows value; prev out (owned) */
@@ -423,6 +427,7 @@ double scr_set_immediate(ScrClosure *cb); /* cb ownership moves in */
  * synchronously on a non-function; borrowed. */
 void scr_queue_microtask(ScrClosure *cb);
 void scr_queue_microtask_dyn(const ScrDyn *cb);
+void scr_queue_microtask_dyn_als(const ScrDyn *cb);
 /* setImmediate AS A dyn VALUE (the traceCallback shape): a minted dyn
  * callable that schedules args[0](args[1..]) on the immediate queue and
  * answers undefined; a non-function first argument throws Node's
@@ -442,6 +447,15 @@ bool scr_immediate_has_ref(double handle);
  * teardown (they must never run yet must not leak). cb ownership moves
  * in. */
 void scr_next_tick(ScrClosure *cb);
+/* The scheduling entry points of programs that enter AsyncLocalStorage
+ * stores: each callback runs with the stores active when it was scheduled
+ * (scr_async.c). */
+void scr_set_timeout_als(ScrClosure *cb, double ms);
+double scr_set_interval_als(ScrClosure *cb, double ms);
+double scr_set_timeout_handle_als(ScrClosure *cb, double ms);
+double scr_set_immediate_als(ScrClosure *cb);
+void scr_next_tick_als(ScrClosure *cb);
+void scr_queue_microtask_als(ScrClosure *cb);
 /* A successful process.stdout/stderr.write completion on that same queue.
  * The callback and its program-shaped Error | null adapter both MOVE into
  * the entry; the adapter is invoked with NULL (Node's success argument). */

@@ -80,6 +80,7 @@ export interface RuntimePackManifest {
 
 export interface RuntimeFeatureSet extends NativeLinkFeatures {
   workers: boolean;
+  youngNursery: boolean;
   eventTarget: boolean;
   wasm: boolean;
   nativeFetch: boolean;
@@ -267,6 +268,7 @@ export function effectiveRuntimeFeatures(
   return {
     ...features,
     workers: features.workers === true,
+    youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,
     nativeFetch,

@@ -65,7 +65,7 @@ export function initializeRuntimeStatics(lowerer: Lowerer, info: ClassInfo, valu
     );
     for (const member of [...definitions, ...initializers]) {
       if (ts.isClassStaticBlockDeclaration(member)) {
-        statements.push(...lowerer.lowerStmts(member.body.statements));
+        statements.push(...lowerer.lowerStmts(member.body.statements.nodes));
         continue;
       }
       if (!member.name) continue;

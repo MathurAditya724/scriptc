@@ -46,13 +46,13 @@ export function lowerKeyObjectCall(lowerer: Lowerer, call: ts.CallExpression): I
   const access = call.expression;
   if (access.questionDotToken || !KEY_OBJECT_METHODS.has(access.name.text)) return null;
   if (!isKeyObjectValue(lowerer, access.expression)) return null;
-  if (call.arguments.some(ts.isSpreadElement)) return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
   return {
     kind: "dynInvoke",
     recv: lowerer.lowerExprExpecting(access.expression, DYN),
     method: access.name.text,
     calleeName: access.getText(),
-    args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc: locOf(call),
   };

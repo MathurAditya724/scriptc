@@ -2,6 +2,7 @@ import { emitWasmModules, wasmBoundsChecks } from "./wasm-modules.js";
 import { type ArraySearchKind, emitArraySearchHelpers } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitLlvmLayouts } from "./layouts.js";
+import { emitThreadSlotsIntrinsic, threadSlotsBlockDefinitions } from "./thread-slots.js";
 import { compileRegexMatcher, type RegexMatcherCode } from "./regex-matchers.js";
 import {
   CYC_BUF,
@@ -11,6 +12,7 @@ import {
   RECORD_SOURCES_GATE,
   WEAK_KEYS_GATE,
 } from "./alloc.js";
+import { youngNurseryRequested } from "../young-nursery.js";
 import { hasLoneSurrogate, llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
 import { createHash } from "node:crypto";
@@ -56,6 +58,7 @@ import {
   typeKey,
   STRING,
   VOID,
+  classJsName,
 } from "../../ir/ir.js";
 import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
@@ -919,6 +922,8 @@ export class LlEmitter {
   /** Constant-key reads on checked-dynamic objects, each with its own
    * zero-initialized ScrDynReadIc (scr_runtime.h). */
   private dynReadIcSites = 0;
+  /** ThreadSlots blocks by family name (thread-slots.ts). */
+  private readonly threadSlotsBlocks = new Map<string, string>();
   /** May-throw analysis (computeMayThrow): pending
    * checks are emitted only after calls that can actually raise. */
   readonly mayThrow: Set<string>;
@@ -970,6 +975,14 @@ export class LlEmitter {
   /** The program calls mock.timers members (moduleUsesMockTimers): timer
    * calls emit scr_test.c's mock-aware entry points. */
   readonly mockTimers: boolean;
+  private schedulesInContextValue: boolean | undefined = undefined;
+  /** Whether timer and tick scheduling goes through the *_als entry
+   * points (RuntimeFeatures asyncContext). */
+  get schedulesInContext(): boolean {
+    if (this.schedulesInContextValue === undefined)
+      this.schedulesInContextValue = moduleRuntimeFeatures(this.mod).asyncContext;
+    return this.schedulesInContextValue;
+  }
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();
@@ -1463,6 +1476,7 @@ export class LlEmitter {
       ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
       ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
       nextCycKind: () => FIRST_EMITTED_CYC_KIND + this.cycKinds++,
+      ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
       unionsById: this.unionsById,
       declare: (decl) => this.declare(decl),
       needOom: () => this.needOom(),
@@ -2519,6 +2533,7 @@ export class LlEmitter {
     {
       const tl =
         this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : "";
+      out.push(...threadSlotsBlockDefinitions(this.threadSlotsBlocks, tl !== ""));
       for (let site = 0; site < this.dynReadIcSites; site++)
         out.push(
           `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${this.sizeType}, ${this.sizeType}, ptr } zeroinitializer`,
@@ -4647,6 +4662,9 @@ export class LlEmitter {
       // An iterator helper's return() before its first next() closes the
       // source generator in its first argument slot.
       const closesSource = fn.generator.closesSource === true;
+      if (fn.generator.tag !== undefined) this.declare(`declare void @scr_gen_set_tag(ptr, ptr)`);
+      if (fn.generator.inheritsTag === true)
+        this.declare(`declare void @scr_gen_copy_tag(ptr, ptr)`);
       if (closesSource) {
         const field = lifted ? 1 : 0;
         this.declare(`declare void @scr_gen_close(ptr)`);
@@ -4679,6 +4697,12 @@ export class LlEmitter {
         settleAsync === null
           ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
           : `  %gg = call ptr @scr_async_gen_new(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+        ...(fn.generator.tag !== undefined
+          ? [`  call void @scr_gen_set_tag(ptr %gg, ptr ${this.cstr(fn.generator.tag)})`]
+          : []),
+        ...(fn.generator.inheritsTag === true
+          ? [`  call void @scr_gen_copy_tag(ptr %gg, ptr %a${lifted ? 1 : 0})`]
+          : []),
         ...(closesSource
           ? [
               `  call void @scr_gen_set_unstarted_return(ptr %gg, ptr @${mangleGenSourceClose(fn.name)})`,
@@ -4956,8 +4980,8 @@ export class LlEmitter {
     }
   }
 
-  /** Strike a refcounted temp from its frame: ownership is being moved. */
-  moveTemp(v: LlValue): void {
+  /** Strike a refcounted temp from its frame. */
+  private disownTemp(v: LlValue): void {
     if (!isRefCounted(v.type) || this.isImmortal(v.name)) return;
     for (let i = this.frames.length - 1; i >= 0; i--) {
       const idx = this.frames[i]!.findIndex((e) => e.name === v.name);
@@ -4971,23 +4995,69 @@ export class LlEmitter {
     );
   }
 
+  /* Ownership transfers name their destination. A heap reference is one
+   * that heap memory holds: a field, an array or map element, a capture
+   * box, a union box, a module global, a promise or generator slot, the
+   * exception cell, or any other runtime structure. A frame reference is
+   * one that a local, a parameter, a return value, a stack object or a
+   * temporary holds. Both forms of each operation emit the same code. */
+
+  /** Ends a temp's frame ownership: its reference moves into heap memory. */
+  toHeap(v: LlValue): void {
+    this.disownTemp(v);
+  }
+
+  /** Ends a temp's frame ownership: its reference moves to another frame
+   * owner (a local or parameter slot, a callee's parameter, a return
+   * value, a stack object, another temp). */
+  toFrame(v: LlValue): void {
+    this.disownTemp(v);
+  }
+
   /** The retained (+1) read of a refcounted value — type-directed through
    * the `_v` table (immortals skip, exactly the C retain calls). */
-  retainValue(name: string, type: IrType): string {
+  private retainCall(name: string, type: IrType): string {
     if (this.isImmortal(name)) return name;
     const t = this.B.tmp();
     this.B.line(`${t} = call ptr ${retainSym(this.shapeHost, type)}(ptr ${name})`);
     return t;
   }
 
+  /** A +1 of `name` that heap memory keeps. */
+  retainHeap(name: string, type: IrType): string {
+    return this.retainCall(name, type);
+  }
+
+  /** A +1 of `name` that a frame owns. */
+  retainFrame(name: string, type: IrType): string {
+    return this.retainCall(name, type);
+  }
+
   /** The release call for one owned refcounted value — type-directed like
    * releaseCallC (all runtime releases are NULL-tolerant). */
-  releaseValue(name: string, type: IrType): void {
+  private releaseCall(name: string, type: IrType): void {
     if (this.isImmortal(name)) return;
     this.B.line(`call void ${releaseSym(this.shapeHost, type)}(ptr ${name})`);
   }
 
-  releaseFrame(frame: LlValue[]): void {
+  /** Releases a reference that heap memory held. */
+  releaseHeap(name: string, type: IrType): void {
+    this.releaseCall(name, type);
+  }
+
+  /** Releases a reference that a frame owned. */
+  releaseFrame(name: string, type: IrType): void {
+    this.releaseCall(name, type);
+  }
+
+  /** A +1 that the runtime made with the heap retain (a box, generator or
+   * await read) becomes a frame value. Emits nothing; answers `name`. */
+  adoptHeap(name: string, _type: IrType): string {
+    return name;
+  }
+
+  /** Releases a statement frame's temps and owned slots. */
+  releaseTemps(frame: LlValue[]): void {
     for (const v of frame) {
       if (v.slot) {
         const t = this.B.tmp();
@@ -4995,10 +5065,10 @@ export class LlEmitter {
         if (v.boxed) {
           this.B.line(`call void ${boxReleaseSym(this.shapeHost)}(ptr ${t})`);
         } else {
-          this.releaseValue(t, v.type);
+          this.releaseFrame(t, v.type);
         }
       } else {
-        this.releaseValue(v.name, v.type);
+        this.releaseFrame(v.name, v.type);
       }
     }
   }
@@ -5023,7 +5093,7 @@ export class LlEmitter {
       } else if (e.boxed) {
         this.B.line(`call void ${boxReleaseSym(this.shapeHost)}(ptr ${t})`);
       } else {
-        this.releaseValue(t, e.type); // runtime releases are NULL-tolerant
+        this.releaseFrame(t, e.type); // runtime releases are NULL-tolerant
       }
     }
   }
@@ -5033,7 +5103,7 @@ export class LlEmitter {
    * everything whose normal fall-through releases the jump bypasses.
    * Release every scope crossed by the control-flow edge. */
   private releaseForJump(frameDepth: number, scopeDepth: number): void {
-    for (let i = this.frames.length - 1; i >= frameDepth; i--) this.releaseFrame(this.frames[i]!);
+    for (let i = this.frames.length - 1; i >= frameDepth; i--) this.releaseTemps(this.frames[i]!);
     for (let i = this.scopes.length - 1; i >= scopeDepth; i--) this.releaseScope(this.scopes[i]!);
   }
 
@@ -5106,7 +5176,7 @@ export class LlEmitter {
     const target = this.tryStack[this.tryStack.length - 1];
     const frameDepth = target?.frameDepth ?? 0;
     const scopeDepth = target?.scopeDepth ?? 0;
-    for (let i = this.frames.length - 1; i >= frameDepth; i--) this.releaseFrame(this.frames[i]!);
+    for (let i = this.frames.length - 1; i >= frameDepth; i--) this.releaseTemps(this.frames[i]!);
     let terminator: string;
     if (target) {
       target.used = true;
@@ -5636,7 +5706,7 @@ export class LlEmitter {
     if (target.value !== null) {
       this.frames.push([]);
       for (const read of speculativeReads(target.value)) reads.set(read, this.emitExpr(read));
-      this.releaseFrame(this.frames.pop()!);
+      this.releaseTemps(this.frames.pop()!);
     }
     this.frames.push([]);
     let result: string;
@@ -5960,7 +6030,7 @@ export class LlEmitter {
   unionExtract(uName: string, unionId: string, arm: IrType): string {
     if (arm.kind === "f64" || arm.kind === "procStream") return this.unionGetF64(uName);
     if (arm.kind === "bool") return this.unionGetBool(uName);
-    return this.retainValue(this.unionPeek(uName, unionId), arm);
+    return this.retainFrame(this.unionPeek(uName, unionId), arm);
   }
 
   /** A scalar f64 arm's payload (scr_union_get_f64 inlined). Inline loads
@@ -6071,7 +6141,7 @@ export class LlEmitter {
   classObjSym(className: string): string {
     if (!this.classObjs.has(className)) {
       const meta = this.classMetaOf(className);
-      this.classObjs.set(className, { nameSym: this.internLiteral(meta.def.jsName ?? "") });
+      this.classObjs.set(className, { nameSym: this.internLiteral(classJsName(meta.def)) });
     }
     return mangleClassObj(className);
   }
@@ -6202,11 +6272,11 @@ export class LlEmitter {
    * in, and the old value is released AFTER the field is overwritten. */
   replaceField(ptr: string, type: IrType, inline: boolean, v: LlValue): void {
     if (!inline && isRefCounted(type)) {
-      this.moveTemp(v);
+      this.toHeap(v);
       const old = this.B.tmp();
       this.B.line(`${old} = load ptr, ptr ${ptr}`);
       this.storeField(ptr, type, v.name, false);
-      this.releaseValue(old, type);
+      this.releaseHeap(old, type);
       return;
     }
     this.storeField(ptr, type, v.name, inline);
@@ -6214,7 +6284,7 @@ export class LlEmitter {
 
   /** Stores `v` (from emitFieldValue) into a fresh field slot. */
   initField(ptr: string, type: IrType, inline: boolean, v: LlValue): void {
-    if (!inline && isRefCounted(type)) this.moveTemp(v);
+    if (!inline && isRefCounted(type)) this.toHeap(v);
     this.storeField(ptr, type, v.name, inline);
   }
 
@@ -6380,7 +6450,7 @@ export class LlEmitter {
     if (!stack) B.line(`${box} = ${boxNewCall(this.shapeHost, type)}`);
     const value = B.tmp();
     B.line(`${value} = load ${this.llType(type)}, ptr %${mangleLocal(localId)}`);
-    this.boxSet(box, type, isRefCounted(type) ? this.retainValue(value, type) : value);
+    this.boxSet(box, type, isRefCounted(type) ? this.retainHeap(value, type) : value);
     B.line(`store ptr ${box}, ptr ${cache}`);
     B.br(join);
     B.startBlock(join);
@@ -6526,7 +6596,7 @@ export class LlEmitter {
     this.boxSet(
       box,
       local.type,
-      borrowed && isRefCounted(local.type) ? this.retainValue(value, local.type) : value,
+      borrowed && isRefCounted(local.type) ? this.retainHeap(value, local.type) : value,
     );
   }
 
@@ -7551,14 +7621,14 @@ export class LlEmitter {
       B.line(`${present} = icmp ne ptr %result, null`);
       B.condBr(present, own, done);
       B.startBlock(own);
-      B.line(`store ptr ${this.retainValue("%result", fn.returnType)}, ptr ${slot}`);
+      B.line(`store ptr ${this.retainFrame("%result", fn.returnType)}, ptr ${slot}`);
       B.br(done);
       B.startBlock(done);
       result = B.tmp();
       B.line(`${result} = load ptr, ptr ${slot}`);
     }
     for (const index of borrowed)
-      if (!kept.has(index)) this.releaseValue(`%p${index}`, fn.params[index]!.type);
+      if (!kept.has(index)) this.releaseFrame(`%p${index}`, fn.params[index]!.type);
     B.terminate(ret === "void" ? "ret void" : `ret ${ret} ${result}`);
     const symbol =
       kept.size > 0 ? `${mangleBorrowedFunction(fn.name)}.virtual` : mangleFunction(fn.name);
@@ -7719,7 +7789,7 @@ export class LlEmitter {
   private emitAdoptingReturn(s: IrStmt & { kind: "return" }, adopted: ExprOf<"awaitExpr">): void {
     const B = this.B;
     const promise = this.emitExpr(adopted.value);
-    this.moveTemp(promise);
+    this.toFrame(promise);
     const slot = B.slot();
     B.entryAllocas.push(`${slot} = alloca ptr ; adopted return promise`);
     B.line(`store ptr ${promise.name}, ptr ${slot}`);
@@ -7753,7 +7823,8 @@ export class LlEmitter {
       const v = this.emitExpr(s.value!);
       if (this.adoptedOperand !== null)
         throw new InternalCompilerError("llvm emitter bug: adopted return promise was not awaited");
-      this.moveTemp(v);
+      if (this.currentCoro !== null) this.toHeap(v);
+      else this.toFrame(v);
       this.releaseForJump(0, 0);
       if (!B.isTerminated()) {
         if (this.currentCoro !== null) {
@@ -8098,7 +8169,7 @@ export class LlEmitter {
           const union = emitStackUnion(this, localUnion);
           B.line(`store ptr ${union.value.name}, ptr ${b.slot}`);
           if (union.payload) {
-            this.moveTemp(union.payload);
+            this.toFrame(union.payload);
             this.scopes[this.scopes.length - 1]!.push({
               slot: union.payloadSlot,
               type: union.payload.type,
@@ -8145,7 +8216,7 @@ export class LlEmitter {
             if (stack.owner) this.scopes[this.scopes.length - 1]!.push(stack.owner);
             if (s.init) {
               const value = this.emitExpr(s.init);
-              if (isRefCounted(value.type)) this.moveTemp(value);
+              if (isRefCounted(value.type)) this.toFrame(value);
               this.boxSet(stack.box, b.type, value.name);
             }
             break;
@@ -8172,7 +8243,7 @@ export class LlEmitter {
             break;
           }
           const v = this.emitExpr(s.init);
-          if (isRefCounted(v.type)) this.moveTemp(v); // the box takes ownership
+          if (isRefCounted(v.type)) this.toHeap(v); // the box takes ownership
           if (b.local!.tdz === true && boxAccess(b.type) !== "ref") {
             this.tdzScalarInit(box, b.type, v.name);
           } else {
@@ -8230,7 +8301,8 @@ export class LlEmitter {
           break;
         }
         const v = this.emitExpr(s.init);
-        this.moveTemp(v);
+        if (b.kind === "global") this.toHeap(v);
+        else this.toFrame(v);
         B.line(`store ${this.llType(b.type)} ${v.name}, ptr ${b.slot}`);
         this.storeIntegerView(s.localId, v, s.init);
         if (isRefCounted(b.type)) {
@@ -8253,10 +8325,10 @@ export class LlEmitter {
           const param = this.binding(s.localId);
           const slot = param.slot;
           const v = this.emitExpr(s.value);
-          this.moveTemp(v);
+          this.toFrame(v);
           const old = B.tmp();
           B.line(`${old} = load ptr, ptr ${owner}`);
-          this.releaseValue(old, param.type);
+          this.releaseFrame(old, param.type);
           B.line(`store ptr ${v.name}, ptr ${slot}`);
           B.line(`store ptr ${v.name}, ptr ${owner}`);
           break;
@@ -8283,7 +8355,7 @@ export class LlEmitter {
           B.line(`${bits} = load ${struct}, ptr ${value.name}`);
           B.line(`store ${struct} ${bits}, ptr ${target}`);
           this.disownSlots(owned);
-          for (const field of old) this.releaseValue(field.name, field.type);
+          for (const field of old) this.releaseFrame(field.name, field.type);
           break;
         }
         const localStorage = this.localUnionStorage.get(s.localId);
@@ -8307,14 +8379,16 @@ export class LlEmitter {
         if (b.kind === "boxed") {
           this.writeBindingBox(this.loadBox(b.slot), b.local!, v.name, s.initializes);
           // The RHS remains frame-owned until a possible TDZ throw passes.
-          if (isRefCounted(v.type)) this.moveTemp(v);
+          if (isRefCounted(v.type)) this.toHeap(v);
           break;
         }
-        this.moveTemp(v);
+        if (b.kind === "global") this.toHeap(v);
+        else this.toFrame(v);
         if (isRefCounted(b.type)) {
           const old = B.tmp();
           B.line(`${old} = load ptr, ptr ${b.slot}`);
-          this.releaseValue(old, b.type);
+          if (b.kind === "global") this.releaseHeap(old, b.type);
+          else this.releaseFrame(old, b.type);
         }
         B.line(`store ${this.llType(b.type)} ${v.name}, ptr ${b.slot}`);
         this.storeIntegerView(s.localId, v, s.value);
@@ -8365,7 +8439,7 @@ export class LlEmitter {
           throw new InternalCompilerError("llvm emitter bug: arraySet on non-array");
         const acc = elemAccess(s.arr.type.elem);
         this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
-        if (acc === "ref") this.moveTemp(v);
+        if (acc === "ref") this.toHeap(v);
         emitDenseArraySet(
           this,
           arr.name,
@@ -8430,7 +8504,7 @@ export class LlEmitter {
           if (acc === "ref" && isRefCounted(elem)) {
             const old = B.tmp();
             B.line(`${old} = inttoptr i64 ${raw} to ptr`);
-            this.releaseValue(old, elem);
+            this.releaseHeap(old, elem);
           }
           B.br(done);
           B.startBlock(call);
@@ -8580,7 +8654,7 @@ export class LlEmitter {
         const v = this.emitExpr(s.value);
         if (this.publishedTypes?.recordGuarded(s.shapeId) === true)
           this.emitPublishedFieldGuard(obj.name, null, "[key]");
-        if (isRefCounted(v.type)) this.moveTemp(v);
+        if (isRefCounted(v.type)) this.toHeap(v);
         const shape = this.recordShape(s.shapeId);
         // Signature-free shapes dispatch over their (one-typed) declared
         // fields and TRAP on a miss (scr_record_key_miss — JS would add
@@ -8646,12 +8720,12 @@ export class LlEmitter {
             if (inline) {
               // The slot copies the checked value's bits; nv is released below.
               this.storeField(ptr, type, nv, true);
-              this.releaseValue(nv, type);
+              this.releaseFrame(nv, type);
             } else if (isRefCounted(type)) {
               const old = B.tmp();
               B.line(`${old} = load ptr, ptr ${ptr}`);
               this.storeField(ptr, type, nv, false);
-              this.releaseValue(old, type);
+              this.releaseHeap(old, type);
             } else {
               this.storeField(ptr, type, nv, false);
             }
@@ -8681,12 +8755,12 @@ export class LlEmitter {
           if (inline) {
             // The write owns the moved-in value; the slot copies its bits.
             this.storeField(ptr, type, v.name, true);
-            this.releaseValue(v.name, type);
+            this.releaseHeap(v.name, type);
           } else if (isRefCounted(type)) {
             const old = B.tmp();
             B.line(`${old} = load ptr, ptr ${ptr}`);
             this.storeField(ptr, type, v.name, false);
-            this.releaseValue(old, type);
+            this.releaseHeap(old, type);
           } else {
             this.storeField(ptr, type, v.name, false);
           }
@@ -8697,7 +8771,7 @@ export class LlEmitter {
           // The MISS on a fixed shape: release the moved-in value, throw
           // the catchable TypeError naming the key (scr_record_key_miss —
           // JS would add the property, the documented divergence).
-          if (isRefCounted(iv)) this.releaseValue(v.name, iv);
+          if (isRefCounted(iv)) this.releaseHeap(v.name, iv);
           this.declare(`declare void @scr_record_key_miss(ptr)`);
           B.line(`call void @scr_record_key_miss(ptr ${key.name})`);
           B.br(join);
@@ -9340,7 +9414,8 @@ export class LlEmitter {
           } else v = this.emitReadReceiver(s.value);
         } else if (s.value !== null) {
           v = this.emitExpr(s.value);
-          this.moveTemp(v);
+          if (this.currentCoro !== null) this.toHeap(v);
+          else this.toFrame(v);
         }
         // An async generator's `return v` awaits v before any crossed
         // finally runs. Past finally regions that turn is taken here and
@@ -9409,7 +9484,7 @@ export class LlEmitter {
         // unwind unconditionally (the innermost try handler, or out of the
         // function) — the same release path as return/break/continue.
         const v = this.emitExpr(s.value);
-        if (isRefCounted(s.value.type)) this.moveTemp(v); // the cell takes ownership
+        if (isRefCounted(s.value.type)) this.toHeap(v); // the cell takes ownership
         this.emitThrowValue({ name: v.name, type: s.value.type });
         this.emitUnwind();
         break;
@@ -9455,7 +9530,7 @@ export class LlEmitter {
       s.kind !== "rethrow" &&
       s.kind !== "runtimeFence"
     ) {
-      this.releaseFrame(frame);
+      this.releaseTemps(frame);
     }
   }
 
@@ -9667,7 +9742,7 @@ export class LlEmitter {
         } else {
           B.line(`${hit} = fcmp oeq double ${disc.name}, ${t.name}`);
         }
-        this.releaseFrame(this.frames.pop()!);
+        this.releaseTemps(this.frames.pop()!);
         const next = B.newLabel("sw.t");
         B.condBr(hit, caseLabels[i]!, next);
         B.startBlock(next);
@@ -9708,7 +9783,7 @@ export class LlEmitter {
   private emitCondition(cond: IrExpr): string {
     const v = this.emitExpr(cond);
     const frame = this.currentFrame();
-    this.releaseFrame(frame);
+    this.releaseTemps(frame);
     frame.length = 0;
     return v.name;
   }
@@ -9720,11 +9795,11 @@ export class LlEmitter {
   emitBranchInto(slot: string, expr: IrExpr, integerSlot?: string): boolean {
     this.frames.push([]);
     const v = this.emitExpr(expr);
-    this.moveTemp(v);
+    this.toFrame(v);
     this.B.line(`store ${this.llType(expr.type)} ${v.name}, ptr ${slot}`);
     if (integerSlot !== undefined && v.uint32 !== undefined)
       this.B.line(`store i32 ${v.uint32}, ptr ${integerSlot}`);
-    this.releaseFrame(this.frames.pop()!);
+    this.releaseTemps(this.frames.pop()!);
     return v.uint32 !== undefined;
   }
 
@@ -9878,12 +9953,13 @@ export class LlEmitter {
       const old = B.tmp();
       B.line(`${old} = load ptr, ptr ${b.slot}`);
       B.line(`store ptr null, ptr ${b.slot}`);
-      this.releaseValue(old, b.type);
+      if (b.kind === "global") this.releaseHeap(old, b.type);
+      else this.releaseFrame(old, b.type);
     }
     let raw: string;
     if (charCode !== null) {
       // The snapshot moves into the consuming character append.
-      this.moveTemp(snapshot);
+      this.toFrame(snapshot);
       this.declare(`declare ptr @scr_str_concat_move_char_code(ptr, double)`);
       raw = B.tmp();
       B.line(
@@ -9898,11 +9974,15 @@ export class LlEmitter {
     }
     const result = this.own({ name: raw, type: left.type });
     if (retainForYield) {
-      const stored = this.retainValue(result.name, result.type);
+      const stored =
+        b.kind === "local"
+          ? this.retainFrame(result.name, result.type)
+          : this.retainHeap(result.name, result.type);
       if (b.kind === "boxed") this.boxSet(this.loadBox(b.slot), b.type, stored);
       else B.line(`store ptr ${stored}, ptr ${b.slot}`);
     } else {
-      this.moveTemp(result);
+      if (b.kind === "local") this.toFrame(result);
+      else this.toHeap(result);
       if (b.kind === "boxed") this.boxSet(this.loadBox(b.slot), b.type, result.name);
       else B.line(`store ptr ${result.name}, ptr ${b.slot}`);
     }
@@ -9965,7 +10045,7 @@ export class LlEmitter {
     if (owned) {
       const old = this.loadField(ptr, fieldType, false);
       this.storeField(ptr, fieldType, "null", false);
-      this.releaseValue(old, fieldType);
+      this.releaseHeap(old, fieldType);
     }
     let raw: string;
     if (right === null) {
@@ -10194,7 +10274,18 @@ export class LlEmitter {
     )
       return this.emitRegionIntrinsic(e);
     if (e.name.startsWith("itable.")) return this.emitInternTableIntrinsic(e);
+    if (e.name.startsWith("slots.")) return emitThreadSlotsIntrinsic(this, e);
     return emitIntrinsicExpr(this, e);
+  }
+
+  /** The ScrSlots block of the ThreadSlots family `name`. */
+  threadSlotsBlock(name: string): string {
+    let sym = this.threadSlotsBlocks.get(name);
+    if (sym === undefined) {
+      sym = `@sc_slots_${this.threadSlotsBlocks.size}`;
+      this.threadSlotsBlocks.set(name, sym);
+    }
+    return sym;
   }
 
   /** InternTable's runtime calls (scr_itable.c). Table and entry handles
@@ -10399,7 +10490,7 @@ export class LlEmitter {
     }
     // The result IS the operand: ownership moves to the result temp.
     if (!isRefCounted(value.type)) return { name: value.name, type: e.type };
-    this.moveTemp(value);
+    this.toFrame(value);
     return this.own({ name: value.name, type: e.type });
   }
 
@@ -10652,7 +10743,7 @@ export class LlEmitter {
         this.frames.push([]);
         const result = this.emitReadReceiver(value);
         B.line(`store ptr ${result.name}, ptr ${slot}`);
-        this.releaseFrame(this.frames.pop()!);
+        this.releaseTemps(this.frames.pop()!);
         B.br(join);
       }
       B.startBlock(join);
@@ -10748,7 +10839,7 @@ export class LlEmitter {
     const { ptr } = this.classFieldPtr(receiver.name, e.className, e.field);
     const p = this.B.tmp();
     this.B.line(`${p} = load ptr, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
-    const owner = this.own({ name: this.retainValue(p, nullable.arm), type: nullable.arm });
+    const owner = this.own({ name: this.retainFrame(p, nullable.arm), type: nullable.arm });
     return { box: this.stackNullableBox(owner.name, nullable), owner };
   }
 
@@ -10787,7 +10878,7 @@ export class LlEmitter {
     B.line(`store ptr ${this.unitInstanceRef(nullable.unionId, nullable.unitTag)}, ptr ${slot}`);
     B.br(join);
     B.startBlock(ref);
-    const owned = this.retainValue(p, nullable.arm);
+    const owned = this.retainHeap(p, nullable.arm);
     const box = this.unionNewOwned(nullable.unionId, nullable.refTag, {
       name: owned,
       type: nullable.arm,
@@ -10810,7 +10901,7 @@ export class LlEmitter {
     B.line(`${isRef} = icmp eq i32 ${tag}, ${nullable.refTag}`);
     const payload = this.unionPeek(u, nullable.unionId);
     B.line(`${sel} = select i1 ${isRef}, ptr ${payload}, ptr null`);
-    return this.retainValue(sel, nullable.arm);
+    return this.retainHeap(sel, nullable.arm);
   }
 
   /** `obj.f = value` for a nullable-pointer field: the new instance pointer
@@ -10835,7 +10926,7 @@ export class LlEmitter {
     ) {
       if (value.tag === nullable.refTag) {
         const inner = this.emitExpr(value.value);
-        this.moveTemp(inner);
+        this.toHeap(inner);
         next = inner.name;
       } else {
         // Unit payloads carry nothing; a void payload runs for effects.
@@ -10851,7 +10942,7 @@ export class LlEmitter {
     const old = B.tmp();
     B.line(`${old} = load ptr, ptr ${ptr}`);
     B.line(`store ptr ${next}, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
-    this.releaseValue(old, nullable.arm);
+    this.releaseHeap(old, nullable.arm);
   }
 
   /** A union binding whose slot may hold a private stack box: stack locals

@@ -371,6 +371,7 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.iteratorResult",
   "dyn.iteratorStep",
   "dyn.iteratorStepDone",
+  "dyn.collectionIteratorIndex",
   "dyn.mapSeedEntries",
   "dyn.mapSeedEntry",
   "dyn.numberConstructor",

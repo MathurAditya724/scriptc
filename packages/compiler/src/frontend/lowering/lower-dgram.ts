@@ -132,7 +132,7 @@ export function lowerDgramDnsModuleCall(
 ): IrExpr | null {
   if (bi.module === "dns") return lowerDnsModuleCall(lowerer, expr, bi, loc);
   if (bi.module !== "dgram") return null;
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (bi.member === "createSocket") {
     if (args.length !== 1) {
       lowerer.noLowering(
@@ -172,7 +172,7 @@ export function lowerDgramDnsModuleCall(
     }
     let sawType = false;
     let reuseAddr: IrExpr | null = null;
-    for (const prop of arg.properties) {
+    for (const prop of arg.properties.nodes) {
       if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
         lowerer.noLowering(
           "createSocket options with computed keys, spreads, or shorthand entries",
@@ -289,7 +289,7 @@ function lowerDnsModuleCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   const dyn = (node: ts.Expression): IrExpr =>
     lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
   // A callback whose second parameter is typed (string, LookupAddress[])
@@ -382,7 +382,7 @@ export function lowerDgramMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (name === "bind" || name === "connect") {
     requireStatementPosition(lowerer, call, `socket.${name}(...)`);
     // bind(port[, address][, cb]) / connect(port[, address][, cb]) — the
@@ -675,7 +675,7 @@ export function lowerPromisifiedDnsCall(
   member: string,
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`the promisified dns.${member} with spread arguments`, expr);
   }

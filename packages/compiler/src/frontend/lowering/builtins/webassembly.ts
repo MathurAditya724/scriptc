@@ -207,7 +207,7 @@ export function lowerWebAssemblyCall(lowerer: Lowerer, call: ts.CallExpression):
   if (member !== "compile" && member !== "instantiate" && member !== "validate" && !isError)
     return null;
   const used = member === "instantiate" || isError ? 2 : 1;
-  const args = lowerArgs(lowerer, call.arguments, used, loc);
+  const args = lowerArgs(lowerer, call.arguments.nodes, used, loc);
   if (args === null) return null;
   lowerer.usesWebAssembly = true;
   let result: IrExpr;
@@ -242,7 +242,7 @@ export function lowerWebAssemblyNew(lowerer: Lowerer, expr: ts.NewExpression): I
   if (member !== "Module" && member !== "Instance" && !isError) return null;
   const loc = locOf(expr);
   const used = member === "Module" ? 1 : 2;
-  const args = lowerArgs(lowerer, expr.arguments ?? [], used, loc);
+  const args = lowerArgs(lowerer, expr.arguments?.nodes ?? [], used, loc);
   if (args === null) return null;
   lowerer.usesWebAssembly = true;
   let result: IrExpr;
