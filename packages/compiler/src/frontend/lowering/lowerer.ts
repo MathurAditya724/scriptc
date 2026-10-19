@@ -1955,6 +1955,9 @@ export class Lowerer {
    * their symbol/node keys; no module-level cache should retain a pass. */
   readonly classSymbolKeys = new Map<ts.Symbol, ClassSymbolKey | null>();
   readonly registeredClassSymbols = new Map<string, ts.Symbol>();
+  /** Symbol-key identities by description, in resolution order (the slot
+   * ordinals of key-table keys — symbolKeyOf). */
+  readonly symbolFieldIdentities = new Map<string, ts.Symbol[]>();
   readonly httpClientFnBindings = new Map<ts.Symbol, HttpClientFnBinding>();
   streamPropMutatedSyms: Set<ts.Symbol> | null = null;
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;

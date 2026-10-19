@@ -44,7 +44,7 @@ function constantSymbolDescription(
 }
 
 export function symbolFieldDisplayName(field: string): string {
-  return field.slice(FIELD_PREFIX.length);
+  return field.slice(FIELD_PREFIX.length).replace(/^\d+:/, "");
 }
 
 /** CopyDataProperties includes symbols, unlike the string-keyed view used
@@ -192,6 +192,7 @@ function symbolKeyOf(
   sym: ts.Symbol,
   registered: boolean,
   description: string,
+  table = false,
 ): ClassSymbolKey {
   // A registry name denotes one symbol even when several source bindings
   // initialize it. Intern those names into a representative checker symbol;
@@ -202,13 +203,22 @@ function symbolKeyOf(
     if (existing) identity = existing;
     else lowerer.registeredClassSymbols.set(description, sym);
   }
+  // Distinct identities can share a description (undici's core and mock
+  // key tables both hold a `Symbol('close')`, and MockClient inherits one
+  // and declares the other). A key-table key whose description an earlier
+  // identity already holds takes an ordinal that keeps its slot apart; the
+  // printable name drops it. Const keys keep their plain names.
+  let identities = lowerer.symbolFieldIdentities.get(description);
+  if (!identities) lowerer.symbolFieldIdentities.set(description, (identities = []));
+  let ordinal = identities.indexOf(identity);
+  if (ordinal < 0) ordinal = identities.push(identity) - 1;
   return {
     sym,
     identity,
     // Symbol slots are not string properties. The reserved prefix keeps
     // them out of the native class's string-keyed dynamic view, including
     // Object.keys/JSON serialization and string-property writeback.
-    fieldName: `${FIELD_PREFIX}Symbol(${description})`,
+    fieldName: `${FIELD_PREFIX}${table && ordinal > 0 ? `${ordinal}:` : ""}Symbol(${description})`,
   };
 }
 
@@ -305,7 +315,7 @@ function cjsTableSymbolKeyOf(
   // identity every requirer and the table's export global share.
   const canonical = lowerer.checker.getSymbolAtLocation(decl.name) ?? sym;
   if (tablePropertyWritten(lowerer, new Set([sym, canonical]), decl.name.text, sf)) return null;
-  return { ...symbolKeyOf(lowerer, canonical, call.registered, call.description), sym };
+  return { ...symbolKeyOf(lowerer, canonical, call.registered, call.description, true), sym };
 }
 
 function tablePropertyWritten(
