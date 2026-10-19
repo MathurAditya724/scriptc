@@ -118,6 +118,78 @@ function isInstanceOf(lowerer: Lowerer, info: ClassInfo, type: IrType | null): b
   );
 }
 
+/** Whether an expression always yields the receiver itself: `this`, or a
+ * call `this.m(...)` / `super.m(...)` whose every implementation the
+ * receiver can reach (the statically resolved method and, for `this`
+ * calls, each subclass override) returns only `this`, a primitive, or
+ * nothing (`return this.set(r, g, b)` with a chainable setter). Such a
+ * return answers the constructed instance. Methods already being checked
+ * count as returning `this` (their other returns decide). */
+function returnsThis(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  node: ts.Expression,
+  visiting: Set<ts.Node> = new Set(),
+): boolean {
+  let e = node;
+  while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isNonNullExpression(e))
+    e = e.expression;
+  if (e.kind === ts.SyntaxKind.ThisKeyword) return true;
+  if (!ts.isCallExpression(e)) return false;
+  const callee = unparenthesized(e.expression);
+  if (
+    !ts.isPropertyAccessExpression(callee) ||
+    callee.questionDotToken !== undefined ||
+    !ts.isIdentifier(callee.name)
+  )
+    return false;
+  const receiver = unparenthesized(callee.expression).kind;
+  if (receiver !== ts.SyntaxKind.ThisKeyword && receiver !== ts.SyntaxKind.SuperKeyword)
+    return false;
+  const name = callee.name.text;
+  const symbol = lowerer.checker.getSymbolAtLocation(callee.name);
+  if (symbol === undefined) return false;
+  const methods: ts.Node[] = [...lowerer.checker.declarationsOf(symbol)];
+  if (receiver === ts.SyntaxKind.ThisKeyword) {
+    const pending = [...info.subclasses];
+    while (pending.length > 0) {
+      const sub = pending.pop()!;
+      pending.push(...sub.subclasses);
+      for (const member of sub.decl?.members ?? []) {
+        if (member.name === undefined || !ts.isIdentifier(member.name) || member.name.text !== name)
+          continue;
+        if (!ts.isMethodDeclaration(member)) return false;
+        methods.push(member);
+      }
+    }
+  }
+  if (methods.length === 0) return false;
+  for (const method of methods) {
+    if (!ts.isMethodDeclaration(method) || method.body === undefined) return false;
+    if (visiting.has(method)) continue;
+    visiting.add(method);
+    for (const ret of ownReturns(method.body)) {
+      if (ret.expression === undefined) continue;
+      if (objectness(lowerer.typeOf(ret.expression)) === "never") continue;
+      if (!returnsThis(lowerer, info, ret.expression, visiting)) return false;
+    }
+  }
+  return true;
+}
+
+/** A function body's own return statements (nested functions, arrows and
+ * classes have their own). */
+function ownReturns(body: ts.Node): ts.ReturnStatement[] {
+  const out: ts.ReturnStatement[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node) || ts.isClassLikeDeclaration(node)) return;
+    if (ts.isReturnStatement(node)) out.push(node);
+    node.forEachChild(visit);
+  };
+  body.forEachChild(visit);
+  return out;
+}
+
 export function constructorReturnPlan(
   lowerer: Lowerer,
   info: ClassInfo,
@@ -131,7 +203,7 @@ export function constructorReturnPlan(
     const returns = new Map<ts.ReturnStatement, ReturnKind>();
     for (const stmt of ownValueReturns(ctor)) {
       const value = unparenthesized(stmt.expression!);
-      if (value.kind === ts.SyntaxKind.ThisKeyword) continue;
+      if (returnsThis(lowerer, info, value)) continue;
       const type = lowerer.typeOf(value);
       const shape = objectness(type);
       if (shape === "never") continue;
