@@ -801,14 +801,32 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
   return out;
 }
 
+static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth);
+
+/* A runtime error through its node: the cached one, or one built from its
+ * fields. */
+ScrStr *scr_insp_error_node(ScrError *e, double recurse, double depth) {
+  ScrDyn *view = scr_errdyn_view_of(e);
+  if (view != NULL && view->kind == SCR_DYN_OBJ) return scr_insp_dyn_error(view, recurse, depth);
+  ScrDyn *fields = scr_error_dyn_fields(e);
+  ScrStr *out = scr_insp_dyn_error(fields, recurse, depth);
+  scr_dyn_release(fields);
+  return out;
+}
+
 /* Errors: the STACKLESS rendering — compiled binaries carry no stack, so
  * the base is formatError's bracket form `[Name: message]` / `[Name]`
  * (Node prints these exact forms for an error whose stack is empty;
- * stack-carrying Node output is a documented divergence). A stamped
- * `code` slot renders as the one extra own property Node would show:
- * `[Error: m] { code: 'X' }`, `[Error]` beyond depth. Message newlines
- * indent like Node's formatError tail. */
+ * stack-carrying Node output is a documented divergence). A runtime error
+ * renders through its checked-dynamic node, so the own properties Node
+ * shows follow in key order: the system-error fields, code, and the extra
+ * properties a throw site attached (`[Error: m] { errno: -2, code:
+ * 'ENOENT', ... }`). Other errors render a stamped `code` slot as their
+ * one extra property: `[Error: m] { code: 'X' }`, `[Error]` beyond depth.
+ * Message newlines indent like Node's formatError tail. */
 ScrStr *scr_insp_error(ScrError *e, double recurse, double depth) {
+  if (e->vt >= &scr_error_vts[0] && e->vt < &scr_error_vts[SCR_ERR_COUNT])
+    return scr_insp_error_node(e, recurse, depth);
   bool has_code = e->code != NULL; /* the stamped slot, read directly (borrowed) */
   if (has_code && recurse > depth) {
     /* `[${getCtxStyle(...)}]` with the trailing space sliced: [Name] */
@@ -897,13 +915,53 @@ static const ScrDyn *insp_error_slot(const ScrDyn *d, const char *key, size_t le
   return v != NULL && v->kind == SCR_DYN_STR ? v : NULL;
 }
 
+/* AssertionError's custom inspect (lib/internal/assert/assertion_error.js)
+ * renders the error at depth 0 and shortens string actual/expected values
+ * with addEllipsis: past 10 lines, the first 10 and "\n..."; otherwise past
+ * 512 characters, the text from offset 512 on and "...". +1. */
+static ScrDyn *insp_assertion_ellipsis(ScrDyn *value) {
+  if (value->kind != SCR_DYN_STR) return scr_dyn_retain(value);
+  ScrStr *text = value->v.str;
+  size_t lines = 1, cut = 0;
+  for (size_t i = 0; i < text->len; i++) {
+    if (text->data[i] != '\n') continue;
+    if (++lines == 11) {
+      cut = i;
+      break;
+    }
+  }
+  InspBuf b = {0};
+  if (lines > 10) {
+    ib_bytes(&b, text->data, cut);
+    ib_cstr(&b, "\n...");
+  } else if (scr_str_utf16_len(text) > 512) {
+    ScrStr *tail = scr_str_slice(text, 512, scr_str_utf16_len(text));
+    ib_str(&b, tail);
+    ib_cstr(&b, "...");
+    scr_str_release(tail);
+  } else {
+    return scr_dyn_retain(value);
+  }
+  ScrStr *shortened = ib_take(&b);
+  ScrDyn *out = scr_dyn_new_str(shortened);
+  scr_str_release(shortened);
+  return out;
+}
+
 /* The checked-dynamic Error encoding (scr_error_dyn_fields) rendered like
  * scr_insp_error: the stackless bracket form `[Name: message]`, then the
  * remaining enumerable own properties (code, errno, syscall, ...) in
  * Node's `{ ... }` tail. */
 static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
+  /* An error already on the traversal stack (a spawnSync error's own
+   * `error`): Node's [Circular *N], and <ref *N> on the outer rendering. */
+  double circular = scr_insp_circ_check(d);
+  if (circular != 0) return scr_insp_circular(circular);
   const ScrDyn *name = insp_error_slot(d, "name", 4);
   const ScrDyn *message = insp_error_slot(d, "message", 7);
+  bool assertion = name != NULL && name->v.str->len == 14 &&
+                   memcmp(name->v.str->data, "AssertionError", 14) == 0;
+  double value_depth = assertion ? recurse : depth;
   size_t extra = 0;
   for (size_t i = 0; i < d->v.obj.len; i++) {
     ScrDynEntry *ent = &d->v.obj.entries[i];
@@ -934,6 +992,7 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
   ScrStr *base_str = ib_take(&base);
   if (extra == 0) return base_str;
   scr_insp_begin(recurse + 1);
+  scr_insp_seen_push(d);
   for (size_t i = 0; i < d->v.obj.len; i++) {
     ScrDynEntry *ent = &d->v.obj.entries[i];
     if (!ent->enumerable) continue;
@@ -941,7 +1000,11 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
         (ent->key_len == 7 && memcmp(ent->key, "message", 7) == 0) ||
         (ent->key_len == 5 && memcmp(ent->key, "stack", 5) == 0))
       continue;
-    ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
+    bool shortened = assertion && ((ent->key_len == 6 && memcmp(ent->key, "actual", 6) == 0) ||
+                                   (ent->key_len == 8 && memcmp(ent->key, "expected", 8) == 0));
+    ScrDyn *shown = shortened ? insp_assertion_ellipsis(ent->value) : scr_dyn_retain(ent->value);
+    ScrStr *val = scr_insp_dyn(shown, recurse + 1, value_depth);
+    scr_dyn_release(shown);
     InspBuf eb = {0};
     insp_key_into(&eb, ent->key, ent->key_len);
     ib_cstr(&eb, ": ");
@@ -953,10 +1016,12 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
   }
   ScrStr *b0 = scr_str_new("{", 1);
   ScrStr *b1 = scr_str_new("}", 1);
-  ScrStr *out = scr_insp_end(base_str, b0, b1, recurse + 1, false, false);
+  ScrStr *body = scr_insp_end(base_str, b0, b1, recurse + 1, false, false);
   scr_str_release(b0);
   scr_str_release(b1);
   scr_str_release(base_str);
+  ScrStr *out = scr_insp_ref_wrap(d, body);
+  scr_str_release(body);
   return out;
 }
 

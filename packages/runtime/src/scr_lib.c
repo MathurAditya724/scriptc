@@ -8738,12 +8738,10 @@ static void scr_crypto_not_xof(void) {
   ScrStr *text = scr_str_new(message, sizeof message - 1);
   ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
   scr_str_release(text);
-  ScrDyn *view = scr_dyn_from_error(e);
-  scr_dyn_obj_set(view, "library", 7, scr_crypto_dyn_str(scr_str_new("digital envelope routines", 25)));
-  scr_dyn_obj_set(view, "reason", 6, scr_crypto_dyn_str(scr_str_new("not XOF or invalid length", 25)));
+  scr_error_set_prop(e, "library", 7, scr_crypto_dyn_str(scr_str_new("digital envelope routines", 25)));
+  scr_error_set_prop(e, "reason", 6, scr_crypto_dyn_str(scr_str_new("not XOF or invalid length", 25)));
   scr_error_set_code(e, code);
-  scr_dyn_obj_set(view, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
-  scr_dyn_release(view);
+  scr_error_set_prop(e, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 

@@ -2285,11 +2285,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   /** execFileSync/execSync as ONE entry (args: cmd, argv, shell, input,
-   * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode — see
-   * scr_runtime.h). Throws Node's exact errors: "Command failed: <cmd>"
+   * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, buffers —
+   * see scr_child.h). Throws Node's exact errors: "Command failed: <cmd>"
    * (+ captured stderr) on non-zero exit or signal death, "spawnSync
    * <file> ENOENT" on spawn failure, "spawnSync <file> ETIMEDOUT" after
-   * the SIGTERM timeout. Result is the captured utf8 stdout (+1). */
+   * the SIGTERM timeout, with Node's status, signal, output, pid, stdout
+   * and stderr properties (Buffer outputs when buffers is set: no
+   * encoding option). Result is the captured utf8 stdout (+1). */
   "cp.execSync": {
     argTypes: [
       STRING,
@@ -2303,6 +2305,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
       F64,
       F64,
       F64,
+      BOOL,
     ],
     result: STRING,
   },
