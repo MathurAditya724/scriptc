@@ -33,7 +33,7 @@ ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
                                         ScrMessage *data, bool environment_data,
                                         ScrMailbox *parent, ScrArr *arguments,
                                         size_t stack_size, const ScrStr *name,
-                                        unsigned capture, ScrContextEnv *environment);
+                                        unsigned capture, struct ScrContextEnv *environment);
 ScrWorkerThread *scr_worker_thread_retain(ScrWorkerThread *worker);
 void scr_worker_thread_release(ScrWorkerThread *worker);
 /* Join is owner-only and idempotent. The caller holds a reference. */
