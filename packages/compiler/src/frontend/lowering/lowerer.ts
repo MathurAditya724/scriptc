@@ -242,6 +242,7 @@ import {
   isOverloadedCallableMemberType,
   isUnitOnlyTsType,
   isWorkerHandleType,
+  isFetchHandleType,
   jsOpenObjectType,
   mapType,
   ShapeRegistry,
@@ -3113,14 +3114,16 @@ export class Lowerer {
   /** Declared class fields may store a DYN value only when its static type
    * is `unknown` or `object` (also with `null` or `undefined`, or an array
    * of those), names checked protocol identity, is an owned runtime
-   * handle (a Worker or MessagePort), or is a WeakMap/WeakSet (native weak
-   * collections live in checked-dynamic storage, as locals of those types
-   * do); `any` fields stay refused. */
+   * handle (a Worker or MessagePort, or a fetch Headers/Request/Response),
+   * or is a WeakMap/WeakSet (native weak collections live in
+   * checked-dynamic storage, as locals of those types do); `any` fields
+   * stay refused. */
   classFieldStoresDyn(type: ts.Type): boolean {
     return (
       this.opaqueValueType(type) ||
       this.classImplementedProtocol(type) ||
       isWorkerHandleType(type, this.typeCtx) ||
+      isFetchHandleType(type, this.typeCtx) ||
       this.weakCollectionType(type)
     );
   }

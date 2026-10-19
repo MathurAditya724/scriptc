@@ -13,6 +13,7 @@ import {
   type IrExpr,
   type IrStmt,
   type IrType,
+  type SrcLoc,
   STRING,
   VOID,
   canConvertToDyn,
@@ -1932,11 +1933,39 @@ export function lowerResponseNew(lowerer: Lowerer, expr: ts.NewExpression): IrEx
   if (stdlibGlobalNameOf(lowerer, expr.expression) !== "Response") return null;
   const args = expr.arguments ?? [];
   if (args.some(ts.isSpreadElement)) return null;
-  const loc = locOf(expr);
+  return lowerResponseConstruction(lowerer, args, locOf(expr), false);
+}
 
+/** Static `Response.json(data, init?)`: the data crosses into the runtime's
+ * checked-dynamic JSON serializer (toJSON hooks included) after ResponseInit
+ * converts, then the response initializes as the constructor does. */
+export function lowerResponseStaticJson(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  if (call.questionDotToken || !ts.isPropertyAccessExpression(call.expression)) return null;
+  const access = call.expression;
+  if (access.questionDotToken || access.name.text !== "json") return null;
+  if (!lowerer.isStdlibGlobal(access.expression, "Response")) return null;
+  if (call.arguments.some(ts.isSpreadElement) || call.arguments.length === 0) return null;
+  return lowerResponseConstruction(lowerer, call.arguments, locOf(call), true);
+}
+
+function lowerResponseConstruction(
+  lowerer: Lowerer,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+  json: boolean,
+): IrExpr {
   const toDyn = (node: ts.Expression | undefined, value: IrExpr, what: string): IrExpr => {
     if (node === undefined) return dynUndefinedExpr(loc);
     if (value.type.kind === "dyn") return value;
+    if (what === "JSON data") {
+      const boxed = lowerer.coerceToExpected(value, DYN);
+      if (boxed.type.kind === "dyn") return boxed;
+      lowerer.noLowering(
+        `Response.json of '${lowerer.fmt(value.type)}' values`,
+        node,
+        "the data must cross the checked-dynamic boundary (number, string, boolean, null, records, arrays, and 'unknown')",
+      );
+    }
     /* A user class can satisfy ResponseInit structurally through plain
      * fields. Project just the declared dictionary members into a record,
      * then use the ordinary checked-dynamic copy. objRecordWidthHelper
@@ -2059,8 +2088,11 @@ export function lowerResponseNew(lowerer: Lowerer, expr: ts.NewExpression): IrEx
   }
   const result: IrExpr = {
     kind: "libCall",
-    fn: "fetch.responseNew",
-    args: [toDyn(bodyNode, bodyRef, "a body"), toDyn(initNode, initRef, "an init value")],
+    fn: json ? "fetch.responseJsonStatic" : "fetch.responseNew",
+    args: [
+      toDyn(bodyNode, bodyRef, json ? "JSON data" : "a body"),
+      toDyn(initNode, initRef, "an init value"),
+    ],
     type: DYN,
     loc,
   };

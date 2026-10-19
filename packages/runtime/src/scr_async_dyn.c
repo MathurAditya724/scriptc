@@ -1104,11 +1104,9 @@ void scr_process_emit_warning(ScrDyn *args) {
   e->name = type ? scr_str_retain((ScrStr *)type) : scr_str_new("Warning", 7);
   e->name_present = true;
   if (code) e->code = scr_str_retain((ScrStr *)code);
+  if (detail) scr_error_set_prop(e, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
   ScrDyn *w = scr_dyn_from_error(e);
   scr_error_release(e);
-  if (detail) {
-    scr_dyn_obj_set(w, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
-  }
   scr_warning_emit_deferred(w);
   scr_dyn_release(w);
 }

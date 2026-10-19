@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
+import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
@@ -2514,6 +2515,39 @@ export function lowerBindingPattern(
         lowerer.bindPatternTarget(el.name, value, isLet, out);
       });
       return;
+    }
+    // Map and Set sources (`const [[k, v], ...rest] = map`): the iterator
+    // yields the collection's entries (Map pairs) or values in order, so
+    // the source snapshots ONCE into that array — the spread's own
+    // machinery — and the pattern lowers as an array pattern over it,
+    // like the string case above. Element defaults keep a fence: they
+    // run between iterator steps and could mutate the live collection.
+    if (srcType.kind === "map" || srcType.kind === "set") {
+      const defaulted = pattern.elements.find(
+        (el): el is ts.BindingElement =>
+          ts.isBindingElement(el) && el.initializer !== undefined && !el.dotDotDotToken,
+      );
+      if (defaulted)
+        lowerer.unsupported("SC1031", defaulted, "binding defaults over Map/Set sources");
+      const snapshot = lowerCollectionSpread(
+        lowerer,
+        srcRef(),
+        pattern as unknown as ts.Expression,
+      );
+      if (snapshot && snapshot.type.kind === "array") {
+        const loc = locOf(pattern);
+        const snapshotT = snapshot.type;
+        const entries = lowerer.declareHiddenLocal("%dentries", snapshotT);
+        out.push({ kind: "varDecl", localId: entries.id, init: snapshot, loc });
+        lowerer.lowerBindingPattern(
+          pattern,
+          () => ({ kind: "varRef", localId: entries.id, type: snapshotT, loc }),
+          snapshotT,
+          isLet,
+          out,
+        );
+        return;
+      }
     }
     if (srcType.kind !== "array") {
       lowerer.unsupported(
