@@ -815,6 +815,10 @@ static ScrDyn *scr_dyn_invoke_impl(
     bool handled = false;
     ScrDyn *fast = dyn_live_array_method(recv, method, args, argc, what, &handled);
     if (handled) return fast;
+    /* Iterator helpers on a compiled generator. */
+    if (scr_dyn_generator_helper_hook &&
+        scr_dyn_generator_helper_hook(recv, method, args, argc, &fast))
+      return fast;
     if (scr_event_ref_hooks &&
         scr_event_ref_hooks->invoke(recv, method, args, argc, what, &fast))
       return fast;

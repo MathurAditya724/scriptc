@@ -557,10 +557,10 @@ export function lowerRequireCacheKeys(
   call: ts.CallExpression,
   member: string,
 ): IrExpr | null {
-  const argument = call.arguments[0];
+  const argument = call.arguments.nodes[0];
   if (
     member !== "keys" ||
-    call.arguments.length !== 1 ||
+    call.arguments.nodes.length !== 1 ||
     argument === undefined ||
     !isRequireCacheExpr(lowerer, argument)
   )

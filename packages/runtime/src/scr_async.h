@@ -160,6 +160,8 @@ ScrAlsCtx *scr_als_ctx_retain(ScrAlsCtx *c);
 void scr_als_ctx_release(ScrAlsCtx *c);
 /* After an enterWith: on the main stack, queues the tick that ends it. */
 void scr_als_entered_with(void);
+ScrAlsCtx *scr_als_ctx_alloc(size_t len);
+ScrDyn *scr_als_peek(double id); /* borrowed; NULL when unset */
 double scr_als_new(void);
 ScrDyn *scr_als_get(double id); /* +1; the undefined value when unset */
 ScrAlsCtx *scr_als_enter(double id, ScrDyn *value); /* borrows value; prev out (owned) */

@@ -729,6 +729,22 @@ double scr_dyn_collection_iterator_index(const ScrDyn *iterator);
  * than 2 and 3) and the index its next step reads from. */
 void scr_dyn_native_iterator_state(const ScrDyn *iterator, unsigned *kind, unsigned *selection,
                                    ScrMap **collection, double *index);
+/* A compiled program that boxes generators and calls iterator helpers on
+ * untyped values registers the checked functions that read a generator
+ * capsule's next and return methods (each takes the capsule). The
+ * iterator helpers below then drive compiled generators. */
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter);
+/* An iterator helper method called on a synchronous generator capsule:
+ * true with *out set (+1, or NULL with the exception pending) when
+ * `method` is one. NULL until the program registers its generator
+ * members. */
+extern SCR_TL bool (*scr_dyn_generator_helper_hook)(ScrDyn *recv, const char *method,
+                                                    ScrDyn *const *args, size_t argc,
+                                                    ScrDyn **out);
+/* The Iterator.prototype helper method `name` as a function value (+1),
+ * the value a compiled generator's helper property reads; undefined for
+ * other names. */
+ScrDyn *scr_dyn_iterator_helper_method(const ScrStr *name);
 /* The ordinary object snapshot plus a retained typed source. source_access
  * releases that source when materialize=false and returns a fresh snapshot
  * when true. */
@@ -873,6 +889,19 @@ void scr_dyn_arr_push_spread(ScrDyn *arr, const ScrDyn *src, const char *what);
  * compile-time source spelling), else the runtime kind wording. Borrows
  * both; NULL with the exception pending on the throw. */
 ScrDyn *scr_dyn_iter_pack(const ScrDyn *src, const ScrStr *msg);
+/* A rest element's pack (`const [a, ...rest] = d`): scr_dyn_iter_pack's
+ * kinds pack as there, and other iterables step through the iterator
+ * protocol to the end. +1, or NULL with the error pending. */
+ScrDyn *scr_dyn_destructure_rest(const ScrDyn *src, const ScrStr *msg);
+/* Destructuring's first `n` values (`const [a, b] = d`) of a dyn source
+ * other than an array, string or bytes (the emitted walk packs those),
+ * through the iterator protocol: an iterator with values left closes.
+ * `spell` is the compile-time not-iterable wording, or NULL. +1, or NULL
+ * with the error pending. */
+ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell);
+/* True for typed capsules that iterate through the protocol (a compiled
+ * synchronous generator) rather than through their materialized view. */
+bool scr_dyn_iterates_by_protocol(const ScrDyn *value);
 /* Map constructor seeds: retain array inputs for live iteration, accept
  * nullish inputs as empty, and validate each entry before reading 0/1. */
 ScrDyn *scr_dyn_map_seed_entries(const ScrDyn *src);

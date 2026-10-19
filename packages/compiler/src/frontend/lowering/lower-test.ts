@@ -25,6 +25,7 @@ import {
   DYN,
   F64,
   STRING,
+  TESTCTX_T,
   VOID,
   isUnitType,
 } from "../../ir/ir.js";
@@ -173,7 +174,7 @@ function lowerTestOptions(
     );
   }
   const out = noOptions();
-  for (const prop of node.properties) {
+  for (const prop of node.properties.nodes) {
     if (
       !(ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) &&
       !ts.isShorthandPropertyAssignment(prop)
@@ -353,7 +354,7 @@ function splitTestArgs(
   expr: ts.CallExpression,
   what: string,
 ): { nameNode?: ts.Expression; optionsNode?: ts.Expression; fnNode?: ts.Expression } {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   const isFn = (a: ts.Expression): boolean =>
     lowerer.checker.getCallSignatures(lowerer.typeOf(a)).length > 0;
   const isOptions = (a: ts.Expression): boolean => ts.isObjectLiteralExpression(a);
@@ -589,7 +590,7 @@ function lowerHook(
   loc: SrcLoc,
 ): IrExpr {
   requireStatementPosition(lowerer, expr, what);
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.length !== 1) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
@@ -652,6 +653,8 @@ export function lowerNodeTestModuleCall(
     case "beforeEach":
     case "afterEach":
       return lowerHook(lowerer, expr, HOOK_WHICH[bi.member]!, `${bi.member}(...)`, loc);
+    case "getTestContext":
+      return lowerGetTestContext(lowerer, expr, loc);
     case "run":
       lowerer.noLowering(
         "test.run",
@@ -670,11 +673,45 @@ export function lowerNodeTestModuleCall(
       lowerer.noLowering(
         `test.${bi.member}`,
         expr,
-        "test/it, describe/suite, before/after/beforeEach/afterEach, and the skip/todo/only twins are the lowered node:test members",
+        "test/it, describe/suite, before/after/beforeEach/afterEach, getTestContext, and the skip/todo/only twins are the lowered node:test members",
         ts.isIdentifier(expr.expression) ? lowerer.resolveValueSymbol(expr.expression) : undefined,
       );
   }
   return null; // unreachable — noLowering throws
+}
+
+/** getTestContext(): the context of the test, suite or hook running in
+ * the current async context, or undefined outside one (module top level,
+ * and code reached only through timer, immediate, nextTick and
+ * queueMicrotask callbacks). */
+function lowerGetTestContext(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  if (expr.arguments.nodes.length > 0) {
+    lowerer.noLowering(
+      `getTestContext with ${expr.arguments.nodes.length} arguments`,
+      expr,
+      "the supported form is getTestContext()",
+    );
+  }
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const missing = declared ? lowerer.wrappedUndefined(declared, loc) : null;
+  if (!declared || !missing) {
+    lowerer.noLowering(
+      "getTestContext() of this type",
+      expr,
+      "getTestContext() lowers as TestContext | SuiteContext | undefined",
+    );
+  }
+  return {
+    kind: "ternary",
+    cond: { kind: "libCall", fn: "test.hasContext", args: [], type: BOOL, loc },
+    then: lowerer.coerceToExpected(
+      { kind: "libCall", fn: "test.context", args: [], type: TESTCTX_T, loc },
+      declared,
+    ),
+    else_: missing,
+    type: declared,
+    loc,
+  };
 }
 
 /** The callable-module form: `test(...)` where the callee identifier IS
@@ -726,7 +763,7 @@ function lowerSnapshotAssert(
     return varRef(local.id, type, loc);
   };
   // Arguments evaluate in order before the assertion serializes, as in Node.
-  const valueNode = call.arguments[0];
+  const valueNode = call.arguments.nodes[0];
   const input = slot(
     "%snapshotInput",
     DYN,
@@ -734,7 +771,7 @@ function lowerSnapshotAssert(
   );
   let path: IrExpr | null = null;
   if (member === "fileSnapshot") {
-    const pathNode = call.arguments[1];
+    const pathNode = call.arguments.nodes[1];
     path = slot(
       "%snapshotPath",
       STRING,
@@ -742,11 +779,11 @@ function lowerSnapshotAssert(
     );
   }
   const serializers =
-    snapshotSerializers(lowerer, call.arguments[member === "snapshot" ? 1 : 2], what)?.map((fn) =>
-      slot("%snapshotSerializer", DYN, fn),
+    snapshotSerializers(lowerer, call.arguments.nodes[member === "snapshot" ? 1 : 2], what)?.map(
+      (fn) => slot("%snapshotSerializer", DYN, fn),
     ) ?? null;
-  if (call.arguments.length > (member === "snapshot" ? 2 : 3)) {
-    lowerer.noLowering(`${what} with ${call.arguments.length} arguments`, call);
+  if (call.arguments.nodes.length > (member === "snapshot" ? 2 : 3)) {
+    lowerer.noLowering(`${what} with ${call.arguments.nodes.length} arguments`, call);
   }
   const text: IrExpr = {
     kind: "toString",
@@ -813,7 +850,7 @@ function snapshotSerializers(
     lowerer.noLowering(`${what} options that are not an object literal`, options, hint);
   }
   let fns: IrExpr[] | null = null;
-  for (const prop of options.properties) {
+  for (const prop of options.properties.nodes) {
     const name = prop.name && ts.isIdentifier(prop.name) ? prop.name.text : null;
     if (
       name !== "serializers" ||
@@ -825,7 +862,7 @@ function snapshotSerializers(
     if (!ts.isArrayLiteralExpression(list)) {
       lowerer.noLowering(`${what} with a non-literal serializers list`, list, hint);
     }
-    fns = list.elements.map((el) => {
+    fns = list.elements.nodes.map((el) => {
       if (ts.isSpreadElement(el)) lowerer.noLowering(`${what} with a spread serializer`, el, hint);
       return lowerer.lowerExprExpecting(el, DYN);
     });
@@ -902,7 +939,8 @@ export function lowerTestMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  if (call.questionDotToken || (access.questionDotToken && !lowerer.chainHandled.has(access)))
+    return null;
   const loc = locOf(call);
   const member = access.name.text;
   // fn.mock.callCount() and the other mock context members.
@@ -1023,7 +1061,7 @@ export function lowerTestMethodCall(
   // The TestContext receiver surface.
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "testCtx") return null;
   if (!lowerer.isStdlibMember(access)) return null;
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (member === "test") {
     const receiver = lowerer.lowerExpr(access.expression);
     return lowerRegistration(lowerer, call, "t.test(...)", loc, 0, receiver);
@@ -1182,7 +1220,9 @@ export function lowerTestCtxProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (expr.questionDotToken) return null;
+  // `getTestContext()?.name`: the optional-chain step re-enters here with
+  // the receiver narrowed.
+  if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
   const mockCalls = lowerMockContextProperty(lowerer, expr);
   if (mockCalls) return mockCalls;
   if (lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind !== "testCtx") return null;

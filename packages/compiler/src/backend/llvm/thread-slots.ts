@@ -49,7 +49,7 @@ export function emitThreadSlotsIntrinsic(
     case "slots.get": {
       const read = readSlot(host, block, word);
       if (host.nullableUnions.of(e.type) !== null)
-        return host.own({ name: host.retainValue(read, e.type), type: e.type });
+        return host.own({ name: host.retainFrame(read, e.type), type: e.type });
       return boxedRead(host, read, e.type);
     }
     case "slots.has": {
@@ -67,13 +67,13 @@ export function emitThreadSlotsIntrinsic(
     case "slots.set": {
       if (value === null) throw new InternalCompilerError("llvm emitter bug: slots.set value");
       // The value moves into the block.
-      host.moveTemp(value);
+      host.toHeap(value);
       host.declare(`declare void @scr_slots_set(ptr, ptr, ptr, ptr, ptr)`);
       B.line(
         `call void @scr_slots_set(ptr ${block}, ptr ${key.name}, ptr ${word}, ptr ${value.name}, ptr ${releaseSym(host.shapeHost, value.type)})`,
       );
       if (e.type.kind === "void") return { name: "", type: e.type };
-      return host.own({ name: host.retainValue(slots.name, e.type), type: e.type });
+      return host.own({ name: host.retainFrame(slots.name, e.type), type: e.type });
     }
     default:
       throw new InternalCompilerError(`llvm emitter bug: unknown intrinsic ${e.name}`);
@@ -100,7 +100,7 @@ function boxedRead(host: LlvmEmitterContext, read: string, type: IrType): LlValu
   B.condBr(has, some, none);
   B.startBlock(some);
   const arm = def.arms[refTag]!;
-  const box = host.unionNewOwned(def.id, refTag, { name: host.retainValue(read, arm), type: arm });
+  const box = host.unionNewOwned(def.id, refTag, { name: host.retainHeap(read, arm), type: arm });
   B.line(`store ptr ${box}, ptr ${result}`);
   B.br(done);
   B.startBlock(none);

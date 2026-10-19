@@ -33,8 +33,14 @@ const DATE_GETTER_FNS: Readonly<Record<string, IrLibFn>> = {
   getTimezoneOffset: "date.getTimezoneOffset",
 };
 
+const DATE_TEXT_FNS: ReadonlyMap<string, IrLibFn> = new Map([
+  ["toString", "date.toString"],
+  ["toDateString", "date.toDateString"],
+  ["toTimeString", "date.toTimeString"],
+]);
+
 const DATE_METHOD_HINT =
-  "getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale/string formatters have no lowering";
+  "getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale formatters have no lowering";
 
 /** The Date slice: statics plus read-only Date values backed by one
  * TimeClip'd millisecond scalar. Construction lives in lowerNew;
@@ -47,18 +53,18 @@ export function lowerDateCall(
   if (call.questionDotToken || access.questionDotToken) return null;
   const loc = locOf(call);
   if (lowerer.stdlibGlobalMember(access, "Date") === "now") {
-    if (call.arguments.length !== 0) {
-      lowerer.noLowering(`Date.now with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 0) {
+      lowerer.noLowering(`Date.now with ${call.arguments.nodes.length} arguments`, call);
     }
     return { kind: "libCall", fn: "date.now", args: [], type: F64, loc };
   }
   // Date.parse uses the same date-string parser as new Date(dateString)
   // (V8's grammar in the runtime), so their NaN and TimeClip behavior agree.
   if (lowerer.stdlibGlobalMember(access, "Date") === "parse") {
-    if (call.arguments.length !== 1 || ts.isSpreadElement(call.arguments[0]!)) {
-      lowerer.noLowering(`Date.parse with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!)) {
+      lowerer.noLowering(`Date.parse with ${call.arguments.nodes.length} arguments`, call);
     }
-    const input = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
+    const input = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, STRING);
     return { kind: "libCall", fn: "date.parse", args: [input], type: F64, loc };
   }
   // Date.UTC(year[, month[, date[, hours[, minutes[, seconds[, ms]]]]]]):
@@ -68,16 +74,16 @@ export function lowerDateCall(
   // argument to number, so the seven-f64 ABI is exact.
   if (lowerer.stdlibGlobalMember(access, "Date") === "UTC") {
     if (
-      call.arguments.length < 1 ||
-      call.arguments.length > 7 ||
-      call.arguments.some((a) => ts.isSpreadElement(a))
+      call.arguments.nodes.length < 1 ||
+      call.arguments.nodes.length > 7 ||
+      call.arguments.nodes.some((a) => ts.isSpreadElement(a))
     ) {
-      lowerer.noLowering(`Date.UTC with ${call.arguments.length} arguments`, call);
+      lowerer.noLowering(`Date.UTC with ${call.arguments.nodes.length} arguments`, call);
     }
     const defaults = [0, 0, 1, 0, 0, 0, 0]; // year is always present (arity ≥ 1)
     const args: IrExpr[] = [];
     for (let i = 0; i < 7; i++) {
-      const a = call.arguments[i];
+      const a = call.arguments.nodes[i];
       args.push(
         a !== undefined
           ? lowerer.lowerExprExpecting(a, F64)
@@ -90,7 +96,7 @@ export function lowerDateCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   if (name === "toJSON") return lowerDateToJson(lowerer, call, access);
-  if (call.arguments.length !== 0) {
+  if (call.arguments.nodes.length !== 0) {
     lowerer.noLowering(`Date.prototype.${name} with arguments`, call, DATE_METHOD_HINT);
   }
   const raw = lowerer.lowerExpr(access.expression);
@@ -119,6 +125,10 @@ export function lowerDateCall(
   if (fn !== undefined) {
     return { kind: "libCall", fn, args: [receiver], type: F64, loc };
   }
+  const textFn = DATE_TEXT_FNS.get(name);
+  if (textFn !== undefined) {
+    return { kind: "libCall", fn: textFn, args: [receiver], type: STRING, loc };
+  }
   lowerer.noLowering(
     `Date.prototype.${name}`,
     call,
@@ -136,8 +146,8 @@ function lowerDateToJson(
   access: ts.PropertyAccessExpression,
 ): IrExpr {
   const loc = locOf(call);
-  if (call.arguments.length > 1 || call.arguments.some((a) => ts.isSpreadElement(a)))
-    lowerer.noLowering(`Date.prototype.toJSON with ${call.arguments.length} arguments`, call);
+  if (call.arguments.nodes.length > 1 || call.arguments.nodes.some((a) => ts.isSpreadElement(a)))
+    lowerer.noLowering(`Date.prototype.toJSON with ${call.arguments.nodes.length} arguments`, call);
   const raw = lowerer.lowerExpr(access.expression);
   const receiver: IrExpr =
     raw.type.kind === "dyn"
@@ -147,7 +157,7 @@ function lowerDateToJson(
     lowerer.badType(access.expression, lowerer.typeOf(access.expression));
   const date = lowerer.declareHiddenLocal("%date", receiver.type);
   const stmts: IrStmt[] = [{ kind: "varDecl", localId: date.id, init: receiver, loc }];
-  const key = call.arguments[0];
+  const key = call.arguments.nodes[0];
   if (key) stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(key), loc });
   const value: IrExpr = { kind: "varRef", localId: date.id, type: receiver.type, loc };
   const time: IrExpr = { kind: "libCall", fn: "date.getTime", args: [value], type: F64, loc };

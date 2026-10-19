@@ -81,7 +81,7 @@ export function lowerIteratorHelperCall(
     if (!ts.isCallExpression(cur) || !ts.isPropertyAccessExpression(cur.expression)) return null;
     if (cur.questionDotToken || cur.expression.questionDotToken) return null;
     const name = cur.expression.name.text;
-    if ((name === "values" || name === "entries") && cur.arguments.length === 0) {
+    if ((name === "values" || name === "entries") && cur.arguments.nodes.length === 0) {
       const recvIr = lowerer.mapTypeOf(lowerer.typeOf(cur.expression.expression));
       if (recvIr?.kind !== "array") return null;
       if (!lowerer.isStdlibMember(cur.expression)) return null;
@@ -91,11 +91,11 @@ export function lowerIteratorHelperCall(
     }
     if (
       !ITER_STAGES.has(name) ||
-      cur.arguments.length !== 1 ||
-      ts.isSpreadElement(cur.arguments[0]!)
+      cur.arguments.nodes.length !== 1 ||
+      ts.isSpreadElement(cur.arguments.nodes[0]!)
     )
       return null;
-    stages.push({ name, argNode: cur.arguments[0]!, access: cur.expression });
+    stages.push({ name, argNode: cur.arguments.nodes[0]!, access: cur.expression });
     cur = cur.expression.expression;
   }
   stages.reverse(); // source order
@@ -154,9 +154,9 @@ export function lowerGeneratorHelperCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const loc = locOf(call);
   if (!isTerminal) {
-    const argNode = call.arguments[0];
-    if (call.arguments.length !== 1 || argNode === undefined || ts.isSpreadElement(argNode)) {
-      lowerer.noLowering(`.${name} with ${call.arguments.length} arguments`, call);
+    const argNode = call.arguments.nodes[0];
+    if (call.arguments.nodes.length !== 1 || argNode === undefined || ts.isSpreadElement(argNode)) {
+      lowerer.noLowering(`.${name} with ${call.arguments.nodes.length} arguments`, call);
     }
     // A stage on m.keys()/values()/entries() (or a Set's) walks the
     // collection inside the helper's own generator.
@@ -205,7 +205,11 @@ export function lowerGeneratorHelperCall(
   let cur: ts.Expression = access.expression;
   while (isStageCall(lowerer, cur)) {
     const stageAccess = cur.expression as ts.PropertyAccessExpression;
-    stages.push({ name: stageAccess.name.text, argNode: cur.arguments[0]!, access: stageAccess });
+    stages.push({
+      name: stageAccess.name.text,
+      argNode: cur.arguments.nodes[0]!,
+      access: stageAccess,
+    });
     cur = stageAccess.expression;
   }
   stages.reverse(); // source order
@@ -271,7 +275,7 @@ export function lowerHelperReturnCall(lowerer: Lowerer, call: ts.CallExpression)
   if (nonNull) callee = (callee as ts.NonNullExpression).expression;
   if (!nonNull && call.questionDotToken === undefined) return null;
   if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return null;
-  if (callee.name.text !== "return" || call.arguments.length !== 0) return null;
+  if (callee.name.text !== "return" || call.arguments.nodes.length !== 0) return null;
   if (!isHelperObject(lowerer, callee.expression) || !lowerer.isStdlibMember(callee)) return null;
   const callT = lowerer.mapTypeOf(lowerer.typeOf(call));
   const gen = lowerer.lowerExpr(callee.expression);
@@ -321,8 +325,8 @@ export function lowerIteratorFromCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (access.name.text !== "from" || call.arguments.length !== 1) return null;
-  const argNode = call.arguments[0]!;
+  if (access.name.text !== "from" || call.arguments.nodes.length !== 1) return null;
+  const argNode = call.arguments.nodes[0]!;
   if (ts.isSpreadElement(argNode)) return null;
   const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
   const argT = lowerer.mapTypeOf(lowerer.typeOf(argNode));
@@ -409,7 +413,11 @@ export function lowerForOfHelperChain(
   while (isStageCall(lowerer, cur)) {
     const stageAccess = cur.expression as ts.PropertyAccessExpression;
     if (stageAccess.name.text === "flatMap") return null;
-    stages.push({ name: stageAccess.name.text, argNode: cur.arguments[0]!, access: stageAccess });
+    stages.push({
+      name: stageAccess.name.text,
+      argNode: cur.arguments.nodes[0]!,
+      access: stageAccess,
+    });
     cur = stageAccess.expression;
   }
   if (stages.length === 0) return null;
@@ -533,9 +541,13 @@ export function lowerForOfHelperChain(
  * argument directly. */
 function iteratorFromArgument(lowerer: Lowerer, expr: ts.Expression): ts.Expression | null {
   if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) return null;
-  if (expr.questionDotToken || expr.expression.questionDotToken || expr.arguments.length !== 1)
+  if (
+    expr.questionDotToken ||
+    expr.expression.questionDotToken ||
+    expr.arguments.nodes.length !== 1
+  )
     return null;
-  const arg = expr.arguments[0]!;
+  const arg = expr.arguments.nodes[0]!;
   if (ts.isSpreadElement(arg) || expr.expression.name.text !== "from") return null;
   if (!lowerer.isStdlibGlobal(expr.expression.expression, "Iterator")) return null;
   return lowerer.isStdlibMember(expr.expression) ? arg : null;
@@ -553,7 +565,11 @@ function arrayIteratorCall(
       ? { receiver: fromArg, proj: "values" }
       : null;
   if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) return null;
-  if (expr.questionDotToken || expr.expression.questionDotToken || expr.arguments.length !== 0)
+  if (
+    expr.questionDotToken ||
+    expr.expression.questionDotToken ||
+    expr.arguments.nodes.length !== 0
+  )
     return null;
   const proj = expr.expression.name.text;
   if (proj !== "values" && proj !== "entries") return null;
@@ -606,7 +622,11 @@ function collectionIteratorCall(
         : null;
   }
   if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) return null;
-  if (expr.questionDotToken || expr.expression.questionDotToken || expr.arguments.length !== 0)
+  if (
+    expr.questionDotToken ||
+    expr.expression.questionDotToken ||
+    expr.arguments.nodes.length !== 0
+  )
     return null;
   const proj = expr.expression.name.text;
   if (proj !== "keys" && proj !== "values" && proj !== "entries") return null;
@@ -668,7 +688,8 @@ function isStageCall(lowerer: Lowerer, expr: ts.Expression): expr is ts.CallExpr
   if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) return false;
   if (expr.questionDotToken || expr.expression.questionDotToken) return false;
   if (!ITER_STAGES.has(expr.expression.name.text)) return false;
-  if (expr.arguments.length !== 1 || ts.isSpreadElement(expr.arguments[0]!)) return false;
+  if (expr.arguments.nodes.length !== 1 || ts.isSpreadElement(expr.arguments.nodes[0]!))
+    return false;
   return (
     isHelperReceiver(lowerer, expr.expression.expression) && lowerer.isStdlibMember(expr.expression)
   );
@@ -817,8 +838,8 @@ function lowerTerminal(
 ): { termArgs: IrExpr[]; resultT: IrType } {
   const termArgs: IrExpr[] = [];
   if (terminal === "toArray") {
-    if (call.arguments.length !== 0)
-      lowerer.noLowering(`.toArray with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 0)
+      lowerer.noLowering(`.toArray with ${call.arguments.nodes.length} arguments`, call);
     return { termArgs, resultT: arrayOf(elem) };
   }
   if (
@@ -827,9 +848,9 @@ function lowerTerminal(
     terminal === "every" ||
     terminal === "find"
   ) {
-    const argNode = call.arguments[0];
-    if (call.arguments.length !== 1 || argNode === undefined || ts.isSpreadElement(argNode)) {
-      lowerer.noLowering(`.${terminal} with ${call.arguments.length} arguments`, call);
+    const argNode = call.arguments.nodes[0];
+    if (call.arguments.nodes.length !== 1 || argNode === undefined || ts.isSpreadElement(argNode)) {
+      lowerer.noLowering(`.${terminal} with ${call.arguments.nodes.length} arguments`, call);
     }
     const f = lowerArrayCallback(lowerer, argNode, [elem], UNDEFINED_T).fnArg;
     if (
@@ -849,14 +870,14 @@ function lowerTerminal(
     };
   }
   // reduce(f[, initial])
-  const fNode = call.arguments[0];
+  const fNode = call.arguments.nodes[0];
   if (
-    call.arguments.length < 1 ||
-    call.arguments.length > 2 ||
+    call.arguments.nodes.length < 1 ||
+    call.arguments.nodes.length > 2 ||
     fNode === undefined ||
-    call.arguments.some((a) => ts.isSpreadElement(a))
+    call.arguments.nodes.some((a) => ts.isSpreadElement(a))
   ) {
-    lowerer.noLowering(`.reduce with ${call.arguments.length} arguments`, call);
+    lowerer.noLowering(`.reduce with ${call.arguments.nodes.length} arguments`, call);
   }
   // The accumulator binds the checker's result type.
   const accLead = lowerer.mapTypeOf(lowerer.typeOf(call)) ?? elem;
@@ -872,7 +893,7 @@ function lowerTerminal(
     lowerer.badType(fNode, lowerer.typeOf(fNode));
   }
   const accT = (f.type as IrType & { kind: "func" }).ret;
-  if (call.arguments.length === 1 && !typeEquals(accT, elem)) {
+  if (call.arguments.nodes.length === 1 && !typeEquals(accT, elem)) {
     lowerer.noLowering(
       ".reduce without an initial value where the accumulator's type differs from the elements'",
       call,
@@ -880,8 +901,8 @@ function lowerTerminal(
     );
   }
   termArgs.push(f);
-  if (call.arguments[1] !== undefined)
-    termArgs.push(lowerer.lowerExprExpecting(call.arguments[1], accT));
+  if (call.arguments.nodes[1] !== undefined)
+    termArgs.push(lowerer.lowerExprExpecting(call.arguments.nodes[1], accT));
   return { termArgs, resultT: accT };
 }
 

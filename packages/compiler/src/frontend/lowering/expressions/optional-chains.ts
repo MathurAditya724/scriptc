@@ -253,7 +253,7 @@ export function lowerOptionalChain(
         }
       }
       const spreads: { arg: number; what: string }[] = [];
-      const args = expr.arguments.map((arg, index) => {
+      const args = expr.arguments.nodes.map((arg, index) => {
         if (!ts.isSpreadElement(arg)) return lowerer.lowerExprExpecting(arg, DYN);
         spreads.push({ arg: index, what: arg.expression.getText() });
         return lowerer.lowerExprExpecting(arg.expression, DYN);
@@ -429,7 +429,7 @@ export function lowerOptionalChain(
   if (dotNode === expr && ts.isCallExpression(expr)) {
     if (narrowed.kind !== "func") lowerer.badType(recvNode, lowerer.typeOf(recvNode));
     const params = narrowed.params;
-    const args = expr.arguments.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
+    const args = expr.arguments.nodes.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
     const body: IrExpr = { kind: "callValue", callee: recvRef, args, type: narrowed.ret, loc };
     return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
   }

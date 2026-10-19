@@ -52,9 +52,9 @@ function connect(files: Record<string, string>) {
 }
 
 function declaration(root: SourceFile, name: string): AstNode {
-  for (const statement of root.statements) {
+  for (const statement of root.statements.nodes) {
     if (statement.name?.text === name) return statement;
-    for (const node of statement.declarationList?.declarations ?? [])
+    for (const node of statement.declarationList?.declarations?.nodes ?? [])
       if (node.name?.text === name) return node;
   }
   throw new Error(`Missing declaration ${name}`);

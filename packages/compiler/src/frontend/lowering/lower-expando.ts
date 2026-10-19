@@ -247,7 +247,7 @@ function nsOwnedMember(
     ) {
       if (ts.isModuleDeclaration(p)) {
         return !(
-          p.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword) ||
+          p.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword) ||
           p.getSourceFile().isDeclarationFile
         );
       }

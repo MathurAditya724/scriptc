@@ -236,7 +236,7 @@ function emitRecordCloneFields(
     const fieldTy = llFieldType(from.type, from.inline);
     const v = B.tmp();
     B.line(`${v} = load ${fieldTy}, ptr ${from.ptr}`);
-    const stored = isRefCounted(from.type) && !from.inline ? host.retainValue(v, from.type) : v;
+    const stored = isRefCounted(from.type) && !from.inline ? host.retainFrame(v, from.type) : v;
     B.line(`store ${fieldTy} ${stored}, ptr ${to.ptr}`);
   }
   const initialized = new Set<string>();
