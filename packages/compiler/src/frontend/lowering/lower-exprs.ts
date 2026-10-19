@@ -147,6 +147,7 @@ import {
 } from "../../diagnostics/diagnostic.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, neverTaintedJsType, own } from "./lowerer.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
+import { lowerHelperReturnCall } from "./containers/iterator-helpers.js";
 import {
   arrayNumberRead,
   arrayValueRead,
@@ -1904,6 +1905,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isPostfixUnaryExpression(expr)) return lowerIncDec(lowerer, expr, false);
   if (ts.isBinaryExpression(expr)) return lowerer.lowerBinary(expr);
   if (ts.isCallExpression(expr)) {
+    // `h.return?.()` on a helper object: the method exists, so the
+    // optional call is the call.
+    const helperReturn = lowerHelperReturnCall(lowerer, expr);
+    if (helperReturn) return helperReturn;
     // The tail of an optional chain whose `?.` sits deeper
     // (`x?.trim().toLowerCase()`): the whole tail short-circuits together.
     if (isOptionalChainTail(lowerer, expr)) return lowerer.lowerOptionalChain(expr);
