@@ -1651,11 +1651,27 @@ export interface IrFunction {
    * out, `nextT` what `.next(v)` sends in (the yield expression's result
    * type). `async` alongside this field marks an async generator: its
    * resume methods queue requests and return promises. */
-  generator?: { yieldT: IrType; nextT: IrType; resultType: IrType & { kind: "record" } };
+  generator?: {
+    yieldT: IrType;
+    nextT: IrType;
+    resultType: IrType & { kind: "record" };
+    /** The first parameter is a generator this one reads from (an
+     * iterator helper's source): `.return()` before the first `.next()`
+     * closes it. */
+    closesSource?: true;
+  };
   /** Source function name for native error stack frames. */
   sourceName?: string;
   /** Ordinary authored function declarations/expressions own a prototype. */
   ownsPrototype?: true;
+  /** The function's execution tier (ir/tiers.ts). Absent means static: the
+   * function may use dynamic values only through boundary operations
+   * (dynFrom, dynCheck, kind tests) and moves, which the validator enforces
+   * (invariant I1). "dynamic" admits the dynamic operation vocabulary
+   * (dynKeyGet, dynCall, dyn.* builtins, ...). Lowering assigns the field
+   * from the body (assignLegacyTiers); stage S2 of the two-tier design
+   * keeps it out of serialized IR, so loaders derive it again. */
+  tier?: "dynamic";
   body: IrStmt[];
   loc: SrcLoc;
 }
@@ -1916,6 +1932,11 @@ export type IrStmt =
       /** Resource-management cleanup: if the guarded body and cleanup both
        * throw, raise a SuppressedError instead of replacing the first error. */
       suppressFinallyErrors?: true;
+      /** Iterator closing: if the guarded body threw and the cleanup throws
+       * too, the cleanup's error is dropped and the first one propagates.
+       * After a generator .return() the cleanup's error replaces it, and on
+       * normal exits it propagates. */
+      dropFinallyErrors?: true;
       loc: SrcLoc;
     };
 
@@ -3709,9 +3730,10 @@ export function isJsonStringifySafeType(
   return isJsonSafeAt(t, getRecord, getUnion, true, false, new Set());
 }
 
-/** A JSON-shaped container with unknown payloads needs the runtime JSON
- * traversal. Its declared structure can be boxed, but payloads may carry
- * omitted values, toJSON methods, or cycles. This predicate does not widen
+/** A JSON-shaped container with unknown payloads, or a class instance at
+ * any position, needs the runtime JSON traversal. Its declared structure can
+ * be boxed, but payloads may carry omitted values, toJSON methods, added
+ * properties, or cycles. This predicate does not widen
  * the type-directed serializer, checked-value boundary, or root-undefined
  * contract; callers must select the checked runtime traversal explicitly. */
 export function isJsonStringifyDynamicType(
@@ -3720,7 +3742,7 @@ export function isJsonStringifyDynamicType(
   getUnion: (unionId: string) => IrUnionDef | undefined,
 ): boolean {
   return (
-    (t.kind === "record" || t.kind === "array" || t.kind === "union") &&
+    (t.kind === "record" || t.kind === "array" || t.kind === "union" || isDynTypedRefType(t)) &&
     isJsonSafeAt(t, getRecord, getUnion, true, false, new Set(), true) &&
     !isJsonStringifySafeType(t, getRecord, getUnion)
   );
@@ -3830,8 +3852,12 @@ function isJsonSafeAt(
       return nativeFields && !stringify;
     case "bytes":
       return nativeFields;
-    case "func":
+    // Class instances stringify through the runtime JSON traversal, which
+    // reads their own enumerable properties and calls toJSON.
     case "object":
+      if (nativeFields && stringify && isDynTypedRefType(t)) return true;
+      return false;
+    case "func":
     // Class values stringify as "{}" husks in Node (own enumerable statics
     // aside — not representable type-directedly); rejected like Maps.
     case "classval":
@@ -3917,6 +3943,8 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["http2Stream", { tag: "SCR_DYNH_H2_STREAM", cls: "Http2Stream" }],
   ["httpClientReq", { tag: "SCR_DYNH_HTTP_CLIENT", cls: "ClientRequest" }],
   ["dir", { tag: "SCR_DYNH_DIR", cls: "Dir" }],
+  ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
+  ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
 ]);
 
 /** A class value that crosses an `unknown` slot as a compiler-owned typed

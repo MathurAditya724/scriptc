@@ -14,6 +14,7 @@ import type { AnalyzeOptions, AnalyzeResult } from "../compile-types.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { NpmStaticStatus } from "./report.js";
+import type { WasmModuleReport } from "../wasm/discover.js";
 import {
   FrontendInputTracker,
   frontendInputsStillMatch,
@@ -38,6 +39,7 @@ export interface CachedCoverage {
   unreached?: { stats: LowerStats; diagnostics: ScrDiagnostic[]; runtimeFences?: ScrDiagnostic[] };
   divergences?: ScrDiagnostic[];
   npmStatic?: NpmStaticStatus[];
+  wasmModules?: WasmModuleReport[];
   preflightFailed: boolean;
 }
 
@@ -89,6 +91,9 @@ export function verdictKey(
   opts: AnalyzeOptions,
   cache: VerdictCacheOptions,
 ): string | null {
+  // The tier report carries source locations the semantic replay does not
+  // move; explaining analyses always lower.
+  if (opts.explainDynamic === true) return null;
   let ffi = "";
   if (opts.ffiProfilePath !== undefined) {
     try {
@@ -120,6 +125,10 @@ export function verdictKey(
       opts.ffiProfilePath ?? "",
       ffi,
       external.join("\n"),
+      // Demotion (stage S6) makes the tier mode part of the verdict.
+      ...(opts.tier === "static-only" ? ["tier=static-only"] : []),
+      // The module files' contents are probes; their names are options.
+      ...(opts.wasm !== undefined && opts.wasm.length > 0 ? [`wasm=${opts.wasm.join("\n")}`] : []),
     ].join("\0"),
   );
 }
@@ -141,6 +150,7 @@ function cacheable(coverage: AnalyzeResult["coverage"]): CachedCoverage | null {
   if (coverage.unreached !== undefined) out.unreached = coverage.unreached;
   if (coverage.divergences !== undefined) out.divergences = coverage.divergences;
   if (coverage.npmStatic !== undefined) out.npmStatic = coverage.npmStatic;
+  if (coverage.wasmModules !== undefined) out.wasmModules = coverage.wasmModules;
   return out;
 }
 
@@ -157,6 +167,7 @@ function restore(cached: CachedCoverage, sources: CachedSource[]): AnalyzeResult
   if (cached.unreached !== undefined) coverage.unreached = cached.unreached;
   if (cached.divergences !== undefined) coverage.divergences = cached.divergences;
   if (cached.npmStatic !== undefined) coverage.npmStatic = cached.npmStatic;
+  if (cached.wasmModules !== undefined) coverage.wasmModules = cached.wasmModules;
   return { coverage, sourceTexts };
 }
 

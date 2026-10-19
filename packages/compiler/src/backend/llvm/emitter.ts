@@ -2,7 +2,14 @@ import { type ArraySearchKind, emitArraySearchHelpers } from "./array-search.js"
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitLlvmLayouts } from "./layouts.js";
 import { compileRegexMatcher, type RegexMatcherCode } from "./regex-matchers.js";
-import { CYC_BUF, CYC_HDR, FIRST_EMITTED_CYC_KIND, inlineAllocSupported } from "./alloc.js";
+import {
+  CYC_BUF,
+  CYC_HDR,
+  FIRST_EMITTED_CYC_KIND,
+  inlineAllocSupported,
+  RECORD_SOURCES_GATE,
+  WEAK_KEYS_GATE,
+} from "./alloc.js";
 import { hasLoneSurrogate, llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
 import { createHash } from "node:crypto";
@@ -50,6 +57,7 @@ import {
   VOID,
 } from "../../ir/ir.js";
 import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
+import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
@@ -158,6 +166,7 @@ import {
   mangleFnClosure,
   mangleFunction,
   mangleGenDrop,
+  mangleGenSourceClose,
   mangleGenSpawn,
   mangleGlobal,
   mangleLocal,
@@ -393,6 +402,7 @@ import {
   elemAccess,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
+  emitShapeUnionHelpers,
   FN_ATTRS,
   inlineRcDecls,
   type InlineRcMode,
@@ -1171,19 +1181,15 @@ export class LlEmitter {
   readonly chainSlots = new Map<string, LlValue>();
   logArgSlots = 0;
   private readonly stackTraces: boolean;
+  /** Stack-trace mode: functions no capture can include (no frame push). */
+  private readonly unframedFunctions: ReadonlySet<string>;
 
   constructor(
     readonly mod: IrModule,
     options: LlvmTargetOptions,
   ) {
-    this.stackTraces = mod.functions.some(
-      (fn) =>
-        !everyStmtList(fn.body, {
-          stmt: () => true,
-          expr: (expr) => !(expr.kind === "libCall" && expr.fn === "error.stack"),
-        }),
-    );
-    this.nullableUnions = new NullableUnions(mod);
+    this.stackTraces = observesStacks(mod);
+    this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
     this.mockTimers = moduleUsesMockTimers(mod);
     this.debug =
       options.debugSources === undefined
@@ -1264,6 +1270,9 @@ export class LlEmitter {
     // which Windows lacks.
     this.stacklessAsyncAllowed = this.stacklessGenerators && mod.lib === undefined && !windows;
     this.publishedTypes = computePublishedTypes(mod);
+    this.unframedFunctions = this.stackTraces
+      ? captureFreeFunctions(mod, this.stackChecks, this.publishedTypes)
+      : new Set();
     this.immutableFields = computeImmutableFields(mod);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
     this.indirectMayThrow = mt.indirect || mod.workers === true;
@@ -1282,8 +1291,10 @@ export class LlEmitter {
     // Optional array reads also cover nullable unions: emitLocalArrayRead
     // then yields the (borrowed or owned) element pointer, not a stack box.
     // Arrays of such a union are read the same way.
-    this.optionalArrayReads = new OptionalArrayReads(this.fnByName, this.unionsById, (id) =>
-      this.nullableUnions.has(id),
+    this.optionalArrayReads = new OptionalArrayReads(
+      this.fnByName,
+      this.unionsById,
+      (id) => this.nullableUnions.single(id) !== null,
     );
     this.unionSources = {
       unions: this.boxedUnionsById,
@@ -1336,7 +1347,8 @@ export class LlEmitter {
           (type) =>
             this.plainReference(type) &&
             type.kind !== "string" &&
-            (type.kind !== "union" || this.nullableUnions.get(type.unionId)?.arm.kind !== "string"),
+            (type.kind !== "union" ||
+              this.nullableUnions.single(type.unionId)?.arm.kind !== "string"),
           this.walkBorrowsByFunction.get(fn.name) ?? new Set(),
         );
         if (rebound.size === 0) continue;
@@ -1389,6 +1401,27 @@ export class LlEmitter {
     const traced = computeTraced(mod);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
+    // A shape union's value is whichever record it holds, and the collector
+    // visits it as that record: when one arm carries a collector header,
+    // every arm must (nullable-unions.ts). Unions that share an arm pass a
+    // header on to each other's arms, so repeat until no union adds one.
+    const shapeUnions = this.nullableUnions.allShapeUnions();
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const union of shapeUnions) {
+        if (
+          !this.tracedUnions.has(union.unionId) &&
+          !union.arms.some((arm) => this.tracedShapes.has(`record:${arm.shapeId}`))
+        )
+          continue;
+        for (const arm of union.arms) {
+          const key = `record:${arm.shapeId}`;
+          if (this.tracedShapes.has(key)) continue;
+          this.tracedShapes.add(key);
+          changed = true;
+        }
+      }
+    }
     this.shapeHost = {
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
@@ -1939,7 +1972,10 @@ export class LlEmitter {
   }
 
   emitParts(): string[] {
-    const parts = limitInlineDynReleases(this.emitModuleParts());
+    const parts = [
+      ...limitInlineDynReleases(this.emitModuleParts()),
+      ...this.disposeObserverGates(),
+    ];
     if (!this.executableTls) return parts;
     // A worker executable's thread-locals all live in the executable's own
     // TLS block: the program's internal ones, and the runtime's external
@@ -1960,6 +1996,21 @@ export class LlEmitter {
           "$1thread_local(localexec) global ",
         ),
     );
+  }
+
+  /** The dispose-observer gates the emitted frees and record writers test
+   * (alloc.ts): defined after every helper is emitted, because dynCheck
+   * builders, JSON schemas and weak collection constructors are requested
+   * lazily. */
+  private disposeObserverGates(): string[] {
+    const weak = [...this.decls].some(
+      (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
+    );
+    return [
+      `${WEAK_KEYS_GATE} = internal constant i1 ${weak}`,
+      `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources}`,
+      ``,
+    ];
   }
 
   private emitModuleParts(): string[] {
@@ -3729,6 +3780,7 @@ export class LlEmitter {
     return [
       ...late,
       ...emitNullableRetainWrappers(this.shapeHost),
+      ...emitShapeUnionHelpers(this.shapeHost),
       ...emitInlineRcHelpers(this.shapeHost),
     ];
   }
@@ -4572,6 +4624,25 @@ export class LlEmitter {
       dr.push(`  call void @free(ptr %ap)`, `  ret void`, `}`, ``);
       for (const line of dr) out.push(line);
 
+      // An iterator helper's return() before its first next() closes the
+      // source generator in its first argument slot.
+      const closesSource = fn.generator.closesSource === true;
+      if (closesSource) {
+        const field = lifted ? 1 : 0;
+        this.declare(`declare void @scr_gen_close(ptr)`);
+        this.declare(`declare void @scr_gen_set_unstarted_return(ptr, ptr)`);
+        out.push(
+          `define internal void @${mangleGenSourceClose(fn.name)}(ptr %ap) ${FN_ATTRS} {`,
+          `entry:`,
+          `  %sp = getelementptr inbounds %${pack}, ptr %ap, i64 0, i32 ${field}`,
+          `  %sv = load ptr, ptr %sp`,
+          `  call void @scr_gen_close(ptr %sv)`,
+          `  ret void`,
+          `}`,
+          ``,
+        );
+      }
+
       // Spawn wrapper: pack the args (+1 moves in), allocate the
       // SUSPENDED fiber — nothing runs until the first .next().
       if (lifted) {
@@ -4588,6 +4659,11 @@ export class LlEmitter {
         settleAsync === null
           ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
           : `  %gg = call ptr @scr_async_gen_new(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+        ...(closesSource
+          ? [
+              `  call void @scr_gen_set_unstarted_return(ptr %gg, ptr @${mangleGenSourceClose(fn.name)})`,
+            ]
+          : []),
         `  ret ptr %gg`,
         `}`,
         ``,
@@ -5896,7 +5972,11 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(unionId);
     if (nullable) {
       // The owned payload IS the nullable union's value.
-      if (tag !== nullable.refTag)
+      if (
+        nullable.repr === "single"
+          ? tag !== nullable.refTag
+          : !nullable.arms.some((arm) => arm.tag === tag)
+      )
         throw new InternalCompilerError(
           `llvm emitter bug: payload wrap into unit arm ${tag} of ${unionId}`,
         );
@@ -6001,7 +6081,7 @@ export class LlEmitter {
         const index = shape.fields.findIndex((entry) => entry.name === field);
         if (index < 0)
           throw new InternalCompilerError(`llvm emitter bug: missing union field ${field}`);
-        layout = "record:";
+        layout = this.nullableUnions.fieldBase(arm.shapeId) === 2 ? "record:tagged;" : "record:";
         for (let i = 0; i <= index; i++) {
           const type = shape.fields[i]!.type;
           layout += `${llFieldType(type, this.inlineUnions.record(type))};`;
@@ -6037,7 +6117,7 @@ export class LlEmitter {
       );
     const p = this.B.tmp();
     this.B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + 1}`,
+      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
     );
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
@@ -6051,7 +6131,7 @@ export class LlEmitter {
     const p = this.B.tmp();
     const v = this.B.tmp();
     this.B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${shape.fields.length + 1}`,
+      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${shape.fields.length + this.nullableUnions.fieldBase(shapeId)}`,
     );
     this.B.line(`${v} = load ptr, ptr ${p}`);
     return v;
@@ -7095,13 +7175,39 @@ export class LlEmitter {
     // Stackful native fibers and native coroutine frames retain these frames
     // while suspended. The active exception context owns the chain, so
     // concurrent fibers isolate it.
-    if (this.stackTraces && !this.wasi && fn.sourceName !== undefined) {
-      this.declare(`declare void @scr_stack_enter(ptr, ptr)`);
-      this.declare(`declare void @scr_stack_leave(ptr)`);
+    if (
+      this.stackTraces &&
+      !this.wasi &&
+      fn.sourceName !== undefined &&
+      !this.unframedFunctions.has(fn.name)
+    ) {
       B.entryAllocas.push(`%source_frame = alloca { ptr, ptr }`);
-      const frame = `    at ${fn.sourceName} (${fn.loc.file})`;
-      B.line(`call void @scr_stack_enter(ptr %source_frame, ptr ${this.cstr(frame)})`);
-      B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
+      const frame = this.cstr(`    at ${fn.sourceName} (${fn.loc.file})`);
+      if (
+        B.excCellInvariant &&
+        this.mod.lib === undefined &&
+        this.mod.workers !== true &&
+        this.sizeType === "i64"
+      ) {
+        // Executables link the active-cell pointer as a plain global, and a
+        // synchronous body sees one cell from entry to every return: push
+        // and pop the frame inline (ScrExcCell.stack is at byte 56 on
+        // 64-bit targets) instead of calling the runtime twice per call.
+        this.declare(`@scr_exc_active = external global ptr`);
+        B.line(`%source_frame.cell = load ptr, ptr @scr_exc_active`);
+        B.line(`%source_frame.chain = getelementptr inbounds i8, ptr %source_frame.cell, i64 56`);
+        B.line(`%source_frame.previous = load ptr, ptr %source_frame.chain`);
+        B.line(`store ptr %source_frame.previous, ptr %source_frame`);
+        B.line(`%source_frame.text = getelementptr inbounds i8, ptr %source_frame, i64 8`);
+        B.line(`store ptr ${frame}, ptr %source_frame.text`);
+        B.line(`store ptr %source_frame, ptr %source_frame.chain`);
+        B.returnEpilogue = `store ptr %source_frame.previous, ptr %source_frame.chain`;
+      } else {
+        this.declare(`declare void @scr_stack_enter(ptr, ptr)`);
+        this.declare(`declare void @scr_stack_leave(ptr)`);
+        B.line(`call void @scr_stack_enter(ptr %source_frame, ptr ${frame})`);
+        B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
+      }
     }
     if (this.stackChecks?.has(fn.name)) this.emitStackCheck();
     if (this.workerEntryPolls?.has(fn.name)) this.emitPendingCheck(undefined, true);
@@ -9462,14 +9568,15 @@ export class LlEmitter {
         B.line(`${stash} = call ptr @scr_exc_take() ; stash across finally`);
         B.line(`store ptr ${stash}, ptr ${stashSlot}`);
         this.scopes.push([{ slot: stashSlot, type: CAUGHT }]);
-        const suppressHandler = s.suppressFinallyErrors
-          ? {
-              label: B.newLabel("try.fs"),
-              used: false,
-              frameDepth: this.frames.length,
-              scopeDepth: this.scopes.length,
-            }
-          : null;
+        const suppressHandler =
+          s.suppressFinallyErrors || s.dropFinallyErrors
+            ? {
+                label: B.newLabel("try.fs"),
+                used: false,
+                frameDepth: this.frames.length,
+                scopeDepth: this.scopes.length,
+              }
+            : null;
         if (suppressHandler) this.tryStack.push(suppressHandler);
         this.emitBlock(s.finallyBody!);
         if (suppressHandler) this.tryStack.pop();
@@ -9479,8 +9586,9 @@ export class LlEmitter {
         this.emitUnwind();
         if (suppressHandler?.used) {
           B.startBlock(suppressHandler.label);
-          this.declare(`declare void @scr_exc_suppress(ptr)`);
-          B.line(`call void @scr_exc_suppress(ptr ${stash}) ; consumes stash`);
+          const cleanup = s.dropFinallyErrors ? "scr_exc_keep_first" : "scr_exc_suppress";
+          this.declare(`declare void @${cleanup}(ptr)`);
+          B.line(`call void @${cleanup}(ptr ${stash}) ; consumes stash`);
           this.emitUnwind();
         }
       }
@@ -10223,7 +10331,12 @@ export class LlEmitter {
       unionsById: this.unionsById,
       recordsById: this.recordsById,
       inlineUnions: this.inlineUnions,
-      nullableArm: (t) => this.nullableUnions.of(t)?.arm ?? null,
+      nullableArm: (t) => {
+        const nullable = this.nullableUnions.of(t);
+        return nullable?.repr === "single" ? nullable.arm : null;
+      },
+      shapeUnion: (t) => this.nullableUnions.of(t)?.repr === "shapes",
+      fieldBase: (shapeId) => this.nullableUnions.fieldBase(shapeId),
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
         return {
@@ -10944,7 +11057,11 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(e.unionId);
     if (!nullable) return null;
     if (isUnitType(e.value.type)) return e.value.kind === "unitLit" ? "unit" : null;
-    return e.tag === nullable.refTag && isRefCounted(e.value.type) ? "ref" : null;
+    const refArm =
+      nullable.repr === "single"
+        ? e.tag === nullable.refTag
+        : nullable.arms.some((arm) => arm.tag === e.tag);
+    return refArm && isRefCounted(e.value.type) ? "ref" : null;
   }
 
   materializeSplitLocal(localId: string): void {

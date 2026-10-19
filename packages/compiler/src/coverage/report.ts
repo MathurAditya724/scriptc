@@ -17,10 +17,14 @@ import {
   type DiagnosticsEnvelope,
   type LocatedDiagnostic,
   type SourcePosition,
+  type TierUnitPosition,
+  type TiersEnvelope,
 } from "../diagnostics/envelope.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
+import type { DemotionUnit, TierReport } from "../frontend/tier-analysis.js";
+import type { WasmModuleReport } from "../wasm/discover.js";
 
 export interface CoverageInput {
   file: string;
@@ -51,6 +55,12 @@ export interface CoverageInput {
   /** --provenance-sources: diagnostics of elided pure-annotated dead
    * consts (off the build; the provenance section names them). */
   provenanceElided?: ScrDiagnostic[];
+  /** --explain-dynamic: the report-only tier assignment (which bindings,
+   * fields, functions, classes and modules the dynamic tier would take). */
+  tiers?: TierReport;
+  /** The WebAssembly modules the build can see (wasm/discover.ts): their
+   * size, validity and the proposals they use. */
+  wasmModules?: WasmModuleReport[];
   /** True when tsc preflight failed — no coverage can be computed. */
   preflightFailed: boolean;
 }
@@ -61,6 +71,8 @@ export interface NpmStaticStatus {
   status: "static" | "refused";
   /** The first refusal reason for a refused package. */
   detail?: string;
+  /** How to act on the refusal, when there is a specific remedy. */
+  hint?: string;
 }
 
 const GREEN = "\x1b[32m";
@@ -180,6 +192,12 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
 
   out.push(`  statements analyzed   ${total}`);
   out.push(`  compile statically    ${ok}  ${c(pctColor, c(BOLD, `(${pct}%)`))}`);
+  const dynamic = dynamicStatements(input);
+  if (dynamic > 0) {
+    out.push(
+      `    in dynamic tier     ${dynamic}  ${c(DIM, "(operate on values typed only at runtime; --explain-dynamic lists them)")}`,
+    );
+  }
 
   if (skipped > 0) {
     out.push(
@@ -199,6 +217,51 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
           ? c(GREEN, "static")
           : c(RED, "refused") + (s.detail !== undefined ? ` ${c(DIM, `(${s.detail})`)}` : "");
       out.push(`    ${s.package.padEnd(widestP)}  ${status}`);
+    }
+    out.push("");
+  }
+
+  // The WebAssembly modules the build can see: what translating them would
+  // take (wasm/discover.ts). No module compiles to native code yet; the
+  // sites that load one are blockers or deferred fences above.
+  const wasm = input.wasmModules ?? [];
+  if (wasm.length > 0) {
+    out.push(
+      `  ${c(DIM, "WebAssembly modules:")} ${c(DIM, "(found at build time; none compile to native code yet)")}`,
+    );
+    for (const m of wasm) {
+      const name = m.path !== undefined ? displayPath(m.path, opts.root) : "inline module";
+      const state =
+        m.status === "valid"
+          ? c(GREEN, "valid")
+          : m.status === "unsupported"
+            ? c(YELLOW, `uses ${m.unsupported.join(", ")}`)
+            : c(RED, `${m.status}: ${m.error ?? ""}`);
+      out.push(`    ${name}  ${c(DIM, `${groupDigits(m.size)} bytes`)}  ${state}`);
+      const imports = m.importModules.length > 0 ? ` (${m.importModules.join(", ")})` : "";
+      out.push(
+        `      ${c(DIM, `${counted(m.functions, "function")}, ${counted(m.imports, "import")}${imports}, ${counted(m.exports, "export")}`)}`,
+      );
+      if (m.features.length > 0) out.push(`      ${c(DIM, `features: ${m.features.join(", ")}`)}`);
+      const shown = m.sources.slice(0, SITES_SHOWN);
+      for (const s of shown) {
+        const at =
+          s.line !== undefined
+            ? `${displayPath(s.file, opts.root)}:${s.line}`
+            : displayPath(s.file, opts.root);
+        const how =
+          s.kind === "path"
+            ? `path at ${at}`
+            : s.kind === "inline"
+              ? `inline at ${at}`
+              : s.kind === "package"
+                ? `shipped by the package at ${displayPath(dirOf(s.file), opts.root)}`
+                : `configured by ${at}`;
+        out.push(`      ${c(DIM, `found: ${how}`)}`);
+      }
+      if (m.sources.length > shown.length) {
+        out.push(`      ${c(DIM, `found: +${m.sources.length - shown.length} more`)}`);
+      }
     }
     out.push("");
   }
@@ -321,6 +384,27 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
   return out.join("\n");
 }
 
+/** "1 function", "1,698 functions". */
+function counted(n: number, noun: string): string {
+  return `${groupDigits(n)} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+/** 637405 → "637,405". */
+function groupDigits(n: number): string {
+  const digits = String(n);
+  let out = "";
+  for (let i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 === 0) out += ",";
+    out += digits[i];
+  }
+  return out;
+}
+
+function dirOf(file: string): string {
+  const slash = file.lastIndexOf("/");
+  return slash <= 0 ? file : file.slice(0, slash);
+}
+
 function DIMPath(file: string, color: boolean): string {
   return color ? DIM + file + RESET : file;
 }
@@ -432,13 +516,148 @@ export function coverageEnvelope(
           stats: {
             statementsTotal: total,
             statementsStatic: ok,
-            statementsDynamic: 0,
+            statementsDynamic: dynamicStatements(input),
             statementsFailed: failed,
             functionsSkipped: skipped,
             percentStatic: total === 0 ? 100 : Math.floor((ok / total) * 100),
           },
         }),
+    ...(input.tiers !== undefined ? { tiers: tiersEnvelope(input.tiers, locator) } : {}),
+    ...(input.wasmModules !== undefined ? { wasmModules: input.wasmModules } : {}),
     groups,
     diagnostics: located,
   };
+}
+
+/** Reached statements in dynamic-tier functions, never more than the
+ * compiled statements they are part of. */
+function dynamicStatements(input: CoverageInput): number {
+  const compiled = input.stats.statementsTotal - input.stats.statementsFailed;
+  return Math.max(0, Math.min(input.stats.statementsDynamic ?? 0, compiled));
+}
+
+function tiersEnvelope(tiers: TierReport, locator: SourceLocator): TiersEnvelope {
+  const at = (loc: { file: string; start: number }): SourcePosition => ({
+    file: loc.file,
+    ...locator.position(loc.file, loc.start),
+  });
+  const unit = (u: DemotionUnit): TierUnitPosition => ({
+    kind: u.kind,
+    name: u.name,
+    ...(u.owner !== undefined ? { owner: u.owner } : {}),
+    ...at(u.loc),
+  });
+  return {
+    mode: tiers.mode,
+    statementsDynamic: tiers.statementsDynamic,
+    dynamicFunctions: tiers.dynamicFunctions.map((fn) => ({
+      name: fn.name,
+      ...at(fn.loc),
+      operation: fn.operation,
+      operationAt: at(fn.operationLoc),
+      statements: fn.statements,
+    })),
+    requests: tiers.requests.map((r) => ({
+      unit: unit(r.unit),
+      enclosing: unit(r.enclosing),
+      seed: r.seed,
+      scope: r.scope,
+      code: r.code,
+      message: r.message,
+      ...at(r.loc),
+    })),
+    units: tiers.units.map((u) => ({ ...unit(u), requests: u.requests, sites: u.sites })),
+  };
+}
+
+/** IR function names as a user reads them: `%init.3` is a module's top
+ * level, `%Point.norm` the method `Point.norm`; generated helpers keep
+ * their `%`-prefixed names. */
+function functionDisplayName(name: string): string {
+  if (name.startsWith("%init.")) return "<top level>";
+  if (/^%[A-Za-z_$][\w$]*\.[A-Za-z_$#][\w$]*$/.test(name)) return name.slice(1);
+  return name;
+}
+
+function unitLabel(u: DemotionUnit, root: string | undefined): string {
+  if (u.kind === "module") return `module ${displayPath(u.name, root)}`;
+  if (u.kind === "binding" && u.owner !== undefined) return `binding ${u.name} in ${u.owner}`;
+  return `${u.kind} ${u.name}`;
+}
+
+function unitMatches(u: DemotionUnit, query: string): boolean {
+  return (
+    u.name === query ||
+    u.name.endsWith(`.${query}`) ||
+    u.name.split(" ")[0] === query ||
+    `${u.owner ?? ""}:${u.name}` === query
+  );
+}
+
+/** `scriptc coverage --explain-dynamic[=<unit>]`: the dynamic tier today
+ * and the demotion chains the report-only analysis computed. With a query,
+ * only units whose name matches it (`x`, `Point.x`, `parse:x`). */
+export function renderExplainDynamic(
+  tiers: TierReport,
+  opts: CoverageRenderOptions & { query?: string } = {},
+): string {
+  const c = (code: string, s: string) => (opts.color ? code + s + RESET : s);
+  const locator = new SourceLocator(opts.sourceTexts);
+  const where = (loc: { file: string; start: number }) => {
+    const p = locator.position(loc.file, loc.start);
+    return `${displayPath(loc.file, opts.root)}:${p.line}:${p.column}`;
+  };
+  const query = opts.query !== undefined && opts.query !== "" ? opts.query : undefined;
+  const out: string[] = [];
+  out.push(
+    `  ${c(BOLD, "dynamic tier")}   ${c(DIM, `(tier assignment, report-only; --tier=${tiers.mode})`)}`,
+  );
+  if (query === undefined) {
+    const fns = tiers.dynamicFunctions;
+    out.push(
+      `    ${fns.length} function${fns.length === 1 ? "" : "s"} already operate${fns.length === 1 ? "s" : ""} on dynamic values ${c(DIM, `(${tiers.statementsDynamic} statement${tiers.statementsDynamic === 1 ? "" : "s"})`)}`,
+    );
+    for (const fn of fns) {
+      out.push(
+        `      ${functionDisplayName(fn.name)}  ${c(DIM, `${where(fn.loc)}: ${fn.operation} at ${where(fn.operationLoc)}`)}`,
+      );
+    }
+  }
+  const live = tiers.requests.filter((r) => r.scope !== "unreached" && r.seed !== "excluded");
+  const excluded = tiers.requests.filter((r) => r.seed === "excluded").length;
+  const unreached = tiers.requests.filter((r) => r.scope === "unreached").length;
+  if (query === undefined) {
+    out.push("");
+    out.push(
+      `    ${live.length} demotion request${live.length === 1 ? "" : "s"} ${c(DIM, "(refusals and fences the dynamic tier would replace)")}` +
+        (unreached > 0 ? c(DIM, `, ${unreached} more in unreached code`) : "") +
+        (excluded > 0 ? c(DIM, `, ${excluded} excluded by policy`) : ""),
+    );
+  }
+  const units = tiers.units.filter((u) => query === undefined || unitMatches(u, query));
+  if (query !== undefined && units.length === 0) {
+    out.push(`    no demoted unit matches '${query}'`);
+    return out.join("\n");
+  }
+  for (const u of units) {
+    const counts = [
+      u.requests > 0 ? `${u.requests} request${u.requests === 1 ? "" : "s"}` : "",
+      u.sites > 0 ? `${u.sites} site${u.sites === 1 ? "" : "s"} inside` : "",
+    ]
+      .filter((s) => s !== "")
+      .join(", ");
+    out.push(`    ${unitLabel(u, opts.root)}  ${c(DIM, `${where(u.loc)} (${counts})`)}`);
+    if (query === undefined && u.requests === 0) continue;
+    for (const r of live) {
+      if (r.unit.kind !== u.kind || r.unit.name !== u.name || r.unit.loc.start !== u.loc.start)
+        continue;
+      if (r.unit.loc.file !== u.loc.file) continue;
+      out.push(
+        `      ${c(DIM, "<-")} ${r.code} ${r.seed} at ${where(r.loc)}: ${capMessage(r.message)}`,
+      );
+      if (r.enclosing.name !== r.unit.name || r.enclosing.kind !== r.unit.kind)
+        out.push(`      ${c(DIM, "->")} ${unitLabel(r.enclosing, opts.root)} turns dynamic`);
+    }
+  }
+  return out.join("\n");
 }

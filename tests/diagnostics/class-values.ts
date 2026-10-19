@@ -18,8 +18,10 @@ class Unrelated {
   static tag = "unrelated";
 }
 
-// Builtin classes as values: their construction is libCall-shaped.
+// Builtin classes as values: a const alias resolves at compile time, and
+// an array of builtin classes has no element type.
 const E = Error;
+const errorClasses = [E];
 
 // Classes extending builtin bases as values (the error-message completion
 // rule has no thunk ABI).
