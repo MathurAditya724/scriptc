@@ -4208,6 +4208,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.getMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getUTCMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getTimezoneOffset": { argTypes: [DATE_T], result: F64 },
+  /** Date.prototype.toString / toDateString / toTimeString and String(date):
+   * V8's local-time formats with the host zone's long name, "Invalid Date"
+   * for an invalid date. Owned (+1) string; never throws. */
+  "date.toString": { argTypes: [DATE_T], result: STRING },
+  "date.toDateString": { argTypes: [DATE_T], result: STRING },
+  "date.toTimeString": { argTypes: [DATE_T], result: STRING },
   /** The composed `new Date(dateString).getTime()` read: one borrowed
    * string, f64 milliseconds since epoch. The parsed grammar is BOUNDED
    * (documented divergence — V8's parser accepts far more): the ASN.1

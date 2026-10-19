@@ -2321,6 +2321,25 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     name: "Date.prototype.getTimezoneOffset",
     fns: ["date.getTimezoneOffset"],
   },
+  {
+    id: "stdlib.date.toString",
+    kind: "stdlib",
+    name: "Date.prototype.toString",
+    fns: ["date.toString"],
+    note: "local time with the host zone's long English name; String(date) and template literals use it",
+  },
+  {
+    id: "stdlib.date.toDateString",
+    kind: "stdlib",
+    name: "Date.prototype.toDateString",
+    fns: ["date.toDateString"],
+  },
+  {
+    id: "stdlib.date.toTimeString",
+    kind: "stdlib",
+    name: "Date.prototype.toTimeString",
+    fns: ["date.toTimeString"],
+  },
   // ── perf_hooks (lowerPerfHooksCall): the monotonic clock.
   {
     id: "node-builtin.perf_hooks.performance.now",

@@ -8863,6 +8863,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
     return { kind: "libCall", fn: "url.href", args: [e], type: STRING, loc: e.loc };
+  // String(date) / `${date}` / "" + date: Date's ToPrimitive prefers
+  // toString().
+  if (e.type.kind === "date")
+    return { kind: "libCall", fn: "date.toString", args: [e], type: STRING, loc: e.loc };
   if (e.type.kind === "regex") {
     return {
       kind: "regexIntrinsic",
