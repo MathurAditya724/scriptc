@@ -22,7 +22,7 @@ import {
   VOID,
   arrayOf,
 } from "../../ir/ir.js";
-import { isNodeTypesPath, requireSpecOf } from "../program.js";
+import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
 
 /** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
@@ -773,6 +773,7 @@ export const STATIC_NUMBER_METHODS: Record<
   { fns: readonly IrLibFn[]; minArgs: number; maxArgs: number } | undefined
 > = {
   toFixed: { fns: ["num.toFixed0", "num.toFixed"], minArgs: 0, maxArgs: 1 },
+  toPrecision: { fns: ["num.toPrecision"], minArgs: 0, maxArgs: 1 },
 };
 
 /** One lowerable builtin-module FUNCTION: `fn`'s libCall with `params`
@@ -1521,6 +1522,7 @@ export const BUILTIN_MODULE_FNS: Record<
     hash: { fn: "crypto.hashDigestStr", params: [STRING, STRING, STRING], result: STRING },
     timingSafeEqual: { fn: "crypto.timingSafeEqual", params: [BYTES_U8, BYTES_U8], result: BOOL },
     randomFillSync: { fn: "crypto.randomFill", params: [BYTES_U8, F64, F64], result: BYTES_U8 },
+    getRandomValues: { fn: "crypto.getRandomValues", params: [BYTES_U8], result: BYTES_U8 },
     randomInt: { fn: "crypto.randomInt", params: [F64, F64], result: F64 },
     randomFill: { fn: "crypto.randomFillCb", params: [], result: VOID },
     randomUUIDv7: { fn: "crypto.randomUUIDv7", params: [DYN], result: STRING },
@@ -2086,6 +2088,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomFillPromiseDyn",
     ],
     timingSafeEqual: ["crypto.timingSafeEqualDyn"],
+    getRandomValues: ["crypto.getRandomValuesDyn"],
     randomInt: ["crypto.randomIntMax", "crypto.randomIntCb", "crypto.randomIntPromise"],
     randomUUID: ["crypto.randomUUIDOpts"],
   },
@@ -2676,6 +2679,15 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     name: "os.constants",
     fns: ["os.constants"],
     note: "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined",
+  },
+  // fs.constants as a value, and its members beyond the baked access-mode
+  // bits: the target libc's null-prototype constants object.
+  {
+    id: "node-builtin.fs.constants",
+    kind: "node-builtin",
+    name: "fs.constants",
+    fns: ["fs.constants"],
+    note: "node_constants.cc's fs group under the target libc's macros; members a platform lacks read as undefined",
   },
 ];
 
@@ -3302,7 +3314,21 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // `Buffer` resolves to a user-file declaration and still misses.
     const resolved =
       symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-    if (!lowerer.isStdlibSymbol(resolved)) return null;
+    if (!lowerer.isStdlibSymbol(resolved)) {
+      // A CommonJS binding of the buffer module's Buffer (`var Buffer =
+      // require('buffer').Buffer`, `const { Buffer } = require('buffer')`
+      // — safe-buffer and compression): the module member IS the global
+      // constructor.
+      if (
+        decl !== undefined &&
+        (ts.isVariableDeclaration(decl) || ts.isBindingElement(decl)) &&
+        isJsSourceFile(decl.getSourceFile())
+      ) {
+        const imported = lowerer.builtinImportOf(expr);
+        if (imported?.module === "buffer" && imported.member === "Buffer") return "Buffer";
+      }
+      return null;
+    }
     return resolved.name === "global" ? "globalThis" : resolved.name;
   }
   if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
@@ -3377,7 +3403,9 @@ export function stdlibGlobalAliasNameOf(
   const name =
     requireSpec === "process" || requireSpec === "node:process"
       ? "process"
-      : stdlibGlobalNameOf(lowerer, aliasExpr);
+      : bufferNamespaceMember(lowerer, aliasExpr)
+        ? "Buffer"
+        : stdlibGlobalNameOf(lowerer, aliasExpr);
   if (name === null) return null;
   // These globals have provenance-aware call or member lowering, so a
   // stable snapshot keeps the same dispatch as the original global.
@@ -3396,6 +3424,14 @@ export function stdlibGlobalAliasNameOf(
   ].includes(name)
     ? name
     : null;
+}
+
+/** `buffer.Buffer` through a buffer-module namespace binding (`var buffer
+ * = require('buffer')`): the module's Buffer IS the global constructor. */
+export function bufferNamespaceMember(lowerer: Lowerer, expr: ts.Expression): boolean {
+  if (!ts.isPropertyAccessExpression(expr) || expr.name.text !== "Buffer") return false;
+  const member = lowerer.builtinMemberOf(expr);
+  return member?.module === "buffer" && member.member === "Buffer";
 }
 
 export function stdlibGlobalAliasDecl(
