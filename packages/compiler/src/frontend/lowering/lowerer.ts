@@ -124,7 +124,7 @@ import {
 } from "../tier-analysis.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
-import type { ClassSymbolKey } from "./symbol-fields.js";
+import { type ClassSymbolKey, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
 export type { WidthLift } from "./width-lift.js";
 export { newFnCtx, type FnCtx } from "./function-context.js";
@@ -7955,6 +7955,17 @@ export class Lowerer {
           this.classes.get(receiver.className)?.fields.get(node.name.text)?.kind === "dyn") ||
         checkedThis?.fields.get(node.name.text)?.kind === "dyn"
       ) {
+        return this.checker.getUnknownType();
+      }
+    }
+    // A symbol-keyed field read through a CommonJS key-table key reads as
+    // the field's layout type (tableKeyFieldType).
+    if (ts.isElementAccessExpression(node) && isJsSourceFile(node.getSourceFile())) {
+      const field = tableKeyFieldType(this, node);
+      if (field) {
+        if (field.kind === "f64") return this.checker.getNumberType();
+        if (field.kind === "string") return this.checker.getStringType();
+        if (field.kind === "bool") return this.checker.getBooleanType();
         return this.checker.getUnknownType();
       }
     }

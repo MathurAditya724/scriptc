@@ -556,6 +556,15 @@ function prototypeProtectedKeys(
         const entries: [ts.Symbol, string][] = owner.symbolMethods ? [...owner.symbolMethods] : [];
         const entry = entries.find(([, field]) => field === name);
         const declaration = entry ? lowerer.checker.valueDeclarationOf(entry[0]) : undefined;
+        // A CommonJS key-table property holds its key in the table's global.
+        const tableKey =
+          declaration && ts.isPropertyAssignment(declaration)
+            ? lowerer.globalsBySymbol.get(entry![0])
+            : undefined;
+        if (tableKey) {
+          keys.push({ kind: "varRef", localId: tableKey.id, type: tableKey.type, loc });
+          continue;
+        }
         if (
           !declaration ||
           !ts.isVariableDeclaration(declaration) ||

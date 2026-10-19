@@ -2884,10 +2884,12 @@ export class ClassDynamicDispatch {
             for (const [symbol, name] of info.symbolMethods) symbolEntries.push([symbol, name]);
           for (const [symbol, name] of symbolEntries) {
             const declaration = lowerer.checker.valueDeclarationOf(symbol);
+            // Module-scope consts and CommonJS key-table properties
+            // (classSymbolKeyOfSymbol) both hold their key in a global.
             if (
               declaration &&
-              ts.isVariableDeclaration(declaration) &&
-              ts.isIdentifier(declaration.name)
+              ((ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) ||
+                ts.isPropertyAssignment(declaration))
             ) {
               const global = lowerer.globalsBySymbol.get(symbol);
               if (global)

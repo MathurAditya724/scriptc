@@ -1,5 +1,10 @@
 import * as ts from "../ts7/adapter.js";
-import { bindingEarlyUse7 } from "../program.js";
+import {
+  bindingEarlyUse7,
+  cjsExportDiscardReason,
+  isCjsExportTableLiteral,
+  isModuleExportsAccess,
+} from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import type { IrType } from "../../ir/ir.js";
 
@@ -96,6 +101,11 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
   cache.set(sym, null);
   const decls = lowerer.checker.declarationsOf(sym);
   const decl = lowerer.checker.valueDeclarationOf(sym);
+  if (decls.length === 1 && decl && ts.isPropertyAssignment(decl)) {
+    const key = cjsTableSymbolKeyOf(lowerer, sym, decl);
+    if (key) cache.set(sym, key);
+    return key;
+  }
   if (decls.length !== 1 || !decl || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name))
     return null;
   const list = decl.parent;
@@ -124,21 +134,9 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
     cache.set(sym, alias);
     return alias;
   }
-  if (!init || !ts.isCallExpression(init) || init.questionDotToken) return null;
-  const callee = init.expression;
-  const registered =
-    ts.isPropertyAccessExpression(callee) && !callee.questionDotToken && callee.name.text === "for";
-  const root = registered ? callee.expression : callee;
-  if (!ts.isIdentifier(root) || !lowerer.isStdlibGlobal(root, "Symbol")) return null;
-  const arg =
-    init.arguments.nodes.length === 0
-      ? null
-      : init.arguments.nodes.length === 1
-        ? init.arguments.nodes[0]!
-        : undefined;
-  if (arg === undefined || (registered && arg === null)) return null;
-  const description = arg === null ? "" : constantSymbolDescription(lowerer, arg);
-  if (description === null) return null;
+  const call = init ? literalSymbolCallOf(lowerer, init) : null;
+  if (!call) return null;
+  const { registered, description } = call;
   // Ordinary Symbol() is a fresh identity per evaluation, so only the
   // module-scope declaration above can name one fixed layout slot.
   const sf = decl.getSourceFile();
@@ -184,6 +182,17 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
     ) !== null
   )
     return null;
+  const key = symbolKeyOf(lowerer, sym, registered, description);
+  cache.set(sym, key);
+  return key;
+}
+
+function symbolKeyOf(
+  lowerer: Lowerer,
+  sym: ts.Symbol,
+  registered: boolean,
+  description: string,
+): ClassSymbolKey {
   // A registry name denotes one symbol even when several source bindings
   // initialize it. Intern those names into a representative checker symbol;
   // the layout table then has one identity-keyed domain for both forms.
@@ -193,7 +202,7 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
     if (existing) identity = existing;
     else lowerer.registeredClassSymbols.set(description, sym);
   }
-  const key: ClassSymbolKey = {
+  return {
     sym,
     identity,
     // Symbol slots are not string properties. The reserved prefix keeps
@@ -201,8 +210,158 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
     // Object.keys/JSON serialization and string-property writeback.
     fieldName: `${FIELD_PREFIX}Symbol(${description})`,
   };
-  cache.set(sym, key);
-  return key;
+}
+
+/** `Symbol(<constant>)` or `Symbol.for(<constant>)` on the standard global. */
+function literalSymbolCallOf(
+  lowerer: Lowerer,
+  init: ts.Expression,
+): { registered: boolean; description: string } | null {
+  if (!ts.isCallExpression(init) || init.questionDotToken) return null;
+  const callee = init.expression;
+  const registered =
+    ts.isPropertyAccessExpression(callee) && !callee.questionDotToken && callee.name.text === "for";
+  const root = registered ? callee.expression : callee;
+  if (!ts.isIdentifier(root) || !lowerer.isStdlibGlobal(root, "Symbol")) return null;
+  const arg =
+    init.arguments.nodes.length === 0
+      ? null
+      : init.arguments.nodes.length === 1
+        ? init.arguments.nodes[0]!
+        : undefined;
+  if (arg === undefined || (registered && arg === null)) return null;
+  const description = arg === null ? "" : constantSymbolDescription(lowerer, arg);
+  return description === null ? null : { registered, description };
+}
+
+/** A key table property: `kX: Symbol('x')` in a JS module's effective
+ * top-level `module.exports = { ... }` literal (undici's core/symbols.js).
+ * The module evaluates once, so the property names one symbol identity for
+ * every requirer, as a module-scope const does. Requirers can observe the
+ * table only after its assignment completes, provided nothing before it
+ * can run code (a require there could close a cycle and publish the
+ * initial empty exports object instead). Any write to the property, or
+ * replacement through `exports`/`module.exports`, keeps it unstable. */
+function cjsTableSymbolKeyOf(
+  lowerer: Lowerer,
+  sym: ts.Symbol,
+  decl: ts.PropertyAssignment,
+): ClassSymbolKey | null {
+  const table = decl.parent;
+  if (!ts.isObjectLiteralExpression(table) || !ts.isIdentifier(decl.name)) return null;
+  const assign = table.parent;
+  if (
+    !ts.isBinaryExpression(assign) ||
+    assign.right !== table ||
+    !isCjsExportTableLiteral(table) ||
+    !ts.isExpressionStatement(assign.parent)
+  )
+    return null;
+  const stmt = assign.parent;
+  const sf = stmt.getSourceFile();
+  if (cjsExportDiscardReason(stmt) !== null) return null;
+  const call = literalSymbolCallOf(lowerer, decl.initializer);
+  if (!call) return null;
+  const inert = (expr: ts.Expression | undefined): boolean => {
+    if (!expr) return true;
+    while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+    return (
+      ts.isIdentifier(expr) ||
+      ts.isArrowFunction(expr) ||
+      ts.isFunctionExpression(expr) ||
+      ts.isStringLiteralLike(expr) ||
+      ts.isNumericLiteral(expr) ||
+      expr.kind === ts.SyntaxKind.TrueKeyword ||
+      expr.kind === ts.SyntaxKind.FalseKeyword ||
+      expr.kind === ts.SyntaxKind.NullKeyword ||
+      literalSymbolCallOf(lowerer, expr) !== null
+    );
+  };
+  const statements = sf.statements.nodes;
+  const prefixInert = statements
+    .slice(0, statements.indexOf(stmt))
+    .every(
+      (statement) =>
+        (ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression)) ||
+        ts.isFunctionDeclaration(statement) ||
+        (ts.isVariableStatement(statement) &&
+          statement.declarationList.declarations.nodes.every(
+            (d) => ts.isIdentifier(d.name) && inert(d.initializer),
+          )),
+    );
+  if (!prefixInert) return null;
+  for (const property of table.properties.nodes) {
+    if (property === decl) break;
+    if (ts.isShorthandPropertyAssignment(property)) continue;
+    if (
+      !ts.isPropertyAssignment(property) ||
+      ts.isComputedPropertyName(property.name) ||
+      !inert(property.initializer)
+    )
+      return null;
+  }
+  // Requirers can reach the property through a checker-synthesized symbol
+  // (the export= type's member); the declaration's own symbol is the one
+  // identity every requirer and the table's export global share.
+  const canonical = lowerer.checker.getSymbolAtLocation(decl.name) ?? sym;
+  if (tablePropertyWritten(lowerer, new Set([sym, canonical]), decl.name.text, sf)) return null;
+  return { ...symbolKeyOf(lowerer, canonical, call.registered, call.description), sym };
+}
+
+function tablePropertyWritten(
+  lowerer: Lowerer,
+  symbols: ReadonlySet<ts.Symbol>,
+  name: string,
+  home: ts.SourceFile,
+): boolean {
+  let written = false;
+  const targets = (node: ts.Node): boolean => {
+    if (ts.isPropertyAccessExpression(node)) {
+      if (node.name.text !== name) return false;
+      const recv = node.expression;
+      if (
+        node.getSourceFile() === home &&
+        ((ts.isIdentifier(recv) && recv.text === "exports") || isModuleExportsAccess(recv))
+      )
+        return true;
+      const target = lowerer.checker.getSymbolAtLocation(node.name);
+      return target !== undefined && symbols.has(target);
+    }
+    if (ts.isElementAccessExpression(node)) {
+      const key = node.argumentExpression;
+      if (!ts.isStringLiteralLike(key) || key.text !== name) return false;
+      const target = lowerer.checker.getSymbolAtLocation(node);
+      return target !== undefined && symbols.has(target);
+    }
+    return false;
+  };
+  for (const sf of lowerer.program.getSourceFiles()) {
+    if (written) break;
+    if (sf.isDeclarationFile || !sf.text.includes(name)) continue;
+    ts.walkPreorder(sf, (node) => {
+      if (written) return "stop";
+      let target: ts.Node | undefined;
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      )
+        target = node.left;
+      else if (ts.isDeleteExpression(node)) target = node.expression;
+      else if (
+        (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken)
+      )
+        target = node.operand;
+      if (target && targets(target)) {
+        written = true;
+        return "stop";
+      }
+      return undefined;
+    });
+  }
+  return written;
 }
 
 function bindingWritten(lowerer: Lowerer, sym: ts.Symbol, sf: ts.SourceFile): boolean {
@@ -244,4 +403,30 @@ function bindingWritten(lowerer: Lowerer, sym: ts.Symbol, sf: ts.SourceFile): bo
     }
   });
   return written;
+}
+
+/** The layout type of a symbol-keyed field read through a CommonJS
+ * key-table key (`this[kCount]` with `kCount` from a `module.exports = {
+ * kCount: Symbol('count') }` table), or null. The checker types such keys
+ * as plain `symbol`, so it answers the read with the union of every
+ * symbol-keyed property of the class; the field's own type is the read's
+ * type. Keys declared as consts keep their unique-symbol checker types. */
+export function tableKeyFieldType(
+  lowerer: Lowerer,
+  node: ts.ElementAccessExpression,
+): IrType | null {
+  const key = node.argumentExpression;
+  if (!ts.isIdentifier(key) && !ts.isPropertyAccessExpression(key)) return null;
+  const keyType = lowerer.checker.getTypeAtLocation(key);
+  if (!(keyType.flags & ts.TypeFlags.ESSymbol) || keyType.flags & ts.TypeFlags.UniqueESSymbol)
+    return null;
+  const resolved = classSymbolKeyOf(lowerer, key);
+  if (!resolved) return null;
+  const decl = lowerer.checker.valueDeclarationOf(resolved.identity);
+  if (!decl || !ts.isPropertyAssignment(decl)) return null;
+  const receiver = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(node.expression));
+  if (receiver?.kind !== "object") return null;
+  const info = lowerer.classes.get(receiver.className);
+  const field = info?.symbolFields?.get(resolved.identity);
+  return field === undefined ? null : (info!.fields.get(field) ?? null);
 }
