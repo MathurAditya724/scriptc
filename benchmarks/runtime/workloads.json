@@ -148,6 +148,13 @@
       ]
     },
     {
+      "name": "worker-messages",
+      "entry": "workloads/worker-messages.ts",
+      "args": [
+        "100000"
+      ]
+    },
+    {
       "name": "atomics-contended",
       "entry": "workloads/atomics-contended.ts",
       "args": [
