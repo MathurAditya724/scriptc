@@ -20,6 +20,7 @@ import {
 } from "./require-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
+import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
@@ -77,6 +78,7 @@ import {
   uninhabitedArmRetagHelper,
   strandedUnitTrap,
   strandedCoercionTrap,
+  recordUnionRouteHelper,
   recordUnionWrapHelper,
   unionRetagHelper,
   narrowedArmHelper,
@@ -480,6 +482,8 @@ import { lowerConsoleNew } from "./lower-console.js";
 import { lowerNumberStaticCall, lowerNumberStaticProperty } from "./builtins/numbers.js";
 import { dateJsonType, isDateJsonSource, lowerDateCall } from "./builtins/dates.js";
 import {
+  fsConstantMemberRead,
+  fsConstantsObject,
   lowerFsConstantsProperty,
   lowerBuiltinConstantsProperty,
   builtinConstantBindingOf,
@@ -2465,6 +2469,9 @@ export class Lowerer {
    * Reachability lowers inits before the declarations they discover, so
    * these rebuild after the worklist restores historical shape metadata. */
   readonly shapeOrderHelperFinalizers: (() => void)[] = [];
+  /** Construction witnesses that choose each shape's enumeration order
+   * once lowering settles (key-order-witness.ts). */
+  readonly keyOrder = new KeyOrderNotes();
   /** Emit-override specializations (`%C.emit:<event>` — lower-event-emitter.ts's
    * emit-overrides block): interned names, the drive-loop queue, and the
    * currently-lowering specialization's context (the super-forward
@@ -7458,6 +7465,13 @@ export class Lowerer {
     this.settleGenericDemandPriorities();
     this.shapes.settleDeclaredOrderPriorities();
     for (const finalize of this.shapeOrderMetadataFinalizers) finalize();
+    applyKeyOrderWitnesses(this, [
+      ...orderedUnits,
+      ...initFunctions,
+      ...instanceFunctions,
+      ...this.liftedFns,
+      ...this.implicitFns,
+    ]);
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     const functions = [
       ...orderedUnits,
@@ -9174,6 +9188,14 @@ export class Lowerer {
     return recordUnionWrapHelper(this, source, toId, loc);
   }
 
+  recordUnionRouteHelper(
+    source: IrType & { kind: "record" },
+    toId: string,
+    loc: SrcLoc,
+  ): string | null {
+    return recordUnionRouteHelper(this, source, toId, loc);
+  }
+
   unionRetagHelper(
     fromId: string,
     toId: string,
@@ -9674,16 +9696,23 @@ export class Lowerer {
         }
       }
     }
-    let e = this.lowerExpr(node);
+    const e = this.lowerExpr(node);
+    return expected ? this.coerceExistingInto(node, e, expected) : e;
+  }
+
+  /** The conversion lowerExprExpecting applies to `e`, the lowered value
+   * of `node` when it is not fresh construction the destination directs
+   * (a literal, conditional, or empty collection). */
+  coerceExistingInto(node: ts.Expression, e: IrExpr, expected: IrType): IrExpr {
     if (
-      (expected?.kind === "union" && this.armTag(expected.unionId, UNDEFINED_T) >= 0) ||
-      (expected?.kind === "dyn" && isJsSourceFile(node.getSourceFile()))
+      (expected.kind === "union" && this.armTag(expected.unionId, UNDEFINED_T) >= 0) ||
+      (expected.kind === "dyn" && isJsSourceFile(node.getSourceFile()))
     ) {
       // A destination that accepts undefined must retain an unchecked
       // read's storage value even when the checker still calls it present.
       e = this.runtimeOptionalSourceValue(node, e) ?? e;
     }
-    return expected ? this.coerceInto(node, e, expected) : e;
+    return this.coerceInto(node, e, expected);
   }
 
   /** An unannotated empty collection has no existing elements or aliases
@@ -12288,13 +12317,7 @@ export class Lowerer {
           COPYFILE_FICLONE_FORCE: 4,
         };
         const value = own(MODES, expr.name.text);
-        if (value === undefined) {
-          this.noLowering(
-            `fs.constants.${expr.name.text}`,
-            expr,
-            "F_OK, R_OK, W_OK, X_OK, and COPYFILE_* are the lowered constants",
-          );
-        }
+        if (value === undefined) return fsConstantMemberRead(expr);
         return { kind: "numLit", value, type: F64, loc };
       }
     }
@@ -12363,14 +12386,8 @@ export class Lowerer {
       const callable = this.lowerBuiltinCallableValue(bi, loc);
       if (callable) return callable;
     }
-    if (bi.member === "constants" && bi.module === "fs") {
-      // A bare `fs.constants` read (not one of the baked bits above).
-      this.noLowering(
-        `fs.constants`,
-        expr,
-        "F_OK, R_OK, W_OK, X_OK, and COPYFILE_* are the lowered constants",
-      );
-    }
+    // A bare `fs.constants` read (not one of the baked bits above).
+    if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
     if (builtinModuleFnOf(this, bi.module, bi.member)) {
       this.unsupported(
         "SC1090",

@@ -52,7 +52,7 @@ const KNOWN: Record<string, Known> = {
   "esm-missing-default": { build: "SC1090" },
   "esm-missing-export": { build: "SC1090" },
   "fetch-destructure": { run: "SC1031" },
-  "fs-shims": { run: "SC2020" },
+  "fs-shims": { run: "SC1101" },
   "hoisted-workspace": { build: "SC2013" },
   "import-refusal": { build: "SC2020" },
   "island-registry": { build: "SC2011" },
