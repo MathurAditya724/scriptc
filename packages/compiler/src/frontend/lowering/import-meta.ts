@@ -65,7 +65,7 @@ export function importMetaBindingSource(
 ): IrExpr | null {
   if (!isImportMeta(initializer) || !ts.isObjectBindingPattern(pattern)) return null;
   const fields: { name: string; value: IrExpr }[] = [];
-  for (const el of pattern.elements) {
+  for (const el of pattern.elements.nodes) {
     if (el.dotDotDotToken)
       lowerer.unsupported(
         "SC1031",

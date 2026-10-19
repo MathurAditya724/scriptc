@@ -50,9 +50,10 @@ export function inferredJsDiagnosticSuppressed(
         (ts.isFunctionDeclaration(declaration) ||
           ts.isFunctionExpression(declaration) ||
           ts.isMethodDeclaration(declaration)) &&
-        node.arguments.length > declaration.parameters.length &&
-        node.arguments[declaration.parameters.length]?.getStart(file) === diagnostic.pos &&
-        node.arguments[node.arguments.length - 1]?.getEnd() === diagnostic.end &&
+        node.arguments.nodes.length > declaration.parameters.nodes.length &&
+        node.arguments.nodes[declaration.parameters.nodes.length]?.getStart(file) ===
+          diagnostic.pos &&
+        node.arguments.nodes[node.arguments.nodes.length - 1]?.getEnd() === diagnostic.end &&
         bodyReadsArguments(declaration)
       ) {
         suppressed = true;
@@ -92,8 +93,8 @@ export function inferredJsDiagnosticSuppressed(
         ts.isMethodDeclaration(declaration) &&
         declaration.type === undefined &&
         isJsSourceFileName(declaration.getSourceFile().fileName) &&
-        declaration.body?.statements.length === 1 &&
-        ts.isThrowStatement(declaration.body.statements[0]!)
+        declaration.body?.statements?.nodes.length === 1 &&
+        ts.isThrowStatement(declaration.body.statements.nodes[0]!)
       ) {
         suppressed = true;
         return "stop";

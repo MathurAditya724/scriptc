@@ -3550,6 +3550,9 @@ declare module "node:test" {
     [Symbol.dispose](): void;
   }
   const mock: MockTracker;
+  /* The context of the test, suite or hook running in the current async
+   * context; undefined outside one. */
+  function getTestContext(): TestContext | SuiteContext | undefined;
   /* Declared for typechecking only — every use fences (no lowering).
    * `assert` is the module-level custom-assertion registry (v24's
    * `const { assert } = require('node:test')`), not TestContext.assert. */
@@ -3567,6 +3570,7 @@ declare module "node:test" {
     afterEach,
     mock,
     assert,
+    getTestContext,
     run,
     snapshot,
     TestContext,

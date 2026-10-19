@@ -11,6 +11,7 @@ import {
   RECORD_SOURCES_GATE,
   WEAK_KEYS_GATE,
 } from "./alloc.js";
+import { youngNurseryRequested } from "../young-nursery.js";
 import { hasLoneSurrogate, llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
 import { createHash } from "node:crypto";
@@ -1463,6 +1464,7 @@ export class LlEmitter {
       ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
       ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
       nextCycKind: () => FIRST_EMITTED_CYC_KIND + this.cycKinds++,
+      ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
       unionsById: this.unionsById,
       declare: (decl) => this.declare(decl),
       needOom: () => this.needOom(),

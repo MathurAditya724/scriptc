@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import type { SourceFile, Node } from "typescript/unstable/ast";
-import { AstFile, AstNode } from "./ast-node.js";
+import { AstFile, AstNode, AstNodeList } from "./ast-node.js";
 import {
   AstKind,
   KIND_NODE_LIST,
@@ -229,11 +229,15 @@ for (const name of [...Object.keys(cases), "model.ts"]) {
       expect(node.getLeadingTriviaWidth()).toBe(expected.getLeadingTriviaWidth());
       expect(ids(node.jsDoc)).toEqual(ids(expected.jsDoc));
       for (const property of astChildNames(node.kind).split(",").filter(Boolean)) {
-        const actual = Reflect.get(node, property) as AstNode | AstNode[] | undefined;
+        const actual = Reflect.get(node, property) as AstNode | AstNodeList | undefined;
         const reference = Reflect.get(expected, property) as OracleNode | OracleNode[] | undefined;
         if (Array.isArray(reference)) {
-          expect(ids(actual as AstNode[]), `${name}:${index}.${property}`).toEqual(ids(reference));
-          expect(Reflect.get(node, property)).toBe(actual);
+          expect(ids((actual as AstNodeList).nodes), `${name}:${index}.${property}`).toEqual(
+            ids(reference),
+          );
+          expect((Reflect.get(node, property) as AstNodeList).nodes).toBe(
+            (actual as AstNodeList).nodes,
+          );
         } else {
           expect((actual as AstNode | undefined)?.index, `${name}:${index}.${property}`).toBe(
             reference?.index,
@@ -256,7 +260,7 @@ for (const name of [...Object.keys(cases), "model.ts"]) {
       node.forEachChild(
         () => 0,
         (list) => {
-          actualLists.push(list.map((n) => n.index));
+          actualLists.push(list.nodes.map((n) => n.index));
           return 0;
         },
       );
@@ -322,7 +326,7 @@ test("checker handles reject cross-file, wrong-kind and nil identities", () => {
 
 test("direct node slots preserve lazy parents, identity and invalid-index checks", () => {
   let materialized = 0;
-  const file = new AstFile(decoded.get("main.ts")!.bytes, undefined, () => {
+  const file = new AstFile(decoded.get("main.ts")!.bytes, () => {
     materialized++;
   });
   let index = file.wire.nodeCount - 1;
@@ -347,7 +351,7 @@ test("direct node slots preserve lazy parents, identity and invalid-index checks
 
 test("named child access shares node and list identities without materializing siblings", () => {
   let materialized = 0;
-  const file = new AstFile(decoded.get("main.ts")!.bytes, undefined, () => {
+  const file = new AstFile(decoded.get("main.ts")!.bytes, () => {
     materialized++;
   });
   let index = 1;
@@ -366,9 +370,11 @@ test("named child access shares node and list identities without materializing s
   expect(node.child("__proto__")).toBeUndefined();
   expect(node.childList("typeParameters")).toBeUndefined();
   const parameters = node.childList("parameters");
-  expect(parameters?.map((parameter) => parameter.index)).toEqual(file.wire.list(paramsIndex));
-  expect(node.child("parameters")).toBe(parameters);
-  expect(node.parameters).toBe(parameters);
+  expect(parameters?.nodes.map((parameter) => parameter.index)).toEqual(
+    file.wire.list(paramsIndex),
+  );
+  expect((node.child("parameters") as AstNodeList | undefined)?.nodes).toBe(parameters?.nodes);
+  expect(node.parameters?.nodes).toBe(parameters?.nodes);
   const body = node.childNode("body");
   expect(body?.index).toBe(bodyIndex);
   expect(node.child("body")).toBe(body);
@@ -414,7 +420,7 @@ test("a source view requires a source-file root", () => {
   const nodes = words.getUint32(HEADER_OFFSET_NODES, true);
   words.setUint32(nodes + NODE_LEN, AstKind.Identifier, true);
   expect(() => new AstFile(bytes).sourceFile).toThrow("expected a source file root");
-  expect(decoded.get("empty.ts")!.file.root.statements).toEqual([]);
+  expect(decoded.get("empty.ts")!.file.root.statements?.nodes).toEqual([]);
 });
 
 test("preorder traversal preserves depth, skipped subtrees and early termination", () => {
@@ -483,7 +489,7 @@ test("selective preorder preserves semantic order and depth without materializin
   };
   visit(oracle.getOrCreateNodeAtIndex(1), 0);
   let materialized = 0;
-  const file = new AstFile(bytes, undefined, () => {
+  const file = new AstFile(bytes, () => {
     materialized++;
   });
   const actual: [number, number][] = [];

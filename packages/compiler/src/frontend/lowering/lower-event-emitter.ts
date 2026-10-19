@@ -288,7 +288,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
       const member = node.expression.name.text;
       const isEmit = member === "emit";
       if (!isEmit && !REGISTER_MEMBERS.has(member)) return;
-      const arg0 = node.arguments[0];
+      const arg0 = node.arguments.nodes[0];
       if (!arg0) return;
       let recvT: IrType | null = null;
       let nameT: ts.Type | null = null;
@@ -327,12 +327,13 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
         if (isEmit) {
           mergeEmit(
             name,
-            node.arguments.slice(1).map((a) => lowerer.mapTypeOf(lowerer.typeOf(a))),
+            node.arguments.nodes.slice(1).map((a) => lowerer.mapTypeOf(lowerer.typeOf(a))),
             isJsSourceFile(sf),
           );
-        } else if (node.arguments[1]) {
-          const cbCt = lowerer.typeOf(node.arguments[1]);
-          const cbT = lowerer.mapTypeOf(cbCt) ?? dynFallbackType(lowerer, node.arguments[1], cbCt);
+        } else if (node.arguments.nodes[1]) {
+          const cbCt = lowerer.typeOf(node.arguments.nodes[1]);
+          const cbT =
+            lowerer.mapTypeOf(cbCt) ?? dynFallbackType(lowerer, node.arguments.nodes[1], cbCt);
           if (
             cbT?.kind !== "dyn" &&
             (cbT?.kind !== "func" || cbT.params.some((p) => p.kind !== "dyn"))
@@ -503,7 +504,7 @@ function staticStringSuffixOf(
   while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
   if (ts.isStringLiteralLike(expression)) return expression.text;
   if (ts.isTemplateExpression(expression))
-    return expression.templateSpans.at(-1)?.literal.text ?? "";
+    return expression.templateSpans.nodes.at(-1)?.literal.text ?? "";
   if (ts.isIdentifier(expression)) {
     const symbol = lowerer.resolveValueSymbol(expression);
     if (!symbol || seen.has(symbol)) return null;
@@ -935,8 +936,11 @@ function lowerListenerArg(
 ): IrExpr {
   // Unannotated non-empty parameter lists have no static types (checker
   // `any`; dyn in JS sources) — say so before the blanket type fence speaks.
-  if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && node.parameters.length > 0) {
-    for (const p of node.parameters) {
+  if (
+    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+    node.parameters.nodes.length > 0
+  ) {
+    for (const p of node.parameters.nodes) {
       if (p.type === undefined && ts.isIdentifier(p.name)) {
         const mapped = (() => {
           try {
@@ -1009,7 +1013,7 @@ export function lowerEmitterMethodCall(
 ): IrExpr | null {
   const member = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const lowerReceiver = (): IrExpr => {
     if (superRecv) return superRecv.thisRef;
     const receiver = lowerer.lowerExpr(access.expression);
@@ -1643,22 +1647,22 @@ export function emitOverrideShapeReason(
   if ((member as { questionToken?: ts.Node }).questionToken !== undefined)
     return "optional method declarations have no lowering";
   if (member.typeParameters !== undefined) return "the compiled shape declares no type parameters";
-  for (const m of member.modifiers ?? []) {
+  for (const m of member.modifiers?.nodes ?? []) {
     if (m.kind === ts.SyntaxKind.AsyncKeyword)
       return "async methods answer a Promise, not emit's boolean";
     if (m.kind === ts.SyntaxKind.AbstractKeyword)
       return "abstract declarations have no body to lower";
     if (m.kind === ts.SyntaxKind.Decorator) return "decorated methods have no lowering";
   }
-  if (member.parameters.length !== 2) return "it must declare exactly (event, ...args)";
-  const p0 = member.parameters[0]!;
-  const p1 = member.parameters[1]!;
+  if (member.parameters.nodes.length !== 2) return "it must declare exactly (event, ...args)";
+  const p0 = member.parameters.nodes[0]!;
+  const p1 = member.parameters.nodes[1]!;
   if (
     !ts.isIdentifier(p0.name) ||
     p0.dotDotDotToken !== undefined ||
     p0.questionToken !== undefined ||
     p0.initializer !== undefined ||
-    (p0.modifiers?.length ?? 0) > 0
+    (p0.modifiers?.nodes.length ?? 0) > 0
   ) {
     return "the event parameter must be a plain identifier";
   }
@@ -1666,7 +1670,7 @@ export function emitOverrideShapeReason(
     !p1.dotDotDotToken ||
     !ts.isIdentifier(p1.name) ||
     p1.initializer !== undefined ||
-    (p1.modifiers?.length ?? 0) > 0
+    (p1.modifiers?.nodes.length ?? 0) > 0
   ) {
     return "the second parameter must be a plain rest parameter (...args)";
   }
@@ -1732,7 +1736,11 @@ function isEmitForwardSpread(
   const sp = id.parent;
   if (!ts.isSpreadElement(sp) || sp.expression !== id) return false;
   const call = sp.parent;
-  if (!ts.isCallExpression(call) || call.arguments.length !== 2 || call.arguments[1] !== sp)
+  if (
+    !ts.isCallExpression(call) ||
+    call.arguments.nodes.length !== 2 ||
+    call.arguments.nodes[1] !== sp
+  )
     return false;
   const callee = call.expression;
   if (
@@ -1742,7 +1750,7 @@ function isEmitForwardSpread(
   ) {
     return false;
   }
-  const a0 = call.arguments[0]!;
+  const a0 = call.arguments.nodes[0]!;
   if (!ts.isIdentifier(a0)) return false;
   try {
     if (lowerer.checker.getSymbolAtLocation(a0) !== eventSym) return false;
@@ -1893,7 +1901,7 @@ export function lowerEmitOverrideSpec(lowerer: Lowerer, req: EmitSpecRequest): I
       params.push({ localId: p.id, name: `%ee${i}`, type: t });
       return p;
     });
-    const eventDecl = ov.decl.parameters[0]!;
+    const eventDecl = ov.decl.parameters.nodes[0]!;
     const eventLocal = lowerer.declareLocal(
       eventDecl.name,
       ts.isIdentifier(eventDecl.name) ? eventDecl.name.text : "event",
@@ -1911,7 +1919,7 @@ export function lowerEmitOverrideSpec(lowerer: Lowerer, req: EmitSpecRequest): I
       restSym: ov.restSym,
       tupleParams,
     };
-    const body = [...prologue, ...lowerer.lowerStmts(ov.decl.body.statements)];
+    const body = [...prologue, ...lowerer.lowerStmts(ov.decl.body.statements.nodes)];
     return {
       name: `%${className}.emit:${event}`,
       params,
@@ -1940,9 +1948,9 @@ export function emitSpecSuperForward(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   const ctx = lowerer.emitSpecCtx;
-  if (!ctx || access.name.text !== "emit" || call.arguments.length !== 2) return null;
-  const a0 = call.arguments[0]!;
-  const a1 = call.arguments[1]!;
+  if (!ctx || access.name.text !== "emit" || call.arguments.nodes.length !== 2) return null;
+  const a0 = call.arguments.nodes[0]!;
+  const a1 = call.arguments.nodes[1]!;
   if (!ts.isIdentifier(a0) || !ts.isSpreadElement(a1) || !ts.isIdentifier(a1.expression))
     return null;
   if (lowerer.checker.getSymbolAtLocation(a0) !== ctx.eventSym) return null;
@@ -2192,7 +2200,7 @@ function eventsOnceBoxer(
  * array. EventTarget and stream receivers, computed names and options are
  * refused. */
 export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length < 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering("events.once without an emitter and an event name", call);
   }
@@ -2302,7 +2310,7 @@ export function lowerEventsEmitterHelper(
   member: string,
   loc: SrcLoc,
 ): IrExpr | null {
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`events.${member} with spread arguments`, call);
   }

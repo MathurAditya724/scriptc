@@ -126,7 +126,7 @@ export function registerPromisifiedBuiltinDecl(
   if (registerHttpClientFnBinding(lowerer, nameNode, init)) return true;
   const e = isPromisifyCall(lowerer, init);
   if (!e) return false;
-  const argNode = e.arguments.length === 1 ? e.arguments[0]! : null;
+  const argNode = e.arguments.nodes.length === 1 ? e.arguments.nodes[0]! : null;
   // `promisify(exec)` over a named import, or `promisify(cp.exec)` over a
   // namespace import.
   const target = !argNode

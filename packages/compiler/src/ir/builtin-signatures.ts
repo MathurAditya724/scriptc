@@ -176,12 +176,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * not iterable (cannot read property Symbol(Symbol.iterator))"). In the
    * may-throw seed set. */
   "dyn.iterPack": { argTypes: [DYN, STRING], result: DYN },
+  "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
   "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
   "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },
   "dyn.iteratorResult": { argTypes: [DYN], result: DYN },
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
   "dyn.iteratorStepDone": { argTypes: [DYN], result: BOOL },
+  "dyn.setGeneratorMembers": { argTypes: [DYN, DYN], result: VOID },
+  "dyn.iteratorHelperMethod": { argTypes: [STRING], result: DYN },
   "dyn.collectionIteratorIndex": { argTypes: [DYN], result: F64 },
   "dyn.mapSeedEntries": { argTypes: [DYN], result: DYN },
   "dyn.mapSeedEntry": { argTypes: [DYN], result: DYN },
@@ -1479,6 +1482,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // undefined.
   "test.ctxPassed": { argTypes: [TESTCTX_T], result: BOOL },
   "test.workerId": { argTypes: [], result: F64 },
+  // getTestContext(): whether a test, suite or hook is running in the
+  // current async context, and that context.
+  "test.hasContext": { argTypes: [], result: BOOL },
+  "test.context": { argTypes: [], result: TESTCTX_T },
   // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
   // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
   "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
