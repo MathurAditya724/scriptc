@@ -83,7 +83,7 @@ function rootOf(info: ClassInfo): ClassInfo {
 function familyOf(lowerer: Lowerer, expr: ts.NewExpression): Family {
   const known = lowerer.threadSlotFamilies.get(expr);
   if (known !== undefined) return known;
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   const arg = args[0];
   if (args.length !== 1 || arg === undefined || ts.isSpreadElement(arg))
     lowerer.noLowering(`new ThreadSlots with ${args.length} arguments`, expr);
@@ -211,8 +211,11 @@ export function lowerThreadSlotsCall(lowerer: Lowerer, expr: ts.CallExpression):
   if (callee.questionDotToken !== undefined || expr.questionDotToken !== undefined)
     lowerer.noLowering(`ThreadSlots.${member} through ?.`, expr, `call slots.${member}() directly`);
   const arity = member === "set" ? 2 : 1;
-  if (expr.arguments.length !== arity || expr.arguments.some((a) => ts.isSpreadElement(a)))
-    lowerer.noLowering(`ThreadSlots.${member} with ${expr.arguments.length} arguments`, expr);
+  if (
+    expr.arguments.nodes.length !== arity ||
+    expr.arguments.nodes.some((a) => ts.isSpreadElement(a))
+  )
+    lowerer.noLowering(`ThreadSlots.${member} with ${expr.arguments.nodes.length} arguments`, expr);
   const init = declaringNew(lowerer, callee.expression);
   if (init === null)
     lowerer.unsupported(
@@ -229,7 +232,7 @@ export function lowerThreadSlotsCall(lowerer: Lowerer, expr: ts.CallExpression):
     lowerer.lowerExpr(callee.expression),
     slotsType,
   );
-  const keyNode = expr.arguments[0]!;
+  const keyNode = expr.arguments.nodes[0]!;
   const key = lowerer.coerceInto(keyNode, lowerer.lowerExpr(keyNode), family.key);
   const name: IrExpr = { kind: "strLit", value: family.name, type: STRING, loc };
   const args = [name, receiver, key];
@@ -244,7 +247,7 @@ export function lowerThreadSlotsCall(lowerer: Lowerer, expr: ts.CallExpression):
     case "delete":
       return { kind: "intrinsic", name: `slots.${member}`, args, type: { kind: "bool" }, loc };
     case "set": {
-      const valueNode = expr.arguments[1]!;
+      const valueNode = expr.arguments.nodes[1]!;
       const value = lowerer.coerceInto(valueNode, lowerer.lowerExpr(valueNode), family.value);
       // `set` returns the slots; a statement discards them.
       const type = ts.isExpressionStatement(expr.parent) ? VOID : slotsType;

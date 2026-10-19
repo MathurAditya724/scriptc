@@ -14,7 +14,7 @@ function protocolPath(path: string): string {
 }
 
 function exportedName(source: SourceFile) {
-  return source.statements[1]!.declarationList!.declarations![0]!.name!;
+  return source.statements.nodes[1]!.declarationList!.declarations?.nodes[0]!.name!;
 }
 
 /** Reuse one server, one source version and both old/new semantic graphs.

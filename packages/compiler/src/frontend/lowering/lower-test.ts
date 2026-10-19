@@ -173,7 +173,7 @@ function lowerTestOptions(
     );
   }
   const out = noOptions();
-  for (const prop of node.properties) {
+  for (const prop of node.properties.nodes) {
     if (
       !(ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) &&
       !ts.isShorthandPropertyAssignment(prop)
@@ -353,7 +353,7 @@ function splitTestArgs(
   expr: ts.CallExpression,
   what: string,
 ): { nameNode?: ts.Expression; optionsNode?: ts.Expression; fnNode?: ts.Expression } {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   const isFn = (a: ts.Expression): boolean =>
     lowerer.checker.getCallSignatures(lowerer.typeOf(a)).length > 0;
   const isOptions = (a: ts.Expression): boolean => ts.isObjectLiteralExpression(a);
@@ -589,7 +589,7 @@ function lowerHook(
   loc: SrcLoc,
 ): IrExpr {
   requireStatementPosition(lowerer, expr, what);
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.length !== 1) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
@@ -726,7 +726,7 @@ function lowerSnapshotAssert(
     return varRef(local.id, type, loc);
   };
   // Arguments evaluate in order before the assertion serializes, as in Node.
-  const valueNode = call.arguments[0];
+  const valueNode = call.arguments.nodes[0];
   const input = slot(
     "%snapshotInput",
     DYN,
@@ -734,7 +734,7 @@ function lowerSnapshotAssert(
   );
   let path: IrExpr | null = null;
   if (member === "fileSnapshot") {
-    const pathNode = call.arguments[1];
+    const pathNode = call.arguments.nodes[1];
     path = slot(
       "%snapshotPath",
       STRING,
@@ -742,11 +742,11 @@ function lowerSnapshotAssert(
     );
   }
   const serializers =
-    snapshotSerializers(lowerer, call.arguments[member === "snapshot" ? 1 : 2], what)?.map((fn) =>
-      slot("%snapshotSerializer", DYN, fn),
+    snapshotSerializers(lowerer, call.arguments.nodes[member === "snapshot" ? 1 : 2], what)?.map(
+      (fn) => slot("%snapshotSerializer", DYN, fn),
     ) ?? null;
-  if (call.arguments.length > (member === "snapshot" ? 2 : 3)) {
-    lowerer.noLowering(`${what} with ${call.arguments.length} arguments`, call);
+  if (call.arguments.nodes.length > (member === "snapshot" ? 2 : 3)) {
+    lowerer.noLowering(`${what} with ${call.arguments.nodes.length} arguments`, call);
   }
   const text: IrExpr = {
     kind: "toString",
@@ -813,7 +813,7 @@ function snapshotSerializers(
     lowerer.noLowering(`${what} options that are not an object literal`, options, hint);
   }
   let fns: IrExpr[] | null = null;
-  for (const prop of options.properties) {
+  for (const prop of options.properties.nodes) {
     const name = prop.name && ts.isIdentifier(prop.name) ? prop.name.text : null;
     if (
       name !== "serializers" ||
@@ -825,7 +825,7 @@ function snapshotSerializers(
     if (!ts.isArrayLiteralExpression(list)) {
       lowerer.noLowering(`${what} with a non-literal serializers list`, list, hint);
     }
-    fns = list.elements.map((el) => {
+    fns = list.elements.nodes.map((el) => {
       if (ts.isSpreadElement(el)) lowerer.noLowering(`${what} with a spread serializer`, el, hint);
       return lowerer.lowerExprExpecting(el, DYN);
     });
@@ -1023,7 +1023,7 @@ export function lowerTestMethodCall(
   // The TestContext receiver surface.
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "testCtx") return null;
   if (!lowerer.isStdlibMember(access)) return null;
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (member === "test") {
     const receiver = lowerer.lowerExpr(access.expression);
     return lowerRegistration(lowerer, call, "t.test(...)", loc, 0, receiver);

@@ -140,7 +140,7 @@ export function sideEffectFreeOptionValue(node: ts.Expression): boolean {
     return sideEffectFreeOptionValue(e.operand);
   }
   if (ts.isObjectLiteralExpression(e)) {
-    return e.properties.every(
+    return e.properties.nodes.every(
       (p) =>
         ts.isShorthandPropertyAssignment(p) ||
         (ts.isPropertyAssignment(p) &&
@@ -149,7 +149,7 @@ export function sideEffectFreeOptionValue(node: ts.Expression): boolean {
     );
   }
   if (ts.isArrayLiteralExpression(e)) {
-    return e.elements.every((el) => !ts.isSpreadElement(el) && sideEffectFreeOptionValue(el));
+    return e.elements.nodes.every((el) => !ts.isSpreadElement(el) && sideEffectFreeOptionValue(el));
   }
   return false;
 }

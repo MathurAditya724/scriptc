@@ -155,7 +155,7 @@ function lowerStringReplacementValues(
   ) {
     lowerer.noLowering(
       `string .${method} callback signature`,
-      call.arguments[1] ?? call,
+      call.arguments.nodes[1] ?? call,
       "use a callback returning string with a prefix of (match: string, offset: number, subject: string)",
     );
   }

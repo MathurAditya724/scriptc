@@ -50,12 +50,12 @@ function describeComptimeValue(v: unknown): string {
 export function lowerComptime(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // 1. Inline function literal only (tsc guarantees the arity/type; the
   // literal-ness is our requirement — source extraction needs the source).
-  let cb: ts.Expression | undefined = expr.arguments[0];
+  let cb: ts.Expression | undefined = expr.arguments.nodes[0];
   while (cb && ts.isParenthesizedExpression(cb)) cb = cb.expression;
   if (!cb || !(ts.isArrowFunction(cb) || ts.isFunctionExpression(cb))) {
     lowerer.unsupported(
       "SC1090",
-      expr.arguments[0] ?? expr,
+      expr.arguments.nodes[0] ?? expr,
       "comptime arguments other than inline function literals " +
         "(write the callback directly in the call: comptime(() => ...))",
     );
@@ -63,7 +63,7 @@ export function lowerComptime(lowerer: Lowerer, expr: ts.CallExpression): IrExpr
   // 2. Async/generator callbacks have no bakeable result.
   if (
     (ts.isFunctionExpression(cb) && cb.asteriskToken) ||
-    cb.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+    cb.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
   ) {
     lowerer.unsupported("SC1090", cb, "async or generator comptime callbacks");
   }

@@ -56,8 +56,8 @@ function identPrefixOf(node: ts.Node, sf: ts.SourceFile): string {
 export function bareRequireSpecOf(e: ts.Node): string | null {
   if (!ts.isCallExpression(e) || e.questionDotToken !== undefined) return null;
   if (!ts.isIdentifier(e.expression) || e.expression.text !== "require") return null;
-  if (e.arguments.length !== 1) return null;
-  const arg = e.arguments[0]!;
+  if (e.arguments.nodes.length !== 1) return null;
+  const arg = e.arguments.nodes[0]!;
   return ts.isStringLiteral(arg) ? arg.text : null;
 }
 
@@ -135,7 +135,7 @@ function scanTableLiteral(
   reexports: string[],
 ): void {
   const text = sf.text;
-  for (const prop of obj.properties) {
+  for (const prop of obj.properties.nodes) {
     if (ts.isGetAccessor(prop)) {
       // `get name() {...}` — merve's explicit early termination... unless
       // the accessor's NAME is not a plain identifier, where the lexer
@@ -253,8 +253,8 @@ function scanDefineProperty(call: ts.CallExpression, sf: ts.SourceFile, out: Set
   ) {
     return;
   }
-  if (call.arguments.length !== 3) return;
-  const [recv, nameArg, desc] = call.arguments as unknown as [
+  if (call.arguments.nodes.length !== 3) return;
+  const [recv, nameArg, desc] = call.arguments.nodes as unknown as [
     ts.Expression,
     ts.Expression,
     ts.Expression,
@@ -263,7 +263,7 @@ function scanDefineProperty(call: ts.CallExpression, sf: ts.SourceFile, out: Set
   if (!ts.isStringLiteral(nameArg)) return;
   if (!ts.isObjectLiteralExpression(desc)) return;
   let i = 0;
-  const props = desc.properties;
+  const props = desc.properties.nodes;
   const first = props[0];
   if (
     first !== undefined &&
@@ -287,8 +287,8 @@ function scanDefineProperty(call: ts.CallExpression, sf: ts.SourceFile, out: Set
   // and the getter must be the descriptor's LAST property.
   const body = getterBodyOf(p);
   if (body === undefined || i !== props.length - 1) return;
-  if (body.statements.length !== 1) return;
-  const ret = body.statements[0]!;
+  if (body.statements.nodes.length !== 1) return;
+  const ret = body.statements.nodes[0]!;
   if (!ts.isReturnStatement(ret) || ret.expression === undefined) return;
   const r = ret.expression;
   const returnsIdentish =
@@ -313,7 +313,7 @@ function getterBodyOf(p: ts.ObjectLiteralElementLike): ts.Block | undefined {
     p.name.text === "get" &&
     p.asteriskToken === undefined &&
     (ts.getModifiers(p) ?? []).length === 0 &&
-    p.parameters.length === 0
+    p.parameters.nodes.length === 0
   ) {
     return p.body;
   }
@@ -322,7 +322,7 @@ function getterBodyOf(p: ts.ObjectLiteralElementLike): ts.Block | undefined {
     ts.isIdentifier(p.name) &&
     p.name.text === "get" &&
     ts.isFunctionExpression(p.initializer) &&
-    p.initializer.parameters.length === 0 &&
+    p.initializer.parameters.nodes.length === 0 &&
     p.initializer.asteriskToken === undefined &&
     (ts.getModifiers(p.initializer) ?? []).length === 0
   ) {
@@ -349,7 +349,7 @@ function starExportSpecOf(call: ts.CallExpression, sf: ts.SourceFile): string | 
   if (nameNode === undefined) return null;
   if (nameNode.text !== "__export" && nameNode.text !== "__exportStar") return null;
   if (!sourceSpellsIdentifier(nameNode, sf)) return null;
-  const arg0 = call.arguments[0];
+  const arg0 = call.arguments.nodes[0];
   if (arg0 === undefined) return null;
   if (!byteAdjacentParen(sf, nameNode.getEnd(), arg0.getStart(sf))) return null;
   return leadingRequireOf(arg0, sf)?.spec ?? null;
@@ -369,7 +369,7 @@ function byteAdjacentParen(sf: ts.SourceFile, nameEnd: number, argStart: number)
  * probed: a member-qualified helper or one space after its paren misses).
  * Answers [ID, spec]. */
 function starAssignOf(stmt: ts.VariableStatement, sf: ts.SourceFile): [string, string] | null {
-  const decl = stmt.declarationList.declarations[0];
+  const decl = stmt.declarationList.declarations.nodes[0];
   if (decl === undefined || !ts.isIdentifier(decl.name) || !sourceSpellsIdentifier(decl.name, sf))
     return null;
   const init = decl.initializer;
@@ -381,9 +381,9 @@ function starAssignOf(stmt: ts.VariableStatement, sf: ts.SourceFile): [string, s
     init.questionDotToken === undefined &&
     ts.isIdentifier(init.expression) &&
     init.expression.text === "_interopRequireWildcard" &&
-    init.arguments.length >= 1
+    init.arguments.nodes.length >= 1
   ) {
-    const arg0 = init.arguments[0]!;
+    const arg0 = init.arguments.nodes[0]!;
     if (!byteAdjacentParen(sf, init.expression.getEnd(), arg0.getStart(sf))) return null;
     const spec = bareRequireSpecOf(arg0);
     if (spec !== null) return [decl.name.text, spec];
@@ -434,8 +434,8 @@ function isHasOwnCall(e: ts.Expression, key: string): boolean {
   )
     cur = cur.expression;
   if (!ts.isIdentifier(cur) || cur.text !== "Object") return false;
-  if (e.arguments.length !== 2) return false;
-  const [recv, k] = e.arguments as unknown as [ts.Expression, ts.Expression];
+  if (e.arguments.nodes.length !== 2) return false;
+  const [recv, k] = e.arguments.nodes as unknown as [ts.Expression, ts.Expression];
   return ts.isIdentifier(recv) && ts.isIdentifier(k) && k.text === key;
 }
 
@@ -448,9 +448,9 @@ function isDirectHasOwnCall(e: ts.Expression, key: string): boolean {
     ts.isIdentifier(e.expression.name) &&
     e.expression.name.text === "hasOwnProperty" &&
     ts.isIdentifier(e.expression.expression) &&
-    e.arguments.length === 1 &&
-    ts.isIdentifier(e.arguments[0]!) &&
-    (e.arguments[0] as ts.Identifier).text === key
+    e.arguments.nodes.length === 1 &&
+    ts.isIdentifier(e.arguments.nodes[0]!) &&
+    (e.arguments.nodes[0] as ts.Identifier).text === key
   );
 }
 
@@ -477,16 +477,16 @@ function isCopyStatement(stmt: ts.Statement, id1: string, key: string): boolean 
   ) {
     return false;
   }
-  if (e.arguments.length !== 3) return false;
-  const [recv, nameArg, desc] = e.arguments as unknown as [
+  if (e.arguments.nodes.length !== 3) return false;
+  const [recv, nameArg, desc] = e.arguments.nodes as unknown as [
     ts.Expression,
     ts.Expression,
     ts.Expression,
   ];
   if (!isExportsTarget(recv)) return false;
   if (!ts.isIdentifier(nameArg) || nameArg.text !== key) return false;
-  if (!ts.isObjectLiteralExpression(desc) || desc.properties.length !== 2) return false;
-  const [en, get] = desc.properties as unknown as [
+  if (!ts.isObjectLiteralExpression(desc) || desc.properties.nodes.length !== 2) return false;
+  const [en, get] = desc.properties.nodes as unknown as [
     ts.ObjectLiteralElementLike,
     ts.ObjectLiteralElementLike,
   ];
@@ -494,8 +494,8 @@ function isCopyStatement(stmt: ts.Statement, id1: string, key: string): boolean 
     return false;
   if (en.initializer.kind !== ts.SyntaxKind.TrueKeyword) return false;
   const body = getterBodyOf(get);
-  if (body === undefined || body.statements.length !== 1) return false;
-  const ret = body.statements[0]!;
+  if (body === undefined || body.statements.nodes.length !== 1) return false;
+  const ret = body.statements.nodes[0]!;
   if (!ts.isReturnStatement(ret) || ret.expression === undefined) return false;
   return isKeyedAccess(ret.expression, (x) => ts.isIdentifier(x) && x.text === id1, key);
 }
@@ -541,16 +541,16 @@ function starLoopIdOf(call: ts.CallExpression, sf: ts.SourceFile): string | null
   ) {
     return null;
   }
-  if (keysCall.arguments.length !== 1) return null;
-  const id1Node = keysCall.arguments[0]!;
+  if (keysCall.arguments.nodes.length !== 1) return null;
+  const id1Node = keysCall.arguments.nodes[0]!;
   if (!ts.isIdentifier(id1Node) || !sourceSpellsIdentifier(id1Node, sf)) return null;
   const id1 = id1Node.text;
-  const fn = call.arguments[0];
+  const fn = call.arguments.nodes[0];
   if (fn === undefined || !ts.isFunctionExpression(fn)) return null; // arrows never match (probed)
   if (fn.name !== undefined) return null; // a NAMED callback misses (probed)
   if (fn.asteriskToken !== undefined || (ts.getModifiers(fn) ?? []).length > 0) return null;
-  if (fn.parameters.length !== 1) return null;
-  const keyParam = fn.parameters[0]!;
+  if (fn.parameters.nodes.length !== 1) return null;
+  const keyParam = fn.parameters.nodes[0]!;
   if (
     !ts.isIdentifier(keyParam.name) ||
     keyParam.initializer !== undefined ||
@@ -558,7 +558,7 @@ function starLoopIdOf(call: ts.CallExpression, sf: ts.SourceFile): string | null
   )
     return null;
   const key = keyParam.name.text;
-  const stmts = fn.body.statements;
+  const stmts = fn.body.statements.nodes;
 
   // Form B: the single `if (KEY !== 'default' [&& !hasOwn]) COPY` statement.
   if (stmts.length === 1 && ts.isIfStatement(stmts[0]!) && stmts[0]!.elseStatement === undefined) {

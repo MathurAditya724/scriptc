@@ -36,9 +36,9 @@ export function lowerJsonMethodCall(
   if (member === null) return null;
   const loc = locOf(call);
   if (
-    (member === "parse" && (call.arguments.length < 1 || call.arguments.length > 2)) ||
-    (member === "stringify" && call.arguments.length > 3) ||
-    call.arguments.some(ts.isSpreadElement)
+    (member === "parse" && (call.arguments.nodes.length < 1 || call.arguments.nodes.length > 2)) ||
+    (member === "stringify" && call.arguments.nodes.length > 3) ||
+    call.arguments.nodes.some(ts.isSpreadElement)
   ) {
     lowerer.noLowering(
       `JSON.${member} with extra or spread arguments`,
@@ -47,8 +47,8 @@ export function lowerJsonMethodCall(
     );
   }
   if (member === "parse") {
-    const text = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
-    const reviver = call.arguments[1];
+    const text = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, STRING);
+    const reviver = call.arguments.nodes[1];
     if (!reviver || jsonNullishArgument(lowerer, reviver)) {
       return { kind: "libCall", fn: "json.parse", args: [text], type: DYN, loc };
     }
@@ -56,8 +56,8 @@ export function lowerJsonMethodCall(
     return { kind: "libCall", fn: "json.parseReviver", args: [text, callback], type: DYN, loc };
   }
   if (member === "stringify") {
-    const replacerNode = call.arguments[1];
-    const spaceNode = call.arguments[2];
+    const replacerNode = call.arguments.nodes[1];
+    const spaceNode = call.arguments.nodes[2];
     const runtimeOptions =
       (replacerNode &&
         !jsonNullishArgument(lowerer, replacerNode) &&
@@ -68,19 +68,19 @@ export function lowerJsonMethodCall(
         !ts.isStringLiteral(spaceNode) &&
         !ts.isNoSubstitutionTemplateLiteral(spaceNode) &&
         !(ts.isPrefixUnaryExpression(spaceNode) && ts.isNumericLiteral(spaceNode.operand)));
-    if (runtimeOptions && call.arguments[0]) {
+    if (runtimeOptions && call.arguments.nodes[0]) {
       const args = [0, 1, 2].map((index) =>
-        call.arguments[index]
-          ? lowerer.lowerExprExpecting(call.arguments[index]!, DYN)
+        call.arguments.nodes[index]
+          ? lowerer.lowerExprExpecting(call.arguments.nodes[index]!, DYN)
           : dynUndefinedExpr(loc),
       );
       return { kind: "libCall", fn: "json.stringifyValue", args, type: DYN, loc };
     }
     const indent = stringifySpaceIndent(lowerer, call);
-    if (call.arguments.length === 0) {
+    if (call.arguments.nodes.length === 0) {
       return lowerer.wrappedUndefined(lowerer.withUndefinedArm(STRING), loc)!;
     }
-    const argNode = call.arguments[0]!;
+    const argNode = call.arguments.nodes[0]!;
     let value = lowerer.lowerExpr(argNode);
     // Optional Map/array reads and partially narrowed unions keep their
     // storage representation when lowered as ordinary arguments. Select
@@ -103,7 +103,7 @@ export function lowerJsonMethodCall(
         if (helper) value = { kind: "call", callee: helper, args: [value], type: narrowed, loc };
       }
     }
-    const replacer = call.arguments[1];
+    const replacer = call.arguments.nodes[1];
     if (replacer && !jsonNullishArgument(lowerer, replacer)) {
       const callback = lowerJsonCallback(lowerer, replacer, "replacer");
       if (value.type.kind === "undefinedT" || value.type.kind === "nullT")
@@ -573,12 +573,12 @@ function stringifySpaceIndent(lowerer: Lowerer, call: ts.CallExpression): string
       call,
       "the serializer is type-directed — shape the value before stringifying",
     );
-  if (call.arguments.length <= 1) return "";
+  if (call.arguments.nodes.length <= 1) return "";
   const unwrap = (e: ts.Expression): ts.Expression =>
     ts.isParenthesizedExpression(e) ? unwrap(e.expression) : e;
   const isUndefined = (e: ts.Expression): boolean => jsonNullishArgument(lowerer, e);
-  if (call.arguments.length === 2) return "";
-  const space = unwrap(call.arguments[2]!);
+  if (call.arguments.nodes.length === 2) return "";
+  const space = unwrap(call.arguments.nodes[2]!);
   if (space.kind === ts.SyntaxKind.NullKeyword || isUndefined(space)) return "";
   if (ts.isNumericLiteral(space)) {
     const n = Number(space.text.replace(/_/g, ""));

@@ -21,14 +21,14 @@ export function matchAllRowsReadByElements(
   const parent = outerValue(drain).parent;
   if (
     ts.isCallExpression(parent) &&
-    parent.arguments[0] === outerValue(drain) &&
+    parent.arguments.nodes[0] === outerValue(drain) &&
     ts.isPropertyAccessExpression(parent.expression) &&
     parent.expression.name.text === "from" &&
     lowerer.isStdlibGlobal(parent.expression.expression, "Array")
   ) {
-    const mapper = parent.arguments[1];
+    const mapper = parent.arguments.nodes[1];
     if (mapper === undefined) return rowsReadByElements(lowerer, parent, 0);
-    return parent.arguments.length === 2 && callbackReadsByElements(lowerer, mapper, 2);
+    return parent.arguments.nodes.length === 2 && callbackReadsByElements(lowerer, mapper, 2);
   }
   if (ts.isForOfStatement(parent) && parent.expression === outerValue(drain))
     return forOfReadsByElements(lowerer, parent, companion);
@@ -103,7 +103,7 @@ function rowsReadByElements(lowerer: Lowerer, node: ts.Node, depth: number): boo
     const literal = parent.parent;
     return (
       ts.isArrayLiteralExpression(literal) &&
-      literal.elements.length === 1 &&
+      literal.elements.nodes.length === 1 &&
       rowsReadByElements(lowerer, literal, depth + 1)
     );
   }
@@ -122,10 +122,13 @@ function rowsReadByElements(lowerer: Lowerer, node: ts.Node, depth: number): boo
   if (!ts.isCallExpression(call) || call.expression !== parent)
     return method === "length" && isValueRead(parent);
   if (ROW_CALLBACK_METHODS.has(method)) {
-    if (call.arguments.length !== 1 || !callbackReadsByElements(lowerer, call.arguments[0]!, 2))
+    if (
+      call.arguments.nodes.length !== 1 ||
+      !callbackReadsByElements(lowerer, call.arguments.nodes[0]!, 2)
+    )
       return false;
   } else if (ROW_SUBSET_METHODS.has(method) || ROW_PICK_METHODS.has(method)) {
-    if (call.arguments.some((a) => ts.isSpreadElement(a))) return false;
+    if (call.arguments.nodes.some((a) => ts.isSpreadElement(a))) return false;
   } else {
     return false;
   }
@@ -172,8 +175,8 @@ function forOfReadsByElements(
   companion: boolean,
 ): boolean {
   const list = loop.initializer;
-  if (!ts.isVariableDeclarationList(list) || list.declarations.length !== 1) return false;
-  const decl = list.declarations[0]!;
+  if (!ts.isVariableDeclarationList(list) || list.declarations.nodes.length !== 1) return false;
+  const decl = list.declarations.nodes[0]!;
   if (!ts.isIdentifier(decl.name)) return false;
   const symbol = lowerer.resolveValueSymbol(decl.name);
   if (!symbol || !bindingNeverReassigned(lowerer, symbol, decl)) return false;
@@ -202,8 +205,8 @@ function callbackReadsByElements(
   let fn: ts.Node = node;
   while (ts.isParenthesizedExpression(fn)) fn = fn.expression;
   if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return false;
-  if (fn.parameters.length > maxParams) return false;
-  const param = fn.parameters[0];
+  if (fn.parameters.nodes.length > maxParams) return false;
+  const param = fn.parameters.nodes[0];
   if (param === undefined) return true;
   if (param.dotDotDotToken !== undefined || param.initializer !== undefined) return false;
   if (ts.isObjectBindingPattern(param.name))
@@ -230,7 +233,7 @@ function constBindingReadsByElements(
   const statement = decl.parent.parent;
   if (
     ts.isVariableStatement(statement) &&
-    statement.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+    statement.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
   )
     return false;
   const symbol = lowerer.resolveValueSymbol(decl.name);
@@ -267,8 +270,8 @@ function groupsProjectedParam(lowerer: Lowerer, param: ts.ParameterDeclaration):
 /** An object pattern that binds only `groups`. */
 function groupsPattern(pattern: ts.ObjectBindingPattern): boolean {
   return (
-    pattern.elements.length > 0 &&
-    pattern.elements.every((el) => {
+    pattern.elements.nodes.length > 0 &&
+    pattern.elements.nodes.every((el) => {
       if (el.dotDotDotToken !== undefined) return false;
       const prop = el.propertyName;
       if (prop === undefined) return ts.isIdentifier(el.name) && el.name.text === "groups";

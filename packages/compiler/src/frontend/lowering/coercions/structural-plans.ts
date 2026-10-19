@@ -407,7 +407,7 @@ export function recordToClassPlan(
       return null;
     }
   }
-  if (!info.ctor || info.ctor.body === undefined || info.ctor.body.statements.length > 0)
+  if (!info.ctor || info.ctor.body === undefined || info.ctor.body.statements.nodes.length > 0)
     return null;
   const props = info.paramProps ?? [];
   if (props.length !== info.ctorParams.length) return null;

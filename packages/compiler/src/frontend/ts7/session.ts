@@ -52,7 +52,6 @@ export class Ts7Session {
   constructor(
     private readonly rpc: Ts7RpcClient,
     collectTiming = false,
-    readonly listMetadata?: (nodes: AstNode[], pos: number, end: number) => void,
   ) {
     this.timing = new Ts7Timing(collectTiming);
   }
@@ -280,7 +279,7 @@ export class Ts7SessionProgram {
     if (source === undefined) {
       const bytes = this.session.binary("getSourceFile", JSON.stringify(this.query(file)));
       if (bytes.length !== 0) {
-        const ast = new AstFile(bytes, this.session.listMetadata, () => {
+        const ast = new AstFile(bytes, () => {
           this.session.timing.materialized();
         });
         this.session.timing.fetched(Math.max(0, ast.wire.nodeCount - 2));
