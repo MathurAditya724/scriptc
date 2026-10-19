@@ -177,12 +177,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * not iterable (cannot read property Symbol(Symbol.iterator))"). In the
    * may-throw seed set. */
   "dyn.iterPack": { argTypes: [DYN, STRING], result: DYN },
+  "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
   "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
   "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },
   "dyn.iteratorResult": { argTypes: [DYN], result: DYN },
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
   "dyn.iteratorStepDone": { argTypes: [DYN], result: BOOL },
+  "dyn.setGeneratorMembers": { argTypes: [DYN, DYN], result: VOID },
+  "dyn.iteratorHelperMethod": { argTypes: [STRING], result: DYN },
   "dyn.collectionIteratorIndex": { argTypes: [DYN], result: F64 },
   "dyn.mapSeedEntries": { argTypes: [DYN], result: DYN },
   "dyn.mapSeedEntry": { argTypes: [DYN], result: DYN },

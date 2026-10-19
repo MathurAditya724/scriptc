@@ -36,7 +36,7 @@ const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 // SCRIPTC_TEST_SHARD="i/n" (CI's matrix) keeps only this shard's slice of
 // the corpus — the file is this suite's wall-time monster, so vitest's
 // file-granular --shard alone cannot split it. Slices are balanced by each
-// program's measured cost (corpus-costs.json). Unset = everything.
+// program's measured cost (corpus-costs.json and corpus-costs/). Unset = everything.
 const ENTRY_EXTS = ["ts", "js", "mjs", "cjs"];
 const files = corpusSelect(
   ENTRY_EXTS.flatMap((ext) => [
