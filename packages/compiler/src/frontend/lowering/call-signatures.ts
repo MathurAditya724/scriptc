@@ -707,6 +707,27 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
   });
 }
 
+/** True when a "use strict" directive prologue covers the node: its
+ * file's or an enclosing function's (strict code's arguments object never
+ * aliases the named parameters). */
+function inStrictCode(node: ts.Node): boolean {
+  const strict = (stmts: readonly ts.Statement[]): boolean => {
+    for (const st of stmts) {
+      if (!ts.isExpressionStatement(st) || !ts.isStringLiteral(st.expression)) return false;
+      if (st.expression.text === "use strict") return true;
+    }
+    return false;
+  };
+  for (let n: ts.Node | undefined = node; n !== undefined; n = n.parent) {
+    if (ts.isSourceFile(n)) return strict(n.statements.nodes);
+    if (ts.isFunctionLike(n)) {
+      const body = (n as { body?: ts.Node }).body;
+      if (body !== undefined && ts.isBlock(body) && strict(body.statements.nodes)) return true;
+    }
+  }
+  return false;
+}
+
 /** Arrows inherit arguments. Ordinary JS functions receive a hidden
  * array unless a declared rest parameter already owns that contract.
  * Class methods are strict; other parameterized forms require ES modules
@@ -732,7 +753,11 @@ function appendArgumentsParameter(
     const classMethod =
       ts.isMethodDeclaration(node) &&
       (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent));
-    if (!classMethod && !isNodeEsmFile(node.getSourceFile(), lowerer.program)) {
+    if (
+      !classMethod &&
+      !isNodeEsmFile(node.getSourceFile(), lowerer.program) &&
+      !inStrictCode(node)
+    ) {
       lowerer.unsupported(
         "SC1090",
         node,

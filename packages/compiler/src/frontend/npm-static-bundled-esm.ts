@@ -633,6 +633,41 @@ export function lowerBundledEsmInits(
       names.has(access.name.text) &&
       plainRead(access);
     const holder = ns.parent;
+    // `__reExport(main, ns, module.exports)`: a star re-export of the
+    // module into the bundle's own exports (`export * from` in its entry).
+    // The initializer runs at the statement; the names become live getter
+    // entries of the export table, after its explicit ones (first wins)
+    // and without `default`, exactly the names __reExport copies.
+    if (
+      holder !== undefined &&
+      ts.isCallExpression(holder) &&
+      ts.isIdentifier(holder.expression) &&
+      helperBase(holder.expression.text) === "__reExport" &&
+      holder.arguments.nodes[1] === ns &&
+      holder.arguments.nodes.length <= 3 &&
+      ts.isExpressionStatement(holder.parent) &&
+      mainTarget !== null &&
+      ts.isIdentifier(holder.arguments.nodes[0]!) &&
+      (holder.arguments.nodes[0] as ts.Identifier).text === mainTarget
+    ) {
+      const inner = unparen(ns);
+      const init =
+        ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.CommaToken
+          ? `${unparen(inner.left).getText(sf)}; `
+          : "";
+      if (shadowed(holder, table.entries)) return { degrade: `its shipped JS ${why}` };
+      const entries = table.entries
+        .filter(([n]) => n !== "default")
+        .map(([n, value]) => `${JSON.stringify(n)}: () => ${getterText(value)}`)
+        .join(", ");
+      edits.push({
+        start: holder.parent.getStart(sf),
+        end: holder.parent.getEnd(),
+        text: `${init}__export(${mainTarget}, { ${entries} });`,
+      });
+      lowered.add(r.text);
+      continue;
+    }
     let readable = memberRead(holder, ns);
     if (
       !readable &&

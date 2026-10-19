@@ -18,6 +18,7 @@
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isNpmStaticPackage,
+  npmStaticActive,
   npmStaticPackageOfPath,
   npmStaticTransformPkgJson,
 } from "./npm-static.js";
@@ -868,7 +869,11 @@ export function resolveBareModule(
   // never consulted — mirroring the shadowed world the tsgo host serves.
   const runtimeImport = mode === "runtime-js" || mode === "runtime-source";
   const npmStatic =
-    mode === "js-only" || (!runtimeImport && mode !== "types-only" && isNpmStaticPackage(pkgName));
+    mode === "js-only" ||
+    (!runtimeImport &&
+      mode !== "types-only" &&
+      (isNpmStaticPackage(pkgName) ||
+        (npmStaticActive() && isNpmStaticPackage(aliasedPackageOf(fromFile, pkgName)))));
   const conditions = runtimeImport
     ? RUNTIME_IMPORT_CONDITIONS
     : npmStatic
@@ -968,6 +973,23 @@ export function resolveBareModule(
   if (mode === "runtime-source") return passOnce("source");
   if (mode === "runtime-js") return passOnce("js");
   return npmStatic ? passOnce("js") : (passOnce("types") ?? passOnce("js"));
+}
+
+/** The package an npm alias directory installs (`"x-updated":
+ * "npm:x@6.3.0"` puts package x under node_modules/x-updated): the name
+ * the nearest node_modules/<dirName>/package.json declares when it
+ * differs from the directory name, else null. */
+function aliasedPackageOf(fromFile: string, dirName: string): string | null {
+  for (let dir = dirname(resolve(fromFile)); ; ) {
+    const pkgDir = join(dir, "node_modules", dirName);
+    if (isDirectory(pkgDir)) {
+      const name = pkgJsonOf(pkgDir)?.name;
+      return typeof name === "string" && name !== dirName ? name : null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 export function resolveWorkspaceSourceModule(

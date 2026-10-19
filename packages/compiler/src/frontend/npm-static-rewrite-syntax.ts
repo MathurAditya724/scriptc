@@ -1080,13 +1080,12 @@ export function rewriteBundlerCjsSyntax(
   lines.push(
     `module.exports = {${spreadParts.join("")}${plainParts.join("")}${esModulePart}${memberParts.join("")}};`,
   );
-  /* Node's lexer sees the original's names for these entries (esbuild's
-   * dead annotation), but no accessor of the canonical table: the host
-   * keeps those names lexer-visible, so ES-module importers link exactly
-   * as they do against the original. */
-  const accessorNames = [...entries.values()]
-    .filter((spec) => spec.kind === "getter" && lexed.exports.has(spec.name))
-    .map((spec) => spec.name);
-  if (accessorNames.length > 0) host.lexerVisibleNames?.(filePath, accessorNames);
+  /* Node's lexer skips accessors (and stops reading an object literal at
+   * the first one), so a canonical table with accessor entries hides
+   * names the original showed it (esbuild's dead annotation): the host
+   * keeps the original's lexer answer, so ES-module importers link
+   * exactly as they do against the original. */
+  if ([...entries.values()].some((spec) => spec.kind === "getter"))
+    host.lexerVisibleNames?.(filePath, [...lexed.exports]);
   return text + lines.join("\n") + "\n";
 }

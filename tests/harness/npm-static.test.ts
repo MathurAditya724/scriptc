@@ -76,8 +76,9 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2565)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2566)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
+    ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
@@ -1487,6 +1488,26 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     ["2565-lazy-barrel-require", ["gtlazyuser", "gtlazy"]],
   ])("the lazy barrel %s compiles statically and byte-matches Node", async (name, packages) => {
     await expectNodeParity(join(fixturesRoot, `npm/cases/${name}/main.ts`), packages);
+  }, 180_000);
+
+  // 2566: two releases of one package in a pnpm store, the newer through
+  // an npm alias directory; the default selection compiles both copies.
+  test("an npm alias of a selected package compiles from its JavaScript", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2566-npm-alias-two-releases/main.ts");
+    const { coverage } = analyze(entry);
+    expect(coverage.npmStatic).toEqual(
+      expect.arrayContaining([
+        { package: "gtroute", status: "static" },
+        { package: "gtpattern", status: "static" },
+      ]),
+    );
+    const binary = await buildStatic(entry, "auto");
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
   // 2562: a file with unverifiable interop that no compiled code can load
