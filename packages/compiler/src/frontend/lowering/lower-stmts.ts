@@ -3979,7 +3979,7 @@ function objectRestValue(
       ),
     };
   });
-  return { kind: "recordLit", fields, type: restT, loc };
+  return lowerer.keyOrder.copy({ kind: "recordLit", fields, type: restT, loc }, srcType.shapeId);
 }
 
 /** The fresh record for `{ a, ...rest }` over a CLASS-INSTANCE source:
@@ -7867,22 +7867,25 @@ function destructuringAssignInto(
           ),
         );
       }
-      const packed: IrExpr = {
-        kind: "recordLit",
-        fields: remaining.map((f): Extract<IrExpr, { kind: "recordLit" }>["fields"][number] => ({
-          name: f.name,
-          value: {
-            kind: "recordGet",
-            obj: { kind: "varRef", localId: tmp.id, type: srcType, loc: locOf(prop) },
-            shapeId: srcType.shapeId,
-            field: f.name,
-            type: f.type,
-            loc: locOf(prop),
-          },
-        })),
-        type: { kind: "record", shapeId: restShapeId },
-        loc: locOf(prop),
-      };
+      const packed: IrExpr = lowerer.keyOrder.copy(
+        {
+          kind: "recordLit",
+          fields: remaining.map((f): Extract<IrExpr, { kind: "recordLit" }>["fields"][number] => ({
+            name: f.name,
+            value: {
+              kind: "recordGet",
+              obj: { kind: "varRef", localId: tmp.id, type: srcType, loc: locOf(prop) },
+              shapeId: srcType.shapeId,
+              field: f.name,
+              type: f.type,
+              loc: locOf(prop),
+            },
+          })),
+          type: { kind: "record", shapeId: restShapeId },
+          loc: locOf(prop),
+        },
+        srcType.shapeId,
+      );
       if (!ts.isIdentifier(restTo)) {
         // `({ a, ...box.rest } = src)` — the rest packs identically and
         // lands through the property/element write machinery.

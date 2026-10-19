@@ -804,6 +804,7 @@ export function lowerRecordOvfCaptureHelper(
   // Every source declared field must flow into the keyed-write slot —
   // in DECLARATION order (insertion order below; declaredOrder omits
   // internal '%'-fields, which never enter the copy).
+  lowerer.keyOrder.observed.add(from.id);
   const orderedFields = from.declaredOrder
     ? from.declaredOrder.flatMap((n) => {
         const f = from.fields.find((x) => x.name === n);
@@ -1090,6 +1091,7 @@ export function lowerObjectAssignIndexShape(
     const from = lowerer.shapes.get(srcIr.shapeId);
     if (!from || from.tuple) return null;
     if (from.fields.some((f) => f.name.startsWith("%"))) return null;
+    lowerer.keyOrder.observed.add(from.id);
     const orderedFields = from.declaredOrder
       ? from.declaredOrder.flatMap((n) => {
           const f = from.fields.find((x) => x.name === n);

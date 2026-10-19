@@ -779,7 +779,11 @@ function keyOrderFinding(
   written: readonly string[],
   assignedNames: ReadonlySet<string>,
 ): { native: string; node: string; detail: "reordered" | "added-later" } | null {
-  const present = declared.filter((name) => written.includes(name));
+  // A shape whose table the witness pass re-chose (key-order-witness.ts)
+  // enumerates that table, not the checker's declaration order.
+  const table = witnessTable(lowerer, contextual);
+  const native = table ?? declared;
+  const present = native.filter((name) => written.includes(name) && declared.includes(name));
   const writtenKnown = written.filter((name) => declared.includes(name));
   if (present.join("\0") !== writtenKnown.join("\0") && writtenKnown.length >= 2) {
     return { native: present.join(", "), node: writtenKnown.join(", "), detail: "reordered" };
@@ -795,10 +799,19 @@ function keyOrderFinding(
     const prop = checker.getPropertyOfType(contextual, name);
     if (prop === undefined || (prop.flags & ts.SymbolFlags.Optional) === 0) continue;
     const nodeOrder = [...writtenKnown, name];
-    const nativeOrder = declared.filter((d) => nodeOrder.includes(d));
+    const nativeOrder = native.filter((d) => nodeOrder.includes(d));
+    if (table !== null && nativeOrder.join("\0") === nodeOrder.join("\0")) continue;
     return { native: nativeOrder.join(", "), node: nodeOrder.join(", "), detail: "added-later" };
   }
   return null;
+}
+
+/** The re-chosen enumeration table of the record shape a contextual type
+ * lowered to, or null when the witness pass kept today's table. */
+function witnessTable(lowerer: Lowerer, contextual: ts.Type): readonly string[] | null {
+  const mapped = safely(() => lowerer.mapTypeOf(contextual));
+  if (mapped?.kind !== "record" || !lowerer.keyOrder.changed.has(mapped.shapeId)) return null;
+  return lowerer.shapes.get(mapped.shapeId)?.declaredOrder ?? null;
 }
 
 function classDeclarationOfTypeNode(

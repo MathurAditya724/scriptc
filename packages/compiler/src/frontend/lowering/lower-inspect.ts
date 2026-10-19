@@ -10,6 +10,7 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrFunction,
   type IrStmt,
   type IrType,
   RUNTIME_ERROR_CLASSES,
@@ -942,6 +943,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       // Object.keys' declared order (SEMANTICS.md 36's stance). Retained
       // reachability can settle this shape after the helper is first
       // interned, so rebuild the field walk once metadata is final.
+      lowerer.keyOrder.observe(t);
       rebuildShapeOrderBody = (): void => {
         const current = lowerer.shapes.get(t.shapeId) ?? shape;
         const order = current.declaredOrder ?? current.fields.map((f) => f.name);
@@ -1292,7 +1294,10 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
     prependCycleGuard();
   }
 
-  const fn = {
+  // Typed as the IR function itself: the finalizer below replaces the
+  // body of the very object liftedFns holds (natively, a differently typed
+  // literal would be copied into the list).
+  const fn: IrFunction = {
     name,
     params: [
       { localId: "v.0", name: "v", type: t },
