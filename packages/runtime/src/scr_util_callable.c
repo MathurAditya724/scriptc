@@ -395,9 +395,9 @@ static ScrDyn *uc_callbackify_rejected(ScrClosure *closure, ScrDyn *const *args,
     ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
     scr_str_release(text);
     scr_error_set_code(e, "ERR_FALSY_VALUE_REJECTION");
+    scr_error_set_prop(e, "reason", 6, scr_dyn_retain(reason));
     err = scr_dyn_from_error(e);
     scr_error_release(e);
-    scr_dyn_obj_set(err, "reason", 6, scr_dyn_retain(reason));
   }
   uc_schedule_callback(cb, err, scr_dyn_retain(scr_dyn_undefined()), 1);
   scr_dyn_release(cb);
