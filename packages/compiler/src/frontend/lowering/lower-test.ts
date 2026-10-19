@@ -409,6 +409,12 @@ function lowerTestName(
   if (!nameNode) return strLit(fallback(), loc);
   const name = lowerer.lowerExprExpecting(nameNode, STRING);
   if (name.kind === "strLit") return name.value === "" ? strLit(fallback(), loc) : name;
+  // A name computed at run time: when the function's own name is not known
+  // at compile time (a function passed in as a parameter, say), the name
+  // is used as given, and an empty one stays empty (the limitations page
+  // notes it). Refusing here would refuse every helper that registers
+  // tests for its callers.
+  if (fnNode && staticFunctionName(lowerer, fnNode) === null) return name;
   const slot = lowerer.declareHiddenLocal("%testName", STRING);
   const value = varRef(slot.id, STRING, loc);
   return {

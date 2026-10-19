@@ -1,12 +1,21 @@
 // The (name?, options?, fn?) forms of test, it, describe and t.test, and
 // Node's default names: a missing or empty name takes the function's name,
-// or "<anonymous>". With both skip and todo, skip wins, in either order and
+// or "<anonymous>". A helper may register tests with computed names and
+// functions it receives as parameters. With both skip and todo, skip wins, in either order and
 // against the todo method twins.
 import { describe, it, test } from "node:test";
 
 function declaredTest(): void {}
 const boundArrow = (): void => {};
 const emptyName = process.argv.length > 99 ? "never" : "";
+
+// A helper that registers tests for its callers: the name is computed and
+// the function arrives as a parameter.
+function registerCase(label: string, body: () => void): void {
+  test(`case ${label}`, body);
+}
+registerCase("one", () => {});
+registerCase("two", declaredTest);
 
 test(function namedExpression() {});
 test(() => {});
