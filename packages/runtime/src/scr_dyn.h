@@ -1014,6 +1014,10 @@ ScrError *scr_error_from_dyn(const ScrDyn *d); /* scr_async_dyn.c (gated) */
  * the gated extraction reads/writes through these). */
 ScrError *scr_errdyn_err_of(const ScrDyn *d); /* +1 or NULL */
 void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
+/* Sets an own property on an error: its checked-dynamic node, which casts
+ * and util.inspect read. Moves value. */
+void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value);
+ScrDyn *scr_errdyn_view_of(const ScrError *e); /* borrowed or NULL */
 /* ToBoolean over the dyn kind (JS-exact); borrowed, never throws. */
 bool scr_dyn_truthy(const ScrDyn *d);
 /* JS String() over a dyn value (arrays join, [object Object], the error

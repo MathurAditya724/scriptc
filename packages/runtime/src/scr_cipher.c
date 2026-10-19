@@ -159,22 +159,20 @@ static void sc_throw_openssl(const char *packed, const char *reason, const char 
   snprintf(message, sizeof message, "error:%s:Provider routines::%s", packed, reason);
   ScrStr *text = scr_str_new(message, strlen(message));
   ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
-  ScrDyn *view = scr_dyn_from_error(e);
   ScrDyn *stack = scr_dyn_new_arr();
   scr_dyn_arr_push(stack, scr_dyn_new_str(text));
   scr_str_release(text);
-  scr_dyn_obj_set(view, "opensslErrorStack", 17, stack);
+  scr_error_set_prop(e, "opensslErrorStack", 17, stack);
   ScrStr *library = scr_str_new("Provider routines", 17);
-  scr_dyn_obj_set(view, "library", 7, scr_dyn_new_str(library));
+  scr_error_set_prop(e, "library", 7, scr_dyn_new_str(library));
   scr_str_release(library);
   ScrStr *reason_text = scr_str_new(reason, strlen(reason));
-  scr_dyn_obj_set(view, "reason", 6, scr_dyn_new_str(reason_text));
+  scr_error_set_prop(e, "reason", 6, scr_dyn_new_str(reason_text));
   scr_str_release(reason_text);
   scr_error_set_code(e, code);
   ScrStr *code_text = scr_str_new(code, strlen(code));
-  scr_dyn_obj_set(view, "code", 4, scr_dyn_new_str(code_text));
+  scr_error_set_prop(e, "code", 4, scr_dyn_new_str(code_text));
   scr_str_release(code_text);
-  scr_dyn_release(view);
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
