@@ -5556,6 +5556,10 @@ const char *scr_gen_tag(const ScrGen *g) {
   return g->tag ? g->tag : g->is_async ? "AsyncGenerator" : "Generator";
 }
 
+__attribute__((constructor)) static void scr_gen_tag_reader_init(void) {
+  scr_gen_tag_reader = scr_gen_tag;
+}
+
 void scr_gen_close(ScrGen *g) {
   scr_gen_slot_reset(&g->ret);
   scr_gen_resume_return(g);

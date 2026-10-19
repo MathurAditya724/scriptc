@@ -1678,6 +1678,8 @@ ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key) {
  * later, and it neither grows nor owns heap references. */
 static ScrDyn scr_dyn_small_ints[384];
 
+const char *(*scr_gen_tag_reader)(const ScrGen *g) = NULL;
+
 __attribute__((constructor)) static void scr_dyn_small_ints_init(void) {
   for (int i = 0; i < 384; i++) {
     scr_dyn_small_ints[i].rc = SIZE_MAX;
@@ -6228,7 +6230,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   if (d->kind == SCR_DYN_TYPED_REF) {
     if (scr_dyn_ref_is_error(d)) return scr_str_new("[object Error]", 14);
     if (scr_dyn_generator(d)) {
-      const char *gen_tag = scr_gen_tag(d->v.typed_ref.ptr);
+      const char *gen_tag = scr_gen_tag_reader(d->v.typed_ref.ptr);
       if (gen_tag[0] == '!') {
         static const char message[] = "Object.prototype.toString of this iterator is not supported yet";
         scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
