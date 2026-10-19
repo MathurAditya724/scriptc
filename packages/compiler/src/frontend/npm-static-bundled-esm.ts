@@ -252,7 +252,8 @@ export function lowerBundledEsmInits(
   const stable = (name: string): boolean => !duplicate.has(name) && !writes.has(name);
   const ownNames = (name: string): boolean => {
     const t = top.get(name);
-    const init = t !== undefined && ts.isVariableDeclaration(t.node) ? t.node.initializer : undefined;
+    const init =
+      t !== undefined && ts.isVariableDeclaration(t.node) ? t.node.initializer : undefined;
     return (
       init !== undefined &&
       stable(name) &&
@@ -308,8 +309,7 @@ export function lowerBundledEsmInits(
     )
       return { degrade: ESM_SHAPE_DEGRADE };
     const frame = factoryFrameUse(fn.body, false);
-    if (frame !== null)
-      return { degrade: `its bundled ES module initializer '${name}' ${frame}` };
+    if (frame !== null) return { degrade: `its bundled ES module initializer '${name}' ${frame}` };
     inits.set(name, { name, call, body: fn.body });
   }
   if (inits.size === 0) return null;
@@ -531,7 +531,12 @@ export function lowerBundledEsmInits(
     const read = new Set<string>();
     for (const [, value] of table.entries) for (const x of references(value)) read.add(x.text);
     for (let a = p.parent; a !== undefined && !ts.isSourceFile(a); a = a.parent) {
-      if (ts.isFunctionLike(a) || ts.isBlock(a) || ts.isClassDeclaration(a) || ts.isClassExpression(a)) {
+      if (
+        ts.isFunctionLike(a) ||
+        ts.isBlock(a) ||
+        ts.isClassDeclaration(a) ||
+        ts.isClassExpression(a)
+      ) {
         for (const n of declaredNames(a)) {
           if (read.has(n)) return { degrade: `its shipped JS ${why}` };
         }

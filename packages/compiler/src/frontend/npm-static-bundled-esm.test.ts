@@ -117,10 +117,7 @@ test("minified initializers sharing a var statement lower the same way", () => {
 });
 
 test.each([
-  [
-    "is asynchronous",
-    `var init_a = __esm({ async "a.ts"() { await 0; } });\ninit_a();`,
-  ],
+  ["is asynchronous", `var init_a = __esm({ async "a.ts"() { await 0; } });\ninit_a();`],
   [
     "is used other than as a statement call",
     `var init_a = __esm({ "a.ts"() {} });\nvar r = init_a();`,
@@ -145,5 +142,7 @@ test.each([
 
 test("files without __esm initializers and ES-module bundles are left alone", () => {
   expect(lower("exports.x = 1;\n")).toBeNull();
-  expect(lower(`${helpers}var init_a = __esm({ "a.ts"() {} });\ninit_a();\nexport {};\n`)).toBeNull();
+  expect(
+    lower(`${helpers}var init_a = __esm({ "a.ts"() {} });\ninit_a();\nexport {};\n`),
+  ).toBeNull();
 });
