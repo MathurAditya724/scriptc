@@ -2467,6 +2467,15 @@ export class Lowerer {
   /** Method adapter names are owned by class-method-values. Looking them
    * up must not scan and retain every unrelated lifted function. */
   readonly classMethodValueHelpers = new Set<string>();
+  /** Reflected class methods whose lambda is lowering right now (null
+   * until lowerLambda named it), with the closure it will produce: a
+   * method that reads itself as a value inside its own body
+   * (`o.create = K.create`) takes this closure instead of lowering the
+   * method again. */
+  readonly methodLambdasInProgress = new Map<
+    ts.Node,
+    { fnName: string; type: IrType; selfReads: number } | null
+  >();
   readonly classMethodValueSelections = new Map<
     string,
     import("./class-method-values.js").ClassMethodValueSelection
@@ -4672,7 +4681,11 @@ export class Lowerer {
     const addUndefined = (t: IrType): IrType => {
       if (t.kind === "union")
         return this.armTag(t.unionId, UNDEFINED_T) >= 0 ? t : (this.withUndefinedArmOf(t) ?? t);
-      if (t.kind === "void" || t.kind === "dyn" || t.kind === "generator") return t;
+      // A Date has no undefined-armed union (it is not a union arm kind):
+      // like a generator it keeps its type, and the site that would store
+      // undefined into it keeps its own diagnostic.
+      if (t.kind === "void" || t.kind === "dyn" || t.kind === "generator" || t.kind === "date")
+        return t;
       return this.withUndefinedArm(t);
     };
     const fieldName = (node: ts.PropertyAccessExpression): string => node.name.text;
@@ -8128,7 +8141,13 @@ export class Lowerer {
       if (part.isUnionType()) return ts.constituentTypes(part).every(visit);
       return false;
     };
-    return visit(t);
+    // A union typescript-go cannot describe is not proven an array.
+    try {
+      return visit(t);
+    } catch (e) {
+      if (ts.isUnreadableConstituentsPanic(e)) return false;
+      throw e;
+    }
   }
 
   /** The lowered static array/tuple value behind checkerAnyArray's

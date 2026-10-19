@@ -13,6 +13,7 @@ import {
 } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { typeKey } from "../type-mapper.js";
+import { functionCanReturnUndefined } from "../function-completion.js";
 import { PoisonError, dynFallbackType, neverTaintedJsType, newFnCtx } from "./lowerer.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { findGenericMethodOn, storedClassValueType, type ClassInfo } from "./lower-classes.js";
@@ -1582,6 +1583,16 @@ function implicitDeclaredReturn(lowerer: Lowerer, info: GenericFnInfo): IrType |
       return null;
     if (mapped !== null && promiseCarriesDyn(lowerer, mapped) && !hasExplicitJsDocReturn(info.decl))
       return null;
+    // A JavaScript body that can complete without returning yields
+    // undefined there, whatever its JSDoc claims (bcryptjs's `hash`
+    // returns a promise only when no callback is passed), exactly as
+    // declaredReturnType widens non-generic JavaScript functions.
+    if (
+      mapped !== null &&
+      isJsSourceFile(info.decl.getSourceFile()) &&
+      functionCanReturnUndefined(info.decl)
+    )
+      return lowerer.withUndefinedArmOf(mapped) ?? mapped;
     return mapped;
   } catch (e) {
     if (!(e instanceof PoisonError)) throw e;

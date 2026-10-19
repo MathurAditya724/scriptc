@@ -3642,11 +3642,26 @@ export function collectClassShapeInner(
     }
 
     if (escape.assigned && !inst) {
+      let earlyReads: Set<string> | null = null;
       for (const f of fieldOrder) {
         if (f.redeclared || escape.assigned.has(f.name) || deferredInitFields.has(f.name)) continue;
         if (paramProps.some((pp) => pp.name === f.name)) continue;
         const declared = fields.get(f.name);
-        if (declared?.kind !== "object" || lowerer.classes.get(declared.className)?.def.runtime)
+        // Records, arrays and strings are pointer slots that start empty
+        // too, but only take the checked slot when a method the
+        // constructor calls actually reads them: their other early
+        // exposures keep the plain slot.
+        if (
+          declared?.kind === "record" ||
+          declared?.kind === "array" ||
+          declared?.kind === "string"
+        ) {
+          earlyReads ??= constructorMethodReads(decl, base, ctor ?? undefined);
+          if (!earlyReads.has(f.name)) continue;
+        } else if (
+          declared?.kind !== "object" ||
+          lowerer.classes.get(declared.className)?.def.runtime
+        )
           continue;
         const armed = lowerer.withUndefinedArm(declared);
         if (armed === null || armed.kind !== "union") continue;
@@ -4876,6 +4891,58 @@ export function staticShadowBelow(info: ClassInfo, name: string): boolean {
       s.genericStatics?.has(name) === true ||
       staticShadowBelow(s, name),
   );
+}
+
+/** The `this` members read by the methods and accessors a constructor
+ * calls through `this` (transitively, over the class and its bases),
+ * outside nested functions. The constructor's own reads are not included:
+ * they run where the constructor's statements put them. */
+function constructorMethodReads(
+  decl: ts.ClassLikeDeclaration,
+  base: ClassInfo | null,
+  ctor: ts.ConstructorDeclaration | undefined,
+): Set<string> {
+  const reads = new Set<string>();
+  const visited = new Set<string>();
+  const bodies = (name: string): ts.Node[] => {
+    const out: ts.Node[] = [];
+    let owner: ts.ClassLikeDeclaration | undefined = decl;
+    for (let next = base; owner; owner = next?.decl ?? undefined, next = next?.base ?? null) {
+      for (const member of owner.members) {
+        if (
+          (ts.isMethodDeclaration(member) || ts.isAccessor(member)) &&
+          member.body &&
+          (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
+          member.name.text === name
+        )
+          out.push(member.body);
+      }
+    }
+    return out;
+  };
+  const enter = (name: string): void => {
+    if (visited.has(name)) return;
+    visited.add(name);
+    for (const body of bodies(name)) scan(body, true);
+  };
+  // Nested functions (callbacks handed elsewhere) are not followed: only
+  // the straight-line code of the constructor and the methods it calls.
+  const scan = (node: ts.Node, inMethod: boolean): void => {
+    ts.walkPreorder(node, (n) => {
+      if (n !== node && ts.isFunctionLike(n)) return "skip";
+      if (
+        ts.isPropertyAccessExpression(n) &&
+        n.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        (ts.isIdentifier(n.name) || ts.isPrivateIdentifier(n.name))
+      ) {
+        if (inMethod) reads.add(n.name.text);
+        enter(n.name.text);
+      }
+      return undefined;
+    });
+  };
+  if (ctor?.body) scan(ctor.body, false);
+  return reads;
 }
 
 /** The nearest GENERIC static declaration of `name` at/above `info` —
