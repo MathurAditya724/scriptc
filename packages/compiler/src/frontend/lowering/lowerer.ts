@@ -12104,6 +12104,15 @@ export class Lowerer {
     if (bi.module === "http" && bi.member === "METHODS") {
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     }
+    if ((bi.module === "http" || bi.module === "https") && bi.member === "globalAgent") {
+      return {
+        kind: "libCall",
+        fn: "http.globalAgent",
+        args: [{ kind: "boolLit", value: bi.module === "https", type: BOOL, loc }],
+        type: DYN,
+        loc,
+      };
+    }
     if (bi.module === "http" && bi.member === "STATUS_CODES") {
       return { kind: "libCall", fn: "http.statusCodes", args: [], type: DYN, loc };
     }
