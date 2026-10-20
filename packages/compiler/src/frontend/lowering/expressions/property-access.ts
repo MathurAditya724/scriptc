@@ -74,6 +74,7 @@ import {
 } from "../lower-exprs.js";
 import {
   cjsInFileExportGlobalOf,
+  cjsWholeExportMemberValueOf,
   isCjsExportsIdentifier,
   lowerCjsExportsObjectValue,
 } from "../cjs-exports-object.js";
@@ -291,6 +292,13 @@ export function lowerPropertyAccessExpr(
     if (expr.name.text === "exports") {
       const exportsValue = lowerCjsExportsObjectValue(lowerer, expr);
       if (exportsValue) return exportsValue;
+    }
+    // A member a module attached to its whole export value
+    // (`module.exports = format; module.exports.shout = shout`), read
+    // through a requirer's binding of that value.
+    {
+      const member = cjsWholeExportMemberValueOf(lowerer, expr);
+      if (member !== null) return lowerExpr(lowerer, member);
     }
     // tsc's `x_1.default` over a dependency whose whole export is one
     // value: that value (cjs-tsc-interop.ts).

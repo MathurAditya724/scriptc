@@ -533,6 +533,70 @@ export function cjsMemberAliasValueOf(lowerer: Lowerer, ref: ts.Identifier): ts.
   return memberAliasIn(lowerer, req.dep, key.text, 0);
 }
 
+/** The module a `const fmt = require("./lib")` binding names, when `access`
+ * reads a member through that binding: `fmt.name`. */
+function requiredModuleOfMemberAccess(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): ts.SourceFile | null {
+  if (access.questionDotToken !== undefined || !ts.isIdentifier(access.name)) return null;
+  if (!ts.isIdentifier(access.expression)) return null;
+  const sym = lowerer.checker.getSymbolAtLocation(access.expression);
+  const declaration = sym?.declarations.length === 1 ? sym.declarations[0] : undefined;
+  if (
+    declaration === undefined ||
+    !ts.isVariableDeclaration(declaration) ||
+    !ts.isIdentifier(declaration.name) ||
+    declaration.initializer === undefined ||
+    (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  return inlineProgramRequireOf(lowerer, declaration.initializer)?.dep ?? null;
+}
+
+/** `fmt.shout` where `const fmt = require("./lib")` names a module whose
+ * whole export is a value (`module.exports = format`) and which writes
+ * `module.exports.shout = …` (or `exports.shout = …` after rebinding
+ * `exports`) once: Node reads the member off that same value, so the read
+ * is the member's value. A call through the member passes the export as
+ * `this`, so calls resolve only for functions that ignore it. */
+export function cjsWholeExportMemberValueOf(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  call = false,
+): ts.Expression | null {
+  const parent = access.parent;
+  if (!call && parent !== undefined && ts.isCallExpression(parent) && parent.expression === access)
+    return null;
+  if (
+    parent !== undefined &&
+    ts.isBinaryExpression(parent) &&
+    parent.left === access &&
+    parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+  )
+    return null;
+  const dep = requiredModuleOfMemberAccess(lowerer, access);
+  if (dep === null) return null;
+  const name = (access.name as ts.Identifier).text;
+  if (call && !cjsExportCallIgnoresThis(lowerer, dep, name)) return null;
+  return memberAliasIn(lowerer, dep, name, 0);
+}
+
+/** True when `access` calls a member of a module's whole export value that
+ * may read `this` (Node binds it to the export). */
+export function cjsWholeExportMemberCallReadsThis(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): boolean {
+  const dep = requiredModuleOfMemberAccess(lowerer, access);
+  if (dep === null) return false;
+  const name = (access.name as ts.Identifier).text;
+  return (
+    memberAliasIn(lowerer, dep, name, 0) !== null && !cjsExportCallIgnoresThis(lowerer, dep, name)
+  );
+}
+
 function memberAliasIn(
   lowerer: Lowerer,
   sf: ts.SourceFile,

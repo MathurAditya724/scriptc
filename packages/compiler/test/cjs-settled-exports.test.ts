@@ -14,14 +14,14 @@ import { analyze } from "../src/index.js";
 const scratch = mkdtempSync(join(tmpdir(), "scriptc-cjs-settled-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-function fences(files: Record<string, string>): string[] {
+function fences(files: Record<string, string>, match = "by reference"): string[] {
   const dir = mkdtempSync(join(scratch, "case-"));
   writeFileSync(join(dir, "package.json"), '{ "private": true }\n');
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
   const { coverage } = analyze(join(dir, "main.cjs"));
   expect(coverage.preflightFailed).toBe(false);
   return [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
-    .filter((d) => d.message.includes("by reference"))
+    .filter((d) => d.message.includes(match))
     .map((d) => `${d.loc.file.slice(dir.length + 1)}: ${d.message.split(" (")[0]}`);
 }
 
@@ -72,4 +72,31 @@ module.exports = { total, label };
 `,
     }),
   ).toEqual([]);
+});
+
+test("a call through a whole export's member that may read 'this' fences", () => {
+  expect(
+    fences(
+      {
+        "main.cjs": `"use strict";
+const Counter = require("./counter.cjs");
+console.log(Counter.bump(2), Counter.n);
+`,
+        "counter.cjs": `"use strict";
+function Counter() {
+  this.n = 0;
+}
+function bump(by) {
+  this.n = (this.n || 0) + by;
+  return this.n;
+}
+module.exports = Counter;
+module.exports.bump = bump;
+`,
+      },
+      "may read 'this'",
+    ),
+  ).toEqual([
+    "main.cjs: calling 'bump' through a module's whole export when the function may read 'this'",
+  ]);
 });

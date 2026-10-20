@@ -35,7 +35,12 @@ import {
   lowerUncompiledRequireCall,
   lowerWithInlineRequireInit,
 } from "./cjs-inline-require.js";
-import { cjsExportCallIgnoresThis, cjsInFileExportGlobalOf } from "./cjs-exports-object.js";
+import {
+  cjsExportCallIgnoresThis,
+  cjsInFileExportGlobalOf,
+  cjsWholeExportMemberCallReadsThis,
+  cjsWholeExportMemberValueOf,
+} from "./cjs-exports-object.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
 import { lowerReadlineDisposeCall } from "./builtins/readline.js";
@@ -1337,6 +1342,27 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           ? mapped
           : F64;
       return nsUndefRead(lowerer, ambientRoot.text, expr, t);
+    }
+  }
+  // A function a module attached to its whole export value
+  // (`module.exports = format; module.exports.shout = shout`), called
+  // through a requirer's binding of that value: a call of the function.
+  if (ts.isPropertyAccessExpression(expr.expression)) {
+    const member = cjsWholeExportMemberValueOf(lowerer, expr.expression, true);
+    if (member !== null && ts.isIdentifier(member)) {
+      const sig = lowerer.fnSigOf(member);
+      if (sig) {
+        lowerer.noteEdge(sig.name);
+        const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
+        return { kind: "call", callee: sig.name, args, type: sig.returnType, loc };
+      }
+    }
+    if (member === null && cjsWholeExportMemberCallReadsThis(lowerer, expr.expression)) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `calling '${expr.expression.name.text}' through a module's whole export when the function may read 'this' (Node binds it to the export)`,
+      );
     }
   }
   // CommonJS namespace member calls (`lib.double(5)` where lib is
