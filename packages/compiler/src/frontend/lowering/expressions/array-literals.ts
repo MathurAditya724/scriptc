@@ -30,6 +30,7 @@ import { generatorDrain } from "../iterator-adapters.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { varRef } from "../../../ir/build.js";
 import { arrayValueStore } from "../array-values.js";
+import { classGeneratorIterable } from "../class-iterables.js";
 
 /** JavaScript: whether `expr` is or holds an existing checked-dynamic
  * object — a binding stored as a dyn value whose checker type is an
@@ -82,7 +83,7 @@ export function lowerArrayLiteral(
   // structurally equal checker types. Their native class ABIs still differ.
   if (
     !expected &&
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     mapped?.kind === "array" &&
     mapped.elem.kind === "classval"
   )
@@ -201,7 +202,7 @@ export function lowerArrayLiteral(
   // keep the checked-dynamic fallback below.
   if (
     lowerer.implicitParamTypes !== null &&
-    npmStaticPackageOfPath(expr.getSourceFile().fileName) !== null &&
+    npmStaticPackageOfPath(ts.getSourceFileOfNode(expr).fileName) !== null &&
     (mapped === null ||
       mapped.kind === "dyn" ||
       (mapped.kind === "array" && mapped.elem.kind === "dyn")) &&
@@ -221,7 +222,7 @@ export function lowerArrayLiteral(
       mapped = arrayOf(first.type);
     }
   }
-  if (!expected && isJsSourceFile(expr.getSourceFile()) && mapped?.kind === "array") {
+  if (!expected && isJsSourceFile(ts.getSourceFileOfNode(expr)) && mapped?.kind === "array") {
     const elem = mapped.elem;
     const arms = elem.kind === "union" ? lowerer.unions.get(elem.unionId)?.arms : [elem];
     if (arms?.length && arms.every((arm) => arm.kind === "classval")) mapped = DYN;
@@ -233,7 +234,7 @@ export function lowerArrayLiteral(
   }
   if (
     !expected &&
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     expr.elements.nodes.some(
       (element) =>
         ts.isSpreadElement(element) &&
@@ -246,7 +247,7 @@ export function lowerArrayLiteral(
   // only in a checked-dynamic array: a static element type would copy it.
   if (
     !expected &&
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     mapped?.kind !== "dyn" &&
     expr.elements.nodes.some(
       (element) => !ts.isSpreadElement(element) && jsHoldsDynObject(lowerer, element),
@@ -268,7 +269,7 @@ export function lowerArrayLiteral(
   // real keys. A structural union can otherwise drop descriptor fields.
   if (
     !expected &&
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     mapped?.kind === "array" &&
     mapped.elem.kind === "union" &&
     expr.elements.nodes.some(ts.isObjectLiteralExpression)
@@ -315,7 +316,7 @@ export function lowerArrayLiteral(
     // to DYN wholesale now (mapType's dyn-element array rule), so the
     // literal IS the dyn array.
     if (
-      isJsSourceFile(expr.getSourceFile()) ||
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
       mapped?.kind === "dyn" ||
       lowerer.checkerAnyArray(expr)
     ) {
@@ -431,6 +432,9 @@ export function lowerArrayLiteral(
           loc: locOf(el),
         };
       }
+      // `[...obj]` over a class whose [Symbol.iterator] is a generator
+      // method spreads the generator that method returns.
+      src = classGeneratorIterable(lowerer, src) ?? src;
       // `[...it]` over a generator (or an iterator adapted into one):
       // drain it once, in order, into a fresh element array.
       if (src.type.kind === "generator") {

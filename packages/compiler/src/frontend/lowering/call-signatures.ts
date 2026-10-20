@@ -1,3 +1,8 @@
+import {
+  typedArgumentsCandidate,
+  typedArgumentsShapes,
+  typedArgumentsTarget,
+} from "./typed-arguments.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
@@ -15,6 +20,7 @@ import {
 import { isJsSourceFile, isNodeEsmFile } from "../program.js";
 import {
   genResultRecord,
+  restTupleParamTypes,
   isAnyArrayType,
   isUnitOnlyTsType,
   jsOpenObjectType,
@@ -27,6 +33,7 @@ import { isStreamUndefCallExpr } from "./lower-server.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
 import { declSymbolOf } from "./lower-modules.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
+import { restPackingAdapterFits } from "./coercions/function-adapters.js";
 import { implicitMonoFile, implicitAnyParamSymbolsOf } from "./generic-functions.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
@@ -46,12 +53,19 @@ export type ParamMode = "required" | "omittable" | "rest" | "dynRest" | "argumen
  * otherwise. `bodyType` is present exactly for DEFAULTED program params:
  * the plain T the body sees after the prologue applies the default (see
  * declareParams). `callDefault` is the compile-time default value for a
- * table-backed builtin's omittable slot. */
+ * table-backed builtin's omittable slot. `entryNarrow` marks a dyn ABI slot
+ * inherited from a JavaScript base method whose TypeScript override declares
+ * a typed parameter: the prologue narrows the checked value to that type. */
 export interface ParamShape {
   type: IrType;
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
+  entryNarrow?: IrType;
+  /** One flattened position of a fixed-tuple rest parameter
+   * (restTupleShapes): the declaration's last parameter owns every shape
+   * from its index on, and the body binds the tuple (declareParams). */
+  restTuple?: true;
 }
 
 export interface FnSig {
@@ -134,7 +148,9 @@ export function documentedParameter(param: ts.ParameterDeclaration): boolean {
   return (
     param.type !== undefined ||
     /@(?:param|type)\b/.test(
-      param.getSourceFile().text.slice(param.parent?.pos ?? param.pos, param.getStart()),
+      ts
+        .getSourceFileOfNode(param)
+        .text.slice(param.parent?.pos ?? param.pos, ts.tokenStartOfNode(param)),
     )
   );
 }
@@ -144,7 +160,7 @@ export function checkedJsDocumentedParameter(
   lowerer: Lowerer,
   param: ts.ParameterDeclaration,
 ): boolean {
-  return lowerer.checkedJsFile(param.getSourceFile()) && documentedParameter(param);
+  return lowerer.checkedJsFile(ts.getSourceFileOfNode(param)) && documentedParameter(param);
 }
 
 /** One parameter's ParamShape — the shared signature-shaped collection
@@ -166,10 +182,10 @@ export function checkedJsDocumentedParameter(
 export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): ParamShape {
   const stage = lowerer.stageSourceType(param.name);
   if (stage) return { type: stage, mode: "required" };
-  if (isJsSourceFile(param.getSourceFile()) && ts.isSetAccessorDeclaration(param.parent))
+  if (isJsSourceFile(ts.getSourceFileOfNode(param)) && ts.isSetAccessorDeclaration(param.parent))
     return { type: DYN, mode: "required" };
   if (
-    isJsSourceFile(param.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     ts.isConstructorDeclaration(param.parent) &&
     !param.dotDotDotToken &&
     !checkedJsDocumentedParameter(lowerer, param)
@@ -193,12 +209,14 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     lowerer.isStdlibGlobal(construction.expression, "Promise");
   if (
     !nativeExecutor &&
-    isJsSourceFile(param.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     !param.type &&
     !param.dotDotDotToken &&
     !ts.isSetAccessorDeclaration(param.parent) &&
     !/@(?:param|type)\b/.test(
-      param.getSourceFile().text.slice(param.parent?.pos ?? param.pos, param.getStart()),
+      ts
+        .getSourceFileOfNode(param)
+        .text.slice(param.parent?.pos ?? param.pos, ts.tokenStartOfNode(param)),
     )
   ) {
     return param.initializer
@@ -207,10 +225,12 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   }
   if (
     param.initializer &&
-    isJsSourceFile(param.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     !param.type &&
     !/@(?:param|type)\b/.test(
-      param.getSourceFile().text.slice(param.parent?.pos ?? param.pos, param.getStart()),
+      ts
+        .getSourceFileOfNode(param)
+        .text.slice(param.parent?.pos ?? param.pos, ts.tokenStartOfNode(param)),
     )
   ) {
     return { type: DYN, mode: "omittable", bodyType: DYN };
@@ -219,10 +239,12 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   // contract. Consume the actual iterable, including surplus elements.
   if (
     ts.isArrayBindingPattern(param.name) &&
-    isJsSourceFile(param.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     !param.type &&
     !/@(?:param|type)\b/.test(
-      param.getSourceFile().text.slice(param.parent?.pos ?? param.pos, param.getStart()),
+      ts
+        .getSourceFileOfNode(param)
+        .text.slice(param.parent?.pos ?? param.pos, ts.tokenStartOfNode(param)),
     )
   ) {
     if (param.dotDotDotToken) return { type: DYN, mode: "dynRest" };
@@ -284,7 +306,7 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     // ARRAY param the dyn call thunk fills with the call's surplus
     // arguments; the binding is that array (dynRest — funcType marks
     // `rest`, and the value only ever calls through the boxed thunk).
-    if (isJsSourceFile(param.getSourceFile())) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(param))) {
       const restMapped = lowerer.mapTypeOf(lowerer.typeOf(param.name));
 
       // Unmapped JS rest parameters use the native variadic checked-value ABI.
@@ -311,7 +333,7 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     // including typed arrays passed through checked callbacks. Extracting
     // a native array here would copy it and discard element writes.
     if (
-      isJsSourceFile(param.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(param)) &&
       !param.type &&
       (raw.kind === "array" ||
         (raw.kind === "union" &&
@@ -323,7 +345,7 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   }
   let type = lowerer.runtimeOptionalBindingType(param.name, lowerer.irTypeOf(param.name));
   const body = param.parent?.body;
-  if (isJsSourceFile(param.getSourceFile()) && body && type.kind !== "dyn") {
+  if (isJsSourceFile(ts.getSourceFileOfNode(param)) && body && type.kind !== "dyn") {
     const symbol = lowerer.checker.getSymbolAtLocation(param.name);
     let acceptsUndefined = false;
     ts.walkPreorder(body, (node) => {
@@ -369,6 +391,28 @@ export function isThisParameter(param: ts.ParameterDeclaration): boolean {
   return ts.isIdentifier(param.name) && param.name.text === "this";
 }
 
+/** A TypeScript rest parameter bound to a name whose type is a fixed tuple
+ * (`...args: [A, B]`, `...args: A` with A bound to a tuple, `...args:
+ * Parameters<F>` with F bound): one required shape per position. Call
+ * sites and function values see the equivalent fixed signature; the body
+ * rebuilds the tuple (declareParams) unless it only forwards it. Null for
+ * every other parameter. */
+export function restTupleShapes(
+  lowerer: Lowerer,
+  param: ts.ParameterDeclaration,
+  tsType?: ts.Type,
+): ParamShape[] | null {
+  if (
+    param.dotDotDotToken === undefined ||
+    !ts.isIdentifier(param.name) ||
+    isJsSourceFile(ts.getSourceFileOfNode(param))
+  ) {
+    return null;
+  }
+  const elems = restTupleParamTypes(tsType ?? lowerer.typeOf(param.name), lowerer.typeCtx);
+  return elems ? elems.map((type) => ({ type, mode: "required", restTuple: true })) : null;
+}
+
 /** ParamShapes for a whole parameter list. */
 export function paramShapes(
   lowerer: Lowerer,
@@ -376,21 +420,48 @@ export function paramShapes(
   signature?: ts.Signature,
   blameOf?: (param: ts.ParameterDeclaration, index: number) => ts.Node,
 ): ParamShape[] {
-  if (!signature)
-    return params.filter((p) => !isThisParameter(p)).map((param) => lowerer.paramShape(param));
+  const out: ParamShape[] = [];
+  if (!signature) {
+    for (const param of params) {
+      if (isThisParameter(param)) continue;
+      const flattened = restTupleShapes(lowerer, param);
+      if (flattened) out.push(...flattened);
+      else out.push(lowerer.paramShape(param));
+    }
+    return out;
+  }
   const symbols = signature.getParameters();
-  return params.map((declParam, i) => {
+  const shapeAt = (declParam: ts.ParameterDeclaration, i: number): ParamShape => {
     const stage = lowerer.stageSourceType(declParam.name);
     if (stage) return { type: stage, mode: "required" as const };
     const symbol = symbols[i];
     const tsType = symbol
       ? lowerer.checker.getTypeOfSymbol(symbol)
       : lowerer.typeOf(declParam.name);
+    // A call-site instantiation whose concrete argument type does not map
+    // is that argument's blocker: name it there, with its concrete type,
+    // rather than as the declaration's unbound type parameter.
+    if (
+      blameOf !== undefined &&
+      !isJsSourceFile(ts.getSourceFileOfNode(declParam)) &&
+      (tsType.flags & ts.TypeFlags.Any) === 0 &&
+      declParam.type !== undefined &&
+      mentionsTypeParameter(lowerer, lowerer.checker.getTypeFromTypeNode(declParam.type)) &&
+      lowerer.mapTypeOf(tsType) === null
+    ) {
+      lowerer.badType(blameOf(declParam, i), tsType);
+    }
     let mapped = jsOpenObjectType(
       declParam,
       lowerer.runtimeOptionalBindingType(
         declParam.name,
-        lowerer.mapTypeOf(tsType) ?? lowerer.irTypeOf(declParam.name),
+        lowerer.mapTypeOf(tsType) ??
+          // A TypeScript instantiation at `any` (a type argument inferred
+          // from an untyped value) takes the checked-dynamic slot.
+          ((tsType.flags & ts.TypeFlags.Any) !== 0 &&
+          !isJsSourceFile(ts.getSourceFileOfNode(declParam))
+            ? DYN
+            : lowerer.irTypeOf(declParam.name)),
       ),
       lowerer.shapes,
       lowerer.unions,
@@ -424,7 +495,32 @@ export function paramShapes(
       );
     }
     return { type: mapped, mode: declParam.questionToken ? "omittable" : "required" };
+  };
+  params.forEach((declParam, i) => {
+    const symbol = symbols[i];
+    const flattened = restTupleShapes(
+      lowerer,
+      declParam,
+      symbol ? lowerer.checker.getTypeOfSymbol(symbol) : undefined,
+    );
+    if (flattened) out.push(...flattened);
+    else out.push(shapeAt(declParam, i));
   });
+  return out;
+}
+
+/** A declared type that is (or is a union over) a bare type parameter
+ * or an instantiation of a generic alias/interface over type arguments. */
+function mentionsTypeParameter(lowerer: Lowerer, t: ts.Type): boolean {
+  if (t.flags & ts.TypeFlags.TypeParameter) return true;
+  const mentions = (part: ts.Type): boolean => mentionsTypeParameter(lowerer, part);
+  if (t.isUnionType()) return ts.constituentTypes(t).some(mentions);
+  if (t.getAliasTypeArguments().some(mentions)) return true;
+  return (
+    (t.flags & ts.TypeFlags.Object) !== 0 &&
+    ((t as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !== 0 &&
+    lowerer.checker.getTypeArguments(t as ts.TypeReference).some(mentions)
+  );
 }
 
 /** A default expression may itself yield undefined. Keep that arm in the
@@ -522,6 +618,21 @@ export function requireExactArityValue(
   // optional/defaulted params spell their `T | undefined` slots (mapType's
   // completed-signature contract), so omitted trailing args complete with
   // the undefined arm like any direct call.
+  // A nested function declaration whose only non-required parameter is a
+  // typed rest: its value carries the typed-rest ABI its own type spells,
+  // and every use converts it at its slot (same signature, or the rest
+  // packing adapter for fixed parameters).
+  if (
+    contextual === null &&
+    ts.isFunctionDeclaration(blame) &&
+    blame.name !== undefined &&
+    funcType.kind === "func" &&
+    funcType.restAbi === "typed" &&
+    shapes.every((s) => s.mode === "required" || s.mode === "rest")
+  ) {
+    const own = lowerer.mapTypeOf(lowerer.typeOf(blame.name));
+    if (own && typeEquals(own, funcType)) return;
+  }
   const target = contextual ? lowerer.checker.getContextualType(contextual) : undefined;
   const mapped = target
     ? lowerer.mapTypeOf(target)
@@ -566,7 +677,7 @@ export function requireExactArityValue(
     const ownType = lowerer.typeOf(contextual);
     mappedFn =
       lowerer.mapTypeOf(ownType) ??
-      (isJsSourceFile(contextual.getSourceFile())
+      (isJsSourceFile(ts.getSourceFileOfNode(contextual))
         ? dynFallbackType(lowerer, contextual, ownType)
         : null);
   }
@@ -582,6 +693,16 @@ export function requireExactArityValue(
   ) {
     return;
   }
+  // A typed-rest function in a slot with fixed parameters (`log(...m:
+  // string[])` into `(m: string) => void`): the slot coercion's packing
+  // adapter collects the slot's arguments into the rest array.
+  if (
+    mappedFn?.kind === "func" &&
+    funcType.kind === "func" &&
+    restPackingAdapterFits(lowerer, funcType, mappedFn)
+  ) {
+    return;
+  }
   // An uncontextualized npm-static implementation function can still
   // have a declaration-backed completed ABI: the package's .d.ts
   // projection supplies the body-facing parameter/return types while
@@ -594,7 +715,7 @@ export function requireExactArityValue(
     target === undefined &&
     contextual !== null &&
     (ts.isArrowFunction(contextual) || ts.isFunctionExpression(contextual)) &&
-    npmStaticPackageOfPath(contextual.getSourceFile().fileName) !== null
+    npmStaticPackageOfPath(ts.getSourceFileOfNode(contextual).fileName) !== null
   ) {
     return;
   }
@@ -659,7 +780,7 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
   // routes generic declarations (direct calls, namespace/CJS member
   // calls, value references) resolves it through genericFnsBySymbol
   // unchanged.
-  if (implicitMonoFile(decl.getSourceFile()) && !isAsync && !isGenerator) {
+  if (implicitMonoFile(ts.getSourceFileOfNode(decl)) && !isAsync && !isGenerator) {
     const implicit = implicitAnyParamSymbolsOf(lowerer, decl);
     if (implicit) {
       const nameText = decl.name?.text ?? "%default";
@@ -668,7 +789,7 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
       lowerer.genericFnsBySymbol.set(symbol, {
         decl,
         baseName: nameText,
-        qualifiedName: lowerer.qualify(decl.getSourceFile(), nsPathPrefix(decl) + nameText),
+        qualifiedName: lowerer.qualify(ts.getSourceFileOfNode(decl), nsPathPrefix(decl) + nameText),
         typeParams: [],
         instances: new Map(),
         implicitParams: implicit,
@@ -703,7 +824,7 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
     // collide. The anonymous default export takes the synthetic
     // "%default" spelling ('%' cannot appear in a user identifier).
     name: lowerer.qualify(
-      decl.getSourceFile(),
+      ts.getSourceFileOfNode(decl),
       nsPathPrefix(decl) + (decl.name?.text ?? "%default"),
     ),
     params,
@@ -732,7 +853,7 @@ function appendArgumentsParameter(
       ts.isFunctionDeclaration(node) ||
       ts.isMethodDeclaration(node)
     ) ||
-    !isJsSourceFile(node.getSourceFile()) ||
+    !isJsSourceFile(ts.getSourceFileOfNode(node)) ||
     !bodyReadsArguments(node)
   )
     return;
@@ -740,7 +861,11 @@ function appendArgumentsParameter(
     const classMethod =
       ts.isMethodDeclaration(node) &&
       (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent));
-    if (!classMethod && !isNodeEsmFile(node.getSourceFile(), lowerer.program)) {
+    if (
+      !classMethod &&
+      !isNodeEsmFile(ts.getSourceFileOfNode(node), lowerer.program) &&
+      !unmappedArguments(node)
+    ) {
       lowerer.unsupported(
         "SC1090",
         node,
@@ -749,6 +874,35 @@ function appendArgumentsParameter(
     }
   }
   shapes.push({ type: DYN, mode });
+}
+
+/** Whether `arguments` inside `node` is Node's unmapped object: strict code
+ * (a 'use strict' prologue on the file or an enclosing function, or a class
+ * body) or a non-simple parameter list (defaults, rest, destructuring). Its
+ * elements then never alias the parameters, which is the ES module case. */
+function unmappedArguments(node: ts.SignatureDeclaration): boolean {
+  if (
+    node.parameters.nodes.some(
+      (p) =>
+        p.initializer !== undefined || p.dotDotDotToken !== undefined || !ts.isIdentifier(p.name),
+    )
+  )
+    return true;
+  const useStrict = (statements: readonly ts.Statement[]): boolean => {
+    for (const statement of statements) {
+      if (!ts.isExpressionStatement(statement) || !ts.isStringLiteral(statement.expression))
+        return false;
+      if (statement.expression.text === "use strict") return true;
+    }
+    return false;
+  };
+  for (let n: ts.Node | undefined = node; n; n = n.parent) {
+    if (ts.isClassDeclaration(n) || ts.isClassExpression(n)) return true;
+    if (ts.isFunctionLike(n) && n.body && ts.isBlock(n.body) && useStrict(n.body.statements.nodes))
+      return true;
+    if (ts.isSourceFile(n)) return useStrict(n.statements.nodes);
+  }
+  return false;
 }
 
 /** Signature checks + param shapes + IR func type for any lambda-like
@@ -766,11 +920,21 @@ export function lambdaSignature(
     | ts.SetAccessorDeclaration,
 ): { shapes: ParamShape[]; funcType: IrType & { kind: "func" } } {
   if (!node.body) lowerer.unsupported("SC1090", node, "function overload signatures");
+  // A parameterless function expression forwarding its `arguments`,
+  // asserted to a fixed signature: that signature is its ABI.
+  if (typedArgumentsCandidate(node) && !node.typeParameters?.nodes.length) {
+    const target = typedArgumentsTarget(lowerer, node);
+    if (target) {
+      const shapes = typedArgumentsShapes(target);
+      lowerer.typedArgumentsLambdas.add(node);
+      return { shapes, funcType: funcTypeFromParamShapes(shapes, target.ret) };
+    }
+  }
   // A JS replacement of a native stream's write method receives the
   // actual call tuple, including overloads and omitted arguments. Node's
   // contextual overload signature cannot define this closure's ABI.
   if (
-    isJsSourceFile(node.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
     !node.type &&
     (ts.isFunctionExpression(node) || ts.isArrowFunction(node)) &&
     node.parameters.nodes.every(
@@ -888,7 +1052,7 @@ export function lambdaSignature(
       : [];
     const ctxDecl = ctxSigs.length === 1 ? ctxSigs[0]!.declaration : undefined;
     const ctxRetRaw =
-      ctxDecl && !ctxDecl.getSourceFile().isDeclarationFile
+      ctxDecl && !ts.getSourceFileOfNode(ctxDecl).isDeclarationFile
         ? lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!))
         : null;
     // An async lambda always produces a promise, so a slot returning a
@@ -910,7 +1074,7 @@ export function lambdaSignature(
     // must match the slot's ABI exactly.
     const dynVariadicSlot =
       ctxRet?.kind === "dyn" &&
-      !isJsSourceFile(node.getSourceFile()) &&
+      !isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       shapes.some((shape) => shape.mode === "dynRest");
     if (
       dynVariadicSlot ||

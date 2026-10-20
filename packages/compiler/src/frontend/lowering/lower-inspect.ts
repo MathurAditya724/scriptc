@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, boolLit, helperLoc, numLit, strLit, varRef } from "../../ir/build.js";
+import { builtinClassDynValueOf, builtinClassKindOf } from "./builtins/builtin-class-dyn.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import * as ts from "../ts7/adapter.js";
@@ -21,6 +22,7 @@ import {
   type SrcLoc,
   canConvertToDyn,
   canDynCheckTo,
+  CLASS_FIELD_ATTRIBUTES_PREFIX,
   classDynViewSupported,
   DYN_CLASS_PROPERTIES,
   isClassOwnEnumerableFieldName,
@@ -491,7 +493,7 @@ function classInspectsThroughView(lowerer: Lowerer, info: ClassInfo | undefined)
   if (info.subclasses.length > 0) return true;
   return (
     info.decl != null &&
-    isJsSourceFile(info.decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(info.decl)) &&
     classDynViewSupported(
       info.def.fields,
       (id) => lowerer.shapes.get(id),
@@ -500,12 +502,16 @@ function classInspectsThroughView(lowerer: Lowerer, info: ClassInfo | undefined)
   );
 }
 
-/** Whether a class holds properties added outside its declared layout, which
- * only its checked-dynamic view can list. Decided after lowering, when the
+/** Whether a class holds properties added outside its declared layout, or
+ * fields Object.defineProperty can make non-enumerable, which only its
+ * checked-dynamic view lists as Node does. Decided after lowering, when the
  * class has its final fields. */
 function classInspectsAddedProperties(lowerer: Lowerer, info: ClassInfo): boolean {
   return (
-    info.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES) &&
+    info.def.fields.some(
+      (field) =>
+        field.name === DYN_CLASS_PROPERTIES || field.name.startsWith(CLASS_FIELD_ATTRIBUTES_PREFIX),
+    ) &&
     classDynViewSupported(
       info.def.fields,
       (id) => lowerer.shapes.get(id),
@@ -2011,6 +2017,47 @@ function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
   return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(depth, loc), loc);
 }
 
+/** %d and %i over a checked-dynamic argument, as Node's formatWithOptions
+ * reads it: a bigint prints as `${n}n`, a symbol as NaN, and any other
+ * value as `number` (Number(arg) for %d, parseInt(String(arg)) for %i)
+ * formatted. The argument evaluates once. */
+function formatDynInteger(
+  lowerer: Lowerer,
+  value: IrExpr,
+  number: (held: IrExpr) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const held = lowerer.declareHiddenLocal("%formatArg", DYN);
+  const ref = (): IrExpr => varRef(held.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: held.id, init: value, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "bigint", value: ref(), type: BOOL, loc },
+      then: {
+        kind: "strConcat",
+        left: { kind: "libCall", fn: "dyn.toStringCoerce", args: [ref()], type: STRING, loc },
+        right: strLit("n", loc),
+        type: STRING,
+        loc,
+      },
+      else_: {
+        kind: "ternary",
+        cond: { kind: "dynTest", test: "symbol", value: ref(), type: BOOL, loc },
+        then: strLit("NaN", loc),
+        else_: { kind: "libCall", fn: "insp.f64", args: [number(ref())], type: STRING, loc },
+        type: STRING,
+        loc,
+      },
+      type: STRING,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
+}
+
 /** %d and %i over the argument types Node formats without a number
  * conversion: a bigint prints as `${n}n` (formatBigInt) and a symbol as NaN;
  * null is Number(null) (0) under %d and parseInt("null") (NaN) under %i, and
@@ -2141,19 +2188,20 @@ export function lowerFormatCall(
           };
         }
         // A checked-dynamic argument (`console.log('... actual %d.',
-        // context.actual)` — test/common's exit report): VALIDATE it as a
-        // number (dynCheck) and format. A non-number dyn value throws the
-        // catchable TypeError where Node would print its ToNumber (NaN
-        // for objects) — it throws instead of returning a wrong result
-        // (SEMANTICS.md).
+        // context.actual)` — test/common's exit report): Number(arg).
         if (value.type.kind === "dyn") {
-          return {
-            kind: "libCall",
-            fn: "insp.f64",
-            args: [{ kind: "dynCheck", value, type: F64, loc }],
-            type: STRING,
+          return formatDynInteger(
+            lowerer,
+            value,
+            (held) => ({
+              kind: "libCall",
+              fn: "dyn.numberConstructor",
+              args: [held],
+              type: F64,
+              loc,
+            }),
             loc,
-          };
+          );
         }
         lowerer.noLowering(
           `util.format %d of '${lowerer.fmt(value.type)}' values`,
@@ -2184,6 +2232,24 @@ export function lowerFormatCall(
             loc,
           };
           return { kind: "libCall", fn: "insp.f64", args: [parsed], type: STRING, loc };
+        }
+        // parseInt(String(arg)) over a checked-dynamic argument.
+        if (value.type.kind === "dyn") {
+          return formatDynInteger(
+            lowerer,
+            value,
+            (held) => ({
+              kind: "libCall",
+              fn: "num.parseInt",
+              args: [
+                { kind: "libCall", fn: "dyn.toStringCoerce", args: [held], type: STRING, loc },
+                numLit(0, loc),
+              ],
+              type: F64,
+              loc,
+            }),
+            loc,
+          );
         }
         lowerer.noLowering(`util.format %i of '${lowerer.fmt(value.type)}' values`, node);
         break;
@@ -2544,8 +2610,15 @@ function lowerUtilCallableCall(
   const arity = member === "deprecate" ? 4 : member === "callbackify" ? 1 : 2;
   // Program classes keep static prototypes: there is no function object
   // whose prototype chain the runtime could relink or wrap.
+  // EventEmitter and the stream classes are the exception as superCtor:
+  // the runtime has untyped constructors for them (builtin-class-dyn.ts).
   const classArgs = member === "inherits" ? 2 : member === "deprecate" ? 1 : 0;
-  for (const arg of expr.arguments.nodes.slice(0, classArgs)) {
+  const builtinBase =
+    member === "inherits" && expr.arguments.nodes[1] !== undefined
+      ? builtinClassKindOf(lowerer, expr.arguments.nodes[1])
+      : null;
+  for (const [index, arg] of expr.arguments.nodes.slice(0, classArgs).entries()) {
+    if (index === 1 && builtinBase !== null) continue;
     if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "classval")
       lowerer.noLowering(
         `util.${member} over a class constructor`,
@@ -2564,9 +2637,12 @@ function lowerUtilCallableCall(
   const stmts: IrStmt[] = [];
   const args: IrExpr[] = [];
   for (let i = 0; i < arity; i++) {
-    const input: IrExpr = expr.arguments.nodes[i]
-      ? lowerer.lowerExprExpecting(expr.arguments.nodes[i]!, DYN)
-      : dynUndefinedExpr(loc);
+    const node = expr.arguments.nodes[i];
+    const input: IrExpr = !node
+      ? dynUndefinedExpr(loc)
+      : i === 1 && builtinBase !== null
+        ? (builtinClassDynValueOf(lowerer, node) ?? lowerer.lowerExprExpecting(node, DYN))
+        : lowerer.lowerExprExpecting(node, DYN);
     const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
     stmts.push({ kind: "varDecl", localId: saved.id, init: input, loc });
     args.push(varRef(saved.id, DYN, loc));
@@ -2584,7 +2660,7 @@ function lowerUtilCallableCall(
  * a statically typed callback parameter cannot receive a value its type
  * excludes. Untyped (JavaScript or unknown) slots keep the wrapper dyn. */
 function callbackifyErrorExcludesNull(lowerer: Lowerer, expr: ts.CallExpression): boolean {
-  if (isJsSourceFile(expr.getSourceFile())) return false;
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
   const checker = lowerer.checker;
   const slot = checker.getContextualType(expr) ?? lowerer.typeOf(expr);
   const wrapper = checker.getCallSignatures(slot)[0];
@@ -2690,7 +2766,7 @@ function lowerGetCallSitesCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (expr.arguments.nodes.length !== 0) return null;
-  if (!isJsSourceFile(expr.getSourceFile())) return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const frame = (): IrExpr => {
     const field = (name: string, value: IrExpr): { key: IrExpr; value: IrExpr } => ({
       key: { kind: "strLit", value: name, type: STRING, loc },
@@ -2702,7 +2778,7 @@ function lowerGetCallSitesCall(
         field("functionName", { kind: "strLit", value: "", type: STRING, loc }),
         field("scriptName", {
           kind: "strLit",
-          value: expr.getSourceFile().fileName,
+          value: ts.getSourceFileOfNode(expr).fileName,
           type: STRING,
           loc,
         }),

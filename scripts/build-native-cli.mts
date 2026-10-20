@@ -5,7 +5,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compile } from "../packages/compiler/src/index.js";
 import { NATIVE_TARGETS, nativeCodegenTarget } from "../packages/compiler/src/backend/targets.js";
-import { ts7Executable } from "../packages/compiler/src/frontend/ts7/rpc-api.js";
+import { tsgoExecutable } from "../packages/compiler/src/frontend/ts7/rpc-api.js";
 import { stageNativeCliAssets } from "./native-cli-assets.mjs";
 import type { NativeToolchainManifest } from "../packages/compiler/src/native/toolchain.js";
 
@@ -108,7 +108,7 @@ const assets = stageNativeCliAssets({
   repository: root,
   output,
   target,
-  ts7: ts7Executable(),
+  ts7: tsgoExecutable(),
   compilerVersion,
 });
 // A cross-libc seed may use Zig on the build host. The installed compiler

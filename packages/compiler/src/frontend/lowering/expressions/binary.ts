@@ -1,5 +1,6 @@
 /* Binary operators: arithmetic, comparisons and equality, logical and nullish pairs, and string conversion for concatenation. */
 import * as ts from "../../ts7/adapter.js";
+import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
 import {
   BIGINT_T,
@@ -66,6 +67,10 @@ import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
 import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
 import { builtinClassRefOf, sameBuiltinClass } from "../builtins/class-values.js";
+import {
+  lowerRuntimeConstructorIs,
+  runtimeConstructorReceiver,
+} from "../builtins/runtime-constructor.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "../strict-equality.js";
 import { withUnitArm } from "../../type-mapper.js";
@@ -477,6 +482,22 @@ export function lowerNullishPair(
       );
     }
   }
+  // An optional callback defaulted to a function of another signature
+  // (`o.tags ?? (() => ({}))`, fewer parameters or a narrower result): the
+  // result is the callback's own function type, and the default adapts into
+  // it (JavaScript ignores surplus arguments). The checker's merged union
+  // signature would lose the callback's result shape.
+  if (present?.kind === "func" && present.rest !== true) {
+    const raw = lowerer.lowerExpr(expr.right);
+    if (
+      raw.type.kind === "func" &&
+      (typeEquals(raw.type, present) || cleanFuncAdaptable(lowerer, raw.type, present))
+    ) {
+      const right = lowerer.coerceInto(expr.right, raw, present);
+      lowerer.nullishFuncResults.add(expr);
+      return { kind: "nullish", left, right, type: present, loc };
+    }
+  }
   lowerer.unsupported(
     "SC1090",
     expr,
@@ -510,7 +531,7 @@ export function lowerNativeFunctionAssignment(
 ): IrExpr | null {
   const target = expr.left;
   if (
-    !isJsSourceFile(expr.getSourceFile()) ||
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
     (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target)) ||
     target.questionDotToken
   )
@@ -882,7 +903,7 @@ export function lowerCompoundValueToTarget(
   // catchable TypeError, as the expanded assignment does).
   if (
     (target.type.kind === "dyn" || rhs.type.kind === "dyn") &&
-    (isJsSourceFile(expr.getSourceFile()) ||
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
       (lowerer.dynConvertible(read.type) && lowerer.dynConvertible(rhs.type)))
   ) {
     const left = lowerer.coerceInto(expr.left, read, DYN);
@@ -1121,7 +1142,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           recv &&
           (recv.type.kind === "dyn" ||
             (recv.type.kind === "array" &&
-              isJsSourceFile(expr.getSourceFile()) &&
+              isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
               lowerer.dynConvertible(recv.type)))
         ) {
           return lowerDynMemberAssignment(
@@ -1322,6 +1343,24 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       lowerUnionTypeofTest(lowerer, expr, loc);
     if (test) return test;
   }
+  // `x.constructor === Readable` for an instance of EventEmitter or a
+  // stream class: the instance's own class, compared without a class value.
+  if (
+    op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    op === ts.SyntaxKind.ExclamationEqualsEqualsToken
+  ) {
+    for (const [side, other] of [
+      [expr.left, expr.right],
+      [expr.right, expr.left],
+    ] as const) {
+      const ctor = runtimeConstructorReceiver(lowerer, side);
+      const target = ctor ? builtinClassRefOf(lowerer, other) : null;
+      if (ctor && (target?.kind === "emitter" || target?.kind === "stream")) {
+        const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+        return lowerRuntimeConstructorIs(lowerer, ctor.receiver, target.info, negated, loc);
+      }
+    }
+  }
   // `C === EventEmitter` between two builtin class references: the
   // classes are compile-time values, so the answer folds.
   if (
@@ -1495,7 +1534,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // Numeric operators dispatch on ToNumeric's actual Number/BigInt
     // result, including values flowing through native callable properties.
     if (
-      isJsSourceFile(expr.getSourceFile()) ||
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
       op === ts.SyntaxKind.PlusToken ||
       [
         ts.SyntaxKind.LessThanToken,
@@ -2370,7 +2409,7 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   }
 
   if (
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     op === ts.SyntaxKind.AmpersandAmpersandToken &&
     left.type.kind === "union" &&
     lowerer.unions.get(left.type.unionId)?.arms.some((arm) => arm.kind === "bool") &&
@@ -2418,7 +2457,7 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
       op === ts.SyntaxKind.AmpersandAmpersandToken &&
       target === null &&
       lowerer.implicitParamTypes !== null &&
-      npmStaticPackageOfPath(expr.getSourceFile().fileName) !== null &&
+      npmStaticPackageOfPath(ts.getSourceFileOfNode(expr).fileName) !== null &&
       (lowerer.typeOf(expr).flags & ts.TypeFlags.Any) !== 0 &&
       left.type.kind === "union"
     ) {
@@ -2579,7 +2618,7 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     // When both operands have native checked representations, preserve
     // the deciding value and short-circuit evaluation in that domain.
     if (
-      isJsSourceFile(expr.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       lowerer.dynConvertible(left.type) &&
       lowerer.dynConvertible(right.type)
     ) {

@@ -1,5 +1,12 @@
 /* instanceof and in, including private-name and runtime-key in. */
 import * as ts from "../../ts7/adapter.js";
+import { builtinClassInstanceOf, builtinClassKind } from "../builtins/builtin-class-dyn.js";
+import {
+  checkedPrivateIn,
+  localPrivateBrandClass,
+  primitiveOperand,
+  privateInMessage,
+} from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   BOOL,
@@ -17,20 +24,22 @@ import {
   UNDEFINED_T,
   isUnitType,
   typeEquals,
+  typeKey,
 } from "../../../ir/ir.js";
-import { refuseWebAssemblyUse } from "../builtins/webassembly.js";
+import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/webassembly.js";
 import { lowerSocketInstanceOf } from "../lower-server.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
-import { varRef } from "../../../ir/build.js";
+import { numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
+import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
-import { isSafeToDiscard } from "./evaluation-safety.js";
+import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { type ClassInfo, storedClassValueType } from "../lower-classes.js";
 import { classInstanceOf } from "../class-dynamic-dispatch.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -54,6 +63,8 @@ import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js"
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const webAssembly = lowerWebAssemblyInstanceof(lowerer, expr);
+  if (webAssembly !== null) return webAssembly;
   refuseWebAssemblyUse(lowerer, expr.right);
   // `x instanceof net.Socket` over a union with a netSocket arm — the
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
@@ -172,6 +183,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (cryptoKey) return cryptoKey;
     const netAddress = lowerNetAddressInstanceof(lowerer, expr);
     if (netAddress) return netAddress;
+    const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
+    if (readlineInterface) return readlineInterface;
   }
   if (lowerer.isStdlibGlobal(expr.right, "SharedArrayBuffer")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
@@ -457,9 +470,25 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       );
     }
     const constructor = tryLowerExpression(lowerer, expr.right);
-    if (constructor?.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile())) {
+    if (constructor?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
       const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
       return checkedClassInstanceOf(lowerer, value, constructor, loc);
+    }
+    // `this instanceof Glob` in a JavaScript constructor function: the
+    // function's prototype against the value's prototype chain.
+    if (
+      constructor?.type.kind === "func" &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      lowerer.dynConvertible(constructor.type)
+    ) {
+      const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+      return {
+        kind: "libCall",
+        fn: "dyn.functionInstanceOf",
+        args: [value, { kind: "dynFrom", value: constructor, type: DYN, loc }],
+        type: BOOL,
+        loc,
+      };
     }
     lowerer.unsupported(
       "SC1090",
@@ -568,6 +597,14 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       type: BOOL,
       loc,
     };
+  }
+  // `u instanceof EventEmitter` (or a stream class): an untyped object
+  // built by a constructor function inherits the untyped constructor's
+  // prototype (builtin-class-dyn.ts). Compiled emitters and streams have
+  // no untyped form, so the prototype chain answers for every value.
+  const builtinKind = builtinClassKind(target.def.name);
+  if (left.type.kind === "dyn" && builtinKind !== null) {
+    return builtinClassInstanceOf(left, builtinKind, loc);
   }
   if (left.type.kind === "dyn") {
     lowerer.unsupported(
@@ -1038,6 +1075,80 @@ function lowerPrivateIn(
       );
     }
   }
+  // A checked value in JavaScript (`#x in this` inside a method, whose
+  // receiver is the actual call-site value): the brand is present exactly
+  // when the value is a class instance at or below the declarer. A typed
+  // reference carries the class it was boxed under: the declarer or a
+  // descendant answers true; an ancestor answers per instance.
+  if (
+    recv.type.kind === "dyn" &&
+    recv.kind === "varRef" &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr))
+  ) {
+    // A function-local class has one brand per evaluation.
+    if (info.localClass) {
+      const owner = localPrivateBrandClass(lowerer, priv);
+      if (!owner) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `'${pname} in …' inside a function-local class that is not a named declaration`,
+        );
+      }
+      return checkedPrivateIn(lowerer, owner.info, owner.decl, pname, recv, loc);
+    }
+    const typedRefIs = (className: string): IrExpr => ({
+      kind: "libCall",
+      fn: "dyn.typedRefIs",
+      args: [
+        recv,
+        { kind: "strLit", value: typeKey({ kind: "object", className }), type: STRING, loc },
+      ],
+      type: BOOL,
+      loc,
+    });
+    const or = (left: IrExpr | null, right: IrExpr): IrExpr =>
+      left === null ? right : { kind: "logical", op: "||", left, right, type: BOOL, loc };
+    let test: IrExpr | null = null;
+    const below = (c: ClassInfo): void => {
+      test = or(test, typedRefIs(c.def.name));
+      for (const sub of c.subclasses) below(sub);
+    };
+    below(info);
+    for (let base = info.base; base; base = base.base) {
+      const baseType: IrType = { kind: "object", className: base.def.name };
+      test = or(test, {
+        kind: "logical",
+        op: "&&",
+        left: typedRefIs(base.def.name),
+        right: {
+          kind: "instanceOf",
+          value: { kind: "dynCheck", value: recv, type: baseType, loc },
+          className: declName,
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      });
+    }
+    // Only objects carry private names: a primitive operand throws Node's
+    // TypeError.
+    return {
+      kind: "ternary",
+      cond: primitiveOperand(recv, loc),
+      then: {
+        kind: "libCall",
+        fn: "error.nodeThrow",
+        args: [numLit(1, loc), strLit("", loc), privateInMessage(pname, recv, loc)],
+        type: BOOL,
+        loc,
+      },
+      else_: test!,
+      type: BOOL,
+      loc,
+    };
+  }
   if (recv.type.kind !== "object") {
     lowerer.unsupported(
       "SC1090",
@@ -1064,6 +1175,24 @@ function lowerPrivateIn(
 }
 
 /** The string keys every record inherits from Object.prototype. */
+/** Keys built-in errors carry outside their class fields: Node's system
+ * error properties, and AggregateError's, SuppressedError's and
+ * AssertionError's own members. */
+const BUILTIN_ERROR_SLOT_KEYS: ReadonlySet<string> = new Set([
+  "errno",
+  "syscall",
+  "path",
+  "dest",
+  "info",
+  "errors",
+  "error",
+  "suppressed",
+  "actual",
+  "expected",
+  "operator",
+  "generatedMessage",
+]);
+
 const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
   "constructor",
   "__defineGetter__",
@@ -1256,7 +1385,7 @@ export function lowerInExpression(
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (
     (classInfo && (classInfo.callableBase || hasRuntimeStatics(classInfo))) ||
-    (isJsSourceFile(expr.getSourceFile()) &&
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       recv.type.kind === "func" &&
       lowerer.dynConvertible(recv.type))
   ) {
@@ -1280,9 +1409,10 @@ export function lowerInExpression(
   // predicate's `err instanceof Error && "code" in err` shape): `code`
   // answers from the runtime error's code slot (stamped by fs/system/
   // event/spawn errors, absent on plain constructions — exactly Node's
-  // own-property answer), and the always-declared members fold true.
-  // Everything else fences: the runtime object carries no other dynamic
-  // properties to ask (`stack` would be a lie — Node has one, we don't).
+  // own-property answer), and the always-present members (message, name,
+  // stack, Object.prototype's keys, members the static class declares)
+  // fold true. Other keys test the declaring subclasses and the error's
+  // own runtime properties; keys of built-in errors' extra slots fence.
   if (recv.type.kind === "object") {
     // %DOMException first: `'cause' in e` answers the options form's
     // own-property record (the runtime slot), and code/name/message are
@@ -1304,33 +1434,76 @@ export function lowerInExpression(
       if (key === "cause") {
         return { kind: "libCall", fn: "error.hasCause", args: [recv], type: BOOL, loc };
       }
+      // The code slot, or an own `code` with another value
+      // (`err.code = undefined` is present).
       if (key === "code") {
-        const codeType = lowerer.envValueType();
-        if (codeType.kind !== "union")
-          throw new InternalCompilerError("lowerer bug: error code type is not a union");
-        const undefTag = lowerer.armTag(codeType.unionId, UNDEFINED_T);
-        const read: IrExpr = {
+        return { kind: "libCall", fn: "error.hasCode", args: [recv], type: BOOL, loc };
+      }
+      // The receiver evaluates for its effects when the answer is static.
+      const always = (): IrExpr =>
+        recv.kind === "varRef" || recv.kind === "caughtNarrow"
+          ? { kind: "boolLit", value: true, type: BOOL, loc }
+          : {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: recv, loc }],
+              result: { kind: "boolLit", value: true, type: BOOL, loc },
+              type: BOOL,
+              loc,
+            };
+      if (key === "message" || key === "name") return always();
+      // Every Error has its own `stack`, and Error.prototype's `toString`
+      // and `constructor` are among Object.prototype's keys.
+      if (key === "stack" || OBJECT_PROTOTYPE_KEYS.has(key)) return always();
+      // A member the static class declares is always present.
+      const declares = (c: ClassInfo): boolean =>
+        c.fields.has(key) ||
+        lowerer.findMethodOn(c, key) !== null ||
+        lowerer.findMethodOn(c, `get:${key}`) !== null ||
+        lowerer.findMethodOn(c, `set:${key}`) !== null;
+      const staticInfo = lowerer.classes.get(recv.type.className);
+      if (staticInfo && declares(staticInfo)) return always();
+      // Any other key: a descendant class that declares it (instanceof), or
+      // an own property set at runtime (a throw site's extra fields,
+      // Object.assign, writes through a dynamic view). Keys built-in errors
+      // keep outside their class fields depend on the runtime error and
+      // stay fenced.
+      if (!BUILTIN_ERROR_SLOT_KEYS.has(key)) {
+        const stable = recv.kind === "varRef" || recv.kind === "caughtNarrow";
+        const slot = stable ? null : lowerer.declareHiddenLocal("%inRecv", recv.type);
+        const ref = (): IrExpr => (slot ? varRef(slot.id, recv.type, loc) : recv);
+        const tests: IrExpr[] = [];
+        const staticName = recv.type.className;
+        for (const c of lowerer.classes.values()) {
+          const name = c.def.name;
+          if (name === staticName || !lowerer.isSubclassOf(name, staticName) || !declares(c))
+            continue;
+          // A declaring ancestor below the static class already covers it.
+          if (c.base && c.base.def.name !== staticName && declares(c.base)) continue;
+          tests.push({ kind: "instanceOf", value: ref(), className: name, type: BOOL, loc });
+        }
+        tests.push({
           kind: "libCall",
-          fn: "error.code",
-          args: [recv],
-          type: codeType,
+          fn: "error.hasKey",
+          args: [ref(), { kind: "strLit", value: key, type: STRING, loc }],
+          type: BOOL,
           loc,
-        };
+        });
+        const answer = tests.reduce((acc, test) => ({
+          kind: "logical",
+          op: "||",
+          left: acc,
+          right: test,
+          type: BOOL,
+          loc,
+        }));
+        if (!slot) return answer;
         return {
-          kind: "unionIsTag",
-          unionId: codeType.unionId,
-          tag: undefTag,
-          negated: true,
-          value: read,
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: slot.id, init: recv, loc }],
+          result: answer,
           type: BOOL,
           loc,
         };
-      }
-      if (
-        (key === "message" || key === "name") &&
-        (recv.kind === "varRef" || recv.kind === "caughtNarrow")
-      ) {
-        return { kind: "boolLit", value: true, type: BOOL, loc };
       }
       lowerer.unsupported(
         "SC1090",
@@ -1349,13 +1522,14 @@ export function lowerInExpression(
   // arm answers membership STATICALLY (a declared non-optional field is
   // always present, an undeclared name never is), so the whole test
   // collapses to runtime TAG tests — tsc's own narrowing then types the
-  // branches (the discriminating-`in` idiom). Optional (undefined-armed)
-  // fields and tuple/index-signature arms answer per VALUE, not per arm
-  // — those unions keep the fence below.
+  // branches (the discriminating-`in` idiom). An arm declaring the key
+  // as an optional (undefined-armed) slot answers per VALUE instead:
+  // its tag test joins that payload's presence test (see
+  // perValueUnionIn). Tuple/index-signature arms keep the fence below.
   if (recv.type.kind === "union") {
     const unionId = recv.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms ?? [];
-    const answers: { tag: number; has: boolean }[] = [];
+    const answers: { tag: number; has: boolean | "slot"; arm: IrType }[] = [];
     let staticAnswers = arms.length > 0;
     for (const arm of arms) {
       const tag = lowerer.armTag(unionId, arm);
@@ -1372,14 +1546,17 @@ export function lowerInExpression(
         f.type.kind === "union" &&
         lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0
       ) {
-        staticAnswers = false; // an optional slot: presence is per-value
-        break;
+        answers.push({ tag, has: "slot", arm }); // presence is per-value
+        continue;
       }
       // Accessor properties are own properties to `in` (Node answers
       // true without invoking the getter) — either slot present makes
       // the name a member.
       const acc = shape.fields.some((x) => x.name === `%get:${key}` || x.name === `%set:${key}`);
-      answers.push({ tag, has: f !== undefined || acc || inherited });
+      answers.push({ tag, has: f !== undefined || acc || inherited, arm });
+    }
+    if (staticAnswers && answers.some((a) => a.has === "slot")) {
+      return perValueUnionIn(lowerer, recv, unionId, key, answers, loc);
     }
     if (staticAnswers) {
       const pureRecv =
@@ -1529,6 +1706,75 @@ export function lowerInExpression(
     expr,
     "statically-decided 'in' on computed receivers (bind the value to a variable first)",
   );
+}
+
+/** `"k" in u` over a union of fixed record shapes where some arm declares
+ * `k` as an optional slot. Arms without the name answer false and arms
+ * with an always-present member answer true, both by tag; an optional
+ * slot answers its payload's own-property presence (an explicit
+ * undefined is present, an omitted or deleted property is not), read
+ * through the checked arm extraction the tag test has just proven. The
+ * receiver evaluates once: a non-repeatable one is stabilized in a
+ * hidden local first. */
+function perValueUnionIn(
+  lowerer: Lowerer,
+  recv: IrExpr,
+  unionId: string,
+  key: string,
+  answers: readonly { tag: number; has: boolean | "slot"; arm: IrType }[],
+  loc: SrcLoc,
+): IrExpr {
+  const recvType = recv.type;
+  const stable = isSafeToRepeat(recv) ? null : lowerer.declareHiddenLocal("%inRecv", recvType);
+  const ref = (): IrExpr => (stable ? varRef(stable.id, recvType, loc) : recv);
+  const isTag = (tag: number): IrExpr => ({
+    kind: "unionIsTag",
+    unionId,
+    tag,
+    negated: false,
+    value: ref(),
+    type: BOOL,
+    loc,
+  });
+  let out: IrExpr | null = null;
+  for (const a of answers) {
+    if (a.has === false) continue;
+    let test = isTag(a.tag);
+    if (a.has === "slot" && a.arm.kind === "record") {
+      test = {
+        kind: "logical",
+        op: "&&",
+        left: test,
+        right: {
+          kind: "recordHas",
+          obj: {
+            kind: "unionNarrow",
+            unionId,
+            tag: a.tag,
+            value: ref(),
+            type: a.arm,
+            loc,
+          },
+          shapeId: a.arm.shapeId,
+          field: key,
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+    out = out ? { kind: "logical", op: "||", left: out, right: test, type: BOOL, loc } : test;
+  }
+  const result: IrExpr = out ?? { kind: "boolLit", value: false, type: BOOL, loc };
+  if (!stable) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stable.id, init: recv, loc }],
+    result,
+    type: BOOL,
+    loc,
+  };
 }
 
 /** The runtime-key `in` (see lowerInExpression): `k in r` where k is a

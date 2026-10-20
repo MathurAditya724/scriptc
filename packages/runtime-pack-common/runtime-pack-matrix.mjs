@@ -9,7 +9,11 @@ import { withLibraryRuntimeFlavors } from "./library-matrix.mjs";
 const any = (...features) => ({ any: features });
 const all = (...features) => ({ all: features });
 
-const BASE_RUNTIME_SOURCES = [
+/* Every runtime pack matrix uses these lists, so a new runtime source is
+ * one line here. Their order is the link order of the units an executable
+ * selects: keep a new unit next to the units it references, and treat any
+ * reordering as a change to every executable's layout. */
+export const BASE_RUNTIME_SOURCES = [
   "scr_context.c",
   "scr_shared.c",
   "scr_number.c",
@@ -47,7 +51,7 @@ const BASE_RUNTIME_SOURCES = [
   "scr_alloc.c",
 ];
 
-const OPTIONAL = [
+export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   ["scr_regex.c", "regex"],
@@ -65,6 +69,8 @@ const OPTIONAL = [
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
   ["scr_perf.c", "dynAsync"],
+  // perf_hooks event-loop metrics, only for programs that read them.
+  ["scr_perf_loop.c", "perfLoop"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
@@ -72,6 +78,8 @@ const OPTIONAL = [
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
   ["scr_events_emitter.c", "emitter"],
+  // events.once with options registers through the emitter and event-target units.
+  ["scr_events_once_signal.c", "eventsOnceSignal"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   ["scr_symbol.c", "symbol"],
   ["scr_bigint_assert.c", all("assert", "bigint")],
@@ -84,11 +92,30 @@ const OPTIONAL = [
   ["scr_util_compare.c", all("parseArgs", "symbol")],
   ["scr_util_style.c", all("parseArgs", "inspect", "dynAsync")],
   ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
+  // Untyped EventEmitter and stream constructor values call listeners
+  // through the dyn-invoke unit, inspect unhandled 'error' payloads and
+  // create EventEmitter's private symbols.
+  ["scr_dyn_builtin_class.c", all("dynBuiltinClass", "inspect", "dynInvoke", "symbol", "emitter")],
+  // Their stream half also references the stream unit.
+  [
+    "scr_dyn_builtin_stream.c",
+    all(
+      "dynBuiltinStream",
+      "dynBuiltinClass",
+      "stream",
+      "inspect",
+      "dynInvoke",
+      "symbol",
+      "emitter",
+    ),
+  ],
   ["scr_stream.c", "stream"],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
   ["scr_stream_ops.c", all("stream", "dynAsync")],
+  // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
+  ["scr_stream_dyn.c", "streamDyn"],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],
   // FileHandle streams reference both the stream unit and FileHandle.
@@ -100,17 +127,20 @@ const OPTIONAL = [
   ["scr_http.c", "httpEffective"],
   ["scr_http2.c", "http2"],
   ["scr_dgram.c", "dgram"],
+  // The dns promise forms run over the dgram unit's callback forms.
+  ["scr_dns_promises.c", all("dgram", "dnsPromises")],
   ["scr_watch.c", "watch"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
+  ["scr_wasm.c", "wasm"],
   ["scr_webcrypto.c", "webcrypto"],
   ["scr_fetch.c", "nativeFetch"],
 ];
 
-function variantsFor(source) {
+export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
   if (source === "scr_bytes.c") {
     variants.push({
@@ -175,7 +205,7 @@ export function createRuntimePackMatrix({
           (source) => ({ source, predicate: true }),
         ),
         ...extraRuntimeSources.map((source) => ({ source, predicate: true })),
-        ...OPTIONAL.filter(([source]) => !omitOptionalSources.includes(source)).map(
+        ...OPTIONAL_RUNTIME_SOURCES.filter(([source]) => !omitOptionalSources.includes(source)).map(
           ([source, predicate]) => ({ source, predicate }),
         ),
       ].map((unit) => ({ ...unit, variants: variantsFor(unit.source) })),

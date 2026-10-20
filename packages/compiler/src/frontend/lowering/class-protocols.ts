@@ -48,9 +48,9 @@ export class ClassProtocols {
             )
           )
             continue;
-          const entries = this.methods.get(property.name) ?? [];
+          const entries = this.methods.get(ts.symbolName(property)) ?? [];
           entries.push(node);
-          this.methods.set(property.name, entries);
+          this.methods.set(ts.symbolName(property), entries);
         }
       }
       if (
@@ -506,7 +506,7 @@ export class ClassProtocols {
     if (facts.observed.has(symbol) || facts.written.has(symbol)) return true;
     const target = facts.targets.get(symbol);
     if (target === undefined) return true;
-    const names = new Set(this.checker.getPropertiesOfType(target).map((p) => p.name));
+    const names = new Set(this.checker.getPropertiesOfType(target).map((p) => ts.symbolName(p)));
     const origins = facts.origins.get(symbol) ?? new Set<ts.Symbol>();
     const writesNames = (written: Set<string> | "all"): boolean =>
       written === "all" || [...written].some((name) => names.has(name));
@@ -551,7 +551,7 @@ export class ClassProtocols {
       .getPropertiesOfType(declared)
       .some(
         (property) =>
-          names.has(property.name) &&
+          names.has(ts.symbolName(property)) &&
           property.declarations.some(
             (declaration) =>
               ts.isGetAccessorDeclaration(declaration) || ts.isSetAccessorDeclaration(declaration),
@@ -610,7 +610,8 @@ export class ClassProtocols {
    * method needs a live receiver (see protocol). */
   private pickOfProgramClass(type: ts.Type): boolean {
     const alias = type.getAliasSymbol();
-    if (alias === undefined || (alias.name !== "Pick" && alias.name !== "Omit")) return false;
+    if (alias === undefined || (ts.symbolName(alias) !== "Pick" && ts.symbolName(alias) !== "Omit"))
+      return false;
     if (!alias.declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile))
       return false;
     const source = type.getAliasTypeArguments()[0];
@@ -622,7 +623,9 @@ export class ClassProtocols {
     return (
       symbol !== undefined &&
       (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
-      symbol.declarations.some((declaration) => !declaration.getSourceFile().isDeclarationFile) &&
+      symbol.declarations.some(
+        (declaration) => !ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      ) &&
       // `typeof C` (the class value) shares the class symbol.
       this.checker.getConstructSignatures(type).length === 0
     );
@@ -647,7 +650,8 @@ export class ClassProtocols {
       this.methods.size > 0 &&
       symbol.declarations.some(
         (declaration) =>
-          ts.isInterfaceDeclaration(declaration) && !declaration.getSourceFile().isDeclarationFile,
+          ts.isInterfaceDeclaration(declaration) &&
+          !ts.getSourceFileOfNode(declaration).isDeclarationFile,
       ) &&
       this.protocol(type)
     );
@@ -666,7 +670,7 @@ export class ClassProtocols {
     const declarations = symbol.declarations;
     return (
       declarations.length > 0 &&
-      declarations.every((declaration) => !declaration.getSourceFile().isDeclarationFile)
+      declarations.every((declaration) => !ts.getSourceFileOfNode(declaration).isDeclarationFile)
     );
   }
 
@@ -755,14 +759,14 @@ export class ClassProtocols {
         !symbol.declarations.some(
           (declaration) =>
             ts.isInterfaceDeclaration(declaration) &&
-            !declaration.getSourceFile().isDeclarationFile,
+            !ts.getSourceFileOfNode(declaration).isDeclarationFile,
         ))
     )
       return false;
     for (const property of properties) {
       const memberType = this.checker.getTypeOfSymbol(property);
       if (this.checker.getCallSignatures(memberType).length === 0) continue;
-      for (const declaration of this.methods.get(property.name) ?? []) {
+      for (const declaration of this.methods.get(ts.symbolName(property)) ?? []) {
         const classSymbol = declaration.name
           ? this.checker.getSymbolAtLocation(declaration.name)
           : undefined;

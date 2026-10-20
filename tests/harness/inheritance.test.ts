@@ -204,14 +204,11 @@ r.on("data", (b: Buffer) => console.log(b.toString()));
     expect(llvm).toContain("call void @scr_stream_init_readable(ptr ");
   });
 
-  test("a runtime-fenced nested stream class emits the refusal without class helpers", async () => {
-    // The phase-1 reachable bug: a class declared inside a block (a
-    // runtime fence in JS) whose instances are captured emitted capture-
-    // box RC adapters for the uncollected class — a C compile error.
-    // run()'s unregistered-class sweep now rewrites such type slots to
-    // the inert f64 placeholder before emission (no instance can exist;
-    // every use traps), so the capture box is a PLAIN-kind box and the
-    // class never reaches the emitter at all.
+  test("a block-scoped stream class lowers natively with its class helpers", async () => {
+    // A class declared inside a block is collected like a class expression.
+    // Its captured instances once needed the unregistered-class sweep (the
+    // class was fenced); a builtin stream base no longer fences, so the
+    // class reaches the emitter with its object type and stream init.
     const llvm = await emittedLlvm(
       "stream-nested-fence",
       `const { Readable } = require("stream");
@@ -226,11 +223,10 @@ r.on("data", (b: Buffer) => console.log(b.toString()));
 `,
       "js",
     );
-    expect(llvm).not.toContain("sc_retain_R_v");
     expect(llvm).not.toContain("uncollected class");
-    expect(llvm).not.toContain("%sc_o_R");
-    expect(llvm).toMatch(/%sc_l_stream_0 = alloca ptr/);
-    expect(llvm).toContain("call void @scr_throw_error_msg_code");
+    expect(llvm).toContain("%sc_o_R");
+    expect(llvm).toContain("call void @scr_stream_init_readable(ptr ");
+    expect(llvm).not.toContain("call void @scr_throw_error_msg_code");
   });
 
   test("a getter-only override of a pair fills the set slot with a thrower", async () => {
