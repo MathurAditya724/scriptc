@@ -181,6 +181,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch, "scr_dyn_invoke.c"),
   // Fixed-width Buffer methods called on checked-dynamic values.
   unit((u) => u.opts.dynBufferNum === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
+  // Builtin functions read as values in JavaScript dependencies.
+  unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c"),
   unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),

@@ -52,6 +52,9 @@ export interface NativeLinkFeatures {
   /** Fixed-width Buffer methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBufferNum?: boolean;
+  /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
+   * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
+  builtinValues?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;

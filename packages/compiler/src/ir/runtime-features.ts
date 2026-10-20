@@ -601,6 +601,8 @@ const RUNTIME_FEATURE_RULES = {
   dynBufferNum: rule({
     expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_NUM_METHODS.has(node.method),
   }),
+  /** Builtin functions read as values (scr_builtin_values.c). */
+  builtinValues: rule({ fns: ["buffer.byteLenValue", "buffer.allocValue", "fs.realpathValue"] }),
   /** The stream unit emits through the emitter unit, also when the
    * program constructs no stream (a pipeline of functions). */
   emitter: rule({
@@ -785,6 +787,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stream: false,
     streamDyn: false,
     dynBufferNum: false,
+    builtinValues: false,
     symbol: false,
     tls: false,
     tlsCa: false,
