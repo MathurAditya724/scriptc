@@ -61,6 +61,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch")],
+  // Borrowed typed-array methods on checked-dynamic values.
+  ["scr_bytes_proto_set.c", "dynInvoke"],
   // Fixed-width Buffer methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBufferNum", "dynInvoke")],
   ["scr_dc.c", "dc"],

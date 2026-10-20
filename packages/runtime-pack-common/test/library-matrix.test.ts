@@ -117,3 +117,20 @@ test("Wasm packs include reactor runtimes without thread-local state or a JS eng
     expect(sources).not.toContain("scr_async.c");
   }
 });
+
+test("borrowed typed-array set is available only with dynamic invocation in every pack mode", () => {
+  for (const object_format of ["elf", "macho", "coff", "wasm"]) {
+    const pack = createRuntimePackMatrix({
+      target: { object_format },
+      compileFlags: [],
+      systemLibraries: [],
+    });
+    for (const flavor of Object.values(pack.flavors)) {
+      const units = (flavor.runtime_units ?? pack.runtime_units).filter(
+        (unit) => unit.source === "scr_bytes_proto_set.c",
+      );
+      expect(units).toHaveLength(1);
+      expect(units[0]?.predicate).toBe("dynInvoke");
+    }
+  }
+});
