@@ -241,8 +241,21 @@ const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** libCall name prefixes that link the child-process unit. */
 const CHILD_PROCESS_LIB_PREFIXES: readonly string[] = ["child.", "cp.", "spawnRes.", "writer."];
 
+/** The entry points scr_dyn_builtin_class.c defines. The unit calls
+ * listeners through the dyn-invoke unit, renders unhandled 'error'
+ * payloads through the inspect unit, creates EventEmitter's private
+ * symbols through the symbol unit and shares defaultMaxListeners with the
+ * emitter unit, so each of them links all five. */
+const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
+  "dyn.builtinClass",
+  "dyn.builtinInstanceOf",
+  "dyn.functionInstanceOf",
+];
+
 /** Entry points that link the symbol unit, besides the sym. and disposable. families. */
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // EventEmitter's kShapeMode and kCapture properties
+  ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",
   "dyn.usingMethod",
   "util.isDeepStrictEqual",
@@ -519,9 +532,16 @@ const RUNTIME_FEATURE_RULES = {
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
   }),
+  /** EventEmitter and the stream classes as untyped constructor values
+   * (scr_dyn_builtin_class.c), which call listeners through the dyn-invoke
+   * unit, render unhandled 'error' payloads through the inspect unit and
+   * create EventEmitter's private symbols through the symbol unit. */
+  dynBuiltinClass: rule({
+    fns: [...BUILTIN_CLASS_LIB_FNS],
+  }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
-    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS],
+    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.
     expr: (node, _tables) =>
@@ -538,7 +558,7 @@ const RUNTIME_FEATURE_RULES = {
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
-    fns: [...STREAM_LIB_FNS],
+    fns: [...STREAM_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
     prefixes: ["emitter.", ...STREAM_LIB_PREFIXES],
   }),
   /** Subclasses of the runtime EventTarget/Event bases tear down and box
@@ -572,7 +592,13 @@ const RUNTIME_FEATURE_RULES = {
    * terminal unit prints completion errors through it when there is a
    * completer. */
   inspect: rule({
-    fns: ["global.native", "util.styleText", "crypto.cipherNew", ...UTIL_CALLABLE_LIB_FNS],
+    fns: [
+      "global.native",
+      "util.styleText",
+      "crypto.cipherNew",
+      ...BUILTIN_CLASS_LIB_FNS,
+      ...UTIL_CALLABLE_LIB_FNS,
+    ],
     prefixes: ["insp.", "console.", "test."],
     libCall: (node) => node.fn === "rl.terminal" && !isDynUndefined(node.args[3]!),
   }),
@@ -678,6 +704,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dgram: false,
     dnsPromises: false,
     dynAsync: false,
+    dynBuiltinClass: false,
     dynInvoke: false,
     dynTier: false,
     emitter: false,

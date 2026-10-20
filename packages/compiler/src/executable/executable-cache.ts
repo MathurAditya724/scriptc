@@ -72,6 +72,7 @@ export interface EarlyExecutableNativeFeatures {
   bigint: boolean;
   searchParams: boolean;
   qs: boolean;
+  dynBuiltinClass: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -190,6 +191,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "bigint",
   "searchParams",
   "qs",
+  "dynBuiltinClass",
   "parseArgs",
   "stream",
   "net",

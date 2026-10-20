@@ -49,6 +49,7 @@ export interface NativeLinkFeatures {
   bigint: boolean;
   searchParams: boolean;
   qs: boolean;
+  dynBuiltinClass: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
