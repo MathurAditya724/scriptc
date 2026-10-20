@@ -484,7 +484,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // Only arrows can see an enclosing method's `this` (JS lexical-this);
     // `this` in plain nested functions is already a tsc error under
     // noImplicitThis, so the generic scope walk here is preflight-safe.
-    const local = lowerer.resolveThis();
+    const local = lowerer.resolveThis(expr);
     if (local) {
       const value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
       // `this.#x` in a function-local class's prototype method, whose `this`
@@ -1057,6 +1057,15 @@ export function nullishBranches(
 export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   let e: ts.Expression = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
+  // `if (Object.setPrototypeOf)`: the feature test of transpiled Error
+  // subclasses' prototype reset. Node always has it.
+  if (
+    ts.isPropertyAccessExpression(e) &&
+    !e.questionDotToken &&
+    e.name.text === "setPrototypeOf" &&
+    lowerer.isStdlibGlobal(e.expression, "Object")
+  )
+    return { kind: "boolLit", value: true, type: BOOL, loc: locOf(e) };
   if (ts.isPropertyAccessExpression(e)) {
     const presence = lowerPromiseThenPresence(lowerer, e, {
       kind: "boolLit",
@@ -2257,9 +2266,14 @@ export function caughtRead(
   // Unnarrowed reads cross into unknown. The caught-value dispatch pass
   // retains known native class payloads through live identity capsules;
   // other payload kinds use the runtime's ordinary conversion.
-  if (narrowed?.kind === "dyn") {
+  // `catch (e: any)` (or useUnknownInCatchVariables off) reads the same way.
+  if (
+    narrowed?.kind === "dyn" ||
+    (narrowed === null && (lowerer.typeOf(node).flags & ts.TypeFlags.Any) !== 0)
+  ) {
     return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   }
+
   // A binding a user type predicate (or an assertion) narrowed to a
   // structural type (`isErrorLike(e)` → `{ message: string; … }`, an
   // intersection like `TypeError & { code: unknown }`): the thrown value is

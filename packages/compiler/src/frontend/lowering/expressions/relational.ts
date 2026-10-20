@@ -1405,9 +1405,10 @@ export function lowerInExpression(
   // predicate's `err instanceof Error && "code" in err` shape): `code`
   // answers from the runtime error's code slot (stamped by fs/system/
   // event/spawn errors, absent on plain constructions — exactly Node's
-  // own-property answer), and the always-declared members fold true.
-  // Everything else fences: the runtime object carries no other dynamic
-  // properties to ask (`stack` would be a lie — Node has one, we don't).
+  // own-property answer), and the always-present members (message, name,
+  // stack, Object.prototype's keys, members the static class declares)
+  // fold true. Other keys test the declaring subclasses and the error's
+  // own runtime properties; keys of built-in errors' extra slots fence.
   if (recv.type.kind === "object") {
     // %DOMException first: `'cause' in e` answers the options form's
     // own-property record (the runtime slot), and code/name/message are
@@ -1429,77 +1430,76 @@ export function lowerInExpression(
       if (key === "cause") {
         return { kind: "libCall", fn: "error.hasCause", args: [recv], type: BOOL, loc };
       }
+      // The code slot, or an own `code` with another value
+      // (`err.code = undefined` is present).
       if (key === "code") {
-        const codeType = lowerer.envValueType();
-        if (codeType.kind !== "union")
-          throw new InternalCompilerError("lowerer bug: error code type is not a union");
-        const undefTag = lowerer.armTag(codeType.unionId, UNDEFINED_T);
-        const read: IrExpr = {
-          kind: "libCall",
-          fn: "error.code",
-          args: [recv],
-          type: codeType,
-          loc,
-        };
-        return {
-          kind: "unionIsTag",
-          unionId: codeType.unionId,
-          tag: undefTag,
-          negated: true,
-          value: read,
-          type: BOOL,
-          loc,
-        };
+        return { kind: "libCall", fn: "error.hasCode", args: [recv], type: BOOL, loc };
       }
-      if (
-        (key === "message" || key === "name") &&
-        (recv.kind === "varRef" || recv.kind === "caughtNarrow")
-      ) {
-        return { kind: "boolLit", value: true, type: BOOL, loc };
-      }
+      // The receiver evaluates for its effects when the answer is static.
+      const always = (): IrExpr =>
+        recv.kind === "varRef" || recv.kind === "caughtNarrow"
+          ? { kind: "boolLit", value: true, type: BOOL, loc }
+          : {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: recv, loc }],
+              result: { kind: "boolLit", value: true, type: BOOL, loc },
+              type: BOOL,
+              loc,
+            };
+      if (key === "message" || key === "name") return always();
       // Every Error has its own `stack`, and Error.prototype's `toString`
       // and `constructor` are among Object.prototype's keys.
-      if (
-        (key === "stack" || OBJECT_PROTOTYPE_KEYS.has(key)) &&
-        (recv.kind === "varRef" || recv.kind === "caughtNarrow")
-      ) {
-        return { kind: "boolLit", value: true, type: BOOL, loc };
-      }
-      // Any other key: a member a program class declares. The receiver's
-      // runtime class is its static class or a descendant; the key is
-      // present exactly when that class (or an ancestor) declares it. Keys
-      // built-in errors keep outside their class fields depend on the
-      // runtime error and stay fenced, as do keys no program class declares.
+      if (key === "stack" || OBJECT_PROTOTYPE_KEYS.has(key)) return always();
+      // A member the static class declares is always present.
       const declares = (c: ClassInfo): boolean =>
         c.fields.has(key) ||
         lowerer.findMethodOn(c, key) !== null ||
         lowerer.findMethodOn(c, `get:${key}`) !== null ||
         lowerer.findMethodOn(c, `set:${key}`) !== null;
-      if (
-        (recv.kind === "varRef" || recv.kind === "caughtNarrow") &&
-        !BUILTIN_ERROR_SLOT_KEYS.has(key) &&
-        [...lowerer.classes.values()].some((c) => c.builtinError !== true && declares(c))
-      ) {
-        const staticName = recv.type.className;
-        const staticInfo = lowerer.classes.get(staticName);
-        if (staticInfo && declares(staticInfo))
-          return { kind: "boolLit", value: true, type: BOOL, loc };
+      const staticInfo = lowerer.classes.get(recv.type.className);
+      if (staticInfo && declares(staticInfo)) return always();
+      // Any other key: a descendant class that declares it (instanceof), or
+      // an own property set at runtime (a throw site's extra fields,
+      // Object.assign, writes through a dynamic view). Keys built-in errors
+      // keep outside their class fields depend on the runtime error and
+      // stay fenced.
+      if (!BUILTIN_ERROR_SLOT_KEYS.has(key)) {
+        const stable = recv.kind === "varRef" || recv.kind === "caughtNarrow";
+        const slot = stable ? null : lowerer.declareHiddenLocal("%inRecv", recv.type);
+        const ref = (): IrExpr => (slot ? varRef(slot.id, recv.type, loc) : recv);
         const tests: IrExpr[] = [];
+        const staticName = recv.type.className;
         for (const c of lowerer.classes.values()) {
           const name = c.def.name;
           if (name === staticName || !lowerer.isSubclassOf(name, staticName) || !declares(c))
             continue;
           // A declaring ancestor below the static class already covers it.
           if (c.base && c.base.def.name !== staticName && declares(c.base)) continue;
-          tests.push({ kind: "instanceOf", value: recv, className: name, type: BOOL, loc });
+          tests.push({ kind: "instanceOf", value: ref(), className: name, type: BOOL, loc });
         }
-        return tests.reduce<IrExpr>(
-          (acc, test) =>
-            acc.kind === "boolLit"
-              ? test
-              : { kind: "logical", op: "||", left: acc, right: test, type: BOOL, loc },
-          { kind: "boolLit", value: false, type: BOOL, loc },
-        );
+        tests.push({
+          kind: "libCall",
+          fn: "error.hasKey",
+          args: [ref(), { kind: "strLit", value: key, type: STRING, loc }],
+          type: BOOL,
+          loc,
+        });
+        const answer = tests.reduce((acc, test) => ({
+          kind: "logical",
+          op: "||",
+          left: acc,
+          right: test,
+          type: BOOL,
+          loc,
+        }));
+        if (!slot) return answer;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: slot.id, init: recv, loc }],
+          result: answer,
+          type: BOOL,
+          loc,
+        };
       }
       lowerer.unsupported(
         "SC1090",

@@ -1142,6 +1142,23 @@ export function lowerPropertyAccessExpr(
       );
     }
   }
+  // A stdlib-declared member (`message` of an interface extending Error)
+  // on a catch binding narrowed to a structural type: the binding reads
+  // as its checked-dynamic value, so the member does too.
+  if (!expr.questionDotToken && lowerer.caughtLocalOf(expr.expression)) {
+    const recv = lowerer.lowerExpr(expr.expression);
+    if (recv.kind === "caughtToDyn") {
+      const read: IrExpr = {
+        kind: "dynKeyGet",
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+        value: recv,
+        type: DYN,
+        loc,
+      };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      return declared && declared.kind !== "void" ? lowerer.coerceToExpected(read, declared) : read;
+    }
+  }
   // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
   // no lowering above claimed ([1,2].entries, Math.SQRT2, Promise.all,
   // re.exec as a value, ...) reports SC2020 here.

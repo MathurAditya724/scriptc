@@ -4670,7 +4670,9 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
     // A parameter a TypeScript program types `any` takes whatever the
     // caller passes: the checked-dynamic slot, as an `any`-typed binding
     // already is (dynFallbackType). Declaration files keep their paths.
-    // Only function declarations and spelled function types: lambdas and
+    // Only function declarations, spelled function types and lambda
+    // parameters whose default is the only source of their type (`(n =
+    // lookup() ?? 5) => ...` with an `any` lookup): other lambdas and
     // methods in object literals keep their existing checked-dynamic story.
     if (
       !pt &&
@@ -4678,7 +4680,12 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
       decl !== undefined &&
       ts.isParameter(decl) &&
       decl.parent !== undefined &&
-      (ts.isFunctionDeclaration(decl.parent) || ts.isFunctionTypeNode(decl.parent)) &&
+      (ts.isFunctionDeclaration(decl.parent) ||
+        ts.isFunctionTypeNode(decl.parent) ||
+        ((ts.isArrowFunction(decl.parent) || ts.isFunctionExpression(decl.parent)) &&
+          decl.initializer !== undefined &&
+          decl.type === undefined &&
+          !isJsSourceFile(decl.getSourceFile()))) &&
       !decl.getSourceFile().isDeclarationFile &&
       (checker.getTypeOfSymbol(p).flags & ts.TypeFlags.Any) !== 0
     )
@@ -6147,6 +6154,7 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
   });
   if (!hasError) return null;
   let error: IrType | null = null;
+  const extra: ts.Symbol[] = [];
   for (const part of parts) {
     const mapped = mapType(part, ctx);
     if (mapped?.kind === "object" && RUNTIME_ERROR_CLASSES.has(mapped.className)) {
@@ -6167,13 +6175,44 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
           : ["code", "syscall", "path", "dest"].includes(property.name)
             ? "string"
             : null;
-      if (!expected || !(property.flags & ts.SymbolFlags.Optional)) return null;
+      if (!expected) {
+        extra.push(property);
+        continue;
+      }
       const field = mapType(ctx.checker.getTypeOfSymbol(property), ctx);
       const arms =
         field?.kind === "union" ? ctx.unions.get(field.unionId)?.arms : field ? [field] : [];
       if (!arms?.length || !arms.every((arm) => arm.kind === expected || arm.kind === "undefinedT"))
         return null;
+      // A required member must still admit the absent value the slot reads.
+      if (
+        !(property.flags & ts.SymbolFlags.Optional) &&
+        !arms.some((arm) => arm.kind === "undefinedT")
+      )
+        return null;
     }
+  }
+  if (!error) return null;
+  // Members beyond Error's own and the system-error metadata (`Error & {
+  // status: number }`, Object.assign's result) are own properties of the
+  // error's checked-dynamic node: each must map to a type a checked read
+  // can produce. Error's own string members keep their slots.
+  for (const property of extra) {
+    const field = mapType(ctx.checker.getTypeOfSymbol(property), ctx);
+    if (!field || field.kind === "void") return null;
+    if (property.name === "message" || property.name === "name") {
+      if (field.kind !== "string") return null;
+      continue;
+    }
+    if (property.name === "stack" || property.name === "cause") return null;
+    if (
+      !canDynCheckTo(
+        field,
+        (id) => ctx.shapes.get(id),
+        (id) => ctx.unions.get(id),
+      )
+    )
+      return null;
   }
   return error;
 }

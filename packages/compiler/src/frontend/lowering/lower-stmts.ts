@@ -1496,6 +1496,8 @@ const THROWN_AS_DYN: ReadonlySet<IrType["kind"]> = new Set([
 ]);
 
 export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt[] | null {
+  if (ownPrototypeResetStatement(lowerer, stmt))
+    return { kind: "block", body: [], loc: locOf(stmt) };
   if (ts.isClassDeclaration(stmt)) {
     if (!stmt.name) lowerer.unsupported("SC1090", stmt, "anonymous local class declarations");
     const info = lowerer.lowerClassExpressionInfo(stmt);
@@ -7478,6 +7480,34 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
               loc,
             };
           }
+          // `err.code = v` on an Error value (`err as Error & { code?:
+          // string }`): typed reads come from the runtime error's code
+          // slot, so the write lands there. A value that is not statically
+          // a string checks at runtime: strings take the slot, anything
+          // else clears it and stays a dynamic own property. The
+          // system-error members (errno, syscall, path, dest) read
+          // through the checked-dynamic node and keep the dynamic write, as
+          // do JavaScript files, whose reads use that node too.
+          if (
+            !isJsSourceFile(expr.getSourceFile()) &&
+            recv?.type.kind === "object" &&
+            lowerer.isErrorRootedClass(recv.type.className) &&
+            expr.left.name.text === "code"
+          ) {
+            const loc = locOf(expr);
+            const stringValue = isStringTyped(lowerer.typeOf(expr.right));
+            return {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: stringValue ? "error.setCode" : "error.setCodeDyn",
+                args: [recv, lowerer.lowerExprExpecting(expr.right, stringValue ? STRING : DYN)],
+                type: VOID,
+                loc,
+              },
+              loc,
+            };
+          }
           if (recv?.type.kind === "object" && recv.type.className === "%Error") {
             const loc = locOf(expr);
             return {
@@ -11296,6 +11326,141 @@ export function stdlibBufferVarAlias(lowerer: Lowerer, decl: ts.VariableDeclarat
     bindingNeverReassigned(lowerer, symbol, decl) &&
     requireEarlyReference(lowerer.program, decl) === null
   );
+}
+
+/** A checker type that is a string or string literal (or a union of them). */
+function isStringTyped(t: ts.Type): boolean {
+  if (t.isUnionType()) return ts.constituentTypes(t).every(isStringTyped);
+  return (t.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral)) !== 0;
+}
+
+/** The Error-subclass prototype reset of transpiled code, inside a class
+ * constructor:
+ *
+ *     const proto = new.target.prototype;
+ *     if (Object.setPrototypeOf) Object.setPrototypeOf(this, proto);
+ *     else this.__proto__ = proto;
+ *
+ * (also `Object.setPrototypeOf(this, new.target.prototype)` and
+ * `Object.setPrototypeOf(this, C.prototype)` in C's own constructor when no
+ * class extends C). A compiled instance already has exactly that prototype,
+ * so each statement is a no-op. True for those statements. */
+function ownPrototypeResetStatement(lowerer: Lowerer, stmt: ts.Statement): boolean {
+  if (ts.isVariableStatement(stmt)) {
+    const decls = stmt.declarationList.declarations.nodes;
+    if (decls.length !== 1 || (stmt.declarationList.flags & ts.NodeFlags.Const) === 0) return false;
+    const decl = decls[0]!;
+    if (!ts.isIdentifier(decl.name) || !decl.initializer) return false;
+    const ctor = enclosingConstructor(decl);
+    if (!ctor || !ownPrototypeRef(lowerer, decl.initializer, ctor)) return false;
+    const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+    if (!symbol) return false;
+    // Every other use of the binding must be one of the reset statements.
+    let onlyResets = true;
+    ts.walkPreorder(ctor, (n) => {
+      if (!onlyResets) return "stop";
+      if (!ts.isIdentifier(n) || n === decl.name) return undefined;
+      if (lowerer.checker.getSymbolAtLocation(n) !== symbol) return undefined;
+      const statement = n.parent?.parent;
+      if (
+        !statement ||
+        !ts.isExpressionStatement(statement) ||
+        resetTarget(lowerer, statement.expression) !== n
+      )
+        onlyResets = false;
+      return undefined;
+    });
+    return onlyResets;
+  }
+  if (!ts.isExpressionStatement(stmt)) return false;
+  const ctor = enclosingConstructor(stmt);
+  if (!ctor) return false;
+  const target = resetTarget(lowerer, stmt.expression);
+  return target !== null && ownPrototypeRef(lowerer, target, ctor);
+}
+
+/** The prototype operand of `Object.setPrototypeOf(this, P)` or
+ * `this.__proto__ = P`, or null. */
+function resetTarget(lowerer: Lowerer, expr: ts.Expression): ts.Expression | null {
+  if (
+    ts.isCallExpression(expr) &&
+    expr.arguments.nodes.length === 2 &&
+    expr.arguments.nodes[0]!.kind === ts.SyntaxKind.ThisKeyword &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    expr.expression.name.text === "setPrototypeOf" &&
+    lowerer.isStdlibGlobal(expr.expression.expression, "Object")
+  )
+    return expr.arguments.nodes[1]!;
+  if (
+    ts.isBinaryExpression(expr) &&
+    expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    ts.isPropertyAccessExpression(expr.left) &&
+    expr.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+    expr.left.name.text === "__proto__"
+  )
+    return expr.right;
+  return null;
+}
+
+/** The class constructor whose body holds `node`, crossing only statements
+ * and blocks (any nested function rebinds `this`). */
+function enclosingConstructor(node: ts.Node): ts.ConstructorDeclaration | null {
+  for (let cur = node.parent; cur !== undefined; cur = cur.parent) {
+    if (ts.isConstructorDeclaration(cur)) return cur;
+    if (
+      ts.isFunctionLike(cur) ||
+      ts.isClassDeclaration(cur) ||
+      ts.isClassExpression(cur) ||
+      ts.isSourceFile(cur)
+    )
+      return null;
+  }
+  return null;
+}
+
+/** Whether `node` denotes the prototype of the object `ctor` constructs:
+ * `new.target.prototype`, a const holding it, or the class's own
+ * `C.prototype` when no class extends C. */
+function ownPrototypeRef(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  ctor: ts.ConstructorDeclaration,
+): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (ts.isPropertyAccessExpression(node) && node.name.text === "prototype") {
+    const base = node.expression;
+    if (
+      ts.isMetaProperty(base) &&
+      base.keywordToken === ts.SyntaxKind.NewKeyword &&
+      base.name.text === "target"
+    )
+      return true;
+    const cls = ctor.parent;
+    if (!ts.isIdentifier(base) || !(ts.isClassDeclaration(cls) || ts.isClassExpression(cls)))
+      return false;
+    const symbol = lowerer.resolveValueSymbol(base);
+    const info = symbol ? lowerer.classBySymbol.get(symbol) : undefined;
+    if (!info || symbol!.valueDeclaration !== cls) return false;
+    for (const other of lowerer.classes.values()) {
+      if (other !== info && lowerer.isSubclassOf(other.def.name, info.def.name)) return false;
+    }
+    return true;
+  }
+  if (ts.isIdentifier(node)) {
+    const symbol = lowerer.resolveValueSymbol(node);
+    const decl = symbol?.valueDeclaration;
+    return (
+      decl !== undefined &&
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer !== undefined &&
+      ts.isVariableDeclarationList(decl.parent) &&
+      (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
+      enclosingConstructor(decl) === ctor &&
+      !ts.isIdentifier(decl.initializer) &&
+      ownPrototypeRef(lowerer, decl.initializer, ctor)
+    );
+  }
+  return false;
 }
 
 function isAssertionInitializer(node: ts.Expression): boolean {

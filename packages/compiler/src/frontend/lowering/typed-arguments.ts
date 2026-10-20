@@ -321,7 +321,9 @@ export function forwardedTupleType(lowerer: Lowerer, node: ts.Expression): IrTyp
     // Checker-only probe first: an ordinary array rest never maps here.
     restTupleElementTypes(lowerer.typeOf(operand), lowerer.typeCtx) !== null
   ) {
-    const t = lowerer.mapTypeOf(lowerer.typeOf(operand));
+    // A tuple with optional positions has no value type of its own; its
+    // forwarded-only binding carries the slots' tuple (declareRestTupleParam).
+    const t = lowerer.mapTypeOf(lowerer.typeOf(operand)) ?? lowerer.peekLocal(operand)?.type;
     if (t && isTupleValueType(lowerer, t)) return t;
   }
   return null;

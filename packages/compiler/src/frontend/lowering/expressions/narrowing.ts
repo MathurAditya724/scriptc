@@ -1288,12 +1288,14 @@ export function lowerAsExpression(
     // the requested shape; an assertion does not bypass runtime checks.
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
     const bridged =
-      narrowed &&
-      (narrowed.kind === "f64" ||
-        narrowed.kind === "bool" ||
-        narrowed.kind === "string" ||
-        narrowed.kind === "object" ||
-        narrowed.kind === "dyn");
+      (narrowed &&
+        (narrowed.kind === "f64" ||
+          narrowed.kind === "bool" ||
+          narrowed.kind === "string" ||
+          narrowed.kind === "object" ||
+          narrowed.kind === "dyn")) ||
+      // `catch (e: any)`: the binding reads as its checked-dynamic value.
+      (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
   const inner = lowerer.lowerExpr(expr.expression);
