@@ -1,8 +1,16 @@
 import { probe } from "./stats.ts";
 
-export class Sink {
+class Base {
+  static count = 1;
+  static hello(): string {
+    return "hello";
+  }
+}
+
+export class Sink extends Base {
   readonly tag: string;
   constructor(tag: string) {
+    super();
     this.tag = tag;
   }
   static describe(): string {

@@ -47,9 +47,13 @@ export interface CycleInitFlag {
    * declaration initializes it (to undefined, which the pointer cannot
    * hold), so the flag alone decides its writes (markUninitializedWrites). */
   uninitialized?: true;
-  /** A class binding: its references are the class's own IR forms and its
-   * static field storage (`global` is the flag itself). */
+  /** A class binding: its references are the class's own IR forms and the
+   * static members it reaches, its own and its bases' (`global` is the flag
+   * itself). */
   className?: string;
+  /** The class and its base classes, whose `%C.static:` functions a static
+   * member access through the class can name. */
+  staticOwners?: readonly string[];
   staticGlobals?: ReadonlySet<string>;
   /** The source references to the class outside its own body, with the
    * local name each one spells (an import can rename the class; Node's
@@ -172,6 +176,12 @@ function registerClassInitFlag(
   const flagId = `%g.class.${className}%initialized`;
   const global: IrGlobal = { id: flagId, name: "%initialized", type: BOOL, mutable: true };
   lowerer.globalsList.push(global);
+  const staticOwners: string[] = [];
+  const staticGlobals = new Set<string>();
+  for (let c: ClassInfo | null = info; c; c = c.base) {
+    staticOwners.push(c.def.name);
+    for (const field of c.staticFields) staticGlobals.add(field.globalId);
+  }
   lowerer.classInitFlags.set(className, {
     global,
     flagId,
@@ -180,7 +190,8 @@ function registerClassInitFlag(
     settled: binding.settled,
     cycle,
     className,
-    staticGlobals: new Set(info.staticFields.map((f) => f.globalId)),
+    staticOwners,
+    staticGlobals,
     references: classReferences(lowerer, binding.symbol, binding.name, cycle),
   });
 }
@@ -472,16 +483,22 @@ function rewriteFunction(
   for (const [id, flag] of lowerer.cycleInitFlags) {
     if (runsEarly(flag)) active.set(id, flag);
   }
-  // Classes, by name; their static field storage joins `active`. A class's
-  // own members run only once the class exists, or inside its own
-  // definition, where the inner binding is initialized.
+  // Classes, by name, and the static field storage each reaches (a base
+  // class's statics through a subclass too). A class's own members run only
+  // once the class exists, or inside its own definition, where the inner
+  // binding is initialized.
   const classes = new Map<string, CycleInitFlag>();
+  const statics = new Map<string, CycleInitFlag[]>();
   for (const [className, flag] of lowerer.classInitFlags) {
     if (!runsEarly(flag) || fn.name.startsWith(`%${className}.`)) continue;
     classes.set(className, flag);
-    if (flag.staticGlobals) for (const id of flag.staticGlobals) active.set(id, flag);
+    for (const id of flag.staticGlobals ?? []) statics.set(id, [...(statics.get(id) ?? []), flag]);
   }
   if (active.size === 0 && classes.size === 0) return;
+  const flagOf = (localId: string, loc: SrcLoc): CycleInitFlag | undefined =>
+    active.get(localId) ?? statics.get(localId)?.find((flag) => coversReference(flag, loc));
+  const namesStatic = (flag: CycleInitFlag, fnName: string): boolean =>
+    (flag.staticOwners ?? []).some((owner) => fnName.startsWith(`%${owner}.static:`));
   const classFlagOf = (e: IrExpr): CycleInitFlag | undefined => {
     if (classes.size === 0) return undefined;
     switch (e.kind) {
@@ -495,8 +512,7 @@ function rewriteFunction(
       case "call":
         for (const [className, flag] of classes) {
           if (
-            (e.callee.startsWith(`%${className}.static:`) ||
-              e.callee === `%dyn.class.instanceof:${className}`) &&
+            (namesStatic(flag, e.callee) || e.callee === `%dyn.class.instanceof:${className}`) &&
             coversReference(flag, e.loc)
           )
             return flag;
@@ -504,10 +520,8 @@ function rewriteFunction(
         return undefined;
       case "closure":
         // A static method read as a value (`const f = K.m`) reads K.
-        for (const [className, flag] of classes) {
-          if (e.fnName.startsWith(`%${className}.static:`) && coversReference(flag, e.loc))
-            return flag;
-        }
+        for (const flag of classes.values())
+          if (namesStatic(flag, e.fnName) && coversReference(flag, e.loc)) return flag;
         return undefined;
       default:
         return undefined;
@@ -580,9 +594,8 @@ function rewriteFunction(
         };
       }
       if (e.kind !== "varRef" && e.kind !== "incDec" && e.kind !== "assignExpr") return e;
-      const flag = active.get(e.localId);
+      const flag = flagOf(e.localId, e.loc);
       if (flag === undefined) return e;
-      if (flag.className !== undefined && !coversReference(flag, e.loc)) return e;
       // `K.x = v` reads K before it evaluates v.
       if (e.kind === "assignExpr" && flag.className === undefined) {
         const t = temp(e.value.type);
@@ -600,9 +613,8 @@ function rewriteFunction(
     },
     stmt: (s: IrStmt): IrStmt => {
       if (s.kind !== "assign" || s.initializes) return s;
-      const flag = active.get(s.localId);
+      const flag = flagOf(s.localId, s.loc);
       if (flag === undefined) return s;
-      if (flag.className !== undefined && !coversReference(flag, s.loc)) return s;
       // `K.x = v` reads K before it evaluates v.
       if (flag.className !== undefined)
         return { kind: "block", body: [check(flag, s.loc), s], loc: s.loc };
@@ -648,7 +660,11 @@ function rewriteFunction(
     for (const [className, flag] of [...classes]) {
       if (flag.module !== initOf || !setsFlag(s, flag)) continue;
       classes.delete(className);
-      if (flag.staticGlobals) for (const id of flag.staticGlobals) active.delete(id);
+      for (const id of flag.staticGlobals ?? []) {
+        const rest = statics.get(id)!.filter((other) => other !== flag);
+        if (rest.length > 0) statics.set(id, rest);
+        else statics.delete(id);
+      }
     }
     const out = rewriteStmt(s);
     for (const [id, flag] of [...active]) {
