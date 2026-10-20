@@ -191,6 +191,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.errored",
   "stream.prop",
   "stream.dynNative",
+  "stream.dynNativePipe",
   "stream.pipeDyn",
   "stream.unpipeDyn",
   "stream.stdioWritable",
@@ -230,6 +231,7 @@ const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "rea
 /** Entry points that link the dyn-invoke unit. */
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynNative",
+  "stream.dynNativePipe",
   "stream.pipeDyn",
   "stream.unpipeDyn",
   "dyn.arrayProtoCall",
@@ -589,7 +591,9 @@ const RUNTIME_FEATURE_RULES = {
   dynTier: rule({ prefixes: ["js."] }),
   /** Checked-dynamic stream slots test values and pipe into JavaScript
    * stream objects (scr_stream_dyn.c). */
-  streamDyn: rule({ fns: ["stream.dynNative", "stream.pipeDyn", "stream.unpipeDyn"] }),
+  streamDyn: rule({
+    fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
+  }),
   /** Fixed-width Buffer read/write methods called on checked-dynamic
    * values (scr_bytes_dyn.c). */
   dynBufferNum: rule({

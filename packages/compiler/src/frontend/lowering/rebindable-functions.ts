@@ -13,17 +13,6 @@ import * as ts from "../ts7/adapter.js";
 import { isJsSourceFile } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 
-const rebindable = new WeakMap<Lowerer, Set<ts.FunctionDeclaration>>();
-
-function rebindableSet(lowerer: Lowerer): Set<ts.FunctionDeclaration> {
-  let set = rebindable.get(lowerer);
-  if (!set) {
-    set = new Set();
-    rebindable.set(lowerer, set);
-  }
-  return set;
-}
-
 /** Top-level function declarations of `sf` that an assignment anywhere in
  * the file writes, recorded for the queries below. */
 export function collectRebindableFunctions(
@@ -56,16 +45,13 @@ export function collectRebindableFunctions(
     if (symbol && symbol.declarations.includes(decl)) found.add(decl);
     return undefined;
   });
-  const set = rebindableSet(lowerer);
-  for (const decl of found) set.add(decl);
+  for (const decl of found) lowerer.rebindableFunctions.add(decl);
   return found;
 }
 
 export function isRebindableFunction(lowerer: Lowerer, decl: ts.Node | undefined): boolean {
   return (
-    decl !== undefined &&
-    ts.isFunctionDeclaration(decl) &&
-    (rebindable.get(lowerer)?.has(decl) ?? false)
+    decl !== undefined && ts.isFunctionDeclaration(decl) && lowerer.rebindableFunctions.has(decl)
   );
 }
 

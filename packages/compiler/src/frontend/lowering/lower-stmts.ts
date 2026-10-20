@@ -5931,10 +5931,18 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   // checker does not report it): buffer-crc32 replaces its number[] table
   // with `new Int32Array(table)`. Only a different representation counts;
   // writes that coerce into the declared type keep it.
-  const declared = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+  // A write whose checker type is the declaration's own maps to the same
+  // representation; the declared type is mapped only for the others.
+  const declaredType = lowerer.typeOf(decl.name);
+  const differing = candidates.filter(
+    (node) =>
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      lowerer.typeOf(node.right) !== declaredType,
+  );
+  if (differing.length === 0) return false;
+  const declared = lowerer.mapTypeOf(declaredType);
   if (declared === null || declared.kind === "dyn" || declared.kind === "union") return false;
-  return candidates.some((node) => {
-    if (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return false;
+  return differing.some((node) => {
     const written = lowerer.mapTypeOf(lowerer.typeOf(node.right));
     return (
       written !== null &&

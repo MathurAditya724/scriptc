@@ -1234,6 +1234,36 @@ function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefi
   return false;
 }
 
+/** A JavaScript default-export object literal holding a class the program
+ * could not lower (`export default { parse, TomlDate }` where TomlDate
+ * extends an unsupported base): the literal narrows that member away, its
+ * diagnostics deferred to the reads that reach it, so the binding's type
+ * drops it too. Otherwise the module's own initialization would fail the
+ * width check against members no build can supply. */
+function withoutRejectedClassMembers(
+  lowerer: Lowerer,
+  expression: ts.Expression,
+  type: IrType,
+): IrType {
+  let literal = expression;
+  while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
+  if (!ts.isObjectLiteralExpression(literal) || type.kind !== "record") return type;
+  const shape = lowerer.shapes.get(type.shapeId);
+  if (!shape || shape.tuple) return type;
+  const rejected = (t: IrType): boolean =>
+    t.kind === "classval" &&
+    !lowerer.classes.has(t.className) &&
+    lowerer.deferredClassByName.has(t.className);
+  if (!shape.fields.some((f) => rejected(f.type))) return type;
+  const kept = shape.fields.filter((f) => !rejected(f.type));
+  const shapeId = lowerer.shapes.intern(
+    kept.map((f) => ({ name: f.name, type: f.type })),
+    false,
+    shape.indexValue,
+  );
+  return { kind: "record", shapeId };
+}
+
 export function collectGlobals(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -1351,6 +1381,7 @@ export function collectGlobals(
           type = unitOnlyUnion(lowerer.unions);
         }
         if (type.kind === "void") lowerer.badType(stmt.expression, tsType);
+        if (isJsSourceFile(sf)) type = withoutRejectedClassMembers(lowerer, stmt.expression, type);
         const g: IrGlobal = { id: `%g.${tag}default`, name: "default", type, mutable: false };
         lowerer.globalsBySymbol.set(symbol, g);
         lowerer.globalsList.push(g);
@@ -2825,6 +2856,23 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
+    // Reassigned function declarations are initialized when the module
+    // starts, as declarations are hoisted: before its dependencies run, so
+    // a module of an import cycle can call one while it initializes. Their
+    // statements then lower to nothing (rebindable-functions.ts).
+    for (const stmt of stmts) {
+      if (!ts.isFunctionDeclaration(stmt) || !stmt.name || !isRebindableFunction(lowerer, stmt))
+        continue;
+      const g = lowerer.globalsByDeclNode.get(stmt);
+      if (!g) continue;
+      header.push({
+        kind: "assign",
+        localId: g.id,
+        value: lowerer.coerceToExpected(lowerer.lowerLambda(stmt), DYN),
+        loc: locOf(stmt),
+      });
+      ctx.hoistedFnDecls.add(stmt);
+    }
     for (const { stmt, dep } of orderedImportsOf(lowerer.program, sf)) {
       const npm = lowerer.npmInitActions.get(sf)?.get(stmt);
       if (npm !== undefined && npm.length > 0) {
@@ -3006,22 +3054,6 @@ export function lowerFileInit(
     }
     statics.sort((a, b) => a.pos - b.pos);
     const body = [...header, ...prelude];
-    // Reassigned function declarations are initialized when the module
-    // starts, as declarations are hoisted; their statements then lower
-    // to nothing (rebindable-functions.ts).
-    for (const stmt of stmts) {
-      if (!ts.isFunctionDeclaration(stmt) || !stmt.name || !isRebindableFunction(lowerer, stmt))
-        continue;
-      const g = lowerer.globalsByDeclNode.get(stmt);
-      if (!g) continue;
-      body.push({
-        kind: "assign",
-        localId: g.id,
-        value: lowerer.coerceToExpected(lowerer.lowerLambda(stmt), DYN),
-        loc: locOf(stmt),
-      });
-      ctx.hoistedFnDecls.add(stmt);
-    }
     let at = 0;
     for (const stmt of stmts) {
       // `<=`: a mixin instantiation's position IS its statement's start

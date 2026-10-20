@@ -1849,6 +1849,9 @@ export class Lowerer {
   /** Syntactic writes indexed once per JS scope. Symbol and RHS type
    * checks remain contextual to each binding probe. */
   readonly jsBindingWritesByOwner = new Map<ts.Node, Map<string, ts.BinaryExpression[]>>();
+  /** JavaScript function declarations their own module reassigns
+   * (rebindable-functions.ts). */
+  readonly rebindableFunctions = new Set<ts.FunctionDeclaration>();
   /** TRAP bindings: declarations whose initializer provably throws before
    * producing a value (its chain roots at an ambient-undefined name —
    * ambientUndefVarRootOf). Module init unwinds at the declaration, so no
