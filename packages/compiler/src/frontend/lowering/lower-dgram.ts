@@ -15,6 +15,7 @@ import {
   BOOL,
   canBoxFuncIntoDyn,
   canDynCheckTo,
+  typeKey,
   DGRAMSOCK_T,
   DYN,
   F64,
@@ -131,6 +132,7 @@ export function lowerDgramDnsModuleCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (bi.module === "dns") return lowerDnsModuleCall(lowerer, expr, bi, loc);
+  if (bi.module === "dns/promises") return lowerDnsPromisesCall(lowerer, expr, bi, loc);
   if (bi.module !== "dgram") return null;
   const args = expr.arguments.nodes;
   if (bi.member === "createSocket") {
@@ -276,6 +278,124 @@ function lowerDnsCallback(lowerer: Lowerer, node: ts.Expression, what: string): 
     node,
     "the callback's parameters must have checked-dynamic conversions",
   );
+}
+
+/** node:dns/promises calls (and dns.promises members): lookup(hostname[,
+ * options]) and lookupService(address, port) as promises over the callback
+ * forms' runtime (argument errors throw synchronously, as Node validates
+ * before it creates the promise), plus the shared getServers and result
+ * order functions. A typed result (Promise<LookupAddress>) checks the
+ * settled value through the checked-dynamic boundary. */
+function lowerDnsPromisesCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  bi: { module: string; member: string },
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments.nodes;
+  const dyn = (node: ts.Expression): IrExpr =>
+    lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+  if (bi.member === "lookup" || bi.member === "lookupService") {
+    const service = bi.member === "lookupService";
+    if (service ? args.length !== 2 : args.length !== 1 && args.length !== 2) {
+      lowerer.noLowering(
+        `dnsPromises.${bi.member} with ${args.length} arguments`,
+        expr,
+        service
+          ? "the form is lookupService(address, port)"
+          : "the supported forms are lookup(hostname) and lookup(hostname, options)",
+      );
+    }
+    const promise: IrExpr = {
+      kind: "libCall",
+      fn: service ? "dns.promisesLookupService" : "dns.promisesLookup",
+      args: [dyn(args[0]!), args.length === 2 ? dyn(args[1]!) : dynUndefinedExpr(loc)],
+      type: { kind: "promise", inner: DYN },
+      loc,
+    };
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (declared === null || declared.kind !== "promise" || declared.inner.kind === "dyn") {
+      return promise;
+    }
+    return checkedDynPromise(lowerer, promise, declared, expr, loc);
+  }
+  if (["getServers", "getDefaultResultOrder", "setDefaultResultOrder"].includes(bi.member)) {
+    return lowerDnsModuleCall(lowerer, expr, { module: "dns", member: bi.member }, loc);
+  }
+  lowerer.noLowering(
+    `dnsPromises.${bi.member}`,
+    expr,
+    "lookup, lookupService, getServers, getDefaultResultOrder, and setDefaultResultOrder are the lowered dns/promises functions",
+    ts.isIdentifier(expr.expression) ? lowerer.resolveValueSymbol(expr.expression) : undefined,
+  );
+}
+
+/** A promise<dyn> as the call site's typed promise: an interned async
+ * helper awaits it and checks the settled value into the declared inner
+ * type (a mismatch rejects with the checked-dynamic TypeError). */
+function checkedDynPromise(
+  lowerer: Lowerer,
+  promise: IrExpr,
+  declared: IrType & { kind: "promise" },
+  node: ts.Node,
+  loc: SrcLoc,
+): IrExpr {
+  const inner = declared.inner;
+  if (
+    !canDynCheckTo(
+      inner,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    lowerer.noLowering(
+      `a dns/promises result typed '${lowerer.fmt(declared)}'`,
+      node,
+      "the settled value must have a checked-dynamic conversion (type it as the documented LookupAddress shape or unknown)",
+    );
+  }
+  const key = `dns.promise:${typeKey(declared)}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = `%dns.promise.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, helper);
+    const promiseT: IrType = { kind: "promise", inner: DYN };
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "promise", name: "promise", type: promiseT }],
+      returnType: inner,
+      locals: [
+        { id: "promise", name: "promise", type: promiseT, mutable: false },
+        { id: "settled", name: "settled", type: DYN, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "settled",
+          init: {
+            kind: "awaitExpr",
+            value: { kind: "varRef", localId: "promise", type: promiseT, loc },
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "dynCheck",
+            value: { kind: "varRef", localId: "settled", type: DYN, loc },
+            type: inner,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+      async: true,
+    });
+  }
+  return { kind: "call", callee: helper, args: [promise], type: declared, loc };
 }
 
 /** dns module calls: lookup(hostname[, options], callback) with Node's

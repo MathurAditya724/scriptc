@@ -96,6 +96,7 @@ import {
   lowerRequireMainProperty,
 } from "../lower-node-module.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
+import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   cjsClassExprWholeExportOf,
@@ -781,6 +782,8 @@ export function lowerPropertyAccessExpr(
     const canonical = stdlibGlobalNameOf(lowerer, expr);
     if (canonical !== null) {
       if (canonical === "globalThis") return lowerGlobalValue(lowerer, expr);
+      // Typed for the programs that name it, absent in Node 24.
+      if (canonical === TEMPORAL_GLOBAL) return dynUndefinedExpr(loc);
       if (canonical === "ArrayBuffer")
         return { kind: "libCall", fn: "arrayBuffer.constructor", args: [], type: DYN, loc };
       if (canonical === "fetch")

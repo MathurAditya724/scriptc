@@ -108,6 +108,27 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "blob.bytes": { argTypes: [DYN], result: { kind: "promise", inner: BYTES_U8 } },
   "blob.arrayBuffer": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "blob.is": { argTypes: [DYN, F64], result: BOOL },
+  /** WebAssembly (scr_wasm.c): modules translated at build time
+   * (wasm/translate.ts), found at run time by the SHA-256 of their bytes.
+   * compile and instantiate over bytes settle on a later loop turn;
+   * instantiate over a Module settles now, as in Node. `wasm.is` answers
+   * instanceof for Module, Instance, Memory, Table and Global (kinds 0-4)
+   * and CompileError, LinkError and RuntimeError (5-7); `wasm.errorNew`
+   * constructs one of the error classes (kind 5-7, message, options). */
+  "wasm.compile": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "wasm.validate": { argTypes: [DYN], result: BOOL },
+  "wasm.instantiate": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "wasm.moduleNew": { argTypes: [DYN], result: DYN },
+  "wasm.instanceNew": { argTypes: [DYN, DYN], result: DYN },
+  "wasm.is": { argTypes: [DYN, F64], result: BOOL },
+  "wasm.errorNew": { argTypes: [F64, DYN, DYN], result: DYN },
+  /** WebAssembly.compile (0), instantiate (1) and validate (2) as function
+   * values, and the namespace object holding them. */
+  "wasm.function": { argTypes: [F64], result: DYN },
+  "wasm.namespace": { argTypes: [], result: DYN },
+  /** The global object viewed through a cast to a type with a WebAssembly
+   * member: an object holding the namespace. */
+  "wasm.globalView": { argTypes: [], result: DYN },
   "abort.timeout": { argTypes: [DYN], result: DYN },
   "abort.now": { argTypes: [DYN], result: DYN },
   "abort.any": { argTypes: [DYN], result: DYN },
@@ -1280,6 +1301,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.createServer": { argTypes: [], result: NETSERVER_T },
   "net.createServerCb": { argTypes: [null], result: NETSERVER_T },
   "net.listen": { argTypes: [NETSERVER_T, F64], result: VOID },
+  /** listen(path[, cb]): a Unix-socket server; the socket file is removed
+   * when the server closes. Failures are the async 'error'. */
+  "net.listenPath": { argTypes: [NETSERVER_T, STRING], result: VOID },
+  "net.listenPathCb": {
+    argTypes: [NETSERVER_T, STRING, { kind: "func", params: [], ret: VOID }],
+    result: VOID,
+  },
   "net.listenCb": {
     argTypes: [NETSERVER_T, F64, { kind: "func", params: [], ret: VOID }],
     result: VOID,
@@ -1322,6 +1350,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * answers null (the serverPort stance). */
   "net.serverAddress": { argTypes: [NETSERVER_T], result: VOID },
   "net.serverClose": { argTypes: [NETSERVER_T], result: VOID },
+  /** server.close((err) => ...): the callback (a dyn function) gets
+   * undefined once the server closes, or Node's ERR_SERVER_NOT_RUNNING
+   * when it was not listening. */
+  "net.serverCloseDyn": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  /** server.address() in programs that may listen on a Unix socket: the
+   * path a listening server answers ("" for a TCP server), and the check
+   * a record-typed address() makes first (throws for a Unix server). */
+  "net.serverUnixPath": { argTypes: [NETSERVER_T], result: STRING },
+  "net.serverAddressCheck": { argTypes: [NETSERVER_T], result: VOID },
   "net.serverCloseCb": {
     argTypes: [NETSERVER_T, { kind: "func", params: [], ret: VOID }],
     result: VOID,
@@ -1490,6 +1527,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * callback) and lookupService(address, port, callback). */
   "dns.lookupDyn": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
   "dns.lookupService": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+  /** node:dns/promises: lookup(hostname, options) and lookupService(address,
+   * port) over the callback forms; the promise fulfills with the dyn
+   * { address, family } (array for all: true) / { hostname, service }.
+   * Argument errors throw synchronously (may-throw), unlike the
+   * util.promisify forms below. */
+  "dns.promisesLookup": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "dns.promisesLookupService": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "dns.getServers": { argTypes: [], result: DYN },
   "dns.getDefaultResultOrder": { argTypes: [], result: STRING },
   "dns.setDefaultResultOrder": { argTypes: [DYN], result: VOID },
@@ -1909,6 +1953,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * non-http scheme. */
   "http.requestUrl": { argTypes: [STRING, STRING, BOOL], result: HTTPCLIENTREQ_T },
   "http.requestUrlCb": { argTypes: [STRING, STRING, BOOL, null], result: HTTPCLIENTREQ_T },
+  /** request/get with a runtime options record: a RequestOptions
+   * variable, or a literal that spreads one or sets socketPath. Args
+   * (options, autoEnd[, cb]). The runtime reads the record in the
+   * ClientRequest constructor's order (host/port or socketPath, path,
+   * method, headers, timeout, agent, signal, maxHeaderSize) with Node's
+   * errors, and documented options it does not implement throw the
+   * runtime fence. The "https." pair adds the TLS options. MAY THROW. */
+  "http.requestDyn": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
+  "http.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+  "https.requestDyn": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
+  "https.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
   /** The paused-mode demux surface (portless's first-byte TLS peek:
    * once('readable') + read(1) + unshift + emit('connection')).
    * sockOnReadable registers a zero-param listener (a consumer: arrived
@@ -1954,6 +2009,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Listeners with a parameter, as dyn functions: close(hadError),
    * write's cb(err) and end's cb. */
   "net.sockOnCloseDyn": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
+  /** socket.on/once('lookup', listener): the listener (a dyn function)
+   * gets (err, address, family, host) once per resolved address, or once
+   * with the lookup error, before the connect. */
+  "net.sockOnLookup": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
   "net.sockOnWriteFlush": {
     argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }],
     result: VOID,

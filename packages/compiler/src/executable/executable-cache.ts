@@ -56,6 +56,7 @@ export interface EarlyExecutableNativeFeatures {
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
+  wasm?: boolean;
   warningReplace?: boolean;
   stdioExtended?: boolean;
   zlib: boolean;
@@ -77,6 +78,7 @@ export interface EarlyExecutableNativeFeatures {
   http: boolean;
   http2: boolean;
   dgram: boolean;
+  dnsPromises: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
@@ -194,6 +196,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "http",
   "http2",
   "dgram",
+  "dnsPromises",
   "watch",
   "foreignFfi",
   "nodeTest",

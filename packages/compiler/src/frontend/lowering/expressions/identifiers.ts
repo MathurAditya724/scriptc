@@ -44,6 +44,7 @@ import {
   ambientUndefinedFnSymbolOf,
   contextualUndefReadType,
   fenceEarlyAliasUse,
+  isTemporalGlobalRoot,
   lowerNsIdentifierValue,
   nsUndefRead,
 } from "../lower-namespaces.js";
@@ -543,7 +544,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           return builtinFunctionFenceValue(lowerer, bi, expr, loc);
         return {
           kind: "strLit",
-          value: `[builtin ${bi.module}.${bi.member}]`,
+          // node:stream/web exports the web stream globals themselves:
+          // the same identity token as the global spelling.
+          value:
+            bi.module === "stream/web"
+              ? `[builtin ${bi.member}]`
+              : `[builtin ${bi.module}.${bi.member}]`,
           type: STRING,
           loc,
         };
@@ -723,6 +729,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   }
   {
     const sym = lowerer.checker.getSymbolAtLocation(expr);
+    // The temporal global is typed (TS 7's lib slice) but Node 24 does
+    // not define it: the read throws Node's ReferenceError.
+    if (isTemporalGlobalRoot(lowerer, expr, sym)) {
+      const t =
+        ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
+      return nsUndefRead(lowerer, expr.text, expr, t);
+    }
     if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
       const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
       // Builtin constructors have real function values in both source

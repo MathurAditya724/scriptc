@@ -30,8 +30,13 @@ import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
-import { refuseWebAssemblyUse } from "./builtins/webassembly.js";
+import {
+  lowerWebAssemblyCall,
+  lowerWebAssemblyNew,
+  refuseWebAssemblyUse,
+} from "./builtins/webassembly.js";
 import { discoverWasmModules, type WasmModuleReport } from "../../wasm/discover.js";
+import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
@@ -185,6 +190,7 @@ import type {
   IrGlobal,
   IrLocal,
   IrModule,
+  IrWasmModule,
   IrParam,
   IrRecordShape,
   IrStmt,
@@ -1103,6 +1109,40 @@ export function lowerToIr(
       diagnostics: [...result.diagnostics, ...contracts.diagnostics],
     };
   else if (contracts.count > 0) result = { ...result, contracts };
+  const discoverModules = (
+    onModule?: (sha256: string, bytes: Uint8Array) => void,
+  ): WasmModuleReport[] =>
+    discoverWasmModules({
+      files: moduleOrder.includes(entry) ? moduleOrder : [...moduleOrder, entry],
+      entry: entry.fileName,
+      configured: options.wasmFiles ?? [],
+      resolveRequest: (fromFile, specifier) => {
+        const resolved = resolveRequireRuntime(
+          fromFile,
+          specifier,
+          targetPlatform,
+          undefined,
+          options.frontendServices,
+        );
+        return resolved.ok ? resolved.value : null;
+      },
+      ...(onModule === undefined ? {} : { onModule }),
+    });
+  // A program that uses the WebAssembly API carries every module the build
+  // can see and translate (wasm/translate.ts); the rest fail at run time
+  // with the CompileError for untranslated bytes.
+  if (result.module !== null && resultLowerer.usesWebAssembly) {
+    const bytesByHash = new Map<string, Uint8Array>();
+    const reports = discoverModules((sha256, bytes) => bytesByHash.set(sha256, bytes));
+    const wasmModules: IrWasmModule[] = [];
+    for (const report of reports) {
+      const bytes = bytesByHash.get(report.sha256);
+      if (report.status !== "valid" || bytes === undefined) continue;
+      wasmModules.push({ sha256: report.sha256, bytes: encodeBase64(bytes) });
+    }
+    result.module.wasmModules = wasmModules;
+    timing("wasm-discovery", { modules: wasmModules.length });
+  }
   if (options.coverage !== true) return result;
   const remainder = new Lowerer(program, entry, moduleOrder, {
     frontendServices: options.frontendServices,
@@ -1156,21 +1196,7 @@ export function lowerToIr(
     },
   };
   if (tiers !== undefined) covered.tiers = tiers;
-  const wasmModules = discoverWasmModules({
-    files: moduleOrder.includes(entry) ? moduleOrder : [...moduleOrder, entry],
-    entry: entry.fileName,
-    configured: options.wasmFiles ?? [],
-    resolveRequest: (fromFile, specifier) => {
-      const resolved = resolveRequireRuntime(
-        fromFile,
-        specifier,
-        targetPlatform,
-        undefined,
-        options.frontendServices,
-      );
-      return resolved.ok ? resolved.value : null;
-    },
-  });
+  const wasmModules = discoverModules();
   timing("wasm-discovery", { modules: wasmModules.length });
   if (wasmModules.length > 0) covered.wasmModules = wasmModules;
   return covered;
@@ -1953,6 +1979,10 @@ export class Lowerer {
   /** Lambdas lowered with checked-dynamic parameters (lambdaSignature):
    * callbacks whose arguments are wider than their contextual overload. */
   readonly dynParamLambdas = new Set<ts.Node>();
+  /** Whether some server in this program may listen on a Unix socket: a
+   * listen call whose first argument is a string. Computed once on first
+   * use (null until then); address() answers the path only when true. */
+  unixListenReachable: boolean | null = null;
   /** IMPLICIT-ANY instances lowered EAGERLY at first demand (their return
    * types are inferred from the body — the call site needs them settled),
    * collected here for run()'s function list (the liftedFns discipline). */
@@ -2753,6 +2783,9 @@ export class Lowerer {
   readonly workerTargets: readonly ts.SourceFile[];
   readonly workerTargetIdByPath = new Map<string, number>();
   usesWorkers = false;
+  /** The program uses the WebAssembly API (builtins/webassembly.ts): the
+   * build translates the modules it discovers. */
+  usesWebAssembly = false;
   /** The program constructs a LifetimeRegion (lifetime-regions.ts). */
   usesLifetimeRegions = false;
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
@@ -11950,6 +11983,8 @@ export class Lowerer {
     // dispatch. The general identifier-call paths have no lowering for a
     // promise-returning ambient global, and `import` is a keyword callee no
     // identifier path matches.
+    const webAssembly = lowerWebAssemblyCall(this, expr);
+    if (webAssembly !== null) return webAssembly;
     refuseWebAssemblyUse(this, expr.expression);
     return (
       lowerLifetimeRegionCall(this, expr) ??
@@ -12178,6 +12213,8 @@ export class Lowerer {
   }
 
   lowerNew(expr: ts.NewExpression): IrExpr {
+    const webAssembly = lowerWebAssemblyNew(this, expr);
+    if (webAssembly !== null) return webAssembly;
     refuseWebAssemblyUse(this, expr.expression, "new ");
     const builtin =
       lowerLifetimeRegionNew(this, expr) ??
@@ -12581,6 +12618,12 @@ export class Lowerer {
     {
       const callable = this.lowerBuiltinCallableValue(bi, loc);
       if (callable) return callable;
+    }
+    // node:stream/web's exports are the web stream globals themselves: in
+    // JavaScript sources the same identity token as the global spelling
+    // (`require("stream/web").ReadableStream === globalThis.ReadableStream`).
+    if (bi.module === "stream/web" && isJsSourceFile(expr.getSourceFile())) {
+      return { kind: "strLit", value: `[builtin ${bi.member}]`, type: STRING, loc };
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
