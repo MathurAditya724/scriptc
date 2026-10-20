@@ -4267,9 +4267,6 @@ function canBoxDynCompositeAt(
       const shape = getRecord(t.shapeId);
       if (!shape) return false;
       if (recordTextCodecClass(shape) !== null) return false;
-      // Accessor slots hold the getter and setter closures, not property
-      // values (see accessorSlotProp).
-      if (shapeHasAccessorSlots(shape)) return false;
       // Recursive shapes answer coinductively, like isJsonSafeType.
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);
