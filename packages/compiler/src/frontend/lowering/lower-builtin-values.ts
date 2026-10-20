@@ -132,13 +132,11 @@ export function isNativeBuiltinValueInitializer(
   const symbol = lowerer.resolveValueSymbol(expr);
   if (!symbol || seen.has(symbol)) return false;
   seen.add(symbol);
-  return lowerer.checker
-    .declarationsOf(symbol)
-    .some(
-      (decl) =>
-        ts.isVariableDeclaration(decl) &&
-        isNativeBuiltinValueInitializer(lowerer, decl.initializer, seen),
-    );
+  return symbol.declarations.some(
+    (decl) =>
+      ts.isVariableDeclaration(decl) &&
+      isNativeBuiltinValueInitializer(lowerer, decl.initializer, seen),
+  );
 }
 
 /** The stored Array.isArray function shares the direct call's native test. */

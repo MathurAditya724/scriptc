@@ -138,9 +138,7 @@ export function zlibStreamModeOf(
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
   const mode = ZLIB_STREAM_MODES.get(target.name);
   if (mode === undefined) return null;
-  return lowerer.checker
-    .declarationsOf(target)
-    .some((d) => ts.isClassDeclaration(d) && isZlibFallbackDecl(lowerer, d))
+  return target.declarations.some((d) => ts.isClassDeclaration(d) && isZlibFallbackDecl(lowerer, d))
     ? mode
     : null;
 }
@@ -161,15 +159,13 @@ function isZlibFallbackDecl(lowerer: Lowerer, d: ts.Node): boolean {
 export function isZlibStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(access.name);
   if (!symbol) return false;
-  return lowerer.checker
-    .declarationsOf(symbol)
-    .some(
-      (d) =>
-        d.parent !== undefined &&
-        ts.isClassDeclaration(d.parent) &&
-        d.parent.name?.text === "ZlibBase" &&
-        isZlibFallbackDecl(lowerer, d.parent),
-    );
+  return symbol.declarations.some(
+    (d) =>
+      d.parent !== undefined &&
+      ts.isClassDeclaration(d.parent) &&
+      d.parent.name?.text === "ZlibBase" &&
+      isZlibFallbackDecl(lowerer, d.parent),
+  );
 }
 
 /** `stream.bytesWritten` on a zlib stream. */

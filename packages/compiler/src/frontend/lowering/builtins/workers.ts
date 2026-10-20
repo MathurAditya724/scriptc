@@ -184,7 +184,7 @@ function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name: strin
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getSymbol();
   if (sym?.name !== name) return false;
-  return lowerer.checker.declarationsOf(sym).some((d) => {
+  return sym.declarations.some((d) => {
     if (!ts.isClassDeclaration(d) && !ts.isInterfaceDeclaration(d)) return false;
     if (!lowerer.isStdlibFile(d.getSourceFile())) return false;
     let up: ts.Node | undefined = d.parent;

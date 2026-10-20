@@ -5103,7 +5103,8 @@ function validateFunction(
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 1;
       if (ok && cbT?.kind === "func" && cbT.params.length === 1) {
         const p = cbT.params[0]!;
-        if (e.fn === "stdin.onData") ok = p.kind === "bytes" && p.elem === "u8";
+        if (e.fn === "stdin.onData")
+          ok = (p.kind === "bytes" && p.elem === "u8") || p.kind === "string";
         else if (e.fn === "stdin.onError") ok = p.kind === "object" && p.className === "%Error";
         else ok = p.kind === "f64";
       }

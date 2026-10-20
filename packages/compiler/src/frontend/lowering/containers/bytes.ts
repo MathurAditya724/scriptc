@@ -555,9 +555,9 @@ export function lowerBytesMethodCall(
         const nameSym = lowerer.checker.getSymbolAtLocation(access.name);
         return (
           nameSym !== undefined &&
-          lowerer.checker
-            .declarationsOf(nameSym)
-            .some((d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer")
+          nameSym.declarations.some(
+            (d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer",
+          )
         );
       })();
     const method = name === "subarray" || declaredOnBuffer ? "subarray" : "slice";
@@ -581,13 +581,11 @@ export function lowerBytesMethodCall(
       const symbol = lowerer.checker.getSymbolAtLocation(access.name);
       return (
         symbol !== undefined &&
-        lowerer.checker
-          .declarationsOf(symbol)
-          .some(
-            (declaration) =>
-              ts.isInterfaceDeclaration(declaration.parent) &&
-              declaration.parent.name.text === "Buffer",
-          )
+        symbol.declarations.some(
+          (declaration) =>
+            ts.isInterfaceDeclaration(declaration.parent) &&
+            declaration.parent.name.text === "Buffer",
+        )
       );
     })()
   ) {
@@ -647,9 +645,9 @@ export function lowerBytesMethodCall(
       const nameSym = lowerer.checker.getSymbolAtLocation(access.name);
       return (
         nameSym !== undefined &&
-        lowerer.checker
-          .declarationsOf(nameSym)
-          .some((d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer")
+        nameSym.declarations.some(
+          (d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer",
+        )
       );
     })();
     if (receiverIr.elem !== "u8" || !declaredOnBuffer) {
@@ -725,9 +723,9 @@ export function lowerBytesMethodCall(
     const nameSym = lowerer.checker.getSymbolAtLocation(access.name);
     return (
       nameSym !== undefined &&
-      lowerer.checker
-        .declarationsOf(nameSym)
-        .some((d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer")
+      nameSym.declarations.some(
+        (d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer",
+      )
     );
   })();
   if (declOnBuffer && receiverIr.elem === "u8") {
@@ -1274,16 +1272,14 @@ function knownBufferProducer(
     const symbol = lowerer.checker.getSymbolAtLocation(node);
     if (!symbol || seen.has(symbol)) return false;
     seen.add(symbol);
-    return lowerer.checker
-      .declarationsOf(symbol)
-      .some(
-        (decl) =>
-          ts.isVariableDeclaration(decl) &&
-          ts.isVariableDeclarationList(decl.parent) &&
-          (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
-          decl.initializer !== undefined &&
-          knownBufferProducer(lowerer, decl.initializer, seen),
-      );
+    return symbol.declarations.some(
+      (decl) =>
+        ts.isVariableDeclaration(decl) &&
+        ts.isVariableDeclarationList(decl.parent) &&
+        (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        decl.initializer !== undefined &&
+        knownBufferProducer(lowerer, decl.initializer, seen),
+    );
   }
   if (!ts.isCallExpression(node)) return false;
   const callee = node.expression;

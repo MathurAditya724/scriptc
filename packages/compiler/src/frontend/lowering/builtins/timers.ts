@@ -155,9 +155,9 @@ function isTimerHandleTyped(
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getAliasSymbol() ?? t.getSymbol();
   if (sym?.name !== name) return false;
-  return lowerer.checker
-    .declarationsOf(sym)
-    .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()));
+  return sym.declarations.some(
+    (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+  );
 }
 function isTimeoutTyped(lowerer: Lowerer, node: ts.Expression): boolean {
   return isTimerHandleTyped(lowerer, node, "Timeout");

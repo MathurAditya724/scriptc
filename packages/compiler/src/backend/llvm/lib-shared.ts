@@ -588,6 +588,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.generateKeySync": "scr_crypto_generate_key_sync",
   "crypto.keyObjectInput": "scr_crypto_key_object_input",
   "crypto.isKeyObject": "scr_crypto_is_key_object",
+  "webcrypto.importKey": "scr_webcrypto_import_key",
+  "webcrypto.sign": "scr_webcrypto_sign",
+  "webcrypto.verify": "scr_webcrypto_verify",
+  "webcrypto.digest": "scr_webcrypto_digest",
+  "webcrypto.isCryptoKey": "scr_webcrypto_is_crypto_key",
   "crypto.randomUUIDv7": "scr_crypto_random_uuid_v7",
   "crypto.pbkdf2": "scr_crypto_pbkdf2",
   "crypto.hkdf": "scr_crypto_hkdf",
@@ -1336,6 +1341,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.emitWarningText": "scr_process_emit_warning_text",
   "process.deprecationFlag": "scr_process_deprecation_flag",
   "process.setDeprecationFlag": "scr_process_set_deprecation_flag",
+  "process.setEmitWarning": "scr_process_set_emit_warning",
   "process.onUncaughtException": "scr_process_on_uncaught_exception",
   "process.offUncaughtException": "scr_process_off_uncaught_exception",
   "process.onUnhandledRejection": "scr_process_on_unhandled_rejection",
@@ -1471,6 +1477,10 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "process.emitWarning",
   // Decipheriv.setAuthTag reports DEP0182 on the next tick.
   "crypto.cipherNew",
+  // WebCrypto results settle through the deferred crypto queue.
+  "webcrypto.sign",
+  "webcrypto.verify",
+  "webcrypto.digest",
   "process.emitWarningText",
   // The legacy url entries queue DEP0169/DEP0170 on the next tick.
   "url.legacyParse",

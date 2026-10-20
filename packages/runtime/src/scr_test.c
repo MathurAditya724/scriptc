@@ -983,9 +983,23 @@ static void scr_test_print_failure(ScrTestCtx *t) {
   }
   fputc('\n', stdout);
   if (t->err) {
-    /* Node prints the failure inspected: a thrown string is quoted. */
-    ScrStr *msg = t->err->kind == SCR_EXC_STR ? scr_insp_str(t->err->payload)
-                                              : scr_caught_to_string(t->err);
+    /* Node prints the failure inspected: a thrown string is quoted, and
+     * numbers, booleans and checked-dynamic values (thrown records, arrays,
+     * null and undefined) print as util.inspect renders them. Errors and
+     * other payloads print their string form. */
+    const ScrCaught *err = t->err;
+    ScrStr *msg;
+    if (err->kind == SCR_EXC_STR) {
+      msg = scr_insp_str(err->payload);
+    } else if (err->kind == SCR_EXC_F64 || err->kind == SCR_EXC_BOOL ||
+               ((err->kind == SCR_EXC_REF || err->kind == SCR_EXC_PRIMITIVE_REF) &&
+                err->retain_fn == scr_dyn_retain_v)) {
+      ScrDyn *value = scr_caught_to_dyn(err);
+      msg = scr_insp_dyn(value, 0, 2);
+      scr_dyn_release(value);
+    } else {
+      msg = scr_caught_to_string(err);
+    }
     if (msg) {
       const char *p = msg->data;
       const char *end = msg->data + msg->len;

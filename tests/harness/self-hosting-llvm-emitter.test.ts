@@ -14,7 +14,7 @@ import {
 } from "@scriptc/compiler";
 import { emitLlvmModule } from "../../packages/compiler/src/backend/llvm/emitter.js";
 import { type IrModule } from "../../packages/compiler/src/ir/ir.js";
-import { executableLinkFeatures } from "../../packages/compiler/src/backend/executable-features.js";
+import { moduleLinkFeatures } from "./link-features.js";
 import {
   llvmEmitterCases,
   llvmEmitterOptions,
@@ -244,7 +244,7 @@ for (const backend of ["llvm"] as const) {
             cacheIdentity: generatedProgram,
             sanitize,
             optimization: "dev",
-            ...executableLinkFeatures(mod),
+            ...moduleLinkFeatures(mod),
           });
           const node = spawnSync(process.execPath, [sourcePath], runOptions);
           const native = spawnSync(outPath, [], runOptions);
@@ -272,7 +272,7 @@ for (const backend of ["llvm"] as const) {
           cacheIdentity: generatedProgram,
           sanitize,
           optimization: "dev",
-          ...executableLinkFeatures(ownIr),
+          ...moduleLinkFeatures(ownIr),
         });
         const again = join(dir, "again.ll");
         progress("second generation emits own IR");
