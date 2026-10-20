@@ -4356,6 +4356,31 @@ void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value
   scr_dyn_obj_put(obj, key, key_len, value);
 }
 
+/* The getter (or, with `setter`, the setter) of the own accessor property
+ * `key`: +1, or the undefined value when the property is not an accessor
+ * or has none. */
+ScrDyn *scr_dyn_obj_accessor_fn(const ScrDyn *obj, const char *key, size_t key_len, bool setter) {
+  const ScrDynEntry *entry = obj->kind == SCR_DYN_OBJ ? scr_dyn_find_entry(obj, key, key_len) : NULL;
+  ScrDyn *fn = entry && entry->accessor ? (setter ? entry->setter : entry->getter) : NULL;
+  return scr_dyn_retain(fn ? fn : scr_dyn_undefined());
+}
+
+/* An object literal's get/set accessor property on a fresh copy:
+ * enumerable and configurable, with the given getter and setter functions
+ * (either NULL when the literal declares none). Moves both. */
+void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter) {
+  scr_dyn_obj_put(obj, key, key_len, scr_dyn_retain(scr_dyn_undefined()));
+  ScrDynEntry *entry = scr_dyn_find_entry(obj, key, key_len);
+  if (!entry) {
+    scr_dyn_release(getter);
+    scr_dyn_release(setter);
+    return;
+  }
+  entry->accessor = true;
+  entry->getter = getter;
+  entry->setter = setter;
+}
+
 /* A class instance's view takes its native field values whatever the
  * attributes copied into it (a frozen instance's view is built the same way
  * as any other). Consumes value. */
