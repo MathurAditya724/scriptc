@@ -30,7 +30,7 @@ import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
-import { isSafeToDiscard } from "./evaluation-safety.js";
+import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { type ClassInfo, storedClassValueType } from "../lower-classes.js";
 import { classInstanceOf } from "../class-dynamic-dispatch.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -1349,13 +1349,14 @@ export function lowerInExpression(
   // arm answers membership STATICALLY (a declared non-optional field is
   // always present, an undeclared name never is), so the whole test
   // collapses to runtime TAG tests — tsc's own narrowing then types the
-  // branches (the discriminating-`in` idiom). Optional (undefined-armed)
-  // fields and tuple/index-signature arms answer per VALUE, not per arm
-  // — those unions keep the fence below.
+  // branches (the discriminating-`in` idiom). An arm declaring the key
+  // as an optional (undefined-armed) slot answers per VALUE instead:
+  // its tag test joins that payload's presence test (see
+  // perValueUnionIn). Tuple/index-signature arms keep the fence below.
   if (recv.type.kind === "union") {
     const unionId = recv.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms ?? [];
-    const answers: { tag: number; has: boolean }[] = [];
+    const answers: { tag: number; has: boolean | "slot"; arm: IrType }[] = [];
     let staticAnswers = arms.length > 0;
     for (const arm of arms) {
       const tag = lowerer.armTag(unionId, arm);
@@ -1372,14 +1373,17 @@ export function lowerInExpression(
         f.type.kind === "union" &&
         lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0
       ) {
-        staticAnswers = false; // an optional slot: presence is per-value
-        break;
+        answers.push({ tag, has: "slot", arm }); // presence is per-value
+        continue;
       }
       // Accessor properties are own properties to `in` (Node answers
       // true without invoking the getter) — either slot present makes
       // the name a member.
       const acc = shape.fields.some((x) => x.name === `%get:${key}` || x.name === `%set:${key}`);
-      answers.push({ tag, has: f !== undefined || acc || inherited });
+      answers.push({ tag, has: f !== undefined || acc || inherited, arm });
+    }
+    if (staticAnswers && answers.some((a) => a.has === "slot")) {
+      return perValueUnionIn(lowerer, recv, unionId, key, answers, loc);
     }
     if (staticAnswers) {
       const pureRecv =
@@ -1529,6 +1533,75 @@ export function lowerInExpression(
     expr,
     "statically-decided 'in' on computed receivers (bind the value to a variable first)",
   );
+}
+
+/** `"k" in u` over a union of fixed record shapes where some arm declares
+ * `k` as an optional slot. Arms without the name answer false and arms
+ * with an always-present member answer true, both by tag; an optional
+ * slot answers its payload's own-property presence (an explicit
+ * undefined is present, an omitted or deleted property is not), read
+ * through the checked arm extraction the tag test has just proven. The
+ * receiver evaluates once: a non-repeatable one is stabilized in a
+ * hidden local first. */
+function perValueUnionIn(
+  lowerer: Lowerer,
+  recv: IrExpr,
+  unionId: string,
+  key: string,
+  answers: readonly { tag: number; has: boolean | "slot"; arm: IrType }[],
+  loc: SrcLoc,
+): IrExpr {
+  const recvType = recv.type;
+  const stable = isSafeToRepeat(recv) ? null : lowerer.declareHiddenLocal("%inRecv", recvType);
+  const ref = (): IrExpr => (stable ? varRef(stable.id, recvType, loc) : recv);
+  const isTag = (tag: number): IrExpr => ({
+    kind: "unionIsTag",
+    unionId,
+    tag,
+    negated: false,
+    value: ref(),
+    type: BOOL,
+    loc,
+  });
+  let out: IrExpr | null = null;
+  for (const a of answers) {
+    if (a.has === false) continue;
+    let test = isTag(a.tag);
+    if (a.has === "slot" && a.arm.kind === "record") {
+      test = {
+        kind: "logical",
+        op: "&&",
+        left: test,
+        right: {
+          kind: "recordHas",
+          obj: {
+            kind: "unionNarrow",
+            unionId,
+            tag: a.tag,
+            value: ref(),
+            type: a.arm,
+            loc,
+          },
+          shapeId: a.arm.shapeId,
+          field: key,
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+    out = out ? { kind: "logical", op: "||", left: out, right: test, type: BOOL, loc } : test;
+  }
+  const result: IrExpr = out ?? { kind: "boolLit", value: false, type: BOOL, loc };
+  if (!stable) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stable.id, init: recv, loc }],
+    result,
+    type: BOOL,
+    loc,
+  };
 }
 
 /** The runtime-key `in` (see lowerInExpression): `k in r` where k is a

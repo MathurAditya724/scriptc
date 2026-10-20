@@ -29,6 +29,7 @@ import { isOptionalProcessStreamProperty } from "../builtins/process.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
+import { hostedStorageView, hostsAll } from "./hosted-narrowing.js";
 import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
@@ -659,6 +660,12 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       };
     }
   }
+  // A narrowing that refines record arms with an intersection keeps the
+  // stored layout: view the value as the stored arms that can hold it.
+  if (narrowed?.kind === "union") {
+    const hosted = hostedStorageView(lowerer, expr, narrowed, expr.loc);
+    if (hosted) return hosted;
+  }
   // A checker type narrowed to a UNIT arm (the `=== undefined` branch)
   // also stays union-typed: a unit arm has no payload to extract, and
   // nothing useful reads such a value anyway. (Standalone undefined maps
@@ -668,6 +675,14 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     return expr;
   }
   const tag = lowerer.armTag(expr.type.unionId, narrowed);
+  if (
+    tag < 0 &&
+    narrowed.kind === "record" &&
+    !lowerer.unions.get(expr.type.unionId)?.discriminant
+  ) {
+    const hosted = hostedStorageView(lowerer, expr, narrowed, expr.loc);
+    if (hosted) return hosted;
+  }
   if (tag < 0) {
     // The checker may refine fields inside a discriminated record too.
     // That creates a different mapped shape, but does not change the
@@ -926,6 +941,10 @@ export function runtimeOptionalReceiverRead(
       loc,
     );
     if (!helper) {
+      // Intersection-refined record arms read through their stored
+      // layout (the predicate `r is Route & { path: string }`).
+      const hosted = hostedStorageView(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
+      if (hosted) return hosted;
       lowerer.unsupported(
         "SC1090",
         expr,
@@ -945,6 +964,10 @@ export function runtimeOptionalReceiverRead(
     // Preserve the member-specific missing-value error on the two-arm
     // path below; mixed storage also needs to validate its concrete class.
     if (view && (lowerer.unions.get(local.type.unionId)?.arms.length ?? 0) > 2) return view;
+  }
+  if (narrowed.kind === "record" && lowerer.armTag(local.type.unionId, narrowed) < 0) {
+    const hosted = hostedStorageView(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
+    if (hosted) return hosted;
   }
   const undefTag = lowerer.armTag(local.type.unionId, UNDEFINED_T);
   const def = lowerer.unions.get(local.type.unionId);
@@ -1286,6 +1309,12 @@ export function lowerAsExpression(
     ) {
       return lowerer.coerceInto(expr, inner, target);
     }
+    // `job as Job & { startedAt: number }` on a record: the asserted
+    // record refines the stored one, so the assertion keeps the object
+    // (a width copy would sever writes through the asserted view).
+    if (inner.type.kind === "record" && target && hostsAll(lowerer, inner.type, target)) {
+      return inner;
+    }
     // Static assertions normally erase, but record layouts are
     // monomorphic: a consumer selected from the asserted shape must see
     // that shape physically. Reuse the ordinary slot coercion so plain
@@ -1311,6 +1340,12 @@ export function lowerAsExpression(
         if (helper) {
           return lowerer.checkedNarrowCall(helper, inner, target, locOf(expr));
         }
+      }
+      // An intersection refining the stored record arms keeps the value
+      // (hosted-narrowing.ts): the stored arms that can hold it.
+      if (target && (target.kind === "union" || target.kind === "record")) {
+        const hosted = hostedStorageView(lowerer, inner, target, locOf(expr));
+        if (hosted) return hosted;
       }
     }
     // `node.parent as Sub | undefined`: a union target whose class arm is
