@@ -43,3 +43,14 @@ console.log(picked === seen, seen.has("g"));
 
 [1, 2, 2, 5].forEach((n) => nodes.add(new Item(`n${n}`)));
 console.log(nodes.size);
+
+// An arrow whose expression body is the add() returns the Set.
+const tags = new Set<string>();
+const tag = (t: string) => tags.add(t);
+console.log(tag("x").size, tag("y") === tags);
+const typedTag = (t: string): Set<string> => tags.add(t);
+console.log(typedTag("z").has("z"));
+const results = ["p", "q"].map((t) => tags.add(t));
+console.log(results.length, results[1] === tags, tags.size);
+["r", "s"].forEach((t) => tags.add(t));
+console.log([...tags].join(","));

@@ -524,11 +524,29 @@ export function lowerMapForEachCall(
   return { kind: "call", callee: helper, args: [receiver, fnArg], type: VOID, loc };
 }
 
+/** True when an arrow's expression body is lowered as a statement: the
+ * function being lowered returns void (`xs.forEach((x) => s.add(x))`) and
+ * the arrow's contextual signature returns void. An arrow that returns the
+ * Set (`(n) => s.add(n)`, a `map` callback) or a body inlined into a
+ * caller that reads its value is not. */
+function setAddArrowResultVoid(lowerer: Lowerer, arrow: ts.ArrowFunction): boolean {
+  if (lowerer.ctx.returnType.kind !== "void") return false;
+  const contextual = lowerer.checker.getContextualType(arrow);
+  if (contextual === undefined) return false;
+  const signatures = lowerer.checker.getCallSignatures(
+    lowerer.checker.getNonNullableType(contextual),
+  );
+  return (
+    signatures.length === 1 &&
+    (lowerer.checker.getReturnTypeOfSignature(signatures[0]!).flags & ts.TypeFlags.Void) !== 0
+  );
+}
+
 /** True when nothing reads an add() call's result: an expression
- * statement, an arrow's expression body, a `void` operand, a for header's
- * initializer or incrementor, a comma's left operand, or a conditional or
- * comma result that is itself discarded. */
-function setAddResultDiscarded(call: ts.CallExpression): boolean {
+ * statement, the expression body of an arrow whose result is void, a `void`
+ * operand, a for header's initializer or incrementor, a comma's left
+ * operand, or a conditional or comma result that is itself discarded. */
+function setAddResultDiscarded(lowerer: Lowerer, call: ts.CallExpression): boolean {
   let node: ts.Node = call;
   for (;;) {
     let parent = node.parent;
@@ -538,7 +556,8 @@ function setAddResultDiscarded(call: ts.CallExpression): boolean {
     }
     if (parent === undefined) return false;
     if (ts.isExpressionStatement(parent) || ts.isVoidExpression(parent)) return true;
-    if (ts.isArrowFunction(parent)) return parent.body === node;
+    if (ts.isArrowFunction(parent))
+      return parent.body === node && setAddArrowResultVoid(lowerer, parent);
     if (ts.isForStatement(parent))
       return parent.initializer === node || parent.incrementor === node;
     if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken) {
@@ -612,7 +631,7 @@ export function lowerSetMethodCall(
   }
   if (name === "add") {
     const v = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.elem);
-    if (setAddResultDiscarded(call)) {
+    if (setAddResultDiscarded(lowerer, call)) {
       return { kind: "setIntrinsic", method: "add", receiver, args: [v], type: VOID, loc };
     }
     // add() returns its Set: a used result (`s.add(a).add(b)`,
