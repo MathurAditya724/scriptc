@@ -1,5 +1,7 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
 import * as ts from "../../ts7/adapter.js";
+import { isStrictCode } from "../strict-mode.js";
+import { isPrivateWriteReceiver } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   type FieldTarget,
@@ -524,6 +526,19 @@ export function fieldSetStmt(
   loc: SrcLoc,
   blame: ts.Node,
 ): IrStmt {
+  // A write through a brand-checked receiver (checkedPrivateReceiver): the
+  // value evaluates first, then the brand check throws, as in Node.
+  if (isPrivateWriteReceiver(target.obj) && value.kind !== "varRef") {
+    const stored = lowerer.declareHiddenLocal("%privateWriteValue", value.type);
+    return {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: stored.id, init: value, loc },
+        fieldSetStmt(lowerer, target, varRef(stored.id, stored.type, loc), loc, blame),
+      ],
+      loc,
+    };
+  }
   // A member write through an unassigned deferred-init field: the value
   // still evaluates first, then the write throws Node's TypeError.
   const deferredSlot =
@@ -737,6 +752,7 @@ export function fieldSetStmt(
         className: target.className,
         field: target.field,
         value,
+        ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
         loc,
       }
     : {

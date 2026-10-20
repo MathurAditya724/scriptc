@@ -44,6 +44,7 @@ import {
   observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
+import { perEvaluationPrivateNames } from "./private-brands.js";
 import {
   errorPropertyRead,
   errorPropertyWrite,
@@ -2694,6 +2695,7 @@ export class ClassDynamicDispatch {
             !findGenericMethodOn(lowerer, info, dispatch.name) &&
             dispatch.name !== "constructor" &&
             !info.fields.has(dispatch.name) &&
+            !(dispatch.name === "stack" && lowerer.isSubclassOf(info.def.name, "%Error")) &&
             !findMethodOn(lowerer, info, `get:${dispatch.name}`) &&
             !findMethodOn(lowerer, info, `set:${dispatch.name}`))
         )
@@ -2885,10 +2887,12 @@ export class ClassDynamicDispatch {
             for (const [symbol, name] of info.symbolMethods) symbolEntries.push([symbol, name]);
           for (const [symbol, name] of symbolEntries) {
             const declaration = symbol.valueDeclaration;
+            // Module-scope consts and CommonJS key-table properties
+            // (classSymbolKeyOfSymbol) both hold their key in a global.
             if (
               declaration &&
-              ts.isVariableDeclaration(declaration) &&
-              ts.isIdentifier(declaration.name)
+              ((ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) ||
+                ts.isPropertyAssignment(declaration))
             ) {
               const global = lowerer.globalsBySymbol.get(symbol);
               if (global)
@@ -4311,19 +4315,43 @@ export class ClassDynamicDispatch {
       loc,
     };
     if (accessor && info.decl) {
-      const method = classMethodValue(lowerer, info.decl, info, member, loc);
-      if (method) {
-        const call: IrExpr = {
-          kind: "libCall",
-          fn: "dyn.reflectApply",
-          args: [
-            lowerer.coerceToExpected(method, DYN),
-            actualReceiver,
-            { kind: "dynArrLit", elems: write ? [varRef("p.1", DYN, loc)] : [], type: DYN, loc },
-          ],
-          type: DYN,
-          loc,
-        };
+      // An accessor whose private names belong to one evaluation runs as
+      // the instance's own evaluation's prototype accessor.
+      const declarer = accessor.declarer;
+      const prototype = perEvaluationPrivateNames(declarer)
+        ? classPrototypeData(lowerer, declarer, loc, upcastTo(lowerer, receiver, declarer.def.name))
+        : null;
+      const method = prototype ? null : classMethodValue(lowerer, info.decl, info, member, loc);
+      if (prototype || method) {
+        const call: IrExpr = prototype
+          ? {
+              kind: "libCall",
+              fn: write ? "dyn.reflectSet" : "dyn.reflectGet",
+              args: [
+                prototype,
+                lowerer.coerceToExpected(key, DYN),
+                ...(write ? [varRef("p.1", DYN, loc)] : []),
+                actualReceiver,
+              ],
+              type: write ? BOOL : DYN,
+              loc,
+            }
+          : {
+              kind: "libCall",
+              fn: "dyn.reflectApply",
+              args: [
+                lowerer.coerceToExpected(method!, DYN),
+                actualReceiver,
+                {
+                  kind: "dynArrLit",
+                  elems: write ? [varRef("p.1", DYN, loc)] : [],
+                  type: DYN,
+                  loc,
+                },
+              ],
+              type: DYN,
+              loc,
+            };
         return [
           {
             kind: "if",
@@ -4494,6 +4522,110 @@ export class ClassDynamicDispatch {
             },
             DYN,
           ),
+          loc,
+        },
+      ];
+    }
+    // An Error's own `stack`: a string is the native error's stack, which
+    // typed reads share; any other value is kept with the instance's own
+    // properties, which a read checks first. A class whose chain declares
+    // a `stack` accessor answers through it (the accessor code below).
+    if (
+      name === "stack" &&
+      !info.fields.has(name) &&
+      lowerer.isSubclassOf(info.def.name, "%Error") &&
+      !findMethodOn(lowerer, info, "get:stack") &&
+      !findMethodOn(lowerer, info, "set:stack")
+    ) {
+      const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+      const error = lowerer.upcastTo(receiver, "%Error");
+      if (write) {
+        const helper = classPropertiesHelper(lowerer, loc);
+        this.generated.add(helper);
+        const store: IrStmt = {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySet",
+            args: [
+              {
+                kind: "call",
+                callee: helper.name,
+                args: [lowerer.coerceToExpected(receiver, DYN)],
+                type: DYN,
+                loc,
+              },
+              key,
+              varRef("p.1", DYN, loc),
+            ],
+            type: VOID,
+            loc,
+          },
+          loc,
+        };
+        return [
+          {
+            kind: "if",
+            cond: {
+              kind: "dynTest",
+              test: "string",
+              value: varRef("p.1", DYN, loc),
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "error.setStack",
+                  args: [error, lowerer.coerceToExpected(varRef("p.1", DYN, loc), STRING)],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "if",
+                cond: this.readBagHas(
+                  lowerer,
+                  "dyn.hasKey",
+                  this.readPropertyBag(lowerer, receiver, loc),
+                  key,
+                  loc,
+                ),
+                then: [store],
+                else_: null,
+                loc,
+              },
+            ],
+            else_: [store],
+            loc,
+          },
+          { kind: "return", value: null, loc },
+        ];
+      }
+      const bag = this.readPropertyBag(lowerer, receiver, loc);
+      return [
+        {
+          kind: "return",
+          value: {
+            kind: "ternary",
+            cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
+            then: {
+              kind: "libCall",
+              fn: "dyn.bagGet",
+              args: [bag, key, lowerer.coerceToExpected(receiver, DYN)],
+              type: DYN,
+              loc,
+            },
+            else_: lowerer.coerceToExpected(
+              { kind: "libCall", fn: "error.stack", args: [error], type: STRING, loc },
+              DYN,
+            ),
+            type: DYN,
+            loc,
+          },
           loc,
         },
       ];

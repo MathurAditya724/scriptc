@@ -4728,6 +4728,31 @@ static void scr_stream_rl_hooks_free(void) {
   }
 }
 
+/* createInterface's input or output given as a checked-dynamic value (a
+ * JavaScript function's result, an object's member): the stream (+1).
+ * An output of null or undefined is NULL (no output). A value that is
+ * not a stream with a readable (input) or writable (output) side is
+ * refused. */
+ScrStream *scr_stream_rl_from_dyn(const ScrDyn *value, bool output) {
+  if (output && (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF)) return NULL;
+  if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len > 7 &&
+      !memcmp(value->v.typed_ref.type_key, "object:", 7)) {
+    ScrStream *stream = scr_dyn_typed_ref_unbox(value);
+    const ScrVt *vt = stream->vt;
+    bool duplex = vt == &scr_duplex_vt || vt == &scr_transform_vt || vt == &scr_passthrough_vt ||
+                  scr_vt_within(vt, &scr_duplex_vt);
+    bool ok = duplex || (output ? vt == &scr_writable_vt || scr_vt_within(vt, &scr_writable_vt)
+                                : vt == &scr_readable_vt || scr_vt_within(vt, &scr_readable_vt));
+    if (ok) return stream;
+    value->v.typed_ref.release(stream);
+  }
+  static const char in_m[] = "createInterface with an input that is not a readable stream has no lowering";
+  static const char out_m[] = "createInterface with an output that is not a writable stream has no lowering";
+  if (output) scr_throw_error_msg_code(SCR_ERR_ERROR, out_m, sizeof out_m - 1, "SC2020");
+  else scr_throw_error_msg_code(SCR_ERR_ERROR, in_m, sizeof in_m - 1, "SC2020");
+  return NULL;
+}
+
 double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double crlf_delay,
                           ScrStr *prompt, ScrDyn *signal, ScrAbortAddFn add) {
   double id = scr_rl_open(&scr_stream_rl_io, in ? scr_stream_retain(in) : NULL,
@@ -6350,15 +6375,19 @@ void scr_stream_install(void) {
 static void scr_stream_child_read(ScrClosure *cb, ScrStream *s, double size) {
   (void)cb; (void)s; (void)size;
 }
-static ScrStream *scr_stream_child_readable(void) {
-  return scr_stream_new_readable(-1, true, true,
+static ScrStream *scr_stream_child_readable(const char *cls) {
+  ScrStream *s = scr_stream_new_readable(-1, true, true,
       scr_closure_new((void *)scr_stream_child_read, 0), scr_stream_child_read,
       NULL, NULL);
+  s->cls = cls;
+  return s;
 }
-static ScrStream *scr_stream_child_writable(ScrClosure *write, ScrStreamChunkInv write_inv,
-    ScrClosure *final_cb, ScrStreamPlainInv final_inv) {
-  return scr_stream_new_writable(-1, true, true, write, write_inv,
+static ScrStream *scr_stream_child_writable(const char *cls, ScrClosure *write,
+    ScrStreamChunkInv write_inv, ScrClosure *final_cb, ScrStreamPlainInv final_inv) {
+  ScrStream *s = scr_stream_new_writable(-1, true, true, write, write_inv,
       final_cb, final_inv, NULL, NULL);
+  s->cls = cls;
+  return s;
 }
 const ScrChildStreamOps scr_stream_child_ops = {
   scr_stream_child_readable, scr_stream_child_writable,
@@ -6578,6 +6607,7 @@ ScrStream *scr_crypto_hash_stream(ScrCryptoHash *hash) {
                                scr_hash_stream_step(box), scr_hash_stream_transform,
                                scr_hash_stream_step(box), scr_hash_stream_flush,
                                scr_hash_stream_step(box), scr_hash_stream_destroy);
+  s->cls = scr_crypto_hash_is_hmac(hash) ? "Hmac" : "Hash";
   /* The steps keep the box alive as long as the stream. */
   scr_crypto_hash_stream_set(hash, scr_stream_retain(s), scr_stream_release_v, box);
   scr_box_release(box);
