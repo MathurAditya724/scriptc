@@ -171,6 +171,16 @@ export const UNDERSCORE_METHODS: ReadonlyMap<string, string> = new Map([
   ["flush", "_flush"],
 ]);
 
+/** The completion callback's parameter position in each underscore
+ * method that takes one (cbTuples' "fn" positions). */
+export const STREAM_COMPLETION_CALLBACK_INDEX: ReadonlyMap<string, number> = new Map([
+  ["_write", 2],
+  ["_final", 0],
+  ["_destroy", 1],
+  ["_transform", 2],
+  ["_flush", 0],
+]);
+
 /** The accepted option-callback names (canonical flag order) and the
  * duplex-shaped-head answer for one runtime stream class. */
 export function streamCtorShape(cls: string): {

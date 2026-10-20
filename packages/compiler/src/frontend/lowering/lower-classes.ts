@@ -112,6 +112,7 @@ import {
 import {
   STREAM_API_MEMBERS,
   STREAM_PROP_MEMBERS,
+  STREAM_COMPLETION_CALLBACK_INDEX,
   UNDERSCORE_METHODS,
   lowerStreamNew,
   lowerStreamSuperCall,
@@ -2690,6 +2691,24 @@ export function collectClassShapeInner(
               );
             }
           }
+          // A completion callback declared with the broad `Function` type
+          // (`cb: Function`) takes the checked-dynamic callable the runtime
+          // passes implicitly typed callbacks; calls through it are
+          // dynamic calls of that callable.
+          const callbackIndex = STREAM_COMPLETION_CALLBACK_INDEX.get(name);
+          const callbackParam =
+            ts.isMethodDeclaration(member) && callbackIndex !== undefined
+              ? member.parameters.nodes[callbackIndex]
+              : undefined;
+          if (
+            callbackParam !== undefined &&
+            ts.isIdentifier(callbackParam.name) &&
+            !callbackParam.dotDotDotToken &&
+            !callbackParam.questionToken &&
+            !callbackParam.initializer &&
+            lowerer.checker.typeToString(lowerer.typeOf(callbackParam.name)) === "Function"
+          )
+            lowerer.checkedCallbackParams.add(callbackParam);
         }
       }
       if (ts.isPropertyDeclaration(member)) {
