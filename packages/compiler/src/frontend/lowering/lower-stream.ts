@@ -3876,6 +3876,44 @@ export function lowerStreamMethodCall(
         loc,
       };
     }
+    // Checked-dynamic slots: unpipe() also unpipes the JavaScript
+    // destinations stream.pipeDyn registered (stream.unpipeDyn with an
+    // undefined destination), as Node's unpipe() empties every pipe.
+    if (lowerer.dynNodeStreams) {
+      const source = lowerer.declareHiddenLocal("%unpipeSource", receiver.type);
+      const sourceRef = varRef(source.id, receiver.type, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: source.id, init: receiver, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "readable.unpipe",
+              args: [sourceRef],
+              type: receiver.type,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "stream.unpipeDyn",
+              args: [sourceRef, dynUndefinedExpr(loc)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: sourceRef,
+        type: receiver.type,
+        loc,
+      };
+    }
     return { kind: "libCall", fn: "readable.unpipe", args: [receiver], type: receiver.type, loc };
   }
 

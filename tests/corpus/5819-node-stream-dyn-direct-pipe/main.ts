@@ -1,7 +1,8 @@
 // A native Readable piped straight into a JavaScript sink, the only
 // untyped stream flow in the program; unpipe of a NodeJS.WritableStream
-// that holds a native Writable or a JavaScript sink; and JavaScript
-// destinations whose prependListener or writableNeedDrain getter throws.
+// that holds a native Writable or a JavaScript sink; unpipe() of every
+// JavaScript sink; and JavaScript destinations whose prependListener or
+// writableNeedDrain getter throws.
 import { Readable, Writable } from "node:stream";
 import { plainSink, throwingSink } from "./sources.js";
 
@@ -36,6 +37,14 @@ async function main(): Promise<void> {
   second.push("late");
   await new Promise<void>((resolve) => setTimeout(resolve, 10));
   console.log("second paused", second.isPaused());
+
+  const third = new Readable({ read() {} });
+  third.pipe(plainSink("first of two"));
+  third.pipe(plainSink("second of two"));
+  third.unpipe();
+  third.push("after unpipe()");
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  console.log("third paused", third.isPaused(), third.listenerCount("data"));
 
   for (const member of ["prependListener", "writableNeedDrain"]) {
     try {

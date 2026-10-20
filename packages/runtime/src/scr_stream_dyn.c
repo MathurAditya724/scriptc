@@ -365,13 +365,25 @@ out:
 /* readable.unpipe(destination) for a destination that is not a native
  * stream: the pipe scr_stream_pipe_dyn registered from src into it
  * unpipes, as Node's unpipe does for a piped destination; nothing happens
- * when there is none. Borrowed. */
+ * when there is none. An undefined destination (unpipe() without one)
+ * unpipes every JavaScript destination of src, oldest pipe first.
+ * Borrowed. */
 void scr_stream_unpipe_dyn(ScrStream *src, ScrDyn *dest) {
-  for (ScrDynPipe *p = scr_dyn_pipe_live; p; p = p->live_next) {
-    if (p->src != src || p->unpiped || p->cleaned || !p->dest || !scr_dyn_strict_eq(p->dest, dest)) continue;
-    ScrDynPipe *held = scr_dyn_pipe_retain_v(p);
+  bool all = dest == NULL || dest->kind == SCR_DYN_UNDEF;
+  for (;;) {
+    /* The live list is newest first; the oldest matching pipe goes next.
+     * Unpiping runs JavaScript ('unpipe' listeners), so each round walks
+     * the list again. */
+    ScrDynPipe *match = NULL;
+    for (ScrDynPipe *p = scr_dyn_pipe_live; p; p = p->live_next) {
+      if (p->src != src || p->unpiped || p->cleaned || !p->dest) continue;
+      if (!all && !scr_dyn_strict_eq(p->dest, dest)) continue;
+      match = p;
+    }
+    if (!match) return;
+    ScrDynPipe *held = scr_dyn_pipe_retain_v(match);
     scr_dyn_pipe_unpipe(held);
     scr_dyn_pipe_release_v(held);
-    return;
+    if (!all || scr_exc_pending()) return;
   }
 }
