@@ -2093,6 +2093,32 @@ function lowerNetServerMethodCall(
     const result = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (result && isAddressInfoRecord(lowerer, result)) {
       const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+      if (unixListenReachable(lowerer)) {
+        // A Unix-socket server's address() is its path, which this record
+        // cannot hold: the check throws for one before the record reads.
+        const local = lowerer.declareHiddenLocal("%addressServer", NETSERVER_T);
+        const server = (): IrExpr => varRef(local.id, NETSERVER_T, loc);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: local.id, init: receiver, loc },
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "net.serverAddressCheck",
+                args: [server()],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          result: { kind: "libCall", fn: "net.serverAddress", args: [server()], type: result, loc },
+          type: result,
+          loc,
+        };
+      }
       return { kind: "libCall", fn: "net.serverAddress", args: [receiver], type: result, loc };
     }
     // @types/node's `string | AddressInfo | null`: the record while the
@@ -2112,20 +2138,50 @@ function lowerNetServerMethodCall(
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
     const local = lowerer.declareHiddenLocal("%addressServer", NETSERVER_T);
     const server = varRef(local.id, NETSERVER_T, loc);
+    const recordArm: IrExpr = {
+      kind: "unionWrap",
+      unionId,
+      tag: lowerer.armTag(unionId, record),
+      value: { kind: "libCall", fn: "net.serverAddress", args: [server], type: record, loc },
+      type: result,
+      loc,
+    };
+    const stringTag = lowerer.armTag(unionId, STRING);
+    let listeningArm: IrExpr = recordArm;
+    const stmts: IrStmt[] = [{ kind: "varDecl", localId: local.id, init: receiver, loc }];
+    if (stringTag >= 0 && unixListenReachable(lowerer)) {
+      // Node answers a Unix-socket server's address() with its path.
+      const pathLocal = lowerer.declareHiddenLocal("%addressPath", STRING);
+      const path = (): IrExpr => varRef(pathLocal.id, STRING, loc);
+      stmts.push({
+        kind: "varDecl",
+        localId: pathLocal.id,
+        init: { kind: "libCall", fn: "net.serverUnixPath", args: [server], type: STRING, loc },
+        loc,
+      });
+      listeningArm = {
+        kind: "ternary",
+        cond: {
+          kind: "strEq",
+          negated: true,
+          left: path(),
+          right: strLit("", loc),
+          type: BOOL,
+          loc,
+        },
+        then: { kind: "unionWrap", unionId, tag: stringTag, value: path(), type: result, loc },
+        else_: recordArm,
+        type: result,
+        loc,
+      };
+    }
     return {
       kind: "seqExpr",
-      stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
+      stmts,
       result: {
         kind: "ternary",
         cond: { kind: "libCall", fn: "net.serverListening", args: [server], type: BOOL, loc },
-        then: {
-          kind: "unionWrap",
-          unionId,
-          tag: lowerer.armTag(unionId, record),
-          value: { kind: "libCall", fn: "net.serverAddress", args: [server], type: record, loc },
-          type: result,
-          loc,
-        },
+        then: listeningArm,
         else_: {
           kind: "unionWrap",
           unionId,
@@ -2178,6 +2234,34 @@ function socketEncodingReachable(lowerer: Lowerer): boolean {
     if (reachable) break;
   }
   lowerer.socketEncodingReachable = reachable;
+  return reachable;
+}
+
+/** Whether some server in the program may listen on a Unix socket: a
+ * `.listen(x, ...)` call on a server (or an untyped value) whose first
+ * argument is string-typed. Only then does address() check for the socket
+ * path, so other programs keep the record-only lowering. */
+function unixListenReachable(lowerer: Lowerer): boolean {
+  if (lowerer.unixListenReachable !== null) return lowerer.unixListenReachable;
+  let reachable = false;
+  for (const file of lowerer.program.getSourceFiles()) {
+    if (file.isDeclarationFile || !file.text.includes("listen")) continue;
+    ts.walkPreorder(file, (node) => {
+      if (reachable) return "skip";
+      if (!ts.isCallExpression(node) || node.arguments.nodes.length === 0) return undefined;
+      const callee = node.expression;
+      if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "listen") return undefined;
+      const kind = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(callee.expression))?.kind;
+      if (kind !== undefined && kind !== "netServer" && kind !== "dyn") return undefined;
+      const arg = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(node.arguments.nodes[0]!));
+      // Only a string-typed argument lowers to listen(path) (an untyped
+      // one checks into a port).
+      if (arg?.kind === "string") reachable = true;
+      return undefined;
+    });
+    if (reachable) break;
+  }
+  lowerer.unixListenReachable = reachable;
   return reachable;
 }
 
@@ -4020,6 +4104,30 @@ export function lowerServerProperty(
   if (lowerer.mapTypeOf(lowerer.typeOf(inner.expression))?.kind !== "netServer") return null;
   if (!lowerer.isStdlibMember(inner)) return null;
   const receiver = coerceToHandle(lowerer, inner.expression, NETSERVER_T);
+  if (unixListenReachable(lowerer)) {
+    const local = lowerer.declareHiddenLocal("%addressServer", NETSERVER_T);
+    const server = (): IrExpr => varRef(local.id, NETSERVER_T, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: local.id, init: receiver, loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "net.serverAddressCheck",
+            args: [server()],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      result: { kind: "libCall", fn: "net.serverPort", args: [server()], type: F64, loc },
+      type: F64,
+      loc,
+    };
+  }
   return { kind: "libCall", fn: "net.serverPort", args: [receiver], type: F64, loc };
 }
 

@@ -167,6 +167,8 @@ void scr_net_server_close(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/);
 void scr_net_server_close_dyn(ScrNetServer *s, const ScrDyn *listener /*borrowed*/);
 void scr_net_sock_on_lookup(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/, bool once);
 void scr_net_lookup_install(void);
+ScrStr *scr_net_server_unix_path(ScrNetServer *s); /* +1, "" unless listening on a path */
+void scr_net_server_address_check(ScrNetServer *s);  /* throws for a Unix-socket server */
 void scr_net_server_close_all_connections(ScrNetServer *s);
 void scr_net_server_close_idle_connections(ScrNetServer *s);
 ScrDyn *scr_net_server_max_connections_get(ScrNetServer *s); /* +1 */

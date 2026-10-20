@@ -1311,6 +1311,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * undefined once the server closes, or Node's ERR_SERVER_NOT_RUNNING
    * when it was not listening. */
   "net.serverCloseDyn": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  /** server.address() in programs that may listen on a Unix socket: the
+   * path a listening server answers ("" for a TCP server), and the check
+   * a record-typed address() makes first (throws for a Unix server). */
+  "net.serverUnixPath": { argTypes: [NETSERVER_T], result: STRING },
+  "net.serverAddressCheck": { argTypes: [NETSERVER_T], result: VOID },
   "net.serverCloseCb": {
     argTypes: [NETSERVER_T, { kind: "func", params: [], ret: VOID }],
     result: VOID,

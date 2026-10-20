@@ -269,6 +269,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  // address() of a Unix-socket server read as the AddressInfo record.
+  "net.serverAddressCheck",
   // The h2 client's throwing entries: connect on a bad/non-http
   // authority (ERR_INVALID_URL / ERR_INVALID_PROTOCOL), request on a
   // closed/destroyed session (ERR_HTTP2_INVALID_SESSION), setEncoding on

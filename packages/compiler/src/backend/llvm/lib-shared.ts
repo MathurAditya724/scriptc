@@ -1153,6 +1153,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "net.sockOnCloseDyn": "scr_net_sock_on_close_dyn",
   "net.sockOnLookup": "scr_net_sock_on_lookup",
   "net.serverCloseDyn": "scr_net_server_close_dyn",
+  "net.serverUnixPath": "scr_net_server_unix_path",
+  "net.serverAddressCheck": "scr_net_server_address_check",
   "net.sockOnWriteFlushDyn": "scr_net_sock_on_write_flush_dyn",
   "net.sockOnFinishDyn": "scr_net_sock_on_finish_dyn",
   "net.isIP": "scr_net_is_ip",

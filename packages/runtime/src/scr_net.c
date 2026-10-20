@@ -2706,6 +2706,22 @@ ScrNetSocket *scr_net_connect_path(ScrStr *path, bool deferred) {
   return s;
 }
 
+/* server.address() in programs that listen on a path (the compiler links
+ * these only there): the Unix-socket path a listening server answers in
+ * place of the AddressInfo record (+1, "" for a TCP server), and the check
+ * a record-typed address() read makes first. */
+ScrStr *scr_net_server_unix_path(ScrNetServer *s) {
+  return s->listening && s->unix_path != NULL ? scr_str_retain(s->unix_path) : scr_str_new("", 0);
+}
+
+void scr_net_server_address_check(ScrNetServer *s) {
+  if (!s->listening || s->unix_path == NULL) return;
+  static const char msg[] =
+      "server.address() of a server listening on a Unix socket is the socket path string; "
+      "type the result as string | AddressInfo | null (Node's declaration) to read it";
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+}
+
 /* server.listen(path[, cb]): binds a Unix socket now; a failure is the
  * deferred 'error', success the deferred 'listening', as for a port. */
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
@@ -2738,10 +2754,6 @@ void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
       s->emit_listening = true;
       scr_str_release(s->unix_path);
       s->unix_path = scr_str_retain(path);
-      /* address() carries the path in its address field (Node answers
-       * the path string itself) */
-      scr_str_release(s->bound_host);
-      s->bound_host = scr_str_retain(path);
       scr_net_watch_read(fd, s, true);
       scr_net_server_register(s);
       return;
