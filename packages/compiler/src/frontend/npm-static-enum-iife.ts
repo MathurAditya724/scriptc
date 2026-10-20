@@ -38,10 +38,17 @@ export function rewriteEnumIifes(sf: ts.SourceFile): string | null {
     if (decl === null) continue;
     const iife = enumIife(stmts[i]!, decl);
     if (iife === null || writtenElsewhere(sf, decl, stmts[i]!)) continue;
+    // Modifiers before `var` stay: `export var Kind;` (an ES module's
+    // enum) keeps exporting the binding.
+    const declaration = stmts[i - 1] as ts.VariableStatement;
+    const modifiers = sf.text.slice(
+      declaration.getStart(sf),
+      declaration.declarationList.getStart(sf),
+    );
     edits.push({
-      start: stmts[i - 1]!.getStart(sf),
-      end: stmts[i - 1]!.getEnd(),
-      text: `var ${decl} = ${objectLiteral(iife.members)};`,
+      start: declaration.getStart(sf),
+      end: declaration.getEnd(),
+      text: `${modifiers}var ${decl} = ${objectLiteral(iife.members)};`,
     });
     edits.push({
       start: stmts[i]!.getStart(sf),

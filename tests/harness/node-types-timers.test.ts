@@ -52,8 +52,9 @@ const program = `class Holder {
   timer: NodeJS.Timeout | null = null;
 }
 const holder = new Holder();
-holder.timer = setTimeout(() => console.log("never"), 50);
-const kept = setTimeout(() => console.log("fired", holder.timer === null), 10);
+holder.timer = setTimeout(() => console.log("never"), 1000);
+// Long enough that the immediate runs first even on a loaded machine.
+const kept = setTimeout(() => console.log("fired", holder.timer === null), 200);
 kept.unref().ref();
 kept.refresh();
 console.log("hasRef", kept.hasRef());

@@ -98,3 +98,28 @@ export function staticallySelected(lowerer: Lowerer, expr: ts.Expression): ts.Ex
     e = taken ? e.whenTrue : e.whenFalse;
   }
 }
+
+/** True when `stmt` declares a binding that is visible outside it: a `var`
+ * or a function declaration, outside nested functions. Such an arm still
+ * lowers when its condition is decided, for the hoisted binding. */
+export function declaresHoistedBinding(stmt: ts.Statement): boolean {
+  let found = false;
+  const visit = (n: ts.Node): void => {
+    if (found) return;
+    if (ts.isFunctionDeclaration(n)) {
+      found = true;
+      return;
+    }
+    if (ts.isFunctionLike(n) || ts.isClassDeclaration(n) || ts.isClassExpression(n)) return;
+    if (
+      ts.isVariableDeclarationList(n) &&
+      (n.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) === 0
+    ) {
+      found = true;
+      return;
+    }
+    n.forEachChild(visit);
+  };
+  visit(stmt);
+  return found;
+}

@@ -22,6 +22,7 @@ import {
   resolveTypeDirective,
   setProjectPathMappings,
 } from "../../src/frontend/resolve.js";
+import { packageShimFor } from "../../src/frontend/package-shims.js";
 import { isRelativeSpecifier } from "../../src/frontend/workspace-registry.js";
 import { options5 } from "./harness.js";
 
@@ -138,6 +139,10 @@ test("relative and bare specifiers across the whole test tree resolve identicall
       // the resolver follows Node — corpus 2124 pins the behavior
       // differentially, so parity has nothing to check here.
       if (spec.startsWith("#/")) continue;
+      // A package scriptc implements itself (package-shims.ts) resolves
+      // to its built-in module by design; 5.9.3 answers the installed
+      // package.
+      if (packageShimFor(file, spec) !== null) continue;
       bare++;
       // PROJECT imports (#alias / self-name): ts5's NON-external answers
       // for bare specifiers are exactly the package.json-mediated
