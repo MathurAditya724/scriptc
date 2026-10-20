@@ -125,6 +125,19 @@ export function applyWidthLift(
         throw new InternalCompilerError("lowerer bug: planned retag lift failed to intern");
       return { kind: "call", callee: retag, args: [value], type: dst, loc };
     }
+    case "unitRetag": {
+      if (dst.kind !== "union" || value.type.kind !== "union")
+        throw new InternalCompilerError("lowerer bug: unit retag lift shape");
+      const fromId = value.type.unionId;
+      const trappable = new Set<number>();
+      (lowerer.unions.get(fromId)?.arms ?? []).forEach((arm, tag) => {
+        if (lowerer.armTag(dst.unionId, arm) < 0) trappable.add(tag);
+      });
+      const retag = lowerer.unionRetagHelper(fromId, dst.unionId, loc, trappable);
+      if (!retag)
+        throw new InternalCompilerError("lowerer bug: planned unit retag lift failed to intern");
+      return { kind: "call", callee: retag, args: [value], type: dst, loc };
+    }
     case "liftWrap": {
       if (dst.kind !== "union")
         throw new InternalCompilerError("lowerer bug: liftWrap lift against a non-union");

@@ -30,6 +30,7 @@ import { generatorDrain } from "../iterator-adapters.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { varRef } from "../../../ir/build.js";
 import { arrayValueStore } from "../array-values.js";
+import { classGeneratorIterable } from "../class-iterables.js";
 
 /** JavaScript: whether `expr` is or holds an existing checked-dynamic
  * object — a binding stored as a dyn value whose checker type is an
@@ -431,6 +432,9 @@ export function lowerArrayLiteral(
           loc: locOf(el),
         };
       }
+      // `[...obj]` over a class whose [Symbol.iterator] is a generator
+      // method spreads the generator that method returns.
+      src = classGeneratorIterable(lowerer, src) ?? src;
       // `[...it]` over a generator (or an iterator adapted into one):
       // drain it once, in order, into a fresh element array.
       if (src.type.kind === "generator") {

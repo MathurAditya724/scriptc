@@ -999,6 +999,15 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
   };
 }
 
+/** True when a value of Node's argument type `passed` widens implicitly
+ * into the declared parameter type `declared` (one of its union arms, or a
+ * sub-union of it). */
+function widensInto(lowerer: Lowerer, passed: IrType, declared: IrType, loc: SrcLoc): boolean {
+  if (declared.kind !== "union") return false;
+  const probe: IrExpr = { kind: "varRef", localId: "%probe", type: passed, loc };
+  return typeEquals(lowerer.coerceToExpected(probe, declared).type, declared);
+}
+
 /* ── user subclasses (`extends Readable`, the underscore-override form) ── */
 
 /** The wrapper closure binding one overridden underscore method as the
@@ -1075,10 +1084,17 @@ function streamMethodWrapper(
         );
       }
     } else if (!typeEquals(got.type, want)) {
+      // A declared supertype of what Node passes (`chunk: Buffer | string`)
+      // is sound: the wrapper takes Node's value and widens it into the
+      // declared parameter.
+      if (widensInto(lowerer, want, got.type, loc)) {
+        paramTypes.push(want);
+        continue;
+      }
       lowerer.noLowering(
         `a '${methodName}' method whose parameter ${i} is '${lowerer.fmt(got.type)}' where Node passes '${lowerer.fmt(want)}'`,
         blame,
-        "annotate the parameter with the Node signature's type (chunks are Buffers here)",
+        "annotate the parameter with the Node signature's type or a supertype of it (chunks are Buffers here)",
       );
     }
     paramTypes.push(got.type);
@@ -1094,7 +1110,11 @@ function streamMethodWrapper(
     for (let i = 0; i < paramTypes.length; i++) {
       const local = lowerer.declareHiddenLocal(`a${i}`, paramTypes[i]!);
       params.push({ localId: local.id, name: local.name, type: paramTypes[i]! });
-      argRefs.push({ kind: "varRef", localId: local.id, type: paramTypes[i]!, loc });
+      const arg: IrExpr = { kind: "varRef", localId: local.id, type: paramTypes[i]!, loc };
+      const declaredType = declared[i]!.type;
+      argRefs.push(
+        typeEquals(arg.type, declaredType) ? arg : lowerer.coerceToExpected(arg, declaredType),
+      );
     }
     const thisRef: IrExpr = { kind: "varRef", localId: thisLocal.id, type: thisType, loc };
     let call: IrExpr;
@@ -3654,8 +3674,10 @@ export function lowerStreamMethodCall(
         : lowerer.lowerExprExpecting(args[0]!, STRING);
     const fn = kind === "bytes" ? "writable.write" : "writable.writeStr";
     if (cbArg !== undefined) {
-      const cb = lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb.type.kind !== "func" || cb.type.params.length > 0) {
+      const cb = callbackDeclaresParameters(cbArg)
+        ? null
+        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
+      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
         lowerer.noLowering(
           "write completion callbacks taking the error argument",
           cbArg,
@@ -3712,8 +3734,10 @@ export function lowerStreamMethodCall(
       );
     }
     if (cbArg !== undefined) {
-      const cb = lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb.type.kind !== "func" || cb.type.params.length > 0) {
+      const cb = callbackDeclaresParameters(cbArg)
+        ? null
+        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
+      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
         lowerer.noLowering(
           "end callbacks with parameters",
           cbArg,
@@ -3977,4 +4001,18 @@ export function lowerStreamProperty(
     return propCall(BOOL);
   }
   return null;
+}
+
+/** Whether an inline completion callback declares a parameter. Node calls
+ * write and end callbacks with an error argument (null on success), but the
+ * native callback receives none, so the parameter would read undefined
+ * where Node passes null or the error. A function literal with parameters
+ * would otherwise adapt to the zero-parameter slot silently. */
+function callbackDeclaresParameters(node: ts.Expression): boolean {
+  let callback = node;
+  while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
+  return (
+    (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) &&
+    callback.parameters.nodes.length > 0
+  );
 }

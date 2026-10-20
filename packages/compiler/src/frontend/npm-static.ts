@@ -13,7 +13,14 @@ import {
   registerWorkspacePackage,
   workspacePackageOfPath,
 } from "./workspace-registry.js";
-import { trackedExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import {
+  clearVirtualSources,
+  setVirtualSource,
+  trackedExists,
+  trackedReadFile,
+  trackedRealpath,
+} from "./input-tracker.js";
+import { npmBuiltinAliasOf } from "./builtin-modules.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -28,14 +35,38 @@ const offenders = new Map<string, string>();
  * the host probes the same file many times, and the rewrite parses. */
 const rewriteCache = new Map<string, string | null>();
 
+/** Rewritten files whose tail export table stands for a live getter table
+ * installed before the file could run another module's code (the rewrite
+ * certifies it; require-cycle admission consults it). */
+const liveExportFiles = new Set<string>();
+
+export function npmStaticLiveExportTable(path: string): boolean {
+  return liveExportFiles.has(path.split("\\").join("/"));
+}
+
+/** Names Node's lexer detects in a rewritten file's original text that
+ * its rewrite spells only as accessors (the lexer skips those). */
+const lexerNames = new Map<string, readonly string[]>();
+
+export function npmStaticLexerVisibleNames(path: string): readonly string[] {
+  return lexerNames.get(path.split("\\").join("/")) ?? [];
+}
+
 export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): void {
-  activePackages = new Set(packages);
+  // npm packages served as builtins (graceful-fs as fs) never compile
+  // their JavaScript, even when named.
+  activePackages = new Set([...packages].filter((name) => npmBuiltinAliasOf(name) === null));
   declarationOverloads = new Map();
   declarationProperties = new Map();
   offenders.clear();
+  fileDegrades.clear();
   rewriteCache.clear();
+  liveExportFiles.clear();
+  lexerNames.clear();
+  clearVirtualSources();
   untypedPkgCache.clear();
   realpathProbed.clear();
+  aliasNames.clear();
 }
 
 export function setNpmStaticDeclarationOverloads(
@@ -79,6 +110,21 @@ export function reportNpmStaticOffender(pkg: string, reason: string): void {
 
 export function npmStaticOffenders(): ReadonlyMap<string, string> {
   return offenders;
+}
+
+/** Files whose bundler interop the rewrite could not finish this attempt,
+ * with their package and reason. A file refuses its package only when
+ * the compiled program can load it (npmStaticLoadableFiles): a package is
+ * judged by what its imported subpaths reach, not by every file it ships. */
+const fileDegrades = new Map<string, { pkg: string; reason: string }>();
+
+export function npmStaticFileDegrades(): ReadonlyMap<string, { pkg: string; reason: string }> {
+  return fileDegrades;
+}
+
+function reportFileDegrade(path: string, pkg: string, reason: string): void {
+  const key = path.split("\\").join("/");
+  if (!fileDegrades.has(key)) fileDegrades.set(key, { pkg, reason });
 }
 
 /** The DefinitelyTyped name mangling ("@scope/pkg" → "scope__pkg") — the
@@ -135,7 +181,30 @@ function shadowTargetOf(path: string): { pkg: string; viaTypes: boolean } | null
       if (mangledTypesName(pkg) === mangled) return { pkg, viaTypes: true };
     }
   }
+  // An npm alias (`"x-updated": "npm:x@6.3.0"`) installs the package under
+  // another directory name: its own manifest names the package.
+  const aliased = aliasedPackageName(`${norm.slice(0, idx)}/node_modules/${dirName}`);
+  if (aliased !== null && aliased !== dirName && activePackages.has(aliased))
+    return { pkg: aliased, viaTypes: false };
   return null;
+}
+
+/** The "name" a node_modules directory's own package.json declares, or
+ * null (cached per load). */
+const aliasNames = new Map<string, string | null>();
+function aliasedPackageName(pkgDir: string): string | null {
+  const hit = aliasNames.get(pkgDir);
+  if (hit !== undefined) return hit;
+  let name: string | null = null;
+  try {
+    const text = trackedReadFile(`${pkgDir}/package.json`);
+    const declared = text === null ? undefined : (JSON.parse(text) as { name?: unknown }).name;
+    if (typeof declared === "string") name = declared;
+  } catch {
+    name = null;
+  }
+  aliasNames.set(pkgDir, name);
+  return name;
 }
 
 /** The opted-in package.json transform, applied identically in BOTH
@@ -362,7 +431,36 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
         if (hit !== undefined) return hit ?? undefined;
         let rewritten: string | null = null;
         try {
-          const original = trackedReadFile(path);
+          let original = trackedReadFile(path);
+          // A bundle's CommonJS chunks move to their own modules first, so
+          // every later pass (and this shadow, for each chunk) sees plain
+          // CommonJS module text.
+          const split = original === null ? null : services.splitCjsChunks(original, path);
+          if (split !== null && "degrade" in split) {
+            reportFileDegrade(path, target.pkg, split.degrade);
+            original = null;
+          } else if (split !== null) {
+            for (const chunk of split.chunks) setVirtualSource(chunk.path, chunk.source);
+            original = split.text;
+          }
+          // Then its lazily initialized ES modules become run-once closures.
+          const esm = original === null ? null : services.lowerEsmInits(original, path);
+          if (esm !== null && typeof esm === "object") {
+            reportFileDegrade(path, target.pkg, esm.degrade);
+            original = null;
+          } else if (esm !== null) {
+            original = esm;
+          }
+          // A module exporting one of its functions reaches its members
+          // through that function.
+          const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
+          if (fnExports !== null) original = fnExports;
+          // A module that names its export object through a variable reaches
+          // its members through `exports`.
+          const exportsVar = original === null ? null : services.cjsExportsVar(original, path);
+          if (exportsVar !== null) original = exportsVar;
+          const respelled =
+            split !== null || esm !== null || fnExports !== null || exportsVar !== null;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;
@@ -385,9 +483,11 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 classFields?.text ??
                 source,
               path,
+              (live) => liveExportFiles.add(live.split("\\").join("/")),
+              (file, names) => lexerNames.set(file.split("\\").join("/"), names),
             );
             if (answer !== null && typeof answer === "object") {
-              reportNpmStaticOffender(target.pkg, answer.degrade);
+              reportFileDegrade(path, target.pkg, answer.degrade);
             } else {
               rewritten =
                 answer ??
@@ -395,7 +495,8 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 propertyProjected?.text ??
                 findWidened?.text ??
                 classFields?.text ??
-                namepaths;
+                namepaths ??
+                (respelled ? original : null);
             }
           }
         } catch {
@@ -434,8 +535,30 @@ function looksUnminified(source: string): boolean {
   return source.length / lines.length <= 200;
 }
 
+/** A whitespace/syntax-minified bundler dist whose interop helpers keep
+ * their names (`var __toESM=…,__toCommonJS=mod=>…`): the recognizers
+ * verify those shapes and refuse the package precisely when they cannot,
+ * so the minification heuristic need not refuse it up front. */
+function namedBundlerHelpers(source: string): boolean {
+  return /\b__(?:toCommonJS|commonJS|toESM)\d*\s*=\s*(?:\(|[A-Za-z_$][\w$]*\s*=>)/.test(source);
+}
+
 function hasTransformMarkers(source: string): boolean {
   return TRANSFORM_MARKERS.some((m) => source.includes(m));
+}
+
+/** Why the declarations at `typesFile` cannot stand for the runtime
+ * package `pkg`, or null when they are its DefinitelyTyped twin
+ * (`@types/<mangled pkg>`). The declarations only check the importing
+ * program; the JavaScript compiles with its inferred types, and an
+ * inferred surface the program does not typecheck against refuses the
+ * package afterwards, whatever release the twin describes. */
+export function definitelyTypedMismatch(pkg: string, typesFile: string): string | null {
+  const owner = npmPackageNameOf(typesFile.split("\\").join("/"));
+  const twin = `@types/${mangledTypesName(pkg)}`;
+  return owner === twin
+    ? null
+    : `its declared types come from ${owner ?? typesFile}, which is not ${pkg}'s DefinitelyTyped package ${twin}`;
 }
 
 /** Auto-mode eligibility for one candidate package: `typesFile` is what
@@ -446,17 +569,23 @@ export function npmStaticIneligibleReason(
   pkgName: string,
   typesFile: string,
   jsEntry: string | null,
+  /** A dependency another package's JavaScript imports: no declarations
+   * check that importer, so the package need not ship its own. */
+  untypedDependency = false,
 ): string | null {
-  if (npmPackageNameOf(typesFile) !== pkgName) {
-    return "its declared types come from a third-party @types package, not the package itself";
-  }
-  if (!/\.d\.(ts|mts|cts)$/.test(typesFile)) {
-    return "it ships no own .d.ts declaration surface";
+  if (!untypedDependency) {
+    if (npmPackageNameOf(typesFile) !== pkgName) {
+      return "its declared types come from a third-party @types package, not the package itself";
+    }
+    if (!/\.d\.(ts|mts|cts)$/.test(typesFile)) {
+      return "it ships no own .d.ts declaration surface";
+    }
   }
   if (jsEntry === null) return "no runtime JS entry resolves";
   const source = trackedReadFile(jsEntry);
   if (source === null) return `its runtime entry ${jsEntry} cannot be read`;
-  if (!looksUnminified(source)) return "its shipped JS looks minified";
+  if (!looksUnminified(source) && !namedBundlerHelpers(source))
+    return "its shipped JS looks minified";
   if (hasTransformMarkers(source)) {
     return "its shipped JS carries build-transform markers (bundled/transpiled dist)";
   }

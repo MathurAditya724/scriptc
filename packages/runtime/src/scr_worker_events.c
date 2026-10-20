@@ -123,7 +123,7 @@ static ScrClosure *scr_worker_stdin_callback(ScrWorkerThread *thread, void *fire
 }
 
 static ScrStream *scr_worker_stdin_new(ScrWorkerThread *thread) {
-  return scr_worker_stdio_ops->writable(
+  return scr_worker_stdio_ops->writable("WritableWorkerStdio",
       scr_worker_stdin_callback(thread, (void *)scr_worker_stdin_write), scr_worker_stdin_write,
       scr_worker_stdin_callback(thread, (void *)scr_worker_stdin_final), scr_worker_stdin_final);
 }
@@ -1441,7 +1441,8 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   for (int i = 0; i < 2; i++) {
     view->stdio_captured[i] = (capture >> i) & 1;
     /* without the stream unit nothing can read the stream: the output is dropped */
-    if (view->stdio_captured[i] && scr_worker_stdio_ops) view->stdio[i] = scr_worker_stdio_ops->readable();
+    if (view->stdio_captured[i] && scr_worker_stdio_ops)
+      view->stdio[i] = scr_worker_stdio_ops->readable("ReadableWorkerStdio");
   }
   view->stdin_captured = capture & 4;
   if (view->stdin_captured && scr_worker_stdio_ops) view->stdin_stream = scr_worker_stdin_new(thread);

@@ -4109,6 +4109,7 @@ function validateFunction(
     if (checkLibEmitterCall(e, sig.result)) return;
     if (
       e.fn === "error.stack" ||
+      e.fn === "error.setStack" ||
       e.fn === "error.cause" ||
       e.fn === "error.hasCause" ||
       e.fn === "error.setCause" ||
@@ -6199,7 +6200,10 @@ function validateFunction(
           if (expectsArg && (rp.params.length !== 1 || !typeEquals(rp.params[0]!, inner))) {
             err(`newPromise resolve param must be (${inner.kind}) => void`, e.loc);
           }
-          if (!expectsArg && rp.params.length !== 0) {
+          // A Promise<never> executor types resolve as `(value: never) =>
+          // void` (one parameter over a void inner): the void resolve never
+          // reads an argument, and a never value cannot be produced.
+          if (!expectsArg && rp.params.length > 1) {
             err("newPromise<void> resolve takes no argument", e.loc);
           }
         }

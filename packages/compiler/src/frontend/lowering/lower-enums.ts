@@ -29,7 +29,8 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
-import { F64, type IrExpr, STRING } from "../../ir/ir.js";
+import { BOOL, F64, type IrExpr, STRING, UNDEFINED_T } from "../../ir/ir.js";
+import { nodeThrowExpr } from "../../ir/build.js";
 
 /** The member's source-name text (identifiers and string-literal names —
  * the only name forms tsc allows on enum members). */
@@ -182,6 +183,15 @@ function lowerEnumReverseRead(
   // existence tracking; nothing needs it — fence through the generic path.
   if (decls.some((d) => isAmbientEnumDecl(d))) return null;
   const idx = foldConstIndex(lowerer, key);
+  const keyType = lowerer.typeOf(key);
+  if (
+    idx === null &&
+    ((keyType.flags & ts.TypeFlags.StringLike) !== 0 ||
+      (keyType.isUnionType() &&
+        ts.constituentTypes(keyType).every((t) => (t.flags & ts.TypeFlags.StringLike) !== 0)))
+  ) {
+    return lowerEnumKeyRead(lowerer, expr, decls, key);
+  }
   if (idx === null) {
     lowerer.unsupported(
       "SC1090",
@@ -204,6 +214,109 @@ function lowerEnumReverseRead(
     );
   }
   return { kind: "strLit", value: name, type: STRING, loc };
+}
+
+/** Object.prototype members every enum object inherits: a runtime key
+ * naming one reads a function, which the member value types cannot hold. */
+const OBJECT_PROTOTYPE_KEYS = new Set([
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+  "__proto__",
+  "constructor",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "toLocaleString",
+  "toString",
+  "valueOf",
+]);
+
+/** `E[key]` with a RUNTIME string key (`Color[name as keyof typeof
+ * Color]` — the name-to-value lookup): the key evaluates once and is
+ * compared against every member NAME, each hit answering that member's
+ * constant, exactly the forward entries tsc's emit stores. A key naming no
+ * member is Node's undefined, so the read carries an undefined arm. Keys
+ * Node would answer from elsewhere on the object throw a named runtime
+ * refusal instead of a wrong value: a numeric member's reverse entry (its
+ * value spelled as a string — Node answers the member NAME) and the
+ * inherited Object.prototype members. */
+function lowerEnumKeyRead(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+  decls: readonly ts.EnumDeclaration[],
+  key: ts.Expression,
+): IrExpr {
+  const loc = locOf(expr);
+  const enumName = decls[0]!.name.text;
+  const valueType = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (valueType === null) lowerer.badType(expr, lowerer.typeOf(expr));
+  const resultType = lowerer.withUndefinedArm(valueType);
+  const keyValue = lowerer.coerceToExpected(lowerer.lowerExpr(key), STRING);
+  const keyLocal = lowerer.declareHiddenLocal("%enumKey", STRING);
+  const keyRef: IrExpr = { kind: "varRef", localId: keyLocal.id, type: STRING, loc };
+  const matches = (text: string): IrExpr => ({
+    kind: "strEq",
+    negated: false,
+    left: keyRef,
+    right: { kind: "strLit", value: text, type: STRING, loc },
+    type: BOOL,
+    loc,
+  });
+  const refusal = (what: string): IrExpr =>
+    nodeThrowExpr(
+      0,
+      "SC1090",
+      `${what} through a runtime key ('${enumName}[key]') is not supported yet`,
+      resultType,
+      loc,
+    );
+  const arms: { cond: IrExpr; value: IrExpr }[] = [];
+  const names = new Set<string>();
+  const reverse = new Set<string>();
+  for (const d of decls) {
+    for (const member of d.members.nodes) {
+      const name = memberNameText(member);
+      const constant = lowerEnumMemberRead(lowerer, expr, member);
+      if (constant === null)
+        lowerer.unsupported("SC1090", expr, `'${enumName}[key]' over this enum`);
+      if (!names.has(name)) {
+        names.add(name);
+        arms.push({ cond: matches(name), value: lowerer.coerceToExpected(constant, resultType) });
+      }
+      const value = lowerer.checker.getConstantValue(member);
+      if (typeof value === "number") reverse.add(String(value));
+    }
+  }
+  for (const text of reverse) {
+    if (names.has(text)) continue;
+    arms.push({ cond: matches(text), value: refusal("enum reverse lookups") });
+  }
+  for (const text of OBJECT_PROTOTYPE_KEYS) {
+    if (names.has(text) || reverse.has(text)) continue;
+    arms.push({ cond: matches(text), value: refusal("inherited enum object members") });
+  }
+  let result: IrExpr = { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
+  result = lowerer.coerceToExpected(result, resultType);
+  for (let i = arms.length - 1; i >= 0; i--) {
+    const arm = arms[i]!;
+    result = {
+      kind: "ternary",
+      cond: arm.cond,
+      then: arm.value,
+      else_: result,
+      type: resultType,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: keyLocal.id, init: keyValue, loc }],
+    result,
+    type: resultType,
+    loc,
+  };
 }
 
 /** A compile-time-constant NUMERIC index: a numeric literal, its negation,

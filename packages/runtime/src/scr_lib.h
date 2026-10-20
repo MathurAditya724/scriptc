@@ -154,6 +154,11 @@ void scr_process_exit(double code);
 extern const unsigned char scr_detached_exit;
 void scr_process_set_exit_code(double code);
 double scr_process_exit_code_or_zero(void);
+/* The writer and the presence test of programs that read process.exitCode:
+ * the code reads undefined until an assignment (or a nonzero exit status
+ * the runtime chose, such as an uncaught exception's 1). */
+void scr_process_set_exit_code_tracked(double code);
+bool scr_process_has_exit_code(void);
 /* process._exiting: true once the exit sequence began (process.exit or
  * the exit-listener runner set the flag). Never throws. */
 extern SCR_TL bool scr_process_in_exit;

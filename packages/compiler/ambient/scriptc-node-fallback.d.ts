@@ -1878,6 +1878,13 @@ declare module "node:fs" {
 declare module "fs" {
   export * from "node:fs";
 }
+/* graceful-fs — served as node:fs (it monkeypatches fs and retries on
+ * EMFILE/ENFILE; compiled programs call fs directly, without the retry
+ * queue). gracefulify is a no-op statement. The @types/graceful-fs shape. */
+declare module "graceful-fs" {
+  export * from "node:fs";
+  export function gracefulify<T>(fsModule: T): T;
+}
 
 /* fs/promises — the SAME synchronous operations behind already-settled
  * promises: success fulfills, failure REJECTS with the would-be thrown
@@ -3372,6 +3379,13 @@ declare module "util" {
     info: import("node:crypto").BinaryLike,
     keylen: number,
   ) => Promise<ArrayBuffer>;
+  /* A callback-only function (`obj.close.bind(obj)`): before the targets
+   * whose leading parameters would otherwise capture it. Builtins that take
+   * arguments before their callback never match these. */
+  export function promisify<TResult>(
+    fn: (callback: (err: any, result: TResult) => void) => void,
+  ): () => Promise<TResult>;
+  export function promisify(fn: (callback: (err?: any) => void) => void): () => Promise<void>;
   export function promisify(
     fn: typeof import("node:crypto").randomFill,
   ): <T extends ArrayBufferView | ArrayBufferLike>(
@@ -4006,7 +4020,10 @@ declare module "readline" {
     meta?: boolean;
     shift?: boolean;
   }
-  export interface Interface extends Disposable {
+  export class Interface implements Disposable {
+    /* createInterface creates interfaces; instanceof tells the two
+     * modules' classes apart. */
+    protected constructor();
     /* terminal says whether the interface edits lines as a terminal;
      * line and cursor are the terminal's (line is '' otherwise). history
      * is the history option itself (or the interface's own empty array);
@@ -4121,7 +4138,10 @@ declare module "readline/promises" {
   /* The readline Interface with the promise question: it resolves with
    * the next line, rejects with an AbortError when options.signal aborts,
    * and with ERR_USE_AFTER_CLOSE after close(). */
-  export interface Interface extends Disposable {
+  export class Interface implements Disposable {
+    /* createInterface creates interfaces; instanceof tells the two
+     * modules' classes apart. */
+    protected constructor();
     /* terminal says whether the interface edits lines as a terminal;
      * line and cursor are the terminal's (line is '' otherwise). history
      * is the history option itself (or the interface's own empty array);
@@ -6145,9 +6165,78 @@ declare module "dns" {
   export function getServers(): string[];
   export function getDefaultResultOrder(): "ipv4first" | "ipv6first" | "verbatim";
   export function setDefaultResultOrder(order: "ipv4first" | "ipv6first" | "verbatim"): void;
+  /* The promise forms (node:dns/promises). */
+  export const promises: typeof import("dns/promises");
 }
 declare module "node:dns" {
   export * from "dns";
+}
+/* node:dns/promises — lookup and lookupService as promises over the same
+ * resolution as the callback forms: argument errors throw synchronously,
+ * failures reject with the callbacks' errors. */
+declare module "dns/promises" {
+  import type { LookupAddress, LookupAllOptions, LookupOneOptions, LookupOptions } from "dns";
+  export function lookup(hostname: string, family: number): Promise<LookupAddress>;
+  export function lookup(hostname: string, options: LookupOneOptions): Promise<LookupAddress>;
+  export function lookup(hostname: string, options: LookupAllOptions): Promise<LookupAddress[]>;
+  export function lookup(
+    hostname: string,
+    options: LookupOptions,
+  ): Promise<LookupAddress | LookupAddress[]>;
+  export function lookup(hostname: string): Promise<LookupAddress>;
+  export function lookupService(
+    address: string,
+    port: number,
+  ): Promise<{ hostname: string; service: string }>;
+  export function getServers(): string[];
+  export function getDefaultResultOrder(): "ipv4first" | "ipv6first" | "verbatim";
+  export function setDefaultResultOrder(order: "ipv4first" | "ipv6first" | "verbatim"): void;
+}
+declare module "node:dns/promises" {
+  export * from "dns/promises";
+}
+
+/* node:v8 — importable for the packages that require it at top level.
+ * getHeapStatistics answers allocator-derived figures in Node's shape
+ * (approximate: the runtime heap's total and used bytes, the machine's
+ * memory as the limit; V8-only figures are 0). The other members observe
+ * V8 itself and fence at their use with the by-design reason; they are
+ * declared so programs that type-check under their own tsc reach that
+ * fence. */
+declare module "v8" {
+  type DoesZapCodeSpaceFlag = 0 | 1;
+  export interface HeapInfo {
+    total_heap_size: number;
+    total_heap_size_executable: number;
+    total_physical_size: number;
+    total_available_size: number;
+    used_heap_size: number;
+    heap_size_limit: number;
+    malloced_memory: number;
+    peak_malloced_memory: number;
+    does_zap_garbage: DoesZapCodeSpaceFlag;
+    number_of_native_contexts: number;
+    number_of_detached_contexts: number;
+    total_global_handles_size: number;
+    used_global_handles_size: number;
+    external_memory: number;
+  }
+  export function getHeapStatistics(): HeapInfo;
+  export function cachedDataVersionTag(): number;
+  export function getHeapSpaceStatistics(): unknown[];
+  export function getHeapCodeStatistics(): unknown;
+  export function getHeapSnapshot(options?: unknown): unknown;
+  export function writeHeapSnapshot(fileName?: string, options?: unknown): string;
+  export function setFlagsFromString(flags: string): void;
+  export function setHeapSnapshotNearHeapLimit(limit: number): void;
+  export function serialize(value: unknown): Buffer;
+  export function deserialize(buffer: Uint8Array): unknown;
+  export function takeCoverage(): void;
+  export function stopCoverage(): void;
+  export function isStringOneByteRepresentation(content: string): boolean;
+}
+declare module "node:v8" {
+  export * from "v8";
 }
 
 /* node:worker_threads — native workers use statically compiled entry points.
@@ -6942,6 +7031,22 @@ declare module "stream/consumers" {
 declare module "node:stream/consumers" {
   import streamConsumers = require("stream/consumers");
   export = streamConsumers;
+}
+/* node:stream/web — the module exports the web stream globals themselves
+ * (require("stream/web").ReadableStream === globalThis.ReadableStream).
+ * ReadableStream is the implemented class; its reader and controller are
+ * exported as types. */
+declare module "stream/web" {
+  export const ReadableStream: typeof globalThis.ReadableStream;
+  export type ReadableStream<T = unknown> = globalThis.ReadableStream<T>;
+  export type ReadableStreamDefaultReader<T = unknown> = globalThis.ReadableStreamDefaultReader<T>;
+  export type ReadableStreamDefaultController<T = unknown> =
+    globalThis.ReadableStreamDefaultController<T>;
+  export type UnderlyingSource<T = unknown> = globalThis.UnderlyingSource<T>;
+  export type QueuingStrategy<T = unknown> = globalThis.QueuingStrategy<T>;
+}
+declare module "node:stream/web" {
+  export * from "stream/web";
 }
 interface ErrorConstructor {
   stackTraceLimit: number;
