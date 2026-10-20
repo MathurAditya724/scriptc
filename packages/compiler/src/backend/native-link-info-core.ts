@@ -49,6 +49,9 @@ export interface NativeLinkFeatures {
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
+  /** Fixed-width Buffer methods called on checked-dynamic values link
+   * scr_bytes_dyn.c; absent (false) for programs without them. */
+  dynBufferNum?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;

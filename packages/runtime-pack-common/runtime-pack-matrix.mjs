@@ -61,6 +61,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch")],
+  // Fixed-width Buffer methods called on checked-dynamic values.
+  ["scr_bytes_dyn.c", all("dynBufferNum", "dynInvoke")],
   ["scr_dc.c", "dc"],
   // The dynamic tier's jsval values (two-tier design I3): linked only into
   // programs whose IR has dynamic-tier operations.

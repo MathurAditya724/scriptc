@@ -37,6 +37,7 @@ import {
   isOptionalProcessVersionsRead,
 } from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
+import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
@@ -1851,6 +1852,9 @@ export class Lowerer {
   /** Syntactic writes indexed once per JS scope. Symbol and RHS type
    * checks remain contextual to each binding probe. */
   readonly jsBindingWritesByOwner = new Map<ts.Node, Map<string, ts.BinaryExpression[]>>();
+  /** JavaScript function declarations their own module reassigns
+   * (rebindable-functions.ts). */
+  readonly rebindableFunctions = new Set<ts.FunctionDeclaration>();
   /** TRAP bindings: declarations whose initializer provably throws before
    * producing a value (its chain roots at an ambient-undefined name —
    * ambientUndefVarRootOf). Module init unwinds at the declaration, so no
@@ -11687,6 +11691,9 @@ export class Lowerer {
   isSelfReference(ident: ts.Identifier): boolean {
     const ctx = this.ctx;
     if (!ctx.selfSymbol) return false;
+    // A reassigned JavaScript declaration names its module global, which
+    // may hold another function by the time the body runs.
+    if (isRebindableFunctionSymbol(this, ctx.selfSymbol)) return false;
     // The self binding can be shadowed by a scoped local of the same symbol?
     // No — a shadow is a different symbol; symbol identity is exact.
     return this.checker.getSymbolAtLocation(ident) === ctx.selfSymbol;
