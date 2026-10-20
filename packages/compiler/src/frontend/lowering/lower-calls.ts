@@ -6699,6 +6699,7 @@ function recordAssignHelper(
   const helper = `%obj.assign.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, helper);
   const sShape = lowerer.shapes.get(srcShapeId)!;
+  const tShape = lowerer.shapes.get(targetShapeId)!;
   const tT: IrType = { kind: "record", shapeId: targetShapeId };
   const sT: IrType = { kind: "record", shapeId: srcShapeId };
   const tRef: IrExpr = { kind: "varRef", localId: "t.0", type: tT, loc };
@@ -6713,12 +6714,13 @@ function recordAssignHelper(
       type: f.type,
       loc,
     };
+    const targetType = tShape.fields.find((x) => x.name === f.name)!.type;
     const set: IrStmt = {
       kind: "recordSet",
       obj: tRef,
       shapeId: targetShapeId,
       field: f.name,
-      value: get,
+      value: typeEquals(targetType, f.type) ? get : lowerer.coerceToExpected(get, targetType),
       loc,
     };
     const present = lowerer.recordFieldPresent(sRef, srcShapeId, f.name, loc);
@@ -7338,7 +7340,12 @@ function lowerObjectStaticCall(
           !shapeHasAccessorSlots(sShape) &&
           sShape.fields.every((sf) => {
             const tf = tShape.fields.find((x) => x.name === sf.name);
-            return tf !== undefined && typeEquals(tf.type, sf.type);
+            // A source value converts into a wider target field (`{ bail:
+            // true }` into `bail?: boolean`).
+            return (
+              tf !== undefined &&
+              (typeEquals(tf.type, sf.type) || lowerer.coercibleValue(sf.type, tf.type))
+            );
           });
         if (ok) {
           const loc = locOf(call);

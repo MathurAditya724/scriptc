@@ -4824,6 +4824,15 @@ function nullishBranches(
 export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   let e: ts.Expression = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
+  // `if (Object.setPrototypeOf)`: the feature test of transpiled Error
+  // subclasses' prototype reset. Node always has it.
+  if (
+    ts.isPropertyAccessExpression(e) &&
+    !e.questionDotToken &&
+    e.name.text === "setPrototypeOf" &&
+    lowerer.isStdlibGlobal(e.expression, "Object")
+  )
+    return { kind: "boolLit", value: true, type: BOOL, loc: locOf(e) };
   if (ts.isPropertyAccessExpression(e)) {
     const presence = lowerPromiseThenPresence(lowerer, e, {
       kind: "boolLit",

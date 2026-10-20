@@ -103,3 +103,17 @@ function describeApiError(error: Error & { status?: number }): string {
   return `${error.message}:${error.status ?? "none"}`;
 }
 console.log(describeApiError(gateway), describeApiError(new Error("plain")));
+
+// Object.assign into a record whose fields are wider than the source's.
+interface BuildFailure {
+  message: string;
+  bail?: boolean;
+  code?: string;
+}
+function failure(message: string, bail: boolean): BuildFailure {
+  const err: BuildFailure = { message };
+  if (bail) Object.assign(err, { bail: true });
+  return Object.assign(err, { code: "E_BUILD" });
+}
+for (const f of [failure("stop", true), failure("go", false)])
+  console.log(f.message, f.bail, f.code);
