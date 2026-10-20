@@ -115,6 +115,30 @@ async function main(): Promise<void> {
   }
   console.log(fs.existsSync(file), fs.existsSync(path.join(root, "deep", "inner")));
 
+  // A symlink source over an existing destination entry: a regular file is
+  // kept and the copy fails with EEXIST; a destination symlink is replaced.
+  const linkSrc = path.join(root, "link-src");
+  fs.mkdirSync(linkSrc);
+  fs.symlinkSync(file, path.join(linkSrc, "entry"));
+  for (const sync of [true, false]) {
+    const linkDest = path.join(root, sync ? "link-dest-sync" : "link-dest-async");
+    fs.mkdirSync(linkDest);
+    fs.writeFileSync(path.join(linkDest, "entry"), "kept");
+    try {
+      if (sync) fs.copySync(linkSrc, linkDest, { overwrite: false });
+      else await fs.copy(linkSrc, linkDest, { overwrite: false });
+    } catch (err) {
+      console.log((err as NodeJS.ErrnoException).code, shown(root, (err as Error).message));
+    }
+    const entry = path.join(linkDest, "entry");
+    console.log(fs.readFileSync(entry, "utf8"), fs.lstatSync(entry).isSymbolicLink());
+  }
+  const relinkDest = path.join(root, "relink-dest");
+  fs.mkdirSync(relinkDest);
+  fs.symlinkSync(data, path.join(relinkDest, "entry"));
+  fs.copySync(linkSrc, relinkDest);
+  console.log(shown(root, fs.readlinkSync(path.join(relinkDest, "entry"))));
+
   console.log(await readStream(file));
   console.log((await fs.promises.readFile(file, "utf8")).length);
   console.log(fs.readFileSync(file, "utf8").length);

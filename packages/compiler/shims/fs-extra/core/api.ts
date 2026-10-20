@@ -925,6 +925,64 @@ async function included(state: CopyState, src: string, dest: string): Promise<bo
   return await filter(src, dest);
 }
 
+/** fs-extra's onLink: a symlink source creates a symlink at `dest`. Only
+ * a destination that is itself a symlink is replaced; over a regular file
+ * or a directory, symlink fails with EEXIST, whatever `overwrite` says. */
+async function copyLink(
+  target: string,
+  dest: string,
+  destExists: boolean,
+  dereference: boolean,
+): Promise<void> {
+  if (!destExists) return fsp.symlink(target, dest);
+  let destLinked: string;
+  try {
+    destLinked = await fsp.readlink(dest);
+  } catch (err) {
+    const code = codeOf(err);
+    if (code === "EINVAL" || code === "UNKNOWN") return fsp.symlink(target, dest);
+    throw err;
+  }
+  const destTarget = dereference ? path.resolve(process.cwd(), destLinked) : destLinked;
+  checkLinkTargets(target, destTarget, (await fsp.stat(dest)).isDirectory());
+  await fsp.unlink(dest);
+  await fsp.symlink(target, dest);
+}
+
+function copyLinkSync(
+  target: string,
+  dest: string,
+  destExists: boolean,
+  dereference: boolean,
+): void {
+  if (!destExists) {
+    fs.symlinkSync(target, dest);
+    return;
+  }
+  let destLinked: string;
+  try {
+    destLinked = fs.readlinkSync(dest);
+  } catch (err) {
+    const code = codeOf(err);
+    if (code !== "EINVAL" && code !== "UNKNOWN") throw err;
+    fs.symlinkSync(target, dest);
+    return;
+  }
+  const destTarget = dereference ? path.resolve(process.cwd(), destLinked) : destLinked;
+  checkLinkTargets(target, destTarget, fs.statSync(dest).isDirectory());
+  fs.unlinkSync(dest);
+  fs.symlinkSync(target, dest);
+}
+
+/** Replacing a destination symlink never points it into its own target,
+ * nor removes a directory link the source lives under. */
+function checkLinkTargets(target: string, destTarget: string, destIsDirectory: boolean): void {
+  if (isSrcSubdir(target, destTarget))
+    throw new Error(`Cannot copy '${target}' to a subdirectory of itself, '${destTarget}'.`);
+  if (destIsDirectory && isSrcSubdir(destTarget, target))
+    throw new Error(`Cannot overwrite '${destTarget}' with '${target}'.`);
+}
+
 async function copyEntry(
   state: CopyState,
   src: string,
@@ -954,9 +1012,12 @@ async function copyEntry(
   }
   if (srcStat.isSymbolicLink()) {
     const linked = await fsp.readlink(src);
-    const target = state.dereference ? path.resolve(process.cwd(), linked) : linked;
-    if (destExists) await fsp.unlink(dest);
-    await fsp.symlink(target, dest);
+    await copyLink(
+      state.dereference ? path.resolve(process.cwd(), linked) : linked,
+      dest,
+      destExists,
+      state.dereference,
+    );
     return;
   }
   if (destExists) {
@@ -1027,10 +1088,14 @@ function copyEntrySync(
     return;
   }
   if (srcStat.isSymbolicLink()) {
+    const dereference = state.dereference === true;
     const linked = fs.readlinkSync(src);
-    const target = state.dereference === true ? path.resolve(process.cwd(), linked) : linked;
-    if (destExists) fs.unlinkSync(dest);
-    fs.symlinkSync(target, dest);
+    copyLinkSync(
+      dereference ? path.resolve(process.cwd(), linked) : linked,
+      dest,
+      destExists,
+      dereference,
+    );
     return;
   }
   if (destExists) {
