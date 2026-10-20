@@ -794,6 +794,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's argument checks (ERR_INVALID_ARG_TYPE/VALUE, ERR_SOCKET_BAD_PORT).
   "dns.lookupDyn",
   "dns.lookupService",
+  "dns.promisesLookup",
+  "dns.promisesLookupService",
   "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",

@@ -481,6 +481,8 @@ const RUNTIME_FEATURE_RULES = {
   dc: rule({ prefixes: ["dc."] }),
   /** dns.lookup lives in the dgram unit. */
   dgram: rule({ prefixes: ["dgram.", "dns."], types: ["dgramSocket"] }),
+  /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
+  dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
@@ -656,6 +658,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     copying: false,
     dc: false,
     dgram: false,
+    dnsPromises: false,
     dynAsync: false,
     dynInvoke: false,
     dynTier: false,

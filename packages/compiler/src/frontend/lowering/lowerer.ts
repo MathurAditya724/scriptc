@@ -12579,6 +12579,12 @@ export class Lowerer {
       const callable = this.lowerBuiltinCallableValue(bi, loc);
       if (callable) return callable;
     }
+    // node:stream/web's exports are the web stream globals themselves: in
+    // JavaScript sources the same identity token as the global spelling
+    // (`require("stream/web").ReadableStream === globalThis.ReadableStream`).
+    if (bi.module === "stream/web" && isJsSourceFile(expr.getSourceFile())) {
+      return { kind: "strLit", value: `[builtin ${bi.member}]`, type: STRING, loc };
+    }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
     if (builtinModuleFnOf(this, bi.module, bi.member)) {
