@@ -154,6 +154,7 @@ import { errorPropertyRead } from "../error-methods.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/compression.js";
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
+import { keyedFieldRead } from "./keyed-field-targets.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -3505,6 +3506,7 @@ export function fieldGetExpr(
     );
     if (checked) target = { ...target, obj: checked };
   }
+  if (target.container === "recordKeyed") return keyedFieldRead(lowerer, target, loc);
   if (target.container === "dynamic")
     return lowerer.coerceInto(
       blame,

@@ -151,6 +151,21 @@ export type FieldTarget =
   // (the write-slot type; reads arm it with undefined under
   // noUncheckedIndexedAccess in fieldGetExpr).
   | { container: "recordOvf"; obj: IrExpr; shapeId: string; field: string; fieldType: IrType }
+  // A computed key of a record in a read-modify-write (`r[k] += v`,
+  // `r[k]++`, `r[k] ??= v`; keyed-field-targets.ts): `keys` lists the
+  // declared fields a literal-union key can name, which share fieldType;
+  // null keys mean a string key into a pure index-signature record, whose
+  // entries fieldType types. `key` is null when the one literal is static.
+  | {
+      container: "recordKeyed";
+      obj: IrExpr;
+      shapeId: string;
+      field: string;
+      keys: readonly string[] | null;
+      key: IrExpr | null;
+      fieldType: IrType;
+      missNaN?: true;
+    }
   | { container: "accessor"; obj: IrExpr; className: string; field: string; fieldType: IrType }
   // A RECORD accessor property (an object-literal `get x()`/`set x(v)` —
   // the shape carries %get:/%set: closure slots): reads call the getter
