@@ -754,6 +754,31 @@ export function childDataThunkFor(host: LlvmEmitterContext, param: IrType): stri
   return sym;
 }
 
+/** The child-stream 'data' thunk for an unknown/any chunk parameter: the
+ * runtime's Buffer (or, after setEncoding, string) chunk boxes into a
+ * checked-dynamic value the listener owns. */
+export function childDataDynThunkFor(host: LlvmEmitterContext, chunk: "bytes" | "str"): string {
+  const key = `cdd:${chunk}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = `sc_cdd_${host.resolveThunks.size}`;
+  host.resolveThunks.set(key, sym);
+  const box = chunk === "bytes" ? "scr_dyn_new_buffer" : "scr_dyn_new_str";
+  host.declare(`declare ptr @${box}(ptr)`);
+  host.resolveThunkDefs.push(
+    `define internal void @${sym}(ptr %cb, ptr %chunk) ${FN_ATTRS} { ; child 'data' → dyn (${chunk})`,
+    `entry:`,
+    `  %d = call ptr @${box}(ptr %chunk)`,
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+    `  call void %fn(ptr %cb, ptr %d)`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  return sym;
+}
+
 export function emitterFixedAdapter(
   host: LlvmEmitterContext,
   cbT: IrType & { kind: "func" },

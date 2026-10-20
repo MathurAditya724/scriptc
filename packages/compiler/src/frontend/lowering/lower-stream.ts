@@ -587,6 +587,33 @@ function dynOptionsValue(lowerer: Lowerer, arg: ts.Expression): IrExpr | null {
   return v.type.kind === "dyn" ? v : null;
 }
 
+/** @types/node declares the transform/flush completion callback as
+ * `(error?: Error | null, data?: any) => void`. Outside objectMode Node
+ * accepts only a Buffer, a string or nothing as `data`, so the callback
+ * parameter is typed with that union while the option callback lowers: a
+ * checked-dynamic value passed as `data` converts at the call. Returns the
+ * pinned parameter symbol (the caller unpins it), or null when the
+ * declared type needs no pin. */
+function pinAnyDataCompletion(
+  lowerer: Lowerer,
+  which: string,
+  fnNode: ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+): ts.Symbol | null {
+  const index = which === "transform" ? 2 : which === "flush" ? 0 : -1;
+  const param = index < 0 ? undefined : fnNode.parameters.nodes[index];
+  if (param === undefined || !ts.isIdentifier(param.name) || param.dotDotDotToken) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(param.name);
+  if (!symbol || lowerer.stageSourceTypes.has(symbol)) return null;
+  const declared = lowerer.paramShape(param).type;
+  if (declared.kind !== "func" || declared.rest || declared.params[1]?.kind !== "dyn") return null;
+  const data = unionOf(lowerer, [BYTES, STRING, { kind: "undefinedT" }]);
+  lowerer.stageSourceTypes.set(
+    symbol,
+    funcOf([declared.params[0]!, data, ...declared.params.slice(2)], declared.ret),
+  );
+  return symbol;
+}
+
 /** Parses the options object literal of a stream constructor. `which`
  * names the callbacks this class accepts, in canonical flag order. */
 function parseStreamOptions(
@@ -672,22 +699,27 @@ function parseStreamOptions(
         continue;
       }
       const full = tuples[name]!.map((t) => (t === "fn" ? null : t));
-      // The completion-callback tail: typed by the checker contextually;
-      // accept the user's declared func type as the tuple's entry so the
-      // prefix check compares like with like.
-      const { funcType } = lowerer.lambdaSignature(fnNode);
-      const tuple: IrType[] = full.map((t, i) => {
-        if (t !== null) return t;
-        const declared = funcType.params[i];
-        if (declared !== undefined && declared.kind !== "func" && declared.kind !== "dyn") {
-          lowerer.noLowering(
-            `a '${name}' callback whose parameter ${i} is '${lowerer.fmt(declared)}' where Node passes the completion callback`,
-            fnNode!,
-          );
-        }
-        return declared ?? funcOf([], VOID);
-      });
-      present.set(name, lowerStreamCallback(lowerer, name, fnNode, thisType, tuple));
+      const pinned = pinAnyDataCompletion(lowerer, name, fnNode);
+      try {
+        // The completion-callback tail: typed by the checker contextually;
+        // accept the user's declared func type as the tuple's entry so the
+        // prefix check compares like with like.
+        const { funcType } = lowerer.lambdaSignature(fnNode);
+        const tuple: IrType[] = full.map((t, i) => {
+          if (t !== null) return t;
+          const declared = funcType.params[i];
+          if (declared !== undefined && declared.kind !== "func" && declared.kind !== "dyn") {
+            lowerer.noLowering(
+              `a '${name}' callback whose parameter ${i} is '${lowerer.fmt(declared)}' where Node passes the completion callback`,
+              fnNode!,
+            );
+          }
+          return declared ?? funcOf([], VOID);
+        });
+        present.set(name, lowerStreamCallback(lowerer, name, fnNode, thisType, tuple));
+      } finally {
+        if (pinned) lowerer.stageSourceTypes.delete(pinned);
+      }
       continue;
     }
     // `{ signal }` shorthand: the binding is the value.

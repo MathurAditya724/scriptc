@@ -181,6 +181,7 @@ import {
   genResultThunkFor,
   childExitThunkFor,
   childExitSignalThunkFor,
+  childDataDynThunkFor,
   childDataThunkFor,
   execFileThunkFor,
   ipcMessageThunkFor,
@@ -5562,6 +5563,10 @@ export class LlEmitter {
 
   childDataThunkFor(param: IrType): string {
     return childDataThunkFor(this, param);
+  }
+
+  childDataDynThunkFor(chunk: "bytes" | "str"): string {
+    return childDataDynThunkFor(this, chunk);
   }
 
   emitterFixedAdapter(cbT: IrType & { kind: "func" }): { fn: string; shim: string } {

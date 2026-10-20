@@ -2540,7 +2540,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * throws when the program lacks the stream unit's boxing helpers. */
   "child.stdioStream": { argTypes: [CHILD_T, F64], result: VOID },
   // Listener registrations: callback func shapes are program-dependent
-  // (zero-param / Buffer / Buffer-armed union) — the slots pin arity,
+  // (zero-param / Buffer / string / unknown / Buffer-armed union) — the slots pin arity,
   // the stream receiver, and the once-flag.
   "stream.onData": { argTypes: [CHILDSTREAM_T, null, BOOL], result: VOID },
   "stream.onDataStr": { argTypes: [CHILDSTREAM_T, null, BOOL], result: VOID },
