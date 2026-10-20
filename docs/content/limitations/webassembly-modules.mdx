@@ -21,7 +21,7 @@ Programs built for `wasm32-wasi` can't use the WebAssembly API.
 Differences from Node.js:
 
 - Growing a memory, from JavaScript or inside the module, does not detach the previous `ArrayBuffer`.
-  Its contents stay readable, so views created before the growth stay valid but keep their old length; code that reads `memory.buffer` again after growing, as WebAssembly glue code does, behaves as in Node.js.
+  The memory never moves, so views created before the growth stay valid but keep their old length; code that reads `memory.buffer` again after growing, as WebAssembly glue code does, behaves as in Node.js.
 - `valueOf()` answers a `WebAssembly.Global`'s value only when the receiver's static type is `WebAssembly.Global`; through an untyped value it answers the object, and converting a `Global` to a primitive uses the object rather than its value.
 - Instances are never freed, together with their memories, imports and exports.
 - A load whose result the module never uses may be removed instead of trapping when its address is out of bounds.

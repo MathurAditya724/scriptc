@@ -138,6 +138,57 @@ describe("translateWasmModule", () => {
   });
 });
 
+/** A module from its sections: `[id, ...payload]`, each payload under 128
+ * bytes. */
+function wasmModule(...sections: number[][]): Uint8Array {
+  const out = [0, 97, 115, 109, 1, 0, 0, 0];
+  for (const [id, ...payload] of sections) out.push(id!, payload.length, ...payload);
+  return new Uint8Array(out);
+}
+
+/** (module (memory 1) (func (export "f") (param i32) (result i32)
+ *  local.get 0 i32.load <memarg>)) with the memarg's bytes as given. */
+function loadModule(memarg: number[]): Uint8Array {
+  const body = [0, 0x20, 0, 0x28, ...memarg, 0x0b];
+  return wasmModule(
+    [1, 1, 0x60, 1, 0x7f, 1, 0x7f],
+    [3, 1, 0],
+    [5, 1, 0, 1],
+    [7, 1, 1, 0x66, 0, 0],
+    [10, 1, body.length, ...body],
+  );
+}
+
+describe("memargs and operand types", () => {
+  test("a memarg naming memory 0 explicitly translates as the plain form", () => {
+    // Flags 0x42: alignment 2 with bit 6 set, then memory index 0 and
+    // offset 4. Validation and translation read the same three immediates.
+    // Only the descriptor (which records the module's byte length) differs.
+    const code = (memarg: number[]): string[] =>
+      translateWasmModule(loadModule(memarg), SHA, { boundsChecks: true })
+        .text.join("\n")
+        .split("\n")
+        .filter((line) => !line.startsWith(`@${wasmSymbolPrefix(SHA)}_desc =`));
+    expect(code([0x42, 0, 4])).toEqual(code([0x02, 4]));
+  });
+
+  test("a memarg naming another memory is refused", () => {
+    expect(() =>
+      translateWasmModule(loadModule([0x42, 1, 4]), SHA, { boundsChecks: true }),
+    ).toThrow(/memory 1/);
+  });
+
+  test("local.tee of an i32 into an externref local is refused", () => {
+    // (func (local externref) i32.const 1 local.tee 0 drop): the operand
+    // never reaches a reference slot.
+    const body = [1, 1, 0x6f, 0x41, 1, 0x22, 0, 0x1a, 0x0b];
+    const bytes = wasmModule([1, 1, 0x60, 0, 0], [3, 1, 0], [10, 1, body.length, ...body]);
+    expect(() => translateWasmModule(bytes, SHA, { boundsChecks: false })).toThrow(
+      /local\.tee operand type does not match/,
+    );
+  });
+});
+
 describe("module parsing", () => {
   test("reads the parts translation needs", () => {
     const m = parseWasmModule(ADD);

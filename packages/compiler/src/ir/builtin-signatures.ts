@@ -440,6 +440,20 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "perf.entryDetail": { argTypes: [F64], result: DYN },
   "perf.entryKeep": { argTypes: [DYN], result: VOID },
   "perf.entryRef": { argTypes: [F64], result: DYN },
+  /** perf_hooks event-loop metrics (scr_perf_loop.c): loopStart is the
+   * loop's start in performance.now() ms (0 before it), idleTime the idle
+   * ms since. eldNew(resolution ms) creates a monitorEventLoopDelay
+   * histogram handle (MAY THROW Node's resolution RangeError); enable/disable answer whether the state changed;
+   * eldPercentile expects Node's validated range; eldStat(which) reads
+   * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. */
+  "perf.loopStart": { argTypes: [], result: F64 },
+  "perf.idleTime": { argTypes: [], result: F64 },
+  "perf.eldNew": { argTypes: [F64], result: F64 },
+  "perf.eldEnable": { argTypes: [F64], result: BOOL },
+  "perf.eldDisable": { argTypes: [F64], result: BOOL },
+  "perf.eldReset": { argTypes: [F64], result: VOID },
+  "perf.eldPercentile": { argTypes: [F64, F64], result: F64 },
+  "perf.eldStat": { argTypes: [F64, F64], result: F64 },
   /** process.memoryUsage(): memoryUsageTake samples the resident set and
    * the runtime heap once (MAY THROW Node's uv_resident_set_memory error)
    * and memoryUsageField(k) reads that sample (0 rss, 1 heapTotal, 2
@@ -2633,8 +2647,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * queue, end/destroy settle it, writable is a pure state read, and
    * listener callbacks move into the writer registry. */
   "child.stdin": { argTypes: [CHILD_T], result: VOID },
+  /** Under the general stream representation (general-streams.ts), a
+   * stdio read (slot 0, 1 or 2) answers the child's bridged runtime stream
+   * — `Writable | null` for stdin, `Readable | null` otherwise; the bridge
+   * throws when the program lacks the stream unit's boxing helpers. */
+  "child.stdioStream": { argTypes: [CHILD_T, F64], result: VOID },
   // Listener registrations: callback func shapes are program-dependent
-  // (zero-param / Buffer / Buffer-armed union) — the slots pin arity,
+  // (zero-param / Buffer / string / unknown / Buffer-armed union) — the slots pin arity,
   // the stream receiver, and the once-flag.
   "stream.onData": { argTypes: [CHILDSTREAM_T, null, BOOL], result: VOID },
   "stream.onDataStr": { argTypes: [CHILDSTREAM_T, null, BOOL], result: VOID },
@@ -2654,6 +2673,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * stderrWrite paths so buffering and ordering stay identical. Data
    * borrowed; the bool is Node's always-true backpressure signal. */
   "procStream.write": { argTypes: [PROCSTREAM_T, STRING], result: BOOL },
+  /** process.stdout/stderr flowing into a runtime Writable slot under the
+   * general stream representation: an fd-backed Writable (+1) whose
+   * writes take process.stdout.write's synchronous path. */
+  /** A pipeline() stage that is a checked-dynamic value: a boxed native
+   * stream unwraps by identity (+1); anything else throws the given
+   * not-supported message. Typed as a Duplex so every stage position
+   * accepts it; the runtime pipeline checks the stream's real sides. */
+  "stream.unboxDyn": {
+    argTypes: [DYN, STRING],
+    result: { kind: "object", className: "%Duplex" },
+  },
+  "stream.stdioWritable": {
+    argTypes: [PROCSTREAM_T],
+    result: { kind: "object", className: "%Writable" },
+  },
   "child.killed": { argTypes: [CHILD_T], result: BOOL },
   "child.kill": { argTypes: [CHILD_T, STRING], result: BOOL },
   "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },
@@ -3534,6 +3568,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
   "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
   "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },
+  /** EventEmitter (0), Stream (1), Readable (2), Writable (3), Duplex (4),
+   * Transform (5) and PassThrough (6) as untyped constructor values, one
+   * per thread (scr_dyn_builtin_class.c). */
+  "dyn.builtinClass": { argTypes: [F64], result: DYN },
+  /** `value instanceof C` for those constructors, over the value's
+   * prototype chain. */
+  "dyn.builtinInstanceOf": { argTypes: [DYN, F64], result: BOOL },
+  /** `value instanceof f` for an untyped constructor function: the
+   * prototype chain against f.prototype. */
+  "dyn.functionInstanceOf": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.classSuper": { argTypes: [DYN, DYN, DYN], result: VOID },
   "dyn.assignPrototype": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.definePrototypeProps": { argTypes: [DYN, DYN, DYN], result: DYN },
@@ -3691,7 +3735,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * returns the below-hwm answer. readable.read: (recv, size — -1 for
    * absent) → Buffer|null union. pause/resume return recv +1 (`this`);
    * isPaused answers the flag. readable.pipe: (recv, dst, end) → dst +1,
-   * fires 'pipe' on dst; readable.unpipe (recv[, dst]) → recv +1.
+   * fires 'pipe' on dst; readable.pipeGeneral: the same, with `end` off
+   * when dst is the converted process.stdout / process.stderr;
+   * readable.unpipe (recv[, dst]) → recv +1.
    * writable.write/writeStr: (recv, chunk[, cb]) → below-hwm bool (cb
    * MOVES when present, called after the user write completes).
    * writable.end: (recv, flags[, chunk][, cb]) → recv +1. cork/uncork are
@@ -3889,6 +3935,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "readable.resume": { argTypes: [null], result: VOID },
   "readable.isPaused": { argTypes: [null], result: BOOL },
   "readable.pipe": { argTypes: [null, null, BOOL], result: VOID },
+  "readable.pipeGeneral": { argTypes: [null, null, BOOL], result: VOID },
   "readable.unpipe": { argTypes: [null], result: VOID },
   "readable.flowing": { argTypes: [null], result: VOID },
   "writable.write": { argTypes: [null, BYTES_U8], result: BOOL },

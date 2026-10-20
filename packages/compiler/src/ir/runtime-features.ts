@@ -149,6 +149,7 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "child.stdioStream",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",
@@ -167,6 +168,8 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.destroyErr",
   "stream.errored",
   "stream.prop",
+  "stream.stdioWritable",
+  "stream.unboxDyn",
   "stream.workerStdio",
 ]);
 
@@ -238,8 +241,21 @@ const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** libCall name prefixes that link the child-process unit. */
 const CHILD_PROCESS_LIB_PREFIXES: readonly string[] = ["child.", "cp.", "spawnRes.", "writer."];
 
+/** The entry points scr_dyn_builtin_class.c defines. The unit calls
+ * listeners through the dyn-invoke unit, renders unhandled 'error'
+ * payloads through the inspect unit, creates EventEmitter's private
+ * symbols through the symbol unit and shares defaultMaxListeners with the
+ * emitter unit, so each of them links all five. */
+const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
+  "dyn.builtinClass",
+  "dyn.builtinInstanceOf",
+  "dyn.functionInstanceOf",
+];
+
 /** Entry points that link the symbol unit, besides the sym. and disposable. families. */
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // EventEmitter's kShapeMode and kCapture properties
+  ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",
   "dyn.usingMethod",
   "util.isDeepStrictEqual",
@@ -499,14 +515,14 @@ const RUNTIME_FEATURE_RULES = {
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
     // The legacy url functions and crypto.createCipheriv emit their
-    // deprecation warnings through the dyn-async unit.
+    // deprecation warnings through the dyn-async unit; scr_wasm.c boxes its
+    // handles and promises through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
     ],
-    // scr_wasm.c boxes its handles and promises through the dyn-async unit.
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
       (node.kind === "awaitExpr" && node.type.kind === "dyn") ||
@@ -516,9 +532,16 @@ const RUNTIME_FEATURE_RULES = {
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
   }),
+  /** EventEmitter and the stream classes as untyped constructor values
+   * (scr_dyn_builtin_class.c), which call listeners through the dyn-invoke
+   * unit, render unhandled 'error' payloads through the inspect unit and
+   * create EventEmitter's private symbols through the symbol unit. */
+  dynBuiltinClass: rule({
+    fns: [...BUILTIN_CLASS_LIB_FNS],
+  }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
-    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS],
+    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.
     expr: (node, _tables) =>
@@ -535,7 +558,7 @@ const RUNTIME_FEATURE_RULES = {
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
-    fns: [...STREAM_LIB_FNS],
+    fns: [...STREAM_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
     prefixes: ["emitter.", ...STREAM_LIB_PREFIXES],
   }),
   /** Subclasses of the runtime EventTarget/Event bases tear down and box
@@ -569,7 +592,13 @@ const RUNTIME_FEATURE_RULES = {
    * terminal unit prints completion errors through it when there is a
    * completer. */
   inspect: rule({
-    fns: ["global.native", "util.styleText", "crypto.cipherNew", ...UTIL_CALLABLE_LIB_FNS],
+    fns: [
+      "global.native",
+      "util.styleText",
+      "crypto.cipherNew",
+      ...BUILTIN_CLASS_LIB_FNS,
+      ...UTIL_CALLABLE_LIB_FNS,
+    ],
     prefixes: ["insp.", "console.", "test."],
     libCall: (node) => node.fn === "rl.terminal" && !isDynUndefined(node.args[3]!),
   }),
@@ -594,6 +623,9 @@ const RUNTIME_FEATURE_RULES = {
   /** scr_util_callable.c reads options through the parseArgs unit's
    * descriptors. */
   parseArgs: rule({ fns: [...PARSE_ARGS_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS] }),
+  /** perf_hooks event-loop metrics (eventLoopUtilization,
+   * monitorEventLoopDelay): scr_perf_loop.c. */
+  perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
   processEvents: rule({ fns: [...PROCESS_EVENT_LIB_FNS, "util.styleText"], types: ["procStream"] }),
   /** scr_url_legacy.c parses and stringifies queries. */
   qs: rule({ fns: [...QS_LIB_FNS, ...LEGACY_URL_LIB_FNS] }),
@@ -675,6 +707,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dgram: false,
     dnsPromises: false,
     dynAsync: false,
+    dynBuiltinClass: false,
     dynInvoke: false,
     dynTier: false,
     emitter: false,
@@ -691,6 +724,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     net: false,
     nodeTest: false,
     parseArgs: false,
+    perfLoop: false,
     processEvents: false,
     qs: false,
     regex: false,

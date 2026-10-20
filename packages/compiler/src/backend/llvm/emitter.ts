@@ -182,6 +182,7 @@ import {
   genResultThunkFor,
   childExitThunkFor,
   childExitSignalThunkFor,
+  childDataDynThunkFor,
   childDataThunkFor,
   execFileThunkFor,
   ipcMessageThunkFor,
@@ -4213,6 +4214,20 @@ export class LlEmitter {
 
   /** Moves need plain slots that nothing else reads behind the binding's
    * back: no debugger view, no coroutine frame, no borrowed (+0) return. */
+  /** Whether the program reads event-loop utilization (perf.loopStart /
+   * perf.idleTime): main then marks the loop's start before running it. */
+  private loopMetricsRead: boolean | undefined;
+  readsLoopMetrics(): boolean {
+    if (this.loopMetricsRead !== undefined) return this.loopMetricsRead;
+    const visitor = {
+      expr: (e: IrExpr): boolean =>
+        !(e.kind === "libCall" && (e.fn === "perf.loopStart" || e.fn === "perf.idleTime")),
+      stmt: (): boolean => true,
+    };
+    this.loopMetricsRead = !this.mod.functions.every((fn) => everyStmtList(fn.body, visitor));
+    return this.loopMetricsRead;
+  }
+
   private lastUseMovesAllowed(): boolean {
     return (
       this.debug === null &&
@@ -5574,6 +5589,10 @@ export class LlEmitter {
 
   childDataThunkFor(param: IrType): string {
     return childDataThunkFor(this, param);
+  }
+
+  childDataDynThunkFor(chunk: "bytes" | "str"): string {
+    return childDataDynThunkFor(this, chunk);
   }
 
   emitterFixedAdapter(cbT: IrType & { kind: "func" }): { fn: string; shim: string } {

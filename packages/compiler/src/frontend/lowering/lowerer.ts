@@ -1,5 +1,8 @@
+import { onlyForwarded } from "./typed-arguments.js";
+import { needsGeneralNodeStreams, stdioIntoGeneralStream } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
+import { builtinClassValue, builtinMemberClassKind } from "./builtins/builtin-class-dyn.js";
 import {
   lifetimeRegionType,
   lowerLifetimeRegionCall,
@@ -883,6 +886,10 @@ export interface LowererMode {
   /** Statically resolved child_process.fork program roots, in stable target-id order. */
   forkTargets?: readonly ts.SourceFile[];
   frontendServices?: FrontendServices | undefined;
+  /** The program's general stream representation (TypeMapperCtx.
+   * generalNodeStreams). lowerToIr turns it on only after a pass without
+   * it saw a stream flow that needs it (requiresGeneralNodeStreams). */
+  generalNodeStreams?: boolean;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LowerOptions.libraryCallbacks (see there). */
@@ -1039,10 +1046,40 @@ export function lowerToIr(
   for (const d of extraModuleCycleDiags) reachableEmit.pushDiag(d);
   for (const d of ffiValidation.diagnostics) reachableEmit.pushDiag(d);
   const emitted = reachableEmit.emitReachable(options.libRoots);
-  const { reachable } = emitted;
+  let { reachable } = emitted;
   let result = emitted.result;
   let resultLowerer = reachableEmit;
   timing("reachable-emit", { reachable: reachable.size });
+  // The general stream representation (TypeMapperCtx.generalNodeStreams)
+  // is a per-program decision: only a program whose reachable code moved
+  // a general stream into a stdio-represented stream slot lowers again
+  // with it. Every other program keeps the single pass above unchanged.
+  const generalNodeStreams = reachableEmit.requiresGeneralNodeStreams;
+  if (generalNodeStreams) {
+    const general = new Lowerer(program, entry, moduleOrder, {
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      targetPlatform,
+      startupCrash,
+      inlineRequireCycleCalls: options.inlineRequireCycleCalls,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      generalNodeStreams: true,
+    });
+    for (const d of extraModuleCycleDiags) general.pushDiag(d);
+    for (const d of ffiValidation.diagnostics) general.pushDiag(d);
+    const generalEmitted = general.emitReachable(options.libRoots);
+    reachable = generalEmitted.reachable;
+    result = generalEmitted.result;
+    resultLowerer = general;
+    timing("general-streams-relower", { reachable: reachable.size });
+  }
   // A generic class-rest support decision can depend on record metadata
   // whose historical owner is discovered only while retained bodies lower.
   // If the settled answer is a fence, rerun the ordinary reachable emit so
@@ -1050,10 +1087,11 @@ export function lowerToIr(
   // declarators stay unvisited, bindings block, cascades and stats match the
   // historical compiler. This is a rare compatibility fallback; programs
   // without such a settled fence retain checker-backed IR exactly once.
-  if (reachableEmit.requiresHistoricalOrderRelower) {
+  if (resultLowerer.requiresHistoricalOrderRelower) {
     const emit = new Lowerer(program, entry, moduleOrder, {
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
       reachable,
       targetPlatform,
       startupCrash,
@@ -1145,24 +1183,34 @@ export function lowerToIr(
     timing("wasm-discovery", { modules: wasmModules.length });
   }
   if (options.coverage !== true) return result;
-  const remainder = new Lowerer(program, entry, moduleOrder, {
-    frontendServices: options.frontendServices,
-    projectCheckJs: options.projectCheckJs ?? false,
-    reachable,
-    remainder: true,
-    alreadyFlushed: resultLowerer.flushedSymbols,
-    inlineRequireCycleCalls: options.inlineRequireCycleCalls,
-    targetPlatform,
-    ffiImports,
-    libraryCallbacks,
-    forkTargets,
-    workerTargets,
-    ffiBindingSymbols: ffiValidation.symbolsByName,
-    externalTypes,
-    externalTypeSpecifiersByFile,
-    tierMode,
-  });
-  const rem = remainder.run();
+  const remainderPass = (general: boolean): Lowerer =>
+    new Lowerer(program, entry, moduleOrder, {
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      ...(general ? { generalNodeStreams: true } : {}),
+      reachable,
+      remainder: true,
+      alreadyFlushed: resultLowerer.flushedSymbols,
+      inlineRequireCycleCalls: options.inlineRequireCycleCalls,
+      targetPlatform,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+    });
+  let remainder = remainderPass(generalNodeStreams);
+  let rem = remainder.run();
+  // Unreached code reports what it would compile to once reached: a
+  // stream flow there that needs the general representation lowers the
+  // remainder again with it, as reachable emit would.
+  if (!generalNodeStreams && remainder.requiresGeneralNodeStreams) {
+    remainder = remainderPass(true);
+    rem = remainder.run();
+  }
   timing("coverage-remainder");
   // Tiers (tier-analysis.ts): reached statements in dynamic-tier functions,
   // and with tierReport the report-only demotion analysis.
@@ -1948,6 +1996,18 @@ export class Lowerer {
    * type parameters are bound to `unknown`, so lambdaSignature admits
    * them. */
   readonly erasingLambdas = new Set<ts.Node>();
+  /** Function expressions lowered against a fixed target signature with a
+   * tuple-typed `arguments` (typed-arguments.ts). */
+  readonly typedArgumentsLambdas = new Set<ts.Node>();
+  /** Const bindings holding a forwarded fixed tuple (`const args =
+   * arguments as any` in a typed-arguments function) → the tuple type. */
+  readonly tupleAliasSymbols = new Map<ts.Symbol, IrType>();
+  /** `??` expressions whose result is the optional callback's own function
+   * type (an adapted function default); their bindings take that type. */
+  readonly nullishFuncResults = new Set<ts.Node>();
+  /** The static names of the current generic instance's name-keyed
+   * function parameters (static-function-names.ts). */
+  staticFnNames: Map<ts.Symbol, string | null> | null = null;
   /** Nesting depth of erased generic bodies being lowered (erased lambdas
    * and erased instances). */
   erasingDepth = 0;
@@ -2049,7 +2109,9 @@ export class Lowerer {
   /** A pipeline() function stage's `source` parameter: the IR type of what
    * the pipeline passes it (the previous stage as an async iterable), set
    * while the stage lowers. Parameter typing and `for await` heads read
-   * it before the checker's `AsyncIterable<T>`. */
+   * it before the checker's `AsyncIterable<T>`. A stream option callback's
+   * completion parameter declared with an any-typed `data` is pinned here
+   * too while the callback lowers (pinAnyDataCompletion). */
   readonly stageSourceTypes = new Map<ts.Symbol, IrType>();
   /** Set when a match result lowers to execGroups/matchGroups, the inputs
    * of regex span folding. */
@@ -2527,6 +2589,12 @@ export class Lowerer {
   /** Settled generic class-rest metadata requires the historical emit
    * fallback so its fence can poison the original statement atomically. */
   requiresHistoricalOrderRelower = false;
+  /** A general stream value (a runtime stream class instance) reached a
+   * slot the child/process stdio handles represent — NodeJS.ReadableStream,
+   * NodeJS.WritableStream, or @types/node's stream.Readable/Writable — or
+   * a stdio handle reached an 'unknown' slot. lowerToIr then lowers the
+   * program again under the general stream representation. */
+  requiresGeneralNodeStreams = false;
   /** Helpers that snapshot shape declaration order into their bodies.
    * Reachability lowers inits before the declarations they discover, so
    * these rebuild after the worklist restores historical shape metadata. */
@@ -2988,6 +3056,7 @@ export class Lowerer {
    * refuse and fence exactly as before. Stage S6 demotes the units of
    * committed refusals in "auto" and keeps them refusals in "static-only". */
   readonly tierMode: TierMode;
+  readonly generalNodeStreams: boolean;
   /** Functions finishModule placed in the dynamic tier (ir/tiers.ts). */
   dynamicFunctions: DynamicFunction[] = [];
   /** Their IR, for coverage's dynamic statement count. */
@@ -3116,6 +3185,7 @@ export class Lowerer {
     this.startupCrash = mode.startupCrash ?? null;
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.tierMode = mode.tierMode ?? "auto";
+    this.generalNodeStreams = mode.generalNodeStreams ?? false;
     this.workerTargets = mode.workerTargets ?? [];
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
@@ -3212,6 +3282,7 @@ export class Lowerer {
       isExternalTypeFile: (sf) =>
         this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))),
       typeMemo: this.typeMemo,
+      ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       canMemoizeType: () =>
         this.typeParamBindings === null &&
         this.typeParamTsBindings === null &&
@@ -8496,6 +8567,8 @@ export class Lowerer {
    * validator ICEs on them as the usual backstop. */
   requireExactShape(node: ts.Node, actual: IrType, expected: IrType): void {
     if (typeEquals(actual, expected)) return;
+    if (!this.generalNodeStreams && needsGeneralNodeStreams(this, actual, expected))
+      this.requiresGeneralNodeStreams = true;
     // dyn mismatches first. A dyn ('unknown') value flowing into a typed
     // slot needs a CHECKED cast — the hint points at `as <type>`; tsc
     // usually rejects this before we do, so the fence is mostly defensive.
@@ -8713,6 +8786,9 @@ export class Lowerer {
     }
     if (expr.type.kind === "void" && expected.kind !== "void" && this.neverValued.has(expr))
       return this.divergentValue(expr, expected);
+    // process.stdout/stderr into a general Writable slot (general-streams.ts).
+    const stdioStream = stdioIntoGeneralStream(this, expr, expected);
+    if (stdioStream) return this.coerceToExpected(stdioStream, expected);
     // Iterator-typed slots: native iterators and differently typed
     // generators step through an adapter generator.
     if (expected.kind === "generator" && !typeEquals(expr.type, expected)) {
@@ -10947,6 +11023,70 @@ export class Lowerer {
     return declareContextLocal(this.ctx, name, type, false, undefined, undefined);
   }
 
+  /** The body binding of a fixed-tuple rest parameter: one native slot per
+   * position (the flattened ABI), rebuilt into the tuple the source names.
+   * The empty tuple rides the empty-array representation. */
+  declareRestTupleParam(
+    decl: ts.ParameterDeclaration,
+    nameNode: ts.Identifier,
+    elemShapes: readonly ParamShape[],
+    params: IrParam[],
+    prologue: IrStmt[],
+  ): void {
+    const loc = locOf(decl);
+    const name = nameNode.text;
+    const tupleType = this.irTypeOf(nameNode);
+    const slots = elemShapes.map((shape, i) => {
+      const slot = this.declareHiddenLocal(`%${name}.${i}`, shape.type);
+      params.push({ localId: slot.id, name: `%${name}.${i}`, type: shape.type });
+      return slot;
+    });
+    const body = this.declareLocal(nameNode, name, tupleType, true);
+    const fn = decl.parent;
+    const symbol = this.checker.getSymbolAtLocation(nameNode);
+    if (
+      fn !== undefined &&
+      symbol !== undefined &&
+      onlyForwarded(
+        this,
+        fn,
+        (id) => id !== nameNode && this.checker.getSymbolAtLocation(id) === symbol,
+      )
+    ) {
+      this.ctx.pureTuples.set(body.id, slots);
+      return;
+    }
+    const init = this.tupleOfSlots(slots, tupleType, nameNode, loc);
+    prologue.push({ kind: "varDecl", localId: body.id, init, loc });
+  }
+
+  /** A fresh tuple holding the given positional slots, typed `tupleType`
+   * (a tuple record, or the empty-array form of `[]`). */
+  tupleOfSlots(slots: readonly IrLocal[], tupleType: IrType, blame: ts.Node, loc: SrcLoc): IrExpr {
+    if (slots.length === 0) {
+      if (tupleType.kind !== "array") this.badType(blame, this.typeOf(blame));
+      return { kind: "arrayLit", elems: [], type: tupleType, loc };
+    }
+    const shape = tupleType.kind === "record" ? this.shapes.get(tupleType.shapeId) : undefined;
+    if (!shape?.tuple || shape.fields.length !== slots.length)
+      this.badType(blame, this.typeOf(blame));
+    return {
+      kind: "recordLit",
+      fields: slots.map((slot, i) => {
+        const field = shape.fields.find((f) => f.name === String(i))!;
+        return {
+          name: field.name,
+          value: this.coerceToExpected(
+            { kind: "varRef", localId: slot.id, type: slot.type, loc },
+            field.type,
+          ),
+        };
+      }),
+      type: tupleType,
+      loc,
+    };
+  }
+
   /** Declares a callee's parameter locals from its ParamShapes and builds
    * the DEFAULT-PARAM PROLOGUE. Required/optional/rest params bind their
    * symbol directly (one local of the ABI type). A defaulted param `x: T = e`
@@ -10983,6 +11123,17 @@ export class Lowerer {
       return defaultAfterUndefined(undefinedValue, this.coerceInto(node, absent, expected));
     };
     decls.forEach((decl, i) => {
+      // A fixed-tuple rest parameter owns every remaining (flattened)
+      // shape, possibly none for `[]` (restTupleShapes).
+      if (
+        decl.dotDotDotToken !== undefined &&
+        ts.isIdentifier(decl.name) &&
+        i === decls.length - 1 &&
+        (shapes[i] === undefined ? shapes.length === i : shapes[i]!.restTuple === true)
+      ) {
+        this.declareRestTupleParam(decl, decl.name, shapes.slice(i), params, prologue);
+        return;
+      }
       const shape = shapes[i]!;
       if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
         // Pattern parameter: one hidden ABI slot carries the source value;
@@ -11314,6 +11465,13 @@ export class Lowerer {
     }
     if (!symbol) return null;
     const direct = this.resolveKey(symbol, ident);
+    if (direct && this.ctx.pureTuples.has(direct.id)) {
+      // onlyForwarded proved every read forwards; a plain read here means
+      // the analysis and the lowering disagree.
+      throw new InternalCompilerError(
+        `lowerer bug: forwarded-only tuple '${ident.text}' read as a value`,
+      );
+    }
     if (direct) return direct;
     // A PARAMETER PROPERTY declares two symbols: references resolve to the
     // PARAMETER symbol, while the declaration's name binds the PROPERTY
@@ -12628,6 +12786,12 @@ export class Lowerer {
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
+    // `stream.Readable` as a JavaScript value: the runtime's untyped
+    // constructor, the base a constructor function inherits.
+    if (isJsSourceFile(expr.getSourceFile())) {
+      const classKind = builtinMemberClassKind(bi.module, bi.member);
+      if (classKind !== null) return builtinClassValue(classKind, loc);
+    }
     if (builtinModuleFnOf(this, bi.module, bi.member)) {
       this.unsupported(
         "SC1090",

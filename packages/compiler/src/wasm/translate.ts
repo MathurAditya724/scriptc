@@ -48,6 +48,7 @@ import {
   VAL_I64,
   WasmCursor,
   parseWasmModule,
+  readMemargFlags,
   skipImmediates,
   type WasmFuncType,
   type WasmModule,
@@ -119,7 +120,6 @@ const RUNTIME_DECLS = [
   "declare void @scr_wasm_table_init(ptr, i32, i32, i32, i32, i32)",
   "declare void @scr_wasm_elem_drop(ptr, i32)",
   "declare void @scr_wasm_global_set_ref(ptr, ptr)",
-  "declare ptr @scr_wasm_global_get_ref(ptr)",
 ];
 
 function llType(t: number): string {
@@ -915,6 +915,39 @@ class FunctionTranslator {
     return v;
   }
 
+  /** Pops a value that must have type `t`: the type a local, global,
+   * table or memory store writes. Validation guarantees it; a mismatch
+   * means the translator and the validator disagree about the code, so
+   * the module is not translated. */
+  popType(t: number, what: string): StackValue {
+    const v = this.pop();
+    if (v.t !== t) throw new WasmTranslateError(`${what} operand type does not match`);
+    return v;
+  }
+
+  /** The declared type of local `i` (parameters first). */
+  localType(i: number): number {
+    const t = this.localTypes[i];
+    if (t === undefined) throw new WasmTranslateError(`unknown local ${i}`);
+    return t;
+  }
+
+  /** The offset of a memarg over memory 0 (the only memory a translatable
+   * module has). */
+  memargOffset(c: WasmCursor): number {
+    const flags = readMemargFlags(() => c.u32());
+    if (flags.align < 0 || flags.memory !== 0)
+      throw new WasmTranslateError(`memarg of memory ${flags.memory} is not supported`);
+    return c.u32();
+  }
+
+  /** A memory index immediate (memory.size, memory.grow and the bulk
+   * memory instructions), which must be 0. */
+  memoryIndex(c: WasmCursor): void {
+    const index = c.u32();
+    if (index !== 0) throw new WasmTranslateError(`memory ${index} is not supported`);
+  }
+
   popN(n: number): StackValue[] {
     const out = this.stack.splice(this.stack.length - n, n);
     if (out.length !== n) throw new Error("wasm translator: operand stack underflow");
@@ -1625,39 +1658,37 @@ class FunctionTranslator {
       }
       case 0x20: {
         const i = c.u32();
-        const t = this.localTypes[i]!;
+        const t = this.localType(i);
         this.push(this.emit(`load ${llType(t)}, ptr %l${i}`), t);
         return;
       }
       case 0x21: {
         const i = c.u32();
-        const v = this.pop();
-        this.expectType(v.t, this.localTypes[i]!);
-        this.add(`  store ${llType(v.t)} ${v.v}, ptr %l${i}`);
+        const t = this.localType(i);
+        const v = this.popType(t, "local.set");
+        this.add(`  store ${llType(t)} ${v.v}, ptr %l${i}`);
         return;
       }
       case 0x22: {
         const i = c.u32();
-        const v = this.stack[this.stack.length - 1]!;
-        this.expectType(v.t, this.localTypes[i]!);
-        this.add(`  store ${llType(v.t)} ${v.v}, ptr %l${i}`);
+        const t = this.localType(i);
+        const v = this.popType(t, "local.tee");
+        this.stack.push(v);
+        this.add(`  store ${llType(t)} ${v.v}, ptr %l${i}`);
         return;
       }
       case 0x23: {
         const g = c.u32();
         const t = this.m.globals[g]!.type;
         const cell = this.loadPtrSlot(this.mt.globalSlot(g));
-        // An externref read stays alive until the outermost export call
-        // returns, whatever later replaces the global's value.
-        if (t === VAL_EXTERNREF)
-          this.push(this.emit(`call ptr @scr_wasm_global_get_ref(ptr ${cell})`), t);
-        else this.push(this.emit(`load ${llType(t)}, ptr ${cell}, align 8`), t);
+        this.push(this.emit(`load ${llType(t)}, ptr ${cell}, align 8`), t);
         return;
       }
       case 0x24: {
         const g = c.u32();
-        const v = this.pop();
-        this.expectType(v.t, this.m.globals[g]!.type);
+        const global = this.m.globals[g];
+        if (global === undefined) throw new WasmTranslateError(`unknown global ${g}`);
+        const v = this.popType(global.type, "global.set");
         const cell = this.loadPtrSlot(this.mt.globalSlot(g));
         if (v.t === VAL_EXTERNREF)
           this.add(`  call void @scr_wasm_global_set_ref(ptr ${cell}, ptr ${v.v})`);
@@ -1675,14 +1706,15 @@ class FunctionTranslator {
       }
       case 0x26: {
         const t = c.u32();
-        const v = this.pop();
-        const i = this.pop();
-        this.expectType(v.t, this.m.tables[t]!.elemType);
+        const table = this.m.tables[t];
+        if (table === undefined) throw new WasmTranslateError(`unknown table ${t}`);
+        const v = this.popType(table.elemType, "table.set");
+        const i = this.popType(VAL_I32, "table.set");
         this.add(`  call void @scr_wasm_table_set(ptr %inst, i32 ${t}, i32 ${i.v}, ptr ${v.v})`);
         return;
       }
       case 0x3f: {
-        c.u32();
+        this.memoryIndex(c);
         const mem = this.loadPtrSlot(OFF_MEMORY);
         const sizePtr = this.emit(`getelementptr inbounds i8, ptr ${mem}, i64 8`);
         const size = this.emit(`load i64, ptr ${sizePtr}, align 8`);
@@ -1691,7 +1723,7 @@ class FunctionTranslator {
         return;
       }
       case 0x40: {
-        c.u32();
+        this.memoryIndex(c);
         const delta = this.pop();
         this.push(this.emit(`call i32 @scr_wasm_memory_grow(ptr %inst, i32 ${delta.v})`), VAL_I32);
         this.refreshMemory();
@@ -1736,7 +1768,7 @@ class FunctionTranslator {
     if (op >= 0x28 && op <= 0x35) {
       const offset = this.memargOffset(c);
       const [vt, mt, bytes, ext] = LOAD_INFO[op]!;
-      const addr = this.pop();
+      const addr = this.popType(VAL_I32, "load address");
       const p = this.address(addr.v, offset, bytes);
       const line = this.lines.lines.length;
       const loaded = this.emit(`load ${mt}, ptr ${p}, align 1`);
@@ -1749,9 +1781,9 @@ class FunctionTranslator {
     }
     if (op >= 0x36 && op <= 0x3e) {
       const offset = this.memargOffset(c);
-      const [, mt, bytes] = STORE_INFO[op]!;
-      const v = this.pop();
-      const addr = this.pop();
+      const [vt, mt, bytes] = STORE_INFO[op]!;
+      const v = this.popType(vt, "store");
+      const addr = this.popType(VAL_I32, "store address");
       const p = this.address(addr.v, offset, bytes);
       let value = v.v;
       if (mt === "i8" || mt === "i16" || (mt === "i32" && v.t === VAL_I64)) {
@@ -1761,24 +1793,6 @@ class FunctionTranslator {
       return;
     }
     this.numeric(op);
-  }
-
-  /** The offset of a load or store's memarg; a memory other than 0 is
-   * refused (only one memory translates). */
-  memargOffset(c: WasmCursor): number {
-    const { memory, offset } = c.memarg();
-    if (memory !== 0) throw new WasmTranslateError("multiple memories are not supported");
-    return offset;
-  }
-
-  /** A value written to a local, global or table has the destination's
-   * type; validation guarantees it, so a mismatch means the translator
-   * lost track of the operand stack. */
-  expectType(actual: number, expected: number): void {
-    if (actual !== expected)
-      throw new Error(
-        `wasm translator: value of type 0x${actual.toString(16)} where 0x${expected.toString(16)} is expected`,
-      );
   }
 
   numeric(op: number): void {
@@ -2069,7 +2083,7 @@ class FunctionTranslator {
       case 8: {
         // memory.init
         const seg = c.u32();
-        c.u32();
+        this.memoryIndex(c);
         const n = this.pop();
         const s = this.pop();
         const d = this.pop();
@@ -2082,8 +2096,8 @@ class FunctionTranslator {
         this.add(`  call void @scr_wasm_data_drop(ptr %inst, i32 ${c.u32()})`);
         return;
       case 10: {
-        c.u32();
-        c.u32();
+        this.memoryIndex(c);
+        this.memoryIndex(c);
         const n = this.pop();
         const s = this.pop();
         const d = this.pop();
@@ -2093,7 +2107,7 @@ class FunctionTranslator {
         return;
       }
       case 11: {
-        c.u32();
+        this.memoryIndex(c);
         const n = this.pop();
         const v = this.pop();
         const d = this.pop();

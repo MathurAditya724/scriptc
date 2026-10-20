@@ -1868,6 +1868,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
+      "kind": "node-builtin",
+      "name": "perf_hooks.monitorEventLoopDelay",
+      "status": "static",
+      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported"
+    },
+    {
       "id": "node-builtin.perf_hooks.performance.clearMarks",
       "kind": "node-builtin",
       "name": "perf_hooks.performance.clearMarks",
@@ -1878,6 +1885,13 @@
       "kind": "node-builtin",
       "name": "perf_hooks.performance.clearMeasures",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.perf_hooks.performance.eventLoopUtilization",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.eventLoopUtilization",
+      "status": "static",
+      "note": "active time is the main thread's CPU time since the loop started; the one- and two-argument difference forms are supported"
     },
     {
       "id": "node-builtin.perf_hooks.performance.getEntries",

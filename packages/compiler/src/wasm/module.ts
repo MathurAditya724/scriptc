@@ -155,15 +155,6 @@ export class WasmCursor {
     }
   }
 
-  /** A memarg: the alignment flags, the memory index when flag bit 6 is
-   * set (multi-memory), then the offset. binary.ts validates it the same
-   * way. */
-  memarg(): { memory: number; offset: number } {
-    const flags = this.u32();
-    const memory = flags & 0x40 ? this.u32() : 0;
-    return { memory, offset: this.u32() };
-  }
-
   /** A signed LEB128 of at most 33 bits. */
   s33(): number {
     let result = 0;
@@ -292,6 +283,21 @@ function decodeUtf8(bytes: Uint8Array, start: number, end: number): string {
   return out;
 }
 
+/** The flags of a memarg (the immediates of loads, stores and atomics):
+ * the alignment exponent and the memory index. Flags with bit 6 set
+ * (multi-memory) are followed by an explicit memory index, which may be
+ * 0; flags of 128 or more are malformed and answer align -1 without
+ * reading further. The offset follows. Validation (binary.ts), translation
+ * and skipImmediates all read memargs through this function, so they agree
+ * on where each instruction ends; `u32` reads the next u32 immediate of
+ * their own reader. */
+export function readMemargFlags(u32: () => number): { align: number; memory: number } {
+  const flags = u32();
+  if (flags >= 128) return { align: -1, memory: 0 };
+  if (flags >= 64) return { align: flags - 64, memory: u32() };
+  return { align: flags, memory: 0 };
+}
+
 /** Reads the immediates of opcode `op` (already consumed). Covers the
  * translatable feature level; anything else was refused before
  * translation. */
@@ -380,7 +386,12 @@ export function skipImmediates(c: WasmCursor, op: number): void {
       }
     }
     default:
-      if (op >= 0x28 && op <= 0x3e) c.memarg();
+      if (op >= 0x28 && op <= 0x3e) {
+        const flags = readMemargFlags(() => c.u32());
+        if (flags.align < 0 || flags.memory !== 0)
+          throw new Error(`wasm: memarg of memory ${flags.memory} is not supported`);
+        c.u32();
+      }
       return;
   }
 }

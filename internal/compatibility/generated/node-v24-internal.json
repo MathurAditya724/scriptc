@@ -566,9 +566,9 @@
       "apiEntries": 131,
       "static": {
         "supported": 0,
-        "partial": 19,
+        "partial": 25,
         "refused": 0,
-        "not-implemented": 112,
+        "not-implemented": 106,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -75646,7 +75646,9 @@
           "tests/corpus/5212-perf-marks-measures.ts",
           "tests/corpus/5213-perf-timing-errors.ts",
           "tests/corpus/5214-perf-entry-inspect.ts",
-          "tests/corpus/5215-perf-timing-validation.js"
+          "tests/corpus/5215-perf-timing-validation.js",
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -77687,8 +77689,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.histogram.percentile",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77802,8 +77808,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.histogram.reset",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -78285,8 +78295,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.histogram.disable",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -78308,8 +78322,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.histogram.enable",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -78676,8 +78694,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.perf_hooks.monitorEventLoopDelay",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -78826,8 +78848,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.eventLoopUtilization",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },

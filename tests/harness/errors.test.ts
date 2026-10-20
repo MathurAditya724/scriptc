@@ -1040,7 +1040,7 @@ describe("refused statements in speculatively lowered JavaScript functions", () 
       `(function () {
   var root = this;
   console.log("before");
-  console.log(root === eval("this"));
+  process.on("__proto__", () => root);
   console.log("after");
 }).call(this);
 `,
@@ -1051,7 +1051,7 @@ describe("refused statements in speculatively lowered JavaScript functions", () 
       "speculative-apply",
       `(function () {
   console.log("before");
-  console.log(typeof eval("1"));
+  process.on("__proto__", () => {});
 }).apply(null, []);
 `,
       "before\n",
@@ -1062,7 +1062,7 @@ describe("refused statements in speculatively lowered JavaScript functions", () 
       `class Base {}
 class Derived extends (function () {
   console.log("before");
-  console.log(typeof eval("1"));
+  process.on("__proto__", () => {});
   return Base;
 })() {}
 console.log(typeof Derived);
@@ -1076,7 +1076,7 @@ console.log(typeof Derived);
     expect(r.stdout).toBe(stdout);
     expect(r.stderr).toMatch(
       new RegExp(
-        `^Uncaught Error: values of type '\\(x: string\\) => any' cannot be compiled: .* \\[SC2009 at .*${name}\\.cjs:${line}\\]\\n$`,
+        `^Uncaught Error: 'process\\.on\\("__proto__", \\.\\.\\.\\)' is part of the standard library types but has no scriptc lowering yet \\[SC2020 at .*${name}\\.cjs:${line}\\]\\n$`,
       ),
     );
   });

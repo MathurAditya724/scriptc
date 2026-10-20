@@ -1097,6 +1097,16 @@ static ScrStr *scr_insp_class_tag(const char *cls, const char *tail) {
   return ib_take(&out);
 }
 
+/* Node prints a @@toStringTag that ends with "." and the constructor name
+ * (WebAssembly.Module for Module) in place of the name, without the
+ * bracketed tag. */
+static bool insp_tag_names_class(const char *tag, const char *cls) {
+  if (!tag) return false;
+  size_t tag_len = strlen(tag), cls_len = strlen(cls);
+  return tag_len > cls_len + 1 && tag[tag_len - cls_len - 1] == '.' &&
+         memcmp(tag + tag_len - cls_len, cls, cls_len) == 0;
+}
+
 /* A native Set or Map held as a checked-dynamic value: `Set(n) { a, b }`,
  * `Map(n) { k => v }`, at most 100 entries like Node's maxArrayLength. */
 /* Node's formatWeakCollection: the entries of a WeakMap or WeakSet are not
@@ -1495,18 +1505,13 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         ScrStr *body = scr_insp_dyn(view, recurse, depth);
         scr_dyn_release(view);
         InspBuf out = {0};
-        /* util.inspect's getPrefix: a tag whose last dotted segment (the
-         * whole tag without a dot) is the constructor name replaces it
-         * (WebAssembly.Module {}); any other tag follows it in brackets. */
-        const char *tag = ops->to_string_tag;
-        const char *dot = tag ? strrchr(tag, '.') : NULL;
-        if (tag && strcmp(ops->cls, dot && dot > tag ? dot + 1 : tag) == 0) {
-          ib_cstr(&out, tag);
+        if (insp_tag_names_class(ops->to_string_tag, ops->cls)) {
+          ib_cstr(&out, ops->to_string_tag);
         } else {
           ib_cstr(&out, ops->cls);
-          if (tag) {
+          if (ops->to_string_tag) {
             ib_cstr(&out, " [");
-            ib_cstr(&out, tag);
+            ib_cstr(&out, ops->to_string_tag);
             ib_char(&out, ']');
           }
         }

@@ -32,6 +32,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     bigint: features.bigint,
     searchParams: features.searchParams,
     qs: features.qs,
+    dynBuiltinClass: features.dynBuiltinClass,
     parseArgs: features.parseArgs,
     stream: features.stream,
     net: features.net,
@@ -46,5 +47,6 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     tlsCa: features.tlsCa,
     cipher: features.cipher,
     webcrypto: features.webcrypto,
+    perfLoop: features.perfLoop,
   };
 }

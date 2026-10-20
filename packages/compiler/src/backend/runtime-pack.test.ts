@@ -44,6 +44,7 @@ const BASE: NativeLinkFeatures = {
   bigint: false,
   searchParams: false,
   qs: false,
+  dynBuiltinClass: false,
   parseArgs: false,
   stream: false,
   net: false,
@@ -58,6 +59,7 @@ const BASE: NativeLinkFeatures = {
   tlsCa: false,
   cipher: false,
   webcrypto: false,
+  perfLoop: false,
 };
 
 async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {

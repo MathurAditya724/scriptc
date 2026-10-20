@@ -1,4 +1,5 @@
 /* LlEmitter's module-level output: module parts, helper definitions, library declarations and FFI callback definitions. */
+import { emitWasmModules } from "./wasm-modules.js";
 import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import {
   mangleAsyncSpawn,
@@ -29,7 +30,6 @@ import {
 import { emitLlvmLayouts } from "./layouts.js";
 import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
 import { emitArraySearchHelpers } from "./array-search.js";
-import { emitWasmModules } from "./wasm-modules.js";
 import { emitClassMembershipHelper } from "./classes.js";
 import { type RegexMatcherCode, compileRegexMatcher } from "./regex-matchers.js";
 import {
@@ -313,6 +313,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     emitter.declare(`declare zeroext i1 @scr_loop_run(ptr)`);
     if (emitter.mod.commonJsEntry === true)
       emitter.declare(`declare void @scr_loop_commonjs_entry()`);
+    if (emitter.readsLoopMetrics()) emitter.declare(`declare void @scr_perf_loop_mark()`);
     emitter.declare(`declare zeroext i1 @scr_report_unhandled_rejections()`);
     emitter.declare(`declare void @scr_discard_unhandled_rejections()`);
   }
@@ -877,6 +878,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(runsLoop
       ? [
           ...(emitter.mod.commonJsEntry === true ? [`  call void @scr_loop_commonjs_entry()`] : []),
+          // performance.eventLoopUtilization measures from here on.
+          ...(emitter.readsLoopMetrics() ? [`  call void @scr_perf_loop_mark()`] : []),
           `  %loop_rejection = call zeroext i1 @scr_loop_run(ptr ${asyncEntry ? "%top" : "null"})`,
           `  %lexc = call zeroext i1 @scr_exc_pending()`,
           `  br i1 %lexc, label %luncaught, label %lok`,

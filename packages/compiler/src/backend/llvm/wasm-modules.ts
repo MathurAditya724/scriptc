@@ -68,8 +68,8 @@ export function emitWasmModules(
     out.push(`@scr_wasm_registry = constant { i64, ptr } { i64 0, ptr null }`);
   } else {
     out.push(
-      `@scr_wasm_registry_modules = private constant [${descriptors.length} x ptr] [${descriptors.map((d) => `ptr ${d}`).join(", ")}]`,
-      `@scr_wasm_registry = constant { i64, ptr } { i64 ${descriptors.length}, ptr @scr_wasm_registry_modules }`,
+      `@sc_wasm_registry_modules = private constant [${descriptors.length} x ptr] [${descriptors.map((d) => `ptr ${d}`).join(", ")}]`,
+      `@scr_wasm_registry = constant { i64, ptr } { i64 ${descriptors.length}, ptr @sc_wasm_registry_modules }`,
     );
   }
   out.push("");

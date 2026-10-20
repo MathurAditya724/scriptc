@@ -551,6 +551,7 @@ async function compileExecutableNative(
     bigint: features.bigint,
     searchParams: features.searchParams,
     qs: features.qs,
+    dynBuiltinClass: features.dynBuiltinClass,
     parseArgs: features.parseArgs,
     stream: features.stream,
     net: features.net,
@@ -567,6 +568,7 @@ async function compileExecutableNative(
     tlsCa: features.tlsCa,
     cipher: features.cipher,
     webcrypto: features.webcrypto,
+    perfLoop: features.perfLoop,
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
     ...(ffi === null
       ? {}

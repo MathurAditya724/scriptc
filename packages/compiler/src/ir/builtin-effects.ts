@@ -75,6 +75,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.stdoutWriteBytes",
   "process.stderrWriteBytes",
   "procStream.write",
+  "child.stdioStream",
+  "stream.unboxDyn",
   "weakMap.new",
   "weakSet.new",
   "dyn.fromEntries",
@@ -346,6 +348,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.onDyn",
   "readable.resume",
   "readable.pipe",
+  "readable.pipeGeneral",
   "readable.unpipe",
   "writable.write",
   "writable.writeStr",
@@ -389,6 +392,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entries",
   "perf.clearMarks",
   "perf.clearMeasures",
+  // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
+  "perf.eldNew",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
@@ -581,6 +586,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
   "dyn.setPrototype",
+  // a proxy in the prototype chain can throw
+  "dyn.builtinInstanceOf",
+  "dyn.functionInstanceOf",
   "dyn.getOwnPropertyNames",
   "dyn.ownKeys",
   "dyn.getOwnPropertySymbols",

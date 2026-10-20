@@ -25,8 +25,10 @@
  * With guard pages (no SCR_WASM_DESC_BOUNDS_CHECKS) memory_base never
  * changes: the memory is reserved once at its largest size plus a guard
  * region, and grow only commits pages. With explicit bounds checks the
- * translated code reloads memory_base and the byte length after every
- * call. */
+ * memory is reserved at its largest size without a guard region, so
+ * memory_base does not change either where the host can reserve address
+ * space; the translated code still reloads memory_base and the byte
+ * length after every call. */
 #ifndef SCR_WASM_ABI_H
 #define SCR_WASM_ABI_H
 #include <stdbool.h>
@@ -183,11 +185,7 @@ typedef struct ScrWasmMemory {
   struct ScrDyn *buffer; /* the cached ArrayBuffer */
   uint64_t buffer_size;  /* the size it was created at */
   uint64_t declared_max; /* pages; UINT64_MAX when the memory has no maximum */
-  /* Explicit-bounds memories (not guarded): the blocks grow replaced.
-   * ArrayBuffers created before a growth still point into them, so they
-   * live as long as the memory. */
-  uint8_t **retired;
-  size_t retired_count;
+  bool buffer_exposed;   /* a buffer over the storage was handed out */
   /* The byte stores of every ArrayBuffer handed out over this memory's
    * storage (retained). The storage outlives the memory while JavaScript
    * still holds one of them or a view over it. */
