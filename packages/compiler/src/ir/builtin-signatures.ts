@@ -4184,6 +4184,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * warnings and DeprecationWarning emissions read their truthiness. */
   "process.deprecationFlag": { argTypes: [F64], result: DYN },
   "process.setDeprecationFlag": { argTypes: [F64, DYN], result: VOID },
+  "process.setEmitWarning": { argTypes: [DYN], result: VOID },
   /** AsyncLocalStorage (node:async_hooks — scr_async.c): stores are f64
    * handles; contexts are immutable fiber-carried snapshots (spawned
    * fibers inherit the spawner's — Node's init-time capture). run/exit

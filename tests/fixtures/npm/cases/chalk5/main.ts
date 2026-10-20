@@ -15,6 +15,13 @@ console.log(modifierNames.join(","));
 console.log(foregroundColorNames.length + " " + backgroundColorNames.length + " " + colorNames.length);
 
 show("red", chalk.red("red"));
+// Root members named like String.prototype's HTML methods, called from
+// TypeScript (pi's `chalk.bold(APP_NAME)`): the checker types chalk's
+// JavaScript default export as a plain function, so the member is `any`.
+show("bold", chalk.bold("bold"));
+show("bold template", `${chalk.bold("Usage:")} pi`);
+const alias = chalk;
+show("bold alias", alias.bold("alias") + alias.italic("i"));
 show("red.bold", chalk.red.bold("bold red"));
 show("nested", chalk.blue("a " + chalk.red("b") + " c"));
 show("multi-arg", chalk.green("one", "two", 3));
@@ -36,6 +43,7 @@ show("gray-grey", chalk.gray("x") + chalk.grey("y"));
 for (const level of [0, 1, 2, 3] as const) {
   const c = new Chalk({ level });
   show(`L${level} red.bold`, c.red.bold("x"));
+  show(`L${level} bold`, c.bold("x"));
   show(`L${level} hex`, c.hex("#123456")("x"));
   show(`L${level} rgb`, c.rgb(255, 255, 255).bgRgb(0, 0, 0)("x"));
   show(`L${level} ansi256`, c.ansi256(100).bgAnsi256(200)("x"));

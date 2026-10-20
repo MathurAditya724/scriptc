@@ -445,6 +445,8 @@ export async function compileCInternal(
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
+    ...(opts.warningReplace ? ["-DSCR_WARNING_REPLACE"] : []),
+    ...(opts.stdioExtended ? ["-DSCR_STDIO_EXTENDED"] : []),
     ...(opts.youngNursery ? ["-DSCR_YIN"] : []),
     "-fno-math-errno",
     // The runtime object model uses type-punned C: a hierarchy
@@ -645,6 +647,8 @@ export async function compileCInternal(
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
+    ...(opts.warningReplace ? ["-DSCR_WARNING_REPLACE"] : []),
+    ...(opts.stdioExtended ? ["-DSCR_STDIO_EXTENDED"] : []),
     ...(opts.youngNursery ? ["-DSCR_YIN"] : []),
     "-fno-math-errno",
     "-fno-strict-aliasing", // the emitted object model type-puns — see buildArgs

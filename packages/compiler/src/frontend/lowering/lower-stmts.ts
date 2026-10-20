@@ -46,7 +46,7 @@ import {
   lowerYieldStarStatement,
   type GenType,
 } from "./lower-generators.js";
-import { lowerForAwaitBuiltin } from "./lower-async-iteration.js";
+import { classAsyncGeneratorIterator, lowerForAwaitBuiltin } from "./lower-async-iteration.js";
 import {
   BOOL,
   BYTES_U8,
@@ -6228,6 +6228,28 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     };
   }
   let obj = lowerer.lowerExpr(target.expression);
+  // `delete this.stack` in an Error subclass that declares a `stack`
+  // accessor (quickjs-wasi's JSException): V8 gives each error an own
+  // `stack` that shadows the accessor, and the delete removes it so reads
+  // reach the accessor. Compiled errors keep the trace internally and
+  // class dispatch already reads the accessor, so only the receiver's
+  // evaluation remains.
+  if (
+    obj.type.kind === "object" &&
+    ts.isPropertyAccessExpression(target) &&
+    target.name.text === "stack"
+  ) {
+    let accessor = false;
+    let errorBase = false;
+    for (let c = lowerer.classes.get(obj.type.className); c; c = c.base ?? undefined) {
+      if (c.builtinError) {
+        errorBase = true;
+        break;
+      }
+      if (c.methods.has("get:stack")) accessor = true;
+    }
+    if (accessor && errorBase) return { kind: "exprStmt", expr: obj, loc };
+  }
   if (isJsSourceFile(expr.getSourceFile()) && obj.type.kind === "object") {
     const info = lowerer.classes.get(obj.type.className);
     const keyType = ts.isElementAccessExpression(target)
@@ -7255,6 +7277,32 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
                 kind: "libCall",
                 fn: "process.setDeprecationFlag",
                 args: [numLit(flag === "noDeprecation" ? 0 : 1, loc), value],
+                type: VOID,
+                loc,
+              },
+              loc,
+            };
+          }
+          // process.emitWarning = fn: an ordinary writable property. Later
+          // process.emitWarning(...) calls, and the warnings Node's own
+          // modules emit through process.emitWarning, call the replacement
+          // instead (silencing them when it does nothing).
+          if (flag === "emitWarning") {
+            const loc = locOf(expr);
+            let rhs: ts.Expression = expr.right;
+            while (
+              ts.isParenthesizedExpression(rhs) ||
+              ts.isAsExpression(rhs) ||
+              ts.isSatisfiesExpression(rhs)
+            )
+              rhs = rhs.expression;
+            const value = lowerer.lowerExprExpecting(rhs, DYN);
+            return {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "process.setEmitWarning",
+                args: [value],
                 type: VOID,
                 loc,
               },
@@ -8835,6 +8883,10 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
           );
         }
       }
+    }
+    {
+      const opened = classAsyncGeneratorIterator(lowerer, stmt.expression);
+      if (opened) return lowerForAwaitGenerator(lowerer, stmt, opened, labels);
     }
     if (
       ts.isPropertyAccessExpression(stmt.expression) &&

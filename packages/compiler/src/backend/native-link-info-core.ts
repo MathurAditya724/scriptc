@@ -25,6 +25,12 @@ export interface NativeLinkFeatures {
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
+  /** The program assigns process.emitWarning: links the
+   * SCR_WARNING_REPLACE variant of the dyn-async unit. */
+  warningReplace?: boolean;
+  /** The program uses process.stdin.setEncoding, string 'data' listeners
+   * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
+  stdioExtended?: boolean;
   zlib: boolean;
   assert: boolean;
   inspect: boolean;

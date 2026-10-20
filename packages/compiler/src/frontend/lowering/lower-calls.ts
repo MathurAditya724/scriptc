@@ -150,7 +150,10 @@ import {
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
-import { lowerProcStreamMethodCall } from "./builtins/process.js";
+import {
+  lowerProcStreamMethodCall,
+  lowerProcessBuiltinModuleNamespace,
+} from "./builtins/process.js";
 import { recordMayKeepSource, throughRecordSource } from "./record-sources.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
@@ -424,6 +427,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       };
     }
     return { kind: "libCall", fn: "http2.streamNoop", args: [], type: VOID, loc };
+  }
+
+  // `process.getBuiltinModule("node:os")` typed as the module namespace,
+  // including pi's cast-and-probe spelling
+  // `(process as P).getBuiltinModule?.("node:os")` (the member always
+  // exists on Node 24's process object).
+  {
+    const namespace = lowerProcessBuiltinModuleNamespace(lowerer, expr);
+    if (namespace) return namespace;
   }
 
   // Optional-chain call forms: `f?.()` (the token on the call) and
@@ -3689,8 +3701,14 @@ function lowerDynReceiverMethodCall(
   // own or inherited member exactly like a non-prototype name (chalk's
   // `chalk.red.bold(...)` reads a prototype getter of a function), so
   // only a string receiver keeps the refusal, deferred to run time.
+  // The same holds when only the MEMBER is checker-untyped: TypeScript
+  // importing chalk's JavaScript source types the default export as a
+  // plain function, so `chalk.bold` reads as `any` on a typed receiver.
   const stringOnlyName =
-    checkerUntyped && !ownCallable && DYN_STRING_PROTO_ONLY_NAMES.has(access.name.text);
+    (checkerUntyped ||
+      (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) &&
+    !ownCallable &&
+    DYN_STRING_PROTO_ONLY_NAMES.has(access.name.text);
   if (DYN_PROTO_METHOD_NAMES.has(access.name.text) && !ownCallable && !stringOnlyName) return null;
   // Optional forms (`obj.cb?.()`, `obj?.cb()`) belong to the chain
   // machinery's short-circuit semantics — not modeled here yet.
