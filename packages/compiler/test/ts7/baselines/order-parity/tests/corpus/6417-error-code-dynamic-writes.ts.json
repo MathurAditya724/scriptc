@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6417-error-code-dynamic-writes.ts"
+ ],
+ "diags": []
+}

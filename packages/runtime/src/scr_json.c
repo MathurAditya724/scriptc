@@ -4271,6 +4271,7 @@ static void scr_dyn_descriptor_fields_drop(ScrDyn **fields) {
 }
 static bool scr_dyn_key_is_index(const char *key, size_t len, double *out);
 static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key);
+static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *key);
 
 /* Property tables belong to closures, not temporary checked wrappers. Seed
  * the configurable, non-writable builtin members once so redefinitions and
@@ -6893,18 +6894,33 @@ ScrError *scr_errdyn_err_of(const ScrDyn *d) {
 
 void scr_errdyn_put(ScrError *e, ScrDyn *d) { scr_errdyn_append(e, d); }
 
-/* Error.cause has one live value even when the Error already crossed a
- * checked-value boundary. Reflective data-property edits update its slot. */
-static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key) {
+/* An Error's slots (name, message, stack, cause, code) have one live value
+ * even when the Error already crossed a checked-value boundary: writes and
+ * deletes of those own properties through its checked-dynamic node update
+ * the slots typed reads use. `view` is the error's node; `obj` holds the
+ * properties (the node itself, or a typed view's materialized object). */
+static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *key) {
   bool cause = key->len == 5 && memcmp(key->data, "cause", 5) == 0;
   bool stack = key->len == 5 && memcmp(key->data, "stack", 5) == 0;
   bool name = key->len == 4 && memcmp(key->data, "name", 4) == 0;
   bool message = key->len == 7 && memcmp(key->data, "message", 7) == 0;
-  if (!cause && !stack && !name && !message) return;
+  bool code = key->len == 4 && memcmp(key->data, "code", 4) == 0;
+  if (!cause && !stack && !name && !message && !code) return;
+  if (obj == NULL || obj->kind != SCR_DYN_OBJ) return;
   size_t hit = scr_errdyn_find(view, false);
   if (hit == SIZE_MAX) return;
-  ScrDynEntry *entry = scr_dyn_entry(view, key);
+  ScrDynEntry *entry = scr_dyn_entry(obj, key);
   ScrError *e = scr_errdyn_cache[hit].err;
+  if (code) {
+    /* A string takes the slot; any other value, or none, clears it and
+     * stays an own property of the node. */
+    ScrStr *next = entry && !entry->accessor && entry->value->kind == SCR_DYN_STR
+                       ? scr_str_retain(entry->value->v.str)
+                       : NULL;
+    scr_str_release(e->code);
+    e->code = next;
+    return;
+  }
   if (name || message) {
     /* The native error's toString and inspect read these fields. */
     if (!entry || entry->accessor || entry->value->kind != SCR_DYN_STR) return;
@@ -6933,6 +6949,10 @@ static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key) {
   scr_dyn_release(e->error_cause);
   e->error_cause = replacement;
   e->cause_enumerable = entry && entry->enumerable;
+}
+
+static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key) {
+  scr_error_sync_slots(view, view, key);
 }
 
 /* Error.prototype.toString over the checked-dynamic error encoding (an
@@ -7963,7 +7983,12 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     if (scr_event_ref_hooks && scr_event_ref_hooks->set(recv, key, value)) return;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
     scr_dyn_key_set(materialized, key, value);
-    if (!scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
+    if (!scr_exc_pending()) {
+      scr_dyn_typed_ref_commit(recv);
+      /* An Error subclass's class commit writes its declared fields; the
+       * slots it inherits from Error take the write here. */
+      scr_error_sync_slots(recv, materialized, key);
+    }
     scr_dyn_release(materialized);
     return;
   }
@@ -9737,7 +9762,10 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
                scr_dyn_entry(materialized, key) != NULL;
     if (!scr_exc_pending()) scr_dyn_key_delete(materialized, key, strict);
     bool deleted = own && !scr_exc_pending();
-    if (!scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
+    if (!scr_exc_pending()) {
+      scr_dyn_typed_ref_commit(recv);
+      scr_error_sync_slots(recv, materialized, key);
+    }
     scr_dyn_release(materialized);
     if (deleted && scr_exc_pending()) {
       /* The native layout requires this field, so the commit rejected the
@@ -12094,7 +12122,17 @@ ScrDyn *scr_dyn_assign(ScrDyn *target, const ScrDyn *src) {
   if (target->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(target);
     ScrDyn *assigned = scr_dyn_assign(materialized, src);
-    if (!scr_exc_pending()) scr_dyn_typed_ref_commit(target);
+    if (!scr_exc_pending()) {
+      scr_dyn_typed_ref_commit(target);
+      /* An Error subclass's inherited slots take the copied values. */
+      static const char *const slots[] = { "name", "message", "stack", "cause", "code" };
+      for (size_t i = 0; i < sizeof slots / sizeof slots[0]; i++) {
+        ScrStr *key = scr_str_new(slots[i], strlen(slots[i]));
+        if (materialized->kind == SCR_DYN_OBJ && scr_dyn_entry(materialized, key) != NULL)
+          scr_error_sync_slots(target, materialized, key);
+        scr_str_release(key);
+      }
+    }
     scr_dyn_release(assigned);
     scr_dyn_release(materialized);
     return scr_exc_pending() ? NULL : scr_dyn_retain(target);
@@ -14144,6 +14182,19 @@ void scr_error_assign_dyn(ScrError *e, const ScrDyn *sources) {
     }
   }
   scr_dyn_release(view);
+}
+
+/* `'code' in err`: the code slot holds a string, or the error has an own
+ * `code` property with another value (`err.code = undefined`), which lives
+ * on its checked-dynamic node. Borrows; never throws. */
+bool scr_error_has_code(ScrError *e) {
+  if (e->code != NULL) return true;
+  const ScrDyn *view = scr_errdyn_view_of(e);
+  if (view == NULL) return false;
+  ScrStr *key = scr_str_new("code", 4);
+  bool own = scr_dyn_has_own(view, key);
+  scr_str_release(key);
+  return own;
 }
 
 /* `key in err` for a key no compiled class of the receiver declares: an own

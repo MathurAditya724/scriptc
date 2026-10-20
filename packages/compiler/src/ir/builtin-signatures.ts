@@ -3117,6 +3117,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * (args: the error, the key): a runtime-set own property (Object.assign,
    * throw-site fields, dynamic writes) or an Object.prototype member. */
   "error.hasKey": { argTypes: [null, STRING], result: BOOL },
+  "error.hasCode": { argTypes: [null], result: BOOL },
   "error.defineCause": { argTypes: [null, DYN], result: VOID },
   "error.deleteCause": { argTypes: [null], result: VOID },
   /** The compiler-resolved Node-parity throw for always-throwing lowered

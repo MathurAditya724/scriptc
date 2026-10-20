@@ -293,6 +293,7 @@ void scr_error_assign_dyn(ScrError *e, const struct ScrDyn *sources);
 /* `key in err` for a key no compiled class declares: a runtime-set own
  * property or an Object.prototype member. Borrows both (scr_json.c). */
 bool scr_error_has_key(ScrError *e, const ScrStr *key);
+bool scr_error_has_code(ScrError *e);
 const char *scr_error_message_code(const ScrStr *msg);
 ScrStr *scr_error_code(ScrError *e);
 SCR_COLD void scr_throw_error_msg_code(int kind, const char *message, size_t len, const char *code);

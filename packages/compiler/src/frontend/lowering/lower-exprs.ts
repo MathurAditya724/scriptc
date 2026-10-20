@@ -14061,27 +14061,10 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
       if (key === "cause") {
         return { kind: "libCall", fn: "error.hasCause", args: [recv], type: BOOL, loc };
       }
+      // The code slot, or an own `code` with another value
+      // (`err.code = undefined` is present).
       if (key === "code") {
-        const codeType = lowerer.envValueType();
-        if (codeType.kind !== "union")
-          throw new InternalCompilerError("lowerer bug: error code type is not a union");
-        const undefTag = lowerer.armTag(codeType.unionId, UNDEFINED_T);
-        const read: IrExpr = {
-          kind: "libCall",
-          fn: "error.code",
-          args: [recv],
-          type: codeType,
-          loc,
-        };
-        return {
-          kind: "unionIsTag",
-          unionId: codeType.unionId,
-          tag: undefTag,
-          negated: true,
-          value: read,
-          type: BOOL,
-          loc,
-        };
+        return { kind: "libCall", fn: "error.hasCode", args: [recv], type: BOOL, loc };
       }
       // The receiver evaluates for its effects when the answer is static.
       const always = (): IrExpr =>

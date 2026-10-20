@@ -4116,6 +4116,7 @@ function validateFunction(
       e.fn === "error.setCodeDyn" ||
       e.fn === "error.assign" ||
       e.fn === "error.hasKey" ||
+      e.fn === "error.hasCode" ||
       e.fn === "error.defineCause" ||
       e.fn === "error.deleteCause"
     ) {
