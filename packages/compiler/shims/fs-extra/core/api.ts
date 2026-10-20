@@ -16,7 +16,9 @@
 // write, ...), the callback forms of the methods that answer stats,
 // listings or paths (stat, lstat, readdir, mkdtemp, realpath, readJson),
 // Buffer and URL paths, and option shapes fs.promises does not compile
-// natively (copyFile mode flags, append options, write flags, string modes).
+// natively (copyFile mode flags, append options, write flags, string modes,
+// numeric utimes times). A readFile callback that fails receives an empty
+// value beside the error, where Node passes undefined.
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
@@ -302,7 +304,9 @@ async function makeDirectory(
 ): Promise<void> {
   if (options === undefined) return fsp.mkdir(path);
   if (typeof options === "number") return fsp.mkdir(path, { mode: options });
-  return fsp.mkdir(path, { recursive: options.recursive ?? false, mode: options.mode ?? 0o777 });
+  const mode = options.mode ?? 0o777;
+  if (options.recursive === true) return fsp.mkdir(path, { recursive: true, mode });
+  return fsp.mkdir(path, { mode });
 }
 
 export function mkdir(path: string, options?: number | MakeDirectoryOptions): Promise<void>;
@@ -341,15 +345,17 @@ export function readFile(
   callback?: Callback<string>,
 ): Promise<string | Buffer> {
   if (typeof options === "function") {
-    fs.readFile(file, {}, (err, data) =>
-      options(err, typeof data === "string" ? Buffer.from(data) : data),
+    fsp.readFile(file).then(
+      (data) => options(null, data),
+      (err: NodeJS.ErrnoException) => options(err, Buffer.alloc(0)),
     );
     return idle();
   }
   if (options === undefined) return fsp.readFile(file);
   if (callback !== undefined) {
-    fs.readFile(file, "utf8", (err, data) =>
-      callback(err, typeof data === "string" ? data : data.toString("utf8")),
+    fsp.readFile(file, "utf8").then(
+      (text) => callback(null, text),
+      (err: NodeJS.ErrnoException) => callback(err, ""),
     );
     return idle();
   }
@@ -460,19 +466,9 @@ export function unlink(path: string, callback?: VoidCallback): Promise<void> {
   return settleVoid(fsp.unlink(path), callback);
 }
 
-export function utimes(path: string, atime: number | Date, mtime: number | Date): Promise<void>;
-export function utimes(
-  path: string,
-  atime: number | Date,
-  mtime: number | Date,
-  callback: VoidCallback,
-): void;
-export function utimes(
-  path: string,
-  atime: number | Date,
-  mtime: number | Date,
-  callback?: VoidCallback,
-): Promise<void> {
+export function utimes(path: string, atime: Date, mtime: Date): Promise<void>;
+export function utimes(path: string, atime: Date, mtime: Date, callback: VoidCallback): void;
+export function utimes(path: string, atime: Date, mtime: Date, callback?: VoidCallback): Promise<void> {
   return settleVoid(fsp.utimes(path, atime, mtime), callback);
 }
 
