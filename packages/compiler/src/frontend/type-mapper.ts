@@ -7228,7 +7228,7 @@ function wideningAddedProperties(
     if ((prop.flags & ts.SymbolFlags.Optional) === 0 || prop.declarations.length === 0) continue;
     if (prop.declarations.some((d) => d.parent === literal)) continue;
     if ((ctx.checker.getTypeOfSymbol(prop).flags & ts.TypeFlags.Undefined) === 0) continue;
-    added.add(prop.name);
+    added.add(ts.symbolName(prop));
   }
   return added;
 }
