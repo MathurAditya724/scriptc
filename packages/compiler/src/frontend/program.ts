@@ -87,6 +87,12 @@ import type {
   NpmStaticDeclarationProperties,
   NpmStaticOverloadSignature,
 } from "./npm-static-declaration-syntax.js";
+import {
+  configurePackageShims,
+  isPackageShimFile,
+  isPackageShimName,
+  isShimmedImport,
+} from "./package-shims.js";
 import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import {
@@ -860,7 +866,13 @@ export function loadProgram(
     }
     externalTypes.set(specifier, declarationPath);
   }
-  const npmStaticPackages = [...new Set(opts?.npmStatic ?? [])];
+  // Packages scriptc implements itself or the project marks never loaded
+  // (package-shims.ts) never compile their published JavaScript, even when
+  // named.
+  configurePackageShims(entryPath);
+  const npmStaticPackages = [...new Set(opts?.npmStatic ?? [])].filter(
+    (name) => !isPackageShimName(name),
+  );
   // Resolve authored declaration entries before enabling the JS-only
   // package resolver. Safe overload metadata binds through the runtime
   // entry to one exact implementation file; it never contributes values
@@ -4085,6 +4097,10 @@ function resolveNpmImport7(
   // its attested source compiles as program modules (resolveProjectModule
 
   if (provenanceEntryFor(specifier) !== null) return null;
+  // Shimmed and never-loaded packages (package-shims.ts) are not npm
+  // imports either: the shim compiles as a program module, and an unloaded
+  // package's require() is Node's MODULE_NOT_FOUND.
+  if (isShimmedImport(fromFileName, specifier)) return null;
   const resolved = resolveBareModule(fromFileName, specifier, undefined, resolutionKind);
   if (!resolved) return null;
   if (!isNodeModulesPath(resolved.typesFile)) {
@@ -4373,6 +4389,7 @@ function preflight7(load: LoadResult): {
         (!suppressedJsStrictness7(d) || enforcedInCheckedJs(p, d)) &&
         !npmStaticFileSuppressed(d) &&
         !nodeModulesJsSuppressed(d) &&
+        (d.fileName === undefined || !isPackageShimFile(d.fileName)) &&
         !namespaceCalleeSuppressed(p, d) &&
         !inferredJsDiagnosticSuppressed(p, d) &&
         !isNpmStaticSubclassArgument(p, d) &&

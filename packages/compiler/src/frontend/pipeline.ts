@@ -20,6 +20,7 @@ import {
   npmStaticPackageOfPath,
 } from "./npm-static.js";
 import { clearResolveCaches, resolveBareModule, resolveWorkspaceSourceModule } from "./resolve.js";
+import { isShimmedImport } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "./workspace-registry.js";
@@ -188,6 +189,9 @@ function detectAutoPackages(
       // Attested entries already resolve to program sources, so the
       // published package's declaration eligibility does not apply.
       if (provenanceEntryFor(spec) !== null) continue;
+      // Packages scriptc implements itself, or that the project marks never
+      // loaded, are not npm dependencies (package-shims.ts).
+      if (isShimmedImport(sf.fileName, spec)) continue;
       if (resolveWorkspaceSourceModule(sf.fileName, spec) !== null) continue;
       if (isRelativeSpecifier(spec) || spec.startsWith("node:") || spec.startsWith("#")) continue;
       // Bare builtin names ("fs", "path") are the builtin machinery's
