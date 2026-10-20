@@ -2132,8 +2132,13 @@ export function caughtRead(
   }
   // Unnarrowed reads cross into unknown. The caught-value dispatch pass
   // retains known native class payloads through live identity capsules;
-  // other payload kinds use the runtime's ordinary conversion.
-  if (narrowed?.kind === "dyn") {
+  // other payload kinds use the runtime's ordinary conversion. A binding
+  // annotated `any` (`catch (error: any)`) reads the same checked-dynamic
+  // value: its member reads, writes and deletes go through it.
+  if (
+    narrowed?.kind === "dyn" ||
+    (narrowed === null && (lowerer.typeOf(node).flags & ts.TypeFlags.Any) !== 0)
+  ) {
     return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   }
   lowerer.unsupported("SC1063", node);
