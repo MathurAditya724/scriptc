@@ -1,11 +1,11 @@
 scriptc coverage tests/coverage-fixtures/js-sloppy-arguments.cjs
 
   statements analyzed   20
-  compile statically    5  (25%)
-    in dynamic tier     3  (operate on values typed only at runtime; --explain-dynamic lists them)
-  (5 functions not analyzed — signature blocked; their statements count as not static)
+  compile statically    9  (45%)
+    in dynamic tier     6  (operate on values typed only at runtime; --explain-dynamic lists them)
+  (4 functions not analyzed — signature blocked; their statements count as not static)
 
-  deferred to runtime   10 sites (JS statements that throw their fence if executed)
+  deferred to runtime   8 sites (JS statements that throw their fence if executed)
       ×1  SC1090  writing parameter 'a' while reading it through 'arguments' in a sloppy-mode function (mapped 'arguments' aliases its parameters)
           at tests/coverage-fixtures/js-sloppy-arguments.cjs:4:23
           hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
@@ -17,9 +17,6 @@ scriptc coverage tests/coverage-fixtures/js-sloppy-arguments.cjs
           hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
       ×1  SC1090  'arguments.callee' in a sloppy-mode function (mapped 'arguments' aliases its parameters)
           at tests/coverage-fixtures/js-sloppy-arguments.cjs:20:10
-          hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
-      ×1  SC1090  writing 'arguments' in a function with parameters outside an ES module
-          at tests/coverage-fixtures/js-sloppy-arguments.cjs:24:3
           hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
       ×1  SC2004  uses of 'readsWritten' inherit the blocker on its declaration
           at tests/coverage-fixtures/js-sloppy-arguments.cjs:33:3
@@ -33,6 +30,3 @@ scriptc coverage tests/coverage-fixtures/js-sloppy-arguments.cjs
       ×1  SC2004  uses of 'callee' inherit the blocker on its declaration
           at tests/coverage-fixtures/js-sloppy-arguments.cjs:36:3
           hint: the declaration of 'callee' did not compile — fix the diagnostic reported there and these sites clear with it
-      ×1  SC2004  uses of 'strictWrite' inherit the blocker on its declaration
-          at tests/coverage-fixtures/js-sloppy-arguments.cjs:37:3
-          hint: the declaration of 'strictWrite' did not compile — fix the diagnostic reported there and these sites clear with it

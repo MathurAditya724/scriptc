@@ -648,6 +648,7 @@ export function formatIrType(
       case "bool":
         return append("boolean");
       case "dyn":
+      case "jsval":
         return append("unknown");
       case "caught":
         // What tsc calls the binding; the fence messages carry the real story.
@@ -2037,12 +2038,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // {}` — classNamer spells them "%anon" (unique per file), the same
     // name their collection registered.
     !classDecl.getSourceFile().isDeclarationFile &&
-    checker.getConstructSignatures(widened).length === 0
+    checker.getConstructSignatures(widened).length === 0 &&
+    // A TypeScript class declared OUTSIDE the lowered program (reached
+    // through `import type` alone) never registers, and the program can
+    // hold no instance of it: its instance type maps below as the
+    // structural type it describes, like an interface.
+    (ctx.isProgramFile(classDecl.getSourceFile()) || isJsSourceFile(classDecl.getSourceFile()))
   ) {
-    // Declared OUTSIDE the lowered program (reached through the type world
-    // alone — jsdoc `typeof import()` over a never-required module): the
-    // class will never register, so the instance type is unmappable, not
-    // an object type naming a struct that cannot exist.
+    // A JavaScript class outside the lowered program (jsdoc `typeof
+    // import()` over a never-required module) stays unmappable: JSDoc
+    // types are not checked, so its slots fall back to the dynamic value.
     if (!ctx.isProgramFile(classDecl.getSourceFile())) return null;
     // The class inside a MIXIN function: per-call-site instantiations
     // share this one node — the CURRENT instantiation (collecting or

@@ -47,12 +47,15 @@ export type ParamMode = "required" | "omittable" | "rest" | "dynRest" | "argumen
  * otherwise. `bodyType` is present exactly for DEFAULTED program params:
  * the plain T the body sees after the prologue applies the default (see
  * declareParams). `callDefault` is the compile-time default value for a
- * table-backed builtin's omittable slot. */
+ * table-backed builtin's omittable slot. `entryNarrow` marks a dyn ABI slot
+ * inherited from a JavaScript base method whose TypeScript override declares
+ * a typed parameter: the prologue narrows the checked value to that type. */
 export interface ParamShape {
   type: IrType;
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
+  entryNarrow?: IrType;
 }
 
 export interface FnSig {
@@ -718,9 +721,11 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
 
 /** Arrows inherit arguments. Ordinary JS functions receive a hidden
  * array unless a declared rest parameter already owns that contract.
- * Class methods and ES modules are strict; other parameterized forms
- * admit the array only where sloppy-mode aliasing between `arguments`
- * and named parameters cannot be observed (sloppy-arguments.ts). */
+ * Class methods and ES modules are strict, and strict code and
+ * non-simple parameter lists get Node's unmapped object; other
+ * parameterized forms admit the array only where sloppy-mode aliasing
+ * between `arguments` and named parameters cannot be observed
+ * (sloppy-arguments.ts). */
 function appendArgumentsParameter(
   lowerer: Lowerer,
   node: ts.SignatureDeclaration,
@@ -742,12 +747,45 @@ function appendArgumentsParameter(
     const classMethod =
       ts.isMethodDeclaration(node) &&
       (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent));
-    if (!classMethod && !isNodeEsmFile(node.getSourceFile(), lowerer.program)) {
+    if (
+      !classMethod &&
+      !isNodeEsmFile(node.getSourceFile(), lowerer.program) &&
+      !unmappedArguments(node)
+    ) {
       const refusal = sloppyArgumentsRefusal(lowerer, node);
       if (refusal !== null) lowerer.unsupported("SC1090", refusal.node, refusal.reason);
     }
   }
   shapes.push({ type: DYN, mode });
+}
+
+/** Whether `arguments` inside `node` is Node's unmapped object: strict code
+ * (a 'use strict' prologue on the file or an enclosing function, or a class
+ * body) or a non-simple parameter list (defaults, rest, destructuring). Its
+ * elements then never alias the parameters, which is the ES module case. */
+function unmappedArguments(node: ts.SignatureDeclaration): boolean {
+  if (
+    node.parameters.nodes.some(
+      (p) =>
+        p.initializer !== undefined || p.dotDotDotToken !== undefined || !ts.isIdentifier(p.name),
+    )
+  )
+    return true;
+  const useStrict = (statements: readonly ts.Statement[]): boolean => {
+    for (const statement of statements) {
+      if (!ts.isExpressionStatement(statement) || !ts.isStringLiteral(statement.expression))
+        return false;
+      if (statement.expression.text === "use strict") return true;
+    }
+    return false;
+  };
+  for (let n: ts.Node | undefined = node; n; n = n.parent) {
+    if (ts.isClassDeclaration(n) || ts.isClassExpression(n)) return true;
+    if (ts.isFunctionLike(n) && n.body && ts.isBlock(n.body) && useStrict(n.body.statements.nodes))
+      return true;
+    if (ts.isSourceFile(n)) return useStrict(n.statements.nodes);
+  }
+  return false;
 }
 
 /** Signature checks + param shapes + IR func type for any lambda-like

@@ -37,6 +37,9 @@ export interface NativeLinkFeatures {
   dynInvoke: boolean;
   dc: boolean;
   dynAsync: boolean;
+  /** Dynamic-tier jsval operations: the scr_js_* units. Absent (not false)
+   * for programs without them, so their link features stay unchanged. */
+  dynTier?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
