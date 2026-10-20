@@ -1,4 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
+import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import * as ts from "../../ts7/adapter.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
@@ -859,6 +860,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       lowerer.checker.getSymbolAtLocation(expr),
     );
   }
+  // An import of a CommonJS member export whose value is a binding of the
+  // exporting module (`module.exports = Client; module.exports.StatsD =
+  // Client`): the member holds that binding's value.
+  const memberAlias = cjsMemberAliasValueOf(lowerer, expr);
+  if (memberAlias !== null) return lowerer.lowerExpr(memberAlias);
   // Preflight guarantees no unresolved identifiers; anything else here
   // is a blocked declaration's binding (the SC2004 cascade) or a
   // binding form we don't model yet.

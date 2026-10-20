@@ -1412,7 +1412,7 @@ console.log(keys(exports));
     [
       "exports-rebinding",
       `console.log("before");
-exports = module.exports = function hash(x) {
+exports = function hash(x) {
   return x;
 };
 exports.extra = 1;
@@ -1420,7 +1420,7 @@ exports.extra = 1;
       {},
       "before\n",
       2,
-      "rebinding 'exports' \\(exports = module\\.exports = value\\)",
+      "rebinding 'exports' without module\\.exports \\(exports = value\\)",
     ],
     [
       "require-computed",
