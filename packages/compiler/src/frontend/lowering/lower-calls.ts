@@ -1594,6 +1594,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // monomorphized against the defining literal's declaration.
       lowerObjLitGenericMethodCall(lowerer, expr, expr.expression);
     if (intrinsic) return intrinsic;
+    {
+      const boxed = lowerDynReceiverMethodCall(lowerer, expr, expr.expression, true);
+      if (boxed) return boxed;
+    }
     if (isJsSourceFile(expr.getSourceFile())) {
       const staticField = lowerStaticFieldRead(lowerer, expr.expression);
       if (staticField?.type.kind === "dyn" && !expr.arguments.nodes.some(ts.isSpreadElement)) {
@@ -3314,6 +3318,13 @@ const ITERATOR_HELPER_METHODS = new Set([
   "find",
 ]);
 
+/** A call expression, through parentheses: its value has no other holder. */
+function isFreshCallResult(node: ts.Expression): boolean {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return ts.isCallExpression(e);
+}
+
 /** METHOD calls on dyn receivers (`pkg.name.replace(...)`, `rawName.split`,
  * `ws.packages.filter(...)` — JSON.parse-derived values): validate the
  * receiver's dyn kind, extract, and ride the STATIC method machinery — the
@@ -3331,6 +3342,7 @@ function lowerDynReceiverMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
+  boxTypedTemporary = false,
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
   if (stdlibGlobalNameOf(lowerer, access.expression) !== null) {
@@ -3518,6 +3530,22 @@ function lowerDynReceiverMethodCall(
   // dispatches through the handle, as the same value held in an
   // 'unknown' slot does.
   if (checkerUntyped && DYN_HANDLE_KINDS.has(recv.type.kind))
+    recv = lowerer.coerceToExpected(recv, DYN);
+  // The last-resort retry (boxTypedTemporary — every other lowering
+  // already declined): a checker-`any` receiver whose value is a FRESH
+  // typed result of an earlier step in the chain (`out.split("\n")`
+  // extracted the string and answered a native string[]) has no typed
+  // home under its `any` spelling, so it boxes into the checked-dynamic
+  // tree and the call dispatches on the runtime kind — `.map`, `.pop`,
+  // `.filter` on that array run JS-exact. Only call results qualify:
+  // the box copies, and a temporary has no other holder to observe it.
+  if (
+    boxTypedTemporary &&
+    checkerUntyped &&
+    recv.type.kind !== "dyn" &&
+    isFreshCallResult(access.expression) &&
+    lowerer.dynConvertible(recv.type)
+  )
     recv = lowerer.coerceToExpected(recv, DYN);
   if (recv.type.kind !== "dyn") return null;
   if (

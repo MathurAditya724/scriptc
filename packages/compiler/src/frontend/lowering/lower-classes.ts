@@ -1,4 +1,5 @@
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
+import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
 import {
   constructedFromValue,
@@ -10144,7 +10145,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       // catch-side instanceof and the uncaught printer working). First
       // settle wins, exactly JS: reject-after-resolve and double-reject
       // are no-ops, and an executor throw after any settle is swallowed.
-      const executor = lowerer.lowerExpr(args[0]!);
+      let executor = lowerer.lowerExpr(args[0]!);
+      if (executor.type.kind !== "func") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
+      executor = adaptPromiseExecutor(lowerer, executor, type.inner, loc) ?? executor;
       if (executor.type.kind !== "func") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
       if (executor.type.params.length > 1) {
         const rj = executor.type.params[1]!;
