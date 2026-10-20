@@ -209,6 +209,15 @@ class BundleScopes {
     return false;
   }
 
+  /** True when a scope inside `root` (exclusive) binds the reference's
+   * name. */
+  boundInside(id: ts.Identifier, root: ts.Node): boolean {
+    for (let n = id.parent; n !== undefined && n !== root; n = n.parent) {
+      if (this.of(n).has(id.text)) return true;
+    }
+    return false;
+  }
+
   /** True when the reference resolves to a top-level binding of `sf`. */
   topLevel(id: ts.Identifier, sf: ts.SourceFile): boolean {
     for (let n = id.parent; n !== undefined && n !== sf; n = n.parent) {
@@ -348,6 +357,25 @@ function isFunctionValued(node: ts.VariableDeclaration | ts.FunctionDeclaration)
   if (ts.isFunctionDeclaration(node)) return true;
   const init = node.initializer && unparen(node.initializer);
   return init !== undefined && (ts.isArrowFunction(init) || ts.isFunctionExpression(init));
+}
+
+/** True when a named function expression initializer (`var f = function
+ * self() {}`) uses its own name only as a callee: `self` is the copied
+ * function, so it is as observable as the top-level binding. */
+function selfCalledOnly(
+  node: ts.VariableDeclaration | ts.FunctionDeclaration,
+  scopes: BundleScopes,
+): boolean {
+  if (!ts.isVariableDeclaration(node) || node.initializer === undefined) return true;
+  const fn = unparen(node.initializer);
+  if (!ts.isFunctionExpression(fn) || fn.name === undefined || fn.body === undefined) return true;
+  const self = fn.name.text;
+  // A parameter or `var` of the same name hides the function's own name.
+  const own = varScopedNames(fn.body);
+  for (const param of fn.parameters.nodes) addBindingNames(param.name, own);
+  if (own.has(self)) return true;
+  // Its parameter initializers see the name too.
+  return references(fn).every((r) => r.text !== self || scopes.boundInside(r, fn) || isCallee(r));
 }
 
 /** True when a reference is the function a call invokes: `f(...)`, or the
@@ -748,7 +776,7 @@ function chunkSource(
       return why(`reads the bundle's top-level binding '${name}', which it cannot carry along`);
     // Each chunk gets its own copy, so a function's identity and its
     // properties must stay unobservable: the bundle only ever calls it.
-    if (isFunctionValued(node) && !calledOnly(name))
+    if (isFunctionValued(node) && (!calledOnly(name) || !selfCalledOnly(node, scopes)))
       return why(
         `uses the bundle's top-level function '${name}' as a value, which its chunks cannot share`,
       );

@@ -3199,11 +3199,66 @@ function cjsCycleRefusal7(
   return null;
 }
 
-/** True for a plain read `binding.name` (not a call, not a write) of the
- * cycle member `dep` whose export `name` is a top-level function
- * declaration nothing reassigns. Every member settles its exports before
- * entering the cycle, so Node reads that same function whenever the read
- * runs, and the compiled read resolves to the declaration itself. */
+/** True when `use` initializes a top-level const whose every other
+ * reference is a value of an export statement (`module.exports = { … }`
+ * or `exports.n = …`). */
+function publishedAlias7(use: ts.Node, decl: ts.Node | undefined): boolean {
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer !== use ||
+    !ts.isIdentifier(decl.name)
+  )
+    return false;
+  const list = decl.parent;
+  const stmt = list?.parent;
+  const sf = stmt?.parent;
+  if (
+    list === undefined ||
+    (list.flags & ts.NodeFlags.Const) === 0 ||
+    stmt === undefined ||
+    !ts.isVariableStatement(stmt) ||
+    sf === undefined ||
+    !ts.isSourceFile(sf)
+  )
+    return false;
+  const alias = decl.name;
+  const published = new Set<ts.Node>();
+  for (const st of sf.statements.nodes) {
+    const cjs = cjsExportAssignmentOf(st);
+    if (cjs === null) continue;
+    if (cjs.kind === "member") published.add(cjs.value);
+    else if (cjs.obj !== null) {
+      for (const p of cjs.obj.properties.nodes) {
+        if (ts.isPropertyAssignment(p) && !ts.isComputedPropertyName(p.name))
+          published.add(p.initializer);
+        else if (ts.isShorthandPropertyAssignment(p)) published.add(p.name);
+      }
+    }
+  }
+  let kept = false;
+  ts.walkPreorder(sf, (n) => {
+    if (kept) return "stop";
+    if (!ts.isIdentifier(n) || n === alias || n.text !== alias.text) return undefined;
+    const p = n.parent;
+    if (
+      p !== undefined &&
+      ((ts.isPropertyAccessExpression(p) && p.name === n) ||
+        (ts.isPropertyAssignment(p) && p.name === n))
+    )
+      return undefined;
+    if (!published.has(n)) kept = true;
+    return undefined;
+  });
+  return !kept;
+}
+
+/** True for a plain read `binding.name` (not a call, not a write, not a
+ * value that is stored or passed on) of the cycle member `dep` whose
+ * export `name` is a top-level function declaration nothing reassigns.
+ * Every member settles its exports before entering the cycle, so Node
+ * reads that same function whenever the read runs, and the compiled read
+ * resolves to the declaration itself. */
 function functionExportRead7(id: ts.Identifier, dep: ts.SourceFile): boolean {
   const access = id.parent;
   if (!ts.isPropertyAccessExpression(access) || access.expression !== id) return false;
@@ -3222,25 +3277,27 @@ function functionExportRead7(id: ts.Identifier, dep: ts.SourceFile): boolean {
     else break;
   }
   const parent = use.parent;
-  // A use that can run the function (a call, `new`, a tag, a member of it
-  // such as `.call`, or an argument another call receives) is not a read.
-  if (
-    (ts.isCallExpression(parent) && parent.expression === use) ||
-    (ts.isCallExpression(parent) && parent.arguments.nodes.includes(use as ts.Expression)) ||
-    ts.isNewExpression(parent) ||
-    (ts.isTaggedTemplateExpression(parent) && parent.tag === use) ||
-    (ts.isPropertyAccessExpression(parent) && parent.expression === use) ||
-    (ts.isElementAccessExpression(parent) && parent.expression === use) ||
-    ts.isDeleteExpression(parent) ||
-    ((ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
-      (parent.operator === ts.SyntaxKind.PlusPlusToken ||
-        parent.operator === ts.SyntaxKind.MinusMinusToken)) ||
+  // Only a use that neither runs the function nor keeps it is a read: a
+  // stored alias (`const f = binding.name`, `{ f: binding.name }`) or an
+  // argument can be called while the cycle initializes. A top-level const
+  // that only publishes it (`module.exports = { name: f }`, the static
+  // rewrite's re-export spelling) runs nothing: a module that reads the
+  // export back checks that read itself.
+  const observes =
+    publishedAlias7(use, parent) ||
+    ts.isExpressionStatement(parent) ||
+    ts.isTypeOfExpression(parent) ||
+    ts.isVoidExpression(parent) ||
+    (ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken) ||
     (ts.isBinaryExpression(parent) &&
-      parent.left === use &&
-      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
-  )
-    return false;
+      (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken)) ||
+    ((ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent)) &&
+      parent.expression === use) ||
+    (ts.isConditionalExpression(parent) && parent.condition === use);
+  if (!observes) return false;
   const name = access.name.text;
   // The exported value's identifier: a table entry or a member export.
   const values: ts.Expression[] = [];

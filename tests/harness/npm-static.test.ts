@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2566)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2566, 2571)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
@@ -1480,6 +1480,21 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         ) as string,
       },
     ]);
+  }, 120_000);
+
+  // 2571: the partner stores the export (in a const, or in an object
+  // literal) and calls it while the cycle initializes; both keep SC1016.
+  test("a CommonJS cycle that stores an export and calls it stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2571-cjs-cycle-stored-function/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcyclealias", "gtcyclebox"] });
+    for (const pkg of ["gtcyclealias", "gtcyclebox"])
+      expect(coverage.npmStatic).toContainEqual({
+        package: pkg,
+        status: "refused",
+        detail: expect.stringMatching(
+          /circular imports .*can use its binding 'import_index' of a module of the cycle/,
+        ) as string,
+      });
   }, 120_000);
 
   // 2564: a chunk reads a top-level function whose name a nested scope of

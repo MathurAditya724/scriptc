@@ -150,11 +150,43 @@ console.log(e.outer, e.indirect, e.wrapped, e.nested, e.seen.join(","));
   expect(chunk).toContain("function wrap(n)");
 });
 
+test("a named function expression that only calls itself travels with a chunk", () => {
+  const answer = expectSameBehavior(`${keyedHelper}var fact = function self(n) {
+  return n <= 1 ? 1 : n * self(n - 1);
+};
+var kind = function self(self) {
+  return typeof self;
+};
+var outer = function self() {
+  var self = 2;
+  return self;
+};
+var require_g = __commonJS({
+  "g.js"(exports2, module2) {
+    module2.exports = [fact(5), kind(1), outer()];
+  }
+});
+console.log(require_g().join(","));
+`);
+  const chunk = answer.chunks[0]!.source;
+  expect(chunk).toContain("var fact = function self(n)");
+});
+
 test.each([
   ["exports it", `function tally() {}`, `module2.exports = { tally };`],
   ["reads its properties", `function tally() {}`, `exports2.calls = tally.calls;`],
   ["constructs it", `function tally() {}`, `exports2.made = new tally();`],
   ["stores an arrow helper", `var tally = () => 1;`, `exports2.fn = tally;`],
+  [
+    "calls a function that reads its own name as a value",
+    `var tally = function self() { self.n = (self.n || 0) + 1; return self.n; };`,
+    `exports2.count = tally();`,
+  ],
+  [
+    "calls a function whose parameter default reads its own name",
+    `var tally = function self(box = self) { box.n = (box.n || 0) + 1; return box.n; };`,
+    `exports2.count = tally();`,
+  ],
 ])("a chunk that %s keeps the package refused", (_, declaration, statement) => {
   const result = split(`${keyedHelper}${declaration}
 var require_f = __commonJS({
