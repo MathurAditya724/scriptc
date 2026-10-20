@@ -1,7 +1,7 @@
 import * as ts from "../ts7/adapter.js";
 import { argumentsReadsOf } from "../arguments-usage.js";
 import { paramWrittenInBody } from "./generic-functions.js";
-import { hasUseStrictDirective } from "./lower-stmts.js";
+import { hasUseStrictDirective } from "./strict-mode.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** Why a parameterized function's `arguments` cannot use the unmapped

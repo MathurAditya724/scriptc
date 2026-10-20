@@ -28,6 +28,7 @@ import { isStreamUndefCallExpr } from "./lower-server.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
 import { declSymbolOf } from "./lower-modules.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
+import { restPackingAdapterFits } from "./coercions/function-adapters.js";
 import { implicitMonoFile, implicitAnyParamSymbolsOf } from "./generic-functions.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
@@ -526,6 +527,21 @@ export function requireExactArityValue(
   // optional/defaulted params spell their `T | undefined` slots (mapType's
   // completed-signature contract), so omitted trailing args complete with
   // the undefined arm like any direct call.
+  // A nested function declaration whose only non-required parameter is a
+  // typed rest: its value carries the typed-rest ABI its own type spells,
+  // and every use converts it at its slot (same signature, or the rest
+  // packing adapter for fixed parameters).
+  if (
+    contextual === null &&
+    ts.isFunctionDeclaration(blame) &&
+    blame.name !== undefined &&
+    funcType.kind === "func" &&
+    funcType.restAbi === "typed" &&
+    shapes.every((s) => s.mode === "required" || s.mode === "rest")
+  ) {
+    const own = lowerer.mapTypeOf(lowerer.typeOf(blame.name));
+    if (own && typeEquals(own, funcType)) return;
+  }
   const target = contextual ? lowerer.checker.getContextualType(contextual) : undefined;
   const mapped = target
     ? lowerer.mapTypeOf(target)
@@ -583,6 +599,16 @@ export function requireExactArityValue(
     mappedFn?.kind === "func" &&
     funcType.kind === "func" &&
     lowerer.spawnResFnAdapterPlan(funcType, mappedFn) !== null
+  ) {
+    return;
+  }
+  // A typed-rest function in a slot with fixed parameters (`log(...m:
+  // string[])` into `(m: string) => void`): the slot coercion's packing
+  // adapter collects the slot's arguments into the rest array.
+  if (
+    mappedFn?.kind === "func" &&
+    funcType.kind === "func" &&
+    restPackingAdapterFits(lowerer, funcType, mappedFn)
   ) {
     return;
   }

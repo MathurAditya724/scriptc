@@ -206,6 +206,23 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.in": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.freeze": { argTypes: [DYN], result: DYN },
   "dyn.isFrozen": { argTypes: [DYN], result: BOOL },
+  /** Object.defineProperty on a declared class field (scr_json.c): the
+   * field's current value (borrowed), its FIELD_* attribute word, the
+   * instance's CLASS_* integrity word, the field name and the descriptor.
+   * Validates as Node does (TypeError "Cannot redefine property: f") and
+   * answers a one-property holder of the defined value and attributes (+1),
+   * read back with class.definedBits and class.definedValue. */
+  "class.defineField": { argTypes: [DYN, F64, F64, STRING, DYN], result: DYN },
+  "class.definedBits": { argTypes: [DYN, STRING], result: F64 },
+  "class.definedValue": { argTypes: [DYN, STRING], result: DYN },
+  /** Whether a property descriptor has a `value` member. */
+  "class.descriptorHasValue": { argTypes: [DYN], result: BOOL },
+  /** Throws Node's TypeError for a write to a read-only class field: the
+   * field name and the instance's class name. */
+  "class.throwReadOnly": { argTypes: [STRING, STRING], result: VOID },
+  /** Throws Node's TypeError for a class field initializer on a
+   * non-extensible instance: the field name. */
+  "class.throwNotExtensible": { argTypes: [STRING], result: VOID },
   "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
   "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
@@ -2391,6 +2408,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Rest listeners use the checked function bridge to pack event arguments. */
   "child.onDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
   "process.connected": { argTypes: [], result: BOOL },
+  /** Whether this fork child opened its channel; part of process.send's
+   * presence in programs with fork targets. Never throws. */
+  "process.ipcOpen": { argTypes: [], result: BOOL },
   "process.send": { argTypes: [STRING], result: BOOL },
   "process.sendCb": { argTypes: [STRING, null], result: BOOL },
   "process.disconnect": { argTypes: [], result: VOID },
@@ -3025,8 +3045,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "process.exit": { argTypes: [F64], result: VOID },
   /** Numeric process.exitCode write (integer validation, implicit exit status). */
   "process.setExitCode": { argTypes: [F64], result: VOID },
+  /** The process.exitCode write of a program that also reads the
+   * property: the same validation, and the code counts as assigned. */
+  "process.setExitCodeTracked": { argTypes: [F64], result: VOID },
   /** The code for process.exit() with no argument, or zero when unset. */
   "process.currentExitCode": { argTypes: [], result: F64 },
+  /** Whether process.exitCode reads a code rather than undefined. Never throws. */
+  "process.hasExitCode": { argTypes: [], result: BOOL },
   "process.cwd": { argTypes: [], result: STRING },
   /** getpid(2) / getuid(2): zero args → f64. POSIX-only target, so both
    * always answer (the checker's `getuid?` optionality covers Windows —
@@ -3231,6 +3256,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** SameValue over checked values, including NaN, signed zero and reference identity. */
   "dyn.sameValue": { argTypes: [DYN, DYN], result: BOOL },
   "error.stack": { argTypes: [null], result: STRING },
+  "error.setStack": { argTypes: [null, STRING], result: VOID },
   "error.stackLimitGet": { argTypes: [], result: F64 },
   "error.stackLimitSet": { argTypes: [F64], result: VOID },
   // Receiver (any error-hierarchy object) and the program-dependent
@@ -3499,6 +3525,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * throws err when unhandled. count/countFn/names/listeners/getMax/
    * setMax/setDefaultMax/getDefaultMax are the introspection surface. */
   "emitter.new": { argTypes: [], result: VOID },
+  /** `x.constructor.name` of an emitter or stream (a borrowed object of
+   * EventEmitter's hierarchy): the +1 class name the instance records. */
+  "emitter.className": { argTypes: [null], result: STRING },
   "emitter.ctor": { argTypes: [null], result: VOID },
   "emitter.on": { argTypes: [null, STRING, null, BOOL, BOOL], result: VOID },
   "emitter.off": { argTypes: [null, STRING, null], result: VOID },
@@ -4016,6 +4045,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [F64, STRING, DYN],
     result: { kind: "promise", inner: STRING },
   },
+  /** The question forms with a checked-dynamic query (a JavaScript value
+   * that need not be a string). */
+  "rl.questionDyn": { argTypes: [F64, DYN, null], result: VOID },
+  "rl.questionAsyncDyn": { argTypes: [F64, DYN], result: { kind: "promise", inner: STRING } },
+  "rl.questionAsyncSignalDyn": {
+    argTypes: [F64, DYN, DYN],
+    result: { kind: "promise", inner: STRING },
+  },
   "rl.close": { argTypes: [F64], result: VOID },
   "rl.pause": { argTypes: [F64], result: VOID },
   "rl.resume": { argTypes: [F64], result: VOID },
@@ -4023,6 +4060,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** prompt(preserveCursor): [handle, preserveCursor] */
   "rl.promptWith": { argTypes: [F64, BOOL], result: VOID },
   "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
+  "rl.setPromptDyn": { argTypes: [F64, DYN], result: VOID },
   "rl.getPrompt": { argTypes: [F64], result: STRING },
   "rl.write": { argTypes: [F64, STRING], result: VOID },
   /** write(data, key): [handle, hasData, data, hasKey, hasName, name,
@@ -4055,6 +4093,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "rl.terminal": { argTypes: [F64, F64, BOOL, DYN, BOOL], result: VOID },
   "rl.line": { argTypes: [F64], result: STRING },
   "rl.isTerminal": { argTypes: [F64], result: BOOL },
+  "rl.isPromises": { argTypes: [F64], result: BOOL },
+  /** createInterface's input or output as a checked-dynamic value:
+   * [value, output] — the stream; refused when it is not one. */
+  "rl.inputFromDyn": { argTypes: [DYN, BOOL], result: { kind: "object", className: "%Readable" } },
+  "rl.outputFromDyn": {
+    argTypes: [DYN, BOOL],
+    result: { kind: "object", className: "%Writable" },
+  },
   "rl.cursor": { argTypes: [F64], result: F64 },
   /** readline.cursorTo / moveCursor / clearLine / clearScreenDown: rl.seq
    * [kind (0-3), the first and second numbers, whether the second is

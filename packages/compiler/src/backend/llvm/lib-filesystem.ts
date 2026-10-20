@@ -1097,6 +1097,30 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
       B.line(`${t} = call ptr @scr_str_from_char_code_one(double ${code.name})`);
       return host.own({ name: t, type: e.type });
     }
+    if (
+      e.fn === "string.fromCharCode" &&
+      packed.kind === "arrayLit" &&
+      packed.elems.length <= 16 &&
+      !packed.spreads?.length
+    ) {
+      // A short argument list passes its codes in a stack array.
+      const codes = packed.elems.map((elem) => host.emitExpr(elem));
+      const slot = B.slot();
+      B.entryAllocas.push(`${slot} = alloca [${Math.max(codes.length, 1)} x double]`);
+      codes.forEach((code, i) => {
+        const p = B.tmp();
+        B.line(
+          `${p} = getelementptr inbounds [${Math.max(codes.length, 1)} x double], ptr ${slot}, i64 0, i64 ${i}`,
+        );
+        B.line(`store double ${code.name}, ptr ${p}`);
+      });
+      host.declare(`declare ptr @scr_str_from_char_codes(ptr, ${host.sizeType})`);
+      const t = B.tmp();
+      B.line(
+        `${t} = call ptr @scr_str_from_char_codes(ptr ${slot}, ${host.sizeType} ${codes.length})`,
+      );
+      return host.own({ name: t, type: e.type });
+    }
     // One packed f64[] (the frontend built it) or one bytes value (the
     // spread-typed-array form); +1 string.
     const base =

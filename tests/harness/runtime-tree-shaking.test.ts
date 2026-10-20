@@ -172,6 +172,33 @@ nativeToolchainTest(
   },
 );
 
+nativeToolchainTest(
+  "the event loop links the child-process unit only for programs that spawn",
+  async () => {
+    const timer = await build(
+      "async-timer",
+      `await new Promise((resolve) => setTimeout(resolve, 1));
+console.log("timer");
+`,
+    );
+    await expectNodeParity(timer.sourcePath, timer.binaryPath);
+    const timerSymbols = await symbols(timer.binaryPath);
+    for (const family of ["scr_children_", "scr_child_", "scr_ipc_"]) {
+      expect(timerSymbols, `the timer program retains ${family}`).not.toContain(family);
+    }
+
+    const spawned = await build(
+      "async-spawn",
+      `import { spawn } from "node:child_process";
+const child = spawn("/bin/echo", ["child"], { stdio: "ignore" });
+child.on("close", (code) => console.log("close", code));
+`,
+    );
+    await expectNodeParity(spawned.sourcePath, spawned.binaryPath);
+    expect(await symbols(spawned.binaryPath)).toContain("scr_children_poll");
+  },
+);
+
 nativeToolchainTest("fetch response JSON retains the URL and parser runtime", async () => {
   const server = createServer((_request, response) => {
     response.setHeader("content-type", "application/json");

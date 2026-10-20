@@ -35,6 +35,7 @@ import {
 import { cjsExportCallIgnoresThis, cjsInFileExportGlobalOf } from "./cjs-exports-object.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
+import { lowerReadlineDisposeCall } from "./builtins/readline.js";
 import { errorToStringCall } from "./error-methods.js";
 import { lowerClassPrototypeAssign, lowerClassPrototypeDescriptors } from "./class-prototypes.js";
 import {
@@ -226,6 +227,7 @@ import {
 } from "./optional-arguments.js";
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
 import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
+import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
@@ -1683,6 +1685,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (timersDispose) return timersDispose;
     const symbolMethod = lowerClassSymbolMethodCall(lowerer, expr);
     if (symbolMethod) return symbolMethod;
+    const readlineDispose = lowerReadlineDisposeCall(lowerer, expr);
+    if (readlineDispose) return readlineDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
     lowerer.fenceStaticResponseMember(expr.expression, "call");
     lowerer.fenceStaticHeadersMember(expr.expression, "call");
@@ -7714,6 +7718,8 @@ function lowerObjectStaticCall(
     if (target && declaredTarget && isDynTypedRefType(declaredTarget))
       target = lowerer.coerceToExpected(target, declaredTarget);
     if (target && member === "defineProperty") {
+      const field = lowerClassFieldDefine(lowerer, call, target);
+      if (field) return field;
       const native = lowerClassDataDescriptor(lowerer, call, member, target);
       if (native) return native;
     }
@@ -7856,6 +7862,19 @@ function lowerObjectStaticCall(
             loc,
           };
     }
+    if (member === "preventExtensions" || member === "seal") {
+      const integrity = lowerClassIntegrity(lowerer, call, member, value);
+      if (integrity) return integrity;
+    } else if (isDynTypedRefType(value.type)) {
+      // The instance's checked view carries its integrity state.
+      return {
+        kind: "libCall",
+        fn: member === "isSealed" ? "dyn.isSealed" : "dyn.isExtensible",
+        args: [lowerer.coerceToExpected(value, DYN)],
+        type: BOOL,
+        loc: locOf(call),
+      };
+    }
     if (value.type.kind === "dyn") {
       const operation = {
         preventExtensions: "dyn.preventExtensions",
@@ -7926,6 +7945,8 @@ function lowerObjectStaticCall(
         )
     )
       return value;
+    const integrity = lowerClassIntegrity(lowerer, call, "freeze", value);
+    if (integrity) return integrity;
     lowerer.noLowering(
       "Object.freeze of a possibly-aliased value",
       call,
