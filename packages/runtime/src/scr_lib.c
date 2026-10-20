@@ -7485,29 +7485,319 @@ static uint64_t scr_sha512_rotr(uint64_t x, unsigned n) {
   return (x >> n) | (x << (64 - n));
 }
 
-SCR_DIGEST_ALIGNED static void scr_sha512_block(uint64_t h[8], const unsigned char *data) {
-  uint64_t w[80];
-  for (size_t i = 0; i < 16; i++) {
-    w[i] = 0;
-    for (size_t b = 0; b < 8; b++) w[i] = (w[i] << 8) | data[i * 8 + b];
+#define SCR_SHA512_BSIG0(x) \
+  (scr_sha512_rotr(x, 28) ^ scr_sha512_rotr(x, 34) ^ scr_sha512_rotr(x, 39))
+#define SCR_SHA512_BSIG1(x) \
+  (scr_sha512_rotr(x, 14) ^ scr_sha512_rotr(x, 18) ^ scr_sha512_rotr(x, 41))
+#define SCR_SHA512_SSIG0(x) (scr_sha512_rotr(x, 1) ^ scr_sha512_rotr(x, 8) ^ ((x) >> 7))
+#define SCR_SHA512_SSIG1(x) (scr_sha512_rotr(x, 19) ^ scr_sha512_rotr(x, 61) ^ ((x) >> 6))
+
+/* One round with the eight working variables passed in rotated order, so
+ * an unrolled sequence of rounds needs no register moves. */
+#define SCR_SHA512_ROUND(a, b, c, d, e, f, g, h, k, w)                                  \
+  do {                                                                                  \
+    uint64_t t1 = (h) + SCR_SHA512_BSIG1(e) + ((g) ^ ((e) & ((f) ^ (g)))) + (k) + (w); \
+    (d) += t1;                                                                          \
+    (h) = t1 + SCR_SHA512_BSIG0(a) + (((a) & (b)) | ((c) & ((a) | (b))));               \
+  } while (0)
+
+static uint64_t scr_sha512_load(const unsigned char *p) {
+  uint64_t v = 0;
+  for (size_t b = 0; b < 8; b++) v = (v << 8) | p[b];
+  return v;
+}
+
+/* The message schedule is kept as a 16-word ring and extended 16 words
+ * at a time between groups of 16 rounds. */
+SCR_DIGEST_ALIGNED static void scr_sha512_blocks_portable(uint64_t state[8], const unsigned char *p,
+                                                          size_t blocks) {
+  uint64_t a = state[0], b = state[1], c = state[2], d = state[3];
+  uint64_t e = state[4], f = state[5], g = state[6], h = state[7];
+  for (; blocks != 0; blocks--, p += 128) {
+    uint64_t w[16];
+    for (size_t i = 0; i < 16; i++) w[i] = scr_sha512_load(p + i * 8);
+    for (size_t i = 0; i < 80; i += 16) {
+      if (i != 0) {
+        for (size_t j = 0; j < 16; j++) {
+          w[j] += SCR_SHA512_SSIG1(w[(j + 14) & 15]) + w[(j + 9) & 15] +
+                  SCR_SHA512_SSIG0(w[(j + 1) & 15]);
+        }
+      }
+      const uint64_t *k = scr_sha512_k + i;
+      SCR_SHA512_ROUND(a, b, c, d, e, f, g, h, k[0], w[0]);
+      SCR_SHA512_ROUND(h, a, b, c, d, e, f, g, k[1], w[1]);
+      SCR_SHA512_ROUND(g, h, a, b, c, d, e, f, k[2], w[2]);
+      SCR_SHA512_ROUND(f, g, h, a, b, c, d, e, k[3], w[3]);
+      SCR_SHA512_ROUND(e, f, g, h, a, b, c, d, k[4], w[4]);
+      SCR_SHA512_ROUND(d, e, f, g, h, a, b, c, k[5], w[5]);
+      SCR_SHA512_ROUND(c, d, e, f, g, h, a, b, k[6], w[6]);
+      SCR_SHA512_ROUND(b, c, d, e, f, g, h, a, k[7], w[7]);
+      SCR_SHA512_ROUND(a, b, c, d, e, f, g, h, k[8], w[8]);
+      SCR_SHA512_ROUND(h, a, b, c, d, e, f, g, k[9], w[9]);
+      SCR_SHA512_ROUND(g, h, a, b, c, d, e, f, k[10], w[10]);
+      SCR_SHA512_ROUND(f, g, h, a, b, c, d, e, k[11], w[11]);
+      SCR_SHA512_ROUND(e, f, g, h, a, b, c, d, k[12], w[12]);
+      SCR_SHA512_ROUND(d, e, f, g, h, a, b, c, k[13], w[13]);
+      SCR_SHA512_ROUND(c, d, e, f, g, h, a, b, k[14], w[14]);
+      SCR_SHA512_ROUND(b, c, d, e, f, g, h, a, k[15], w[15]);
+    }
+    a = state[0] += a; b = state[1] += b; c = state[2] += c; d = state[3] += d;
+    e = state[4] += e; f = state[5] += f; g = state[6] += g; h = state[7] += h;
   }
-  for (size_t i = 16; i < 80; i++) {
-    uint64_t s0 = scr_sha512_rotr(w[i - 15], 1) ^ scr_sha512_rotr(w[i - 15], 8) ^ (w[i - 15] >> 7);
-    uint64_t s1 = scr_sha512_rotr(w[i - 2], 19) ^ scr_sha512_rotr(w[i - 2], 61) ^ (w[i - 2] >> 6);
-    w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+}
+
+#ifdef SCR_SHA_NI
+/* ── SHA-512 kernels (x86-64) ─────────────────────────────────────────
+ * With AVX2 and BMI2, the message schedule is computed two words at a
+ * time in vector registers, interleaved with the scalar rounds, and the
+ * rounds rotate with RORX. With AVX-512VL the schedule uses vector
+ * rotates and three-input XOR. The CPU and OS state checks run once and
+ * are cached. */
+static int scr_sha512_x86_state; /* 0 unknown, 1 portable, 2 AVX2, 3 AVX-512VL */
+
+static int scr_sha512_x86(void) {
+  if (scr_sha512_x86_state == 0) {
+    unsigned a, b, c, d;
+    int kind = 1;
+    if (__get_cpuid(1, &a, &b, &c, &d) && (c & bit_OSXSAVE) && (c & bit_AVX)) {
+      unsigned lo, hi;
+      __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+      (void)hi;
+      /* XMM and YMM state enabled. */
+      if ((lo & 6) == 6 && __get_cpuid_count(7, 0, &a, &b, &c, &d) && (b & bit_AVX2) &&
+          (b & bit_BMI2)) {
+        kind = 2;
+        /* Opmask, ZMM0-15 upper halves and ZMM16-31 state enabled. */
+        if ((b & bit_AVX512F) && (b & bit_AVX512VL) && (lo & 0xe0) == 0xe0) kind = 3;
+      }
+    }
+    scr_sha512_x86_state = kind;
   }
-  uint64_t a = h[0], b = h[1], c = h[2], d = h[3];
-  uint64_t e = h[4], f = h[5], g = h[6], v = h[7];
-  for (size_t i = 0; i < 80; i++) {
-    uint64_t s1 = scr_sha512_rotr(e, 14) ^ scr_sha512_rotr(e, 18) ^ scr_sha512_rotr(e, 41);
-    uint64_t t1 = v + s1 + ((e & f) ^ (~e & g)) + scr_sha512_k[i] + w[i];
-    uint64_t s0 = scr_sha512_rotr(a, 28) ^ scr_sha512_rotr(a, 34) ^ scr_sha512_rotr(a, 39);
-    uint64_t t2 = s0 + ((a & b) ^ (a & c) ^ (b & c));
-    v = g; g = f; f = e; e = d + t1;
-    d = c; c = b; b = a; a = t1 + t2;
+  return scr_sha512_x86_state;
+}
+
+__attribute__((target("avx2,bmi2"))) static inline __m128i scr_sha512_ssig0_avx2(__m128i x) {
+  return _mm_xor_si128(_mm_xor_si128(_mm_or_si128(_mm_srli_epi64(x, 1), _mm_slli_epi64(x, 63)),
+                                     _mm_or_si128(_mm_srli_epi64(x, 8), _mm_slli_epi64(x, 56))),
+                       _mm_srli_epi64(x, 7));
+}
+
+__attribute__((target("avx2,bmi2"))) static inline __m128i scr_sha512_ssig1_avx2(__m128i x) {
+  return _mm_xor_si128(_mm_xor_si128(_mm_or_si128(_mm_srli_epi64(x, 19), _mm_slli_epi64(x, 45)),
+                                     _mm_or_si128(_mm_srli_epi64(x, 61), _mm_slli_epi64(x, 3))),
+                       _mm_srli_epi64(x, 6));
+}
+
+__attribute__((target("avx512f,avx512vl,bmi2"))) static inline __m128i
+scr_sha512_ssig0_avx512(__m128i x) {
+  return _mm_ternarylogic_epi64(_mm_ror_epi64(x, 1), _mm_ror_epi64(x, 8), _mm_srli_epi64(x, 7),
+                                0x96);
+}
+
+__attribute__((target("avx512f,avx512vl,bmi2"))) static inline __m128i
+scr_sha512_ssig1_avx512(__m128i x) {
+  return _mm_ternarylogic_epi64(_mm_ror_epi64(x, 19), _mm_ror_epi64(x, 61), _mm_srli_epi64(x, 6),
+                                0x96);
+}
+
+/* A round for the vector kernels. wk is the schedule word plus its
+ * constant. Maj(a, b, c) is ((a ^ b) & (b ^ c)) ^ b, where b ^ c is the
+ * previous round's a ^ b. The empty asm statements keep the compiler from
+ * reassociating the additions: adding Sigma1(e) last keeps the sum of h,
+ * wk and Ch off the dependency chain through e. */
+#define SCR_SHA512_PIN(v) __asm__("" : "+r"(v))
+#define SCR_SHA512_ROUND_WK(a, b, c, d, e, f, g, h, wk, ab, bc) \
+  do {                                                          \
+    uint64_t t1 = (h) + (wk);                                   \
+    SCR_SHA512_PIN(t1);                                         \
+    t1 += (g) ^ ((e) & ((f) ^ (g)));                            \
+    SCR_SHA512_PIN(t1);                                         \
+    t1 += SCR_SHA512_BSIG1(e);                                  \
+    SCR_SHA512_PIN(t1);                                         \
+    (d) += t1;                                                  \
+    (ab) = (a) ^ (b);                                           \
+    uint64_t m = t1 + (((ab) & (bc)) ^ (b));                    \
+    SCR_SHA512_PIN(m);                                          \
+    (h) = m + SCR_SHA512_BSIG0(a);                              \
+  } while (0)
+
+/* Words 2j and 2j+1 of the schedule, in the ring slot of words 2j-16 and
+ * 2j-15, and their sum with the round constants into wk. */
+#define SCR_SHA512_SCHEDULE(j, ssig0, ssig1)                                                     \
+  do {                                                                                           \
+    if ((j) < 40) {                                                                              \
+      __m128i s15 = _mm_alignr_epi8(w[((j) + 1) & 7], w[(j) & 7], 8);                           \
+      __m128i s7 = _mm_alignr_epi8(w[((j) + 5) & 7], w[((j) + 4) & 7], 8);                      \
+      __m128i next = _mm_add_epi64(_mm_add_epi64(w[(j) & 7], ssig0(s15)),                       \
+                                   _mm_add_epi64(s7, ssig1(w[((j) + 7) & 7])));                 \
+      w[(j) & 7] = next;                                                                         \
+      _mm_store_si128((__m128i *)&wk[(j) * 2],                                                   \
+                      _mm_add_epi64(next, _mm_loadu_si128((const __m128i *)&scr_sha512_k[(j) * 2]))); \
+    }                                                                                            \
+  } while (0)
+
+/* Rounds 2i to 2i+7 compute the schedule words 2i+16 to 2i+23. */
+#define SCR_SHA512_VECTOR_BODY(ssig0, ssig1)                                                   \
+  const __m128i bswap = _mm_set_epi64x(0x08090a0b0c0d0e0fULL, 0x0001020304050607ULL);         \
+  uint64_t a = state[0], b = state[1], c = state[2], d = state[3];                             \
+  uint64_t e = state[4], f = state[5], g = state[6], h = state[7];                             \
+  for (; blocks != 0; blocks--, p += 128) {                                                    \
+    __m128i w[8];                                                                              \
+    uint64_t wk[80] __attribute__((aligned(16)));                                              \
+    _Pragma("GCC unroll 8") for (int i = 0; i < 8; i++) {                                      \
+      w[i] = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + i * 16)), bswap);          \
+      _mm_store_si128((__m128i *)&wk[i * 2],                                                   \
+                      _mm_add_epi64(w[i], _mm_loadu_si128((const __m128i *)&scr_sha512_k[i * 2]))); \
+    }                                                                                          \
+    uint64_t x = b ^ c, y;                                                                     \
+    _Pragma("GCC unroll 10") for (int i = 0; i < 40; i += 4) {                                 \
+      SCR_SHA512_SCHEDULE(i + 8, ssig0, ssig1);                                                \
+      SCR_SHA512_ROUND_WK(a, b, c, d, e, f, g, h, wk[2 * i + 0], y, x);                        \
+      SCR_SHA512_ROUND_WK(h, a, b, c, d, e, f, g, wk[2 * i + 1], x, y);                        \
+      SCR_SHA512_SCHEDULE(i + 9, ssig0, ssig1);                                                \
+      SCR_SHA512_ROUND_WK(g, h, a, b, c, d, e, f, wk[2 * i + 2], y, x);                        \
+      SCR_SHA512_ROUND_WK(f, g, h, a, b, c, d, e, wk[2 * i + 3], x, y);                        \
+      SCR_SHA512_SCHEDULE(i + 10, ssig0, ssig1);                                               \
+      SCR_SHA512_ROUND_WK(e, f, g, h, a, b, c, d, wk[2 * i + 4], y, x);                        \
+      SCR_SHA512_ROUND_WK(d, e, f, g, h, a, b, c, wk[2 * i + 5], x, y);                        \
+      SCR_SHA512_SCHEDULE(i + 11, ssig0, ssig1);                                               \
+      SCR_SHA512_ROUND_WK(c, d, e, f, g, h, a, b, wk[2 * i + 6], y, x);                        \
+      SCR_SHA512_ROUND_WK(b, c, d, e, f, g, h, a, wk[2 * i + 7], x, y);                        \
+    }                                                                                          \
+    a = state[0] += a; b = state[1] += b; c = state[2] += c; d = state[3] += d;                \
+    e = state[4] += e; f = state[5] += f; g = state[6] += g; h = state[7] += h;                \
   }
-  h[0] += a; h[1] += b; h[2] += c; h[3] += d;
-  h[4] += e; h[5] += f; h[6] += g; h[7] += v;
+
+__attribute__((target("avx2,bmi2"), aligned(64))) static void
+scr_sha512_blocks_avx2(uint64_t state[8], const unsigned char *p, size_t blocks) {
+  SCR_SHA512_VECTOR_BODY(scr_sha512_ssig0_avx2, scr_sha512_ssig1_avx2)
+}
+
+__attribute__((target("avx512f,avx512vl,bmi2"), aligned(64))) static void
+scr_sha512_blocks_avx512(uint64_t state[8], const unsigned char *p, size_t blocks) {
+  SCR_SHA512_VECTOR_BODY(scr_sha512_ssig0_avx512, scr_sha512_ssig1_avx512)
+}
+#endif
+
+
+#if defined(__aarch64__) && (defined(__clang__) || defined(__GNUC__)) && !defined(_WIN32)
+/* ── SHA-512 kernel (arm64) ───────────────────────────────────────────
+ * On CPUs with the SHA-512 extension (FEAT_SHA512), the blocks run with
+ * SHA512H, SHA512H2, SHA512SU0 and SHA512SU1; other CPUs use the portable
+ * blocks. The CPU check runs once and is cached. */
+#include <arm_neon.h>
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#else
+#include <sys/auxv.h>
+#endif
+#define SCR_SHA512_ARM 1
+#if defined(__clang__)
+#define SCR_SHA512_ARM_TARGET __attribute__((target("sha3")))
+#else
+#define SCR_SHA512_ARM_TARGET __attribute__((target("+sha3")))
+#endif
+
+static int scr_sha512_arm_state; /* 0 unknown, 1 available, 2 absent */
+
+static bool scr_sha512_arm(void) {
+  if (scr_sha512_arm_state == 0) {
+    bool ok;
+#if defined(__APPLE__)
+    int value = 0;
+    size_t size = sizeof value;
+    ok = sysctlbyname("hw.optional.armv8_2_sha512", &value, &size, NULL, 0) == 0 && value != 0;
+#else
+    ok = (getauxval(AT_HWCAP) & (1ul << 21)) != 0; /* HWCAP_SHA512 */
+#endif
+    scr_sha512_arm_state = ok ? 1 : 2;
+  }
+  return scr_sha512_arm_state == 1;
+}
+
+/* Two rounds per step. With the state pairs in the roles (A, B, C, D) =
+ * (ab, cd, ef, gh), a step computes I = SHA512H(swap(K + W) + D, ext(C, D),
+ * ext(B, C)), D = SHA512H2(I, B, A) and B += I; the roles then rotate to
+ * (D, A, B, C). */
+#define SCR_SHA512_ARM_STEP(A, B, C, D, msg, k)                                                \
+  do {                                                                                         \
+    uint64x2_t kw = vaddq_u64((msg), vld1q_u64(k));                                            \
+    uint64x2_t sum = vaddq_u64(vextq_u64(kw, kw, 1), (D));                                     \
+    uint64x2_t i = vsha512hq_u64(sum, vextq_u64((C), (D), 1), vextq_u64((B), (C), 1));         \
+    (D) = vsha512h2q_u64(i, (B), (A));                                                         \
+    (B) = vaddq_u64((B), i);                                                                   \
+  } while (0)
+
+/* Message words 2j and 2j+1 from the eight pairs before them. */
+#define SCR_SHA512_ARM_SCHEDULE(m0, m1, m4, m5, m7) \
+  (m0) = vsha512su1q_u64(vsha512su0q_u64((m0), (m1)), (m7), vextq_u64((m4), (m5), 1))
+
+SCR_SHA512_ARM_TARGET static void scr_sha512_blocks_arm(uint64_t state[8], const unsigned char *p,
+                                                         size_t blocks) {
+  uint64x2_t ab = vld1q_u64(&state[0]), cd = vld1q_u64(&state[2]);
+  uint64x2_t ef = vld1q_u64(&state[4]), gh = vld1q_u64(&state[6]);
+  for (; blocks != 0; blocks--, p += 128) {
+    uint64x2_t ab0 = ab, cd0 = cd, ef0 = ef, gh0 = gh;
+    uint64x2_t m0 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 0)));
+    uint64x2_t m1 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 16)));
+    uint64x2_t m2 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 32)));
+    uint64x2_t m3 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 48)));
+    uint64x2_t m4 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 64)));
+    uint64x2_t m5 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 80)));
+    uint64x2_t m6 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 96)));
+    uint64x2_t m7 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 112)));
+    const uint64_t *k = scr_sha512_k;
+    for (int i = 0; i < 5; i++, k += 16) {
+      SCR_SHA512_ARM_STEP(ab, cd, ef, gh, m0, k + 0);
+      SCR_SHA512_ARM_STEP(gh, ab, cd, ef, m1, k + 2);
+      SCR_SHA512_ARM_STEP(ef, gh, ab, cd, m2, k + 4);
+      SCR_SHA512_ARM_STEP(cd, ef, gh, ab, m3, k + 6);
+      SCR_SHA512_ARM_STEP(ab, cd, ef, gh, m4, k + 8);
+      SCR_SHA512_ARM_STEP(gh, ab, cd, ef, m5, k + 10);
+      SCR_SHA512_ARM_STEP(ef, gh, ab, cd, m6, k + 12);
+      SCR_SHA512_ARM_STEP(cd, ef, gh, ab, m7, k + 14);
+      if (i == 4) break;
+      SCR_SHA512_ARM_SCHEDULE(m0, m1, m4, m5, m7);
+      SCR_SHA512_ARM_SCHEDULE(m1, m2, m5, m6, m0);
+      SCR_SHA512_ARM_SCHEDULE(m2, m3, m6, m7, m1);
+      SCR_SHA512_ARM_SCHEDULE(m3, m4, m7, m0, m2);
+      SCR_SHA512_ARM_SCHEDULE(m4, m5, m0, m1, m3);
+      SCR_SHA512_ARM_SCHEDULE(m5, m6, m1, m2, m4);
+      SCR_SHA512_ARM_SCHEDULE(m6, m7, m2, m3, m5);
+      SCR_SHA512_ARM_SCHEDULE(m7, m0, m3, m4, m6);
+    }
+    ab = vaddq_u64(ab, ab0);
+    cd = vaddq_u64(cd, cd0);
+    ef = vaddq_u64(ef, ef0);
+    gh = vaddq_u64(gh, gh0);
+  }
+  vst1q_u64(&state[0], ab);
+  vst1q_u64(&state[2], cd);
+  vst1q_u64(&state[4], ef);
+  vst1q_u64(&state[6], gh);
+}
+#endif
+
+static void scr_sha512_blocks(uint64_t h[8], const unsigned char *p, size_t blocks) {
+#ifdef SCR_SHA_NI
+  switch (scr_sha512_x86()) {
+  case 3:
+    scr_sha512_blocks_avx512(h, p, blocks);
+    return;
+  case 2:
+    scr_sha512_blocks_avx2(h, p, blocks);
+    return;
+  default:
+    break;
+  }
+#endif
+#ifdef SCR_SHA512_ARM
+  if (scr_sha512_arm()) {
+    scr_sha512_blocks_arm(h, p, blocks);
+    return;
+  }
+#endif
+  scr_sha512_blocks_portable(h, p, blocks);
 }
 
 static void scr_sha512_init(ScrSha512Ctx *ctx, bool sha384) {
@@ -7536,14 +7826,15 @@ static void scr_sha512_update(ScrSha512Ctx *ctx, const unsigned char *data, size
     data += take;
     len -= take;
     if (ctx->tail_len == 128) {
-      scr_sha512_block(ctx->h, ctx->tail);
+      scr_sha512_blocks(ctx->h, ctx->tail, 1);
       ctx->tail_len = 0;
     }
   }
-  while (len >= 128) {
-    scr_sha512_block(ctx->h, data);
-    data += 128;
-    len -= 128;
+  if (len >= 128) {
+    size_t blocks = len / 128;
+    scr_sha512_blocks(ctx->h, data, blocks);
+    data += blocks * 128;
+    len -= blocks * 128;
   }
   if (len != 0) {
     memcpy(ctx->tail, data, len);
@@ -7562,8 +7853,7 @@ static size_t scr_sha512_final(const ScrSha512Ctx *source, unsigned char out[64]
     tail[pad - 1 - b] = (unsigned char)(low >> (8 * b));
     tail[pad - 9 - b] = (unsigned char)(high >> (8 * b));
   }
-  scr_sha512_block(ctx.h, tail);
-  if (pad == 256) scr_sha512_block(ctx.h, tail + 128);
+  scr_sha512_blocks(ctx.h, tail, pad / 128);
   size_t len = sha384 ? 48 : 64;
   for (size_t i = 0; i < len; i++) out[i] = (unsigned char)(ctx.h[i / 8] >> (56 - 8 * (i % 8)));
   return len;
