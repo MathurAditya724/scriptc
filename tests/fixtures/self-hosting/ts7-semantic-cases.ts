@@ -81,8 +81,8 @@ export function checkSemanticModel(snapshot: SemanticSnapshot, checker: Semantic
   check(checker.getTypeOfSymbol(answerSymbol) === answerType, "symbol type identity");
   check(checker.getTypeOfSymbol([answerSymbol, answerSymbol])[1] === answerType, "batch symbol types");
   check(checker.getTypeOfSymbolAtLocation(answerSymbol, answerName) === answerType, "location-dependent symbol type");
-  check(answerSymbol.valueDeclaration?.resolve() === answer && answerSymbol.declarations[0]!.resolve() === answer, "default declaration resolution");
-  check(answerSymbol.declarations[0]!.resolve(checker.project) === answer, "explicit declaration project");
+  check(answerSymbol.valueDeclarationHandle?.resolve() === answer && answerSymbol.declarationHandles[0]!.resolve() === answer, "default declaration resolution");
+  check(answerSymbol.declarationHandles[0]!.resolve(checker.project) === answer, "explicit declaration project");
   check(checker.getTypeAtPosition(root.fileName, [answerName.getStart(), answerName.getStart()])[1] === answerType, "position type batch");
   check(checker.getSymbolAtPosition(root.fileName, [answerName.getStart(), answerName.getStart()])[1] === answerSymbol, "position symbol batch");
   check(checker.getResolvedSymbol(answerName)!.getExportSymbol() === answerSymbol, "resolved local/export symbol identity");
@@ -123,7 +123,7 @@ export function checkSemanticModel(snapshot: SemanticSnapshot, checker: Semantic
   // the binder's member symbol is distinct but refers to the same AST node.
   const boundMember = boxSymbol.getMembers().get("value")!;
   const checkedMember = checker.getPropertyOfType(boxType, "value")!;
-  check(boundMember !== checkedMember && boundMember.declarations[0]!.resolve() === checkedMember.declarations[0]!.resolve(), "bound and instantiated member declarations");
+  check(boundMember !== checkedMember && boundMember.declarationHandles[0]!.resolve() === checkedMember.declarationHandles[0]!.resolve(), "bound and instantiated member declarations");
   check(boxSymbol.getMembers() === boxSymbol.getMembers() && boxSymbol.getExports() === boxSymbol.getExports(), "symbol table cache");
   check(boxType.getBaseTypes()!.length === 0 && checker.getBaseTypes(boxType).length === 0, "empty base types");
   const child = checker.getDeclaredTypeOfSymbol(symbolAt(checker, declaration(root, "Child").name!));
@@ -147,8 +147,8 @@ export function checkSemanticModel(snapshot: SemanticSnapshot, checker: Semantic
   const signature = signatureAt(checker, identity);
   const signatureTypes = signature.getTypeParameters();
   check(signatureTypes.length === 1 && signatureTypes[0]!.isTypeParameter(), "signature type parameters");
-  check(signature.getParameters()[0]!.name === "value" && signature.getParameters()[0]!.declarations[0]!.resolve() === identity.parameters?.nodes[0], "signature parameters");
-  check(signature.declaration!.resolve() === identity, "signature declaration");
+  check(signature.getParameters()[0]!.name === "value" && signature.getParameters()[0]!.declarationHandles[0]!.resolve() === identity.parameters?.nodes[0], "signature parameters");
+  check(signature.declarationHandle!.resolve() === identity, "signature declaration");
   check(checker.getReturnTypeOfSignature(signature) === signatureTypes[0], "generic return identity");
   check(checker.getParameterType(signature, 0) === signatureTypes[0], "parameter type query");
   const constraint = checker.getConstraintOfTypeParameter(signatureTypes[0]!)!;
@@ -179,7 +179,7 @@ export function checkSemanticModel(snapshot: SemanticSnapshot, checker: Semantic
   check(checker.isUndefinedSymbol(undefinedSymbol), "well-known undefined symbol");
   const shorthand = declaration(root, "ref").initializer!.properties?.nodes[0]!;
   check(checker.getShorthandAssignmentValueSymbol(shorthand) === answerSymbol, "shorthand symbol");
-  const exportSpecifier = renamed.declarations[0]!.resolve()!;
+  const exportSpecifier = renamed.declarationHandles[0]!.resolve()!;
   check(checker.getExportSpecifierLocalTargetSymbol(exportSpecifier) === answerSymbol, "export specifier symbol");
   check(checker.getConstantValue(declaration(root, "Mode").members?.nodes[0]!) === 3, "enum constant");
   check(checker.getConstantValue(answerName) === undefined, "missing constant");
@@ -235,7 +235,7 @@ export function checkSemanticModel(snapshot: SemanticSnapshot, checker: Semantic
   try { answerType.getRegularType(); } catch { refused = true; }
   check(refused, "type access after disposal");
   refused = false;
-  try { answerSymbol.declarations[0]!.resolve(); } catch { refused = true; }
+  try { answerSymbol.declarationHandles[0]!.resolve(); } catch { refused = true; }
   check(refused, "declaration access after disposal");
 }
 

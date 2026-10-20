@@ -267,7 +267,7 @@ export function runTs7Client(client: Ts7RpcClient, directory: string, report: st
     const typeText = checker.typeToString(ownedType);
     check(checker.getTypeAtPosition(file, content.indexOf("answer")) === ownedType, "semantic type identity");
     check(checker.getSymbolAtPosition(file, content.indexOf("answer")) === ownedSymbol, "semantic symbol identity");
-    check(ownedSymbol.declarations[0]!.resolve() === declaration, "semantic declaration identity");
+    check(ownedSymbol.declarationHandles[0]!.resolve() === declaration, "semantic declaration identity");
     check(typeText === "42" && ownedType.isNumberLiteralType() && ownedType.value === 42, "semantic literal metadata");
     // The semantic exercise disposes its graph; the session still owns the
     // server snapshot and its program until explicit snapshot disposal.

@@ -17,6 +17,8 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
+    ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.stdioExtended ? { stdioExtended: true } : {}),
     zlib: features.zlib,
     assert: features.assert,
     inspect: features.inspect,
@@ -41,5 +43,6 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     tls: features.tls,
     tlsCa: features.tlsCa,
     cipher: features.cipher,
+    webcrypto: features.webcrypto,
   };
 }

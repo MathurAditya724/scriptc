@@ -2605,18 +2605,8 @@ export type IrExpr =
   | { kind: "logical"; op: "&&" | "||"; left: IrExpr; right: IrExpr; type: IrType; loc: SrcLoc }
   | { kind: "strConcat"; left: IrExpr; right: IrExpr; type: IrType; loc: SrcLoc }
   | { kind: "strEq"; negated: boolean; left: IrExpr; right: IrExpr; type: IrType; loc: SrcLoc }
-  /** String ordering. Ordinary source comparisons omit `utf16` and retain
-   * scriptc's documented code-point order; the default Array sort comparator
-   * sets it to request ECMAScript's UTF-16 code-unit order. */
-  | {
-      kind: "strCmp";
-      op: IrStrCmpOp;
-      left: IrExpr;
-      right: IrExpr;
-      utf16?: boolean;
-      type: IrType;
-      loc: SrcLoc;
-    }
+  /** String ordering in ECMAScript's UTF-16 code-unit order. */
+  | { kind: "strCmp"; op: IrStrCmpOp; left: IrExpr; right: IrExpr; type: IrType; loc: SrcLoc }
   /** f64|bool → string, JS-exact (Number::toString / "true"/"false").
    * Union operands dispatch through the per-union ToString helper (arms
    * fenced to unit/string/f64/bool by the frontend); a CAUGHT operand is

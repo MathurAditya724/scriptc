@@ -137,6 +137,7 @@ typedef enum {
   SCR_DYNH_CIPHER = 45, /* node:crypto Cipheriv (scr_cipher.c) */
   SCR_DYNH_CONSOLE = 32, /* stored global console value */
   SCR_DYNH_CONSOLE_INSTANCE = 38, /* node:console Console instance */
+  SCR_DYNH_CRYPTO_KEY = 56, /* WebCrypto CryptoKey (scr_webcrypto.c) */
   SCR_DYNH_CUSTOM_EVENT = 40, /* ScrEvent with detail — new CustomEvent() */
   SCR_DYNH_DATE = 30, /* JavaScript Date with stable native identity */
   SCR_DYNH_DECIPHER = 46, /* node:crypto Decipheriv (scr_cipher.c) */
@@ -931,6 +932,10 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
 void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict);
+/* This thread's global object box (borrowed). Every spelling of the global
+ * object answers it; its symbol-keyed properties are the global object's
+ * (scr_node_builtin.c). */
+ScrDyn *scr_global_object(void);
 ScrDyn *scr_dyn_global_symbol_get(ScrSym *key); /* borrowed key; +1 value */
 void scr_dyn_global_symbol_set(ScrSym *key, ScrDyn *value); /* both borrowed */
 bool scr_dyn_global_symbol_has(ScrSym *key);

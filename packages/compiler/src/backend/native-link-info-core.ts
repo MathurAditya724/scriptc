@@ -28,6 +28,12 @@ export interface NativeLinkFeatures {
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
    * without it keep their link identity. */
   wasm?: boolean;
+  /** The program assigns process.emitWarning: links the
+   * SCR_WARNING_REPLACE variant of the dyn-async unit. */
+  warningReplace?: boolean;
+  /** The program uses process.stdin.setEncoding, string 'data' listeners
+   * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
+  stdioExtended?: boolean;
   zlib: boolean;
   assert: boolean;
   inspect: boolean;
@@ -54,6 +60,9 @@ export interface NativeLinkFeatures {
    * archive. */
   cipher: boolean;
   tlsCa: boolean;
+  /** crypto.subtle importKey/sign/verify/digest and CryptoKey values:
+   * scr_webcrypto.c. */
+  webcrypto: boolean;
 }
 
 export interface NativeLinkInfo {

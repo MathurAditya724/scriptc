@@ -5676,6 +5676,20 @@
       "note": "compile, instantiate, validate, Module, Instance, instanceof, the error classes, exports, memories, tables, globals and Module transfer to workers, over the modules translated at build time; the rest refuses with SC2020 (the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations))"
     },
     {
+      "id": "stdlib.webcrypto.CryptoKey",
+      "kind": "stdlib",
+      "name": "CryptoKey",
+      "status": "static",
+      "note": "secret HMAC keys with type, extractable, algorithm and usages, and instanceof CryptoKey"
+    },
+    {
+      "id": "stdlib.webcrypto.subtle",
+      "kind": "stdlib",
+      "name": "globalThis.crypto.subtle",
+      "status": "static",
+      "note": "importKey('raw') for HMAC keys, HMAC sign and verify, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused"
+    },
+    {
       "id": "syntax.async-generators",
       "kind": "syntax",
       "name": "typed async generator functions and methods",
