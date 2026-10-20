@@ -36,7 +36,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     host.emitPendingCheck();
     return out;
   }
-  if (e.fn === "stream.dynNative") {
+  if (e.fn === "stream.dynNative" || e.fn === "stream.dynNativePipe") {
     // Checked-dynamic stream slots: the boxed native stream (+1) or NULL.
     if (e.type.kind !== "union")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
@@ -47,11 +47,13 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
     const value = host.emitExpr(e.args[0]!);
     const side = host.emitExpr(e.args[1]!);
-    // Programs with constructor-function streams answer those streams too
-    // (scr_dyn_builtin_stream.c), as stream.unboxDyn does there.
-    const fn = host.usesDynBuiltinStream
-      ? "scr_dyn_builtin_stream_dyn_native"
-      : "scr_stream_dyn_native";
+    // A pipe or unpipe destination in programs with constructor-function
+    // streams can be one of those streams too (scr_dyn_builtin_stream.c),
+    // as stream.unboxDyn does there.
+    const fn =
+      e.fn === "stream.dynNativePipe" && host.usesDynBuiltinStream
+        ? "scr_dyn_builtin_stream_dyn_native"
+        : "scr_stream_dyn_native";
     host.declare(`declare ptr @${fn}(ptr, double)`);
     const raw = B.tmp();
     B.line(`${raw} = call ptr @${fn}(ptr ${value.name}, double ${side.name}) ; +1 or NULL`);
