@@ -2135,6 +2135,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     checker
       .declarationsOf(psym)
       .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()));
+  // The timer handles: an interface in the fallback and in @types/node 22+,
+  // a class (`class Timeout implements Timer`) in @types/node 20 and older.
+  const isStdlibTimerHandle = (name: string): boolean =>
+    psym?.name === name &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()),
+      );
   // The builtin Error classes: references to the lib's Error interfaces map to the runtime-provided class
   // hierarchy (provenance, not the name — a user's own `class Error`
   // resolved through the class-instance branch above, and a user
@@ -2643,11 +2654,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // methods lower over that handle (loop-liveness bookkeeping); `Timeout |
   // null` becomes `number | null`, and clearTimeout/clearInterval take the
   // handle. Provenance-checked like the other named interfaces.
-  if (isStdlibInterface("Timeout")) return F64;
+  if (isStdlibTimerHandle("Timeout")) return F64;
   // NodeJS.Immediate / the fallback `Immediate` (setImmediate's return):
   // the same numeric-handle story over the check-phase queue — its own id
   // space, so clearTimeout of an Immediate no-ops like Node.
-  if (isStdlibInterface("Immediate")) return F64;
+  if (isStdlibTimerHandle("Immediate")) return F64;
   if (
     isStdlibInterface("ArrayBuffer") ||
     isStdlibInterface("SharedArrayBuffer") ||
