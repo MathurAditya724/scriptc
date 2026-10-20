@@ -2684,6 +2684,24 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [DYN, STRING],
     result: { kind: "object", className: "%Duplex" },
   },
+  /** Checked-dynamic stream slots (dyn-streams.ts): the native stream a
+   * checked-dynamic value boxes (+1) — a runtime stream with the readable
+   * (1) or writable (2) side — or null for any other value. Never throws;
+   * the result union is `%Readable | null` or `%Writable | null`. */
+  "stream.dynNative": { argTypes: [DYN, F64], result: VOID },
+  /** stream.dynNative for a pipe or unpipe destination: also a
+   * constructor-function stream's runtime stream, in programs that link
+   * that unit, unless it overrides write() or end(). */
+  "stream.dynNativePipe": { argTypes: [DYN, F64], result: VOID },
+  /** readable.pipe(destination, end) into a checked-dynamic destination
+   * that is not a native stream: [source, the source boxed, destination,
+   * end]. Node's pipe listener protocol over the destination's members
+   * (scr_stream_dyn.c); throws what those members throw. */
+  "stream.pipeDyn": { argTypes: [null, DYN, DYN, BOOL], result: VOID },
+  /** readable.unpipe(destination) for a checked-dynamic destination that
+   * is not a native stream: [source, destination]. Unpipes the pipe
+   * stream.pipeDyn registered into it, if any (scr_stream_dyn.c). */
+  "stream.unpipeDyn": { argTypes: [null, DYN], result: VOID },
   "stream.stdioWritable": {
     argTypes: [PROCSTREAM_T],
     result: { kind: "object", className: "%Writable" },
@@ -3589,6 +3607,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * Transform (5) and PassThrough (6) as untyped constructor values, one
    * per thread (scr_dyn_builtin_class.c). */
   "dyn.builtinClass": { argTypes: [F64], result: DYN },
+  /** The stream classes (2-6 above) with their stream half: constructor
+   * functions over them get native stream state
+   * (scr_dyn_builtin_stream.c). */
+  "dyn.builtinStreamClass": { argTypes: [F64], result: DYN },
   /** `value instanceof C` for those constructors, over the value's
    * prototype chain. */
   "dyn.builtinInstanceOf": { argTypes: [DYN, F64], result: BOOL },
@@ -4307,6 +4329,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * errorBoxer, listenForError] → a pending promise of any[]; the boxers
    * turn the event's and the 'error' tuple into that array. */
   "events.once": { argTypes: [null, STRING, null, null, BOOL], result: VOID },
+  /** events.once(emitter, name, { signal }) (scr_events_once_signal.c):
+   * events.once's arguments plus the checked-dynamic signal (an
+   * AbortSignal or undefined). */
+  "events.onceSignal": { argTypes: [null, STRING, null, null, BOOL, DYN], result: VOID },
   /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
    * value's type that copies the borrowed already-resolved `value` promise
    * when the timer (or immediate) fires; ref false unrefs it. The result

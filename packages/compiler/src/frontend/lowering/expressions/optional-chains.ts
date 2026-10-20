@@ -92,7 +92,7 @@ export function isRequireMainFilename(lowerer: Lowerer, expr: ts.Expression): bo
   const main = expr.expression;
   if (!ts.isPropertyAccessExpression(main) || main.name.text !== "main") return false;
   if (!lowerer.isStdlibGlobal(main.expression, "require")) return false;
-  return !isNodeEsmFile(expr.getSourceFile(), lowerer.program);
+  return !isNodeEsmFile(ts.getSourceFileOfNode(expr), lowerer.program);
 }
 
 export function isOptionalChainTail(lowerer: Lowerer, expr: ts.Expression): boolean {
@@ -257,14 +257,14 @@ export function lowerOptionalChain(
       const spreads: { arg: number; what: string }[] = [];
       const args = expr.arguments.nodes.map((arg, index) => {
         if (!ts.isSpreadElement(arg)) return lowerer.lowerExprExpecting(arg, DYN);
-        spreads.push({ arg: index, what: arg.expression.getText() });
+        spreads.push({ arg: index, what: ts.getTextOfNode(arg.expression) });
         return lowerer.lowerExprExpecting(arg.expression, DYN);
       });
       const body: IrExpr = {
         kind: "dynCall",
         callee,
         ...(thisValue ? { receiver: thisValue } : {}),
-        calleeName: recvNode.getText(),
+        calleeName: ts.getTextOfNode(recvNode),
         args,
         ...(spreads.length ? { spreads } : {}),
         type: DYN,

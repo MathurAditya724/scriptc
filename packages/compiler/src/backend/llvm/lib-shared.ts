@@ -742,6 +742,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "procStream.write": "scr_proc_stream_write",
   "stream.stdioWritable": "scr_stream_stdio_writable",
   "stream.unboxDyn": "scr_stream_unbox_dyn",
+  "stream.pipeDyn": "scr_stream_pipe_dyn",
+  "stream.unpipeDyn": "scr_stream_unpipe_dyn",
   "process.kill": "scr_process_kill_named",
   "process.killNum": "scr_process_kill",
   // fs.promises (scr_bytes_io.c / scr_lib.c): the promise forms settle
@@ -1459,6 +1461,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",
   "dyn.classInherit": "scr_dyn_class_inherit",
   "dyn.builtinClass": "scr_dyn_builtin_class",
+  "dyn.builtinStreamClass": "scr_dyn_builtin_stream_class",
   "dyn.builtinInstanceOf": "scr_dyn_builtin_instanceof",
   "dyn.functionInstanceOf": "scr_dyn_function_instanceof",
   "dyn.classSuper": "scr_dyn_class_super",
@@ -1537,6 +1540,8 @@ export function mockTimerSym(
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "process.emitWarning",
+  // Constructor-function streams defer their events on the stream ticks.
+  "dyn.builtinStreamClass",
   // Decipheriv.setAuthTag reports DEP0182 on the next tick.
   "crypto.cipherNew",
   // WebCrypto results settle through the deferred crypto queue.

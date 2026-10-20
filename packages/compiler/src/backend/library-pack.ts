@@ -43,6 +43,7 @@ export async function compilePackedLibrary(
     searchParams: options.searchParams ?? false,
     qs: false,
     dynBuiltinClass: false,
+    dynBuiltinStream: false,
     parseArgs: false,
     stream: false,
     net: false,

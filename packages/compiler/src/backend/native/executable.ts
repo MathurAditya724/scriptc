@@ -220,6 +220,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // measures with.
   unit((u) => u.opts.events && u.regex, "scr_readline_tty.c"),
   unit((u) => u.opts.emitter || u.opts.workers, "scr_events_emitter.c"),
+  // events.once with options registers through the emitter and
+  // event-target units.
+  unit((u) => u.opts.eventsOnceSignal === true, "scr_events_once_signal.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
   // net families (http implies net), so handle-free binaries keep
@@ -247,11 +250,24 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       (u.opts.emitter || u.opts.workers),
     "scr_dyn_builtin_class.c",
   ),
+  unit(
+    (u) =>
+      u.opts.dynBuiltinStream &&
+      u.opts.dynBuiltinClass &&
+      u.opts.stream &&
+      u.opts.inspect &&
+      u.opts.dynInvoke &&
+      u.opts.symbol,
+    "scr_dyn_builtin_stream.c",
+  ),
   unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
   // The zlib stream classes reference both the zlib engine and the
   // stream unit.
   unit((u) => u.opts.zlib && u.opts.stream, "scr_zlib_stream.c"),
   unit((u) => u.opts.stream && u.opts.dynAsync, "scr_stream_ops.c"),
+  // Checked-dynamic stream slots test values and call JavaScript stream
+  // members through the dyn-invoke unit.
+  unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,

@@ -193,9 +193,9 @@ export function templateRawTextOf(
 ): string {
   const own = (node as { rawText?: string }).rawText;
   if (own !== undefined) return own;
-  const sf = node.getSourceFile();
-  const start = node.getStart(sf);
-  const end = node.getEnd();
+  const sf = ts.getSourceFileOfNode(node);
+  const start = ts.tokenStartOfNode(node);
+  const end = node.end;
   const tailTrim =
     node.kind === ts.SyntaxKind.TemplateHead || node.kind === ts.SyntaxKind.TemplateMiddle ? 2 : 1;
   return sf.text.slice(start + 1, end - tailTrim);
@@ -296,14 +296,14 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // integer within ±(2^53−1)) and non-integer spellings carry
     // nothing, so the IR is unchanged for programs that held their
     // numbers.
-    const spelled = expr.getText().replace(/_/g, "");
+    const spelled = ts.getTextOfNode(expr).replace(/_/g, "");
     if (/^\d+$/.test(spelled) && String(Number(spelled)) !== spelled) {
       return { kind: "numLit", value: Number(spelled), spelling: spelled, type: F64, loc };
     }
     return { kind: "numLit", value, type: F64, loc };
   }
   if (ts.isBigIntLiteral(expr)) {
-    const spelling = expr.getText().replace(/_/g, "").replace(/n$/i, "");
+    const spelling = ts.getTextOfNode(expr).replace(/_/g, "").replace(/n$/i, "");
     return {
       kind: "libCall",
       fn: "bigint.parse",
@@ -549,7 +549,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // the read answers the strict-mode plain-call undefined, the old
     // constant. TypeScript keeps the fence (noImplicitThis makes it a
     // compile-time story there).
-    if (isJsSourceFile(expr.getSourceFile())) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
       // Module scope of a CommonJS file: `this` is module.exports.
       const exportsThis = lowerCjsTopLevelThis(lowerer, expr);
       if (exportsThis) return exportsThis;
@@ -1548,7 +1548,7 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
   // statement ruled non-null without narrowing it (jose's secs()).
   if (
     receiverT?.kind === "union" &&
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     !expr.questionDotToken &&
     !hasOptionalChainGuard(expr.expression)
   ) {
@@ -1738,7 +1738,8 @@ export function stringWrapperToString(lowerer: Lowerer, node: ts.Expression): Ir
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isNewExpression(e) || !ts.isIdentifier(e.expression)) return null;
   const symbol = lowerer.resolveValueSymbol(e.expression);
-  if (symbol?.name !== "String" || !lowerer.isStdlibSymbol(symbol)) return null;
+  if (symbol === null || ts.symbolName(symbol) !== "String" || !lowerer.isStdlibSymbol(symbol))
+    return null;
   const args = e.arguments?.nodes ?? [];
   if (args.length > 1 || args.some(ts.isSpreadElement)) return null;
   if (args.length === 0) return { kind: "strLit", value: "", type: STRING, loc: locOf(e) };
@@ -2027,7 +2028,7 @@ export function aliasTypeofNarrows(
     const leaf = aliasTypeofArmOf(lowerer, e, strip);
     if (leaf) out.push(leaf);
   };
-  if (implicitMonoFile(cond.getSourceFile())) walk(cond, polarity);
+  if (implicitMonoFile(ts.getSourceFileOfNode(cond))) walk(cond, polarity);
   return out;
 }
 
@@ -2127,7 +2128,7 @@ export function cjsAccessorSnapshotOf(
 ): { id: string; type: IrType } | null {
   const hit = lowerer.cjsAccessorSnapshots.get(getter);
   if (hit !== undefined) return hit;
-  if (!lexerVisibleAccessors(getter.getSourceFile()).includes(getter)) return null;
+  if (!lexerVisibleAccessors(ts.getSourceFileOfNode(getter)).includes(getter)) return null;
   const call = cjsAccessorCall(lowerer, getter, locOf(getter));
   if (call === null) return null;
   const snapshot = { id: `%g.cjsSnapshot.${lowerer.cjsAccessorSnapshots.size}`, type: call.type };
@@ -2576,7 +2577,7 @@ export function lowerOptionalArrayIndexRead(
   key: IrExpr,
 ): IrExpr | null {
   if (
-    !isJsSourceFile(expr.getSourceFile()) ||
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
     expr.questionDotToken ||
     hasOptionalChainGuard(expr.expression)
   )
