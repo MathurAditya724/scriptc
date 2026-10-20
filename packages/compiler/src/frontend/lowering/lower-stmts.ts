@@ -8,6 +8,7 @@ import {
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
+import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
@@ -2914,16 +2915,21 @@ export function lowerBindingPattern(
         ts.isNumericLiteral(prop)
           ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
           : null;
-      if (propName === null) {
+      // A runtime computed key (`{ [name]: v }`) reads the live property.
+      const runtimeRead =
+        propName === null && ts.isComputedPropertyName(prop)
+          ? runtimeKeyPatternRead(lowerer, prop.expression, srcRef(), out, loc)
+          : null;
+      if (propName === null && runtimeRead === null) {
         lowerer.unsupported(
           "SC1031",
           el,
           "destructuring with computed keys that do not fold to one property name",
         );
       }
-      let value: IrExpr = {
+      let value: IrExpr = runtimeRead ?? {
         kind: "dynKeyGet",
-        key: { kind: "strLit", value: propName, type: STRING, loc },
+        key: { kind: "strLit", value: propName!, type: STRING, loc },
         value: srcRef(),
         type: DYN,
         loc,
@@ -3181,11 +3187,22 @@ export function lowerBindingPattern(
         ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
         : null;
     if (propName === null) {
-      lowerer.unsupported(
-        "SC1031",
-        el,
-        "destructuring with computed keys that do not fold to one property name",
-      );
+      // A runtime computed key (`{ [name]: v }`): the keyed read of an
+      // index-signature entry, of the declared field a literal-union key
+      // names, or of a JavaScript record's live property.
+      const runtimeRead = ts.isComputedPropertyName(prop)
+        ? runtimeKeyPatternRead(lowerer, prop.expression, srcRef(), out, locOf(el))
+        : null;
+      if (runtimeRead === null) {
+        lowerer.unsupported(
+          "SC1031",
+          el,
+          "destructuring with computed keys that do not fold to one property name",
+        );
+      }
+      const value = el.initializer ? applyBindingDefault(lowerer, el, runtimeRead) : runtimeRead;
+      lowerer.bindPatternTarget(el.name, value, isLet, out);
+      continue;
     }
     // An ACCESSOR property (%get:/%set: closure slots): the element's
     // read IS a getter call — once, at the element's pattern position
