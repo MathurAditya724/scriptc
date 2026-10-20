@@ -196,6 +196,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The performance timeline (every perf_hooks user-timing call selects
   // dynAsync, whose unit carries the timeline's buffer warning).
   unit((u) => u.opts.dynAsync, "scr_perf.c"),
+  // perf_hooks event-loop metrics, only for programs that read them.
+  unit((u) => u.opts.perfLoop, "scr_perf_loop.c"),
   // Blob and File (every blob.* call selects dynAsync, whose unit boxes
   // their reads as dyn promises).
   unit((u) => u.opts.dynAsync, "scr_blob.c"),

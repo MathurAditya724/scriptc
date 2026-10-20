@@ -85,6 +85,7 @@ export interface EarlyExecutableNativeFeatures {
   nodeTest: boolean;
   tls: boolean;
   cipher: boolean;
+  perfLoop: boolean;
   tlsCa: boolean;
   webcrypto: boolean;
 }
@@ -206,6 +207,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "tlsCa",
   "cipher",
   "webcrypto",
+  "perfLoop",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {

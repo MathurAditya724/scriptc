@@ -623,6 +623,9 @@ const RUNTIME_FEATURE_RULES = {
   /** scr_util_callable.c reads options through the parseArgs unit's
    * descriptors. */
   parseArgs: rule({ fns: [...PARSE_ARGS_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS] }),
+  /** perf_hooks event-loop metrics (eventLoopUtilization,
+   * monitorEventLoopDelay): scr_perf_loop.c. */
+  perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
   processEvents: rule({ fns: [...PROCESS_EVENT_LIB_FNS, "util.styleText"], types: ["procStream"] }),
   /** scr_url_legacy.c parses and stringifies queries. */
   qs: rule({ fns: [...QS_LIB_FNS, ...LEGACY_URL_LIB_FNS] }),
@@ -721,6 +724,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     net: false,
     nodeTest: false,
     parseArgs: false,
+    perfLoop: false,
     processEvents: false,
     qs: false,
     regex: false,

@@ -46,6 +46,7 @@ const base: NativeLinkFeatures = {
   tlsCa: false,
   cipher: false,
   webcrypto: false,
+  perfLoop: false,
 };
 
 test("runtime manifest validation and selection are entirely static", async () => {

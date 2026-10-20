@@ -1849,6 +1849,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       contextResolutions++;
       return viaIndexed;
     }
+    // `Parameters<F>` / `ReturnType<F>` over a bound function-typed
+    // parameter (variadic higher-order wrappers): the checker keeps both
+    // conditionals symbolic inside the body, and their `infer` positions
+    // match a call signature, which matchInferReference cannot decide.
+    const viaSignature =
+      mapBoundSignatureAlias(type, ctx) ?? mapBoundKeyofNeverConditional(type, ctx);
+    if (viaSignature !== null) {
+      contextResolutions++;
+      return viaSignature;
+    }
     // A conditional type over a bound parameter (`Infer<S["left"]>`, a
     // mapped type's member): evaluate it against the bindings.
     if (type.isConditionalType()) {
@@ -4061,6 +4071,27 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "record", shapeId: perfEntryShape(ctx.shapes, ctx.unions) };
   }
   // readline's getCursorPos() record, in Node's key order ({ cols, rows }).
+  // perf_hooks' EventLoopUtilization (performance.eventLoopUtilization's
+  // result): a plain data record in Node's key order.
+  if (isStdlibInterface("EventLoopUtilization")) {
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "active", type: F64 },
+          { name: "idle", type: F64 },
+          { name: "utilization", type: F64 },
+        ],
+        false,
+        undefined,
+        ["idle", "active", "utilization"],
+      ),
+    };
+  }
+  // monitorEventLoopDelay's IntervalHistogram: a numeric handle into the
+  // runtime's histogram table, like a timer handle. Its members lower over
+  // the handle (builtins/performance.ts).
+  if (isStdlibInterface("IntervalHistogram")) return F64;
   if (isStdlibInterface("CursorPos")) {
     return {
       kind: "record",
@@ -4621,11 +4652,37 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
     // declaration as a typed packed-array closure would bypass its boxed
     // spread/error semantics and change coverage classification.
     if (rest && decl !== undefined && isJsSourceFile(decl.getSourceFile())) return null;
+    // A fixed-tuple rest (`...args: [A, B]`, `...args: Parameters<F>` over
+    // a bound F) flattens to its positional parameters. Pattern rests keep
+    // their packed-record ABI and stay unmapped as values.
+    if (rest && decl !== undefined && ts.isParameter(decl) && ts.isIdentifier(decl.name)) {
+      const elems = restTupleParamTypes(checker.getTypeOfSymbol(p), ctx);
+      if (elems) {
+        params.push(...elems);
+        continue;
+      }
+    }
     const optional =
       decl !== undefined &&
       ts.isParameter(decl) &&
       (decl.questionToken !== undefined || decl.initializer !== undefined);
     let pt = mapType(checker.getTypeOfSymbol(p), ctx);
+    // A parameter a TypeScript program types `any` takes whatever the
+    // caller passes: the checked-dynamic slot, as an `any`-typed binding
+    // already is (dynFallbackType). Declaration files keep their paths.
+    // Only function declarations and spelled function types: lambdas and
+    // methods in object literals keep their existing checked-dynamic story.
+    if (
+      !pt &&
+      !rest &&
+      decl !== undefined &&
+      ts.isParameter(decl) &&
+      decl.parent !== undefined &&
+      (ts.isFunctionDeclaration(decl.parent) || ts.isFunctionTypeNode(decl.parent)) &&
+      !decl.getSourceFile().isDeclarationFile &&
+      (checker.getTypeOfSymbol(p).flags & ts.TypeFlags.Any) !== 0
+    )
+      pt = DYN;
     if (
       decl &&
       ts.isParameter(decl) &&
@@ -5113,6 +5170,167 @@ function mapBoundIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | null
   return mapType(checker.getTypeOfSymbol(prop), ctx);
 }
 
+/** The standard library's `Parameters<F>` / `ReturnType<F>` over a type
+ * parameter the current instantiation binds to a callable checker type:
+ * that type's one call signature. Concrete arguments never reach here (the
+ * checker evaluates those conditionals itself); generic bodies keep them
+ * symbolic because their `infer` sits in a call signature. */
+function boundSignatureAlias(
+  type: ts.Type,
+  ctx: TypeMapperCtx,
+): { name: "Parameters" | "ReturnType"; sig: ts.Signature } | null {
+  const { checker, resolveTypeParamTs } = ctx;
+  if (!resolveTypeParamTs) return null;
+  const alias = type.getAliasSymbol();
+  if (!alias || (alias.name !== "Parameters" && alias.name !== "ReturnType")) return null;
+  const aliasArgs = type.getAliasTypeArguments();
+  const arg = aliasArgs[0];
+  if (aliasArgs.length !== 1 || !arg || !(arg.flags & ts.TypeFlags.TypeParameter)) return null;
+  const isLibAlias = alias.declarations.some(
+    (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+  );
+  if (!isLibAlias) return null;
+  const bound = resolveTypeParamTs(arg);
+  if (!bound || bound.flags & ts.TypeFlags.TypeParameter) return null;
+  const sigs = checker.getCallSignatures(bound);
+  const sig = sigs[0];
+  if (sigs.length !== 1 || !sig || sig.getTypeParameters().length > 0) return null;
+  return { name: alias.name, sig };
+}
+
+/** One position of a fixed-arity parameter tuple. An optional position
+ * still has a native slot (the function type's `T | undefined` slot). */
+interface TupleElement {
+  type: ts.Type;
+  optional: boolean;
+}
+
+/** The positional parameters of a signature as a fixed tuple: a trailing
+ * rest flattened when its own type is a fixed tuple. Null for a variadic
+ * position, which has no fixed native arity. */
+function signatureParameters(sig: ts.Signature, ctx: TypeMapperCtx): TupleElement[] | null {
+  const { checker } = ctx;
+  const out: TupleElement[] = [];
+  for (const p of sig.getParameters()) {
+    const decl = p.valueDeclaration;
+    const type = checker.getTypeOfSymbol(p);
+    if (decl !== undefined && ts.isParameter(decl)) {
+      if (decl.dotDotDotToken !== undefined) {
+        const inner = restTupleElements(type, ctx);
+        if (!inner) return null;
+        out.push(...inner);
+        continue;
+      }
+      out.push({
+        type,
+        optional: decl.questionToken !== undefined || decl.initializer !== undefined,
+      });
+      continue;
+    }
+    out.push({ type, optional: (p.flags & ts.SymbolFlags.Optional) !== 0 });
+  }
+  return out;
+}
+
+/** The required-only positional parameter types of a signature (the
+ * value-level `Parameters<F>` tuple), null when a position is optional
+ * or variadic: such a tuple's length varies per call. */
+function signatureParameterTypes(sig: ts.Signature, ctx: TypeMapperCtx): ts.Type[] | null {
+  const elems = signatureParameters(sig, ctx);
+  if (!elems || elems.some((e) => e.optional)) return null;
+  return elems.map((e) => e.type);
+}
+
+/** The element types of a REST parameter's type when it is a fixed tuple:
+ * a tuple of required elements (`[number, string]`, the empty `[]`), a type
+ * parameter bound to one, or `Parameters<F>` over a bound function type.
+ * Such a rest parameter has a compile-time arity, so its native ABI is the
+ * flattened positional list (exactly the equivalent fixed signature —
+ * TypeScript treats `(...a: [A, B]) => R` and `(a: A, b: B) => R` alike). */
+export function restTupleElementTypes(type: ts.Type, ctx: TypeMapperCtx): ts.Type[] | null {
+  return restTupleElements(type, ctx)?.map((e) => e.type) ?? null;
+}
+
+/** restTupleElementTypes with each position's optionality: a rest tuple
+ * may end in optional positions (`[A, B?]`, `Parameters<(a: A, b?: B) =>
+ * R>`), which flatten to `T | undefined` slots exactly as the function
+ * type's optional parameters do. */
+function restTupleElements(type: ts.Type, ctx: TypeMapperCtx): TupleElement[] | null {
+  const { checker } = ctx;
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const bound = ctx.resolveTypeParamTs?.(type);
+    return bound && bound !== type ? restTupleElements(bound, ctx) : null;
+  }
+  const viaAlias = boundSignatureAlias(type, ctx);
+  if (viaAlias) {
+    return viaAlias.name === "Parameters" ? signatureParameters(viaAlias.sig, ctx) : null;
+  }
+  if (!checker.isTupleType(type)) return null;
+  const ref = type as ts.TupleTypeReference;
+  const tupleShape =
+    (ref.elementFlags as ts.ElementFlags[] | undefined) !== undefined
+      ? ref
+      : (ref.getTarget() as ts.TupleType | undefined);
+  const args = checker.getTypeArguments(ref);
+  if (args.length === 0) return [];
+  const flags = tupleShape?.elementFlags;
+  if (flags === undefined) return null;
+  if (flags.some((f) => !(f & (ts.ElementFlags.Required | ts.ElementFlags.Optional)))) return null;
+  return args.map((t, i) => ({
+    type: t,
+    optional: (flags[i]! & ts.ElementFlags.Optional) !== 0,
+  }));
+}
+
+/** One tuple element's IR type under the tuple mapping's rules. */
+function mapTupleElement(t: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  let et = (t.flags & ts.TypeFlags.Any) !== 0 ? DYN : mapType(t, ctx);
+  if (et?.kind === "void" && isUnitOnlyTsType(t, ctx.resolveTypeParam))
+    et = unitOnlyUnion(ctx.unions);
+  return !et || et.kind === "void" ? null : et;
+}
+
+/** The mapped element types of a fixed-tuple rest parameter type
+ * (restTupleElementTypes), null when it is not one or an element does not
+ * map. */
+export function restTupleParamTypes(type: ts.Type, ctx: TypeMapperCtx): IrType[] | null {
+  const elems = restTupleElements(type, ctx);
+  if (!elems) return null;
+  const out: IrType[] = [];
+  for (const e of elems) {
+    let et = mapTupleElement(e.type, ctx);
+    // An optional position's slot holds undefined when the caller omits
+    // it, as an optional parameter's does (mapCallSignature).
+    if (et && e.optional && et.kind !== "dyn") et = withUndefinedArm(et, ctx.unions);
+    if (!et) return null;
+    out.push(et);
+  }
+  return out;
+}
+
+/** `Parameters<F>` (the fixed tuple of F's parameters, interned exactly as
+ * the spelled tuple maps) and `ReturnType<F>` (F's mapped result) over a
+ * bound function-typed type parameter. */
+function mapBoundSignatureAlias(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const target = boundSignatureAlias(type, ctx);
+  if (!target) return null;
+  if (target.name === "ReturnType") {
+    const ret = ctx.checker.getReturnTypeOfSignature(target.sig);
+    return ret.flags & ts.TypeFlags.Any ? DYN : mapType(ret, ctx);
+  }
+  const elems = signatureParameterTypes(target.sig, ctx);
+  if (!elems) return null;
+  if (elems.length === 0) return arrayOf(unitOnlyUnion(ctx.unions));
+  const fields: { name: string; type: IrType }[] = [];
+  for (let i = 0; i < elems.length; i++) {
+    const et = mapTupleElement(elems[i]!, ctx);
+    if (!et) return null;
+    fields.push({ name: String(i), type: et });
+  }
+  fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return { kind: "record", shapeId: ctx.shapes.intern(fields, true) };
+}
+
 /** `Partial<T>` / `Readonly<T>` where T is a STILL-GENERIC type parameter —
  * the one mapped-type spelling a monomorphized body can contain that the
  * checker cannot resolve for us (`keyof T` is unknown inside the body, so
@@ -5184,13 +5402,17 @@ function mapGenericAwaitedAlias(type: ts.Type, ctx: TypeMapperCtx): IrType | nul
   const aliasArgs = type.getAliasTypeArguments();
   const arg = aliasArgs[0];
   if (aliasArgs.length !== 1 || !arg) return null;
-  if (!(arg.flags & ts.TypeFlags.TypeParameter)) return null;
+  // `Awaited<ReturnType<F>>` (an async wrapper's settled result) resolves
+  // through F's bound signature like a bare type parameter.
+  const viaSignature =
+    arg.flags & ts.TypeFlags.TypeParameter ? null : boundSignatureAlias(arg, ctx);
+  if (!(arg.flags & ts.TypeFlags.TypeParameter) && viaSignature?.name !== "ReturnType") return null;
   // Provenance: the STANDARD LIBRARY's alias, not a user's shadowing one.
   const isLibAlias = alias.declarations.some(
     (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
   );
   if (!isLibAlias) return null;
-  const bound = resolveTypeParam(arg);
+  const bound = viaSignature ? mapBoundSignatureAlias(arg, ctx) : resolveTypeParam(arg);
   if (!bound) return null;
   let r = bound;
   while (r.kind === "promise") r = r.inner;
@@ -5216,11 +5438,15 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
   const obj = type.getObjectType();
   if (obj === undefined || !(obj.flags & ts.TypeFlags.TypeParameter)) return null;
   const bound = resolveTypeParam(obj);
+  const idx = type.getIndexType();
+  if (idx === undefined) return null;
+  // `T[keyof T]` over a T bound to an unknown-valued record view
+  // (`Record<string, unknown>` maps to the checked-dynamic value, see
+  // mapRecordType): every member reads as unknown.
+  if (bound?.kind === "dyn" && idx.isIndexType() && idx.getTarget() === obj) return DYN;
   if (!bound || bound.kind !== "record") return null;
   const shape = shapes.get(bound.shapeId);
   if (!shape || shape.tuple) return null;
-  const idx = type.getIndexType();
-  if (idx === undefined) return null;
   let covered: IrType[] | null = null;
   if (idx.isStringLiteralType()) {
     const f = shape.fields.find((x) => x.name === idx.value);
@@ -5237,7 +5463,62 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
   }
   if (!covered || covered.length === 0) return null;
   const first = covered[0]!;
-  return covered.every((t) => typeEquals(t, first)) ? first : null;
+  if (covered.every((t) => typeEquals(t, first))) return first;
+  // Only the `keyof T` index itself covers every field at once; a key
+  // parameter bound to string keeps its literal-key resolution below.
+  if (!(idx.isIndexType() && idx.getTarget() === obj)) return null;
+  // Fields of different scalar types (`Object.entries` over a bound record
+  // reads `T[keyof T]`): any one of them, the union of their types.
+  const arms: IrType[] = [];
+  for (const t of covered) {
+    const parts = t.kind === "union" ? (ctx.unions.get(t.unionId)?.arms ?? null) : [t];
+    if (!parts) return null;
+    for (const part of parts) {
+      if (
+        part.kind !== "f64" &&
+        part.kind !== "string" &&
+        part.kind !== "bool" &&
+        part.kind !== "undefinedT" &&
+        part.kind !== "nullT"
+      )
+        return null;
+      if (!arms.some((a) => typeEquals(a, part))) arms.push(part);
+    }
+  }
+  if (arms.length === 1) return arms[0]!;
+  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  return { kind: "union", unionId: ctx.unions.intern(arms) };
+}
+
+/** `keyof T extends never ? A : B` over a bound record T (the lib's
+ * Object.entries element spelling): decided by whether the binding has any
+ * key. */
+function mapBoundKeyofNeverConditional(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const { resolveTypeParam, shapes } = ctx;
+  if (!resolveTypeParam || !type.isConditionalType()) return null;
+  const check = type.getCheckType();
+  const ext = type.getExtendsType();
+  if (!check || !ext || !(ext.flags & ts.TypeFlags.Never) || !check.isIndexType()) return null;
+  const target = check.getTarget();
+  if (!target || !(target.flags & ts.TypeFlags.TypeParameter)) return null;
+  const bound = resolveTypeParam(target);
+  // A T bound to the checked-dynamic value (`Record<string, unknown>`, an
+  // unknown-valued record view) has no static key set to decide the
+  // branch, but both branches of the lib's `keyof T extends never ?
+  // unknown : T[keyof T]` read as unknown there: one answer either way.
+  if (bound?.kind === "dyn") {
+    const whenEmpty = type.getTrueType();
+    const otherwise = type.getFalseType();
+    const a = whenEmpty ? mapType(whenEmpty, ctx) : null;
+    const b = otherwise ? mapType(otherwise, ctx) : null;
+    return a && b && typeEquals(a, b) ? a : null;
+  }
+  if (bound?.kind !== "record") return null;
+  const shape = shapes.get(bound.shapeId);
+  if (!shape || shape.tuple) return null;
+  const hasKeys = shape.fields.length > 0 || shape.indexValue !== undefined;
+  const branch = hasKeys ? type.getFalseType() : type.getTrueType();
+  return branch ? mapType(branch, ctx) : null;
 }
 
 /** A mapped type over a type parameter of the instance being lowered (`{
@@ -5380,10 +5661,13 @@ function matchInferReference(
   const target = (t: ts.Type): ts.Type | undefined =>
     t.isTypeReference?.() ? (t as ts.TypeReference).getTarget?.() : undefined;
   const wantTarget = target(extendsType) ?? extendsType.getAliasSymbol();
-  if (!wantTarget) return undefined;
+  if (!wantTarget) return matchInferSignature(checked, extendsType, ctx);
   const gotTarget = target(checked) ?? checked.getAliasSymbol();
-  if (!gotTarget) return checked.flags & ts.TypeFlags.Object ? undefined : false;
-  if (gotTarget !== wantTarget) return undefined;
+  if (!gotTarget)
+    return checked.flags & ts.TypeFlags.Object
+      ? matchInferThenable(checked, extendsType, ctx)
+      : false;
+  if (gotTarget !== wantTarget) return matchInferThenable(checked, extendsType, ctx);
   const wantArgs = target(extendsType)
     ? checker.getTypeArguments(extendsType as ts.TypeReference)
     : extendsType.getAliasTypeArguments();
@@ -5402,6 +5686,154 @@ function matchInferReference(
     else if (want !== gotArgs[i]) return undefined;
   }
   return inferred;
+}
+
+/** The type parameter an `infer X` declares, when `t` is one. */
+function inferSymbolOf(t: ts.Type, _ctx: TypeMapperCtx): ts.Symbol | undefined {
+  if (!(t.flags & ts.TypeFlags.TypeParameter)) return undefined;
+  const symbol = t.getSymbol();
+  return symbol &&
+    symbol.declarations.some((d) => d.parent !== undefined && ts.isInferTypeNode(d.parent))
+    ? symbol
+    : undefined;
+}
+
+/** `checked extends (...args: any) => infer R` — the shape of the standard
+ * library's ReturnType, over a concrete function type: R binds to its
+ * result. Pattern parameters must be `any` or `any[]`, and a pattern rest
+ * `any` or `any[]`; anything else stays undecided. The match follows
+ * TypeScript's assignability: a primitive never matches a function type,
+ * a function that needs more arguments than a pattern without a rest
+ * passes never matches, and a positional `any[]` parameter needs the
+ * function's parameter there to accept an array. */
+function matchInferSignature(
+  checked: ts.Type,
+  extendsType: ts.Type,
+  ctx: TypeMapperCtx,
+): Map<ts.Symbol, ts.Type> | false | undefined {
+  const { checker } = ctx;
+  const wantSigs = checker.getCallSignatures(extendsType);
+  const want = wantSigs[0];
+  if (wantSigs.length !== 1 || !want || want.getTypeParameters().length > 0) return undefined;
+  const wantShape = signatureShape(want, ctx);
+  if (wantShape === undefined) return undefined;
+  const isAny = (t: ts.Type): boolean => (t.flags & ts.TypeFlags.Any) !== 0;
+  const isAnyArray = (t: ts.Type): boolean =>
+    checker.isArrayType(t) && isAny(checker.getTypeArguments(t as ts.TypeReference)[0]!);
+  if (!wantShape.params.every((p) => isAny(p.type) || isAnyArray(p.type))) return undefined;
+  if (wantShape.rest !== null && !isAny(wantShape.rest)) return undefined;
+  if (!(checked.flags & ts.TypeFlags.Object)) return false;
+  const gotSigs = checker.getCallSignatures(checked);
+  const got = gotSigs[0];
+  if (gotSigs.length !== 1 || !got || got.getTypeParameters().length > 0) return undefined;
+  const gotShape = signatureShape(got, ctx);
+  if (gotShape !== undefined) {
+    // `(a: any) => infer R` rejects `(a: string, b: string) => R` and
+    // `(...args: [string, number]) => R`: they need more arguments.
+    if (wantShape.rest === null && requiredArguments(gotShape) > wantShape.params.length)
+      return false;
+    for (let i = 0; i < wantShape.params.length; i++) {
+      if (!isAnyArray(wantShape.params[i]!.type)) continue;
+      const param = gotShape.params[i]?.type ?? gotShape.rest;
+      if (param === undefined || param === null) continue;
+      const accepts = acceptsArray(param, ctx);
+      if (accepts !== true) return accepts;
+    }
+  } else if (wantShape.params.some((p) => isAnyArray(p.type))) {
+    return undefined;
+  }
+  const wantRet = checker.getReturnTypeOfSignature(want);
+  const infer = inferSymbolOf(wantRet, ctx);
+  if (infer) return new Map([[infer, checker.getReturnTypeOfSignature(got)]]);
+  return wantRet.flags & ts.TypeFlags.Any ? new Map() : undefined;
+}
+
+/** A signature's parameters as a call sees them: the positional ones, with
+ * a fixed-tuple rest (`...args: [A, B?]`) flattened into positions, and the
+ * element type of an array rest (`any` for `...args: any`). Undefined when
+ * a parameter has no declaration, or the rest is a variadic tuple or
+ * another type. */
+function signatureShape(
+  sig: ts.Signature,
+  ctx: TypeMapperCtx,
+): { params: { type: ts.Type; optional: boolean }[]; rest: ts.Type | null } | undefined {
+  const { checker } = ctx;
+  const params: { type: ts.Type; optional: boolean }[] = [];
+  for (const p of sig.getParameters()) {
+    const decl = p.valueDeclaration;
+    if (decl === undefined || !ts.isParameter(decl)) return undefined;
+    const type = checker.getTypeOfSymbol(p);
+    if (decl.dotDotDotToken === undefined) {
+      params.push({
+        type,
+        optional: decl.questionToken !== undefined || decl.initializer !== undefined,
+      });
+      continue;
+    }
+    if (type.flags & ts.TypeFlags.Any) return { params, rest: type };
+    if (checker.isArrayType(type))
+      return { params, rest: checker.getTypeArguments(type as ts.TypeReference)[0]! };
+    const elems = restTupleElements(type, ctx);
+    if (!elems) return undefined;
+    for (const e of elems) params.push({ type: e.type, optional: e.optional });
+    return { params, rest: null };
+  }
+  return { params, rest: null };
+}
+
+/** The fewest arguments a call must pass: up to the last required position. */
+function requiredArguments(shape: { params: { optional: boolean }[] }): number {
+  let required = 0;
+  shape.params.forEach((p, i) => {
+    if (!p.optional) required = i + 1;
+  });
+  return required;
+}
+
+/** Whether a parameter of this type accepts an `any[]` argument: true for
+ * `any`, `unknown` and array types, false for primitives, undefined
+ * otherwise. */
+function acceptsArray(t: ts.Type, ctx: TypeMapperCtx): boolean | undefined {
+  if (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return true;
+  if (ctx.checker.isArrayType(t)) return true;
+  const primitive =
+    ts.TypeFlags.StringLike |
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.BigIntLike |
+    ts.TypeFlags.ESSymbolLike |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Void;
+  return t.flags & primitive ? false : undefined;
+}
+
+/** `checked extends PromiseLike<infer U>` (or `Promise<infer U>`) over the
+ * standard library's Promise: U binds to the settled type. An object with
+ * no `then` member is no thenable. Everything else stays undecided. */
+function matchInferThenable(
+  checked: ts.Type,
+  extendsType: ts.Type,
+  ctx: TypeMapperCtx,
+): Map<ts.Symbol, ts.Type> | false | undefined {
+  const { checker } = ctx;
+  const stdlibNamed = (t: ts.Type, names: readonly string[]): boolean => {
+    const symbol = t.getSymbol();
+    return (
+      symbol !== undefined &&
+      names.includes(symbol.name) &&
+      symbol.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
+    );
+  };
+  if (!stdlibNamed(extendsType, ["PromiseLike", "Promise"])) return undefined;
+  const wantArgs = checker.getTypeArguments(extendsType as ts.TypeReference);
+  const infer = wantArgs.length === 1 ? inferSymbolOf(wantArgs[0]!, ctx) : undefined;
+  if (!infer) return undefined;
+  if (stdlibNamed(checked, ["Promise", "PromiseLike"])) {
+    const gotArgs = checker.getTypeArguments(checked as ts.TypeReference);
+    return gotArgs.length === 1 ? new Map([[infer, gotArgs[0]!]]) : undefined;
+  }
+  return checker.getPropertyOfType(checked, "then") === undefined ? false : undefined;
 }
 
 /** The type mentions a mapped key or bound alias parameter (a template
@@ -5567,8 +5999,20 @@ export function isUnitOnlyTsType(t: ts.Type, resolveTypeParam?: TypeParamResolve
   return parts.every(
     (p) =>
       (p.flags & UNIT) !== 0 ||
-      ((p.flags & ts.TypeFlags.TypeParameter) !== 0 && resolveTypeParam?.(p)?.kind === "void"),
+      ((p.flags & ts.TypeFlags.TypeParameter) !== 0 && resolveTypeParam?.(p)?.kind === "void") ||
+      boundVoidReturnType(p, resolveTypeParam),
   );
+}
+
+/** `ReturnType<F>` over a type parameter bound to a void-returning
+ * function (a variadic wrapper's result slot): a unit-only value. */
+function boundVoidReturnType(p: ts.Type, resolveTypeParam?: TypeParamResolver): boolean {
+  if (!resolveTypeParam || p.getAliasSymbol()?.name !== "ReturnType") return false;
+  const args = p.getAliasTypeArguments();
+  const arg = args[0];
+  if (args.length !== 1 || !arg || !(arg.flags & ts.TypeFlags.TypeParameter)) return false;
+  const bound = resolveTypeParam(arg);
+  return bound?.kind === "func" && bound.ret.kind === "void";
 }
 
 /** IR-level `t | undefined`, canonicalized and fenced exactly like the

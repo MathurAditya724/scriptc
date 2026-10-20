@@ -60,6 +60,7 @@ const native: EarlyExecutableNativeFeatures = {
   tlsCa: false,
   cipher: false,
   webcrypto: false,
+  perfLoop: false,
 };
 
 async function fixture(): Promise<{

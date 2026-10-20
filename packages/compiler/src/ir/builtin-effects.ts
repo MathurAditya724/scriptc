@@ -384,6 +384,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entries",
   "perf.clearMarks",
   "perf.clearMeasures",
+  // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
+  "perf.eldNew",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",

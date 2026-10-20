@@ -59,6 +59,7 @@ const BASE: NativeLinkFeatures = {
   tlsCa: false,
   cipher: false,
   webcrypto: false,
+  perfLoop: false,
 };
 
 async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {

@@ -2260,6 +2260,19 @@ export function caughtRead(
   if (narrowed?.kind === "dyn") {
     return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   }
+  // A binding a user type predicate (or an assertion) narrowed to a
+  // structural type (`isErrorLike(e)` → `{ message: string; … }`, an
+  // intersection like `TypeError & { code: unknown }`): the thrown value is
+  // still whatever was thrown, so it crosses as a checked-dynamic value and
+  // each member read validates its own result, as JavaScript reads it.
+  const checked = lowerer.typeOf(node);
+  if (
+    narrowed?.kind === "record" ||
+    narrowed?.kind === "union" ||
+    (narrowed === null && (checked.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !== 0)
+  ) {
+    return { kind: "caughtToDyn", value: ref, type: DYN, loc };
+  }
   lowerer.unsupported("SC1063", node);
 }
 

@@ -111,6 +111,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
               tlsCa: false,
               cipher: false,
               webcrypto: false,
+              perfLoop: false,
               nativeFetch: false,
               netEffective: false,
               httpEffective: false,

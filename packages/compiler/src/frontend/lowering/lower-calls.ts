@@ -1,3 +1,4 @@
+import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerBuiltinClassCall } from "./builtins/builtin-class-dyn.js";
 import { refuseModuleMemberThis } from "./module-member-this.js";
@@ -150,6 +151,7 @@ import {
 import {
   fencePerfEntryKeyWalk,
   isPerfEntryType,
+  lowerHistogramMethodCall,
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
@@ -255,7 +257,6 @@ const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "cl
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
-
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
   if (
@@ -1412,6 +1413,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (ts.isPropertyAccessExpression(expr.expression)) {
     const intrinsic =
       fenceNodeModuleMutationCall(lowerer, expr, expr.expression) ??
+      // `f.apply(thisArg, args)` forwarding a fixed argument tuple (typed
+      // `arguments`, a tuple rest parameter): a direct call.
+      lowerForwardingApply(lowerer, expr, expr.expression) ??
       // Builtin namespace imports first (`fs.readFileSync(...)` where fs
       // is `import * as fs from "node:fs"`): the same tables and fences
       // as named builtin imports — before anything below tries to lower
@@ -1423,6 +1427,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // .bind(performance) function value over the runtime's
       // process-start-anchored monotonic clock.
       lowerPerfHooksCall(lowerer, expr, expr.expression) ??
+      lowerHistogramMethodCall(lowerer, expr, expr.expression) ??
       // The composed crypto pattern (randomBytes(n).toString(enc))
       // — its receiver is a Buffer-typed CALL no other lowering claims.
       lowerer.lowerCryptoComposedCall(expr, expr.expression) ??
@@ -1907,6 +1912,19 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // or marshals the callee and applies through a runtime-built argument
   // list (lowerSpreadArgsCall). Shapes outside its lanes fall through
   // to the historical fences.
+  // Forwarded fixed tuples (`fn(...args)` over a tuple rest parameter or a
+  // typed `arguments`) have a compile-time arity: complete them into the
+  // callee's positional slots directly, without the runtime-arity lane.
+  if (
+    callee.type.rest !== true &&
+    expr.arguments.nodes.some(ts.isSpreadElement) &&
+    expr.arguments.nodes.every(
+      (a) => !ts.isSpreadElement(a) || isForwardedTupleSpread(lowerer, a.expression),
+    )
+  ) {
+    const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
+    return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+  }
   if (expr.arguments.nodes.some((a) => ts.isSpreadElement(a))) {
     const spreadServed = lowerSpreadArgsCall(lowerer, expr, callee, loc);
     if (spreadServed) return spreadServed;
@@ -3325,7 +3343,13 @@ function lowerDynReceiverMethodCall(
   // array — scalar narrowings bridge through maybeNarrow's dynCheck and
   // take the ordinary typed paths, but there is no static home for an
   // any-elemented array). Typed receivers keep their own lowerings.
-  const recvTs = lowerer.typeOf(access.expression);
+  // An optional step the chain already guarded (`s?.m(x)`) has a receiver
+  // proven non-nullish.
+  const rawRecvTs = lowerer.typeOf(access.expression);
+  const recvTs =
+    access.questionDotToken !== undefined && lowerer.chainHandled.has(access)
+      ? lowerer.checker.getNonNullableType(rawRecvTs)
+      : rawRecvTs;
   if (lowerer.classImplementedProtocol(recvTs)) {
     const property = lowerer.checker.getPropertyOfType(recvTs, access.name.text);
     if (
@@ -8805,6 +8829,9 @@ export function lowerRecordFieldCall(
         };
     return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
   }
+  // An optional callback field the checker narrowed at this call
+  // (`o.cb ? o.cb(x) : …`, `if (o.cb) o.cb(x)`): extract the func arm.
+  if (callee.type.kind === "union") callee = lowerer.maybeNarrow(callee, access);
   if (callee.type.kind !== "func") lowerer.badType(access, lowerer.typeOf(access));
   // JavaScript passes the record as `this`. A record with no dynamic form
   // cannot be that receiver; the library's own function fields (the

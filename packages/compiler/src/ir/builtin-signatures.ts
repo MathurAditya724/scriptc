@@ -422,6 +422,20 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "perf.entryDetail": { argTypes: [F64], result: DYN },
   "perf.entryKeep": { argTypes: [DYN], result: VOID },
   "perf.entryRef": { argTypes: [F64], result: DYN },
+  /** perf_hooks event-loop metrics (scr_perf_loop.c): loopStart is the
+   * loop's start in performance.now() ms (0 before it), idleTime the idle
+   * ms since. eldNew(resolution ms) creates a monitorEventLoopDelay
+   * histogram handle (MAY THROW Node's resolution RangeError); enable/disable answer whether the state changed;
+   * eldPercentile expects Node's validated range; eldStat(which) reads
+   * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. */
+  "perf.loopStart": { argTypes: [], result: F64 },
+  "perf.idleTime": { argTypes: [], result: F64 },
+  "perf.eldNew": { argTypes: [F64], result: F64 },
+  "perf.eldEnable": { argTypes: [F64], result: BOOL },
+  "perf.eldDisable": { argTypes: [F64], result: BOOL },
+  "perf.eldReset": { argTypes: [F64], result: VOID },
+  "perf.eldPercentile": { argTypes: [F64, F64], result: F64 },
+  "perf.eldStat": { argTypes: [F64, F64], result: F64 },
   /** process.memoryUsage(): memoryUsageTake samples the resident set and
    * the runtime heap once (MAY THROW Node's uv_resident_set_memory error)
    * and memoryUsageField(k) reads that sample (0 rss, 1 heapTotal, 2

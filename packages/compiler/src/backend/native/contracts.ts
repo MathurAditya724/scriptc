@@ -221,6 +221,8 @@ export interface CcOptions {
   cipher?: boolean;
   /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
   webcrypto?: boolean;
+  /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */
+  perfLoop?: boolean;
   /** Internal compiler hook: called only after a strict native artifact hit
    * or a successful stable build has installed `outPath`. The executable
    * frontend cache uses it to publish its stamp after native dependencies
