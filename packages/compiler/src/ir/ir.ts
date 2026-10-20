@@ -1626,6 +1626,10 @@ export interface IrRecordShape {
    * fields carry that declaredOrder OMITS are internal '%'-fields (Dirent's
    * %dtype) — hidden from every key-order surface, JSON included. */
   declaredOrder?: string[];
+  /** Shapes with accessor slots: every own key in declaration order, with
+   * an accessor property named once (see accessorSlotProp). The
+   * checked-dynamic copy lists its keys in this order. */
+  accessorOrder?: string[];
 }
 
 /** fs.Dirent rows: the hidden %dtype entry kind (libuv's UV_DIRENT
@@ -4272,9 +4276,6 @@ function canBoxDynCompositeAt(
       const shape = getRecord(t.shapeId);
       if (!shape) return false;
       if (recordTextCodecClass(shape) !== null) return false;
-      // Accessor slots hold the getter and setter closures, not property
-      // values (see accessorSlotProp).
-      if (shapeHasAccessorSlots(shape)) return false;
       // Recursive shapes answer coinductively, like isJsonSafeType.
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);

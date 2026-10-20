@@ -171,6 +171,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "records[].id": "other",
   "records[].fields[].name": "other",
   "records[].declaredOrder[]": "other",
+  "records[].accessorOrder[]": "other",
   "unions[].id": "other",
   "unions[].discriminant.field": "other",
   "unions[].discriminant.cases[].values[]": "other",

@@ -32,6 +32,7 @@ import {
 import {
   cjsExportMemberWriteGlobalOf,
   isCjsExportsIdentifier,
+  isCjsModuleExports,
   isFreshExportsReset,
 } from "./cjs-exports-object.js";
 import { isDeadTscHelperDecl, tscInteropBindingOfDecl } from "./cjs-tsc-interop.js";
@@ -223,6 +224,7 @@ import { constituentTypes } from "../ts7/checker.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
+import { classGeneratorIterable } from "./class-iterables.js";
 
 interface UsingRegistration {
   acquire: IrStmt[];
@@ -6910,6 +6912,25 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       "require() outside the module's top level (move it to the top of the file)",
     );
   }
+  // Replacing the export object (or rebinding `exports`) anywhere but a
+  // top-level statement makes the module's exports depend on which path
+  // ran (`cond ? module.exports = a : module.exports = b`, an
+  // environment-dependent branch); the static export table has one shape.
+  if (
+    !topLevelJs &&
+    isJsSourceFile(expr.getSourceFile()) &&
+    ts.isBinaryExpression(expr) &&
+    expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    (isCjsModuleExports(lowerer, expr.left) || isCjsExportsIdentifier(lowerer, expr.left))
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      expr.left,
+      isCjsModuleExports(lowerer, expr.left)
+        ? "replacing module.exports outside a top-level statement (a conditional or environment-dependent export object)"
+        : "rebinding 'exports' outside a top-level statement (a conditional or environment-dependent export object)",
+    );
+  }
   if (topLevelJs && ts.isExpressionStatement(stmtNode)) {
     if (isFreshExportsReset(lowerer, stmtNode))
       return { kind: "block", body: [], loc: locOf(expr) };
@@ -9149,6 +9170,16 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
       );
     }
     if (iterable.type.kind === "object") {
+      // A [Symbol.iterator] generator method: the loop drives the
+      // generator it returns.
+      const generator = classGeneratorIterable(lowerer, iterable);
+      if (generator)
+        return lowerForOfGenerator(
+          lowerer,
+          stmt,
+          generator as IrExpr & { type: IrType & { kind: "generator" } },
+          labels,
+        );
       // Class iterables ([Symbol.iterator]() + next() — classIteratorOf)
       // drive the same protocol with ordinary method calls.
       const cit = lowerer.classIteratorOf(iterable.type);

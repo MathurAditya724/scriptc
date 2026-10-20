@@ -114,3 +114,24 @@ test("a computed key in an Object.assign source keeps checked dispatch", async (
     .replace("LITERAL", "Object.assign(target, { [key]: value })");
   expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
 });
+
+const range = `
+class Range {
+  hi: number;
+  constructor(hi: number) { this.hi = hi; }
+  *[Symbol.iterator](): Generator<number> { for (let i = 0; i < this.hi; i++) yield i; }
+}
+const r = new Range(3);
+console.log(r[Symbol.iterator]().next().value);
+`;
+
+test("a well-known symbol method call lowers to the class's method", async () => {
+  expect(await callersOf(range, "%Range.sym:iterator")).not.toEqual([]);
+});
+
+test("a reflection call with a well-known symbol key keeps checked dispatch", async () => {
+  const write = "Object.defineProperty(r, Symbol.iterator, { value: function* () {} });\n";
+  // The checked path reads the declared method through its value thunk.
+  const callers = await callersOf(`${range}${write}`, "%Range.sym:iterator");
+  expect(callers.filter((name) => !name.startsWith("%method.value:"))).toEqual([]);
+});

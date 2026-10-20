@@ -15,6 +15,7 @@ import {
   isDirentShape,
   isDynTypedRefType,
   isRefCounted,
+  shapeHasAccessorSlots,
   typeKey,
 } from "../../ir/ir.js";
 import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
@@ -977,6 +978,7 @@ export function streamTypedRefMaterializeAdapter(
      * Declared-field records and tuples cover the live stream values. */
     const ordinary =
       shape.indexValue ||
+      shapeHasAccessorSlots(shape) ||
       shape.fields.some((field) => field.name === "handleEvent" && field.type.kind === "func");
     if (ordinary) {
       const out = B.tmp();
