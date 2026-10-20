@@ -1498,6 +1498,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // TestContext surface (t.test/t.skip/t.diagnostic), t.assert.*.
       lowerer.lowerTestMethodCall(expr, expr.expression) ??
       lowerer.lowerTimeoutMethodCall(expr, expr.expression) ??
+      lowerUint8ArrayPrototypeSetCall(lowerer, expr, expr.expression) ??
       lowerArrayPrototypeBorrowCall(lowerer, expr, expr.expression) ??
       lowerObjectOwnPrototypeCall(lowerer, expr, expr.expression) ??
       lowerObjectPrototypeCall(lowerer, expr, expr.expression) ??
@@ -2516,6 +2517,52 @@ function immediateObjectTagReceiver(
     };
   }
   return null;
+}
+
+/** wasm-bindgen borrows the builtin to copy host bytes into linear memory.
+ * The checked helper keeps the receiver's element kind, overlap handling,
+ * argument order and bounds checks without looking up its own `set` member. */
+function lowerUint8ArrayPrototypeSetCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (
+    call.questionDotToken ||
+    access.questionDotToken ||
+    access.name.text !== "call" ||
+    !ts.isPropertyAccessExpression(access.expression) ||
+    call.arguments.nodes.some(ts.isSpreadElement)
+  )
+    return null;
+  const method = access.expression;
+  if (
+    method.questionDotToken ||
+    method.name.text !== "set" ||
+    !ts.isPropertyAccessExpression(method.expression) ||
+    method.expression.questionDotToken ||
+    method.expression.name.text !== "prototype" ||
+    !lowerer.isStdlibGlobal(method.expression.expression, "Uint8Array") ||
+    !lowerer.isStdlibMember(method)
+  )
+    return null;
+  const receiverNode = call.arguments.nodes[0];
+  if (call.arguments.nodes.length < 2 || call.arguments.nodes.length > 3)
+    lowerer.noLowering("Uint8Array.prototype.set.call with this argument count", call);
+  const loc = locOf(call);
+  return {
+    kind: "libCall",
+    fn: "dyn.typedArrayProtoSet",
+    args: [
+      lowerer.lowerExprExpecting(receiverNode!, DYN),
+      lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
+      call.arguments.nodes[2]
+        ? lowerer.lowerExprExpecting(call.arguments.nodes[2], DYN)
+        : dynUndefinedExpr(loc),
+    ],
+    type: DYN,
+    loc,
+  };
 }
 
 const ARRAY_BORROW_METHODS = new Set([

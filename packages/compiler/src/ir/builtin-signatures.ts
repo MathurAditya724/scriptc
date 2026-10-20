@@ -305,6 +305,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.defineProperty": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.getOwnPropertyDescriptor": { argTypes: [DYN, DYN], result: DYN },
   "dyn.arrayProtoCall": { argTypes: [DYN, STRING, DYN], result: DYN },
+  "dyn.typedArrayProtoSet": { argTypes: [DYN, DYN, DYN], result: DYN },
   /** Promise.all / Promise.allSettled / Promise.any over a spread
    * checked-dynamic array: the values, the settled-record array, or the
    * first fulfillment (AggregateError once every entry rejects).

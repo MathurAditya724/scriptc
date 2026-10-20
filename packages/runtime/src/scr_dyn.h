@@ -971,6 +971,8 @@ void scr_class_throw_read_only(ScrStr *field, ScrStr *owner);
 void scr_class_throw_not_extensible(ScrStr *field);
 ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key);
 ScrDyn *scr_dyn_array_proto_call(ScrDyn *target, ScrStr *method, ScrDyn *args);
+/* Borrowed TypedArray.prototype.set: all arguments borrowed; result +1. */
+ScrDyn *scr_dyn_typed_array_proto_set(ScrDyn *target, ScrDyn *source, ScrDyn *offset);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
 ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity */
 /* The checked-dynamic keyed WRITE (`h.k = v` on a dyn receiver): OBJ sets

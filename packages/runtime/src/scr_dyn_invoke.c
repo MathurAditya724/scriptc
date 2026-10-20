@@ -182,6 +182,28 @@ static double dyn_bytes_index_arg(ScrDyn *const *args, size_t argc, size_t index
   return isnan(value) ? 0 : trunc(value);
 }
 
+/* Borrow the builtin without consulting a receiver's own `set` property. */
+ScrDyn *scr_dyn_typed_array_proto_set(ScrDyn *target, ScrDyn *source, ScrDyn *offset) {
+  if (target->kind != SCR_DYN_BYTES || target->v.bytes->is_data_view) {
+    scr_throw_error(SCR_ERR_TYPE, scr_str_new("this is not a typed array.", 26));
+    return NULL;
+  }
+  ScrDyn *args[] = { offset };
+  double index = dyn_bytes_index_arg(args, 1, 0, 0);
+  if (scr_exc_pending()) return NULL;
+  /* DataView is array-like with no length, rather than a TypedArray source. */
+  if (source->kind == SCR_DYN_BYTES && source->v.bytes->is_data_view) {
+    if (!(index >= 0) || index > (double)target->v.bytes->len) {
+      static const char msg[] = "offset is out of bounds";
+      scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+      return NULL;
+    }
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  scr_bytes_set_from_dyn(target->v.bytes, source, index);
+  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+}
+
 /* JS relative-index normalization (slice's rule). */
 static size_t dyn_rel_index(double rel, size_t len) {
   if (rel < 0) {

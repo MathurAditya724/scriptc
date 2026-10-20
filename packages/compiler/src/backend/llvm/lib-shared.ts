@@ -963,6 +963,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.defineProperty": "scr_dyn_define_property",
   "dyn.getOwnPropertyDescriptor": "scr_dyn_get_own_property_descriptor",
   "dyn.arrayProtoCall": "scr_dyn_array_proto_call",
+  "dyn.typedArrayProtoSet": "scr_dyn_typed_array_proto_set",
   "dyn.promiseAll": "scr_dyn_promise_all",
   "dyn.promiseAllSettled": "scr_dyn_promise_all_settled",
   "dyn.promiseAny": "scr_dyn_promise_any",
