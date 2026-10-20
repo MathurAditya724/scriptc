@@ -34,6 +34,7 @@ import { literalUnionArm } from "../union-discriminants.js";
  * (FieldTarget). */
 import { isFsStreamMember, lowerFsStreamProperty } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
+import { builtinFunctionFenceValue } from "./builtin-function-fences.js";
 import {
   isZlibStreamMember,
   lowerZlibInstanceOf,
@@ -1396,6 +1397,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         // the same identity-token story as stdlib globals above (the
         // harness adds worker_threads.Worker to its identity Set).
         if (isJsSourceFile(expr.getSourceFile())) {
+          // A function member is a function value that fences when called.
+          if (builtinModuleFnOf(lowerer, bi.module, bi.member))
+            return builtinFunctionFenceValue(lowerer, bi, expr, loc);
           return {
             kind: "strLit",
             value: `[builtin ${bi.module}.${bi.member}]`,
@@ -11889,6 +11893,25 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
           };
         }
       }
+    }
+    // `&&` over an always-truthy plain left operand (an array, object or
+    // function value) whose result union has no arm for it: every JS
+    // object is truthy, so `list && list[0]` evaluates the left for its
+    // effects and answers the right. Coercing the left into that union
+    // would trap at run time where Node answers the right operand.
+    if (
+      op === ts.SyntaxKind.AmpersandAmpersandToken &&
+      target?.kind === "union" &&
+      REF_TRUTHY_KINDS.has(left.type.kind) &&
+      lowerer.armTag(target.unionId, left.type) < 0
+    ) {
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: left, loc }],
+        result: lowerer.coerceInto(expr.right, right, target),
+        type: target,
+        loc,
+      };
     }
     if (target?.kind === "union") {
       // `&&` whose left does NOT fit the result union: the checker

@@ -1,5 +1,10 @@
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
+import {
+  constructedFromValue,
+  constructedValue,
+  superIntoResultSlot,
+} from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { lowerReadlineUiNew } from "./builtins/readline.js";
 import { checkedClassUnionAssertion } from "./class-assertions.js";
@@ -86,7 +91,7 @@ import {
   isNodeTypesPath,
   locOf,
 } from "../program.js";
-import { PoisonError, dynFallbackType, newFnCtx, own } from "./lowerer.js";
+import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
@@ -8342,7 +8347,7 @@ export function superCallStmt(
     )[0]!;
   }
   lowerer.noteSuperConstructorEdge(`%${base.def.name}.constructor`);
-  return {
+  const call: IrStmt = {
     kind: "exprStmt",
     expr: {
       kind: "call",
@@ -8353,6 +8358,14 @@ export function superCallStmt(
     },
     loc,
   };
+  return superIntoResultSlot(
+    lowerer,
+    base,
+    info,
+    call,
+    lowerer.upcastTo({ ...thisRef }, base.def.name),
+    info.ctor ?? info.decl!,
+  );
 }
 
 /** `super.method(args)`: the base chain's implementation, called
@@ -8750,21 +8763,21 @@ function lowerProgramClassNew(
     : lowerer.completeArgs(expr.arguments?.nodes ?? [], info.ctorParams, loc, expr);
   for (let current: ClassInfo | null = info; current; current = current.base) {
     if (current.def.baseValueGlobal)
-      return {
+      return constructedValue(lowerer, info, {
         kind: "newValue",
         callee: classValueRef(lowerer, info, expr),
         args,
         type: { kind: "object", className: info.def.name },
         loc,
-      };
+      });
   }
-  return {
+  return constructedValue(lowerer, info, {
     kind: "new",
     className: info.def.name,
     args,
     type: { kind: "object", className: info.def.name },
     loc,
-  };
+  });
 }
 
 function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType | null {
@@ -9063,13 +9076,18 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
             loc,
             expr,
           );
-          return {
-            kind: "newValue",
-            callee,
-            args,
-            type: { kind: "object", className: info.def.name },
-            loc,
-          };
+          return constructedFromValue(
+            lowerer,
+            info,
+            {
+              kind: "newValue",
+              callee,
+              args,
+              type: { kind: "object", className: info.def.name },
+              loc,
+            },
+            expr,
+          );
         }
       }
     }
@@ -9992,13 +10010,18 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         loc,
         expr,
       );
-      const built: IrExpr = {
-        kind: "newValue",
-        callee,
-        args,
-        type: { kind: "object", className: info.def.name },
-        loc,
-      };
+      const built = constructedFromValue(
+        lowerer,
+        info,
+        {
+          kind: "newValue",
+          callee,
+          args,
+          type: { kind: "object", className: info.def.name },
+          loc,
+        },
+        expr,
+      );
       // A runtime class slot widened from a union (`[Readable, Writable]`'s
       // elements hold EventEmitter values): the checker types the result as
       // the union of the arms' instances, which the checked class view
@@ -10065,7 +10088,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       ((callee.type.kind === "func" || callee.type.kind === "classval") &&
         lowerer.dynConvertible(callee.type)))
   ) {
-    return lowerCheckedConstructor(lowerer, expr, lowerer.coerceToExpected(callee, DYN));
+    let boxed = lowerer.coerceToExpected(callee, DYN);
+    // A plain function's box carries its name: the construction's
+    // prototype records it as `constructor`, which util.inspect prints
+    // (`F { a: 2 }`).
+    if (boxed.kind === "dynFrom" && boxed.fnName === undefined && callee.type.kind === "func") {
+      const name = jsFuncNameOf(expr.expression, lowerer);
+      if (name !== null) boxed = { ...boxed, fnName: name };
+    }
+    return lowerCheckedConstructor(lowerer, expr, boxed);
   }
   lowerer.unsupported(
     "SC1090",

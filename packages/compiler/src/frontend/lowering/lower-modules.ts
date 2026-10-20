@@ -2539,6 +2539,11 @@ export function collectGlobals(
           };
           lowerer.globalsBySymbol.set(symbol, g);
           lowerer.globalsList.push(g);
+          // `let f: T;` initializes the binding (to undefined) where the
+          // declaration runs: later writes are ordinary stores, which the
+          // pointer guard alone would refuse (markCycleEarlyBindings).
+          if (g.tdz && !decl.initializer)
+            lowerer.uninitializedLexicalGlobals.set(g.id, { name: nameNode, module: sf, symbol });
           // Mutable checked-dynamic LET globals ride the same entry
           // init: a closure called above the declaration statement
           // reads the dyn undefined instead of faulting on NULL — the

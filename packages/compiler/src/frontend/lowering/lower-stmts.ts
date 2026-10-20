@@ -19,6 +19,7 @@ import { processDataMemberValue } from "./builtins/process.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
 import { bindingSource } from "../binding-source.js";
+import { lowerConstructorReturn } from "./constructor-returns.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   cjsExportValueByName,
@@ -1577,6 +1578,11 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // incompatible boundary keeps the ordinary per-statement refusal.
     let value: IrExpr | null = null;
     if (stmt.expression) {
+      // A constructor's returned object replaces the constructed `this`.
+      if (lowerer.currentClass?.ctor) {
+        const constructorReturn = lowerConstructorReturn(lowerer, stmt);
+        if (constructorReturn !== null) return constructorReturn;
+      }
       return lowerer.lowerReturnStmt(stmt.expression, locOf(stmt));
     } else if (lowerer.ctx.returnType.kind === "union") {
       value = lowerer.wrappedUndefined(lowerer.ctx.returnType, locOf(stmt));

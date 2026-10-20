@@ -1,4 +1,5 @@
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
+import { refuseModuleMemberThis } from "./module-member-this.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
 import { lowerResponseStaticJson } from "./lower-stdlib.js";
@@ -1278,6 +1279,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       if (facadeServed) return facadeServed;
       const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
       if (memberSym) fenceEarlyNsMemberRef(lowerer, expr.expression, memberSym);
+      refuseModuleMemberThis(lowerer, expr, nsMember);
       const generic = lowerer.genericFnOf(nsMember);
       if (generic) return lowerer.lowerGenericCall(expr, generic);
       const sig = lowerer.fnSigOf(nsMember);
@@ -1341,6 +1343,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (!ts.isIdentifier(nameId)) {
       lowerer.unsupported("SC1090", nameId, "private-named module members");
     }
+    refuseModuleMemberThis(lowerer, expr, nameId);
     const generic = lowerer.genericFnOf(nameId);
     if (generic) return lowerer.lowerGenericCall(expr, generic);
     const sig = lowerer.fnSigOf(nameId);

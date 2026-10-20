@@ -1051,6 +1051,107 @@ console.log(typeof Derived);
   });
 });
 
+describe("constructors returning objects (JS lane)", () => {
+  test("a returned plain object is a named deferred fence", async () => {
+    // Node's `new Box(2)` answers `{ size: 99 }`; a Box instance cannot
+    // hold that object, so the return refuses instead of answering `this`.
+    const r = await compileAndRun(
+      "constructor-returns-object",
+      `'use strict';
+class Box {
+  constructor(size) {
+    this.size = size;
+    if (size > 1) return { size: 99 };
+  }
+}
+console.log(new Box(1).size);
+console.log(new Box(2));
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("1\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: returning an object other than an instance of the class from a constructor \(Node's 'new Box\(\)' answers the returned object, .*\) is not supported yet \[SC1090 at .*constructor-returns-object\.cjs:5\]\n$/,
+    );
+  });
+
+  test("an untyped returned value fences only when it holds a foreign object", async () => {
+    // Primitive results answer the constructed instance, as in Node; an
+    // object that is not a Wrap instance refuses.
+    const r = await compileAndRun(
+      "constructor-returns-untyped",
+      `'use strict';
+class Wrap {
+  constructor(value) {
+    this.value = value;
+    return value;
+  }
+}
+console.log(new Wrap(1).value, new Wrap('s').value, new Wrap(null).value);
+const w = new Wrap(0);
+console.log(new Wrap(w) === w);
+console.log(new Wrap({ a: 1 }));
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("1 s null\ntrue\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: returning an object other than an instance of the class from a constructor .* is not supported yet \[SC1090 at .*constructor-returns-untyped\.cjs:5\]\n$/,
+    );
+  });
+});
+
+describe("module exports that read this, called through the module binding (JS lane)", () => {
+  test("a require binding's member call is a named deferred fence", async () => {
+    // Node passes the exports object as `this` to `m.hello()`; the direct
+    // call has none to pass, so it refuses instead of reading another one.
+    const r = await compileAndRun(
+      "require-member-this",
+      `'use strict';
+const m = require('./lib.cjs');
+console.log(m.plain(21));
+console.log(m.hello());
+`,
+      "cjs",
+      {
+        "lib.cjs": `'use strict';
+exports.name = 'lib';
+exports.hello = function () { return 'hi from ' + this.name; };
+exports.plain = function (x) { return x * 2; };
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("42\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('hello': .*\) is not supported yet \[SC1090 at .*require-member-this\.cjs:4\]\n$/,
+    );
+  });
+
+  test("a namespace import's member call is a named deferred fence", async () => {
+    const r = await compileAndRun(
+      "namespace-member-this",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.who());
+`,
+      "mjs",
+      {
+        "lib.mjs": `export function who() { return typeof this; }
+export function plain(x) { return x + 1; }
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('who': .*\) is not supported yet \[SC1090 at .*namespace-member-this\.mjs:3\]\n$/,
+    );
+  });
+});
+
 // CommonJS forms around the module's exports that keep a refusal name the
 // construct itself (they used to report an unlowerable `require` value, a
 // "binding form with no lowering", or the ES-module `module` message).

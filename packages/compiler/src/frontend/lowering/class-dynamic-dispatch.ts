@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
+import { constructedValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
   BOOL,
@@ -3164,13 +3165,13 @@ export class ClassDynamicDispatch {
         }
         if (!supported || !info.decl) continue;
         const cls = classValueRef(lowerer, info, info.decl);
-        const result: IrExpr = {
+        const result = constructedValue(lowerer, info, {
           kind: "new",
           className: name,
           args,
           type: { kind: "object", className: name },
           loc,
-        };
+        });
         this.constructDispatch.body.unshift({
           kind: "if",
           cond: {
