@@ -1066,6 +1066,7 @@ extern SCR_TL size_t scr_uncloneable_count;
 ScrDyn *scr_dyn_from_error(const ScrError *e);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
+void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len);
 void scr_error_commit_dyn(ScrError *e, const ScrDyn *view);
 /* The reverse extraction, riding the same identity cache: a dyn error
  * that came from a runtime ScrError answers THAT instance (+1;
