@@ -182,6 +182,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c"),
   unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
+  unit((u) => u.opts.wasm, "scr_wasm.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||

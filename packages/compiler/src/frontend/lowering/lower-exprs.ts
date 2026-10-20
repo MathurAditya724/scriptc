@@ -1,4 +1,4 @@
-import { refuseWebAssemblyUse } from "./builtins/webassembly.js";
+import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Expression lowering: the expression dispatch (lowerExpr), literals
@@ -263,7 +263,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (externalTypeSpecifier !== null) {
     lowerer.externalHostFence(externalTypeSpecifier, expr);
   }
-  // Every reached use of the WebAssembly API fences at its expression.
+  // WebAssembly API values lower; every other reached use of the API
+  // fences at its expression.
+  const webAssemblyValue = lowerWebAssemblyValue(lowerer, expr);
+  if (webAssemblyValue !== null) return webAssemblyValue;
   refuseWebAssemblyUse(lowerer, expr);
 
   if (ts.isNumericLiteral(expr)) {
