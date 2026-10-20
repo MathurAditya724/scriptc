@@ -2180,6 +2180,57 @@ function lowerStringMethodCallWithOptionalArgs(
   return changed ? { ...lowered, args } : lowered;
 }
 
+/** `.then(String)` / `.then(Number)` / `.then(Boolean)` over a promise of
+ * a number, string or boolean: the ambient constructor converts its first
+ * argument (the settled value), so the handler is an interned closure over
+ * the settled type applying that conversion. The constructors' own value
+ * form takes a string, which a number or boolean settled value is not.
+ * Null for every other handler. */
+function primitiveConversionHandler(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  inner: IrType,
+): IrExpr | null {
+  if (!ts.isIdentifier(node)) return null;
+  const name = node.text;
+  if (name !== "String" && name !== "Number" && name !== "Boolean") return null;
+  // A string settled value already fits the constructors' value form.
+  if (inner.kind !== "f64" && inner.kind !== "bool") return null;
+  if (!lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(node) ?? undefined)) return null;
+  const loc = locOf(node);
+  const ret: IrType = name === "String" ? STRING : name === "Number" ? F64 : BOOL;
+  const fnT = funcOf([inner], ret);
+  const key = `then.${name}:${typeKey(inner)}`;
+  let fnName = lowerer.arrHofHelpers.get(key);
+  if (fnName === undefined) {
+    fnName = `%then.${name}.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(key, fnName);
+    const value = varRef("v.0", inner, loc);
+    let body: IrExpr;
+    if (name === "Boolean") body = { kind: "toBool", operand: value, type: BOOL, loc };
+    else if (name === "String") body = { kind: "toString", operand: value, type: STRING, loc };
+    else if (inner.kind === "f64") body = value;
+    else
+      body = {
+        kind: "ternary",
+        cond: value,
+        then: { kind: "numLit", value: 1, type: F64, loc },
+        else_: { kind: "numLit", value: 0, type: F64, loc },
+        type: F64,
+        loc,
+      };
+    lowerer.liftedFns.push({
+      name: fnName,
+      params: [{ localId: "v.0", name: "v", type: inner }],
+      returnType: ret,
+      locals: [{ id: "v.0", name: "v", type: inner, mutable: false }],
+      body: [{ kind: "return", value: body, loc }],
+      loc,
+    });
+  }
+  return { kind: "closure", fnName, captures: [], type: fnT, loc };
+}
+
 function lowerNumberConstructorValue(
   lowerer: Lowerer,
   argNode: ts.Expression,
@@ -5788,7 +5839,9 @@ export function lowerPromiseMethodCall(
 
     if (inner.kind === "moduleNs")
       markModuleNsHandlerParams(lowerer, call.arguments.nodes[0]!, inner);
-    let cb = lowerer.lowerExpr(call.arguments.nodes[0]!);
+    let cb =
+      primitiveConversionHandler(lowerer, call.arguments.nodes[0]!, inner) ??
+      lowerer.lowerExpr(call.arguments.nodes[0]!);
     // A TYPED handler on a DYN-settling promise (the tracePromise
     // result's `.then((value) => ...)` — the checker's generic
     // instantiation typed the parameter, but the settled value is a

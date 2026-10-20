@@ -4169,6 +4169,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** A numeric typed array that is not a Buffer (any element kind). */
   "insp.typedArray": { argTypes: [null, F64, F64], result: STRING },
   "insp.error": { argTypes: [null, F64, F64], result: STRING },
+  "insp.errorHasCause": { argTypes: [null], result: BOOL },
+  "insp.errorBagHasProperties": { argTypes: [DYN], result: BOOL },
+  "insp.errorCause": { argTypes: [null, F64, F64], result: STRING },
   "insp.dyn": { argTypes: [DYN, F64, F64], result: STRING },
   "insp.dynS": { argTypes: [DYN, F64], result: STRING },
   "insp.begin": { argTypes: [F64], result: VOID },

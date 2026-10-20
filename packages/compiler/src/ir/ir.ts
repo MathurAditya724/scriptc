@@ -647,6 +647,9 @@ export function isSupportedArrayElem(t: IrType): boolean {
     case "regex":
     case "child":
     case "netServer":
+    // fs.Stats snapshots (`await Promise.all(paths.map(stat))`): immutable
+    // refcounted handles with their own retain/release adapters.
+    case "stats":
     case "symbol":
     case "classval":
     case "moduleNs":
