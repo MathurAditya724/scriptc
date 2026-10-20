@@ -68,6 +68,7 @@ import {
   isNpmStaticPackage,
   npmStaticActive,
   npmStaticFsShadow,
+  npmStaticLexerVisibleNames,
   npmStaticLiveExportTable,
   npmStaticPackageOfPath,
   reportNpmStaticOffender,
@@ -5576,12 +5577,18 @@ function cjsNamedImportLinkCheck(
       npmStaticDepSf7(program, from, spec, "require");
     return dep !== null && isCjsJsFile7(dep, program) ? dep : null;
   };
+  // A bundler rewrite spells some lexer-visible names as accessors.
+  const lexWithAccessorNames = (sf: ts.SourceFile): ReturnType<typeof cjsLexedExportsOfFile> => {
+    const lexed = cjsLexedExportsOfFile(sf);
+    for (const name of npmStaticLexerVisibleNames(sf.fileName)) lexed.exports.add(name);
+    return lexed;
+  };
   const visible = (dep: ts.SourceFile, name: string): boolean =>
     // `default` is the module.exports binding itself — always provided.
     // The program already owns native source ASTs; reuse them without
     // starting another syntax session or reparsing their source text.
     name === "default" ||
-    cjsVisibleNames(dep, cjsLexedExportsOfFile, resolveCjsDep, lexMemo).has(name);
+    cjsVisibleNames(dep, lexWithAccessorNames, resolveCjsDep, lexMemo).has(name);
 
   /** The statement's resolved LOCAL CommonJS dependency, when it is an
    * import/re-export from one. */

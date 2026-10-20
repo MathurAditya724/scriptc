@@ -42,6 +42,8 @@ import {
   STATIC_RESPONSE_CALLS,
   STATIC_RESPONSE_READS,
 } from "../../compat/fetch-profile.js";
+import { classGeneratorIterable } from "./class-iterables.js";
+import { generatorDrain } from "./iterator-adapters.js";
 
 export function refuseUnsupportedApi(
   lowerer: Lowerer,
@@ -2447,6 +2449,10 @@ export function lowerStdlibMethodCall(
         src = lowerer.coerceInto(spread.expression, src, inferred);
       }
     }
+    // A generator, or a class whose [Symbol.iterator] is a generator
+    // method, drains into the number[] the fold reads.
+    src = classGeneratorIterable(lowerer, src) ?? src;
+    if (src.type.kind === "generator") src = generatorDrain(lowerer, src, F64, loc) ?? src;
     if (src.type.kind !== "array" || src.type.elem.kind !== "f64") {
       lowerer.unsupported(
         "SC1090",

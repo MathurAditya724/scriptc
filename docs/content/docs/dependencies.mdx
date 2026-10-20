@@ -52,10 +52,12 @@ Type-only imports follow Node.js's type stripping. `import type` and `export typ
 
 scriptc compiles a package automatically when it:
 
-- ships its own type declarations, and
-- ships readable, unminified JavaScript.
+- ships its own type declarations, or is typed by its DefinitelyTyped `@types/` package, or is a dependency of another package that has no declarations at all, and
+- ships readable JavaScript: unminified, or minified by a bundler whose helpers keep their names.
 
-A package that doesn't meet these requirements, or that uses something scriptc can't compile, gets a package-specific diagnostic that explains why. The usual fixes are to switch to a version or alternative package that compiles, or to replace the call with code you write yourself. A package whose declarations come from a separate `@types/` package doesn't ship its own; its diagnostic names the package and the `--npm-static` option that compiles it anyway.
+The declarations check your program; the package's JavaScript compiles with the types scriptc infers from it. A program that doesn't typecheck against the inferred types, for example because an `@types/` package describes another release, fails the build at that use.
+
+A package that doesn't meet these requirements, or that uses something scriptc can't compile, gets a package-specific diagnostic that explains why. The usual fixes are to switch to a version or alternative package that compiles, or to replace the call with code you write yourself.
 
 `graceful-fs` is the exception: it compiles as `node:fs` instead of from its JavaScript, with one [documented difference](/docs/limitations#graceful-fs).
 
@@ -65,17 +67,17 @@ A package that doesn't meet these requirements, or that uses something scriptc c
 
 ## Explicit package selection
 
-Some packages rely on separately installed declarations, such as an `@types/` package, or on types inferred from their JavaScript. To try compiling one of them, name it with `--npm-static`:
+Some packages your program imports directly ship no declarations, so their types can only be inferred from their JavaScript. To try compiling one of them, name it with `--npm-static`:
 
 ```console
 $ scriptc build app.ts --npm-static=three -o app >/dev/null
 ```
 
-Naming a package skips the declaration requirement above, but the package still has to compile. The option selects only the packages it names: a dependency of a named package that doesn't ship its own declarations is still refused. Add a trailing `...` to select a package together with every package it depends on, for example `--npm-static=fs-extra...`. `--npm-static=auto` uses the default automatic selection. The option accepts a comma-separated list and can be repeated.
+Naming a package skips the declaration requirement above, but the package still has to compile. Add a trailing `...` to select a package together with every package it depends on, for example `--npm-static=fs-extra...`. `--npm-static=auto` uses the default automatic selection. The option accepts a comma-separated list and can be repeated.
 
 ## CommonJS packages
 
-CommonJS packages compile with Node.js's module semantics. Each `require()` evaluates its module at the call, once, and later calls return the cached exports. A package can assign `module.exports` and run code before it requires its dependencies. If that code reads a `const` or `let` require binding before its `require` runs, the read throws the same `ReferenceError` as Node.js. A `var` binding that earlier code can reach is reported at build time. A `require()` of a JSON file, such as a package's own `package.json`, returns one object parsed at build time, shared by every module that requires it. A require cycle compiles when each of its modules assigns its exports before requiring anything, as semver's classes do, and uses the other modules only inside functions that its top-level code can't call. Other require cycles are reported at build time. The [limitations](/docs/limitations) page lists the supported `require` forms.
+CommonJS packages compile with Node.js's module semantics. Each `require()` evaluates its module at the call, once, and later calls return the cached exports. A package can assign `module.exports` and run code before it requires its dependencies. If that code reads a `const` or `let` require binding before its `require` runs, the read throws the same `ReferenceError` as Node.js. A `var` binding that earlier code can reach is reported at build time. A `require()` of a JSON file, such as a package's own `package.json`, returns one object parsed at build time, shared by every module that requires it. A require cycle compiles when each of its modules assigns its exports before requiring anything, as semver's classes and esbuild's per-file output do, and uses the other modules only inside functions that its top-level code can't call. Bundles built by esbuild compile with their bundled CommonJS modules and lazily initialized ES modules, each evaluated once, at its first use, as under Node.js. Other require cycles are reported at build time. The [limitations](/docs/limitations) page lists the supported `require` forms.
 
 ## Unsupported code inside a package
 

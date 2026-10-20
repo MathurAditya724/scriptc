@@ -17,6 +17,7 @@ import {
   type LoadResult,
 } from "./program.js";
 import {
+  definitelyTypedMismatch,
   npmStaticFileDegrades,
   npmStaticIneligibleReason,
   npmStaticOffenders,
@@ -223,13 +224,26 @@ function detectAutoPackages(
           chosen.push(runtimePkg);
           continue;
         }
+        // Both answers compile the JavaScript with inferred types; the
+        // declarations only check the importer, and an inferred surface
+        // the program does not typecheck against still refuses the package
+        // below. A DefinitelyTyped twin qualifies; a package without
+        // declarations qualifies as a dependency of another package, whose
+        // JavaScript importer has no declarations to check.
+        const refusal =
+          npm === null
+            ? owner === null && !sf.fileName.includes("/node_modules/")
+              ? "it ships no own .d.ts declaration surface"
+              : null
+            : definitelyTypedMismatch(runtimePkg, npm.typesFile);
+        if (refusal === null) {
+          chosen.push(runtimePkg);
+          continue;
+        }
         statuses.push({
           package: runtimePkg,
           status: "refused",
-          detail:
-            npm === null
-              ? "it ships no own .d.ts declaration surface"
-              : `its declared types come from the separate ${npm.packageName} package, not the package itself`,
+          detail: refusal,
           hint: npmStaticOptInHint(runtimePkg, owner),
         });
         continue;
@@ -260,6 +274,7 @@ function detectAutoPackages(
       pkg,
       typesFile,
       jsEntry !== null && isJsSourceFileName(jsEntry.typesFile) ? jsEntry.typesFile : null,
+      mode === "lib" && isJsSourceFileName(typesFile) && fromFile.includes("/node_modules/"),
     );
     if (reason === null) chosen.push(pkg);
     else

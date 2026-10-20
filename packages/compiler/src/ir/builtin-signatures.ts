@@ -228,7 +228,25 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeDateIs": { argTypes: [DYN], result: BOOL },
+  /** A builtin constructor (`Object`, `Date`, `RegExp`, `Map`, `Set`,
+   * `Promise`, `WeakMap`, `WeakSet`) read as a JavaScript value: one
+   * interned function per name, the same one dynamic values answer for
+   * `.constructor`. The name is a compiler-chosen literal. */
+  "dyn.globalConstructor": { argTypes: [STRING], result: DYN },
+  /** A builtin global function (setTimeout, setInterval, setImmediate,
+   * the clear functions, queueMicrotask, process.nextTick) read as a
+   * JavaScript value: one interned function per name whose calls run the
+   * timer APIs (it pulls in the event loop). The name is a compiler-chosen
+   * literal. */
+  "dyn.builtinFunction": { argTypes: [STRING], result: DYN },
   "date.nativeNew": { argTypes: [DYN], result: DYN },
+  /** `new Date(year, monthIndex, ...)` in JavaScript: the argument array's
+   * first seven values pass through ToNumber in order (later ones are
+   * evaluated, never converted), then the local-time field constructor. */
+  "date.nativeNewFields": { argTypes: [DYN], result: DYN },
+  /** `new Date(value)` in JavaScript: a string argument parses with V8's
+   * full date parser; every other value constructs as date.nativeNew. */
+  "date.nativeNewValue": { argTypes: [DYN], result: DYN },
   "date.checkedValue": { argTypes: [DYN], result: DATE_T },
   "dyn.nativeRegexIs": { argTypes: [DYN], result: BOOL },
   /** toString() on a checked-dynamic receiver: runtime kind dispatch
@@ -256,6 +274,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.promiseAll": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "dyn.promiseAllSettled": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "dyn.promiseAny": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  /** PromiseResolve over one checked-dynamic value: the promise it holds,
+   * a promise that adopts a thenable's settlement, or a promise fulfilled
+   * with the value. The second argument reads `then` as above. */
+  "dyn.promiseResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   /** Bare `typeof v` on a dyn value AS A STRING (arg: the dyn value,
    * borrowed; result: an owned string) — the dyn kind's JS answer:
    * undefined→"undefined", null/object/array/bytes→"object" (JS's oldest
@@ -4346,13 +4368,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.toDateString": { argTypes: [DATE_T], result: STRING },
   "date.toTimeString": { argTypes: [DATE_T], result: STRING },
   /** The composed `new Date(dateString).getTime()` read: one borrowed
-   * string, f64 milliseconds since epoch. The parsed grammar is BOUNDED
-   * (documented divergence — V8's parser accepts far more): the ASN.1
-   * validity shape X509Certificate.validFrom/validTo answer ("Jul  1
-   * 00:00:00 2026 GMT" — the portless cert-expiry read), and ECMA's own
-   * date-time string format (YYYY-MM-DD[THH:mm[:ss[.sss]]][Z|±HH:MM] —
-   * date-only forms are UTC, exactly the spec). Anything else is NaN,
-   * Node's invalid-date getTime. Never throws. */
+   * string, f64 milliseconds since epoch, with V8's date-string grammar
+   * (the ES5 format, then the legacy forms: RFC 1123/2822, Date#toString,
+   * "Jan 2, 2024", ...). Zone-less dates are local time; anything V8
+   * rejects is NaN, Node's invalid-date getTime. Never throws. */
   "date.parseGetTime": { argTypes: [STRING], result: F64 },
   /** `Date.UTC(...)` — seven f64 arguments (the frontend completes the
    * spec's defaults for omitted trailing parts: month 0, date 1, time
@@ -4360,6 +4379,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * map to 1900+year, out-of-range months/dates roll over, non-finite
    * parts and out-of-range results answer NaN. Never throws. */
   "date.utc": { argTypes: [F64, F64, F64, F64, F64, F64, F64], result: F64 },
+  /** `new Date(year, monthIndex[, date, hours, minutes, seconds, ms])` —
+   * the same seven-f64 completion as date.utc, but the fields are LOCAL
+   * time: V8's MakeDay/MakeTime, then UTC(t) in the host zone (DST gaps
+   * read with the offset before the transition, overlaps answer the
+   * earlier instant), then TimeClip. Never throws. */
+  "date.newLocal": { argTypes: [F64, F64, F64, F64, F64, F64, F64], result: DATE_T },
   /** WHATWG TextDecoder.decode over u8 bytes (scr_bytes.c): utf-8 with
    * default options — the same maximal-subpart replacement decode as
    * Buffer.toString("utf8"), with the leading BOM stripped (the one

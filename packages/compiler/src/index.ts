@@ -8,6 +8,7 @@ import {
   libraryWasmRefusal,
 } from "./library/prepare.js";
 import { analyzeWithFrontend } from "./frontend/analysis.js";
+import { checkerCacheIdentity } from "./frontend/ts7/checker-backend.js";
 import { analyzeWithVerdictCache, fileVerdictStore } from "./coverage/verdict-cache.js";
 import { coverageCompilerIdentity } from "./coverage/verdict-startup.js";
 import { commentOnlyReplay } from "./coverage/verdict-semantic.js";
@@ -378,6 +379,12 @@ export async function analyzeCached(
 
 const nodeFrontend: FrontendFactory = (entry, npmStatic, externalTypes, libraryNpmStatic) =>
   runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic);
+
+/** The checker's part of the executable cache key (`checkerCacheIdentity`), as the CLI's startup route computes it. */
+function checkerField(): { checker?: string } {
+  const checker = checkerCacheIdentity();
+  return checker === undefined ? {} : { checker };
+}
 
 /** The whole pipeline: load → preflight → lower → validate → emit LLVM → link. */
 function clearCompileSessionCaches(): void {
@@ -1053,6 +1060,7 @@ async function compileTracked(
       ...(opts.strip ? { strip: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
+      ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,
       ffiProfile:
