@@ -156,6 +156,49 @@ export interface FileParts {
   topStmts: ts.Statement[];
 }
 
+/** Preflight's module graph (LoadResult.moduleEdges), for the walks that
+ * append modules outside the startup order, and the set collecting the
+ * inline require() calls that close a cycle there. */
+export interface AppendGraph {
+  edges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
+  inlineCycleCalls?: Set<ts.Node>;
+}
+
+/** An appended module's edges: its import and export declarations, then
+ * the require() edges preflight resolved — a CommonJS file's only edges
+ * (the compiled CommonJS package a workspace module loaded on demand
+ * imports, and the sibling packages and files IT requires). */
+function appendedEdgesOf(
+  program: ts.Program,
+  graph: AppendGraph | undefined,
+): (sf: ts.SourceFile) => CycleEdge[] {
+  const cache = new Map<ts.SourceFile, CycleEdge[]>();
+  return (sf) => {
+    let out = cache.get(sf);
+    if (out !== undefined) return out;
+    out = orderedImportsOf(program, sf).flatMap(({ stmt, dep }) =>
+      dep !== null && dep !== sf
+        ? [{ dep, stmt: stmt as ts.ImportDeclaration | ts.ExportDeclaration }]
+        : [],
+    );
+    for (const e of graph?.edges?.get(sf) ?? [])
+      if (e.stmt === undefined && e.dep !== sf) out.push(e);
+    cache.set(sf, out);
+    return out;
+  };
+}
+
+/** Lazy inline requires run after their module's top level: their modules
+ * join the order afterwards, as in preflight's walk. */
+function visitLazyEdges(
+  sf: ts.SourceFile,
+  edgesOf: (sf: ts.SourceFile) => CycleEdge[],
+  state: ReadonlyMap<ts.SourceFile, "visiting" | "done">,
+  visit: (sf: ts.SourceFile) => void,
+): void {
+  for (const e of edgesOf(sf)) if (e.lazy === true && state.get(e.dep) === undefined) visit(e.dep);
+}
+
 /** Program modules selected by statically resolved child_process.fork()
  * calls join the compiled graph without becoming startup dependencies of
  * the parent entry. Their guarded init functions are selected by %main only
@@ -166,8 +209,9 @@ export function appendForkModules(
   order: ts.SourceFile[],
   targets: ts.SourceFile[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
-  appendEntryModules(program, order, targets, forkTargetPaths(program, order), onCycle);
+  appendEntryModules(program, order, targets, forkTargetPaths(program, order), onCycle, graph);
 }
 
 export function appendWorkerModules(
@@ -175,8 +219,9 @@ export function appendWorkerModules(
   order: ts.SourceFile[],
   targets: ts.SourceFile[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
-  appendEntryModules(program, order, targets, workerTargetPaths(program, order), onCycle);
+  appendEntryModules(program, order, targets, workerTargetPaths(program, order), onCycle, graph);
 }
 
 function appendEntryModules(
@@ -185,6 +230,7 @@ function appendEntryModules(
   targets: ts.SourceFile[],
   paths: readonly string[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
   if (order.length === 0) return;
   const byPath = new Map(
@@ -194,22 +240,24 @@ function appendEntryModules(
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
   const stack: string[] = [];
-  const staticEdgesOf = (sf: ts.SourceFile): CycleEdge[] =>
-    orderedImportsOf(program, sf).flatMap(({ stmt, dep }) =>
-      dep !== null && dep !== sf
-        ? [{ dep, stmt: stmt as ts.ImportDeclaration | ts.ExportDeclaration }]
-        : [],
-    );
-  const cycleAdmissionReason = makeCycleAdmission(program, staticEdgesOf);
+  const staticEdgesOf = appendedEdgesOf(program, graph);
+  const cycleAdmissionReason = makeCycleAdmission(program, (sf) =>
+    staticEdgesOf(sf).filter((e) => e.call === undefined),
+  );
   const visit = (sf: ts.SourceFile): void => {
     const prior = state.get(sf);
     if (prior === "done") return;
     state.set(sf, "visiting");
     stack.push(sf.fileName);
     for (const edge of staticEdgesOf(sf)) {
+      if (edge.lazy === true) continue; // visited after this module completes
       const edgeState = state.get(edge.dep);
       if (edgeState === "done") continue;
       if (edgeState === "visiting") {
+        if (edge.call !== undefined) {
+          graph?.inlineCycleCalls?.add(edge.call);
+          continue;
+        }
         const reason = cycleAdmissionReason(sf, edge);
         if (reason !== null) {
           const cycleStart = stack.indexOf(edge.dep.fileName);
@@ -222,6 +270,7 @@ function appendEntryModules(
     stack.pop();
     state.set(sf, "done");
     added.push(sf);
+    visitLazyEdges(sf, staticEdgesOf, state, visit);
   };
 
   const knownTargets = new Set(targets);
@@ -313,27 +362,30 @@ export function appendDynamicImportModules(
   program: ts.Program,
   order: ts.SourceFile[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
   if (order.length === 0) return; // no preflight order — sites keep their fences
   const state = new Map<ts.SourceFile, "visiting" | "done">();
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
   const stack: string[] = [];
-  const staticEdgesOf = (sf: ts.SourceFile): CycleEdge[] =>
-    orderedImportsOf(program, sf).flatMap(({ stmt, dep }) =>
-      dep !== null && dep !== sf
-        ? [{ dep, stmt: stmt as ts.ImportDeclaration | ts.ExportDeclaration }]
-        : [],
-    );
-  const cycleAdmissionReason = makeCycleAdmission(program, staticEdgesOf);
+  const staticEdgesOf = appendedEdgesOf(program, graph);
+  const cycleAdmissionReason = makeCycleAdmission(program, (sf) =>
+    staticEdgesOf(sf).filter((e) => e.call === undefined),
+  );
   const visit = (sf: ts.SourceFile): void => {
     if (state.get(sf) !== undefined) return;
     state.set(sf, "visiting");
     stack.push(sf.fileName);
     for (const e of staticEdgesOf(sf)) {
+      if (e.lazy === true) continue; // visited after this module completes
       const s = state.get(e.dep);
       if (s === "done") continue;
       if (s === "visiting") {
+        if (e.call !== undefined) {
+          graph?.inlineCycleCalls?.add(e.call);
+          continue;
+        }
         // A back edge: Node answers it from the cache. Same admission
         // question as preflight's static walk, same fence when refused.
         const reason = cycleAdmissionReason(sf, e);
@@ -348,6 +400,7 @@ export function appendDynamicImportModules(
     stack.pop();
     state.set(sf, "done");
     added.push(sf);
+    visitLazyEdges(sf, staticEdgesOf, state, visit);
   };
   const scanned = new Set<ts.SourceFile>();
   for (;;) {

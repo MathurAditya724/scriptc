@@ -10,6 +10,7 @@ import {
   checkPreflight,
   isNodeTypesPath,
   locOf,
+  npmStaticDepSf7,
   npmStaticLoadableFiles,
   requiresOf,
   resolveImport,
@@ -119,26 +120,32 @@ export type FrontendFactory = (
  * with their own static import graphs: they load at the call, outside the
  * startup module order, and their npm imports are dependencies all the
  * same (a workspace package loaded on demand, the vercel.ts config parser
- * shape). Package files are the package machinery's business. */
+ * shape). An opted-in package's JavaScript reached that way joins too,
+ * with every file its literal require() and import edges load: those
+ * files are outside the module order as well, and the packages THEY
+ * require (a compiled CommonJS dist requiring a sibling package) are
+ * dependencies the selection must see. */
 function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void {
   const queue = [...scanned];
   const added = new Set<SourceFile>();
   while (queue.length > 0) {
     const sf = queue.pop()!;
-    if (sf.fileName.includes("/node_modules/")) continue;
-    const specs: string[] = [];
+    const packageJs = sf.fileName.includes("/node_modules/");
+    if (packageJs && !added.has(sf)) continue;
+    const specs: { spec: string; kind: "import" | "require" }[] = [];
     // Every literal import() in the file, read from the syntax: a comment
     // can stand between the keyword and its parenthesis. A file without
-    // the keyword has none.
-    const calls = sf.text.includes("import") ? moduleSourceCandidates(load.program, sf).calls : [];
+    // the keyword has none. Package JavaScript loads its literal require()
+    // calls the same way, nested ones included.
+    const calls =
+      packageJs || sf.text.includes("import") ? moduleSourceCandidates(load.program, sf).calls : [];
     for (const call of calls) {
       const arg = call.arguments.nodes[0];
-      if (
-        call.expression.kind === SyntaxKind.ImportKeyword &&
-        arg !== undefined &&
-        isStringLiteralLike(arg)
-      )
-        specs.push(arg.text);
+      if (arg === undefined || !isStringLiteralLike(arg)) continue;
+      if (call.expression.kind === SyntaxKind.ImportKeyword)
+        specs.push({ spec: arg.text, kind: "import" });
+      else if (packageJs && isIdentifier(call.expression) && call.expression.text === "require")
+        specs.push({ spec: arg.text, kind: "require" });
     }
     // The startup graph's static edges are already in the module order.
     if (added.has(sf)) {
@@ -149,12 +156,18 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
           isStringLiteral(stmt.moduleSpecifier) &&
           !(isImportDeclaration(stmt) ? erasedTypeOnlyImport(stmt) : stmt.isTypeOnly)
         )
-          specs.push(stmt.moduleSpecifier.text);
+          specs.push({ spec: stmt.moduleSpecifier.text, kind: "import" });
       }
     }
-    for (const spec of specs) {
-      const dep = resolveImport(load.program, sf, spec);
-      if (dep === null || scanned.has(dep) || dep.fileName.includes("/node_modules/")) continue;
+    for (const { spec, kind } of specs) {
+      if (canonicalBuiltinModule(spec) !== null) continue;
+      // Only the JavaScript of a package the selection already opted in:
+      // a package's declarations load nothing.
+      const dep =
+        resolveImport(load.program, sf, spec, kind) ??
+        npmStaticDepSf7(load.program, sf, spec, kind);
+      if (dep === null || scanned.has(dep)) continue;
+      if (dep.fileName.includes("/node_modules/") && !isJsSourceFileName(dep.fileName)) continue;
       scanned.add(dep);
       added.add(dep);
       queue.push(dep);
@@ -674,6 +687,7 @@ function loadFrontend(
         frontendServices: finalLoad.services,
         startupCrash: finalLoad.startupCrash ?? null,
         inlineRequireCycleCalls: finalLoad.inlineRequireCycleCalls,
+        moduleEdges: finalLoad.moduleEdges,
         projectCheckJs: finalLoad.typeWorld?.projectCheckJs ?? false,
         externalTypes: finalLoad.externalTypes,
         externalTypeSpecifiersByFile: finalLoad.externalTypeSpecifiersByFile,
