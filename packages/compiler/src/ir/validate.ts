@@ -5235,7 +5235,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "stream.dynNative") {
+    if (e.fn === "stream.dynNative" || e.fn === "stream.dynNativePipe") {
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const side = e.args[1];
       const className =

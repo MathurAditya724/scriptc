@@ -232,6 +232,13 @@
       ]
     },
     {
+      "name": "unicode-lexer",
+      "entry": "workloads/unicode-lexer.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
       "name": "log-summary",
       "entry": "../builds/log-summary/main.ts",
       "input": "log-summary",

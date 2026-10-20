@@ -1192,6 +1192,10 @@ ScrDyn *scr_dyn_builtin_stream_object(struct ScrStream *s);
 ScrDyn *scr_dyn_builtin_stream_view(struct ScrStream *s);
 struct ScrStream *scr_dyn_builtin_stream_check(const ScrDyn *value, double kind);
 struct ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr *message);
+/* stream.dynNative in those programs: scr_stream_dyn_native's contract,
+ * also taking constructor-function streams that keep the runtime's write
+ * and end (+1 or NULL). */
+struct ScrStream *scr_dyn_builtin_stream_dyn_native(const ScrDyn *value, double side);
 bool scr_dyn_class_is_key(const ScrDyn *value, const ScrStr *type_key);
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key);
 /* Calls a dyn value: a non-function kind throws the catchable TypeError
