@@ -4360,16 +4360,25 @@ bool scr_dyn_data_view_is(const ScrDyn *value) {
  * `constructor` data property on its prototype chain (Node's
  * getConstructorName). The dyn printer reads runtime class names
  * (v.obj.class_name, set only on prototypes that stay alive), so a
- * construction through a plain function stamps that prototype with the
- * function's static name and keeps it alive; the stamps are cleared before
- * release at exit, so freelist reuse never sees them. */
-static SCR_TL ScrDyn **scr_dyn_named_prototypes;
+ * construction through a plain function stamps that prototype with a copy
+ * of the function's name and keeps it alive. The copy is the stamp's own: a
+ * function's name can live in storage the function owns (a bound
+ * function's "bound <name>"), and the function is released when the
+ * writable `constructor` property is replaced. The stamps are cleared and
+ * their copies freed before release at exit, so freelist reuse never sees
+ * them. */
+typedef struct {
+  ScrDyn *prototype;
+  char *name;
+} ScrDynNamedPrototype;
+static SCR_TL ScrDynNamedPrototype *scr_dyn_named_prototypes;
 static SCR_TL size_t scr_dyn_named_count, scr_dyn_named_cap;
 
 static void scr_dyn_named_prototypes_cleanup(void) {
   for (size_t i = 0; i < scr_dyn_named_count; i++) {
-    scr_dyn_named_prototypes[i]->v.obj.class_name = NULL;
-    scr_dyn_release(scr_dyn_named_prototypes[i]);
+    scr_dyn_named_prototypes[i].prototype->v.obj.class_name = NULL;
+    scr_dyn_release(scr_dyn_named_prototypes[i].prototype);
+    free(scr_dyn_named_prototypes[i].name);
   }
   free(scr_dyn_named_prototypes);
   scr_dyn_named_prototypes = NULL;
@@ -4386,13 +4395,17 @@ static void scr_dyn_name_prototype_chain(const ScrDyn *object) {
     if (scr_dyn_named_count == scr_dyn_named_cap) {
       if (scr_dyn_named_cap == 0) scr_atexit(scr_dyn_named_prototypes_cleanup);
       size_t cap = scr_dyn_named_cap ? scr_dyn_named_cap * 2 : 8;
-      ScrDyn **grown = realloc(scr_dyn_named_prototypes, cap * sizeof *grown);
+      ScrDynNamedPrototype *grown = realloc(scr_dyn_named_prototypes, cap * sizeof *grown);
       if (!grown) scr_json_oom();
       scr_dyn_named_prototypes = grown;
       scr_dyn_named_cap = cap;
     }
-    p->v.obj.class_name = name;
-    scr_dyn_named_prototypes[scr_dyn_named_count++] = scr_dyn_retain(p);
+    size_t len = strlen(name);
+    char *copy = malloc(len + 1);
+    if (!copy) scr_json_oom();
+    memcpy(copy, name, len + 1);
+    p->v.obj.class_name = copy;
+    scr_dyn_named_prototypes[scr_dyn_named_count++] = (ScrDynNamedPrototype){ scr_dyn_retain(p), copy };
     return;
   }
 }
