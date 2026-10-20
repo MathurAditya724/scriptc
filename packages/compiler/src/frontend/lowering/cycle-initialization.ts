@@ -70,6 +70,9 @@ interface ClassReference {
   name: string;
 }
 
+/** The static field storage of a flag without a class. */
+const NO_STATIC_GLOBALS: ReadonlySet<string> = new Set();
+
 /** Registers the initialization flags after global collection. Bindings
  * whose early access has no exact representation are refused: a `var`
  * (Node reads `undefined` there, but module storage only starts when the
@@ -492,7 +495,8 @@ function rewriteFunction(
   for (const [className, flag] of lowerer.classInitFlags) {
     if (!runsEarly(flag) || fn.name.startsWith(`%${className}.`)) continue;
     classes.set(className, flag);
-    for (const id of flag.staticGlobals ?? []) statics.set(id, [...(statics.get(id) ?? []), flag]);
+    for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS)
+      statics.set(id, [...(statics.get(id) ?? []), flag]);
   }
   if (active.size === 0 && classes.size === 0) return;
   const flagOf = (localId: string, loc: SrcLoc): CycleInitFlag | undefined =>
@@ -660,7 +664,7 @@ function rewriteFunction(
     for (const [className, flag] of [...classes]) {
       if (flag.module !== initOf || !setsFlag(s, flag)) continue;
       classes.delete(className);
-      for (const id of flag.staticGlobals ?? []) {
+      for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS) {
         const rest = statics.get(id)!.filter((other) => other !== flag);
         if (rest.length > 0) statics.set(id, rest);
         else statics.delete(id);
