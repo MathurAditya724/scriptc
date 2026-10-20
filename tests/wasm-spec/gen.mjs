@@ -123,6 +123,12 @@ const { values } = parseArgs({
 });
 const repo = join(dirname(new URL(import.meta.url).pathname), "../..");
 
+// Writes control and format characters (names.wast has several) as escapes, so the
+// generated file holds the same strings without invisible characters in its source.
+function escapeInvisible(literal) {
+  return literal.replace(/[\u007f-\u009f\u2028\u2029\p{Cf}]/gu, (c) => `\\u{${c.codePointAt(0).toString(16)}}`);
+}
+
 function value(v) {
   if (v.type === "v128") return null;
   return `${v.type}:${v.value}`;
@@ -257,7 +263,7 @@ for (const [group, names] of Object.entries(GROUPS)) {
  * ${names.map((n) => `${n}.wast`).join(", ")}. Do not edit. */\n`;
   const body =
     `export const modules = [\n${modules.map((m) => `  "${m}",`).join("\n")}\n];\n` +
-    `export const script = ${JSON.stringify(JSON.stringify(commands))};\n`;
+    `export const script = ${escapeInvisible(JSON.stringify(JSON.stringify(commands)))};\n`;
   writeFileSync(join(out, "data.mjs"), header + body);
   writeFileSync(
     join(out, "main.mjs"),
