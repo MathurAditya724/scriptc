@@ -21,6 +21,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
+  "dyn.promiseResolve",
   "process.onUncaughtException",
   "process.offUncaughtException",
   "process.onUnhandledRejection",
@@ -198,12 +199,24 @@ const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "rea
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
   "dyn.arrayPrototype",
+  "dyn.builtinFunction",
   "dyn.builtinMethod",
   "dyn.defineProperty",
   "dyn.defineProps",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
+  "dyn.globalConstructor",
   "dyn.objCreateWithProperties",
+  "dyn.objectTag",
+]);
+
+/** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
+const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "constructor",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+  "toString",
+  "valueOf",
 ]);
 
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
@@ -211,6 +224,7 @@ const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.connected",
   "process.disconnect",
   "process.forkTarget",
+  "process.ipcOpen",
   "process.onDisconnect",
   "process.onMessage",
   "process.send",
@@ -493,7 +507,13 @@ const RUNTIME_FEATURE_RULES = {
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS],
-    expr: (node, _tables) => node.kind === "dynInvoke",
+    // Constant-key reads of Object.prototype member names answer the
+    // inherited member through scr_dyn_invoke.c.
+    expr: (node, _tables) =>
+      node.kind === "dynInvoke" ||
+      (node.kind === "dynKeyGet" &&
+        node.key.kind === "strLit" &&
+        INHERITED_MEMBER_NAMES.has(node.key.value)),
   }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */

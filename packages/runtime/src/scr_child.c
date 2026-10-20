@@ -6410,6 +6410,7 @@ void scr_child_ipc_on_disconnect(ScrChild *c, ScrClosure *cb, bool once) {
 bool scr_process_ipc_connected(void) {
   return scr_process_ipc != NULL && scr_process_ipc->connected;
 }
+bool scr_process_ipc_open(void) { return scr_process_ipc != NULL; }
 bool scr_process_ipc_send(ScrStr *json) {
   return scr_ipc_send(scr_process_ipc, json, NULL, NULL);
 }

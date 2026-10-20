@@ -70,6 +70,7 @@ import {
 } from "./instantiation-path.js";
 import { appendImplicitUndefinedReturn, hasExplicitJsDocReturn } from "./function-returns.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
+import { errorNameAfterField, errorViewFields } from "./error-name-order.js";
 import {
   checkedJsDocumentedParameter,
   documentedParameter,
@@ -88,7 +89,6 @@ import {
   isCjsJsFile,
   isJsSourceFile,
   isModuleExportsAccess,
-  isNodeTypesPath,
   locOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
@@ -1046,9 +1046,11 @@ export function builtinStreamInfoOf(
     if (rec.lib === symbol.name) irName = name;
   }
   if (!irName) return null;
+  // Both the bundled declarations and @types/node declare the classes
+  // inside `declare module "stream"` (@types/node nests them in the module's
+  // `internal` namespace).
   const declared = symbol.declarations.some((d) => {
     if (!ts.isClassDeclaration(d)) return false;
-    if (isNodeTypesPath(d.getSourceFile().fileName)) return false;
     let node: ts.Node | undefined = d.parent;
     while (node) {
       if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
@@ -2212,11 +2214,7 @@ export function collectClassShapeInner(
     }
     if (lowerer.collectingExprClasses.has(decl)) {
       for (let parent = base; parent; parent = parent.base) {
-        if (
-          parent.builtinEmitter ||
-          parent.builtinStream !== undefined ||
-          parent.builtinEventTarget !== undefined
-        ) {
+        if (parent.builtinEventTarget !== undefined) {
           lowerer.unsupported(
             "SC1090",
             decl,
@@ -4259,6 +4257,12 @@ export function collectClassShapeInner(
       ...(deferredInitFields.size > 0 ? { deferredInitFields } : {}),
       ...(escape.escapes ? { constructionEscapes: true as const } : {}),
     };
+    let root: ClassInfo | null = info;
+    while (root?.base) root = root.base;
+    if (root !== info && root?.def.name === "%Error") {
+      const after = errorNameAfterField(info, errorViewFields(info.def.fields));
+      if (after !== undefined) info.def.errorNameAfter = after;
+    }
     // GENERIC members get their declaring-class backlink now that the
     // info exists (instance lowering reads it for `this` typing and the
     // generic-class binding merge).
@@ -5182,16 +5186,11 @@ export function classValueRef(lowerer: Lowerer, info: ClassInfo, blame: ts.Node)
       loc: locOf(blame),
     };
   }
-  if (
-    lowerer.inheritsBuiltinEmitterCtor(info) ||
-    inheritsBuiltinStreamCtor(lowerer, info) ||
-    eventTargetRootOf(info) !== null ||
-    (() => {
-      for (let c = info.base; c; c = c.base)
-        if (c.builtinEmitter || c.builtinStream !== undefined) return true;
-      return false;
-    })()
-  ) {
+  // Classes extending EventEmitter or a stream class construct through
+  // their own (or synthesized) `%C.constructor`, whose super call runs the
+  // runtime initializer, so the class object's construct thunk serves them
+  // like any program class. EventTarget subclasses keep the refusal.
+  if (eventTargetRootOf(info) !== null) {
     lowerer.unsupported(
       "SC1090",
       blame,
@@ -8062,6 +8061,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
         className: info.def.name,
         field: f.name,
         value: dynUndefinedExpr(loc),
+        define: true,
         loc,
       });
     }
@@ -8077,6 +8077,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
         className: info.def.name,
         field: f.name,
         value,
+        define: true,
         loc: locOf(f.initializer),
       });
     } catch (e) {
@@ -8734,6 +8735,60 @@ function inheritsBuiltinStreamCtor(lowerer: Lowerer, info: ClassInfo): boolean {
   return false;
 }
 
+/** The run-time form of refuseInheritedBuiltinCtorArgs, for construction
+ * from checked-dynamic code (`new F(options)` with F an untyped value
+ * holding C), whose argument count is known only to the caller: a
+ * runtimeFence located at C, or null when C's constructor takes its
+ * arguments. */
+export function inheritedBuiltinCtorFence(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  loc: SrcLoc,
+): IrStmt | null {
+  let feature: string | null = null;
+  if (inheritsBuiltinStreamCtor(lowerer, info))
+    feature = `new ${info.def.name.replace(/^%/, "")} with arguments through an inherited stream constructor (declare a constructor that passes an inline options object to super(...))`;
+  else if (lowerer.inheritsBuiltinEmitterCtor(info))
+    feature = "EventEmitter constructor options ('captureRejections')";
+  if (feature === null) return null;
+  // Located at the class, whose constructor takes no arguments.
+  const at = info.decl !== null ? locOf(info.decl) : loc;
+  const diag = unsupportedDiag("SC1090", at, feature);
+  lowerer.runtimeFences.push(diag);
+  const line =
+    info.decl !== null
+      ? ts.getLineAndCharacterOfPosition(info.decl.getSourceFile(), at.start).line + 1
+      : null;
+  const where = line !== null ? ` [${diag.code} at ${at.file}:${line}]` : "";
+  return { kind: "runtimeFence", code: diag.code, message: `${diag.message}${where}`, loc };
+}
+
+/** `new C(args)` where C's constructor is the inherited runtime stream or
+ * EventEmitter constructor (a ctor-less chain into the base): that
+ * constructor takes zero arguments here (the options bag fences, like the
+ * super() form), so arguments report at the first one. Applies to direct
+ * construction and to construction through a class value of C. Stream
+ * subclasses come first: their chain roots at the emitter too, but the
+ * message should name the stream story. */
+function refuseInheritedBuiltinCtorArgs(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  expr: ts.NewExpression,
+): void {
+  const first = expr.arguments?.nodes[0];
+  if (first === undefined) return;
+  if (inheritsBuiltinStreamCtor(lowerer, info)) {
+    lowerer.noLowering(
+      `new ${info.def.name.replace(/^%/, "")} with arguments through an inherited stream constructor`,
+      first,
+      "declare a constructor that passes an inline options object to super(...)",
+    );
+  }
+  if (lowerer.inheritsBuiltinEmitterCtor(info)) {
+    lowerer.unsupported("SC1090", first, "EventEmitter constructor options ('captureRejections')");
+  }
+}
+
 /** Preserve argument evaluation order and option presence through builtin
  * and inherited Error constructors. Checked-dynamic conversion retains
  * Error identity and distinguishes a missing cause from undefined. */
@@ -8858,24 +8913,7 @@ function lowerProgramClassNew(
       "construction through a function-local class's internal name",
     );
   lowerer.noteEdge(`%${info.def.name}.constructor`);
-  // A ctor-less chain into an EventEmitter base inherits `new C()` —
-  // zero arguments (the options bag fences, like the super() form).
-  // Stream subclasses come first: their chain roots at the emitter
-  // too, but the message should name the stream story.
-  if (inheritsBuiltinStreamCtor(lowerer, info) && (expr.arguments?.nodes ?? []).length > 0) {
-    lowerer.noLowering(
-      `new ${info.def.name.replace(/^%/, "")} with arguments through an inherited stream constructor`,
-      expr.arguments!.nodes[0]!,
-      "declare a constructor that passes an inline options object to super(...)",
-    );
-  }
-  if (lowerer.inheritsBuiltinEmitterCtor(info) && (expr.arguments?.nodes ?? []).length > 0) {
-    lowerer.unsupported(
-      "SC1090",
-      expr.arguments!.nodes[0]!,
-      "EventEmitter constructor options ('captureRejections')",
-    );
-  }
+  refuseInheritedBuiltinCtorArgs(lowerer, info, expr);
   // A ctor-less chain into a builtin error base inherits both arguments;
   // each synthesized constructor forwards the same pair to its base.
   const args = lowerer.inheritsBuiltinErrorCtor(info)
@@ -9466,18 +9504,57 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // fenced, so copying the scalar cannot create an observable lie.
     if (symbol && symbol.name === "Date" && lowerer.isStdlibSymbol(symbol)) {
       const args = expr.arguments?.nodes ?? [];
-      if (args.some(ts.isSpreadElement) || args.length > 1) {
+      if (args.some(ts.isSpreadElement)) {
         lowerer.noLowering(
-          `new Date with ${args.length} arguments`,
+          `new Date with spread arguments`,
           expr,
-          "new Date(), new Date(milliseconds), and new Date(dateString) are supported; the local-time year/month field constructor has no lowering",
+          "new Date(), new Date(milliseconds), new Date(dateString), and new Date(year, monthIndex, ...) with listed arguments are supported",
           symbol,
         );
+      }
+      // new Date(year, monthIndex[, date[, hours[, minutes[, seconds[, ms]]]]]):
+      // local-time fields, converted to UTC in the host zone at run time.
+      // JavaScript callers pass their arguments to the runtime's ToNumber
+      // (in order, exactly the constructor's coercions); typed callers
+      // pass numbers, completed with the spec's defaults (date 1, time
+      // parts 0) for the seven-f64 ABI.
+      if (args.length > 1) {
+        if (isJsSourceFile(expr.getSourceFile())) {
+          return {
+            kind: "libCall",
+            fn: "date.nativeNewFields",
+            args: [
+              {
+                kind: "dynArrLit",
+                elems: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+                type: DYN,
+                loc,
+              },
+            ],
+            type: DYN,
+            loc,
+          };
+        }
+        if (args.length > 7) {
+          lowerer.noLowering(`new Date with ${args.length} arguments`, expr, undefined, symbol);
+        }
+        const defaults = [0, 0, 1, 0, 0, 0, 0];
+        const fields: IrExpr[] = [];
+        for (let i = 0; i < 7; i++) {
+          const arg = args[i];
+          fields.push(
+            arg !== undefined
+              ? lowerer.lowerExprExpecting(arg, F64)
+              : { kind: "numLit", value: defaults[i]!, type: F64, loc },
+          );
+        }
+        return { kind: "libCall", fn: "date.newLocal", args: fields, type: DATE_T, loc };
       }
       if (isJsSourceFile(expr.getSourceFile())) {
         return {
           kind: "libCall",
-          fn: "date.nativeNew",
+          // One argument: a string parses with the full date parser.
+          fn: args.length === 1 ? "date.nativeNewValue" : "date.nativeNew",
           args: [
             {
               kind: "dynArrLit",
@@ -10123,6 +10200,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           `EventEmitter and stream class values constructed with options (construct with 'new ${info.def.name.slice(1)}({ ... })' directly)`,
         );
       }
+      // A program class whose constructor is the inherited runtime one
+      // takes no arguments through its class value either.
+      refuseInheritedBuiltinCtorArgs(lowerer, info, expr);
       defineClassValueConstruct(lowerer, info);
       const args = lowerer.completeArgs(
         expr.arguments?.nodes ?? [],

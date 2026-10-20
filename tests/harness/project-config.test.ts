@@ -425,6 +425,61 @@ test("node-types: promisified fs callback functions lower as their fs/promises c
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: util.promisify over typed callback-last functions settles like Node", async () => {
+  const outDir = outDirFor("promisify-callback-functions");
+  const entry = join(nodeTypesDir, "promisify-callback-functions.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "promisify-callback-functions"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: lookup-option unions and narrowed header-record entries under @types/node", async () => {
+  const outDir = outDirFor("lookup-and-header-entries");
+  const entry = join(nodeTypesDir, "lookup-and-header-entries.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "lookup-and-header-entries"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const native = await execFileAsync(result.binaryPath);
+  const node = await execFileAsync(process.execPath, [
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    entry,
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: stream subclasses extend the @types/node stream classes", async () => {
+  const outDir = outDirFor("stream-subclass-hooks");
+  const entry = join(nodeTypesDir, "stream-subclass-hooks.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "stream-subclass-hooks"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: promisified setTimeout and setImmediate lower as timers/promises", async () => {
   const outDir = outDirFor("promisify-timers");
   const entry = join(nodeTypesDir, "promisify-timers.ts");

@@ -21,6 +21,7 @@ import {
   type SrcLoc,
   canConvertToDyn,
   canDynCheckTo,
+  CLASS_FIELD_ATTRIBUTES_PREFIX,
   classDynViewSupported,
   DYN_CLASS_PROPERTIES,
   isClassOwnEnumerableFieldName,
@@ -500,12 +501,16 @@ function classInspectsThroughView(lowerer: Lowerer, info: ClassInfo | undefined)
   );
 }
 
-/** Whether a class holds properties added outside its declared layout, which
- * only its checked-dynamic view can list. Decided after lowering, when the
+/** Whether a class holds properties added outside its declared layout, or
+ * fields Object.defineProperty can make non-enumerable, which only its
+ * checked-dynamic view lists as Node does. Decided after lowering, when the
  * class has its final fields. */
 function classInspectsAddedProperties(lowerer: Lowerer, info: ClassInfo): boolean {
   return (
-    info.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES) &&
+    info.def.fields.some(
+      (field) =>
+        field.name === DYN_CLASS_PROPERTIES || field.name.startsWith(CLASS_FIELD_ATTRIBUTES_PREFIX),
+    ) &&
     classDynViewSupported(
       info.def.fields,
       (id) => lowerer.shapes.get(id),
