@@ -2122,6 +2122,70 @@ static bool scr_dyn_array_proto_name(const ScrStr *key) {
   return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
 }
 
+/* Own string keys of %TypedArray%.prototype, plus BYTES_PER_ELEMENT from
+ * each typed array's own prototype. */
+static bool scr_dyn_typed_array_proto_name(const ScrStr *key) {
+  static const char *const names[] = {
+    "constructor", "buffer", "byteLength", "byteOffset", "length", "entries", "keys", "values",
+    "at", "copyWithin", "every", "fill", "filter", "find", "findIndex", "findLast",
+    "findLastIndex", "forEach", "includes", "indexOf", "join", "lastIndexOf", "map", "reverse",
+    "reduce", "reduceRight", "set", "slice", "some", "sort", "subarray", "toReversed", "toSorted",
+    "with", "toLocaleString", "toString", "BYTES_PER_ELEMENT"
+  };
+  return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
+}
+
+/* Own string keys of Buffer.prototype that %TypedArray%.prototype lacks. */
+static bool scr_dyn_buffer_proto_name(const ScrStr *key) {
+  static const char *const names[] = {
+    "readBigUInt64LE", "readBigUInt64BE", "readBigUint64LE", "readBigUint64BE", "readBigInt64LE",
+    "readBigInt64BE", "writeBigUInt64LE", "writeBigUInt64BE", "writeBigUint64LE",
+    "writeBigUint64BE", "writeBigInt64LE", "writeBigInt64BE", "readUIntLE", "readUInt32LE",
+    "readUInt16LE", "readUInt8", "readUIntBE", "readUInt32BE", "readUInt16BE", "readUintLE",
+    "readUint32LE", "readUint16LE", "readUint8", "readUintBE", "readUint32BE", "readUint16BE",
+    "readIntLE", "readInt32LE", "readInt16LE", "readInt8", "readIntBE", "readInt32BE",
+    "readInt16BE", "writeUIntLE", "writeUInt32LE", "writeUInt16LE", "writeUInt8", "writeUIntBE",
+    "writeUInt32BE", "writeUInt16BE", "writeUintLE", "writeUint32LE", "writeUint16LE",
+    "writeUint8", "writeUintBE", "writeUint32BE", "writeUint16BE", "writeIntLE", "writeInt32LE",
+    "writeInt16LE", "writeInt8", "writeIntBE", "writeInt32BE", "writeInt16BE", "readFloatLE",
+    "readFloatBE", "readDoubleLE", "readDoubleBE", "writeFloatLE", "writeFloatBE", "writeDoubleLE",
+    "writeDoubleBE", "asciiSlice", "base64Slice", "base64urlSlice", "latin1Slice", "hexSlice",
+    "ucs2Slice", "utf8Slice", "asciiWrite", "base64Write", "base64urlWrite", "latin1Write",
+    "hexWrite", "ucs2Write", "utf8Write", "parent", "offset", "copy", "equals", "inspect",
+    "compare", "write", "toJSON", "swap16", "swap32", "swap64"
+  };
+  return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
+}
+
+/* Own string keys of DataView.prototype. */
+static bool scr_dyn_data_view_proto_name(const ScrStr *key) {
+  static const char *const names[] = {
+    "constructor", "buffer", "byteLength", "byteOffset", "getInt8", "setInt8", "getUint8",
+    "setUint8", "getInt16", "setInt16", "getUint16", "setUint16", "getInt32", "setInt32",
+    "getUint32", "setUint32", "getFloat32", "setFloat32", "getFloat64", "setFloat64",
+    "getBigInt64", "setBigInt64", "getBigUint64", "setBigUint64", "getFloat16", "setFloat16"
+  };
+  return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
+}
+
+/* `in` on a typed array, Buffer or DataView. On a typed array, a canonical
+ * numeric key (one that ToString(ToNumber(key)) reproduces, or "-0")
+ * answers by bounds alone: an integral index, not -0, below the length.
+ * Other keys name members of %TypedArray%.prototype, Buffer.prototype for a
+ * Buffer, or Object.prototype. A DataView has no indexed elements: its keys
+ * name members of DataView.prototype or Object.prototype. */
+static bool scr_dyn_bytes_in(const ScrDyn *v, const ScrStr *key) {
+  if (v->v.bytes->is_data_view) return scr_dyn_data_view_proto_name(key) || scr_dyn_object_proto_name(key);
+  if (key->len == 2 && memcmp(key->data, "-0", 2) == 0) return false;
+  double index = scr_string_to_number(key);
+  ScrStr *canonical = scr_f64_to_scrstr(index);
+  bool numeric = canonical->len == key->len && memcmp(canonical->data, key->data, key->len) == 0;
+  scr_str_release(canonical);
+  if (numeric) return index >= 0 && index == floor(index) && index < (double)v->v.bytes->len;
+  return scr_dyn_typed_array_proto_name(key) || (v->buffer && scr_dyn_buffer_proto_name(key)) ||
+         scr_dyn_object_proto_name(key);
+}
+
 static bool scr_dyn_object_proto_key(const ScrDyn *target, const ScrStr *key) {
   return !target->null_proto && scr_dyn_object_proto_name(key);
 }
@@ -7911,6 +7975,7 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     return out;
   }
   if (v->kind == SCR_DYN_PROXY) return scr_dyn_proxy_has(v, key);
+  if (v->kind == SCR_DYN_BYTES) return scr_dyn_bytes_in(v, key);
   if (scr_dyn_has_key(v, key)) return true;
   if (scr_exc_pending()) return false;
   if (v->kind == SCR_DYN_OBJ) return scr_dyn_builtin_inherited(v, key);
