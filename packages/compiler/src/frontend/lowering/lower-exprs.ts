@@ -2232,6 +2232,11 @@ export function caughtRead(
 ): IrExpr {
   const ref: IrExpr = { kind: "varRef", localId: local.id, type: CAUGHT, loc };
   const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
+  // A hand-written type predicate or assertion's claim about the thrown
+  // value is unchecked: the value crosses as a checked-dynamic value, so its
+  // reads answer what Node reads from the value actually thrown.
+  if (narrowed && narrowed.kind !== "dyn" && lowerer.narrowing.predicateClaim(node))
+    return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   if (
     narrowed &&
     (narrowed.kind === "f64" || narrowed.kind === "bool" || narrowed.kind === "string")

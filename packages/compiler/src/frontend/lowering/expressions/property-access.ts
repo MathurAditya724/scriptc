@@ -1,5 +1,6 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import * as ts from "../../ts7/adapter.js";
+import { lowerPredicateNarrowedRead } from "./predicate-reads.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
@@ -256,6 +257,14 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // A receiver a hand-written type predicate or assertion narrowed can hold
+  // another declared type: other arms read the member as Node does.
+  {
+    const claimed = lowerPredicateNarrowedRead(lowerer, expr, () =>
+      lowerPropertyAccessExpr(lowerer, expr, loc),
+    );
+    if (claimed) return claimed;
+  }
   if (!expr.questionDotToken) {
     const navigator = lowerNavigatorMember(lowerer, expr, NODE_COMPAT_VERSION);
     if (navigator) return navigator;
