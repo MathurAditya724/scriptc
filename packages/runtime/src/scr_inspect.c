@@ -1277,10 +1277,11 @@ static ScrStr *scr_insp_dyn_collection(ScrDyn *d, double recurse, double depth, 
   return out;
 }
 
-/* An own enumerable symbol-keyed property of `d` (borrowed), or NULL. */
+/* An own symbol-keyed property of `d` (borrowed) this render shows, or
+ * NULL: enumerable ones, and under showHidden the non-enumerable ones too. */
 static ScrDynEntry *scr_insp_symbol_entry(ScrDyn *d, size_t i) {
   ScrDynEntry *ent = scr_dyn_own_symbol_entry(d, d->symbol_keys->v.arr.items[i]);
-  return ent && ent->enumerable ? ent : NULL;
+  return ent && (ent->enumerable || g_show_hidden) ? ent : NULL;
 }
 
 /* An ordinary object: `Name { key: value }` with its constructor name
@@ -1334,7 +1335,10 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
     ScrStr *key = scr_insp_dyn(d->symbol_keys->v.arr.items[i], recurse + 1, depth);
     ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
     InspBuf eb = {0};
+    /* A hidden symbol key is bracketed like a hidden string key. */
+    if (!ent->enumerable) ib_char(&eb, '[');
     ib_bytes(&eb, key->data, key->len);
+    if (!ent->enumerable) ib_char(&eb, ']');
     ib_cstr(&eb, ": ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(key);
@@ -1486,7 +1490,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       ScrStr *base = scr_str_new("", 0);
       ScrStr *b0 = scr_str_new("[", 1);
       ScrStr *b1 = scr_str_new("]", 1);
-      ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, more);
+      /* groupArrayElements leaves the last entry out of the grid when
+       * there are more than maxArrayLength (100) entries: the "... N more
+       * items" tail, or under showHidden the `[length]` entry. */
+      bool trailing = shown + (more ? 1 : 0) + (g_show_hidden ? 1 : 0) > 100;
+      ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, trailing);
       scr_str_release(base);
       scr_str_release(b0);
       scr_str_release(b1);
