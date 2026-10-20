@@ -220,6 +220,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // measures with.
   unit((u) => u.opts.events && u.regex, "scr_readline_tty.c"),
   unit((u) => u.opts.emitter || u.opts.workers, "scr_events_emitter.c"),
+  // events.once with options registers through the emitter and
+  // event-target units.
+  unit((u) => u.opts.eventsOnceSignal === true, "scr_events_once_signal.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
   // net families (http implies net), so handle-free binaries keep
@@ -246,6 +249,16 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.symbol &&
       (u.opts.emitter || u.opts.workers),
     "scr_dyn_builtin_class.c",
+  ),
+  unit(
+    (u) =>
+      u.opts.dynBuiltinStream &&
+      u.opts.dynBuiltinClass &&
+      u.opts.stream &&
+      u.opts.inspect &&
+      u.opts.dynInvoke &&
+      u.opts.symbol,
+    "scr_dyn_builtin_stream.c",
   ),
   unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
   // The zlib stream classes reference both the zlib engine and the

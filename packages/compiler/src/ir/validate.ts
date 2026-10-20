@@ -4159,7 +4159,7 @@ function validateFunction(
       if (!ok) err(`libCall ${e.fn} must be a promise of its ${cryptoPromise} value`, e.loc);
       return true;
     }
-    if (e.fn === "events.once") {
+    if (e.fn === "events.once" || e.fn === "events.onceSignal") {
       const [recv, , boxer, errorBoxer] = e.args;
       const arrayT = e.type.kind === "promise" ? e.type.inner : null;
       const boxes = (b: IrExpr | undefined) =>
@@ -4170,7 +4170,7 @@ function validateFunction(
         !boxes(boxer) ||
         !boxes(errorBoxer)
       ) {
-        err(`libCall events.once must box its event tuples into the promised array`, e.loc);
+        err(`libCall ${e.fn} must box its event tuples into the promised array`, e.loc);
       }
       return true;
     }
@@ -5233,7 +5233,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "stream.dynNative") {
+    if (e.fn === "stream.dynNative" || e.fn === "stream.dynNativePipe") {
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const side = e.args[1];
       const className =

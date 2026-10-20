@@ -67,6 +67,7 @@ export interface EarlyExecutableNativeFeatures {
   dynAsync: boolean;
   dynTier?: boolean;
   streamDyn?: boolean;
+  eventsOnceSignal?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
@@ -74,6 +75,7 @@ export interface EarlyExecutableNativeFeatures {
   searchParams: boolean;
   qs: boolean;
   dynBuiltinClass: boolean;
+  dynBuiltinStream: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -194,6 +196,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "searchParams",
   "qs",
   "dynBuiltinClass",
+  "dynBuiltinStream",
   "parseArgs",
   "stream",
   "net",

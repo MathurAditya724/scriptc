@@ -171,6 +171,16 @@ export const UNDERSCORE_METHODS: ReadonlyMap<string, string> = new Map([
   ["flush", "_flush"],
 ]);
 
+/** The completion callback's parameter position in each underscore
+ * method that takes one (cbTuples' "fn" positions). */
+export const STREAM_COMPLETION_CALLBACK_INDEX: ReadonlyMap<string, number> = new Map([
+  ["_write", 2],
+  ["_final", 0],
+  ["_destroy", 1],
+  ["_transform", 2],
+  ["_flush", 0],
+]);
+
 /** The accepted option-callback names (canonical flag order) and the
  * duplex-shaped-head answer for one runtime stream class. */
 export function streamCtorShape(cls: string): {
@@ -1465,7 +1475,7 @@ export function lowerStreamStaticCall(
     member === "toWeb" &&
     cls === "%Readable" &&
     call.arguments.nodes.length === 2 &&
-    isJsSourceFile(call.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
     ts.isObjectLiteralExpression(call.arguments.nodes[1]!)
   ) {
     for (const p of call.arguments.nodes[1]!.properties.nodes) {
@@ -1499,7 +1509,7 @@ export function lowerStreamStaticCall(
     );
   }
   const type: IrType = { kind: "object", className: "%Readable" };
-  const js = isJsSourceFile(call.getSourceFile());
+  const js = isJsSourceFile(ts.getSourceFileOfNode(call));
   const srcNode = args[0];
   const optsNode = args[1];
   const srcT = srcNode ? lowerer.mapTypeOf(lowerer.typeOf(srcNode)) : null;
@@ -2117,7 +2127,7 @@ function lowerStreamArg(
         loc: locOf(node),
       });
     };
-    if (isJsSourceFile(node.getSourceFile()) && lowerer.dynConvertible(v.type)) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(node)) && lowerer.dynConvertible(v.type)) {
       if (what === "pipeline") {
         // Strings and arrays are iterables — VALID pipeline stages in
         // Node — and a record carrying a readable/writable member may be
@@ -3131,7 +3141,7 @@ function lowerOperatorCallback(
   if (v.type.kind === "dyn") return v;
   if (
     v.type.kind !== "func" &&
-    isJsSourceFile(node.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
     lowerer.dynConvertible(v.type)
   ) {
     // JavaScript passes any value; Node's validateFunction throws.
