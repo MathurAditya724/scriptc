@@ -1081,8 +1081,15 @@ function copyEntrySync(
       throw new Error(`Cannot overwrite non-directory '${dest}' with directory '${src}'.`);
     if (!destExists) fs.mkdirSync(dest);
     for (const item of fs.readdirSync(src)) {
+      const srcItem = path.join(src, item);
       const destItem = path.join(dest, item);
-      copyEntrySync(state, path.join(src, item), destItem, fs.existsSync(destItem), false);
+      // fs-extra's copyDirItem checks every entry against its destination:
+      // a destination symlink back into the source tree must not let the
+      // overwrite below unlink the source's own file.
+      const destItemStat = statOrNullSync(destItem);
+      if (destItemStat !== null && sameNode(fs.statSync(srcItem), destItemStat))
+        throw new Error("Source and destination must not be the same.");
+      copyEntrySync(state, srcItem, destItem, destItemStat !== null, false);
     }
     if (!destExists) fs.chmodSync(dest, srcStat.mode);
     return;

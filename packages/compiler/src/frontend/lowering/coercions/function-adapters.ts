@@ -4,6 +4,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrParam, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import {
   canAdaptDynFuncTo,
+  canDynCheckTo,
   DYN,
   F64,
   isUnitType,
@@ -341,6 +342,19 @@ export function funcCoerceAdapter(
       voidRet = toT.ret.kind === "dyn" ? "dyn" : "strand";
     }
   }
+  // An untyped result (a generic wrapper's `any` handed back `as F`) takes
+  // the checked-dynamic extraction to the slot's result: a record checks
+  // its shape, a Promise keeps its identity and checks its payload when it
+  // settles.
+  const checkedRet =
+    strandRet &&
+    fromT.ret.kind === "dyn" &&
+    canDynCheckTo(
+      toT.ret,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    );
+  if (checkedRet) strandRet = false;
   const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
@@ -439,6 +453,10 @@ export function funcCoerceAdapter(
         strandThrow(
           `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the result cannot convert to '${lowerer.fmt(toT.ret)}' — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
         ),
+      ];
+    } else if (checkedRet) {
+      body = [
+        { kind: "return", value: { kind: "dynCheck", value: call, type: toT.ret, loc }, loc },
       ];
     } else {
       const result = lowerer.coerceToExpected(call, toT.ret);

@@ -191,6 +191,11 @@ typedef enum {
   X(SHARED_ARRAY_BUFFER, 37) \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(URL, 28) /* native WHATWG URL */ \
+  X(WASM_GLOBAL, 61) /* WebAssembly.Global */ \
+  X(WASM_INSTANCE, 58) /* WebAssembly.Instance */ \
+  X(WASM_MEMORY, 59) /* WebAssembly.Memory */ \
+  X(WASM_MODULE, 57) /* WebAssembly.Module (scr_wasm.c) */ \
+  X(WASM_TABLE, 60) /* WebAssembly.Table */ \
   X(WEAK_MAP, 23) /* native weak-key metadata */ \
   X(WEAK_SET, 24) /* native weak membership */ \
   X(WEB_CONTROLLER, 11) /* native ReadableStreamDefaultController */ \
@@ -1148,6 +1153,12 @@ ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *pr
  * must be static literals (the box never frees them; name may be NULL). */
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name);
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
+/* EventEmitter and the stream constructors as untyped constructor values,
+ * and instanceof over untyped constructor functions
+ * (scr_dyn_builtin_class.c, linked with the dynBuiltinClass feature). */
+ScrDyn *scr_dyn_builtin_class(double kind);
+bool scr_dyn_builtin_instanceof(ScrDyn *value, double kind);
+bool scr_dyn_function_instanceof(ScrDyn *value, ScrDyn *callee);
 bool scr_dyn_class_is_key(const ScrDyn *value, const ScrStr *type_key);
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key);
 /* Calls a dyn value: a non-function kind throws the catchable TypeError
@@ -1281,7 +1292,8 @@ typedef struct ScrDynHandleOps {
    * inspector returns `this`) instead of the bare class name. */
   bool inspect_bracketed_past_depth;
   /* The @@toStringTag when it differs from cls: String() answers
-   * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`. */
+   * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`, or
+   * `<tag> <view>` when the tag ends with "." and cls, as Node does. */
   const char *to_string_tag;
   /* The view has no properties, so util.inspect prints it in full at any
    * depth, as Node prints `{}`. */

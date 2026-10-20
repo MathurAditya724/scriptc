@@ -80,21 +80,54 @@ declare namespace NodeJS {
     path?: string | undefined;
     syscall?: string | undefined;
   }
-  /* The piped child-output stream (child.stdout / child.stderr under
-   * stdio ["ignore", "pipe", "pipe"]): 'data' fires one Buffer chunk per
-   * read (≤64KB, consumer-driven — no listener, no read), 'end' fires
-   * once at EOF and always BEFORE the child's 'exit'. A flowing stream
-   * keeps the loop alive. */
+  /* The readable-stream interface every Node stream implements. The
+   * piped child-output stream (child.stdout / child.stderr under stdio
+   * ["ignore", "pipe", "pipe"]) is declared with it: 'data' fires one
+   * Buffer chunk per read (≤64KB, consumer-driven — no listener, no
+   * read), 'end' fires once at EOF and always BEFORE the child's 'exit'. A
+   * flowing stream keeps the loop alive. A program that also passes
+   * other streams (fs, zlib, node:stream) where this interface is
+   * expected compiles it as the node:stream Readable, with child output
+   * bridged into one. */
   interface ReadableStream {
     on(event: "data", listener: (chunk: Buffer) => void): void;
     on(event: "data", listener: (chunk: string) => void): void;
     on(event: "end", listener: () => void): void;
+    on(event: string, listener: (...args: any[]) => void): void;
     once(event: "data", listener: (chunk: Buffer) => void): void;
     once(event: "data", listener: (chunk: string) => void): void;
     once(event: "end", listener: () => void): void;
+    once(event: string, listener: (...args: any[]) => void): void;
     /* setEncoding('utf8') makes subsequent data chunks strings, including
      * multibyte sequences split across native pipe reads. */
     setEncoding(encoding: string): this;
+    readonly readable: boolean;
+    pause(): this;
+    resume(): this;
+    isPaused(): boolean;
+    pipe<T extends WritableStream>(destination: T, options?: { end?: boolean }): T;
+    unpipe(destination?: WritableStream): this;
+    [Symbol.asyncIterator](): AsyncIterableIterator<string | Buffer>;
+  }
+  /* The writable-stream interface every Node stream implements:
+   * process.stdout/process.stderr, fs.WriteStream and the node:stream
+   * Writable family. Written only to the process streams, it compiles as
+   * their descriptor; with other streams flowing into it, as the
+   * node:stream Writable (the process streams convert into one). */
+  interface WritableStream {
+    readonly writable: boolean;
+    write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
+    write(
+      data: string | Uint8Array,
+      encoding: BufferEncoding,
+      callback?: (error?: Error | null) => void,
+    ): boolean;
+    end(callback?: () => void): void;
+    end(data: string | Uint8Array, callback?: () => void): void;
+    end(data: string | Uint8Array, encoding: BufferEncoding, callback?: () => void): void;
+    /* Node's EventEmitter signature: listeners take untyped arguments. */
+    on(event: string, listener: (...args: any[]) => void): void;
+    once(event: string, listener: (...args: any[]) => void): void;
   }
 }
 
@@ -1271,8 +1304,37 @@ declare module "node:perf_hooks" {
     getEntriesByType(type: EntryType): PerformanceEntry[];
     clearMarks(name?: string): void;
     clearMeasures(name?: string): void;
+    eventLoopUtilization(
+      utilization1?: EventLoopUtilization,
+      utilization2?: EventLoopUtilization,
+    ): EventLoopUtilization;
   }
   export const performance: Performance;
+  /* Event-loop metrics: utilization (idle/active ms since the loop started)
+   * and monitorEventLoopDelay's sampling histogram (nanoseconds). */
+  export interface EventLoopUtilization {
+    idle: number;
+    active: number;
+    utilization: number;
+  }
+  export interface EventLoopMonitorOptions {
+    resolution?: number | undefined;
+  }
+  export interface Histogram {
+    readonly count: number;
+    readonly exceeds: number;
+    readonly max: number;
+    readonly mean: number;
+    readonly min: number;
+    readonly stddev: number;
+    percentile(percentile: number): number;
+    reset(): void;
+  }
+  export interface IntervalHistogram extends Histogram {
+    enable(): boolean;
+    disable(): boolean;
+  }
+  export function monitorEventLoopDelay(options?: EventLoopMonitorOptions): IntervalHistogram;
 }
 declare module "perf_hooks" {
   export * from "node:perf_hooks";
@@ -3066,8 +3128,10 @@ declare module "child_process" {
     destroy(): void;
     on(event: "drain" | "finish", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
+    on(event: string, listener: (...args: any[]) => void): void;
     once(event: "drain" | "finish", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(event: string, listener: (...args: any[]) => void): void;
   }
 
   export interface ChildProcess extends Disposable {
@@ -6414,7 +6478,7 @@ declare module "node:cluster" {
 /* node:tty — the fd probe (the same isatty(3) behind process.*.isTTY)
  * and the supported structural view of a process output stream. */
 declare module "tty" {
-  export interface WriteStream {
+  export interface WriteStream extends NodeJS.WritableStream {
     write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
     write(
       data: string | Uint8Array,
@@ -6664,8 +6728,8 @@ declare module "stream" {
     resume(): this;
     isPaused(): boolean;
     setEncoding(encoding: string): this;
-    pipe<T extends Writable>(destination: T, options?: { end?: boolean }): T;
-    unpipe(destination?: Writable): this;
+    pipe<T extends NodeJS.WritableStream>(destination: T, options?: { end?: boolean }): T;
+    unpipe(destination?: NodeJS.WritableStream): this;
     destroy(error?: Error): this;
     readonly readable: boolean;
     readonly readableEnded: boolean;

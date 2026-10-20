@@ -16,6 +16,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
+    ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     zlib: features.zlib,
@@ -31,6 +32,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     bigint: features.bigint,
     searchParams: features.searchParams,
     qs: features.qs,
+    dynBuiltinClass: features.dynBuiltinClass,
     parseArgs: features.parseArgs,
     stream: features.stream,
     net: features.net,
@@ -45,5 +47,6 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     tlsCa: features.tlsCa,
     cipher: features.cipher,
     webcrypto: features.webcrypto,
+    perfLoop: features.perfLoop,
   };
 }
