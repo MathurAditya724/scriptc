@@ -179,6 +179,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit((u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch, "scr_dyn_invoke.c"),
+  unit((u) => u.opts.dynInvoke, "scr_bytes_proto_set.c"),
   // Fixed-width Buffer methods called on checked-dynamic values.
   unit((u) => u.opts.dynBufferNum === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),

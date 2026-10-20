@@ -138,8 +138,9 @@ test("the zero-cost gate recognizes dynamic-tier runtime symbols", () => {
       "scr_js_load_ic",
       "scr_dyn_obj_read",
       "scr_dyn_obj_read",
+      "scr_dyn_typed_array_proto_set",
     ]),
-  ).toEqual(["scr_dyn_obj_read", "scr_js_load_ic"]);
+  ).toEqual(["scr_dyn_obj_read", "scr_dyn_typed_array_proto_set", "scr_js_load_ic"]);
 });
 
 test("the zero-cost gate reads function names from ELF and Mach-O nm output", () => {

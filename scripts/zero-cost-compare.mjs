@@ -360,6 +360,7 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_function_apply",
   "scr_dyn_fn_get",
   "scr_dyn_this_get",
+  "scr_dyn_typed_array_",
   // Dynamic operators and coercions.
   "scr_dyn_add_",
   "scr_dyn_arithmetic",
