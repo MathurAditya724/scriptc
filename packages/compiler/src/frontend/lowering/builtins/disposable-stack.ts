@@ -13,7 +13,7 @@ const STACK_CLASSES: readonly StackClass[] = ["DisposableStack", "AsyncDisposabl
 function stdlibStackClassOf(lowerer: Lowerer, node: ts.Expression): StackClass | null {
   const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node));
   for (const symbol of [type.getSymbol(), type.getAliasSymbol()]) {
-    const name = STACK_CLASSES.find((cls) => cls === symbol?.name);
+    const name = symbol && STACK_CLASSES.find((cls) => cls === ts.symbolName(symbol));
     if (name && symbol && lowerer.isStdlibSymbol(symbol)) return name;
   }
   return null;

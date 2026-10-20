@@ -3,6 +3,7 @@ import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
 import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { timerStyleCallback } from "../lower-timers.js";
 import * as ts from "../../ts7/adapter.js";
+import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
@@ -27,6 +28,7 @@ import {
   funcOf,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
+import { builtinFunctionValue } from "../lower-exprs.js";
 import { canonicalBuiltinModule } from "../../builtin-modules.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
@@ -190,14 +192,14 @@ export function lowerProcStreamMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  if (isJsSourceFile(call.getSourceFile())) {
+  if (isJsSourceFile(ts.getSourceFileOfNode(call))) {
     const receiver = lowerer.lowerExpr(access.expression);
     if (receiver.type.kind === "dyn") {
       return {
         kind: "dynInvoke",
         recv: receiver,
         method: name,
-        calleeName: call.expression.getText(),
+        calleeName: ts.getTextOfNode(call.expression),
         args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
         type: DYN,
         loc,
@@ -212,7 +214,7 @@ export function lowerProcStreamMethodCall(
         kind: "dynInvoke",
         recv: receiver,
         method: name,
-        calleeName: call.expression.getText(),
+        calleeName: ts.getTextOfNode(call.expression),
         args: [],
         type: DYN,
         loc,
@@ -224,6 +226,7 @@ export function lowerProcStreamMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     const data = lowerer.lowerExpr(call.arguments.nodes[0]!);
     if (data.type.kind !== "string") {
+      requestGeneralStreamSurface(lowerer, access.expression);
       lowerer.noLowering(
         `write of '${lowerer.fmt(data.type)}' data on a stream value`,
         call.arguments.nodes[0]!,
@@ -232,6 +235,7 @@ export function lowerProcStreamMethodCall(
     }
     return { kind: "libCall", fn: "procStream.write", args: [receiver, data], type: BOOL, loc };
   }
+  requestGeneralStreamSurface(lowerer, access.expression);
   lowerer.noLowering(
     `WritableStream.${name}`,
     call,
@@ -272,7 +276,7 @@ export function lowerProcessStreamProperty(
     ? lowerer.stdlibGlobalMember(expr.expression, "process")
     : null;
   if (
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     (direct === "stdin" ||
       direct === "stdout" ||
       direct === "stderr" ||
@@ -578,6 +582,11 @@ export function lowerProcessProperty(
   if (member === "hrtime") {
     return { kind: "libCall", fn: "process.hrtimeValue", args: [], type: DYN, loc };
   }
+  // A stored process.nextTick in JavaScript (`cond ? setImmediate :
+  // process.nextTick`): the interned builtin function value.
+  if (member === "nextTick" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    return builtinFunctionValue("process.nextTick", loc);
+  }
   if (member === "getBuiltinModule") {
     // Keep the native loader's argument validation when the function is
     // stored. The declaration's string signature must not insert a checked
@@ -658,7 +667,7 @@ export function lowerProcessProperty(
   // OUTER expressions dispatch first.
   if (
     member === "stdin" ||
-    ((member === "stdout" || member === "stderr") && isJsSourceFile(expr.getSourceFile()))
+    ((member === "stdout" || member === "stderr") && isJsSourceFile(ts.getSourceFileOfNode(expr)))
   ) {
     return {
       kind: "libCall",
@@ -688,7 +697,10 @@ export function lowerProcessMethodCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken) return null;
-  if (isJsSourceFile(call.getSourceFile()) && ts.isPropertyAccessExpression(access.expression)) {
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    ts.isPropertyAccessExpression(access.expression)
+  ) {
     const stream = lowerer.stdlibGlobalMember(access.expression, "process");
     if (stream === "stdin" || stream === "stdout" || stream === "stderr") {
       if (call.arguments.nodes.some(ts.isSpreadElement))
@@ -697,7 +709,7 @@ export function lowerProcessMethodCall(
         kind: "dynInvoke",
         recv: lowerer.lowerExpr(access.expression),
         method: access.name.text,
-        calleeName: access.getText(),
+        calleeName: ts.getTextOfNode(access),
         args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
         type: DYN,
         loc: locOf(call),
@@ -874,7 +886,7 @@ export function lowerProcessMethodCall(
             loc,
           },
           receiver,
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args: [
             lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN),
             lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
@@ -1071,7 +1083,7 @@ export function lowerProcessMethodCall(
       // `writeOut: (str) => process.stdout.write(str)` — str untyped):
       // a runtime string writes; anything else throws the dynCheck's
       // honest TypeError at the call.
-      if (data.type.kind === "dyn" && isJsSourceFile(call.getSourceFile())) {
+      if (data.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
         data = { kind: "dynCheck", value: data, type: STRING, loc };
       }
       const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
@@ -1086,7 +1098,7 @@ export function lowerProcessMethodCall(
       let callback: IrExpr | undefined;
       if (callbackNode) {
         callback = lowerer.lowerExpr(callbackNode);
-        if (callback.type.kind === "dyn" && isJsSourceFile(call.getSourceFile())) {
+        if (callback.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
           callback = {
             kind: "dynCheck",
             value: callback,

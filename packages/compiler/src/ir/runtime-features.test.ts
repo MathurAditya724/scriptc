@@ -77,6 +77,13 @@ describe("runtime feature snapshots", () => {
     });
   });
 
+  test("links the async disposable unit for an AsyncDisposableStack check alone", () => {
+    const mod = module();
+    expect(moduleRuntimeFeatures(mod).dynAsync).toBe(false);
+    mod.functions[0]!.body.push(call("disposable.asyncStackIs"));
+    expect(moduleRuntimeFeatures(mod).dynAsync).toBe(true);
+  });
+
   test("detects promise boxing independently of static promise storage", () => {
     const mod = module();
     const promise = { kind: "promise" as const, inner: STRING };

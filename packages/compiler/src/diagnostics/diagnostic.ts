@@ -59,8 +59,9 @@
  *            order that differs from insertion order where the program
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
- *            to a cast to an unrelated class (SC6004), and Date strings the native parser does not
- *            accept (SC6005)
+ *            to a cast to an unrelated class (SC6004); SC6005 (Date strings
+ *            outside the native parser's grammar) is retired — the runtime
+ *            parses date strings with V8's grammar
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
@@ -200,18 +201,6 @@ export function unrelatedClassCastDivergenceDiag(
   };
 }
 
-/** SC6005 — a Date string literal outside the grammar the native parser
- * accepts (ISO 8601 with an explicit offset, date-only forms, and the
- * certificate-time shape): Node parses many more forms. */
-export function dateLiteralDivergenceDiag(text: string, loc: SrcLoc): ScrDiagnostic {
-  return {
-    code: "SC6005",
-    message: `the date string '${text}' parses to an invalid date (NaN) natively, while Node accepts it (the native parser takes ISO 8601 date-times with an explicit offset, such as '2024-01-02T03:04:05Z', and date-only forms)`,
-    loc,
-    hint: "write the date in ISO 8601 with an explicit offset ('Z' or '+HH:MM'), or build it from numbers with Date.UTC",
-  };
-}
-
 /* ── SC5xxx: native FFI ───────────────────────────────────────────────── */
 
 /** SC5001 — the outbound native-FFI manifest is malformed or unreadable. */
@@ -282,11 +271,11 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
       "imports (#alias via the imports field, self-name references via " +
       "exports), statically compiled npm packages, " +
       "and the built-in fs, fs/promises, path, os, url, crypto, zlib, " +
-      "child_process, net, http, tls, https, http2, dgram, dns, util, " +
+      "child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, " +
       "util/types, string_decoder, querystring, readline, events, stream, " +
-      "stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, " +
+      "stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, " +
       "cluster, tty, async_hooks, timers, timers/promises, " +
-      "diagnostics_channel, perf_hooks, module, and console modules (bare or " +
+      "diagnostics_channel, perf_hooks, module, v8, and console modules (bare or " +
       "node:-prefixed) and node:test (node:-prefixed only, like in Node) " +
       "are supported",
   },
@@ -751,17 +740,20 @@ export function noLoweringDiag(
   };
 }
 
-/** A REACHED use of the WebAssembly API (SC2020): scriptc.d.ts declares
- * its types so packages that mention them typecheck, but no module
- * compiles to native code yet. `surface` names what was used
- * ('WebAssembly.compile', 'new WebAssembly.Module', 'globalThis.WebAssembly'). */
+/** A REACHED use of a part of the WebAssembly API scriptc does not
+ * implement yet (SC2020): the streaming functions, Tag and Exception, the
+ * classes as values. compile, instantiate, validate, the Module, Instance,
+ * Memory, Table and Global constructors, Module.imports/exports/
+ * customSections and the error classes lower (builtins/webassembly.ts).
+ * `surface` names what was used ('WebAssembly.compileStreaming',
+ * 'WebAssembly.Memory'). */
 export function webAssemblyDiag(surface: string, loc: SrcLoc): ScrDiagnostic {
   return {
     code: "SC2020",
-    message: `'${surface}' is not supported yet: scriptc does not compile WebAssembly modules to native code yet`,
+    message: `'${surface}' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, and the error classes over modules translated at build time, but not this part of the API`,
     loc,
     milestone: "later",
-    hint: "WebAssembly support is planned as translation of each module whose bytes the build can see (an inline literal, or a file read from a path the compiler resolves) into native code; 'scriptc coverage' lists the modules this program would load (https://scriptc.dev/limitations)",
+    hint: "the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)",
   };
 }
 
