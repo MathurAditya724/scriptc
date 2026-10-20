@@ -3,6 +3,7 @@ import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
 import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { timerStyleCallback } from "../lower-timers.js";
 import * as ts from "../../ts7/adapter.js";
+import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
@@ -225,6 +226,7 @@ export function lowerProcStreamMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     const data = lowerer.lowerExpr(call.arguments.nodes[0]!);
     if (data.type.kind !== "string") {
+      requestGeneralStreamSurface(lowerer, access.expression);
       lowerer.noLowering(
         `write of '${lowerer.fmt(data.type)}' data on a stream value`,
         call.arguments.nodes[0]!,
@@ -233,6 +235,7 @@ export function lowerProcStreamMethodCall(
     }
     return { kind: "libCall", fn: "procStream.write", args: [receiver, data], type: BOOL, loc };
   }
+  requestGeneralStreamSurface(lowerer, access.expression);
   lowerer.noLowering(
     `WritableStream.${name}`,
     call,

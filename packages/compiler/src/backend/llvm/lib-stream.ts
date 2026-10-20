@@ -56,6 +56,8 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       host.declare(`declare void @scr_child_stream_thunk0(ptr, ptr)`);
     } else if (param.kind === "union") {
       adapter = host.childDataThunkFor(param);
+    } else if (param.kind === "dyn") {
+      adapter = host.childDataDynThunkFor("bytes");
     } else {
       adapter = "scr_child_stream_thunk_bytes";
       host.declare(`declare void @scr_child_stream_thunk_bytes(ptr, ptr)`);
@@ -78,7 +80,8 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
   if (e.fn === "stream.onDataStr") {
     host.usesTimers = true;
     const cbT = e.args[1]!.type;
-    if (cbT.kind !== "func" || cbT.params[0]?.kind !== "string") {
+    const strParam = cbT.kind === "func" ? cbT.params[0]?.kind : undefined;
+    if (strParam !== "string" && strParam !== "dyn") {
       throw new InternalCompilerError(
         "llvm emitter bug: stream.onDataStr callback not a string func",
       );
@@ -87,10 +90,12 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const cb = host.emitExpr(e.args[1]!);
     const once = host.emitExpr(e.args[2]!);
     host.toHeap(cb);
-    host.declare(`declare void @scr_child_stream_thunk_str(ptr, ptr)`);
+    let adapter = "scr_child_stream_thunk_str";
+    if (strParam === "dyn") adapter = host.childDataDynThunkFor("str");
+    else host.declare(`declare void @scr_child_stream_thunk_str(ptr, ptr)`);
     host.declare(`declare void @scr_child_stream_on_data_str(ptr, ptr, ptr, i1 zeroext)`);
     B.line(
-      `call void @scr_child_stream_on_data_str(ptr ${s0.name}, ptr ${cb.name}, ptr @scr_child_stream_thunk_str, i1 ${once.name})`,
+      `call void @scr_child_stream_on_data_str(ptr ${s0.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`,
     );
     return { name: "", type: e.type };
   }
