@@ -6465,7 +6465,10 @@ function lowerCjsExportStatement(
     // storage — collectGlobals skipped it; importers re-resolve through
     // cjsMemberExportClassSymbol): the statement lowers to nothing.
     if (lowerer.cjsMemberExportClassSymbol(cjs.expr) !== null) {
-      return { kind: "block", body: [], loc };
+      // An inline require still evaluates its module here.
+      const req = inlineProgramRequireOf(lowerer, cjs.value);
+      const init = req !== null ? lowerer.requireInitStmt(req.spec, req.call) : null;
+      return init ?? { kind: "block", body: [], loc };
     }
     // The tsc VOID-INIT PREAMBLE (`exports.leaf = void 0;` with the real
     // `exports.leaf = leaf;` further down — every tsc-emitted dist file
@@ -6926,12 +6929,13 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     if (
       ts.isBinaryExpression(expr) &&
       expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      isCjsExportsIdentifier(lowerer, expr.left)
+      isCjsExportsIdentifier(lowerer, expr.left) &&
+      cjsExportAssignmentOf(stmtNode)?.kind !== "table"
     ) {
       lowerer.unsupported(
         "SC1090",
         expr.left,
-        "rebinding 'exports' (exports = module.exports = value): members attached through 'exports' afterwards are properties of that value, which the static export table does not model — write module.exports.<name> = … and module.exports = value",
+        "rebinding 'exports' without module.exports (exports = value): members attached through 'exports' afterwards are properties of that value, which module.exports does not hold — write exports = module.exports = value",
       );
     }
     const cjs = cjsExportAssignmentOf(stmtNode);
