@@ -324,6 +324,9 @@ typedef struct {
 
 static SCR_TL InspSeenEnt *g_seen;
 static SCR_TL size_t g_nseen;
+/* util.format's %o (scr_insp_dyn_hidden): this render shows hidden own
+ * properties, like util.inspect's showHidden. */
+static SCR_TL bool g_show_hidden;
 static SCR_TL size_t g_seen_cap;
 /* Detection-numbered circular targets (persist across the call). */
 static SCR_TL const void *g_circ[64];
@@ -1283,9 +1286,15 @@ static ScrDynEntry *scr_insp_symbol_entry(ScrDyn *d, size_t i) {
 /* An ordinary object: `Name { key: value }` with its constructor name
  * `cls` (NULL for a plain object). Node's default view lists the own
  * enumerable string keys, then the own enumerable symbol keys. */
+/* An own entry this render shows: enumerable ones, and under showHidden
+ * the non-enumerable ones too (never the encoding's `%` markers). */
+static bool insp_obj_shows(const ScrDynEntry *ent) {
+  return ent->enumerable || (g_show_hidden && !(ent->key_len && ent->key[0] == '%'));
+}
+
 static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char *cls) {
   size_t shown = 0;
-  for (size_t i = 0; i < d->v.obj.len; i++) shown += d->v.obj.entries[i].enumerable;
+  for (size_t i = 0; i < d->v.obj.len; i++) shown += insp_obj_shows(&d->v.obj.entries[i]);
   size_t nsymbols = d->symbol_keys ? d->symbol_keys->v.arr.len : 0;
   for (size_t i = 0; i < nsymbols; i++) shown += scr_insp_symbol_entry(d, i) != NULL;
   if (shown == 0) {
@@ -1301,10 +1310,17 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
   scr_insp_begin(recurse + 1);
   for (size_t i = 0; i < d->v.obj.len; i++) {
     ScrDynEntry *ent = &d->v.obj.entries[i];
-    if (!ent->enumerable) continue;
+    if (!insp_obj_shows(ent)) continue;
     ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
     InspBuf eb = {0};
-    insp_key_into(&eb, ent->key, ent->key_len);
+    if (ent->enumerable) {
+      insp_key_into(&eb, ent->key, ent->key_len);
+    } else {
+      /* formatProperty's hidden key: the key's rendering in brackets. */
+      ib_char(&eb, '[');
+      insp_key_into(&eb, ent->key, ent->key_len);
+      ib_char(&eb, ']');
+    }
     ib_cstr(&eb, ": ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(val);
@@ -1379,8 +1395,35 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
   return out;
 }
 
+/* Under showHidden, the kinds whose hidden entries this inspector does not
+ * render (a function's length/name/prototype, an error's stack, a typed
+ * array's byte fields, a native handle's internals): the kind's name, NULL
+ * for the kinds it renders. */
+static const char *insp_hidden_refusal(const ScrDyn *d) {
+  switch (d->kind) {
+    case SCR_DYN_FUNC: return "function";
+    case SCR_DYN_BYTES: return d->buffer ? "Buffer" : d->v.bytes->is_data_view ? "DataView" : "typed array";
+    case SCR_DYN_OBJ: return scr_dyn_obj_get(d, "%error", 6) != NULL ? "Error" : NULL;
+    case SCR_DYN_HANDLE:
+      return d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_SET ||
+                     d->v.handle.tag == SCR_DYNH_DATE
+                 ? NULL
+                 : scr_dyn_handle_cls(d);
+    default: return NULL;
+  }
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
+  const char *refused = g_show_hidden ? insp_hidden_refusal(d) : NULL;
+  if (refused) {
+    InspBuf out = {0};
+    ib_cstr(&out, "util.format %o of ");
+    ib_cstr(&out, refused);
+    ib_cstr(&out, " values is not supported yet");
+    scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+    return scr_str_new("", 0);
+  }
   switch (d->kind) {
     case SCR_DYN_NULL:
       return scr_str_new("null", 4);
@@ -1398,14 +1441,14 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       return scr_insp_str(d->v.str);
     case SCR_DYN_ARR: {
       size_t len = d->v.arr.len;
-      if (len == 0) return scr_str_new("[]", 2);
+      if (len == 0 && !g_show_hidden) return scr_str_new("[]", 2);
       if (recurse > depth) return scr_str_new("[Array]", 7);
       scr_insp_begin(recurse + 1);
       /* Node's maxArrayLength (100) counts output entries; a run of holes
        * is one `<n empty items>` entry (formatSpecialArray). */
       const unsigned char *presence = d->v.arr.presence;
-      size_t i = 0;
-      for (size_t shown = 0; i < len && shown < 100; shown++) {
+      size_t i = 0, shown = 0;
+      for (; i < len && shown < 100; shown++) {
         if (presence && !presence[i]) {
           size_t next = i + 1;
           while (next < len && !presence[next]) next++;
@@ -1427,6 +1470,18 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         ScrStr *m = scr_insp_more_items((double)(len - i));
         scr_insp_entry(m, d->v.arr.items[i]->kind == SCR_DYN_NUM);
         scr_str_release(m);
+      }
+      if (g_show_hidden) {
+        /* The own non-enumerable `length`, after the items. Node's
+         * grouping reads value[k] for every output position k, this one
+         * included. */
+        size_t at = shown + (more ? 1 : 0);
+        char line[48];
+        int n = snprintf(line, sizeof line, "[length]: %zu", len);
+        ScrStr *s = scr_str_new(line, (size_t)n);
+        scr_insp_entry(s, at < len && (!presence || presence[at]) &&
+                              d->v.arr.items[at]->kind == SCR_DYN_NUM);
+        scr_str_release(s);
       }
       ScrStr *base = scr_str_new("", 0);
       ScrStr *b0 = scr_str_new("[", 1);
@@ -1594,6 +1649,16 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth) {
   if (d->kind == SCR_DYN_STR) return scr_str_retain(d->v.str);
   return scr_insp_dyn(d, 0, depth);
+}
+
+/* util.format's %o over a dyn value: util.inspect with showHidden at the
+ * given depth. */
+ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth) {
+  bool outer = g_show_hidden;
+  g_show_hidden = true;
+  ScrStr *out = scr_insp_dyn(d, 0, depth);
+  g_show_hidden = outer;
+  return out;
 }
 
 /* ── console.table cells ─────────────────────────────────────────────── */

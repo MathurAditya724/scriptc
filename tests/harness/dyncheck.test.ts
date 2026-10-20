@@ -1238,4 +1238,34 @@ console.log("done", caught);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("done 100\n");
   });
+
+  test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {
+    // Node's showHidden adds a function's length/name/prototype, an
+    // error's stack and a typed array's byte fields; %o throws the 'not
+    // supported yet' Error for them instead of printing without them.
+    const r = await compileAndRun(
+      "format-o-hidden-refusals",
+      `import { format } from "node:util";
+function f(): void {}
+const values: [string, unknown][] = [["fn", f], ["err", new Error("e")], ["u8", new Uint8Array(1)], ["arr", [1]]];
+for (const [label, value] of values) {
+  try {
+    console.log(label, format("%o", value));
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "fn util.format %o of function values is not supported yet",
+        "err util.format %o of Error values is not supported yet",
+        "u8 util.format %o of typed array values is not supported yet",
+        "arr [ 1, [length]: 1 ]",
+        "",
+      ].join("\n"),
+    );
+  });
 });

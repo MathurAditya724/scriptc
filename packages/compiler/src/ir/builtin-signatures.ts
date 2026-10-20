@@ -3944,6 +3944,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.error": { argTypes: [null, F64, F64], result: STRING },
   "insp.dyn": { argTypes: [DYN, F64, F64], result: STRING },
   "insp.dynS": { argTypes: [DYN, F64], result: STRING },
+  /** util.format's %o over a checked-dynamic value: inspect with
+   * showHidden. Kinds whose hidden entries have no rendering throw the
+   * 'not supported yet' Error. */
+  "insp.dynHidden": { argTypes: [DYN, F64], result: STRING },
   "insp.begin": { argTypes: [F64], result: VOID },
   /** util.inspect's breakLength, compact (0 for false) and sorted for the
    * renders that follow; the call site restores 80, 3 and false afterwards. */

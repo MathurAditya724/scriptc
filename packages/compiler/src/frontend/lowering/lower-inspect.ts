@@ -1982,10 +1982,21 @@ function formatSArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
 }
 
 /** %O (depth 2) / %o (showHidden, depth 4) — inspect with the spec's
- * option deltas; %o fences over arrays (showHidden adds their hidden
- * [length] entry, which has no lowering). */
+ * option deltas. A checked-dynamic argument renders through the runtime's
+ * showHidden walk; static %o fences over arrays and nested dynamic values
+ * (showHidden adds an array's hidden [length] entry, which the static
+ * rendering has no lowering for). */
 function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
   const value = lowerer.lowerExpr(node);
+  if (depth === 4 && value.type.kind === "dyn") {
+    return {
+      kind: "libCall",
+      fn: "insp.dynHidden",
+      args: [value, numLit(4, loc)],
+      type: STRING,
+      loc,
+    };
+  }
   if (value.type.kind === "bytes") {
     lowerer.noLowering(
       `util.format %${depth === 4 ? "o" : "O"} of typed-array values`,
@@ -2001,11 +2012,11 @@ function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
       node,
       reason,
     );
-  if (depth === 4 && typeTreeHasArray(lowerer, value.type, new Set())) {
+  if (depth === 4 && typeTreeHasHidden(lowerer, value.type, new Set())) {
     lowerer.noLowering(
       "util.format %o over arrays",
       node,
-      "%o renders with showHidden (arrays gain a hidden [length] entry) — use %O for the default rendering",
+      "%o renders with showHidden (arrays gain a hidden [length] entry) — use %O for the default rendering, or pass the value as unknown",
     );
   }
   return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(depth, loc), loc);
@@ -2346,35 +2357,36 @@ export function lowerFormatCall(
 }
 
 /** Arrays anywhere in the tree — the %o (showHidden) gate. */
-function typeTreeHasArray(lowerer: Lowerer, t: IrType, visiting: Set<string>): boolean {
+function typeTreeHasHidden(lowerer: Lowerer, t: IrType, visiting: Set<string>): boolean {
   switch (t.kind) {
     case "array":
+    case "dyn":
       return true;
     case "record": {
       if (visiting.has(t.shapeId)) return false;
       visiting.add(t.shapeId);
       const shape = lowerer.shapes.get(t.shapeId);
       if (shape?.tuple) return true;
-      return (shape?.fields ?? []).some((f) => typeTreeHasArray(lowerer, f.type, visiting));
+      return (shape?.fields ?? []).some((f) => typeTreeHasHidden(lowerer, f.type, visiting));
     }
     case "map":
       return (
-        typeTreeHasArray(lowerer, t.key, visiting) || typeTreeHasArray(lowerer, t.value, visiting)
+        typeTreeHasHidden(lowerer, t.key, visiting) || typeTreeHasHidden(lowerer, t.value, visiting)
       );
     case "set":
-      return typeTreeHasArray(lowerer, t.elem, visiting);
+      return typeTreeHasHidden(lowerer, t.elem, visiting);
     case "union": {
       if (visiting.has(t.unionId)) return false;
       visiting.add(t.unionId);
       return (lowerer.unions.get(t.unionId)?.arms ?? []).some((a) =>
-        typeTreeHasArray(lowerer, a, visiting),
+        typeTreeHasHidden(lowerer, a, visiting),
       );
     }
     case "object": {
       if (visiting.has(t.className)) return false;
       visiting.add(t.className);
       return (lowerer.classes.get(t.className)?.def.fields ?? []).some((f) =>
-        typeTreeHasArray(lowerer, f.type, visiting),
+        typeTreeHasHidden(lowerer, f.type, visiting),
       );
     }
     case "bytes":
