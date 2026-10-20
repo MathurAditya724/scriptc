@@ -1,7 +1,8 @@
 // util.promisify over typed callback-only functions (bound methods, one with
-// an optional callback, a function declaration, an inline arrow): the error
-// argument rejects, the value fulfills, a synchronous throw rejects, and
-// settlement is async.
+// an optional callback, a function declaration, an inline arrow, a function
+// that returns a value): the error argument rejects, the value fulfills, the
+// return value is ignored, a synchronous throw rejects, and settlement is
+// async.
 import { promisify } from "node:util";
 
 class Connection {
@@ -30,6 +31,12 @@ class Connection {
 
 function boom(callback: (error: Error | null) => void): void {
   if (callback !== undefined) throw new TypeError("synchronous failure");
+}
+
+let pending = 0;
+function size(callback: (error: Error | null, size: number) => void): number {
+  setImmediate(() => callback(null, 4));
+  return ++pending;
 }
 
 async function main(): Promise<void> {
@@ -68,5 +75,6 @@ async function main(): Promise<void> {
   console.log(order.join(", "));
   await promisify(new Connection("inline").close.bind(new Connection("inline")))();
   console.log("inline done");
+  console.log("size", await promisify(size)(), pending);
 }
 void main();

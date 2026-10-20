@@ -1558,6 +1558,17 @@ static ScrDyn *scr_dyn_invoke_impl(
         }
         return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
       }
+      /* The typed array methods below are not DataView's; it inherits
+       * Object.prototype's. */
+      if (dyn_name_is(method, "toString") || dyn_name_is(method, "toLocaleString")) {
+        ScrStr *tag = scr_str_new("[object DataView]", 17);
+        ScrDyn *out = scr_dyn_new_str(tag);
+        scr_str_release(tag);
+        return out;
+      }
+      if (dyn_name_is(method, "valueOf")) return scr_dyn_retain(recv);
+      dyn_throw_not_fn(what);
+      return NULL;
     }
     size_t blen = bytes->len;
     if (dyn_name_is(method, "at")) {

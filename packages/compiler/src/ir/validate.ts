@@ -4109,6 +4109,7 @@ function validateFunction(
     if (checkLibEmitterCall(e, sig.result)) return;
     if (
       e.fn === "error.stack" ||
+      e.fn === "error.setStack" ||
       e.fn === "error.cause" ||
       e.fn === "error.hasCause" ||
       e.fn === "error.setCause" ||

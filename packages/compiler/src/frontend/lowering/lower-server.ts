@@ -2514,6 +2514,20 @@ function lowerNetSocketMethodCall(
       ? value
       : lowerer.coerceInto(call, value, declared);
   }
+  if (name === "isSessionReused" && args.length === 0) {
+    // TLSSocket.isSessionReused(): the client never offers a cached
+    // session (no session resumption, a documented TLS divergence), so
+    // no handshake resumes one. A plain socket asserted to be a
+    // TLSSocket answers false too, where Node has no such method.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+      result: boolLit(false, loc),
+      type: BOOL,
+      loc,
+    };
+  }
   if (name === "resetAndDestroy") {
     // An RST close; a connecting socket resets once it connects. Answers
     // the socket, Node's chaining.

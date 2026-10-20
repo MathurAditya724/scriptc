@@ -3369,6 +3369,56 @@ export function collectClassShapeInner(
               .map((p): ParamShape => ({ type: p.type, mode: "omittable" })),
           );
         }
+        // A TypeScript override of a JavaScript method (`class T extends
+        // Agent` over an npm-static package) keeps the base's checked-value
+        // ABI: each untyped base slot stays dyn, and the override's typed
+        // parameter narrows from it at entry with a checked conversion. An
+        // untyped base return takes the override's value boxed. Calls on
+        // a statically typed receiver see the same ABI.
+        if (
+          overridden &&
+          !isJsSourceFile(member.getSourceFile()) &&
+          overridden.declarer.decl !== null &&
+          isJsSourceFile(overridden.declarer.decl.getSourceFile()) &&
+          member.asteriskToken === undefined &&
+          !overridden.sig.async &&
+          !overridden.sig.gen &&
+          shapes.length <= overridden.sig.params.length &&
+          shapes.every((p, i) => {
+            const inherited = overridden.sig.params[i]!;
+            return (
+              (p.mode === "required" || p.mode === "omittable") &&
+              p.bodyType === undefined &&
+              (inherited.mode === "required" || inherited.mode === "omittable") &&
+              (typeEquals(p.type, inherited.type) ||
+                (inherited.type.kind === "dyn" && lowerer.dynConvertible(p.type)))
+            );
+          }) &&
+          overridden.sig.params
+            .slice(shapes.length)
+            .every(
+              (p) => p.type.kind === "dyn" && (p.mode === "required" || p.mode === "omittable"),
+            )
+        ) {
+          for (let i = 0; i < shapes.length; i++) {
+            const own = shapes[i]!;
+            if (overridden.sig.params[i]!.type.kind === "dyn" && own.type.kind !== "dyn")
+              shapes[i] = { type: DYN, mode: own.mode, entryNarrow: own.type };
+          }
+          shapes.push(
+            ...overridden.sig.params
+              .slice(shapes.length)
+              .map((p): ParamShape => ({ type: p.type, mode: "omittable" })),
+          );
+          if (
+            overridden.sig.ret.kind === "dyn" &&
+            ft.ret.kind !== "dyn" &&
+            ft.ret.kind !== "void" &&
+            lowerer.dynConvertible(ft.ret)
+          )
+            ft.ret = DYN;
+          ft.params = shapes.map((shape) => shape.type);
+        }
         if (
           overridden &&
           member.asteriskToken === undefined &&
@@ -5413,6 +5463,75 @@ function namedEvaluationName(expr: ts.ClassLikeDeclaration): string {
   return "";
 }
 
+/** Each evaluation of a function-local class creates fresh private names,
+ * while the compiled class shares one layout across evaluations. A
+ * JavaScript class's prototype methods are closures per evaluation, so the
+ * names agree when every private member is an instance field and every use
+ * is on `this` (privateNamesOnlyOnThis): native methods only run on their
+ * own evaluation's instances, and the closures, which receive any `this`,
+ * check the receiver's evaluation against the class's own binding
+ * (private-brands.ts), so the class must be a named declaration (undici's
+ * webidl FastIterableIterator). The checker rejects writes to that binding. */
+function localPrivateFieldsAgree(expr: ts.ClassLikeDeclaration): boolean {
+  if (!isJsSourceFile(expr.getSourceFile()) || !ts.isClassDeclaration(expr) || !expr.name)
+    return false;
+  if (
+    expr.members.nodes.some(
+      (member) =>
+        member.name !== undefined &&
+        ts.isPrivateIdentifier(member.name) &&
+        !ts.isPropertyDeclaration(member),
+    )
+  )
+    return false;
+  return privateNamesOnlyOnThis(expr);
+}
+
+/** Every private name is used only on `this` inside the class's own instance
+ * members (`this.#x`, `#x in this`), outside nested classes and non-arrow
+ * functions, and the class has no static members that could hand instances
+ * across evaluations. */
+function privateNamesOnlyOnThis(expr: ts.ClassLikeDeclaration): boolean {
+  let ok = true;
+  for (const member of expr.members.nodes) {
+    if (ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword)) return false;
+    ts.walkPreorder(member, (node) => {
+      if (!ok) return "stop";
+      // A nested class or non-arrow function rebinds `this`: any private
+      // name inside it disqualifies.
+      if (
+        node !== member &&
+        (ts.isClassDeclaration(node) ||
+          ts.isClassExpression(node) ||
+          ts.isFunctionExpression(node) ||
+          ts.isFunctionDeclaration(node))
+      ) {
+        ts.walkPreorder(node, (inner) => {
+          if (ts.isPrivateIdentifier(inner)) ok = false;
+          return ok ? undefined : "stop";
+        });
+        return "skip";
+      }
+      if (ts.isPrivateIdentifier(node)) {
+        const parent = node.parent;
+        const onThis =
+          parent === member ||
+          (ts.isPropertyAccessExpression(parent) &&
+            parent.name === node &&
+            parent.expression.kind === ts.SyntaxKind.ThisKeyword) ||
+          (ts.isBinaryExpression(parent) &&
+            parent.left === node &&
+            parent.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+            parent.right.kind === ts.SyntaxKind.ThisKeyword);
+        if (!onThis) ok = false;
+      }
+      return undefined;
+    });
+    if (!ok) return false;
+  }
+  return true;
+}
+
 /** Collect a class expression once per enclosing specialization. Function-local
  * evaluations allocate fresh constructor objects; top-level expressions use
  * immortal templates. Static initialization remains limited to whole top-level
@@ -5450,7 +5569,8 @@ export function lowerClassExpressionInfo(
   }
   if (
     local &&
-    expr.members.nodes.some((member) => member.name && ts.isPrivateIdentifier(member.name))
+    expr.members.nodes.some((member) => member.name && ts.isPrivateIdentifier(member.name)) &&
+    !localPrivateFieldsAgree(expr)
   ) {
     lowerer.unsupported("SC1090", expr, "function-local classes with private brands");
   }
@@ -7943,6 +8063,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
         className: info.def.name,
         field: f.name,
         value: dynUndefinedExpr(loc),
+        define: true,
         loc,
       });
     }
@@ -7958,6 +8079,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
         className: info.def.name,
         field: f.name,
         value,
+        define: true,
         loc: locOf(f.initializer),
       });
     } catch (e) {
