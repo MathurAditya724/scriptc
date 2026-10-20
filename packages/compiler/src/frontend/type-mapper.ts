@@ -1375,6 +1375,116 @@ function isLookupOptionsUnion(type: ts.Type, ctx: Pick<TypeMapperCtx, "isStdlibF
   return all;
 }
 
+/** The binary and stream members of fetch's BodyInit (undici-types):
+ * NodeJS.ArrayBufferView expands to the typed arrays and DataView. */
+const FETCH_BODY_MEMBERS: ReadonlySet<string> = new Set([
+  "ArrayBuffer",
+  "SharedArrayBuffer",
+  "AsyncIterable",
+  "Iterable",
+  "Blob",
+  "FormData",
+  "URLSearchParams",
+  "ReadableStream",
+  "DataView",
+  "Buffer",
+  "Int8Array",
+  "Uint8Array",
+  "Uint8ClampedArray",
+  "Int16Array",
+  "Uint16Array",
+  "Int32Array",
+  "Uint32Array",
+  "Float16Array",
+  "Float32Array",
+  "Float64Array",
+  "BigInt64Array",
+  "BigUint64Array",
+]);
+
+/** fetch's request body type, BodyInit, however TypeScript spells it
+ * (`RequestInit["body"]`, `NonNullable<...>`, an optional member): a
+ * union of strings, the stdlib binary and stream types and nullish
+ * values that includes both FormData and URLSearchParams. Native fetch
+ * reads such a body at run time, so it rides checked-dynamic storage. */
+function isFetchBodyUnion(type: ts.Type, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  if (!type.isUnionType()) return false;
+  let formData = false;
+  let searchParams = false;
+  for (const member of ts.constituentTypes(type)) {
+    if (member.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.Null | ts.TypeFlags.Undefined))
+      continue;
+    const symbol = member.getSymbol();
+    if (
+      symbol === undefined ||
+      !FETCH_BODY_MEMBERS.has(symbol.name) ||
+      !symbol.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
+    )
+      return false;
+    if (symbol.name === "FormData") formData = true;
+    if (symbol.name === "URLSearchParams") searchParams = true;
+  }
+  return formData && searchParams;
+}
+
+/** A mapped object type (Omit, Pick, Partial) whose members all come from
+ * one stdlib interface that maps to the checked dynamic. */
+function isDynInterfaceSubset(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (!(type.flags & ts.TypeFlags.Object) || type.isClassOrInterface()) return false;
+  const alias = type.getAliasSymbol();
+  if (alias === undefined) return false;
+  const props = ctx.checker.getPropertiesOfType(type);
+  if (props.length === 0) return false;
+  let owner: ts.InterfaceDeclaration | undefined;
+  for (const prop of props) {
+    const decl = prop.declarations[0];
+    const parent = decl?.parent;
+    if (
+      parent === undefined ||
+      !ts.isInterfaceDeclaration(parent) ||
+      !ctx.isStdlibFile(parent.getSourceFile()) ||
+      (owner !== undefined && owner !== parent)
+    )
+      return false;
+    owner = parent;
+  }
+  return (
+    owner !== undefined && mapType(ctx.checker.getTypeAtLocation(owner.name), ctx)?.kind === "dyn"
+  );
+}
+
+/** fetch's HeadersInit (undici-types): a union of the stdlib Headers
+ * class with header-pair arrays and/or a header record, plus nullish
+ * values. Native fetch reads it at run time like the init around it. */
+function isFetchHeadersUnion(type: ts.Type, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  if (!type.isUnionType()) return false;
+  let headers = false;
+  let other = false;
+  for (const member of ts.constituentTypes(type)) {
+    if (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) continue;
+    const symbol = member.getSymbol();
+    if (
+      symbol?.name === "Headers" &&
+      symbol.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
+    ) {
+      headers = true;
+      continue;
+    }
+    const alias = member.getAliasSymbol()?.name;
+    if (
+      symbol?.name === "Array" ||
+      symbol?.name === "ReadonlyArray" ||
+      alias === "Record" ||
+      alias === "HeaderRecord"
+    ) {
+      other = true;
+      continue;
+    }
+    return false;
+  }
+  return headers && other;
+}
+
 function isReceiveMessageResult(
   type: ts.Type,
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
@@ -1542,6 +1652,25 @@ function classExprNeedsContext(decl: ts.ClassLikeDeclaration): boolean {
   return false;
 }
 
+/** True for the type of a TypeScript object literal with no contextual
+ * type (`const options = { ...location, path }`) that spreads a value
+ * mapping to the checked dynamic (a stdlib options type such as
+ * http.RequestOptions). A literal with a contextual type is built in that
+ * type's representation instead, and JavaScript literals keep their own
+ * rules. */
+function spreadsCheckedDynamic(symbol: ts.Symbol | undefined, ctx: TypeMapperCtx): boolean {
+  if (symbol === undefined || (symbol.flags & ts.SymbolFlags.ObjectLiteral) === 0) return false;
+  const decl = symbol.declarations[0];
+  if (decl === undefined || !ts.isObjectLiteralExpression(decl)) return false;
+  if (isJsSourceFile(decl.getSourceFile())) return false;
+  if (ctx.checker.getContextualType(decl)) return false;
+  return decl.properties.nodes.some(
+    (prop) =>
+      ts.isSpreadAssignment(prop) &&
+      mapType(ctx.checker.getTypeAtLocation(prop.expression), ctx)?.kind === "dyn",
+  );
+}
+
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
@@ -1562,9 +1691,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const moduleId = ctx.moduleNamespaceId?.(type) ?? null;
     if (moduleId !== null) return { kind: "moduleNs", moduleId };
   }
+  // A TypeScript object literal that spreads a checked-dynamic value
+  // (`{ ...requestOptions, path, timeout }`): its keys are the source's
+  // runtime keys, which no record shape holds, so the literal rides
+  // checked-dynamic storage like its source.
+  if (spreadsCheckedDynamic(intrinsic, ctx)) return DYN;
   // worker_threads.receiveMessageOnPort's `{ message: any } | undefined`:
   // the runtime's { message } object, a checked-dynamic value.
   if (isReceiveMessageResult(type, ctx)) return DYN;
+  if (isFetchBodyUnion(type, ctx) || isFetchHeadersUnion(type, ctx)) return DYN;
+  // Omit/Pick/Partial of a stdlib interface that rides checked-dynamic
+  // storage (`Omit<RequestInit, "body" | "headers">`): every member comes
+  // from that interface, so the value is a subset of the same runtime-read
+  // options object and rides the same storage.
+  if (isDynInterfaceSubset(type, ctx)) return DYN;
   // The lookup-function option union (`LookupOneOptions | LookupAllOptions
   // | number | undefined`): with a LookupAllOptions arm it is an option bag
   // dns.lookup reads at run time, so it rides checked-dynamic storage.
@@ -3904,6 +4044,34 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // v8.getHeapStatistics()'s record, in Node's key order (builtins/v8.ts).
+  if (isStdlibInterface("HeapInfo")) {
+    const names = [
+      "total_heap_size",
+      "total_heap_size_executable",
+      "total_physical_size",
+      "total_available_size",
+      "used_heap_size",
+      "heap_size_limit",
+      "malloced_memory",
+      "peak_malloced_memory",
+      "does_zap_garbage",
+      "number_of_native_contexts",
+      "number_of_detached_contexts",
+      "total_global_handles_size",
+      "used_global_handles_size",
+      "external_memory",
+    ];
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [...names].sort().map((name) => ({ name, type: F64 })),
+        false,
+        undefined,
+        names,
+      ),
+    };
+  }
   // process.cpuUsage()/threadCpuUsage()'s {user, system} microsecond
   // record and resourceUsage()'s getrusage record — stdlib data
   // interfaces interned explicitly (the RemoteInfo pattern; declared
@@ -5446,9 +5614,12 @@ function inferSymbolOf(t: ts.Type, _ctx: TypeMapperCtx): ts.Symbol | undefined {
 
 /** `checked extends (...args: any) => infer R` — the shape of the standard
  * library's ReturnType, over a concrete function type: R binds to its
- * result. Parameters must be `any` (they constrain nothing); anything else
- * stays undecided. A primitive never matches a function type, and neither
- * does a function that needs more arguments than fixed parameters pass. */
+ * result. Pattern parameters must be `any` or `any[]`, and a pattern rest
+ * `any` or `any[]`; anything else stays undecided. The match follows
+ * TypeScript's assignability: a primitive never matches a function type,
+ * a function that needs more arguments than a pattern without a rest
+ * passes never matches, and a positional `any[]` parameter needs the
+ * function's parameter there to accept an array. */
 function matchInferSignature(
   checked: ts.Type,
   extendsType: ts.Type,
@@ -5458,52 +5629,97 @@ function matchInferSignature(
   const wantSigs = checker.getCallSignatures(extendsType);
   const want = wantSigs[0];
   if (wantSigs.length !== 1 || !want || want.getTypeParameters().length > 0) return undefined;
-  const anyParams = want.getParameters().every((p) => {
-    const t = checker.getTypeOfSymbol(p);
-    return (
-      (t.flags & ts.TypeFlags.Any) !== 0 ||
-      (checker.isArrayType(t) &&
-        (checker.getTypeArguments(t as ts.TypeReference)[0]!.flags & ts.TypeFlags.Any) !== 0)
-    );
-  });
-  if (!anyParams) return undefined;
+  const wantShape = signatureShape(want, ctx);
+  if (wantShape === undefined) return undefined;
+  const isAny = (t: ts.Type): boolean => (t.flags & ts.TypeFlags.Any) !== 0;
+  const isAnyArray = (t: ts.Type): boolean =>
+    checker.isArrayType(t) && isAny(checker.getTypeArguments(t as ts.TypeReference)[0]!);
+  if (!wantShape.params.every((p) => isAny(p.type) || isAnyArray(p.type))) return undefined;
+  if (wantShape.rest !== null && !isAny(wantShape.rest)) return undefined;
   if (!(checked.flags & ts.TypeFlags.Object)) return false;
   const gotSigs = checker.getCallSignatures(checked);
   const got = gotSigs[0];
   if (gotSigs.length !== 1 || !got || got.getTypeParameters().length > 0) return undefined;
-  // A pattern with fixed parameters admits only functions that need no
-  // more arguments than it passes: `(a: any) => infer R` rejects
-  // `(a: string, b: string) => R`, as TypeScript's assignability does.
-  const wantArity = signatureArity(want);
-  const gotArity = signatureArity(got);
-  if (
-    wantArity !== undefined &&
-    gotArity !== undefined &&
-    !wantArity.rest &&
-    gotArity.required > want.getParameters().length
-  )
-    return false;
+  const gotShape = signatureShape(got, ctx);
+  if (gotShape !== undefined) {
+    // `(a: any) => infer R` rejects `(a: string, b: string) => R` and
+    // `(...args: [string, number]) => R`: they need more arguments.
+    if (wantShape.rest === null && requiredArguments(gotShape) > wantShape.params.length)
+      return false;
+    for (let i = 0; i < wantShape.params.length; i++) {
+      if (!isAnyArray(wantShape.params[i]!.type)) continue;
+      const param = gotShape.params[i]?.type ?? gotShape.rest;
+      if (param === undefined || param === null) continue;
+      const accepts = acceptsArray(param, ctx);
+      if (accepts !== true) return accepts;
+    }
+  } else if (wantShape.params.some((p) => isAnyArray(p.type))) {
+    return undefined;
+  }
   const wantRet = checker.getReturnTypeOfSignature(want);
   const infer = inferSymbolOf(wantRet, ctx);
   if (infer) return new Map([[infer, checker.getReturnTypeOfSignature(got)]]);
   return wantRet.flags & ts.TypeFlags.Any ? new Map() : undefined;
 }
 
-/** How many arguments a call of `sig` must pass (up to its last required
- * parameter), and whether it takes a rest parameter. Undefined when a
- * parameter has no declaration to read this from; the arity check is then
- * skipped. */
-function signatureArity(sig: ts.Signature): { required: number; rest: boolean } | undefined {
-  let required = 0;
-  let rest = false;
-  const params = sig.getParameters();
-  for (let i = 0; i < params.length; i++) {
-    const decl = params[i]!.valueDeclaration;
+/** A signature's parameters as a call sees them: the positional ones, with
+ * a fixed-tuple rest (`...args: [A, B?]`) flattened into positions, and the
+ * element type of an array rest (`any` for `...args: any`). Undefined when
+ * a parameter has no declaration, or the rest is a variadic tuple or
+ * another type. */
+function signatureShape(
+  sig: ts.Signature,
+  ctx: TypeMapperCtx,
+): { params: { type: ts.Type; optional: boolean }[]; rest: ts.Type | null } | undefined {
+  const { checker } = ctx;
+  const params: { type: ts.Type; optional: boolean }[] = [];
+  for (const p of sig.getParameters()) {
+    const decl = p.valueDeclaration;
     if (decl === undefined || !ts.isParameter(decl)) return undefined;
-    if (decl.dotDotDotToken !== undefined) rest = true;
-    else if (decl.questionToken === undefined && decl.initializer === undefined) required = i + 1;
+    const type = checker.getTypeOfSymbol(p);
+    if (decl.dotDotDotToken === undefined) {
+      params.push({
+        type,
+        optional: decl.questionToken !== undefined || decl.initializer !== undefined,
+      });
+      continue;
+    }
+    if (type.flags & ts.TypeFlags.Any) return { params, rest: type };
+    if (checker.isArrayType(type))
+      return { params, rest: checker.getTypeArguments(type as ts.TypeReference)[0]! };
+    const elems = restTupleElements(type, ctx);
+    if (!elems) return undefined;
+    for (const e of elems) params.push({ type: e.type, optional: e.optional });
+    return { params, rest: null };
   }
-  return { required, rest };
+  return { params, rest: null };
+}
+
+/** The fewest arguments a call must pass: up to the last required position. */
+function requiredArguments(shape: { params: { optional: boolean }[] }): number {
+  let required = 0;
+  shape.params.forEach((p, i) => {
+    if (!p.optional) required = i + 1;
+  });
+  return required;
+}
+
+/** Whether a parameter of this type accepts an `any[]` argument: true for
+ * `any`, `unknown` and array types, false for primitives, undefined
+ * otherwise. */
+function acceptsArray(t: ts.Type, ctx: TypeMapperCtx): boolean | undefined {
+  if (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return true;
+  if (ctx.checker.isArrayType(t)) return true;
+  const primitive =
+    ts.TypeFlags.StringLike |
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.BigIntLike |
+    ts.TypeFlags.ESSymbolLike |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Void;
+  return t.flags & primitive ? false : undefined;
 }
 
 /** `checked extends PromiseLike<infer U>` (or `Promise<infer U>`) over the

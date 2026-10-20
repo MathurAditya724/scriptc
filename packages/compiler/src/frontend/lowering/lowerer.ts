@@ -1963,6 +1963,10 @@ export class Lowerer {
    * setEncoding call whose receiver is a socket or an untyped value.
    * Computed once on first use (null until then). */
   socketEncodingReachable: boolean | null = null;
+  /** Whether some server in this program may listen on a Unix socket: a
+   * listen call whose first argument is a string. Computed once on first
+   * use (null until then); address() answers the path only when true. */
+  unixListenReachable: boolean | null = null;
   /** IMPLICIT-ANY instances lowered EAGERLY at first demand (their return
    * types are inferred from the body — the call site needs them settled),
    * collected here for run()'s function list (the liftedFns discipline). */
@@ -12673,6 +12677,12 @@ export class Lowerer {
     {
       const callable = this.lowerBuiltinCallableValue(bi, loc);
       if (callable) return callable;
+    }
+    // node:stream/web's exports are the web stream globals themselves: in
+    // JavaScript sources the same identity token as the global spelling
+    // (`require("stream/web").ReadableStream === globalThis.ReadableStream`).
+    if (bi.module === "stream/web" && isJsSourceFile(expr.getSourceFile())) {
+      return { kind: "strLit", value: `[builtin ${bi.member}]`, type: STRING, loc };
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);

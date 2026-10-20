@@ -131,6 +131,10 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.clientSignal",
+  "http.requestDyn",
+  "http.requestDynCb",
+  "https.requestDyn",
+  "https.requestDynCb",
   "rl.createSignal",
   "rl.questionAsyncSignal",
   "sp.finishedOptsSignal",
@@ -481,6 +485,8 @@ const RUNTIME_FEATURE_RULES = {
   dc: rule({ prefixes: ["dc."] }),
   /** dns.lookup lives in the dgram unit. */
   dgram: rule({ prefixes: ["dgram.", "dns."], types: ["dgramSocket"] }),
+  /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
+  dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
@@ -539,6 +545,9 @@ const RUNTIME_FEATURE_RULES = {
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
+  /** A socket 'lookup' listener: the C main installs the net unit's
+   * lookup records (scr_net_lookup_install). */
+  netLookup: rule({ fns: ["net.sockOnLookup"] }),
   http: rule({
     prefixes: ["http.", "tls.", "https.", "http2."],
     types: ["httpReq", "httpRes", "httpClientReq", "secureCtx"],
@@ -659,6 +668,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     copying: false,
     dc: false,
     dgram: false,
+    dnsPromises: false,
     dynAsync: false,
     dynInvoke: false,
     dynTier: false,
@@ -667,6 +677,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsWatch: false,
+    netLookup: false,
     http: false,
     http2: false,
     inspect: false,

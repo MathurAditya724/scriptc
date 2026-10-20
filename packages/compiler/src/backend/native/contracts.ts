@@ -177,6 +177,11 @@ export interface CcOptions {
    * on the IR): compiles scr_dgram.c into the binary — the net gating
    * precedent, so dgram-free binaries keep their exact link line. */
   dgram?: boolean;
+  /** The program uses node:dns/promises (the dns.promisesLookup libCalls):
+   * compiles scr_dns_promises.c over the dgram unit, so callback-only
+   * binaries keep their exact link line. */
+  dnsPromises?: boolean;
+
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free
    * binaries keep their exact link line. */

@@ -24,6 +24,7 @@ import {
 } from "../../ir/ir.js";
 import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
+import { V8_MEMBER_REASON } from "../builtin-modules.js";
 
 /** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
 const ZLIB_STREAM: IrType = { kind: "object", className: "%Transform" };
@@ -1908,6 +1909,18 @@ export const BUILTIN_MODULE_FNS: Record<
   // special-cased); the keys exist for the same reason net/http's do.
   dgram: {},
   dns: {},
+  // node:dns/promises rides the same spoke (lookup's promise form).
+  "dns/promises": {},
+  // node:v8: getHeapStatistics answers allocator-derived figures in
+  // Node's shape (builtins/v8.ts — the entry carries the canonical
+  // shape); every other member fences with the by-design reason
+  // (builtinFenceHintOf).
+  v8: {
+    getHeapStatistics: { fn: "process.memoryUsageTake", params: [], result: VOID },
+  },
+  // node:stream/web re-exports the web stream globals (the same objects);
+  // its members lower through the globals' own paths.
+  "stream/web": {},
   // node:assert lowers ENTIRELY through the assert spoke (lower-assert.ts
   // — every call shape is special-cased: optional messages complete, the
   // comparisons pick per-type libCalls, deep equality synthesizes
@@ -2832,7 +2845,11 @@ export const FS_CALLBACK_MEMBERS = new Set([
  * inherited function into the diagnostic text). */
 export function builtinFenceHintOf(module: string, member: string): string | undefined {
   const mod = ownEntry(BUILTIN_MODULE_FENCE_HINTS, module);
-  return mod ? ownEntry(mod, member) : undefined;
+  const hint = mod ? ownEntry(mod, member) : undefined;
+  // node:v8's unlowered members observe the engine itself: the by-design
+  // reason, not a pending-surface hint (kept out of the hint table so the
+  // compatibility rows stay by-design rather than refused).
+  return hint === undefined && module === "v8" ? V8_MEMBER_REASON : hint;
 }
 
 /** BUILTIN_MODULE_CONSTS with the win32-target overrides applied — the
@@ -3462,6 +3479,10 @@ export function stdlibGlobalAliasNameOf(
     "Number",
     "String",
     "Boolean",
+    // Code generation from strings throws Node's EvalError at every call
+    // (code-generation.ts); zod 4 probes `const F = Function; new F("")`.
+    "Function",
+    "eval",
   ].includes(name)
     ? name
     : null;

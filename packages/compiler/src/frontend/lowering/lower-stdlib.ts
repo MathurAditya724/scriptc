@@ -1466,7 +1466,8 @@ export function lowerStaticFetchCompanionCall(
   }
   const root = call.expression.expression;
   const symbol = lowerer.resolveValueSymbol(root);
-  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  if ((!symbol || !lowerer.isStdlibSymbol(symbol)) && !isStreamWebReadableStream(lowerer, root))
+    return null;
   const loc = locOf(call);
   if (root.text === "AbortSignal") {
     noteEventListeners(lowerer, loc);
@@ -1879,6 +1880,12 @@ export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression
   };
 }
 
+/** An import binding of node:stream/web's ReadableStream, which IS the
+ * global class (`import { ReadableStream } from "node:stream/web"`). */
+function isStreamWebReadableStream(lowerer: Lowerer, ident: ts.Identifier): boolean {
+  return ident.text === "ReadableStream" && lowerer.isStdlibGlobal(ident, "ReadableStream");
+}
+
 export function lowerStaticReadableStreamNew(
   lowerer: Lowerer,
   expr: ts.NewExpression,
@@ -1887,7 +1894,11 @@ export function lowerStaticReadableStreamNew(
     return null;
   }
   const symbol = lowerer.resolveValueSymbol(expr.expression);
-  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  if (
+    (!symbol || !lowerer.isStdlibSymbol(symbol)) &&
+    !isStreamWebReadableStream(lowerer, expr.expression)
+  )
+    return null;
   const args = expr.arguments?.nodes ?? [];
   if (args.length > 1) return null;
   const loc = locOf(expr);
