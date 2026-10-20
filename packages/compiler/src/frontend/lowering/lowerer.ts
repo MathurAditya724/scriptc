@@ -1917,10 +1917,6 @@ export class Lowerer {
   /** Const bindings holding a forwarded fixed tuple (`const args =
    * arguments as any` in a typed-arguments function) → the tuple type. */
   readonly tupleAliasSymbols = new Map<ts.Symbol, IrType>();
-  /** Tuple bindings that are only forwarded (typed-arguments.ts
-   * onlyForwarded): binding local id → the native slots forwarding reads.
-   * Such a binding is never materialized. */
-  readonly pureTuples = new Map<string, IrLocal[]>();
   /** The static names of the current generic instance's name-keyed
    * function parameters (static-function-names.ts). */
   staticFnNames: Map<ts.Symbol, string | null> | null = null;
@@ -10725,7 +10721,7 @@ export class Lowerer {
         (id) => id !== nameNode && this.checker.getSymbolAtLocation(id) === symbol,
       )
     ) {
-      this.pureTuples.set(body.id, slots);
+      this.ctx.pureTuples.set(body.id, slots);
       return;
     }
     const init = this.tupleOfSlots(slots, tupleType, nameNode, loc);
@@ -11122,7 +11118,7 @@ export class Lowerer {
     }
     if (!symbol) return null;
     const direct = this.resolveKey(symbol, ident);
-    if (direct && this.pureTuples.has(direct.id)) {
+    if (direct && this.ctx.pureTuples.has(direct.id)) {
       // onlyForwarded proved every read forwards; a plain read here means
       // the analysis and the lowering disagree.
       throw new InternalCompilerError(

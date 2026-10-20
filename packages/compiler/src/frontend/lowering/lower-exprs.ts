@@ -908,7 +908,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // type and lowerLambda declared the local.
     if (expr.text === "arguments") {
       const binding = captureContextArguments(lowerer.fnStack);
-      if (binding && lowerer.pureTuples.has(binding.id)) {
+      if (binding && lowerer.ctx.pureTuples.has(binding.id)) {
         throw new InternalCompilerError("lowerer bug: forwarded-only 'arguments' read as a value");
       }
       if (binding) return { kind: "varRef", localId: binding.id, type: binding.type, loc };

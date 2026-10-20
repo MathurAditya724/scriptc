@@ -176,7 +176,7 @@ export function declareTypedArguments(
   if (
     onlyForwarded(lowerer, node, (id) => id.text === "arguments" && argumentsOwner(id) === node)
   ) {
-    lowerer.pureTuples.set(local.id, slots);
+    lowerer.ctx.pureTuples.set(local.id, slots);
     return;
   }
   prologue.push({
@@ -273,7 +273,7 @@ function pureSlotsOf(lowerer: Lowerer, node: ts.Expression): IrLocal[] | null {
   if (!ts.isIdentifier(operand)) return null;
   const local =
     operand.text === "arguments" ? lowerer.ctx.argumentsLocal : lowerer.peekLocal(operand);
-  return local ? (lowerer.pureTuples.get(local.id) ?? null) : null;
+  return local ? (lowerer.ctx.pureTuples.get(local.id) ?? null) : null;
 }
 
 /** The positional values `node` forwards when it is a pure-forwarded tuple
@@ -466,7 +466,7 @@ export function lowerTupleAliasDecl(lowerer: Lowerer, decl: ts.VariableDeclarati
     // An alias of a pure-forwarded tuple is itself only forwarded
     // (onlyForwarded followed it): it names the same slots.
     const local = lowerer.declareLocal(decl.name, decl.name.text, tupleType, false);
-    lowerer.pureTuples.set(local.id, slots);
+    lowerer.ctx.pureTuples.set(local.id, slots);
     return { kind: "block", body: [], loc: locOf(decl) };
   }
   const init = lowerer.lowerExpr(stripTypeWrappers(decl.initializer));
