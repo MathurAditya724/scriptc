@@ -44,8 +44,9 @@ test("unreached blockers report in their own group", async () => {
 });
 
 test("WebAssembly modules the build can see report with their sources", async () => {
-  // A resolved path and an inline literal (glue.js), a packaged .wasm
-  // (wasm-fixture-pkg), and package.json's scriptc.wasm list.
+  // A resolved path, a resolved .so shared library and an inline literal
+  // (glue.js), a packaged .wasm (wasm-fixture-pkg), and package.json's
+  // scriptc.wasm list. A resolved .so that is not a module is not reported.
   await expect(report(fixture("wasm/main.ts"))).toMatchFileSnapshot(
     "__snapshots__/coverage-wasm.txt",
   );
@@ -61,6 +62,7 @@ test("WebAssembly modules the build can see report with their sources", async ()
   ).toEqual([
     ["inline", "valid", [], ["inline"]],
     ["tests/coverage-fixtures/wasm/add.wasm", "valid", [], ["path", "config"]],
+    ["tests/coverage-fixtures/wasm/ext.so", "valid", [], ["path"]],
     [
       "tests/coverage-fixtures/wasm/node_modules/wasm-fixture-pkg/lib/core.wasm",
       "invalid",
@@ -70,7 +72,7 @@ test("WebAssembly modules the build can see report with their sources", async ()
     ["tests/coverage-fixtures/wasm/build/generated.wasm", "unsupported", ["simd"], ["config"]],
   ]);
   const envelope = coverageEnvelope(coverage, { compilerVersion: "test" });
-  expect(envelope.wasmModules?.map((m) => m.sha256.length)).toEqual([64, 64, 64, 64]);
+  expect(envelope.wasmModules?.map((m) => m.sha256.length)).toEqual([64, 64, 64, 64, 64]);
 });
 
 test("divergences report as warnings, never as blockers", async () => {
@@ -82,9 +84,6 @@ test("divergences report as warnings, never as blockers", async () => {
     "SC6002",
     "SC6003",
     "SC6004",
-    "SC6005",
-    "SC6005",
-    "SC6005",
   ]);
   expect(coveragePasses(coverage, "blockers")).toBe(true);
   expect(coveragePasses(coverage, "divergences")).toBe(false);
@@ -256,11 +255,11 @@ test("CLI: build --print=diagnostics reports failures and divergence warnings as
     };
     expect(envelope.success).toBe(true);
     expect(envelope.artifact).toBe(join(outDir, "out.ir.json"));
-    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(8).fill("warning"));
+    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(5).fill("warning"));
     const human = build(fixture("divergences.ts"));
     expect(human.status).toBe(0);
     expect(human.stderr).toContain("warning SC6001");
-    expect(human.stderr).toContain("8 warnings: the program compiled");
+    expect(human.stderr).toContain("5 warnings: the program compiled");
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }

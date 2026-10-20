@@ -149,6 +149,11 @@ void scr_process_exit(double code);
 extern const unsigned char scr_detached_exit;
 void scr_process_set_exit_code(double code);
 double scr_process_exit_code_or_zero(void);
+/* The writer and the presence test of programs that read process.exitCode:
+ * the code reads undefined until an assignment (or a nonzero exit status
+ * the runtime chose, such as an uncaught exception's 1). */
+void scr_process_set_exit_code_tracked(double code);
+bool scr_process_has_exit_code(void);
 /* process._exiting: true once the exit sequence began (process.exit or
  * the exit-listener runner set the flag). Never throws. */
 extern SCR_TL bool scr_process_in_exit;
@@ -169,6 +174,21 @@ double scr_process_uptime(void);
 /* perf_hooks performance.now(): fractional ms since process start (the
  * uptime anchor — Node's timeOrigin for a compiled program). */
 double scr_perf_now(void);
+/* perf_hooks event-loop metrics (scr_perf_loop.c). loop_mark records the
+ * loop's start (the emitted main calls it before the loop runs, only in
+ * programs that read the metric); loop_start answers it (0 before) and
+ * idle_time the idle ms since. The eld_* family is monitorEventLoopDelay's
+ * IntervalHistogram over a handle; eld_percentile expects 0 < p <= 100; eld_stat which: 0 min, 1 max, 2 mean, 3 stddev,
+ * 4 count, 5 exceeds. */
+void scr_perf_loop_mark(void);
+double scr_perf_loop_start(void);
+double scr_perf_idle_time(void);
+double scr_eld_new(double resolution);
+bool scr_eld_enable(double handle);
+bool scr_eld_disable(double handle);
+void scr_eld_reset(double handle);
+double scr_eld_percentile(double handle, double percentile);
+double scr_eld_stat(double handle, double which);
 /* perf_hooks user timing (scr_perf.c): mark, measure, the getEntries
  * family and the clears take the call's dyn argument vector (borrowed)
  * and apply Node's validation and errors. mark and measure answer 1 and

@@ -1,4 +1,4 @@
-import { refuseWebAssemblyUse } from "./builtins/webassembly.js";
+import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Expression lowering: the expression dispatch (lowerExpr), literals
@@ -38,7 +38,14 @@ import {
   typeEquals,
   typeKey,
 } from "../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../program.js";
+import {
+  cjsExportAssignmentOf,
+  cjsExportDiscardReason,
+  cjsExportTargetLiteral,
+  isJsSourceFile,
+  locOf,
+} from "../program.js";
+import { npmStaticLexerVisibleNames } from "../npm-static.js";
 import {
   type CompoundOp,
   NARROW_FIRST,
@@ -84,6 +91,8 @@ import { lowerElementCompoundParts } from "./expressions/element-access.js";
 export {
   DEFERRED_READ_MESSAGE,
   abstractPropertyDeclOf,
+  builtinFunctionValue,
+  builtinGlobalValue,
   fieldGetExpr,
   fieldTarget,
   isMatchSliceType,
@@ -92,6 +101,7 @@ export {
   lowerIntrinsicProperty,
   lowerUnionProperty,
   matchResultNamedGroupsOf,
+  primitiveConstructorOr,
 } from "./expressions/property-access.js";
 export {
   lowerAsExpression,
@@ -141,6 +151,21 @@ export type FieldTarget =
   // (the write-slot type; reads arm it with undefined under
   // noUncheckedIndexedAccess in fieldGetExpr).
   | { container: "recordOvf"; obj: IrExpr; shapeId: string; field: string; fieldType: IrType }
+  // A computed key of a record in a read-modify-write (`r[k] += v`,
+  // `r[k]++`, `r[k] ??= v`; keyed-field-targets.ts): `keys` lists the
+  // declared fields a literal-union key can name, which share fieldType;
+  // null keys mean a string key into a pure index-signature record, whose
+  // entries fieldType types. `key` is null when the one literal is static.
+  | {
+      container: "recordKeyed";
+      obj: IrExpr;
+      shapeId: string;
+      field: string;
+      keys: readonly string[] | null;
+      key: IrExpr | null;
+      fieldType: IrType;
+      missNaN?: true;
+    }
   | { container: "accessor"; obj: IrExpr; className: string; field: string; fieldType: IrType }
   // A RECORD accessor property (an object-literal `get x()`/`set x(v)` —
   // the shape carries %get:/%set: closure slots): reads call the getter
@@ -253,7 +278,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (externalTypeSpecifier !== null) {
     lowerer.externalHostFence(externalTypeSpecifier, expr);
   }
-  // Every reached use of the WebAssembly API fences at its expression.
+  // WebAssembly API values lower; every other reached use of the API
+  // fences at its expression.
+  const webAssemblyValue = lowerWebAssemblyValue(lowerer, expr);
+  if (webAssemblyValue !== null) return webAssemblyValue;
   refuseWebAssemblyUse(lowerer, expr);
 
   if (ts.isNumericLiteral(expr)) {
@@ -456,7 +484,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // Only arrows can see an enclosing method's `this` (JS lexical-this);
     // `this` in plain nested functions is already a tsc error under
     // noImplicitThis, so the generic scope walk here is preflight-safe.
-    const local = lowerer.resolveThis();
+    const local = lowerer.resolveThis(expr);
     if (local) {
       const value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
       // `this.#x` in a function-local class's prototype method, whose `this`
@@ -1029,6 +1057,15 @@ export function nullishBranches(
 export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   let e: ts.Expression = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
+  // `if (Object.setPrototypeOf)`: the feature test of transpiled Error
+  // subclasses' prototype reset. Node always has it.
+  if (
+    ts.isPropertyAccessExpression(e) &&
+    !e.questionDotToken &&
+    e.name.text === "setPrototypeOf" &&
+    lowerer.isStdlibGlobal(e.expression, "Object")
+  )
+    return { kind: "boolLit", value: true, type: BOOL, loc: locOf(e) };
   if (ts.isPropertyAccessExpression(e)) {
     const presence = lowerPromiseThenPresence(lowerer, e, {
       kind: "boolLit",
@@ -2057,6 +2094,102 @@ function aliasTypeofArmOf(
   return null;
 }
 
+/** The names Node's ES-module loader copies off a CommonJS module that a
+ * bundler rewrite spells as accessors (npmStaticLexerVisibleNames), with
+ * their getters in that order; empty for every other module. */
+function lexerVisibleAccessors(dep: ts.SourceFile): ts.GetAccessorDeclaration[] {
+  const names = npmStaticLexerVisibleNames(dep.fileName);
+  if (names.length === 0) return [];
+  let table: ts.ObjectLiteralExpression | null = null;
+  for (const stmt of dep.statements.nodes) {
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs?.kind === "table" && cjsExportDiscardReason(stmt) === null) {
+      table = cjsExportTargetLiteral(cjs.expr.right, dep);
+    }
+  }
+  if (table === null) return [];
+  const getters = new Map<string, ts.GetAccessorDeclaration>();
+  for (const p of table.properties.nodes) {
+    if (ts.isGetAccessorDeclaration(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)))
+      getters.set(p.name.text, p);
+  }
+  return names.flatMap((n) => {
+    const g = getters.get(n);
+    return g === undefined ? [] : [g];
+  });
+}
+
+/** The module global holding the value an accessor export had when an
+ * ES-module importer first linked its CommonJS module. */
+export function cjsAccessorSnapshotOf(
+  lowerer: Lowerer,
+  getter: ts.GetAccessorDeclaration,
+): { id: string; type: IrType } | null {
+  const hit = lowerer.cjsAccessorSnapshots.get(getter);
+  if (hit !== undefined) return hit;
+  if (!lexerVisibleAccessors(getter.getSourceFile()).includes(getter)) return null;
+  const call = cjsAccessorCall(lowerer, getter, locOf(getter));
+  if (call === null) return null;
+  const snapshot = { id: `%g.cjsSnapshot.${lowerer.cjsAccessorSnapshots.size}`, type: call.type };
+  lowerer.globalsList.push({
+    id: snapshot.id,
+    name: "%cjsSnapshot",
+    type: call.type,
+    mutable: true,
+  });
+  lowerer.cjsAccessorSnapshots.set(getter, snapshot);
+  return snapshot;
+}
+
+/** Node's ES-module loader reads every lexer-visible export of a CommonJS
+ * module once, when an importer first links it, and the import bindings
+ * keep those values. For the accessors a bundler rewrite introduced, the
+ * importer's link point runs each getter once, in the lexer's order, and
+ * stores the values its bindings read. Empty when the module has none. */
+export function cjsAccessorSnapshotStores(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  loc: SrcLoc,
+): IrStmt[] {
+  const getters = lexerVisibleAccessors(dep);
+  if (getters.length === 0) return [];
+  let readyId = lowerer.cjsSnapshotReady.get(dep);
+  if (readyId === undefined) {
+    readyId = `%g.cjsSnapshotReady.${lowerer.cjsSnapshotReady.size}`;
+    lowerer.globalsList.push({ id: readyId, name: "%cjsSnapshotReady", type: BOOL, mutable: true });
+    lowerer.cjsSnapshotReady.set(dep, readyId);
+  }
+  const stores: IrStmt[] = [
+    {
+      kind: "assign",
+      localId: readyId,
+      value: { kind: "boolLit", value: true, type: BOOL, loc },
+      loc,
+    },
+  ];
+  for (const getter of getters) {
+    const snapshot = cjsAccessorSnapshotOf(lowerer, getter);
+    const call = cjsAccessorCall(lowerer, getter, loc);
+    if (snapshot === null || call === null) return [];
+    stores.push({ kind: "assign", localId: snapshot.id, value: call, loc });
+  }
+  return [
+    {
+      kind: "if",
+      cond: {
+        kind: "unary",
+        op: "!",
+        operand: { kind: "varRef", localId: readyId, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      },
+      then: stores,
+      else_: null,
+      loc,
+    },
+  ];
+}
+
 /** The interned lifted-getter call both accessor-read paths share. */
 export function cjsAccessorCall(
   lowerer: Lowerer,
@@ -2132,12 +2265,25 @@ export function caughtRead(
   }
   // Unnarrowed reads cross into unknown. The caught-value dispatch pass
   // retains known native class payloads through live identity capsules;
-  // other payload kinds use the runtime's ordinary conversion. A binding
-  // annotated `any` (`catch (error: any)`) reads the same checked-dynamic
-  // value: its member reads, writes and deletes go through it.
+  // other payload kinds use the runtime's ordinary conversion.
+  // `catch (e: any)` (or useUnknownInCatchVariables off) reads the same way.
   if (
     narrowed?.kind === "dyn" ||
     (narrowed === null && (lowerer.typeOf(node).flags & ts.TypeFlags.Any) !== 0)
+  ) {
+    return { kind: "caughtToDyn", value: ref, type: DYN, loc };
+  }
+
+  // A binding a user type predicate (or an assertion) narrowed to a
+  // structural type (`isErrorLike(e)` → `{ message: string; … }`, an
+  // intersection like `TypeError & { code: unknown }`): the thrown value is
+  // still whatever was thrown, so it crosses as a checked-dynamic value and
+  // each member read validates its own result, as JavaScript reads it.
+  const checked = lowerer.typeOf(node);
+  if (
+    narrowed?.kind === "record" ||
+    narrowed?.kind === "union" ||
+    (narrowed === null && (checked.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !== 0)
   ) {
     return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   }
@@ -2593,6 +2739,24 @@ export function symbolFieldTarget(
   };
 }
 
+/** `return Promise.reject(reason)` in an async function: the checker's
+ * context is the awaited return type (or its union with PromiseLike), not
+ * a promise, but the async function adopts the returned promise, so the
+ * promise of its own result type is the honest type. Null elsewhere. */
+function asyncReturnPromise(lowerer: Lowerer, call: ts.CallExpression): IrType | null {
+  if (lowerer.ctx.isAsync !== true || lowerer.ctx.generator) return null;
+  let node: ts.Node = call;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  const returned =
+    (ts.isReturnStatement(parent) && parent.expression === node) ||
+    (ts.isArrowFunction(parent) && parent.body === node);
+  if (!returned) return null;
+  const ret = lowerer.ctx.returnType;
+  if (ret.kind === "void" || ret.kind === "promise") return null;
+  return { kind: "promise", inner: ret };
+}
+
 /** `Promise.reject(reason)` on THE Promise global: a pre-rejected
  * promise. The reason is pinned to the Error hierarchy (the executor
  * reject parameter's contract — rejection payloads share the
@@ -2624,7 +2788,9 @@ export function lowerPromiseRejectCall(
   // A maybe-promise context (`return Promise.reject(e)` from a function
   // returning `T | Promise<T>`) names its one promise arm.
   const maybePromise = contextual ? maybePromiseUnionOf(lowerer, contextual) : null;
-  const type = maybePromise ? maybePromise.promise : contextual;
+  const type = maybePromise
+    ? maybePromise.promise
+    : (asyncReturnPromise(lowerer, call) ?? contextual);
   const reasonNode = call.arguments.nodes[0]!;
   // A CHECKED-DYNAMIC reason (`Promise.reject(value)` where value rode
   // an untyped binding — the tracingChannel suite's shape): the checked-dynamic tree

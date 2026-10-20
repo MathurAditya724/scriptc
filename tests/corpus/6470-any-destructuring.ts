@@ -2,7 +2,9 @@
 // `any` (an untyped command runner), an awaited `any` promise, JSON.parse,
 // and an `any` table read by key all destructure through the
 // checked-dynamic value, with renames, defaults, nesting, rest, holes and
-// Node's TypeError for a null source.
+// Node's TypeError for a null source, including empty patterns, awaited
+// sources, element reads, `this` receivers and string, numeric and
+// computed first keys.
 function run(command: string): any {
   return { stdout: ` ${command} output \n`, stderr: "", exitCode: 0, meta: { pid: 42 } };
 }
@@ -52,4 +54,71 @@ for (const found of [true, false]) {
   }
 }
 
-main();
+async function nothing(): Promise<any> {
+  return null;
+}
+
+function nothingSync(): any {
+  return undefined;
+}
+
+class Holder {
+  value(): any {
+    return null;
+  }
+  read(): void {
+    const { a } = this.value();
+    console.log(a);
+  }
+}
+
+const sparse: any = { k: null, list: [null] };
+const key = "k";
+
+async function nullSources(): Promise<void> {
+  const attempts: Array<() => Promise<void>> = [
+    async () => {
+      const {} = await nothing();
+    },
+    async () => {
+      const { a } = await nothing();
+      console.log(a);
+    },
+    async () => {
+      const {} = nothingSync();
+    },
+    async () => {
+      const {} = (await nothing()) as any;
+    },
+    async () => {
+      const { "a-b": x } = nothingSync()!;
+      console.log(x);
+    },
+    async () => {
+      const { 1.5: x } = sparse[key];
+      console.log(x);
+    },
+    async () => {
+      const { [key]: x } = sparse.list[0];
+      console.log(x);
+    },
+    async () => {
+      new Holder().read();
+    },
+    async () => {
+      let a: any;
+      ({ a } = await nothing());
+      console.log(a);
+    },
+  ];
+  for (const attempt of attempts) {
+    try {
+      await attempt();
+      console.log("no error");
+    } catch (e) {
+      console.log(e instanceof TypeError, (e as Error).message);
+    }
+  }
+}
+
+main().then(nullSources);

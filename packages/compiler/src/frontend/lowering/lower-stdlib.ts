@@ -4,6 +4,7 @@ import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerToNumberArgument } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
+import { isDeclaredInAmbientNamespace } from "../type-mapper.js";
 import {
   arrayOf,
   BOOL,
@@ -42,6 +43,8 @@ import {
   STATIC_RESPONSE_CALLS,
   STATIC_RESPONSE_READS,
 } from "../../compat/fetch-profile.js";
+import { classGeneratorIterable } from "./class-iterables.js";
+import { generatorDrain } from "./iterator-adapters.js";
 
 export function refuseUnsupportedApi(
   lowerer: Lowerer,
@@ -1021,7 +1024,15 @@ export function fenceStaticAbortControllerMemberRead(
 function isStdlibFetchInterface(lowerer: Lowerer, node: ts.Node, owner: string): ts.Symbol | null {
   const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node));
   for (const symbol of [type.getSymbol(), type.getAliasSymbol()]) {
-    if (symbol?.name === owner && lowerer.isStdlibSymbol(symbol)) return symbol;
+    // NodeJS.ReadableStream shares the WHATWG interface's name.
+    if (
+      symbol?.name === owner &&
+      lowerer.isStdlibSymbol(symbol) &&
+      !symbol.declarations.some(
+        (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientNamespace(d, "NodeJS"),
+      )
+    )
+      return symbol;
   }
   return null;
 }
@@ -1464,7 +1475,8 @@ export function lowerStaticFetchCompanionCall(
   }
   const root = call.expression.expression;
   const symbol = lowerer.resolveValueSymbol(root);
-  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  if ((!symbol || !lowerer.isStdlibSymbol(symbol)) && !isStreamWebReadableStream(lowerer, root))
+    return null;
   const loc = locOf(call);
   if (root.text === "AbortSignal") {
     noteEventListeners(lowerer, loc);
@@ -1877,6 +1889,12 @@ export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression
   };
 }
 
+/** An import binding of node:stream/web's ReadableStream, which IS the
+ * global class (`import { ReadableStream } from "node:stream/web"`). */
+function isStreamWebReadableStream(lowerer: Lowerer, ident: ts.Identifier): boolean {
+  return ident.text === "ReadableStream" && lowerer.isStdlibGlobal(ident, "ReadableStream");
+}
+
 export function lowerStaticReadableStreamNew(
   lowerer: Lowerer,
   expr: ts.NewExpression,
@@ -1885,7 +1903,11 @@ export function lowerStaticReadableStreamNew(
     return null;
   }
   const symbol = lowerer.resolveValueSymbol(expr.expression);
-  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  if (
+    (!symbol || !lowerer.isStdlibSymbol(symbol)) &&
+    !isStreamWebReadableStream(lowerer, expr.expression)
+  )
+    return null;
   const args = expr.arguments?.nodes ?? [];
   if (args.length > 1) return null;
   const loc = locOf(expr);
@@ -2436,6 +2458,10 @@ export function lowerStdlibMethodCall(
         src = lowerer.coerceInto(spread.expression, src, inferred);
       }
     }
+    // A generator, or a class whose [Symbol.iterator] is a generator
+    // method, drains into the number[] the fold reads.
+    src = classGeneratorIterable(lowerer, src) ?? src;
+    if (src.type.kind === "generator") src = generatorDrain(lowerer, src, F64, loc) ?? src;
     if (src.type.kind !== "array" || src.type.elem.kind !== "f64") {
       lowerer.unsupported(
         "SC1090",

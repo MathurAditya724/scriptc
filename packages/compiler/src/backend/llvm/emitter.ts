@@ -1,3 +1,4 @@
+import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
@@ -56,6 +57,9 @@ import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-fe
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { type DenseArrayLoop } from "./dense-array-loops.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
+import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
+import { globalSlotAlias } from "./bytes-alias.js";
+import type { IntegerCountedForLoop } from "../../ir/integer-loops.js";
 import {
   materializeSplitPiece,
   type SplitSpan,
@@ -178,6 +182,7 @@ import {
   genResultThunkFor,
   childExitThunkFor,
   childExitSignalThunkFor,
+  childDataDynThunkFor,
   childDataThunkFor,
   execFileThunkFor,
   ipcMessageThunkFor,
@@ -410,6 +415,9 @@ export interface LlvmTargetOptions {
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
   detachedExit?: boolean;
+  /** Translated WebAssembly memories check bounds explicitly instead of
+   * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
+  wasmBoundsChecks?: boolean;
 }
 
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
@@ -522,6 +530,9 @@ export function boxSlotCount(fn: IrFunction): number {
 
 /** Whether any node of `e` names the local (reads, writes, declarations,
  * captures). */
+/** Typed-array loop versions nest at most this deep (each doubles a body). */
+export const MAX_BYTES_LOOP_VERSION_DEPTH = 3;
+
 function mentionsLocal(e: IrExpr, localId: string): boolean {
   const exprNames = (node: IrExpr): boolean => {
     if (node.kind === "varRef" || node.kind === "incDec" || node.kind === "assignExpr")
@@ -676,6 +687,7 @@ export class LlEmitter {
   readonly emitLibraryIdentity: boolean;
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
+  readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
   readonly literals = new Map<string, { sym: string; len: number }>();
@@ -1029,6 +1041,17 @@ export class LlEmitter {
   wrappingSums = new Set<IrExpr>();
   byteWindowsEnabled = true;
   byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
+  /** Typed-array loop versioning (bytes-loop-versions.ts) for the current
+   * function: off in debug and suspending functions and inside a copy. */
+  bytesLoopVersionsEnabled = false;
+  /** Loops being versioned around the statement being emitted: a loop is
+   * never versioned inside its own copies, and versions nest boundedly. */
+  readonly bytesLoopVersioning = new Set<IrStmt>();
+  bytesLoopEntries: ReturnType<typeof findInitializedByteLoopBindings> | null = null;
+  bytesLoopFunction: IrFunction | null = null;
+  /** Counted loops whose integer-form safety test an enclosing version
+   * guard already passed. */
+  readonly provenCountedGuards = new Set<IrStmt>();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
   integerViews = new Map<string, string>();
   /** Module globals the current function owns outright (initializer
@@ -1158,6 +1181,13 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
+    this.wasmBoundsChecks =
+      options.wasmBoundsChecks === true ||
+      wasmBoundsChecks({
+        sanitize: false,
+        pointerBits: options.pointerBits ?? 64,
+        targetTriple: options.targetTriple ?? "",
+      });
     this.rcHelpers = options.inlineRc !== undefined ? new Set() : null;
     this.rcMode = options.inlineRc;
     this.rcHelpersNoinline = options.rcHelpersNoinline === true;
@@ -3347,6 +3377,34 @@ export class LlEmitter {
 
   /** A binding's storage: a module global, a plain local slot, or a boxed
    * local (the slot holds the capture BOX; access goes through it). */
+  matchBytesLoopVersion(
+    s: IrStmt & { kind: "for" },
+    counted: IntegerCountedForLoop | null,
+  ): ReturnType<typeof matchBytesLoopVersion> {
+    const fn = this.bytesLoopFunction;
+    if (!fn) return null;
+    this.bytesLoopEntries ??= findInitializedByteLoopBindings(fn);
+    const initialized = this.bytesLoopEntries.get(s);
+    if (!initialized) return null;
+    const invariantGlobals = new Set(this.stableGlobals);
+    for (const global of this.initializerBindings.get(fn.name) ?? [])
+      invariantGlobals.add(global.id);
+    return matchBytesLoopVersion(s, counted, {
+      locals: this.currentLocals,
+      invariantGlobals,
+      captured: this.captureIds,
+      ranges: this.integerRanges,
+      initialized,
+      proven: this.bytesBounds,
+    });
+  }
+
+  /** The alias tag of a whole-slot load of a binding (module globals only). */
+  slotAlias(id: string): string {
+    const binding = this.binding(id);
+    return binding.kind === "global" ? globalSlotAlias(this, id, binding.type.kind) : "";
+  }
+
   binding(id: string): {
     kind: "global" | "local" | "boxed";
     slot: string;
@@ -4156,6 +4214,20 @@ export class LlEmitter {
 
   /** Moves need plain slots that nothing else reads behind the binding's
    * back: no debugger view, no coroutine frame, no borrowed (+0) return. */
+  /** Whether the program reads event-loop utilization (perf.loopStart /
+   * perf.idleTime): main then marks the loop's start before running it. */
+  private loopMetricsRead: boolean | undefined;
+  readsLoopMetrics(): boolean {
+    if (this.loopMetricsRead !== undefined) return this.loopMetricsRead;
+    const visitor = {
+      expr: (e: IrExpr): boolean =>
+        !(e.kind === "libCall" && (e.fn === "perf.loopStart" || e.fn === "perf.idleTime")),
+      stmt: (): boolean => true,
+    };
+    this.loopMetricsRead = !this.mod.functions.every((fn) => everyStmtList(fn.body, visitor));
+    return this.loopMetricsRead;
+  }
+
   private lastUseMovesAllowed(): boolean {
     return (
       this.debug === null &&
@@ -5517,6 +5589,10 @@ export class LlEmitter {
 
   childDataThunkFor(param: IrType): string {
     return childDataThunkFor(this, param);
+  }
+
+  childDataDynThunkFor(chunk: "bytes" | "str"): string {
+    return childDataDynThunkFor(this, chunk);
   }
 
   emitterFixedAdapter(cbT: IrType & { kind: "func" }): { fn: string; shim: string } {
