@@ -111,14 +111,14 @@ export function builtinClassDynValueOf(lowerer: Lowerer, node: ts.Expression): I
   };
 }
 
-/** EventEmitter is dyn.builtinClass; the stream classes, which carry
- * native stream state for constructor functions, are
+/** EventEmitter and the legacy Stream are dyn.builtinClass; the stream
+ * classes, which carry native stream state for constructor functions, are
  * dyn.builtinStreamClass, so only programs that use them link the stream
  * half. */
 export function builtinClassValue(kind: number, loc: SrcLoc): IrExpr {
   return {
     kind: "libCall",
-    fn: kind === 0 ? "dyn.builtinClass" : "dyn.builtinStreamClass",
+    fn: kind <= 1 ? "dyn.builtinClass" : "dyn.builtinStreamClass",
     args: [numLit(kind, loc)],
     type: DYN,
     loc,
