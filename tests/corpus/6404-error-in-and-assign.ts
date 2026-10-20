@@ -117,3 +117,28 @@ function failure(message: string, bail: boolean): BuildFailure {
 }
 for (const f of [failure("stop", true), failure("go", false)])
   console.log(f.message, f.bail, f.code);
+
+// A record given a member its type lacks and thrown at once.
+interface FailureRecord {
+  from: string;
+  isGraceful: boolean;
+  errorValue: unknown;
+}
+function classifyFailure(err: unknown, from: string): FailureRecord {
+  return { from, isGraceful: from === "user", errorValue: err };
+}
+function handleFailure(err: unknown, from: string): string {
+  const failure = classifyFailure(err, from);
+  if (failure.from === "build") {
+    throw Object.assign(failure, { bail: true });
+  }
+  return `${failure.from} ${failure.isGraceful}`;
+}
+for (const from of ["build", "user"]) {
+  try {
+    console.log("handled", handleFailure(new Error("x"), from));
+  } catch (e) {
+    const thrownRecord = e as { from: string; bail?: boolean; isGraceful: boolean };
+    console.log("thrown", thrownRecord.from, thrownRecord.bail, thrownRecord.isGraceful);
+  }
+}

@@ -7601,6 +7601,37 @@ function lowerObjectStaticCall(
         }
       }
     }
+    // `throw Object.assign(record, { extra })`: an error-shaped record given
+    // a member its type lacks, thrown at once. A fixed record cannot grow
+    // the member, so the throw carries a checked-dynamic copy of the target
+    // with the source's members added. The copy is unobservable: control
+    // leaves with the throw, so nothing on that path reads the target again.
+    {
+      let parent: ts.Node | undefined = call.parent;
+      while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+      const argNodes = call.arguments.nodes;
+      if (
+        parent &&
+        ts.isThrowStatement(parent) &&
+        argNodes.length === 2 &&
+        !argNodes.some((a) => ts.isSpreadElement(a))
+      ) {
+        const tProbe = tryLowerExpression(lowerer, argNodes[0]!);
+        const sProbe = tryLowerExpression(lowerer, argNodes[1]!);
+        if (
+          tProbe?.type.kind === "record" &&
+          lowerer.dynConvertible(tProbe.type) &&
+          sProbe &&
+          (sProbe.type.kind === "dyn" || lowerer.dynConvertible(sProbe.type))
+        ) {
+          const loc = locOf(call);
+          const target = lowerer.coerceToExpected(lowerer.lowerExpr(argNodes[0]!), DYN);
+          const source = lowerer.coerceToExpected(lowerer.lowerExpr(argNodes[1]!), DYN);
+          if (target.type.kind === "dyn" && source.type.kind === "dyn")
+            return { kind: "libCall", fn: "dyn.assign", args: [target, source], type: DYN, loc };
+        }
+      }
+    }
     // `Object.assign(target, ...sources)` over a CHECKED-DYNAMIC target
     // — the n-ary/spread form (`Object.assign({}, ...plugins.map(p =>
     // p.options), coreOptions)`, support.js's option-table merge). The
