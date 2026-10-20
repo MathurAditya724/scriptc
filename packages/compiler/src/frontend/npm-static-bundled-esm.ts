@@ -984,11 +984,22 @@ function hoistInitClasses(
         hoistedEls.add(el);
         edits.push({ start: from, end: cls.getStart(sf), text: `${sep} ${rest}(); ${close} ` });
         const next = els[i + 1];
-        edits.push({
-          start: cls.getEnd(),
-          end: next === undefined ? cls.getEnd() : next.getStart(sf),
-          text: ` function ${rest}() { ${strict}`,
-        });
+        // The class's own closing brace carries the next piece's opener: an
+        // empty insertion at its end would share its position with the
+        // initializer body's closing edit in minified text (`…}}})`).
+        edits.push(
+          next === undefined
+            ? {
+                start: cls.getEnd() - 1,
+                end: cls.getEnd(),
+                text: `} function ${rest}() { ${strict}`,
+              }
+            : {
+                start: cls.getEnd(),
+                end: next.getStart(sf),
+                text: ` function ${rest}() { ${strict}`,
+              },
+        );
         if (cls.name === undefined) {
           const keyword = cls.getStart(sf);
           edits.push({ start: keyword, end: keyword + "class".length, text: `class ${name}` });

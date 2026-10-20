@@ -256,3 +256,10 @@ console.log(typeof make().on);
 `);
   expect(lowered).toContain('new (require("events")).EventEmitter()');
 });
+
+test("a minified initializer that ends with its class still hoists it", () => {
+  const lowered = expectSameBehavior(
+    `${helpers}var Counter;var init_counter=__esm({"src/counter.ts"(){console.log("counter init"),Counter=class{n=0;next(){return++this.n}}}});function run(){init_counter();const c=new Counter;c.next();console.log(c.next())}run();`,
+  );
+  expect(lowered).toContain("class Counter{");
+});
