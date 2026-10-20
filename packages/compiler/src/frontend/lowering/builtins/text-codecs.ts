@@ -361,13 +361,11 @@ export function storedTextCodecClassOf(
 ): TextCodecCtor["cls"] | null {
   const sym = lowerer.typeOf(expr).getSymbol();
   if (!sym || (sym.name !== "TextEncoder" && sym.name !== "TextDecoder")) return null;
-  return lowerer.checker
-    .declarationsOf(sym)
-    .some(
-      (d) =>
-        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-        lowerer.isStdlibFile(d.getSourceFile()),
-    )
+  return sym.declarations.some(
+    (d) =>
+      (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+      lowerer.isStdlibFile(d.getSourceFile()),
+  )
     ? sym.name
     : null;
 }

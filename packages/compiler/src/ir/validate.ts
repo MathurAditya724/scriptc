@@ -5107,7 +5107,8 @@ function validateFunction(
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 1;
       if (ok && cbT?.kind === "func" && cbT.params.length === 1) {
         const p = cbT.params[0]!;
-        if (e.fn === "stdin.onData") ok = p.kind === "bytes" && p.elem === "u8";
+        if (e.fn === "stdin.onData")
+          ok = (p.kind === "bytes" && p.elem === "u8") || p.kind === "string";
         else if (e.fn === "stdin.onError") ok = p.kind === "object" && p.className === "%Error";
         else ok = p.kind === "f64";
       }
@@ -5246,7 +5247,11 @@ function validateFunction(
   }
 
   function checkLibSpecialCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "crypto.randomFillView" || e.fn === "crypto.randomFillViewRest") {
+    if (
+      e.fn === "crypto.randomFillView" ||
+      e.fn === "crypto.randomFillViewRest" ||
+      e.fn === "crypto.getRandomValues"
+    ) {
       // The filled view is the result, at its own element type.
       const view = e.args[0]?.type;
       if (view?.kind !== "bytes" || !typeEquals(e.type, view)) {

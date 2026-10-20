@@ -99,7 +99,7 @@ function ownedBinding(lowerer: Lowerer, id: ts.Identifier): boolean {
   if (!symbol) return false;
   const cached = lowerer.protocolOwnedBindings.get(symbol);
   if (cached !== undefined) return cached;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   let owned =
     decl !== undefined &&
     decl.getSourceFile() === id.getSourceFile() &&
@@ -192,7 +192,7 @@ function protocolSignature(
   const recvTs = lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression));
   const property = lowerer.checker.getPropertyOfType(recvTs, access.name.text);
   if (!property) return null;
-  const declarations = lowerer.checker.declarationsOf(property);
+  const declarations = property.declarations;
   if (
     declarations.length === 0 ||
     !declarations.every(
@@ -201,7 +201,7 @@ function protocolSignature(
   )
     return null;
   const signature = lowerer.checker.getResolvedSignature(call);
-  const declaration = signature && lowerer.checker.signatureDeclaration(signature);
+  const declaration = signature && signature.declaration;
   if (
     !signature ||
     !declaration ||
@@ -492,7 +492,7 @@ export function lowerProtocolPropertyRead(
   if (!lowerer.classImplementedProtocol(receiverType)) return null;
   const name = access.name.text;
   const property = lowerer.checker.getPropertyOfType(receiverType, name);
-  const declarations = property ? lowerer.checker.declarationsOf(property) : [];
+  const declarations = property ? property.declarations : [];
   if (declarations.length === 0 || !declarations.every((decl) => ts.isPropertySignature(decl)))
     return null;
   const result = lowerer.mapTypeOf(lowerer.typeOf(access));

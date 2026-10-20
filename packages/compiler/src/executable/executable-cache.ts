@@ -56,12 +56,15 @@ export interface EarlyExecutableNativeFeatures {
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
+  warningReplace?: boolean;
+  stdioExtended?: boolean;
   zlib: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
   dc: boolean;
   dynAsync: boolean;
+  dynTier?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
@@ -81,6 +84,7 @@ export interface EarlyExecutableNativeFeatures {
   cipher: boolean;
   perfLoop: boolean;
   tlsCa: boolean;
+  webcrypto: boolean;
 }
 
 interface EarlyExecutableCacheStamp {
@@ -194,6 +198,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "tls",
   "tlsCa",
   "cipher",
+  "webcrypto",
   "perfLoop",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
 

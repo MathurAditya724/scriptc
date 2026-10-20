@@ -33,6 +33,7 @@ export async function compilePackedLibrary(
     assert: options.assert ?? false,
     inspect: options.inspect ?? false,
     dynInvoke: options.dynInvoke ?? false,
+    ...(options.dynTier === true ? { dynTier: true } : {}),
     dc: false,
     dynAsync: false,
     events: false,
@@ -52,6 +53,7 @@ export async function compilePackedLibrary(
     nodeTest: false,
     tls: false,
     cipher: false,
+    webcrypto: false,
     perfLoop: false,
     tlsCa: false,
   };

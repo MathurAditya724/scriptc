@@ -100,6 +100,7 @@ async function main(): Promise<number> {
               nodeTest: false,
               tls: false,
               cipher: false,
+              webcrypto: false,
               perfLoop: false,
               tlsCa: false,
             },

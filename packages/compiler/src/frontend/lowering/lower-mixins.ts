@@ -223,7 +223,7 @@ export function mixinFnOfCallee(lowerer: Lowerer, callee: ts.Expression): MixinF
   let sym = lowerer.checker.getSymbolAtLocation(callee) ?? null;
   if (sym && sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
   if (!sym) return null;
-  const decls = lowerer.checker.declarationsOf(sym);
+  const decls = sym.declarations;
   if (decls.length !== 1 || decls[0] === undefined) return null; // overloads / merged declarations
   const d = decls[0];
   if (ts.isFunctionDeclaration(d)) return mixinFnShapeOf(lowerer, d);
@@ -348,7 +348,7 @@ export function mixinResultBindingClassOf(
   sym: ts.Symbol | null | undefined,
 ): ClassInfo | null {
   if (!sym) return null;
-  const decls = lowerer.checker.declarationsOf(sym);
+  const decls = sym.declarations;
   if (decls.length !== 1 || decls[0] === undefined || !ts.isVariableDeclaration(decls[0]))
     return null;
   const decl = decls[0];
@@ -541,7 +541,7 @@ export function mixinIntersectionInstanceType(lowerer: Lowerer, widened: ts.Type
   const plainParts: string[] = [];
   for (const part of parts) {
     const sym = part.getSymbol();
-    const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
+    const decl = sym ? sym.valueDeclaration : undefined;
     const node =
       decl &&
       (ts.isClassDeclaration(decl) || ts.isClassExpression(decl)) &&

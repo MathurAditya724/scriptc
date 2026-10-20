@@ -22,13 +22,18 @@ import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   cjsExportAssignmentOf,
+  cjsExportDiscardReason,
   cjsExportTargetLiteral,
   isCjsJsFile,
   isModuleExportsAccess,
   isRequireStatement,
   locOf,
+  npmStaticDepSf7,
+  resolveImport,
 } from "../program.js";
+import { cjsWholeExportValueOf, inlineProgramRequireOf } from "./cjs-inline-require.js";
 import { isCjsModuleGlobal } from "./lower-node-module.js";
+import { bindingNeverReassigned } from "./binding-analysis.js";
 import { DYN, type IrExpr, type IrGlobal } from "../../ir/ir.js";
 
 /** True for the CommonJS wrapper's `exports` binding (not shadowed by any
@@ -37,7 +42,7 @@ export function isCjsExportsIdentifier(lowerer: Lowerer, node: ts.Expression): b
   if (!ts.isIdentifier(node) || node.text !== "exports") return false;
   if (!isCjsJsFile(node.getSourceFile(), lowerer.program)) return false;
   const symbol = lowerer.checker.getSymbolAtLocation(node);
-  const decls = symbol ? lowerer.checker.declarationsOf(symbol) : [];
+  const decls = symbol ? symbol.declarations : [];
   return !decls.some(
     (d) =>
       !d.getSourceFile().isDeclarationFile &&
@@ -349,7 +354,7 @@ function functionUsesThis(fn: ts.FunctionLikeDeclaration): boolean {
 /** A function declaration, or a variable initialized with a function or
  * arrow expression, that never reads `this`. */
 function symbolIsThisFreeFunction(lowerer: Lowerer, sym: ts.Symbol | undefined): boolean {
-  const decls = sym ? lowerer.checker.declarationsOf(sym) : [];
+  const decls = sym ? sym.declarations : [];
   const fn = decls.find(ts.isFunctionDeclaration);
   if (fn !== undefined) return !functionUsesThis(fn);
   const v = decls.find(ts.isVariableDeclaration);
@@ -427,4 +432,129 @@ export function cjsExportCallIgnoresThis(
     }
     return false;
   });
+}
+
+/** The value behind a binding of a CommonJS member export (an `import {
+ * name }` or a top-level `const { name } = require(...)`) written once as
+ * `module.exports.<name> = <value>` or `exports.<name> = <value>`, when the
+ * module exports a value whole and the member is a property added to it
+ * (`exports = module.exports = Client; exports.StatsD = Client`). The
+ * checker gives such a binding a synthesized property symbol, so the
+ * module's statements answer. The value is a binding of the exporting
+ * module or a primitive literal, which the use site reads again. Follows
+ * `module.exports = require("./x")` re-exports. Null for any other binding. */
+export function cjsMemberAliasValueOf(lowerer: Lowerer, ref: ts.Identifier): ts.Expression | null {
+  const sym = lowerer.checker.getSymbolAtLocation(ref);
+  if (!sym) return null;
+  const decls = sym.declarations;
+  // `import { StatsD } from "pkg"`
+  const specifier = sym.flags & ts.SymbolFlags.Alias ? decls.find(ts.isImportSpecifier) : undefined;
+  if (specifier !== undefined) {
+    const importDecl = specifier.parent?.parent?.parent;
+    if (
+      importDecl === undefined ||
+      !ts.isImportDeclaration(importDecl) ||
+      !ts.isStringLiteral(importDecl.moduleSpecifier)
+    )
+      return null;
+    const spec = importDecl.moduleSpecifier.text;
+    const from = importDecl.getSourceFile();
+    const dep =
+      resolveImport(lowerer.program, from, spec, "import") ??
+      npmStaticDepSf7(lowerer.program, from, spec, "import");
+    if (dep === null) return null;
+    return memberAliasIn(lowerer, dep, (specifier.propertyName ?? specifier.name).text, 0);
+  }
+  // `const { shout } = require("./lib")` at a module's top level
+  const element = decls.find(ts.isBindingElement);
+  if (element === undefined || element.dotDotDotToken || !ts.isIdentifier(element.name))
+    return null;
+  const pattern = element.parent;
+  const declaration = pattern?.parent;
+  if (
+    pattern === undefined ||
+    !ts.isObjectBindingPattern(pattern) ||
+    declaration === undefined ||
+    !ts.isVariableDeclaration(declaration) ||
+    declaration.initializer === undefined ||
+    (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  const key = element.propertyName ?? element.name;
+  if (!ts.isIdentifier(key)) return null;
+  const req = inlineProgramRequireOf(lowerer, declaration.initializer);
+  if (req === null) return null;
+  return memberAliasIn(lowerer, req.dep, key.text, 0);
+}
+
+function memberAliasIn(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  name: string,
+  depth: number,
+): ts.Expression | null {
+  const member = memberWritesIn(lowerer, sf, name, depth);
+  // One write: a member written again would be a runtime slot.
+  return member !== null && member.writes === 1 ? member.value : null;
+}
+
+/** The writes of member `name` in `sf` and in the modules it re-exports
+ * through `module.exports = require("./x")`, which share its exports
+ * object. `value` is the last write's value when the use site can read
+ * it again. Null when the module does not export a value whole. */
+function memberWritesIn(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  name: string,
+  depth: number,
+): { value: ts.Expression | null; writes: number } | null {
+  if (depth > 32 || sf.isDeclarationFile || !isCjsJsFile(sf, lowerer.program)) return null;
+  const whole = cjsWholeExportValueOf(sf);
+  if (whole === null) return null;
+  let value: ts.Expression | null = null;
+  let writes = 0;
+  const inner = inlineProgramRequireOf(lowerer, whole.rhs);
+  if (inner !== null) {
+    // The re-exported module runs first; this module's own writes follow.
+    const dep = memberWritesIn(lowerer, inner.dep, name, depth + 1);
+    if (dep === null) return null;
+    ({ value, writes } = dep);
+  }
+  for (const stmt of sf.statements.nodes) {
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs?.kind !== "member" || !ts.isIdentifier(cjs.name) || cjs.name.text !== name) continue;
+    writes++;
+    if (cjsExportDiscardReason(stmt) !== null) return null;
+    let written: ts.Expression = cjs.value;
+    while (ts.isParenthesizedExpression(written)) written = written.expression;
+    value = rereadableMemberValue(lowerer, stmt, written) ? written : null;
+  }
+  return { value, writes };
+}
+
+/** True when reading `value` again at the use site observes what the
+ * member write `stmt` stored: a primitive literal, or a module binding
+ * declared before the write and never reassigned. */
+function rereadableMemberValue(
+  lowerer: Lowerer,
+  stmt: ts.Statement,
+  value: ts.Expression,
+): boolean {
+  if (
+    ts.isStringLiteral(value) ||
+    ts.isNumericLiteral(value) ||
+    ts.isNoSubstitutionTemplateLiteral(value) ||
+    value.kind === ts.SyntaxKind.TrueKeyword ||
+    value.kind === ts.SyntaxKind.FalseKeyword
+  )
+    return true;
+  if (!ts.isIdentifier(value)) return false;
+  const sym = lowerer.resolveValueSymbol(value);
+  if (sym === null || sym.declarations.length !== 1) return false;
+  const decl = sym.declarations[0]!;
+  if (decl.getSourceFile() !== stmt.getSourceFile()) return false;
+  // A function declaration is initialized when the module starts; any
+  // other binding must be initialized before the write stores it.
+  if (!ts.isFunctionDeclaration(decl) && decl.end > stmt.pos) return false;
+  return bindingNeverReassigned(lowerer, sym, decl);
 }
