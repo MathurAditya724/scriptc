@@ -33,3 +33,26 @@ const job: Job = { id: "j1" };
 const tracked = job as Job & { startedAt: number };
 tracked.startedAt = 42;
 console.log(tracked.startedAt + 1, JSON.stringify(job), Object.keys(job));
+
+// An annotated binding of the asserted type keeps the object as well:
+// the members appear on it once written, not before.
+function stamp(job: Job): Job & { finishedAt: number } {
+  const done: Job & { finishedAt: number } = job as Job & { finishedAt: number };
+  done.finishedAt = 7;
+  return done;
+}
+const second: Job = { id: "j2", retries: 1 };
+console.log(stamp(second).finishedAt, JSON.stringify(second), Object.keys(second));
+
+const third: Job = { id: "j3" };
+const queued: Job & { queuedAt: number } = third as Job & { queuedAt: number };
+queued.queuedAt = 9;
+console.log(queued.queuedAt, JSON.stringify(third), Object.keys(third));
+
+function markAnnotated(route: Route): void {
+  const marked: Route & { internal: boolean } = route as Route & { internal: boolean };
+  marked.internal = false;
+}
+const annotatedRoute: Route = { handle: "hit" };
+markAnnotated(annotatedRoute);
+console.log(JSON.stringify(annotatedRoute));

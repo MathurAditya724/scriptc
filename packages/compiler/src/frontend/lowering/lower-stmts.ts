@@ -5475,10 +5475,12 @@ export function lowerVarDecl(
   // `const view = route as Route & { order: number }`: the asserted type
   // refines the record arms the value is stored in (the assertion keeps
   // that value, see hosted-narrowing.ts). The binding keeps the stored
-  // type, so writes through it reach the asserted object.
+  // type, so writes through it reach the asserted object. An annotation
+  // the stored type hosts (`const view: Route & { order: number } = ...`)
+  // keeps it too: coercing into the annotated layout would copy the
+  // value and read members the writes have not created yet.
   if (
     !isLet &&
-    !decl.type &&
     decl.initializer &&
     isAssertionInitializer(decl.initializer) &&
     (settledType.kind === "union" || settledType.kind === "record") &&

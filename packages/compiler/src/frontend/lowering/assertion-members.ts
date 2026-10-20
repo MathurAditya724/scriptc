@@ -145,7 +145,8 @@ export function extendAssertedRecordMembers(
  * the stored type of `value` once the members are attached, exactly as a
  * local binding does (lowerVarDecl): the assertion keeps the object, and
  * writes through the binding must reach it. Globals took their checker
- * type during collection, before the members existed. */
+ * (or annotated) type during collection, before the members existed; an
+ * annotation the stored type hosts gives way to it the same way. */
 function keepStoredTypeOfAssertedGlobals(lowerer: Lowerer, files: readonly ts.SourceFile[]): void {
   for (const sf of files) {
     if (sf.isDeclarationFile) continue;
@@ -153,7 +154,7 @@ function keepStoredTypeOfAssertedGlobals(lowerer: Lowerer, files: readonly ts.So
       if (!ts.isVariableStatement(statement)) continue;
       if ((statement.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
       for (const decl of statement.declarationList.declarations.nodes) {
-        if (!ts.isIdentifier(decl.name) || decl.type || !decl.initializer) continue;
+        if (!ts.isIdentifier(decl.name) || !decl.initializer) continue;
         let init: ts.Expression = decl.initializer;
         while (ts.isParenthesizedExpression(init)) init = init.expression;
         if (!ts.isAsExpression(init) && !ts.isTypeAssertion(init)) continue;
