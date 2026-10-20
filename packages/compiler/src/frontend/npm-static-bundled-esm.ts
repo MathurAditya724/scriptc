@@ -449,7 +449,6 @@ export function lowerBundledEsmInits(
       }
     }
   }
-  edits.push(...removeDeclarators(sf, deadDeclarators));
 
   /* Namespaces of lazily initialized modules read through members. */
   let mainTarget: string | null = null;
@@ -500,6 +499,17 @@ export function lowerBundledEsmInits(
   };
   const getterText = (value: ts.Expression): string =>
     applyEdits(source, value.getStart(sf), value.getEnd(), edits);
+  /** A call through the namespace (`ns.fn()`, `L().fn()`) passes the object
+   * the read came from as `this`; the lowered object differs from Node's
+   * module object (`__esModule`, property attributes), so it must stay
+   * unobservable: the callee is a top-level function that never reads
+   * `this`. */
+  const receiverHidden = (values: ReadonlyMap<string, ts.Expression>, name: string): boolean => {
+    const value = values.get(name);
+    if (value === undefined || !ts.isIdentifier(value) || !stable(value.text)) return false;
+    const decl = top.get(value.text)?.node;
+    return decl !== undefined && ts.isFunctionDeclaration(decl) && !readsThis(decl);
+  };
 
   /* Memoized lazy loaders of those namespaces, `L = () => M ??= NS` (a
    * bundle plugin's lazy re-exports): every `L().name` becomes the
@@ -564,7 +574,7 @@ export function lowerBundledEsmInits(
     const table = tables.get(target);
     if (table === undefined) continue;
     const loaderWhy = {
-      degrade: `its memoized lazy loader '${name}' returns the namespace of a bundled ES module as a value, a module object the static rewrite cannot represent (only member reads of its result compile)`,
+      degrade: `its memoized lazy loader '${name}' returns the namespace of a bundled ES module as a value, a module object the static rewrite cannot represent (only member reads of its result compile, and calls only of exported functions that do not read 'this')`,
     };
     const memo = memoize.left.text;
     const memoDecl = top.get(memo)?.node;
@@ -612,6 +622,10 @@ export function lowerBundledEsmInits(
       const member = (access as ts.PropertyAccessExpression).name.text;
       const value = entries.get(member);
       if (value === undefined || shadowed(access, table.entries)) return loaderWhy;
+      // The rewrite reads the export without the namespace object, so a
+      // call through it (`L().fn()`) loses its receiver.
+      if (calledWithReceiver(access as ts.Expression) && !receiverHidden(entries, member))
+        return loaderWhy;
       const init = initCall === null ? "" : `${initCall.getText(sf)}, `;
       edits.push({
         start: access.getStart(sf),
@@ -619,7 +633,7 @@ export function lowerBundledEsmInits(
         text: `(${init}${getterText(value)})`,
       });
     }
-    edits.push(...removeDeclarators(sf, new Set([d, memoDecl])));
+    deadDeclarators.add(d).add(memoDecl);
     loaderSpans.push({ start: d.getStart(sf), end: d.getEnd() });
     lowered.add(target);
   }
@@ -664,24 +678,13 @@ export function lowerBundledEsmInits(
       else break;
     }
     const values = new Map(table.entries);
-    // A call through the namespace (`ns.fn()`) passes the object the read
-    // came from as `this`; the lowered object differs from Node's module
-    // object (`__esModule`, property attributes), so it must stay
-    // unobservable: the callee is a top-level function that never reads
-    // `this`.
-    const receiverHidden = (name: string): boolean => {
-      const value = values.get(name);
-      if (value === undefined || !ts.isIdentifier(value) || !stable(value.text)) return false;
-      const decl = top.get(value.text)?.node;
-      return decl !== undefined && ts.isFunctionDeclaration(decl) && !readsThis(decl);
-    };
     const memberRead = (access: ts.Node | undefined, of: ts.Node): boolean =>
       access !== undefined &&
       ts.isPropertyAccessExpression(access) &&
       access.expression === of &&
       values.has(access.name.text) &&
       plainRead(access) &&
-      (!calledWithReceiver(access) || receiverHidden(access.name.text));
+      (!calledWithReceiver(access) || receiverHidden(values, access.name.text));
     const holder = ns.parent;
     // `__reExport(main, ns, module.exports)`: a star re-export of the
     // module into the bundle's own exports (`export * from` in its entry).
@@ -792,8 +795,12 @@ export function lowerBundledEsmInits(
     )
       return { degrade: ESM_SHAPE_DEGRADE };
     edits.push({ start: table.stmt.getStart(sf), end: table.stmt.getEnd(), text: "" });
-    edits.push(...removeDeclarators(sf, new Set([decl])));
+    deadDeclarators.add(decl);
   }
+  // Every removed declarator in one pass: declarators of one statement
+  // removed separately would leave overlapping edits, and applyEdits keeps
+  // only the first of them.
+  edits.push(...removeDeclarators(sf, deadDeclarators));
 
   /* The run-once closures. */
   for (const init of inits.values()) {
