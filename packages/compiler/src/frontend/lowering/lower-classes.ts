@@ -88,7 +88,6 @@ import {
   isCjsJsFile,
   isJsSourceFile,
   isModuleExportsAccess,
-  isNodeTypesPath,
   locOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
@@ -1046,9 +1045,11 @@ export function builtinStreamInfoOf(
     if (rec.lib === symbol.name) irName = name;
   }
   if (!irName) return null;
+  // Both the bundled declarations and @types/node declare the classes
+  // inside `declare module "stream"` (@types/node nests them in the module's
+  // `internal` namespace).
   const declared = symbol.declarations.some((d) => {
     if (!ts.isClassDeclaration(d)) return false;
-    if (isNodeTypesPath(d.getSourceFile().fileName)) return false;
     let node: ts.Node | undefined = d.parent;
     while (node) {
       if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
@@ -8062,6 +8063,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
         className: info.def.name,
         field: f.name,
         value: dynUndefinedExpr(loc),
+        define: true,
         loc,
       });
     }
@@ -8077,6 +8079,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
         className: info.def.name,
         field: f.name,
         value,
+        define: true,
         loc: locOf(f.initializer),
       });
     } catch (e) {

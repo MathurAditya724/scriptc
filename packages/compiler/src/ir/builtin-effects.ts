@@ -349,6 +349,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.kill",
   "process.killNum",
   "process.setExitCode",
+  "process.setExitCodeTracked",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
   "process.emitWarning",
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
@@ -600,6 +601,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.mapSeedEntry",
   "dyn.freeze",
   "dyn.isFrozen",
+  "class.defineField",
+  "class.throwReadOnly",
+  "class.throwNotExtensible",
   "dyn.toString",
   "dyn.valueOf",
   "string.fromCodePoint",
