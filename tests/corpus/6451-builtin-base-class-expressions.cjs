@@ -31,3 +31,16 @@ const l = new Lower();
 l.on("data", (d) => console.log("lower", d.toString()));
 l.end("HeLLo");
 console.log(Wrap.name, Bus.name, typeof Lower);
+{
+  // A class declared in a block is collected like a class expression.
+  class Once extends Readable {
+    _read() {
+      this.push(null);
+    }
+  }
+  function onReadable() {
+    console.log("block", stream.read() === null);
+  }
+  const stream = new Once();
+  stream.once("readable", onReadable);
+}
