@@ -127,7 +127,11 @@ export function matchBytesLoopVersion(
     }
     return everyStmtChild(s, scanExpr, scanStmt);
   };
+  // The guard runs before the initializer, so a binding the initializer
+  // writes is not invariant either: `for (let i = (a = b, 0); ...)` must
+  // not keep the bounds the guard proved for the old `a`.
   if (
+    (loop.init !== null && !scanStmt(loop.init)) ||
     !loop.body.every(scanStmt) ||
     (loop.cond !== null && !scanExpr(loop.cond)) ||
     (loop.update !== null && !scanStmt(loop.update))
