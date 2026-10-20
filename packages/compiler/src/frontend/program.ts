@@ -3207,11 +3207,30 @@ function cjsCycleRefusal7(
 function functionExportRead7(id: ts.Identifier, dep: ts.SourceFile): boolean {
   const access = id.parent;
   if (!ts.isPropertyAccessExpression(access) || access.expression !== id) return false;
+  // The value the read yields: through parentheses and the right operand
+  // of a comma, so `(0, binding.name)(...)` is the call it spells.
   let use: ts.Node = access;
-  while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+  for (;;) {
+    const p = use.parent;
+    if (ts.isParenthesizedExpression(p)) use = p;
+    else if (
+      ts.isBinaryExpression(p) &&
+      p.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+      p.right === use
+    )
+      use = p;
+    else break;
+  }
   const parent = use.parent;
+  // A use that can run the function (a call, `new`, a tag, a member of it
+  // such as `.call`, or an argument another call receives) is not a read.
   if (
     (ts.isCallExpression(parent) && parent.expression === use) ||
+    (ts.isCallExpression(parent) && parent.arguments.nodes.includes(use as ts.Expression)) ||
+    ts.isNewExpression(parent) ||
+    (ts.isTaggedTemplateExpression(parent) && parent.tag === use) ||
+    (ts.isPropertyAccessExpression(parent) && parent.expression === use) ||
+    (ts.isElementAccessExpression(parent) && parent.expression === use) ||
     ts.isDeleteExpression(parent) ||
     ((ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
       (parent.operator === ts.SyntaxKind.PlusPlusToken ||
