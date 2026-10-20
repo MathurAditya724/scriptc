@@ -53,3 +53,31 @@ second.calls += 10;
 const holder: { counter: Counter } = { counter: counted(second) };
 second.calls = 100;
 console.log("counter", counter.calls, holder.counter.calls, second.calls);
+
+// A view also accepts other classes that have its members. Their instances
+// flow through it the same way.
+class Meter {
+  label = "meter";
+  reads = 0;
+  read(): number {
+    return this.reads;
+  }
+}
+class Gauge {
+  reads = 0;
+  read(): number {
+    return this.reads;
+  }
+}
+interface Reading {
+  reads: number;
+}
+function reading(view: Pick<Meter, "read" | "reads">): Reading {
+  console.log("read", view.read());
+  return view;
+}
+const gauge = new Gauge();
+const result = reading(gauge);
+gauge.reads = 50;
+const meter = new Meter();
+console.log("reading", result.reads, reading(meter).reads, meter.label);

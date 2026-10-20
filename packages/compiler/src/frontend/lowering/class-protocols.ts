@@ -6,6 +6,8 @@ export class ClassProtocols {
   private implemented: Set<ts.Symbol> | null = null;
   private readonly methods = new Map<string, ts.ClassLikeDeclaration[]>();
   private readonly answers = new Map<ts.Type, boolean>();
+  /** The program classes each Pick or Omit view accepts (classesAcceptedBy). */
+  private readonly accepted = new Map<ts.Type, ts.Symbol[]>();
   /** What markIdentityFlows learned about the program, while it runs. */
   private facts: FlowFacts | null = null;
 
@@ -414,9 +416,12 @@ export class ClassProtocols {
         for (const part of ts.constituentTypes(type)) add(part);
         return;
       }
-      // A Pick or Omit view's values are instances of the class it views.
+      // A Pick or Omit view's values are instances of the class it views,
+      // or of any other program class that has the view's members.
       if (this.pickOfProgramClass(type)) {
         add(type.getAliasTypeArguments()[0]!);
+        for (const other of this.classesAcceptedBy(type))
+          for (const related of this.classFamily(other, facts)) out.add(related);
         return;
       }
       const symbol = type.getSymbol();
@@ -432,6 +437,30 @@ export class ClassProtocols {
       if (element !== undefined) add(element);
     } else add(source);
     return out;
+  }
+
+  /** The program classes with methods whose instances are assignable to
+   * `type`. */
+  private classesAcceptedBy(type: ts.Type): ts.Symbol[] {
+    const known = this.accepted.get(type);
+    if (known !== undefined) return known;
+    this.index();
+    const found = new Set<ts.Symbol>();
+    for (const entries of this.methods.values())
+      for (const declaration of entries) {
+        const symbol = declaration.name
+          ? this.checker.getSymbolAtLocation(declaration.name)
+          : undefined;
+        if (
+          symbol !== undefined &&
+          !found.has(symbol) &&
+          this.checker.isTypeAssignableTo(this.checker.getDeclaredTypeOfSymbol(symbol), type)
+        )
+          found.add(symbol);
+      }
+    const result = [...found];
+    this.accepted.set(type, result);
+    return result;
   }
 
   /** A class symbol with its base classes and the program classes that
