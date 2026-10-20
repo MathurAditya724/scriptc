@@ -1,7 +1,7 @@
 // Streams that arrive untyped meet NodeJS stream interface slots: an
 // untyped JavaScript function's stream returned as NodeJS.ReadableStream,
-// a checked cast from 'unknown', pipeline() over untyped source and
-// destination stages, and 'for await' over a NodeJS.ReadableStream
+// a checked cast from 'unknown', pipe() and pipeline() into untyped
+// destinations, and 'for await' over a NodeJS.ReadableStream
 // parameter fed by a file stream and a child's stdout.
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
@@ -36,6 +36,13 @@ async function main(): Promise<void> {
   await collect("cast", held(plain) as NodeJS.ReadableStream);
   const child = spawn("sh", ["-c", "printf 'child text\\n'"], { stdio: ["ignore", "pipe", "inherit"] });
   if (child.stdout) await collect("child", child.stdout);
+
+  await new Promise<void>((resolve) => {
+    const piped = fs.createReadStream(plain);
+    piped.on("end", () => resolve());
+    piped.pipe(collector());
+  });
+  console.log("pipe", JSON.stringify(joined()));
 
   const sink = collector();
   await pipeline(openUntyped(packed), zlib.createGunzip(), sink);

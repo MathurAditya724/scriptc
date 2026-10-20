@@ -3371,6 +3371,58 @@ function pipeIntoStdio(
   };
 }
 
+/** `readable.pipe(untyped)`: a checked-dynamic destination unwraps a boxed
+ * native stream at run time (stream.unboxDyn; other values throw the
+ * not-supported Error), and pipe() answers the destination value itself. */
+function pipeIntoDyn(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  target: IrExpr,
+): IrExpr {
+  const loc = locOf(call);
+  const receiverValue = lowerer.lowerExpr(access.expression);
+  const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
+  const destination = lowerer.declareHiddenLocal("%pipeDestination", target.type);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: source.id, init: receiverValue, loc },
+    { kind: "varDecl", localId: destination.id, init: target, loc },
+  ];
+  const end = pipeEndOption(lowerer, call.arguments.nodes[1], loc);
+  const duplex: IrType = { kind: "object", className: "%Duplex" };
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "readable.pipe",
+      args: [
+        { kind: "varRef", localId: source.id, type: receiverValue.type, loc },
+        {
+          kind: "libCall",
+          fn: "stream.unboxDyn",
+          args: [
+            { kind: "varRef", localId: destination.id, type: target.type, loc },
+            strLit("pipe destinations other than native streams are not supported yet", loc),
+          ],
+          type: duplex,
+          loc,
+        },
+        end,
+      ],
+      type: duplex,
+      loc,
+    },
+    loc,
+  });
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: { kind: "varRef", localId: destination.id, type: target.type, loc },
+    type: target.type,
+    loc,
+  };
+}
+
 export function lowerStreamMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -3622,6 +3674,7 @@ export function lowerStreamMethodCall(
     }
     const target = lowerer.lowerExpr(args[0]!);
     if (target.type.kind === "procStream") return pipeIntoStdio(lowerer, call, access, target);
+    if (target.type.kind === "dyn") return pipeIntoDyn(lowerer, call, access, target);
     const dst = target;
     const dstInfo =
       dst.type.kind === "object" ? lowerer.classes.get(dst.type.className) : undefined;
