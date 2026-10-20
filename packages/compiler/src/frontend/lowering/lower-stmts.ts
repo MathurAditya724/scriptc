@@ -2,7 +2,7 @@ import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
-import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
@@ -6600,16 +6600,12 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       if (!isRelativeSpecifier(spec) && canonicalBuiltinModule(spec) === null) {
         const refusal = probeNodeRequireRefusal(sf.fileName, spec);
         if (refusal !== null) {
+          // The same throw as the expression form (cjs-inline-require):
+          // an Error carrying Node's MODULE_NOT_FOUND code.
           const loc = locOf(expr);
           return {
-            kind: "throw",
-            value: {
-              kind: "libCall",
-              fn: "error.new",
-              args: [{ kind: "strLit", value: refusal.message, type: STRING, loc }],
-              type: { kind: "object", className: "%Error" },
-              loc,
-            },
+            kind: "exprStmt",
+            expr: nodeThrowExpr(0, "MODULE_NOT_FOUND", refusal.message, VOID, loc),
             loc,
           };
         }
