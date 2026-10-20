@@ -111,6 +111,98 @@ console.log(require_named().name);
   expect(chunk).toContain("var __defProp = Object.defineProperty;");
 });
 
+test("a helper travels with a chunk whose nested scopes declare its name", () => {
+  const answer = expectSameBehavior(`${keyedHelper}function label(n) {
+  return "label " + n;
+}
+function wrap(n) {
+  function inner() {
+    var label = "inner";
+    return label;
+  }
+  return label(n) + " " + inner();
+}
+var require_e = __commonJS({
+  "e.js"(exports2, module2) {
+    function nested() {
+      var label = "nested";
+      return label;
+    }
+    var seen = [];
+    for (let label of ["loop"]) seen.push(label);
+    try {
+      throw "caught";
+    } catch (label) {
+      seen.push(label);
+    }
+    {
+      const label = "block";
+      seen.push(label);
+    }
+    module2.exports = { outer: label(1), indirect: (0, label)(3), wrapped: wrap(2), nested: nested(), seen };
+  }
+});
+var e = require_e();
+console.log(e.outer, e.indirect, e.wrapped, e.nested, e.seen.join(","));
+`);
+  const chunk = answer.chunks[0]!.source;
+  expect(chunk).toContain("function label(n)");
+  expect(chunk).toContain("function wrap(n)");
+});
+
+test("a named function expression that only calls itself travels with a chunk", () => {
+  const answer = expectSameBehavior(`${keyedHelper}var fact = function self(n) {
+  return n <= 1 ? 1 : n * self(n - 1);
+};
+var kind = function self(self) {
+  return typeof self;
+};
+var outer = function self() {
+  var self = 2;
+  return self;
+};
+var require_g = __commonJS({
+  "g.js"(exports2, module2) {
+    module2.exports = [fact(5), kind(1), outer()];
+  }
+});
+console.log(require_g().join(","));
+`);
+  const chunk = answer.chunks[0]!.source;
+  expect(chunk).toContain("var fact = function self(n)");
+});
+
+test.each([
+  ["exports it", `function tally() {}`, `module2.exports = { tally };`],
+  ["reads its properties", `function tally() {}`, `exports2.calls = tally.calls;`],
+  ["constructs it", `function tally() {}`, `exports2.made = new tally();`],
+  ["stores an arrow helper", `var tally = () => 1;`, `exports2.fn = tally;`],
+  [
+    "calls a function that reads its own name as a value",
+    `var tally = function self() { self.n = (self.n || 0) + 1; return self.n; };`,
+    `exports2.count = tally();`,
+  ],
+  [
+    "calls a function whose parameter default reads its own name",
+    `var tally = function self(box = self) { box.n = (box.n || 0) + 1; return box.n; };`,
+    `exports2.count = tally();`,
+  ],
+])("a chunk that %s keeps the package refused", (_, declaration, statement) => {
+  const result = split(`${keyedHelper}${declaration}
+var require_f = __commonJS({
+  "f.js"(exports2, module2) {
+    ${statement}
+  }
+});
+require_f();
+`);
+  expect(result).toEqual({
+    degrade: expect.stringContaining(
+      "uses the bundle's top-level function 'tally' as a value",
+    ) as string,
+  });
+});
+
 test.each([
   ["reads its factory's receiver", `console.log(this);`],
   ["reads its factory's arguments object", `console.log(arguments.length);`],

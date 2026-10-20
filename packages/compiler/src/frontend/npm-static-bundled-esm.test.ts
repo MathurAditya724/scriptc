@@ -108,6 +108,42 @@ console.log(load(), (init_lazy(), __toCommonJS(lazy_exports)).value());
   expect(lowered).toContain('(require("os")).EOL');
 });
 
+test("calls of exported functions that never read their own `this` still lower", () => {
+  const lowered = expectSameBehavior(`${helpers}var t_exports = {};
+__export(t_exports, { plain: () => plain, inner: () => inner });
+function plain(x) { return "plain " + x; }
+function inner() {
+  function own() { return typeof this; }
+  return "inner " + own.call(1);
+}
+var init_t = __esm({ "t.ts"() {} });
+const t = (init_t(), __toCommonJS(t_exports));
+console.log(t.plain(1), (t.plain)(2), t.inner());
+`);
+  expect(lowered).not.toContain("__toCommonJS(t_exports)");
+});
+
+test.each([
+  ["a direct call", `NS.who()`],
+  ["a parenthesized callee", `(NS.who)()`],
+  ["a tagged template", "NS.who`x`"],
+  ["a call through a local", `(() => { const m = NS; return m.who(); })()`],
+  ["an arrow inside the function", `NS.arrow()()`],
+])("%s that passes the namespace as `this` keeps the package refused", (_, use) => {
+  const result = lower(`${helpers}var w_exports = {};
+__export(w_exports, { who: () => who, arrow: () => arrow });
+function who() { return this.__esModule; }
+function arrow() { return () => this; }
+var init_w = __esm({ "w.ts"() {} });
+console.log(${use.replaceAll("NS", "(init_w(), __toCommonJS(w_exports))")});
+`);
+  expect(result).toEqual({
+    degrade: expect.stringContaining(
+      "calls only of exported functions that do not read 'this'",
+    ) as string,
+  });
+});
+
 test("minified initializers sharing a var statement lower the same way", () => {
   expectSameBehavior(
     helpers +

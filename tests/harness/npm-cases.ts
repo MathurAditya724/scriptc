@@ -19,12 +19,12 @@ export function npmCases(fixturesRoot: string): NpmCase[] {
   return [
     ...globSync(join(fixturesRoot, "npm/cases/*/main.ts"))
       .sort()
-      // 2465-2469 and 2556-2568 are the --npm-static bundler-emitted-CJS
+      // 2465-2469, 2556-2567, 2571 and 2580-2584 are the --npm-static bundler-emitted-CJS
       // cases (npm-static.test.ts drives them with the opt-in): their
       // consumers exercise the static rewrite's surface (lexer-visible
       // names the shipped .d.ts never declares, the __toESM interop
       // family), so they stay out of the flagless island lane by design.
-      .filter((entry) => !/\/(246[5-9]|255[6-9]|256[0-8])-[^/]+\/main\.ts$/.test(entry))
+      .filter((entry) => !/\/(246[5-9]|255[6-9]|256[0-7]|2571|258[0-4])-[^/]+\/main\.ts$/.test(entry))
       .map((entry) => ({
         name: entry.split("/").at(-2)!,
         entry,
