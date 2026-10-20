@@ -1,5 +1,15 @@
 import { expect, test } from "vitest";
-import { BOOL, DYN, F64, STRING, VOID, type IrExpr, type IrFunction, type IrModule } from "./ir.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  JSVAL,
+  STRING,
+  VOID,
+  type IrExpr,
+  type IrFunction,
+  type IrModule,
+} from "./ir.js";
 import {
   deserializeModule,
   deserializeModuleBytes,
@@ -37,7 +47,7 @@ function moduleOf(...functions: IrFunction[]): IrModule {
     body: [],
     loc,
   };
-  return { irVersion: 16, sourceFile: "tiers.ts", functions: [main, ...functions], entry: "%main" };
+  return { irVersion: 17, sourceFile: "tiers.ts", functions: [main, ...functions], entry: "%main" };
 }
 
 const keyGet: IrExpr = {
@@ -123,20 +133,56 @@ test("the validator enforces I1: static functions perform no dynamic operation",
   ]);
 });
 
-test("serialized IR carries no tiers in stage S2, and loading derives them again", () => {
+test("serialized IR carries each function's tier", () => {
   const reader = fn("reader", keyGet);
   const mod = moduleOf(reader);
-  const untiered = serializeModule(mod, true);
   assignLegacyTiers(mod.functions);
   expect(reader.tier).toBe("dynamic");
-  expect(serializeModule(mod, true)).toBe(untiered);
-  expect(serializeModuleParts(mod).join("")).toBe(untiered);
-  expect(serializeModule(mod)).not.toContain('"tier"');
-  for (const loaded of [
-    deserializeModule(untiered),
-    deserializeModuleBytes(Buffer.from(untiered)),
-  ]) {
+  const tiered = serializeModule(mod, true);
+  expect(serializeModuleParts(mod).join("")).toBe(tiered);
+  expect(tiered).toContain('"tier":"dynamic"');
+  for (const loaded of [deserializeModule(tiered), deserializeModuleBytes(Buffer.from(tiered))]) {
     expect(loaded.functions.map(functionTier)).toEqual(["static", "dynamic"]);
     expect(validateModule(loaded)).toEqual([]);
   }
+  // A loader trusts the serialized tier: the validator then checks I1.
+  const stripped = deserializeModule(tiered.replace(',"tier":"dynamic"', ""));
+  expect(validateModule(stripped).map((e) => e.message)).toEqual([
+    "in reader: static-tier function performs the dynamic operation dynKeyGet",
+  ]);
+});
+
+test("jsval operators are dynamic operations and jsval conversions are boundaries", () => {
+  const js: IrExpr = { kind: "libCall", fn: "js.fromDyn", args: [dynParam], type: JSVAL, loc };
+  expect(dynamicOperationOf(js)).toBeNull();
+  expect(
+    dynamicOperationOf({ kind: "libCall", fn: "js.toDyn", args: [js], type: DYN, loc }),
+  ).toBeNull();
+  expect(
+    dynamicOperationOf({ kind: "libCall", fn: "js.toF64", args: [js], type: F64, loc }),
+  ).toBeNull();
+  expect(
+    dynamicOperationOf({
+      kind: "libCall",
+      fn: "js.fromF64",
+      args: [{ kind: "numLit", value: 1, type: F64, loc }],
+      type: JSVAL,
+      loc,
+    }),
+  ).toBeNull();
+  expect(
+    dynamicOperationOf({ kind: "libCall", fn: "js.add", args: [js, js], type: JSVAL, loc }),
+  ).toBe("js.add");
+  const sum = fn("sum", {
+    kind: "libCall",
+    fn: "js.toDyn",
+    args: [{ kind: "libCall", fn: "js.add", args: [js, js], type: JSVAL, loc }],
+    type: DYN,
+    loc,
+  });
+  expect(validateModule(moduleOf(sum)).map((e) => e.message)).toEqual([
+    "in sum: static-tier function performs the dynamic operation js.add",
+  ]);
+  sum.tier = "dynamic";
+  expect(validateModule(moduleOf(sum))).toEqual([]);
 });

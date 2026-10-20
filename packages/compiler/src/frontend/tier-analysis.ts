@@ -474,7 +474,7 @@ class UnitResolver {
     let symbol = this.checker.getSymbolAtLocation(root);
     if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
       symbol = this.checker.getAliasedSymbol(symbol);
-    const decls = symbol === undefined ? [] : this.checker.declarationsOf(symbol);
+    const decls = symbol === undefined ? [] : symbol.declarations;
     const decl = decls.find((d) => !d.getSourceFile().isDeclarationFile);
     if (decl === undefined) {
       // CommonJS `exports`/`module` as values: the module object.

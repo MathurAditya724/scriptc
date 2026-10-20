@@ -60,7 +60,7 @@ export function checkCheckerSnapshots(session: Ts7Session, client: Ts7RpcClient,
   check(oldArms.length === 2 && siblingArms.length === 2, "original constituents");
   check(oldArms !== siblingArms && oldArms[0] !== siblingArms[0], "project-local constituents");
   const oldSymbol = old.getSymbolAtLocation(name)!;
-  const oldDeclaration = old.valueDeclarationOf(oldSymbol)!;
+  const oldDeclaration = oldSymbol.valueDeclaration!;
   check(oldDeclaration.name === name, "resolved declaration identity");
 
   value = 'export const value: string | null = "new";';
@@ -73,7 +73,7 @@ export function checkCheckerSnapshots(session: Ts7Session, client: Ts7RpcClient,
   const newSymbol = next.getSymbolAtLocation(name)!;
   check(next.typeToString(newType) === "string | null", "new snapshot result");
   check(newType !== oldType && newSymbol !== oldSymbol, "independent semantic identities");
-  check(next.valueDeclarationOf(newSymbol) === oldDeclaration, "declarations retain shared syntax identity");
+  check(newSymbol.valueDeclaration === oldDeclaration, "declarations retain shared syntax identity");
   check(next.getTypeOfSymbol(newSymbol) === newType, "new symbol answer");
   check(old.getTypeOfSymbol(oldSymbol) === oldType, "old symbol answer");
   check(old.getTypeAtLocation(name) === oldType && old.typeToString(oldType) === "number | null", "old snapshot stays immutable");

@@ -11,6 +11,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import type { IrExpr, IrType } from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
 import {
   ASSERT_VERDICT_LIB_FNS,
@@ -763,6 +764,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "dyn":
     case "global":
       return host.emitDynamicLibCall(e);
+    case "js":
+      return emitJsLibCall(host, e);
     case "fs":
     case "fsp":
     case "fileHandle":
@@ -847,6 +850,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "util":
     case "bigint":
     case "crypto":
+    case "webcrypto":
     case "buffer":
     case "bytes":
     case "tlsca":
