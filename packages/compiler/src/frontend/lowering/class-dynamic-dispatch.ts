@@ -2699,6 +2699,7 @@ export class ClassDynamicDispatch {
             !findGenericMethodOn(lowerer, info, dispatch.name) &&
             dispatch.name !== "constructor" &&
             !info.fields.has(dispatch.name) &&
+            !(dispatch.name === "stack" && lowerer.isSubclassOf(info.def.name, "%Error")) &&
             !findMethodOn(lowerer, info, `get:${dispatch.name}`) &&
             !findMethodOn(lowerer, info, `set:${dispatch.name}`))
         )
@@ -4525,6 +4526,110 @@ export class ClassDynamicDispatch {
             },
             DYN,
           ),
+          loc,
+        },
+      ];
+    }
+    // An Error's own `stack`: a string is the native error's stack, which
+    // typed reads share; any other value is kept with the instance's own
+    // properties, which a read checks first. A class whose chain declares
+    // a `stack` accessor answers through it (the accessor code below).
+    if (
+      name === "stack" &&
+      !info.fields.has(name) &&
+      lowerer.isSubclassOf(info.def.name, "%Error") &&
+      !findMethodOn(lowerer, info, "get:stack") &&
+      !findMethodOn(lowerer, info, "set:stack")
+    ) {
+      const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+      const error = lowerer.upcastTo(receiver, "%Error");
+      if (write) {
+        const helper = classPropertiesHelper(lowerer, loc);
+        this.generated.add(helper);
+        const store: IrStmt = {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySet",
+            args: [
+              {
+                kind: "call",
+                callee: helper.name,
+                args: [lowerer.coerceToExpected(receiver, DYN)],
+                type: DYN,
+                loc,
+              },
+              key,
+              varRef("p.1", DYN, loc),
+            ],
+            type: VOID,
+            loc,
+          },
+          loc,
+        };
+        return [
+          {
+            kind: "if",
+            cond: {
+              kind: "dynTest",
+              test: "string",
+              value: varRef("p.1", DYN, loc),
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "error.setStack",
+                  args: [error, lowerer.coerceToExpected(varRef("p.1", DYN, loc), STRING)],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "if",
+                cond: this.readBagHas(
+                  lowerer,
+                  "dyn.hasKey",
+                  this.readPropertyBag(lowerer, receiver, loc),
+                  key,
+                  loc,
+                ),
+                then: [store],
+                else_: null,
+                loc,
+              },
+            ],
+            else_: [store],
+            loc,
+          },
+          { kind: "return", value: null, loc },
+        ];
+      }
+      const bag = this.readPropertyBag(lowerer, receiver, loc);
+      return [
+        {
+          kind: "return",
+          value: {
+            kind: "ternary",
+            cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
+            then: {
+              kind: "libCall",
+              fn: "dyn.bagGet",
+              args: [bag, key, lowerer.coerceToExpected(receiver, DYN)],
+              type: DYN,
+              loc,
+            },
+            else_: lowerer.coerceToExpected(
+              { kind: "libCall", fn: "error.stack", args: [error], type: STRING, loc },
+              DYN,
+            ),
+            type: DYN,
+            loc,
+          },
           loc,
         },
       ];

@@ -1,5 +1,6 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
 import * as ts from "../../ts7/adapter.js";
+import { isStrictCode } from "../strict-mode.js";
 import { isPrivateWriteReceiver } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
 import {
@@ -751,6 +752,7 @@ export function fieldSetStmt(
         className: target.className,
         field: target.field,
         value,
+        ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
         loc,
       }
     : {

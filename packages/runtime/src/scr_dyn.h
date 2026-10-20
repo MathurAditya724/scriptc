@@ -937,7 +937,17 @@ double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);
 void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
+void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
+void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits);
+void scr_dyn_class_view_attributes(ScrDyn *view, double bits);
+ScrDyn *scr_class_define_field(ScrDyn *current, double field_bits, double object_bits, ScrStr *name,
+                               ScrDyn *descriptor);
+double scr_class_defined_bits(ScrDyn *holder, ScrStr *name);
+ScrDyn *scr_class_defined_value(ScrDyn *holder, ScrStr *name);
+bool scr_class_descriptor_has_value(ScrDyn *descriptor);
+void scr_class_throw_read_only(ScrStr *field, ScrStr *owner);
+void scr_class_throw_not_extensible(ScrStr *field);
 ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key);
 ScrDyn *scr_dyn_array_proto_call(ScrDyn *target, ScrStr *method, ScrDyn *args);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */

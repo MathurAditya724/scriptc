@@ -224,12 +224,30 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   const loops: number[] = [];
   let loopIds = 0;
   const loopKey = (): string => loops.join("/");
+  /** Bindings initialized by another binding's reference (`const view =
+   * value`, the snapshot a union-receiver write takes), so writes through
+   * either count as writes through the one object. */
+  const aliases = new Map<string, { target: string; fn: string }>();
+  const bindingOf = (obj: IrExpr): string | null => {
+    let o = obj;
+    while (o.kind === "unionNarrow" || o.kind === "downcast") o = o.value;
+    if (o.kind !== "varRef") return null;
+    let id = o.localId;
+    const seen = new Set<string>();
+    for (;;) {
+      const alias = aliases.get(id);
+      if (!alias || alias.fn !== fnName || inits.get(id)?.count !== 1 || seen.has(id)) return id;
+      seen.add(id);
+      id = alias.target;
+    }
+  };
   const noteInit = (id: string, init: IrExpr): void => {
     const previous = inits.get(id);
     if (previous !== undefined) {
       previous.count++;
       return;
     }
+    if (init.kind === "varRef") aliases.set(id, { target: init.localId, fn: fnName });
     const fresh =
       init.kind === "recordLit" ||
       init.kind === "recordClone" ||
@@ -315,7 +333,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
           field: st.field,
           kind: st.value.kind === "fieldAbsent" ? "delete" : "write",
           fn: fnName,
-          binding: st.obj.kind === "varRef" ? st.obj.localId : null,
+          binding: bindingOf(st.obj),
           loop: loopKey(),
           pos,
         });
