@@ -306,3 +306,44 @@ test("sums that only feed a bitwise conversion of int32 operands add in 32 bits"
   }
   expect(body("number_add")).not.toMatch(/ = add i32 |fcmp ord/);
 });
+
+test("string reads of a scan receiver load it inline where emitted code can address it", () => {
+  const receiver: IrExpr = { kind: "varRef", localId: "text", type: STRING, loc };
+  const mod = fixture();
+  mod.functions = [
+    { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+    {
+      name: "units",
+      params: [{ name: "text", localId: "text", type: STRING }],
+      returnType: F64,
+      locals: [{ id: "text", name: "text", type: STRING, mutable: false }],
+      loc,
+      body: [
+        {
+          kind: "return",
+          loc,
+          value: { kind: "strIntrinsic", method: "length", receiver, args: [], type: F64, loc },
+        },
+      ],
+    },
+  ];
+  const helper = (llvm: string): string =>
+    /^define internal double @sc_str_utf16_len\([^]*?^}/m.exec(llvm)![0];
+  const plain = emitLlvmModule(mod);
+  expect(plain).toContain("@scr_str_scan = external global");
+  expect(helper(plain)).toContain("%scan.same");
+  // ELF worker executables keep the receiver in the thread's static TLS block.
+  const elf = emitLlvmModule(
+    { ...mod, workers: true },
+    { targetTriple: "x86_64-unknown-linux-gnu" },
+  );
+  expect(elf).toContain("@scr_str_scan = external thread_local(localexec) global");
+  expect(helper(elf)).toContain("%scan.same");
+  // Darwin worker executables leave every non-ASCII read to the runtime.
+  const darwin = emitLlvmModule(
+    { ...mod, workers: true },
+    { targetTriple: "arm64-apple-macosx14.0.0" },
+  );
+  expect(darwin).not.toContain("@scr_str_scan");
+  expect(helper(darwin)).not.toContain("%scan.same");
+});
