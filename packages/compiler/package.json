@@ -29,6 +29,7 @@
   "files": [
     "dist",
     "ambient",
+    "shims",
     "surface-manifest.json"
   ],
   "publishConfig": {

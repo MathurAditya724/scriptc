@@ -11,6 +11,7 @@ import { InternalCompilerError } from "../../errors.js";
  * (FieldTarget). */
 import * as ts from "../ts7/adapter.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
+import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerMaybePromiseAwait, maybePromiseUnionOf } from "./maybe-promise.js";
@@ -1096,6 +1097,11 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     });
     if (presence !== null) return presence;
   }
+  // Global detection (`typeof window < "u"`, `typeof self !==
+  // "undefined" && …`): a condition whose typeof answers are static
+  // folds, so the untaken arm never lowers (static-typeof.ts).
+  const folded = staticCondition(lowerer, e);
+  if (folded !== null) return { kind: "boolLit", value: folded, type: BOOL, loc: locOf(e) };
   if (ts.isBinaryExpression(e)) {
     const op = e.operatorToken.kind;
     if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {
