@@ -842,37 +842,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // reach here — their hooks claim the property/new forms first).
   {
     const sym = lowerer.resolveValueSymbol(expr);
-    const classInfo = sym ? lowerer.classBySymbol.get(sym) : undefined;
-    // A GENERIC class name whose CONTEXTUAL type pins one instantiation
-    // (`const B: new (v: string) => Counter<string> = Counter`): the
-    // value is that instantiation's class object — the generic-fn
-    // pinning rule on the static side. Unpinned references fall
-    // through to classValueRef's family fence.
-    if (classInfo?.generic) {
-      const ctxT = lowerer.checker.getContextualType(expr);
-      const mapped = ctxT ? lowerer.mapTypeOf(ctxT) : null;
-      const instInfo =
-        mapped?.kind === "classval" ? lowerer.classes.get(mapped.className) : undefined;
-      if (instInfo && instInfo.genericInstance?.family === classInfo) {
-        return lowerer.classValueRef(instInfo, expr);
-      }
-    }
-    if (classInfo) {
-      // A decorated name a replacing decorator can REBIND: the value
-      // is the decoration result — the mutable classval global %init
-      // assigned at the class statement (TC39's name binding), never
-      // the declaration's own class object.
-      const decoratedGlobal = classInfo.classDecorators?.valueGlobalId;
-      if (decoratedGlobal !== undefined) {
-        return {
-          kind: "varRef",
-          localId: decoratedGlobal,
-          type: { kind: "classval", className: classInfo.def.name },
-          loc,
-        };
-      }
-      return lowerer.classValueRef(classInfo, expr);
-    }
+    const value = sym ? classNameValue(lowerer, sym, expr, loc) : null;
+    if (value) return value;
     // The enum OBJECT as a value (member reads never reach here — the
     // access hooks fold them): iteration, storage, reverse lookups
     // through variables all land on this pointed fence.
@@ -927,6 +898,48 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     expr,
     `the reference to '${expr.text}' (a binding form with no lowering)`,
   );
+}
+
+/** A program CLASS NAME as a value (`sym` is the name's value symbol; an
+ * identifier or a shorthand property `{ Name }` spells it): the classRef
+ * over the class's immortal class object, or null when `sym` names no
+ * program class. */
+export function classNameValue(
+  lowerer: Lowerer,
+  sym: ts.Symbol,
+  expr: ts.Identifier,
+  loc: SrcLoc,
+): IrExpr | null {
+  const classInfo = lowerer.classBySymbol.get(sym);
+  if (!classInfo) return null;
+  // A GENERIC class name whose CONTEXTUAL type pins one instantiation
+  // (`const B: new (v: string) => Counter<string> = Counter`): the
+  // value is that instantiation's class object — the generic-fn
+  // pinning rule on the static side. Unpinned references fall
+  // through to classValueRef's family fence.
+  if (classInfo.generic) {
+    const ctxT = lowerer.checker.getContextualType(expr);
+    const mapped = ctxT ? lowerer.mapTypeOf(ctxT) : null;
+    const instInfo =
+      mapped?.kind === "classval" ? lowerer.classes.get(mapped.className) : undefined;
+    if (instInfo && instInfo.genericInstance?.family === classInfo) {
+      return lowerer.classValueRef(instInfo, expr);
+    }
+  }
+  // A decorated name a replacing decorator can REBIND: the value
+  // is the decoration result — the mutable classval global %init
+  // assigned at the class statement (TC39's name binding), never
+  // the declaration's own class object.
+  const decoratedGlobal = classInfo.classDecorators?.valueGlobalId;
+  if (decoratedGlobal !== undefined) {
+    return {
+      kind: "varRef",
+      localId: decoratedGlobal,
+      type: { kind: "classval", className: classInfo.def.name },
+      loc,
+    };
+  }
+  return lowerer.classValueRef(classInfo, expr);
 }
 
 function moduleFileName(lowerer: Lowerer, sf: ts.SourceFile): string {

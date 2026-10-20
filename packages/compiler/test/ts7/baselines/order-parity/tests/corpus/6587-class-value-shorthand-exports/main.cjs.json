@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6587-class-value-shorthand-exports/channel.cjs",
+  "<repo>/tests/corpus/6587-class-value-shorthand-exports/main.cjs"
+ ],
+ "diags": []
+}

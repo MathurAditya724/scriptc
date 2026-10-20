@@ -72,13 +72,6 @@ class Conditional extends Animal {
 const rec = { name: "r" };
 console.log(rec instanceof Animal);
 
-// ...and folds statically for standalone classes, so a computed operand
-// whose effects would be dropped is rejected
-class Point {
-  x: number = 0;
-}
-console.log(new Point() instanceof Point);
-
 // Reached: unreached bodies never lower, so their rejections only exist
 // when something on the entry path uses them.
 new Conditional(true);

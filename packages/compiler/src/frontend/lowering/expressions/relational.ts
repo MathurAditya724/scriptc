@@ -452,22 +452,14 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       const value =
         left.type.className === targetInfo.def.name ||
         lowerer.isSubclassOf(left.type.className, targetInfo.def.name);
+      const answer: IrExpr = { kind: "boolLit", value, type: BOOL, loc };
       if (
         left.kind === "varRef" &&
         (ts.isIdentifier(expr.right) || expr.right.kind === ts.SyntaxKind.ThisKeyword)
       ) {
-        return readsClassAfter(lowerer, targetInfo, expr.right, [], {
-          kind: "boolLit",
-          value,
-          type: BOOL,
-          loc,
-        });
+        return readsClassAfter(lowerer, targetInfo, expr.right, [], answer);
       }
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "statically-decided 'instanceof' on computed operands (bind the values to variables first)",
-      );
+      return evaluatedOperandsThen(lowerer, left, expr.right, answer);
     }
     const constructor = tryLowerExpression(lowerer, expr.right);
     if (constructor?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -750,19 +742,26 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     leftClass === className || lowerer.isSubclassOf(leftClass, className);
   const value =
     isInstance(target.def.name) || (duplex !== undefined && isInstance(duplex.def.name));
+  const answer: IrExpr = { kind: "boolLit", value, type: BOOL, loc };
   if (left.kind === "varRef") {
-    return readsClassAfter(lowerer, target, expr.right, [], {
-      kind: "boolLit",
-      value,
-      type: BOOL,
-      loc,
-    });
+    return readsClassAfter(lowerer, target, expr.right, [], answer);
   }
-  lowerer.unsupported(
-    "SC1090",
-    expr,
-    "statically-decided 'instanceof' on computed operands (bind the value to a variable first)",
-  );
+  return evaluatedOperandsThen(lowerer, left, expr.right, answer);
+}
+
+/** A statically decided `instanceof` over computed operands: both operands
+ * still evaluate, left then right, for their effects (a construction, a
+ * call, a property read), and the folded answer follows. */
+function evaluatedOperandsThen(
+  lowerer: Lowerer,
+  left: IrExpr,
+  right: ts.Expression,
+  answer: IrExpr,
+): IrExpr {
+  const stmts: IrStmt[] = [];
+  if (left.kind !== "varRef") stmts.push({ kind: "exprStmt", expr: left, loc: left.loc });
+  stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(right), loc: locOf(right) });
+  return { kind: "seqExpr", stmts, result: answer, type: answer.type, loc: answer.loc };
 }
 
 /** `x instanceof K` for a union-typed operand whose arms are class

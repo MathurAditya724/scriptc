@@ -26,39 +26,32 @@ inheritance.ts:55:3 - error SC1090: overriding a method with a different signatu
      |   ^~~~
   56 |     return other.name;
 
-inheritance.ts:80:13 - error SC1090: statically-decided 'instanceof' on computed operands (bind the value to a variable first) are not supported yet
+inheritance.ts:82:15 - error SC2004: uses of 'GenericAbstract' inherit the blocker on its declaration
 
-  79 | }
-  80 | console.log(new Point() instanceof Point);
-     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  81 | 
-
-inheritance.ts:89:15 - error SC2004: uses of 'GenericAbstract' inherit the blocker on its declaration
-
-  88 | new Impl().usesLimit();
-  89 | const gaRef = GenericAbstract;
+  81 | new Impl().usesLimit();
+  82 | const gaRef = GenericAbstract;
      |               ^~~~~~~~~~~~~~~
-  90 | new Aliased();
+  83 | new Aliased();
 
   hint: the declaration of 'GenericAbstract' did not compile — fix the diagnostic reported there and these sites clear with it
 
-inheritance.ts:91:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+inheritance.ts:84:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 
-  90 | new Aliased();
-  91 | new BareRepeat();
+  83 | new Aliased();
+  84 | new BareRepeat();
      | ^~~~~~~~~~~~~~~~
-  92 | new RetypedRepeat();
+  85 | new RetypedRepeat();
 
-inheritance.ts:92:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+inheritance.ts:85:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 
-  91 | new BareRepeat();
-  92 | new RetypedRepeat();
+  84 | new BareRepeat();
+  85 | new RetypedRepeat();
      | ^~~~~~~~~~~~~~~~~~~
-  93 | new Bivariant();
+  86 | new Bivariant();
 
-inheritance.ts:93:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+inheritance.ts:86:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 
-  92 | new RetypedRepeat();
-  93 | new Bivariant();
+  85 | new RetypedRepeat();
+  86 | new Bivariant();
      | ^~~~~~~~~~~~~~~
-  94 | 
+  87 | 

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6585-class-value-shorthand.cjs"
+ ],
+ "diags": []
+}

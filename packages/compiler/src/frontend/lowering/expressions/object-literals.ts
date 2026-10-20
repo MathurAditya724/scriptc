@@ -35,6 +35,7 @@ import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceSymbolFieldCopy } from "../symbol-fields.js";
 import { planUnionRetag } from "../union-retag.js";
 import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
+import { classNameValue } from "./identifiers.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -3165,6 +3166,10 @@ export function lowerShorthandValue(
     if (g) {
       return lowerer.maybeNarrow({ kind: "varRef", localId: g.id, type: g.type, loc }, propName);
     }
+    // A class declaration's name (`{ Name }`): the class value, exactly
+    // like the long form `{ Name: Name }`.
+    const classValue = classNameValue(lowerer, resolved, propName, loc);
+    if (classValue) return classValue;
     const sig = lowerer.fnSigsBySymbol.get(resolved);
     const decl = resolved.declarations[0];
     if (
