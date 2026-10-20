@@ -32,7 +32,7 @@ import {
   emitPowerOfTwoRemainder,
   emitSignedIntegerRemainder,
 } from "./integer-remainder.js";
-import { emitDenseArrayGet, emitDenseArrayState } from "./dense-array-access.js";
+import { emitDenseArrayGet, emitDenseArrayState, slotWidth } from "./dense-array-access.js";
 import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
 
 export function emitLiteralExpr(
@@ -894,7 +894,14 @@ export function emitContainerExpr(
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayHas on non-array");
-      const t = emitDenseArrayState(host, arr.name, idx, e.index, "has");
+      const t = emitDenseArrayState(
+        host,
+        arr.name,
+        idx,
+        e.index,
+        "has",
+        slotWidth(elemAccess(e.arr.type.elem)),
+      );
       return { name: t, type: e.type };
     }
     case "arrayState": {
@@ -902,7 +909,14 @@ export function emitContainerExpr(
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayState on non-array");
-      const t = emitDenseArrayState(host, arr.name, idx, e.index, "state");
+      const t = emitDenseArrayState(
+        host,
+        arr.name,
+        idx,
+        e.index,
+        "state",
+        slotWidth(elemAccess(e.arr.type.elem)),
+      );
       return { name: t, type: e.type };
     }
     case "arrIntrinsic":

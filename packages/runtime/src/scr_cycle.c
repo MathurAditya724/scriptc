@@ -1190,8 +1190,10 @@ void scr_cyc_on_release(void *obj) {
     size_t end = arr->len < arr->cap ? arr->len : arr->cap;               \
     size_t filled = arr->filled < end ? arr->filled : end;                \
     for (size_t i = 0; i < filled; i++) visit((void *)(uintptr_t)arr->data[i], ctx); \
+    const uint8_t *states = scr_arr_states_end(arr);                      \
     for (size_t i = filled; i < end; i++)                                 \
-      if (arr->present[i] == SCR_ARR_VALUE) visit((void *)(uintptr_t)arr->data[i], ctx); \
+      if (*scr_arr_state_in(states, i) == SCR_ARR_VALUE)                   \
+        visit((void *)(uintptr_t)arr->data[i], ctx);                      \
   }
 
 /* Visit every child of `obj` with VISIT, through ARRAY_WALK for a dense

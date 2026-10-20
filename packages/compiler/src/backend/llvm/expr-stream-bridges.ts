@@ -185,10 +185,10 @@ export function streamTypedRefCommitAdapter(
       `  call void @scr_arr_outline(ptr %next)`,
     ];
     const storageMembers = [
-      { name: "len", index: 1, type: host.sizeType },
-      { name: "cap", index: 2, type: host.sizeType },
+      // The dense states follow the data slots, so they move with data and cap.
+      { name: "len", index: SCR_ARR_FIELD.len, type: "i32" },
+      { name: "cap", index: SCR_ARR_FIELD.cap, type: "i32" },
       { name: "data", index: SCR_ARR_FIELD.data, type: "ptr" },
-      { name: "present", index: SCR_ARR_FIELD.present, type: "ptr" },
       { name: "filled", index: SCR_ARR_FIELD.filled, type: "i32" },
       { name: "ext", index: SCR_ARR_FIELD.ext, type: "ptr" },
     ];

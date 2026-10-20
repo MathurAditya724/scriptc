@@ -805,8 +805,9 @@ static void scr_rgn_walk_arr(ScrRgnWalk *w, ScrArr *a) {
   ScrRgnSlotKind k = a->elem == SCR_ELEM_ARR ? (ScrRgnSlotKind){SCR_RGN_W_ARR, NULL}
                                              : scr_rgn_slot_kind(a->ops ? a->ops->release : NULL);
   size_t dense = a->len < a->cap ? a->len : a->cap;
+  const uint8_t *states = scr_arr_states_end(a);
   for (size_t i = 0; i < dense; i++)
-    if (!a->present || a->present[i] == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->data[i]), k);
+    if (!states || *scr_arr_state_in(states, i) == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->data[i]), k);
   if (!a->ext) return;
   for (size_t i = 0; i < a->ext->sparse_len; i++)
     if (a->ext->sparse[i].state == SCR_ARR_VALUE) scr_rgn_slot_as(w, scr_rgn_slot_ptr(a->ext->sparse[i].slot), k);
