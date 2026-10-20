@@ -129,7 +129,8 @@ import {
 } from "../tier-analysis.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
-import type { ClassSymbolKey } from "./symbol-fields.js";
+import { finalizePrivateBrands } from "./private-brands.js";
+import { type ClassSymbolKey, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
 export type { WidthLift } from "./width-lift.js";
 export { newFnCtx, type FnCtx } from "./function-context.js";
@@ -299,6 +300,7 @@ import {
 import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
 import {
   cjsNamespaceModule,
+  cjsWholeExportValueOf,
   inlineNamespaceRequireOf,
   inlineProgramRequireOf,
 } from "./cjs-inline-require.js";
@@ -1961,6 +1963,9 @@ export class Lowerer {
    * their symbol/node keys; no module-level cache should retain a pass. */
   readonly classSymbolKeys = new Map<ts.Symbol, ClassSymbolKey | null>();
   readonly registeredClassSymbols = new Map<string, ts.Symbol>();
+  /** Symbol-key identities by description, in resolution order (the slot
+   * ordinals of key-table keys — symbolKeyOf). */
+  readonly symbolFieldIdentities = new Map<string, ts.Symbol[]>();
   readonly httpClientFnBindings = new Map<ts.Symbol, HttpClientFnBinding>();
   streamPropMutatedSyms: Set<ts.Symbol> | null = null;
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
@@ -2113,6 +2118,51 @@ export class Lowerer {
       }
     }
     return fallback ?? null;
+  }
+
+  /** A TypeScript object literal handed to a JavaScript checked-value
+   * parameter whose inferred type is open (`constructor({ factory, ...options
+   * } = {})` — the rest element admits any property): the literal names a
+   * property the contextual JS type does not declare, so it has no record
+   * layout there and is built as the plain object the JS side receives. */
+  private excessJsContextualProperty(
+    literal: ts.ObjectLiteralExpression,
+    contextual: readonly ts.Type[],
+  ): boolean {
+    const objects = contextual.filter(
+      (part) => !(part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)),
+    );
+    if (objects.length === 0) return false;
+    // Only a destructuring pattern with a rest element is open; other
+    // inferred JS types keep their record lowering.
+    const fromJs = objects.every((part) => {
+      const sym = part.getSymbol();
+      return (
+        sym !== undefined &&
+        sym.declarations.some((d) => {
+          if (!isJsSourceFile(d.getSourceFile())) return false;
+          // The pattern itself, or the `= {}` default of a pattern parameter.
+          const pattern =
+            ts.isObjectLiteralExpression(d) &&
+            d.parent !== undefined &&
+            ts.isParameter(d.parent) &&
+            d.parent.initializer === d
+              ? d.parent.name
+              : d;
+          return (
+            ts.isObjectBindingPattern(pattern) &&
+            pattern.elements.nodes.some((element) => element.dotDotDotToken !== undefined)
+          );
+        })
+      );
+    });
+    if (!fromJs) return false;
+    return literal.properties.nodes.some((prop) => {
+      if (!prop.name || !(ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)))
+        return false;
+      const name = prop.name.text;
+      return objects.every((part) => !this.checker.getPropertyOfType(part, name));
+    });
   }
 
   /** The index value of a keyed read of a record's index signature that
@@ -3719,14 +3769,35 @@ export class Lowerer {
         ? d.parent
         : null;
     if (!assign || assign.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
-    if (!ts.isIdentifier(assign.right)) return null;
     const stmt = assign.parent;
     if (!stmt || !ts.isExpressionStatement(stmt) || !ts.isSourceFile(stmt.parent)) return null;
     if (!isJsSourceFile(stmt.parent)) return null;
     const cjs = cjsExportAssignmentOf(stmt);
     if (cjs?.kind !== "member" || cjs.expr !== assign) return null;
     if (cjsExportDiscardReason(stmt) !== null) return null;
+    // `module.exports.C = require('./c')` over a module whose whole export
+    // is a class identifier: the same alias plumbing; the statement keeps
+    // the require's module evaluation at its position.
+    const required = this.memberExportRequiredClass(assign.right);
+    if (required !== undefined) return required;
+    if (!ts.isIdentifier(assign.right)) return null;
     let value = this.checker.getSymbolAtLocation(assign.right);
+    if (!value) return null;
+    if (value.flags & ts.SymbolFlags.Alias) value = this.checker.getAliasedSymbol(value);
+    const isClass = value.declarations.some((decl) => ts.isClassDeclaration(decl));
+    return isClass ? value : null;
+  }
+
+  /** For an inline program `require("./c")`: the class symbol its module's
+   * kept `module.exports = <class identifier>` names, or null when the
+   * whole export is something else. Undefined when `expr` is not such a
+   * require. */
+  memberExportRequiredClass(expr: ts.Expression): ts.Symbol | null | undefined {
+    const req = inlineProgramRequireOf(this, expr);
+    if (req === null) return undefined;
+    const whole = cjsWholeExportValueOf(req.dep);
+    if (whole === null || !ts.isIdentifier(whole.rhs)) return null;
+    let value = this.checker.getSymbolAtLocation(whole.rhs);
     if (!value) return null;
     if (value.flags & ts.SymbolFlags.Alias) value = this.checker.getAliasedSymbol(value);
     const isClass = value.declarations.some((decl) => ts.isClassDeclaration(decl));
@@ -6856,6 +6927,7 @@ export class Lowerer {
   finishModule(functions: IrFunction[]): LowerResult {
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
+    finalizePrivateBrands(this, functions);
     trackClassFieldCreation(this, functions);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
@@ -8034,6 +8106,17 @@ export class Lowerer {
           this.classes.get(receiver.className)?.fields.get(node.name.text)?.kind === "dyn") ||
         checkedThis?.fields.get(node.name.text)?.kind === "dyn"
       ) {
+        return this.checker.getUnknownType();
+      }
+    }
+    // A symbol-keyed field read through a CommonJS key-table key reads as
+    // the field's layout type (tableKeyFieldType).
+    if (ts.isElementAccessExpression(node) && isJsSourceFile(node.getSourceFile())) {
+      const field = tableKeyFieldType(this, node);
+      if (field) {
+        if (field.kind === "f64") return this.checker.getNumberType();
+        if (field.kind === "string") return this.checker.getStringType();
+        if (field.kind === "bool") return this.checker.getBooleanType();
         return this.checker.getUnknownType();
       }
     }
@@ -9671,7 +9754,8 @@ export class Lowerer {
           builtinOption("SpawnOptions") ||
           builtinOption("UrlObject") ||
           builtinOption("URLFormatOptions") ||
-          !this.mapTypeOf(this.typeOf(x))
+          !this.mapTypeOf(this.typeOf(x)) ||
+          this.excessJsContextualProperty(x, parts)
         ) {
           return lowerDynObjectLiteral(this, x);
         }
@@ -10958,6 +11042,21 @@ export class Lowerer {
         return;
       }
       const name = (decl.name as ts.Identifier).text;
+      if (shape.entryNarrow) {
+        // A typed override parameter over an inherited checked-value slot:
+        // the body local narrows from the dyn argument at entry.
+        const loc = locOf(decl);
+        const slot = this.declareHiddenLocal(name, shape.type);
+        params.push({ localId: slot.id, name, type: shape.type });
+        const narrowed = this.coerceInto(
+          decl.name,
+          { kind: "varRef", localId: slot.id, type: shape.type, loc },
+          shape.entryNarrow,
+        );
+        const body = this.declareLocal(decl.name, name, shape.entryNarrow, true);
+        prologue.push({ kind: "varDecl", localId: body.id, init: narrowed, loc });
+        return;
+      }
       if (shape.mode === "omittable" && shape.bodyType && decl.initializer) {
         const abi = shape.type;
         if (abi.kind === "dyn") {

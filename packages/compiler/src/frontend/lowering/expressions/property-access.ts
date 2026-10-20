@@ -1,5 +1,6 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import * as ts from "../../ts7/adapter.js";
+import { localPrivateBrandClass } from "../private-brands.js";
 import { type Lowerer, PoisonError, jsFuncNameOf, neverTaintedJsType, own } from "../lowerer.js";
 import {
   ARRAY_METHODS,
@@ -3086,6 +3087,22 @@ export function fieldTarget(
       field: "stackTraceLimit",
       fieldType: F64,
     };
+  }
+  // `this.#x` in a function-local class's prototype method: the field of
+  // the brand-checked receiver (checkedPrivateReceiver).
+  if (
+    ts.isPrivateIdentifier(access.name) &&
+    access.expression.kind === ts.SyntaxKind.ThisKeyword &&
+    lowerer.resolveThis()?.type.kind === "dyn"
+  ) {
+    const owner = localPrivateBrandClass(lowerer, access.name);
+    if (owner) {
+      const ownerType: IrType & { kind: "object" } = {
+        kind: "object",
+        className: owner.info.def.name,
+      };
+      return classFieldTarget(lowerer, access.expression, ownerType, access.name.text);
+    }
   }
   const stored = ts.isIdentifier(access.expression)
     ? (lowerer.peekLocal(access.expression)?.type ?? lowerer.globalOf(access.expression)?.type)
