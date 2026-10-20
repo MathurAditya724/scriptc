@@ -24,6 +24,7 @@
 import * as ts from "./ts7/syntax.js";
 import { helperTokens } from "./helper-tokens.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
+import { bundledShimForwarder, packageShimForBundledFile } from "./package-shims.js";
 import {
   builtinAliasOf,
   versionedPackageOfKey,
@@ -598,7 +599,8 @@ export function splitBundledChunks(
     const alias = builtinAliasOfChunk(chunk);
     const aliased = alias === null ? null : aliasReplacement(call, alias);
     if (alias !== null && aliased === null) unaliased.add(chunk.name);
-    const forwarded = forwarderSpec(chunk);
+    const forwarded =
+      forwarderSpec(chunk) ?? (shimOfChunk(chunk) !== null ? shimSpec(chunk) : null);
     callEdits.push({
       start: call.getStart(sf),
       end: call.getEnd(),
@@ -629,6 +631,15 @@ export function splitBundledChunks(
   for (const chunk of chunks.values()) {
     if (!unaliased.has(chunk.name) && builtinAliasOfChunk(chunk) !== null) {
       // A chunk of a package that IS a builtin on Node 24 is that builtin.
+      bundleEdits.push({ start: chunk.stmt.getStart(sf), end: chunk.stmt.getEnd(), text: "" });
+      continue;
+    }
+    const shim = shimOfChunk(chunk);
+    if (shim !== null) {
+      // A bundled copy of a package scriptc implements itself is the
+      // package's shim (package-shims.ts), reached through a forwarder
+      // declaration the checker follows.
+      out.push({ path: shimDeclPath(chunk), source: bundledShimForwarder(shimDeclPath(chunk), shim) });
       bundleEdits.push({ start: chunk.stmt.getStart(sf), end: chunk.stmt.getEnd(), text: "" });
       continue;
     }
@@ -787,6 +798,24 @@ function builtinAliasOfChunk(chunk: Chunk): BuiltinAlias | null {
   if (chunk.key === null) return null;
   const pkg = versionedPackageOfKey(chunk.key);
   return pkg === null ? null : builtinAliasOf(pkg.name, pkg.version, pkg.subpath);
+}
+
+/** The shim module standing in for a chunk that is a bundled copy of a
+ * shimmed package's main file at a supported version, or null. */
+function shimOfChunk(chunk: Chunk): string | null {
+  if (chunk.key === null) return null;
+  const pkg = versionedPackageOfKey(chunk.key);
+  return pkg === null ? null : packageShimForBundledFile(pkg.name, pkg.version, pkg.subpath);
+}
+
+/** The forwarder declaration beside the bundle for a shimmed chunk, and
+ * the specifier its call sites require. */
+function shimDeclPath(chunk: Chunk): string {
+  return chunk.path.replace(/\.cjs$/, ".shim.d.ts");
+}
+
+function shimSpec(chunk: Chunk): string {
+  return chunk.spec.replace(/\.cjs$/, ".shim");
 }
 
 /** The builtin module a chunk forwards, or null: a body that is exactly

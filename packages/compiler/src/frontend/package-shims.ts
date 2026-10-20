@@ -58,6 +58,10 @@ interface ImplementationShim {
   /** The entry has a default export (a CommonJS package's whole export
    * object, which a default import reads). */
   defaultExport?: boolean;
+  /** The package's main file in every supported version: a bundler's copy
+   * of it (a __commonJS chunk whose key names the package, its version
+   * and this file) is the package itself. */
+  mainFile: string;
 }
 
 const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
@@ -66,6 +70,7 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
     {
       name: "fs-extra",
       defaultExport: true,
+      mainFile: "lib/index.js",
       versions: new Map([
         [8, "fs-extra/index.ts"],
         [9, "fs-extra/index.ts"],
@@ -78,6 +83,7 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
     "undici",
     {
       name: "undici",
+      mainFile: "index.js",
       versions: new Map([
         [5, "undici/v5.ts"],
         [7, "undici/v7.ts"],
@@ -85,6 +91,56 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
     },
   ],
 ]);
+
+/** The shim module that stands in for a bundled copy of a package's main
+ * file (a __commonJS chunk keyed `…/<name>@<version>/…/<name>/<file>`), or
+ * null when the package, version or file is not one the registry serves. */
+export function packageShimForBundledFile(name: string, version: string, file: string): string | null {
+  const shim = IMPLEMENTATION_SHIMS.get(name);
+  if (shim === undefined || file.replace(/^\.\//, "") !== shim.mainFile) return null;
+  const major = Number(/^(\d+)\./.exec(version)?.[1] ?? NaN);
+  const entry = shim.versions.get(major);
+  return entry === undefined ? null : join(packageShimRoot(), entry);
+}
+
+/** Bundled-copy forwarders: a virtual declaration module beside a bundle
+ * (`<bundle>.<binding>.shim.d.ts`) that re-exports the shim standing in
+ * for a bundled package, so the checker loads the shim through it, and
+ * module resolution answers the shim itself for its path. */
+const bundledForwarders = new Map<string, string>();
+
+/** The forwarder declaration text for a bundled copy of a shimmed package
+ * and records its path; the bundle's call sites require the forwarder's
+ * extensionless path. */
+export function bundledShimForwarder(declPath: string, shimPath: string): string {
+  bundledForwarders.set(declPath.split("\\").join("/"), shimPath);
+  const target = JSON.stringify(tsgoPath(shimPath));
+  const shim = [...IMPLEMENTATION_SHIMS.values()].find((entry) =>
+    [...entry.versions.values()].some((v) => join(packageShimRoot(), v) === shimPath),
+  );
+  const defaultLine = shim?.defaultExport === true ? `export { default } from ${target};\n` : "";
+  return `// scriptc: this bundled package compiles from its built-in implementation.\nexport * from ${target};\n${defaultLine}`;
+}
+
+/** True for a bundled-copy forwarder's path (the --npm-static shadow keeps
+ * it visible where it hides the package's other declaration files). */
+export function isBundledShimForwarder(path: string): boolean {
+  return bundledForwarders.has(path.split("\\").join("/"));
+}
+
+/** The shim a resolved module path forwards to, or the path itself. */
+export function throughBundledShimForwarder(resolved: string): string {
+  return bundledForwarders.get(resolved.split("\\").join("/")) ?? resolved;
+}
+
+/** Every implementation module the registry ships (absolute paths), for
+ * the guard test that compiles each one. */
+export function packageShimEntries(): string[] {
+  const entries = new Set<string>();
+  for (const shim of IMPLEMENTATION_SHIMS.values())
+    for (const entry of shim.versions.values()) entries.add(join(packageShimRoot(), entry));
+  return [...entries].sort();
+}
 
 /** Package names the project marks never loaded. */
 let unloadedPackages: ReadonlySet<string> = new Set();
@@ -257,4 +313,5 @@ export function isPackageShimFile(fileName: string): boolean {
 /** Resets per-compile caches. */
 export function clearPackageShimCaches(): void {
   installedCache.clear();
+  bundledForwarders.clear();
 }

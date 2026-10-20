@@ -4,6 +4,7 @@
  * Eligibility failures and package preflight errors become explicit refusals. */
 import { dirname } from "node:path";
 import type { FrontendServices } from "./services.js";
+import { isBundledShimForwarder } from "./package-shims.js";
 import type {
   NpmStaticDeclarationOverloads,
   NpmStaticDeclarationProperties,
@@ -506,6 +507,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
     hideFile: (path) => {
       const target = shadowTargetOf(path);
       if (!target) return false;
+      if (isBundledShimForwarder(path)) return false;
       if (target.viaTypes) return true; // the @types twin hides whole
       return isDeclarationFileName(path) || isUnloadableInstalledTsSource(path);
     },

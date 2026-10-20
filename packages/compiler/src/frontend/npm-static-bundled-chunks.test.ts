@@ -366,3 +366,27 @@ console.log(mixed.Readable, mixed.from);
   expect(mixed.text).toContain('var members = require("./index.js.require_readable.cjs");');
   expect(mixed.text).toContain('var mixed = require("./index.js.require_readable.cjs");');
 });
+
+test("a bundled copy of a shimmed package's main file requires the package shim", () => {
+  const key = (version: string, file: string) =>
+    `node_modules/.pnpm/fs-extra@${version}/node_modules/fs-extra/${file}`;
+  const result = split(`${keyedHelper}var require_lib = __commonJS({
+  "${key("9.0.0", "lib/index.js")}"(exports2, module2) {
+    module2.exports = { readFile() { return "bundled"; } };
+  }
+});
+var require_old = __commonJS({
+  "${key("7.0.1", "lib/index.js")}"(exports2, module2) {
+    module2.exports = { readFile() { return "old"; } };
+  }
+});
+console.log(require_lib().readFile(), require_old().readFile());
+`) as BundledChunkSplit;
+  const forwarder = result.chunks.find((c) => c.path.endsWith(".shim.d.ts"));
+  expect(forwarder?.path).toBe("/pkg/dist/index.js.require_lib.shim.d.ts");
+  expect(forwarder?.source).toMatch(/export \* from ".*shims\/fs-extra\/index\.ts";/);
+  expect(forwarder?.source).toMatch(/export \{ default \} from ".*shims\/fs-extra\/index\.ts";/);
+  expect(result.text).toContain('require("./index.js.require_lib.shim").readFile()');
+  // fs-extra 7 has no shim: its chunk stays a module.
+  expect(result.chunks.map((c) => basename(c.path))).toContain("index.js.require_old.cjs");
+});
