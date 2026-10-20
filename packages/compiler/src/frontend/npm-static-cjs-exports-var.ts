@@ -62,45 +62,78 @@ function bindsName(name: ts.BindingName | undefined, text: string): boolean {
   return false;
 }
 
-/** True when `scope` (a function, or a block or catch clause) declares
- * `text` itself, so references inside it name that binding instead of the
- * module-level alias: a parameter, a var/let/const or a function or class
- * declaration in a function (nested functions excluded), a let/const or
- * class in a block, a catch binding. */
-function shadows(scope: ts.Node, text: string): boolean {
-  if (isFunctionScope(scope)) {
-    const fn = scope as ts.SignatureDeclaration;
-    if (fn.parameters.nodes.some((p) => bindsName(p.name, text))) return true;
+/** True when one of `statements` declares `text` lexically: a let/const,
+ * or a class or function declaration. */
+function declaresLexically(statements: readonly ts.Statement[], text: string): boolean {
+  for (const stmt of statements) {
     if (
-      (ts.isFunctionExpression(scope) || ts.isClassExpression(scope)) &&
-      scope.name?.text === text
+      ts.isVariableStatement(stmt) &&
+      (stmt.declarationList.flags & ts.NodeFlags.BlockScoped) !== 0 &&
+      stmt.declarationList.declarations.nodes.some((d) => bindsName(d.name, text))
     )
       return true;
-  } else if (ts.isCatchClause(scope)) {
-    if (bindsName(scope.variableDeclaration?.name, text)) return true;
-  } else if (!ts.isBlock(scope)) {
-    return false;
+    if ((ts.isClassDeclaration(stmt) || ts.isFunctionDeclaration(stmt)) && stmt.name?.text === text)
+      return true;
   }
-  const functionScope = isFunctionScope(scope);
+  return false;
+}
+
+/** True when a function body declares `text` with `var` (or a function
+ * declaration in a nested block) anywhere outside nested functions. */
+function declaresVar(body: ts.Node, text: string): boolean {
   let found = false;
-  ts.walkPreorder(scope, (n) => {
+  ts.walkPreorder(body, (n) => {
     if (found) return "stop";
-    if (n === scope) return undefined;
+    if (n === body) return undefined;
     if (isFunctionScope(n)) {
       if (ts.isFunctionDeclaration(n) && n.name?.text === text) found = true;
       return "skip";
     }
-    if (!functionScope && ts.isBlock(n)) return "skip"; /* its own scope */
-    if (ts.isVariableDeclaration(n) && bindsName(n.name, text)) {
-      const list = n.parent;
-      const blockScoped =
-        ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.BlockScoped) !== 0;
-      if (functionScope || blockScoped) found = true;
-    }
-    if (ts.isClassDeclaration(n) && n.name?.text === text) found = true;
+    if (
+      ts.isVariableDeclarationList(n) &&
+      (n.flags & ts.NodeFlags.BlockScoped) === 0 &&
+      n.declarations.nodes.some((d) => bindsName(d.name, text))
+    )
+      found = true;
     return undefined;
   });
   return found;
+}
+
+/** True when `scope` declares `text` itself, so references inside it name
+ * that binding instead of the module-level alias: a function's parameters,
+ * own name, `var`s and the let/const, class and function declarations of
+ * its body; a block's or case block's own let/const, class and function
+ * declarations; a catch binding; a for loop's let/const. A let/const in a
+ * nested block shadows only that block, which the walk reaches as its own
+ * scope. */
+function shadows(scope: ts.Node, text: string): boolean {
+  if (isFunctionScope(scope)) {
+    const fn = scope as ts.SignatureDeclaration;
+    if (fn.parameters.nodes.some((p) => bindsName(p.name, text))) return true;
+    if (ts.isFunctionExpression(scope) && scope.name?.text === text) return true;
+    const body = (scope as { body?: ts.Node }).body;
+    if (body === undefined || !ts.isBlock(body)) return false;
+    return declaresVar(body, text) || declaresLexically(body.statements.nodes, text);
+  }
+  if (ts.isBlock(scope)) return declaresLexically(scope.statements.nodes, text);
+  if (ts.isCaseBlock(scope))
+    return declaresLexically(
+      scope.clauses.nodes.flatMap((clause) => clause.statements.nodes),
+      text,
+    );
+  if (ts.isCatchClause(scope)) return bindsName(scope.variableDeclaration?.name, text);
+  if (ts.isForStatement(scope) || ts.isForInStatement(scope) || ts.isForOfStatement(scope)) {
+    const init = scope.initializer;
+    return (
+      init !== undefined &&
+      ts.isVariableDeclarationList(init) &&
+      (init.flags & ts.NodeFlags.BlockScoped) !== 0 &&
+      init.declarations.nodes.some((d) => bindsName(d.name, text))
+    );
+  }
+  if (ts.isClassExpression(scope)) return scope.name?.text === text;
+  return false;
 }
 
 export function normalizeCjsExportsVar(sf: ts.SourceFile): string | null {
@@ -149,7 +182,14 @@ export function normalizeCjsExportsVar(sf: ts.SourceFile): string | null {
     // that binding, not the export object.
     if (
       n !== sf &&
-      (isFunctionScope(n) || ts.isBlock(n) || ts.isCatchClause(n)) &&
+      (isFunctionScope(n) ||
+        ts.isBlock(n) ||
+        ts.isCaseBlock(n) ||
+        ts.isCatchClause(n) ||
+        ts.isForStatement(n) ||
+        ts.isForInStatement(n) ||
+        ts.isForOfStatement(n) ||
+        ts.isClassExpression(n)) &&
       shadows(n, name)
     )
       return "skip";
