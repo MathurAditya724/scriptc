@@ -60,7 +60,7 @@ Code that operates on values whose types are known only at runtime, such as `any
 
 `--explain-dynamic` lists those functions and the operation that makes each one dynamic. It also lists the units an unsupported construct would move to the dynamic tier: the binding, field, class, function, or module that has no static representation for the construct, with the diagnostic behind each one. These are the constructs the dynamic tier is planned to compile; today they remain blockers in TypeScript and deferred runtime errors in JavaScript. Add a name, such as `--explain-dynamic=Point`, to show only the matching units. With `--print=diagnostics`, the document gains a `tiers` object with the same information.
 
-`--tier=static-only` keeps every unsupported construct a blocker instead of moving it to the dynamic tier; code that already operates on runtime-typed values compiles as before. It also makes a checked cast whose value does not match its type throw, where `auto`, the default, continues with the value in the dynamic tier (see [runtime type checks](/docs/limitations#runtime-type-checks)). Otherwise `auto` behaves the same way today.
+`--tier=static-only` keeps every unsupported construct a blocker instead of moving it to the dynamic tier; code that already operates on runtime-typed values compiles as before. Today `auto`, the default, behaves the same way.
 
 ## Diagnostic codes
 

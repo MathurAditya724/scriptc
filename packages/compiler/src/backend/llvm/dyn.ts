@@ -1448,29 +1448,22 @@ export class LlDyn {
    * differently), runs the checked-dynamic route — scr_json_parse plus the
    * dynCheck builder — which reports the exact error. Returns +1, or null
    * with the pending flag set. */
-  jsonParseHelper(t: IrType, fallback = false): string | null {
+  jsonParseHelper(t: IrType): string | null {
     if (t.kind !== "record" && t.kind !== "array") return null;
     const key = typeKey(t);
-    const cacheKey = fallback ? `fallback:${key}` : key;
-    const existing = this.jsonParsers.get(cacheKey);
+    const existing = this.jsonParsers.get(key);
     if (existing) return existing;
     if (!this.jsonSchemaSupported(t, new Set())) return null;
     const host = this.host;
     const name = `sc_jp_${this.jsonParsers.size}`;
-    this.jsonParsers.set(cacheKey, name);
+    this.jsonParsers.set(key, name);
     const schema = this.jsonSchema(t);
     const check = this.dynCheckHelper(t);
     host.declare(`declare ptr @scr_json_parse_schema(ptr, ptr)`);
     host.declare(`declare ptr @scr_json_parse(ptr)`);
     host.declare(`declare void @scr_dyn_release(ptr)`);
-    // A fallback site (dynCheck.fallback): a value that fails validation
-    // parks as the checked value (scr_dyn_check_recover) and the helper
-    // returns the dummy with no exception pending. Syntax errors still
-    // throw.
-    if (fallback) host.declare(`declare zeroext i1 @scr_dyn_check_recover(ptr)`);
-    const recover = fallback ? [`  call zeroext i1 @scr_dyn_check_recover(ptr %d)`] : [];
     this.defs.push(
-      `define internal ptr @${name}(ptr %text) ${FN_ATTRS} { ; JSON.parse as ${llvmCommentText(key)}${fallback ? " (fallback)" : ""}`,
+      `define internal ptr @${name}(ptr %text) ${FN_ATTRS} { ; JSON.parse as ${llvmCommentText(key)}`,
       `entry:`,
       `  %fast = call ptr @scr_json_parse_schema(ptr %text, ptr @${schema})`,
       `  %hit = icmp ne ptr %fast, null`,
@@ -1485,7 +1478,6 @@ export class LlDyn {
       `  ret ptr null`,
       `check:`,
       `  %v = call ptr @${check}(ptr %d, ptr null)`,
-      ...recover,
       `  call void @scr_dyn_release(ptr %d)`,
       `  ret ptr %v`,
       `}`,

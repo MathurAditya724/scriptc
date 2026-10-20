@@ -235,7 +235,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     const receiver = tryLowerExpression(lowerer, expr.expression);
     if (receiver?.type.kind === "dyn") {
       const key = lowerer.lowerExprExpecting(expr.argumentExpression, DYN);
-      const optional = hasOptionalChainGuard(expr.expression, lowerer);
+      const optional = hasOptionalChainGuard(expr.expression);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",
@@ -378,7 +378,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           lowerer.lowerExpr(expr.argumentExpression),
           expr.argumentExpression,
         );
-        const optional = hasOptionalChainGuard(expr.expression, lowerer);
+        const optional = hasOptionalChainGuard(expr.expression);
         return lowerer.maybeNarrow(
           {
             kind: "dynKeyGet",
@@ -488,7 +488,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           ? lowerer.coerceToExpected(rawKey, DYN)
           : lowerRecordPropertyKey(lowerer, rawKey, expr.argumentExpression);
       if (key.type.kind === "string" || key.type.kind === "dyn") {
-        const opt = hasOptionalChainGuard(expr.expression, lowerer);
+        const opt = hasOptionalChainGuard(expr.expression);
         return lowerer.maybeNarrow(
           {
             kind: "dynKeyGet",

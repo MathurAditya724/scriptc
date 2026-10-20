@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/json-parse-fallback-wrong-types.ts"
- ],
- "diags": []
-}
