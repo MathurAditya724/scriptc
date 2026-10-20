@@ -10,7 +10,10 @@
  * - the undici shims keep memory bounded against a peer that sends endless
  *   chunk-size lines and large or compressed bodies, and the 5.x profile
  *   rejects a Host value with CR or LF as undici 5.29 does (the vendored
- *   5.12 writes it into the request).
+ *   5.12 writes it into the request);
+ * - fetch aborts a redirect it follows or rejects, so a redirect body that
+ *   never ends does not keep its connection busy (undici 7 leaves that
+ *   connection open with its body paused).
  */
 import { execFile, spawn } from "node:child_process";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -163,6 +166,18 @@ describe("package shims", () => {
       if (!sanitize) expect(out.split("\n")[4]).toBe("rss under 48 MiB");
     }, 300_000);
   }
+
+  test("undici7: fetch closes the connection of a redirect it follows or rejects", async () => {
+    const { dir, binary } = await buildInCase("undici7", "undici-redirect.ts");
+    expect(await runAgainstPeer(binary, dir)).toBe(
+      [
+        "follow 200 closed",
+        "error mode TypeError fetch failed",
+        "after error mode closed",
+        "",
+      ].join("\n"),
+    );
+  }, 180_000);
 
   test("undici5: a Host value with CR or LF throws before the request is written", async () => {
     const { dir, binary } = await buildInCase("undici5", "undici5-host.ts");
