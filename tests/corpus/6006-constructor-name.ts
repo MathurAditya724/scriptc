@@ -63,3 +63,18 @@ try {
   console.log(kind(error), (error as Error).constructor.name);
 }
 console.log(kind("text"));
+
+// A constructor replaced through an untyped value answers the
+// replacement's name, for classes with and without subclasses.
+class Replacement {}
+const replaced = new Lone();
+const untyped: any = replaced;
+untyped.constructor = { name: "Fake" };
+console.log(replaced.constructor.name);
+const defined = new Lone();
+Object.defineProperty(defined, "constructor", { value: Replacement });
+console.log(defined.constructor.name);
+const shape: Shape = new Circle();
+const untypedShape: any = shape;
+untypedShape.constructor = Replacement;
+console.log(shape.constructor.name, new Lone().constructor.name);

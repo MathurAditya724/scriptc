@@ -182,6 +182,9 @@ void scr_child_ipc_on_disconnect(ScrChild *c, ScrClosure *cb /*moves*/,
                                  bool once);
 double scr_process_fork_target(double target_count);
 bool scr_process_ipc_connected(void);
+/* Whether this fork child opened its channel (process.send's presence in
+ * a program with fork targets; disconnecting keeps it). */
+bool scr_process_ipc_open(void);
 bool scr_process_ipc_send(ScrStr *json);
 bool scr_process_ipc_send_cb(ScrStr *json, ScrClosure *cb /*moves*/,
                              ScrIpcSendFn fn);
@@ -296,5 +299,19 @@ bool scr_children_ready(void);
 bool scr_children_failed_pending(void);
 void scr_children_poll(void);
 bool scr_children_wait(double max_wait_ms);
+/* The loop reaches the functions above through this table. The child
+ * unit installs it with the first spawned child or IPC channel, so
+ * programs that never create either do not link the unit. */
+typedef struct ScrLoopChildren {
+  bool (*pending)(void);
+  bool (*ready)(void);
+  bool (*reffed_pending)(void);
+  bool (*failed_pending)(void);
+  void (*poll)(void);
+  bool (*wait)(double max_wait_ms);
+  int (*wake_fd)(void);
+  void (*teardown)(void);
+} ScrLoopChildren;
+void scr_loop_set_children(const ScrLoopChildren *hooks);
 
 #endif /* SCR_CHILD_H */

@@ -4,7 +4,7 @@ import { InternalCompilerError } from "../../errors.js";
  * literals — records/arrays/unions included, subject to comptimeBakeable. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import { type IrExpr, type IrType } from "../../ir/ir.js";
+import { isUnitType, type IrExpr, type IrType } from "../../ir/ir.js";
 import { comptimeFailedDiag } from "../../diagnostics/diagnostic.js";
 import { locOf } from "../program.js";
 import { PoisonError } from "./lowerer.js";
@@ -76,7 +76,7 @@ export function lowerComptime(lowerer: Lowerer, expr: ts.CallExpression): IrExpr
       "SC1090",
       expr,
       `baking comptime results of type '${lowerer.fmt(target)}' into the binary ` +
-        `(only number, string, boolean, arrays, and records lower to literals)`,
+        `(number, string, boolean, and arrays, records and unions of those lower to literals; a record or union type reachable from itself does not)`,
     );
   }
   // 5. The host executes the extracted callback under a finite budget.
@@ -110,20 +110,104 @@ function comptimeFailureDetail(error: unknown): string {
 
 /** True when a comptime result of this type can be written as a literal
  * expression: number/string/boolean, arrays and record shapes of those,
- * nested. Closures, class instances, unions, promises, dyn, and void
- * cannot be baked. */
+ * and unions of those with null or undefined (the mixed rows of a JSON
+ * table: `(string | number)[][]`), nested. Closures, class instances,
+ * promises, dyn, void, and recursive types (a record or union reachable
+ * from itself, directly or through arrays) cannot be baked. */
 export function comptimeBakeable(lowerer: Lowerer, t: IrType): boolean {
+  return bakeableWithin(lowerer, t, new Set());
+}
+
+/** comptimeBakeable below the records and unions in `open` (keyed
+ * `record:<shapeId>` and `union:<unionId>`), whose members are being
+ * checked: reaching one of them again means the type is recursive. */
+function bakeableWithin(lowerer: Lowerer, t: IrType, open: Set<string>): boolean {
   switch (t.kind) {
     case "f64":
     case "string":
     case "bool":
       return true;
     case "array":
-      return lowerer.comptimeBakeable(t.elem);
+      return bakeableWithin(lowerer, t.elem, open);
     case "record": {
       const shape = lowerer.shapes.get(t.shapeId);
-      return !!shape && shape.fields.every((f) => lowerer.comptimeBakeable(f.type));
+      const key = `record:${t.shapeId}`;
+      if (!shape || open.has(key)) return false;
+      open.add(key);
+      const bakeable = shape.fields.every((f) => bakeableWithin(lowerer, f.type, open));
+      open.delete(key);
+      return bakeable;
     }
+    case "union": {
+      const arms = lowerer.unions.get(t.unionId)?.arms;
+      const key = `union:${t.unionId}`;
+      if (arms === undefined || open.has(key)) return false;
+      open.add(key);
+      const bakeable = arms.every(
+        (arm) => isUnitType(arm) || (arm.kind !== "union" && bakeableWithin(lowerer, arm, open)),
+      );
+      open.delete(key);
+      return bakeable;
+    }
+    default:
+      return false;
+  }
+}
+
+/** The tag of the arm of union `unionId` that `value` bakes into, or -1.
+ * A record value whose discriminant field holds one of the union's
+ * discriminant values takes that case's arm, since arms with overlapping
+ * shapes can both fit it. Any other value takes the first arm it fits, in
+ * the union's arm order: a JSON value fits exactly one scalar arm, and
+ * array or record arms are told apart by their contents. */
+function comptimeUnionArm(lowerer: Lowerer, unionId: string, value: unknown): number {
+  const def = lowerer.unions.get(unionId);
+  if (!def) return -1;
+  const discriminant = def.discriminant;
+  if (
+    discriminant !== undefined &&
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  ) {
+    const key = (value as Record<string, unknown>)[discriminant.field];
+    const named = discriminant.cases.find((c) => c.values.some((v) => v === key));
+    if (named !== undefined)
+      return comptimeFits(lowerer, value, def.arms[named.tag]!) ? named.tag : -1;
+  }
+  return def.arms.findIndex((arm) => comptimeFits(lowerer, value, arm));
+}
+
+/** Whether `value` bakes into the bakeable type `t` without a mismatch:
+ * the arm choice of a union literal. Records are exact, as in
+ * comptimeValueToIr; an absent field reads as undefined. */
+function comptimeFits(lowerer: Lowerer, value: unknown, t: IrType): boolean {
+  switch (t.kind) {
+    case "f64":
+      return typeof value === "number" && Number.isFinite(value);
+    case "string":
+      return typeof value === "string";
+    case "bool":
+      return typeof value === "boolean";
+    case "nullT":
+      return value === null;
+    case "undefinedT":
+      return value === undefined;
+    case "array":
+      return Array.isArray(value) && value.every((el) => comptimeFits(lowerer, el, t.elem));
+    case "record": {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (!shape) return false;
+      const obj = value as Record<string, unknown>;
+      const declared = new Set(shape.fields.map((f) => f.name));
+      return (
+        Object.keys(obj).every((key) => declared.has(key)) &&
+        shape.fields.every((f) => comptimeFits(lowerer, obj[f.name], f.type))
+      );
+    }
+    case "union":
+      return comptimeUnionArm(lowerer, t.unionId, value) >= 0;
     default:
       return false;
   }
@@ -264,6 +348,23 @@ export function comptimeValueToIr(
         value: lowerer.comptimeValueToIr(obj[f.name], f.type, `${path}.${f.name}`, blame),
       }));
       return { kind: "recordLit", fields, type: expected, loc };
+    }
+    case "union": {
+      const arms = lowerer.unions.get(expected.unionId)!.arms; // bakeable-checked
+      const tag = comptimeUnionArm(lowerer, expected.unionId, value);
+      if (tag < 0) fail(describeComptimeValue(value));
+      const arm = arms[tag]!;
+      const payload: IrExpr = isUnitType(arm)
+        ? { kind: "unitLit", unit: arm.kind === "nullT" ? "null" : "undefined", type: arm, loc }
+        : lowerer.comptimeValueToIr(value, arm, path, blame);
+      return {
+        kind: "unionWrap",
+        unionId: expected.unionId,
+        tag,
+        value: payload,
+        type: expected,
+        loc,
+      };
     }
     default:
       // comptimeBakeable already fenced these off.

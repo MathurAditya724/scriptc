@@ -9,11 +9,12 @@ import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 /** `value.constructor.name`: the name of the class that constructed the
  * value.
  *
- * - A TypeScript program class without subclasses answers its name at
- *   compile time, as `C.name` does.
- * - Other program class instances in TypeScript read `constructor` and then
+ * - Program class instances in TypeScript read `constructor` and then
  *   `name` through the instance's checked-dynamic view, which JavaScript
- *   sources already use for `value.constructor`.
+ *   sources already use for `value.constructor`, so a `constructor`
+ *   replaced through an untyped value answers the replacement's name. A
+ *   class without subclasses whose instances have no checked-dynamic view
+ *   answers its name at compile time, as `C.name` does.
  * - An error-typed value tests the program's error classes that extend its
  *   static class, most derived first, and otherwise answers the native
  *   error's builtin class name.
@@ -104,8 +105,15 @@ export function lowerConstructorName(
     if (programClass && js) return null;
     return errorConstructorName(lowerer, target, declared.className, programClass, loc);
   }
-  if (!programClass || js) return null;
-  if (programClass.subclasses.length === 0 && programClass.def.jsName !== undefined && asString) {
+  if (!programClass || js || !asString) return null;
+  // An instance that can become an untyped value can have its `constructor`
+  // replaced there (`untyped.constructor = Other`), so only a class whose
+  // instances never convert answers its name at compile time.
+  if (
+    programClass.subclasses.length === 0 &&
+    programClass.def.jsName !== undefined &&
+    !lowerer.dynConvertible(declared)
+  ) {
     return {
       kind: "seqExpr",
       stmts: [{ kind: "exprStmt", expr: lowerer.lowerExpr(target), loc }],
@@ -114,7 +122,7 @@ export function lowerConstructorName(
       loc,
     };
   }
-  if (!asString || !lowerer.dynConvertible(declared)) return null;
+  if (!lowerer.dynConvertible(declared)) return null;
   const slot = lowerer.declareHiddenLocal("%constructorNameReceiver", DYN);
   const value = varRef(slot.id, DYN, loc);
   return {
