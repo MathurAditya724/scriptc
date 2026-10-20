@@ -806,6 +806,8 @@ static bool scr_http_token_char(unsigned char ch) {
     (ch >= 'a' && ch <= 'z') || (ch != 0 && strchr("!#$%&'*+-.^_`|~", ch) != NULL);
 }
 
+static void scr_http_throw_invalid_header_name(ScrStr *name /*borrowed*/, ScrStr *label /*borrowed*/);
+
 /* node:http's public validators use the same token and field-vchar rules
  * as OutgoingMessage. Strings are UTF-8 here, so the Latin-1 obs-text
  * range accepted by Node's JS regex is C2/C3 plus one continuation byte. */
@@ -814,7 +816,12 @@ void scr_http_validate_header_name(ScrStr *name /*borrowed*/, ScrStr *label /*bo
   for (size_t i = 0; i < name->len && valid; i++)
     valid = scr_http_token_char((unsigned char)name->data[i]);
   if (valid) return;
+  scr_http_throw_invalid_header_name(name, label);
+}
 
+/* Node's ERR_INVALID_HTTP_TOKEN for a header name; `name` is the name's
+ * string form. */
+static void scr_http_throw_invalid_header_name(ScrStr *name /*borrowed*/, ScrStr *label /*borrowed*/) {
   ScrJsonBuf b;
   scr_jb_init(&b);
   ScrStr *shown = label->len ? label : NULL;
@@ -7009,6 +7016,96 @@ static const char SCR_HTTP_REQ_SUPPORTED[] =
     "hostname/host, port, path, method, headers, timeout, agent, signal, socketPath, "
     "defaultPort, protocol, and maxHeaderSize are the supported options";
 
+/* validateHeaderName and validateHeaderValue over one pair of the flat
+ * headers array: a name that is not a string throws
+ * ERR_INVALID_HTTP_TOKEN with its string form, and an array value
+ * validates each element. */
+static void scr_http_req_validate_header_pair(const ScrDyn *name, const ScrDyn *value) {
+  ScrStr *label = scr_str_new("", 0);
+  if (name->kind == SCR_DYN_STR) {
+    scr_http_validate_header_name(name->v.str, label);
+  } else {
+    ScrStr *text = scr_dyn_string_coerce_js(name);
+    if (text != NULL) {
+      scr_http_throw_invalid_header_name(text, label);
+      scr_str_release(text);
+    }
+  }
+  scr_str_release(label);
+  if (scr_exc_pending()) return;
+  if (value->kind == SCR_DYN_ARR) {
+    for (size_t k = 0; k < value->v.arr.len && !scr_exc_pending(); k++)
+      scr_http_validate_header_value(name->v.str, value->v.arr.items[k]);
+  } else {
+    scr_http_validate_header_value(name->v.str, value);
+  }
+}
+
+/* util.inspect's one-line rendering of a short array ("[ 'x-a', 5 ]"): up
+ * to six primitive entries whose rendering stays within inspect's
+ * 80-column break length (a start of n + 11, plus the separators and each
+ * entry). NULL when inspect would group or break the entries, or an entry
+ * is not a primitive or renders outside ASCII (inspect counts UTF-16
+ * units). */
+static ScrStr *scr_http_inspect_short_array(const ScrDyn *list) {
+  size_t n = list->v.arr.len;
+  if (n == 0 || n > 6) return NULL;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "[ ");
+  size_t total = 2 * n + 11;
+  bool fits = true;
+  for (size_t i = 0; i < n && fits; i++) {
+    const ScrDyn *v = list->v.arr.items[i];
+    ScrStr *part = NULL;
+    switch (v->kind) {
+    case SCR_DYN_STR: part = scr_str_inspect_quoted(v->v.str, false); break;
+    case SCR_DYN_NUM:
+      part = v->v.num == 0 && signbit(v->v.num) ? scr_str_new("-0", 2) : scr_f64_to_scrstr(v->v.num);
+      break;
+    case SCR_DYN_BOOL: part = v->v.b ? scr_str_new("true", 4) : scr_str_new("false", 5); break;
+    case SCR_DYN_NULL: part = scr_str_new("null", 4); break;
+    case SCR_DYN_UNDEF: part = scr_str_new("undefined", 9); break;
+    default: break;
+    }
+    if (part == NULL) {
+      fits = false;
+      break;
+    }
+    for (size_t k = 0; k < part->len && fits; k++) fits = (unsigned char)part->data[k] < 0x80;
+    total += part->len;
+    if (total > 80) fits = false;
+    if (i > 0) scr_jb_puts(&b, ", ");
+    scr_jb_write(&b, part->data, part->len);
+    scr_str_release(part);
+  }
+  scr_jb_puts(&b, " ]");
+  ScrStr *out = scr_jb_finish(&b);
+  if (fits) return out;
+  scr_str_release(out);
+  return NULL;
+}
+
+/* Node's ERR_INVALID_ARG_VALUE for a flat headers array of odd length.
+ * Arrays whose inspected form scr_http_inspect_short_array cannot
+ * reproduce fence instead. */
+static void scr_http_req_odd_headers_fail(const char *api, const ScrDyn *list) {
+  ScrStr *shown = scr_http_inspect_short_array(list);
+  if (shown == NULL) {
+    scr_http_req_opts_fence(api, "headers",
+                            "the odd-length headers array error prints up to six short primitive entries here");
+    return;
+  }
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "The argument 'headers' is invalid. Received ");
+  scr_jb_write(&b, shown->data, shown->len);
+  scr_str_release(shown);
+  ScrStr *msg = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(msg);
+}
+
 void scr_http_req_opts_fence(const char *api, const char *key, const char *hint) {
   ScrJsonBuf b;
   scr_jb_init(&b);
@@ -7270,7 +7367,21 @@ bool scr_http_req_opts_read(const ScrDyn *opts, bool secure, const char *api, Sc
     }
     if (!scr_exc_pending()) o->headers = scr_http_dynh_pairs(headers);
   } else if (headers != NULL && headers->kind == SCR_DYN_ARR) {
-    o->headers = scr_http_dynh_flat_pairs(headers);
+    /* Node's _storeHeader checks that the flat [name, value, ...] form has
+     * an even length, then validates each name and value. The
+     * [[name, value], ...] entry form is not modeled. */
+    size_t n = headers->v.arr.len;
+    if (n > 0 && headers->v.arr.items[0]->kind == SCR_DYN_ARR) {
+      scr_http_req_opts_fence(
+          api, "headers",
+          "headers is an object of string or number values or a flat [name, value, ...] array here");
+    } else if (n % 2 != 0) {
+      scr_http_req_odd_headers_fail(api, headers);
+    } else {
+      for (size_t i = 0; i < n && !scr_exc_pending(); i += 2)
+        scr_http_req_validate_header_pair(headers->v.arr.items[i], headers->v.arr.items[i + 1]);
+    }
+    if (!scr_exc_pending()) o->headers = scr_http_dynh_flat_pairs(headers);
   } else if (headers != NULL && headers->kind != SCR_DYN_NULL) {
     scr_http_req_opts_fence(api, "headers", "headers is an object of string or number values here");
   }

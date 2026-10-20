@@ -23,7 +23,9 @@ function lookups(): Promise<void> {
       named.on("data", () => {});
       named.on("close", () => {
         const direct = net.connect({ host: "127.0.0.1", port });
-        direct.once("lookup", () => console.log("unexpected lookup"));
+        // A 'lookup' listener that never runs and holds its socket: closing
+        // the socket drops it.
+        direct.once("lookup", () => console.log("unexpected lookup", direct.remotePort));
         direct.once("connect", () => console.log("connect without lookup"));
         direct.on("data", () => {});
         direct.on("close", () => tcp.close(() => resolve()));

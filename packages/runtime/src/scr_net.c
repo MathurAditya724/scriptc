@@ -5172,6 +5172,7 @@ static void scr_net_sweep(void) {
       scr_net_ls_drop(&sock->finish_ls);
       scr_net_ls_drop(&sock->wcb_ls);
       scr_net_ls_drop(&sock->ready_ls);
+      scr_net_ls_drop(&sock->lookup_ls);
       if (sock->pipe_dst) {
         scr_net_sock_release(sock->pipe_dst);
         sock->pipe_dst = NULL;
@@ -5373,6 +5374,7 @@ static void scr_net_cleanup_atexit(void) {
     scr_net_ls_drop(&s->conn_ls);
     scr_net_ls_drop(&s->timeout_ls);
     scr_net_ls_drop(&s->readable_ls);
+    scr_net_ls_drop(&s->lookup_ls);
     /* Tear down the protocol layer's parser NOW: an in-flight http
      * exchange (a handler that threw before res.end()) holds req/res,
      * and the res holds this socket back — a cycle the lean untraced
