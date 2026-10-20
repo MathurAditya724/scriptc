@@ -5238,6 +5238,8 @@ declare module "tls" {
     getProtocol(): string | null;
     /* OpenSSL's suite name, the IANA name and the suite's version */
     getCipher(): CipherNameAndProtocol;
+    /* whether the handshake resumed a cached session */
+    isSessionReused(): boolean;
   }
   export interface CipherNameAndProtocol {
     name: string;
