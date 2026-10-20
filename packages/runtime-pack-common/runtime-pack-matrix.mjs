@@ -95,7 +95,15 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Their stream half also references the stream unit.
   [
     "scr_dyn_builtin_stream.c",
-    all("dynBuiltinStream", "dynBuiltinClass", "stream", "inspect", "dynInvoke", "symbol", "emitter"),
+    all(
+      "dynBuiltinStream",
+      "dynBuiltinClass",
+      "stream",
+      "inspect",
+      "dynInvoke",
+      "symbol",
+      "emitter",
+    ),
   ],
   ["scr_stream.c", "stream"],
   // The zlib stream classes reference both the zlib engine and the stream unit.
