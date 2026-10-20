@@ -168,6 +168,8 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
         npmStaticDepSf7(load.program, sf, spec, kind);
       if (dep === null || scanned.has(dep)) continue;
       if (dep.fileName.includes("/node_modules/") && !isJsSourceFileName(dep.fileName)) continue;
+      // An import() whose graph Node refuses rejects: nothing in it loads.
+      if (kind === "import" && load.dynamicImportRejections?.has(dep)) continue;
       scanned.add(dep);
       added.add(dep);
       queue.push(dep);
@@ -688,6 +690,7 @@ function loadFrontend(
         startupCrash: finalLoad.startupCrash ?? null,
         inlineRequireCycleCalls: finalLoad.inlineRequireCycleCalls,
         moduleEdges: finalLoad.moduleEdges,
+        dynamicImportRejections: finalLoad.dynamicImportRejections,
         projectCheckJs: finalLoad.typeWorld?.projectCheckJs ?? false,
         externalTypes: finalLoad.externalTypes,
         externalTypeSpecifiersByFile: finalLoad.externalTypeSpecifiersByFile,
