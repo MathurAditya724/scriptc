@@ -7,6 +7,7 @@ import { stripTypeCasts } from "./arguments.js";
 import { streamClassAliasDecl } from "../lower-stream.js";
 import { zlibClassName, zlibStreamModeOf } from "./compression.js";
 import { stdlibGlobalNameOf } from "../surfaces.js";
+import { RUNTIME_ERROR_CLASSES } from "../../../ir/ir.js";
 
 /** A builtin class an expression names at compile time: the error
  * classes, node:events EventEmitter, the node:stream classes (each a
@@ -92,7 +93,7 @@ export function builtinClassAliasOwnsNoSlot(lowerer: Lowerer, symbol: ts.Symbol)
   if (builtinClassAliasOf(lowerer, symbol) === null) return false;
   const binding =
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-  const decl = lowerer.checker.valueDeclarationOf(binding);
+  const decl = binding.valueDeclaration;
   if (decl === undefined || !ts.isVariableDeclaration(decl)) return false;
   if (builtinMemberRequireDecl(decl.name, decl.initializer)) return false;
   if (streamClassAliasDecl(lowerer, decl.name, decl.initializer)) return false;
@@ -123,6 +124,60 @@ export function registerBuiltinClassAlias(
   return symbol !== undefined && builtinClassAliasOwnsNoSlot(lowerer, symbol);
 }
 
+/** The runtime-provided class (EventEmitter, a stream class, an error
+ * class) `expr` names, when values of it construct (valueCtorParams), or
+ * null. */
+export function runtimeClassValueOf(lowerer: Lowerer, expr: ts.Expression): ClassInfo | null {
+  const ref = builtinClassRefOf(lowerer, expr);
+  if (ref === null || ref.kind === "zlib" || ref.kind === "collection") return null;
+  return ref.info.valueCtorParams !== undefined ? ref.info : null;
+}
+
+/** The runtime-provided class whose static side `type` is (`typeof
+ * EventEmitter`, `typeof Readable`, `ErrorConstructor`), when values of
+ * it construct, or null. Instance types have no construct signatures and
+ * answer null. A union of such static sides (`[Readable, Writable]`'s
+ * element type) is their nearest common ancestor's value when every arm
+ * constructs through the same parameters: a slot of the ancestor holds
+ * any of them. */
+export function runtimeClassValueOfType(lowerer: Lowerer, type: ts.Type): string | null {
+  if (type.isUnionType()) {
+    const arms: ClassInfo[] = [];
+    for (const part of ts.constituentTypes(type)) {
+      const name = runtimeClassValueOfType(lowerer, part);
+      const info = name !== null ? lowerer.classes.get(name) : undefined;
+      if (!info) return null;
+      arms.push(info);
+    }
+    const ancestor = commonRuntimeAncestor(arms);
+    if (ancestor === null) return null;
+    return arms.every((arm) => lowerer.ctorAbiEquals(arm, ancestor)) ? ancestor.def.name : null;
+  }
+  if (lowerer.checker.getConstructSignatures(type).length === 0) return null;
+  const symbol = type.getSymbol();
+  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  let info = lowerer.builtinEmitterInfoOf(symbol) ?? lowerer.builtinStreamInfoOf(symbol);
+  if (!info && symbol.name.endsWith("Constructor")) {
+    for (const [irName, rec] of RUNTIME_ERROR_CLASSES) {
+      if (`${rec.lib}Constructor` === symbol.name) info = lowerer.classes.get(irName) ?? null;
+    }
+  }
+  return info?.valueCtorParams !== undefined ? info.def.name : null;
+}
+
+/** The nearest class every one of `infos` is or extends, when it is a
+ * runtime class whose values construct, or null. */
+function commonRuntimeAncestor(infos: ClassInfo[]): ClassInfo | null {
+  for (let candidate = infos[0] ?? null; candidate; candidate = candidate.base) {
+    const holdsAll = infos.every((info) => {
+      for (let c: ClassInfo | null = info; c; c = c.base) if (c === candidate) return true;
+      return false;
+    });
+    if (holdsAll) return candidate.def.runtime && candidate.valueCtorParams ? candidate : null;
+  }
+  return null;
+}
+
 /** True when two references name the same builtin class. */
 export function sameBuiltinClass(a: BuiltinClassRef, b: BuiltinClassRef): boolean {
   if (a.kind === "zlib") return b.kind === "zlib" && a.mode === b.mode;
@@ -134,7 +189,7 @@ export function sameBuiltinClass(a: BuiltinClassRef, b: BuiltinClassRef): boolea
  * can name a class (an identifier or a property access), or null. */
 function constInitializerOf(lowerer: Lowerer, symbol: ts.Symbol): ts.Expression | null {
   if ((symbol.flags & ts.SymbolFlags.BlockScopedVariable) === 0) return null;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (
     decl === undefined ||
     !ts.isVariableDeclaration(decl) ||

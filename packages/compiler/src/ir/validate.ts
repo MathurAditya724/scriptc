@@ -56,7 +56,7 @@ import {
   maybePromiseUnionArmsOk,
   VOID,
 } from "./ir.js";
-import { DYN_CLASS_PROPERTIES, callSiteReturnType } from "./ir.js";
+import { DYN_CLASS_PROPERTIES, callSiteReturnType, classValueConstructor } from "./ir.js";
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
@@ -2937,15 +2937,21 @@ function validateFunction(
             err(`upcast: "${sub}" does not extend "${sup}"`, e.loc);
             break;
           }
-          const subCtor = functions.get(`%${sub}.constructor`);
-          const supCtor = functions.get(`%${sup}.constructor`);
-          if (!subCtor || !supCtor) {
+          const subClass = classes.get(sub);
+          const supClass = classes.get(sup);
+          const subValueCtor = subClass ? classValueConstructor(subClass) : null;
+          const supValueCtor = supClass ? classValueConstructor(supClass) : null;
+          const subCtor = subValueCtor ? functions.get(subValueCtor.fn) : undefined;
+          const supCtor = supValueCtor ? functions.get(supValueCtor.fn) : undefined;
+          if (!subCtor || !supCtor || !subValueCtor || !supValueCtor) {
             err(`classval upcast: "${sub}"/"${sup}" lack constructor functions`, e.loc);
             break;
           }
+          const subArgs = subCtor.params.slice(subValueCtor.firstArg);
+          const supArgs = supCtor.params.slice(supValueCtor.firstArg);
           const abiEqual =
-            subCtor.params.length === supCtor.params.length &&
-            subCtor.params.every((p, i) => i === 0 || typeEquals(p.type, supCtor.params[i]!.type));
+            subArgs.length === supArgs.length &&
+            subArgs.every((p, i) => typeEquals(p.type, supArgs[i]!.type));
           if (!abiEqual) {
             err(`classval upcast: "${sub}" and "${sup}" constructor ABIs differ`, e.loc);
           }
@@ -2970,16 +2976,13 @@ function validateFunction(
           err(`classRef to undeclared class "${e.className}"`, e.loc);
           break;
         }
-        if (cls.runtime) {
-          err(`classRef to runtime-provided class "${e.className}"`, e.loc);
-        }
-        if (cls.jsName === undefined) {
+        if (cls.jsName === undefined && !cls.runtime) {
           err(`classRef to "${e.className}" without a jsName (the class object's .name)`, e.loc);
         }
         // A class value can always be constructed through — the frontend
         // notes the constructor edge at every classRef, so the emitted
         // thunk has a body to call.
-        if (!functions.has(`%${e.className}.constructor`)) {
+        if (!functions.has(classValueConstructor(cls).fn)) {
           err(`classRef to "${e.className}" without its constructor function`, e.loc);
         }
         if (!typeEquals(e.type, { kind: "classval", className: e.className })) {
@@ -3008,21 +3011,24 @@ function validateFunction(
           break;
         }
         const cls = e.callee.type.className;
-        const ctor = functions.get(`%${cls}.constructor`);
-        if (!ctor) {
+        const calleeClass = classes.get(cls);
+        const valueCtor = calleeClass ? classValueConstructor(calleeClass) : null;
+        const ctor = valueCtor ? functions.get(valueCtor.fn) : undefined;
+        if (!ctor || !valueCtor) {
           err(`newValue on "${cls}": missing constructor function`, e.loc);
           break;
         }
         // Count-exact against the static class's completed ABI (every
         // value legally in the slot shares it — the upcast rule).
-        if (ctor.params.length !== e.args.length + 1) {
+        const first = valueCtor.firstArg;
+        if (ctor.params.length !== e.args.length + first) {
           err(
-            `newValue on "${cls}": ${e.args.length} args, ctor expects ${ctor.params.length - 1}`,
+            `newValue on "${cls}": ${e.args.length} args, ctor expects ${ctor.params.length - first}`,
             e.loc,
           );
         }
         e.args.forEach((a, i) => {
-          const p = ctor.params[i + 1];
+          const p = ctor.params[i + first];
           if (p) expectType(a, p.type, `newValue on "${cls}" arg ${i}`);
         });
         if (!typeEquals(e.type, { kind: "object", className: cls })) {
@@ -5236,7 +5242,11 @@ function validateFunction(
   }
 
   function checkLibSpecialCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "crypto.randomFillView" || e.fn === "crypto.randomFillViewRest") {
+    if (
+      e.fn === "crypto.randomFillView" ||
+      e.fn === "crypto.randomFillViewRest" ||
+      e.fn === "crypto.getRandomValues"
+    ) {
       // The filled view is the result, at its own element type.
       const view = e.args[0]?.type;
       if (view?.kind !== "bytes" || !typeEquals(e.type, view)) {

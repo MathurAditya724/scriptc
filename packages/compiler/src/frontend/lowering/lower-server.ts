@@ -708,7 +708,7 @@ export function lowerNetModuleCall(
   // Members with ordinary surfaces.ts table entries (the autoselect
   // budget pair) ride the generic path — null hands the dispatch back.
   if (builtinModuleFnOf(lowerer, "net", bi.member)) return null;
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (bi.member === "createServer") {
     if (args.length === 0) {
       return { kind: "libCall", fn: "net.createServer", args: [], type: NETSERVER_T, loc };
@@ -883,7 +883,7 @@ function lowerNetConnectOptions(
   member: string,
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   const optsNode = args[0] as ts.ObjectLiteralExpression;
   const isJs = isJsSourceFile(expr.getSourceFile());
   // The checked-dynamic option-bag route (JS sources): a literal with
@@ -893,7 +893,7 @@ function lowerNetConnectOptions(
   // port/host/autoSelectFamily), with the compiler-rendered fence as the
   // post-validation tail.
   if (isJs) {
-    const needsBag = optsNode.properties.some(
+    const needsBag = optsNode.properties.nodes.some(
       (p) =>
         (!ts.isPropertyAssignment(p) && !ts.isShorthandPropertyAssignment(p)) ||
         (ts.isPropertyAssignment(p) && ts.isComputedPropertyName(p.name)) ||
@@ -944,7 +944,7 @@ function lowerNetConnectOptions(
     type: NETSOCKET_T,
     loc,
   });
-  for (const prop of optsNode.properties) {
+  for (const prop of optsNode.properties.nodes) {
     let initializer: ts.Expression | null;
     if (
       ts.isPropertyAssignment(prop) &&
@@ -1147,9 +1147,9 @@ function lowerServerCloseBind(
   if (!lowerer.isStdlibMember(closeAccess)) return null;
   const loc = locOf(call);
   const recvNode = closeAccess.expression;
-  const thisArg = call.arguments[0];
+  const thisArg = call.arguments.nodes[0];
   if (
-    call.arguments.length !== 1 ||
+    call.arguments.nodes.length !== 1 ||
     !thisArg ||
     !ts.isIdentifier(recvNode) ||
     !ts.isIdentifier(thisArg) ||
@@ -1352,7 +1352,7 @@ function lowerNetServerMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (name === "getConnections") {
     // cb(null, count) on the next tick; answers the server.
     if (args.length !== 1) {
@@ -1451,7 +1451,7 @@ function lowerNetServerMethodCall(
       let host: IrExpr | null = null;
       let v6only: IrExpr | null = null;
       let reusePort: IrExpr | null = null;
-      for (const prop of (args[0] as ts.ObjectLiteralExpression).properties) {
+      for (const prop of (args[0] as ts.ObjectLiteralExpression).properties.nodes) {
         let initializer: ts.Expression | null;
         if (
           ts.isPropertyAssignment(prop) &&
@@ -2152,8 +2152,8 @@ function lowerEncodedDataListener(lowerer: Lowerer, node: ts.Expression): IrExpr
   let fn = node;
   while (ts.isParenthesizedExpression(fn)) fn = fn.expression;
   if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return null;
-  if (fn.parameters.length !== 1) return null;
-  const param = fn.parameters[0]!;
+  if (fn.parameters.nodes.length !== 1) return null;
+  const param = fn.parameters.nodes[0]!;
   if (!ts.isIdentifier(param.name) || param.initializer || param.dotDotDotToken) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(param.name);
   if (symbol === undefined) return null;
@@ -2184,7 +2184,7 @@ function lowerNetSocketMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if ((name === "ref" || name === "unref") && args.length === 0) {
     // Whether the socket keeps the event loop alive.
     requireStatementPosition(lowerer, call, `socket.${name}()`);
@@ -2868,7 +2868,7 @@ function h2EndStreamOption(lowerer: Lowerer, node: ts.Expression | undefined): b
     );
   }
   let end: boolean | undefined;
-  for (const prop of (node as ts.ObjectLiteralExpression).properties) {
+  for (const prop of (node as ts.ObjectLiteralExpression).properties.nodes) {
     if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
       lowerer.noLowering(
         "h2 options with spreads or computed keys",
@@ -2907,7 +2907,7 @@ function lowerH2SessionMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const receiver = () => coerceToHandle(lowerer, access.expression, HTTP2SESSION_T);
   if (name === "request") {
     const pairs =
@@ -3169,7 +3169,7 @@ function lowerH2StreamMethodCall(
   if (!lowerer.isStdlibMember(access) && !compatReqStream) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const receiver = () =>
     receiverOverride ?? coerceToHandle(lowerer, access.expression, HTTP2STREAM_T);
   if (name === "respond") {
@@ -3949,7 +3949,7 @@ export function lowerServerProperty(
   }
   if (expr.name.text !== "port") return null;
   const recv = expr.expression;
-  if (!ts.isCallExpression(recv) || recv.questionDotToken || recv.arguments.length !== 0)
+  if (!ts.isCallExpression(recv) || recv.questionDotToken || recv.arguments.nodes.length !== 0)
     return null;
   if (!ts.isPropertyAccessExpression(recv.expression)) return null;
   const inner = recv.expression;
@@ -4051,7 +4051,7 @@ function lowerHttpServerOptions(
   let allowMissingHost = false;
   let keepAliveTimeoutBuffer: IrExpr | null = null;
   let maxHeaderSize: IrExpr | null = null;
-  for (const prop of node.properties) {
+  for (const prop of node.properties.nodes) {
     let initializer: ts.Expression | null;
     if (
       ts.isPropertyAssignment(prop) &&
@@ -4169,7 +4169,7 @@ function lowerHttpCreateServerForms(
   what: string,
   loc: SrcLoc,
 ): IrExpr {
-  const args: readonly ts.Expression[] = expr.arguments ?? [];
+  const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
   if (args.length > 2) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
@@ -4335,7 +4335,7 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
   let timeout: IrExpr = numLit(-1, loc);
   let port: IrExpr = numLit(-1, loc);
   let scheduling: IrExpr = lowerer.coerceToExpected(strLit("lifo", loc), DYN);
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   if (args.length > 1) {
     lowerer.noLowering(
       `${api} with ${args.length} arguments`,
@@ -4352,7 +4352,7 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
         "spell the options as an object literal at the construction site",
       );
     }
-    for (const prop of optsNode.properties) {
+    for (const prop of optsNode.properties.nodes) {
       if (ts.isSpreadAssignment(prop)) {
         lowerer.noLowering(`${api} with an options spread`, prop, "write each option inline");
       }
@@ -4485,9 +4485,9 @@ function lowerHttpModuleCall(
   if (bi.member === "validateHeaderName") {
     requireStatementPosition(lowerer, expr, "http.validateHeaderName(...)");
     if (
-      expr.arguments.length < 1 ||
-      expr.arguments.length > 2 ||
-      expr.arguments.some(ts.isSpreadElement)
+      expr.arguments.nodes.length < 1 ||
+      expr.arguments.nodes.length > 2 ||
+      expr.arguments.nodes.some(ts.isSpreadElement)
     ) {
       lowerer.noLowering(
         "http.validateHeaderName arguments",
@@ -4495,24 +4495,24 @@ function lowerHttpModuleCall(
         "pass a header name and an optional label",
       );
     }
-    const name = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+    const name = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
     const label =
-      expr.arguments.length === 2
-        ? lowerer.lowerExprExpecting(expr.arguments[1]!, STRING)
+      expr.arguments.nodes.length === 2
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, STRING)
         : strLit("Header name", loc);
     return { kind: "libCall", fn: "http.validateHeaderName", args: [name, label], type: VOID, loc };
   }
   if (bi.member === "validateHeaderValue") {
     requireStatementPosition(lowerer, expr, "http.validateHeaderValue(...)");
-    if (expr.arguments.length !== 2 || expr.arguments.some(ts.isSpreadElement)) {
+    if (expr.arguments.nodes.length !== 2 || expr.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(
         "http.validateHeaderValue arguments",
         expr,
         "pass a header name and a value",
       );
     }
-    const name = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-    const value = lowerer.lowerExprExpecting(expr.arguments[1]!, DYN);
+    const name = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+    const value = lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, DYN);
     return {
       kind: "libCall",
       fn: "http.validateHeaderValue",
@@ -4556,7 +4556,7 @@ function lowerTlsServerOptions(
   const loc = locOf(node);
   let cert: IrExpr | null = null;
   let key: IrExpr | null = null;
-  for (const prop of node.properties) {
+  for (const prop of node.properties.nodes) {
     let initializer: ts.Expression | null;
     if (
       ts.isPropertyAssignment(prop) &&
@@ -4681,7 +4681,7 @@ function tlsLiteralNeedsRuntimeWalk(
   includeHttpTimeoutOptions = false,
 ): boolean {
   const jsSource = isJsSourceFile(node.getSourceFile());
-  return node.properties.some(
+  return node.properties.nodes.some(
     (p) =>
       (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
       (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
@@ -4735,7 +4735,7 @@ function lowerTlsServerOptionsOrDyn(
  * callback (and 'secureConnect'/'connect' listeners) fires
  * post-handshake — Node's secureConnect timing. */
 function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   const FORMS_HINT =
     "the supported forms are connect(options[, cb]) and connect(port[, host][, options][, cb]) — options implement port/host/rejectUnauthorized/ca/servername";
   if (args.length < 1 || args.length > 4 || args.some(ts.isSpreadElement)) {
@@ -4847,7 +4847,7 @@ function lowerTlsModuleCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (bi.member === "createServer") {
     if (args.length < 1 || args.length > 2) {
       lowerer.noLowering(
@@ -5051,7 +5051,7 @@ function clientFnRefOf(
  * `const` declaration, or a parameter/let whose enclosing scope contains
  * no assignment or ++/-- targeting it. */
 function neverReassigned(lowerer: Lowerer, sym: ts.Symbol): boolean {
-  const decl = lowerer.checker.declarationsOf(sym)[0];
+  const decl = sym.declarations[0];
   if (!decl) return false;
   if (
     ts.isVariableDeclaration(decl) &&
@@ -5178,7 +5178,7 @@ function lowerHttpsModuleCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (bi.member === "createServer") {
     if (args.length < 1 || args.length > 2) {
       lowerer.noLowering(
@@ -5279,7 +5279,7 @@ function lowerHttp2ModuleCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (bi.member === "createServer") {
     // The REAL h2c server (scr_http2.c). An options object literal is
     // accepted and ignored (h2 session-tuning knobs; the honest-defaults
@@ -5355,7 +5355,7 @@ function lowerHttp2ModuleCall(
       lowerer.checker.getCallSignatures(lowerer.typeOf(args[1]!)).length === 0
     ) {
       if (ts.isObjectLiteralExpression(args[1]!)) {
-        for (const pr of (args[1] as ts.ObjectLiteralExpression).properties) {
+        for (const pr of (args[1] as ts.ObjectLiteralExpression).properties.nodes) {
           // Plain `name: value` and shorthand `{ ca }` both carry the
           // option; a shorthand's value is the same-named identifier.
           let name: string;
@@ -5570,14 +5570,14 @@ function lowerHttp2ModuleCall(
           const ok =
             ts.isObjectLiteralExpression(whenTrue) &&
             ts.isObjectLiteralExpression(whenFalse) &&
-            whenFalse.properties.length === 0 &&
-            whenTrue.properties.length === 1 &&
-            ts.isPropertyAssignment(whenTrue.properties[0]!) &&
-            (ts.isIdentifier(whenTrue.properties[0]!.name) ||
-              ts.isStringLiteral(whenTrue.properties[0]!.name)) &&
-            (whenTrue.properties[0]!.name as ts.Identifier | ts.StringLiteral).text ===
+            whenFalse.properties.nodes.length === 0 &&
+            whenTrue.properties.nodes.length === 1 &&
+            ts.isPropertyAssignment(whenTrue.properties.nodes[0]!) &&
+            (ts.isIdentifier(whenTrue.properties.nodes[0]!.name) ||
+              ts.isStringLiteral(whenTrue.properties.nodes[0]!.name)) &&
+            (whenTrue.properties.nodes[0]!.name as ts.Identifier | ts.StringLiteral).text ===
               "SNICallback" &&
-            whenTrue.properties[0]!.initializer.getText() === condText;
+            whenTrue.properties.nodes[0]!.initializer.getText() === condText;
           if (!ok) {
             lowerer.noLowering(
               "createSecureServer options with a conditional spread",
@@ -5595,7 +5595,7 @@ function lowerHttp2ModuleCall(
             `spreads must be inline object literals here; ${SNI_HINT}`,
           );
         }
-        for (const p of inner.properties) lowerOption(p);
+        for (const p of inner.properties.nodes) lowerOption(p);
         return;
       }
       let initializer: ts.Expression | null;
@@ -5671,14 +5671,14 @@ function lowerHttp2ModuleCall(
           e.kind === ts.SyntaxKind.FalseKeyword;
         const isLiteralObjectOfLiterals = (e: ts.Expression): boolean =>
           ts.isObjectLiteralExpression(e) &&
-          e.properties.every(
+          e.properties.nodes.every(
             (p) =>
               ts.isPropertyAssignment(p) &&
               ts.isIdentifier(p.name) &&
               isScalarLiteral(p.initializer),
           );
         if (k === "settings" && initializer !== null && ts.isObjectLiteralExpression(initializer)) {
-          for (const setting of initializer.properties) {
+          for (const setting of initializer.properties.nodes) {
             if (
               ts.isPropertyAssignment(setting) &&
               ts.isIdentifier(setting.name) &&
@@ -5731,7 +5731,7 @@ function lowerHttp2ModuleCall(
       );
       // An undocumented key, dropped like Node drops it.
     };
-    for (const prop of optsNode.properties) lowerOption(prop);
+    for (const prop of optsNode.properties.nodes) lowerOption(prop);
     if (cert === null || key === null) {
       lowerer.noLowering(
         "createSecureServer without both cert and key",
@@ -5846,7 +5846,7 @@ function lowerHttpClientCall(
     const c = lowerer.lowerCondition(binding!.cond);
     return binding!.trueSecure ? c : { kind: "unary", op: "!", operand: c, type: BOOL, loc };
   };
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.length < 1 || args.length > 2) {
     lowerer.noLowering(
       `${member} with ${args.length} arguments`,
@@ -5934,7 +5934,7 @@ function lowerHttpClientCall(
   let servername: IrExpr | null = null;
   /** maxHeaderSize: the response head's size bound. */
   let maxHeaderSize: IrExpr | null = null;
-  for (const prop of optsNode.properties) {
+  for (const prop of optsNode.properties.nodes) {
     // Shorthand entries ({ port } for { port: port }) are the natural
     // spelling at these call sites — the shorthand's VALUE lowering
     // resolves the local binding (lowerShorthandValue), not the property
@@ -6441,7 +6441,7 @@ function lowerClientHeadersOption(lowerer: Lowerer, node: ts.Expression): IrExpr
   const loc = locOf(node);
   if (ts.isObjectLiteralExpression(node)) {
     const elems: IrExpr[] = [];
-    for (const prop of node.properties) {
+    for (const prop of node.properties.nodes) {
       const key = ts.isPropertyAssignment(prop) ? staticHeaderKeyOf(lowerer, prop) : null;
       if (!ts.isPropertyAssignment(prop) || key === null) {
         lowerer.noLowering(
@@ -6493,8 +6493,8 @@ function lowerHttpTrailersOption(lowerer: Lowerer, node: ts.Expression): IrExpr 
   if (!ts.isArrayLiteralExpression(node)) return lowerClientHeadersOption(lowerer, node);
   const loc = locOf(node);
   const flat: IrExpr[] = [];
-  for (const entry of node.elements) {
-    if (!ts.isArrayLiteralExpression(entry) || entry.elements.length !== 2) {
+  for (const entry of node.elements.nodes) {
+    if (!ts.isArrayLiteralExpression(entry) || entry.elements.nodes.length !== 2) {
       lowerer.noLowering(
         "addTrailers pair list",
         entry,
@@ -6502,8 +6502,8 @@ function lowerHttpTrailersOption(lowerer: Lowerer, node: ts.Expression): IrExpr 
       );
     }
     const pair = entry as ts.ArrayLiteralExpression;
-    const name = pair.elements[0]!;
-    const value = pair.elements[1]!;
+    const name = pair.elements.nodes[0]!;
+    const value = pair.elements.nodes[1]!;
     if (ts.isSpreadElement(name) || ts.isSpreadElement(value)) {
       lowerer.noLowering(
         "addTrailers pair with spread",
@@ -6528,7 +6528,7 @@ function lowerHttpClientMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (name === "setHeader") {
     requireStatementPosition(lowerer, call, "request.setHeader(...)");
     if (args.length !== 2)
@@ -7038,7 +7038,7 @@ function lowerHttpReqMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (name === "setTimeout") {
     requireStatementPosition(lowerer, call, "message.setTimeout(...)");
     if (args.length < 1 || args.length > 2)
@@ -7239,7 +7239,7 @@ function lowerHttpResMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (name === "setTimeout") {
     if (args.length < 1 || args.length > 2) {
       lowerer.noLowering(
@@ -7298,7 +7298,7 @@ function lowerHttpResMethodCall(
     let pairs: IrExpr;
     if (ts.isObjectLiteralExpression(node)) {
       const elems: IrExpr[] = [];
-      for (const prop of node.properties) {
+      for (const prop of node.properties.nodes) {
         const key = ts.isPropertyAssignment(prop) ? staticHeaderKeyOf(lowerer, prop) : null;
         if (!ts.isPropertyAssignment(prop) || key === null) {
           lowerer.noLowering(
@@ -7542,7 +7542,7 @@ function lowerHttpResMethodCall(
     }
     const names: IrExpr[] = [];
     const values: IrExpr[] = [];
-    for (const prop of headersNode.properties) {
+    for (const prop of headersNode.properties.nodes) {
       const key = ts.isPropertyAssignment(prop) ? staticHeaderKeyOf(lowerer, prop) : null;
       if (!ts.isPropertyAssignment(prop) || key === null) {
         lowerer.noLowering(

@@ -43,7 +43,7 @@ export function lowerArrayFromAsyncCall(
   if (!lowerer.isStdlibGlobal(access.expression, "Array")) return null;
   if (access.name.text !== "fromAsync") return null;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `Array.fromAsync with ${args.length} arguments`,

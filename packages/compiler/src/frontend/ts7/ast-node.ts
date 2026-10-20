@@ -16,8 +16,21 @@ import {
 import type { SourceFile } from "./ast-types.js";
 import { SyntaxKind, NodeFlags } from "./enums.js";
 
+/** A list of child nodes with the list's own position, the shape of tsc-ts's
+ * NodeList. The file keeps the nodes array, not this object: each read of a
+ * list field returns a new AstNodeList over the same array, so `nodes` keeps
+ * its identity and a decoded file holds no list objects. */
+export class AstNodeList<T extends AstNode = AstNode> {
+  constructor(
+    readonly pos: number,
+    readonly end: number,
+    readonly nodes: readonly T[],
+  ) {}
+}
+
 /** One immutable AST response owns one object per node and one array per
- * list. Parent access is lazy, so resolving a checker handle near the bottom
+ * list.
+ * Parent access is lazy, so resolving a checker handle near the bottom
  * of a deep tree never recursively constructs its ancestors. */
 export class AstFile {
   readonly wire: AstWireFile;
@@ -34,7 +47,6 @@ export class AstFile {
 
   constructor(
     bytes: Uint8Array,
-    private readonly listMetadata?: (nodes: AstNode[], pos: number, end: number) => void,
     private readonly materialized?: () => void,
   ) {
     this.wire = new AstWireFile(bytes);
@@ -63,14 +75,15 @@ export class AstFile {
     return node;
   }
 
-  list(index: number): AstNode[] {
-    if (Object.hasOwn(this.lists, index)) return this.lists[index]!;
-    const nodes: AstNode[] = [];
-    for (const child of this.wire.list(index)) nodes.push(this.node(child));
-    this.listMetadata?.(nodes, this.wire.pos(index) >>> 0, this.wire.end(index) >>> 0);
-    this.lists[index] = nodes;
-    this.materialized?.();
-    return nodes;
+  list(index: number): AstNodeList {
+    let nodes = this.lists[index];
+    if (nodes === undefined) {
+      nodes = [];
+      for (const child of this.wire.list(index)) nodes.push(this.node(child));
+      this.lists[index] = nodes;
+      this.materialized?.();
+    }
+    return new AstNodeList(this.wire.pos(index) >>> 0, this.wire.end(index) >>> 0, nodes);
   }
 
   namedChild(node: AstNode, name: string): number {
@@ -190,11 +203,11 @@ export class AstNode {
     const index = this.file.namedChild(this, name);
     return index === 0 ? undefined : this.file.node(index);
   }
-  childList(name: string): AstNode[] | undefined {
+  childList(name: string): AstNodeList | undefined {
     const index = this.file.namedChild(this, name);
     return index === 0 ? undefined : this.file.list(index);
   }
-  child(name: string): AstNode | AstNode[] | undefined {
+  child(name: string): AstNode | AstNodeList | undefined {
     const index = this.file.namedChild(this, name);
     if (index === 0) return undefined;
     return this.file.wire.kind(index) === KIND_NODE_LIST
@@ -213,7 +226,7 @@ export class AstNode {
         throw new AstDecodeError("sibling belongs to another parent");
       const kind = wire.kind(index);
       if (kind === KIND_NODE_LIST) {
-        for (const node of file.list(index)) indices.push(node.index);
+        for (const node of file.list(index).nodes) indices.push(node.index);
       } else if (kind !== AstKind.JSDoc) {
         indices.push(index);
       }
@@ -222,7 +235,7 @@ export class AstNode {
 
   forEachChild<T>(
     visitNode: (node: AstNode) => T,
-    visitList?: (nodes: readonly AstNode[]) => T,
+    visitList?: (nodes: AstNodeList) => T,
   ): T | undefined {
     const wire = this.file.wire;
     // Walk the immutable sibling links directly. Repeated semantic scans
@@ -237,7 +250,7 @@ export class AstNode {
           const result = visitList(list);
           if (result) return result;
         } else {
-          for (const node of list) {
+          for (const node of list.nodes) {
             const result = visitNode(node);
             if (result) return result;
           }
@@ -395,7 +408,7 @@ export class AstNode {
   }
   get modifierFlags(): number {
     let result = 0;
-    for (const modifier of this.childList("modifiers") ?? [])
+    for (const modifier of this.childList("modifiers")?.nodes ?? [])
       result |= astModifierFlag(modifier.kind);
     return result;
   }
@@ -439,7 +452,7 @@ export class AstNode {
   get argumentExpression(): AstNode | undefined {
     return this.childNode("argumentExpression");
   }
-  get arguments(): readonly AstNode[] | undefined {
+  get arguments(): AstNodeList | undefined {
     return this.childList("arguments");
   }
   get assertsModifier(): AstNode | undefined {
@@ -448,7 +461,7 @@ export class AstNode {
   get asteriskToken(): AstNode | undefined {
     return this.childNode("asteriskToken");
   }
-  get attributes(): AstNode | readonly AstNode[] | undefined {
+  get attributes(): AstNode | AstNodeList | undefined {
     return this.child("attributes");
   }
   get awaitModifier(): AstNode | undefined {
@@ -466,13 +479,13 @@ export class AstNode {
   get checkType(): AstNode | undefined {
     return this.childNode("checkType");
   }
-  get children(): AstNode | readonly AstNode[] | undefined {
+  get children(): AstNode | AstNodeList | undefined {
     return this.child("children");
   }
   get className(): AstNode | undefined {
     return this.childNode("className");
   }
-  get clauses(): readonly AstNode[] | undefined {
+  get clauses(): AstNodeList | undefined {
     return this.childList("clauses");
   }
   get closingElement(): AstNode | undefined {
@@ -484,7 +497,7 @@ export class AstNode {
   get colonToken(): AstNode | undefined {
     return this.childNode("colonToken");
   }
-  get comment(): readonly AstNode[] | undefined {
+  get comment(): AstNodeList | undefined {
     return this.childList("comment");
   }
   get condition(): AstNode | undefined {
@@ -496,7 +509,7 @@ export class AstNode {
   get declarationList(): AstNode | undefined {
     return this.childNode("declarationList");
   }
-  get declarations(): readonly AstNode[] | undefined {
+  get declarations(): AstNodeList | undefined {
     return this.childList("declarations");
   }
   get defaultType(): AstNode | undefined {
@@ -508,7 +521,7 @@ export class AstNode {
   get elementType(): AstNode | undefined {
     return this.childNode("elementType");
   }
-  get elements(): readonly AstNode[] | undefined {
+  get elements(): AstNodeList | undefined {
     return this.childList("elements");
   }
   get elseStatement(): AstNode | undefined {
@@ -547,7 +560,7 @@ export class AstNode {
   get head(): AstNode | undefined {
     return this.childNode("head");
   }
-  get heritageClauses(): readonly AstNode[] | undefined {
+  get heritageClauses(): AstNodeList | undefined {
     return this.childList("heritageClauses");
   }
   get importClause(): AstNode | undefined {
@@ -574,10 +587,10 @@ export class AstNode {
   get literal(): AstNode | undefined {
     return this.childNode("literal");
   }
-  get members(): readonly AstNode[] | undefined {
+  get members(): AstNodeList | undefined {
     return this.childList("members");
   }
-  get modifiers(): readonly AstNode[] | undefined {
+  get modifiers(): AstNodeList | undefined {
     return this.childList("modifiers");
   }
   get moduleReference(): AstNode | undefined {
@@ -622,13 +635,13 @@ export class AstNode {
   get parameterName(): AstNode | undefined {
     return this.childNode("parameterName");
   }
-  get parameters(): readonly AstNode[] | undefined {
+  get parameters(): AstNodeList | undefined {
     return this.childList("parameters");
   }
   get postfixToken(): AstNode | undefined {
     return this.childNode("postfixToken");
   }
-  get properties(): readonly AstNode[] | undefined {
+  get properties(): AstNodeList | undefined {
     return this.childList("properties");
   }
   get propertyName(): AstNode | undefined {
@@ -649,7 +662,7 @@ export class AstNode {
   get statement(): AstNode | undefined {
     return this.childNode("statement");
   }
-  get statements(): readonly AstNode[] | undefined {
+  get statements(): AstNodeList | undefined {
     return this.childList("statements");
   }
   get tag(): AstNode | undefined {
@@ -658,13 +671,13 @@ export class AstNode {
   get tagName(): AstNode | undefined {
     return this.childNode("tagName");
   }
-  get tags(): readonly AstNode[] | undefined {
+  get tags(): AstNodeList | undefined {
     return this.childList("tags");
   }
   get template(): AstNode | undefined {
     return this.childNode("template");
   }
-  get templateSpans(): readonly AstNode[] | undefined {
+  get templateSpans(): AstNodeList | undefined {
     return this.childList("templateSpans");
   }
   get thenStatement(): AstNode | undefined {
@@ -685,7 +698,7 @@ export class AstNode {
   get type(): AstNode | undefined {
     return this.childNode("type");
   }
-  get typeArguments(): readonly AstNode[] | undefined {
+  get typeArguments(): AstNodeList | undefined {
     return this.childList("typeArguments");
   }
   get typeExpression(): AstNode | undefined {
@@ -697,10 +710,10 @@ export class AstNode {
   get typeParameter(): AstNode | undefined {
     return this.childNode("typeParameter");
   }
-  get typeParameters(): readonly AstNode[] | undefined {
+  get typeParameters(): AstNodeList | undefined {
     return this.childList("typeParameters");
   }
-  get types(): readonly AstNode[] | undefined {
+  get types(): AstNodeList | undefined {
     return this.childList("types");
   }
   get value(): AstNode | undefined {

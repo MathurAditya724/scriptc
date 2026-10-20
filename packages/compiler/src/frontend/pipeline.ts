@@ -146,7 +146,7 @@ function detectAutoPackages(
     const owner = npmStaticPackageOfPath(sf.fileName);
     const viaTransitive = owner !== null && transitive.has(owner);
     const edges: { spec: string; loc: SrcLoc }[] = [];
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (
         (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
         stmt.moduleSpecifier &&
@@ -167,7 +167,7 @@ function detectAutoPackages(
     // anywhere in the package, nested ones included.
     if (viaTransitive) {
       for (const call of moduleSourceCandidates(load.program, sf).calls) {
-        const arg = call.arguments[0];
+        const arg = call.arguments.nodes[0];
         if (
           arg !== undefined &&
           isStringLiteralLike(arg) &&

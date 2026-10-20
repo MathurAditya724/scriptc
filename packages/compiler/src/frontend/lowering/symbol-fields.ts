@@ -26,7 +26,7 @@ function constantSymbolDescription(
   const symbol = lowerer.resolveValueSymbol(name);
   if (!symbol || seen.has(symbol)) return null;
   seen.add(symbol);
-  const declaration = lowerer.checker.valueDeclarationOf(symbol);
+  const declaration = symbol.valueDeclaration;
   if (
     !declaration ||
     !ts.isVariableDeclaration(declaration) ||
@@ -94,8 +94,8 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
   const cached = cache.get(sym);
   if (cached !== undefined) return cached;
   cache.set(sym, null);
-  const decls = lowerer.checker.declarationsOf(sym);
-  const decl = lowerer.checker.valueDeclarationOf(sym);
+  const decls = sym.declarations;
+  const decl = sym.valueDeclaration;
   if (decls.length !== 1 || !decl || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name))
     return null;
   const list = decl.parent;
@@ -109,12 +109,12 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
   if (init && (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init))) {
     const target = classSymbolKeyOf(lowerer, init);
     if (!target || bindingWritten(lowerer, sym, decl.getSourceFile())) return null;
-    const preceding = list.declarations.slice(0, list.declarations.indexOf(decl));
+    const preceding = list.declarations.nodes.slice(0, list.declarations.nodes.indexOf(decl));
     if (
       bindingEarlyUse7(
         lowerer.program,
         decl.getSourceFile(),
-        decl.getSourceFile().statements.indexOf(list.parent),
+        decl.getSourceFile().statements.nodes.indexOf(list.parent),
         decl,
         preceding,
       ) !== null
@@ -131,10 +131,10 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
   const root = registered ? callee.expression : callee;
   if (!ts.isIdentifier(root) || !lowerer.isStdlibGlobal(root, "Symbol")) return null;
   const arg =
-    init.arguments.length === 0
+    init.arguments.nodes.length === 0
       ? null
-      : init.arguments.length === 1
-        ? init.arguments[0]!
+      : init.arguments.nodes.length === 1
+        ? init.arguments.nodes[0]!
         : undefined;
   if (arg === undefined || (registered && arg === null)) return null;
   const description = arg === null ? "" : constantSymbolDescription(lowerer, arg);
@@ -143,7 +143,7 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
   // module-scope declaration above can name one fixed layout slot.
   const sf = decl.getSourceFile();
   if (bindingWritten(lowerer, sym, sf)) return null;
-  const preceding = list.declarations.slice(0, list.declarations.indexOf(decl));
+  const preceding = list.declarations.nodes.slice(0, list.declarations.nodes.indexOf(decl));
   // Creating a function value does not execute its body. The general
   // require-publication analysis conservatively enters those bodies, but a
   // prefix containing only imports and function definitions cannot call
@@ -164,19 +164,24 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
     );
   };
   const prefixIsInert =
-    sf.statements
-      .slice(0, sf.statements.indexOf(list.parent))
+    sf.statements.nodes
+      .slice(0, sf.statements.nodes.indexOf(list.parent))
       .every(
         (statement) =>
           ts.isImportDeclaration(statement) ||
           ts.isFunctionDeclaration(statement) ||
           (ts.isVariableStatement(statement) &&
-            statement.declarationList.declarations.every(inertInitializer)),
+            statement.declarationList.declarations.nodes.every(inertInitializer)),
       ) && preceding.every(inertInitializer);
   if (
     !prefixIsInert &&
-    bindingEarlyUse7(lowerer.program, sf, sf.statements.indexOf(list.parent), decl, preceding) !==
-      null
+    bindingEarlyUse7(
+      lowerer.program,
+      sf,
+      sf.statements.nodes.indexOf(list.parent),
+      decl,
+      preceding,
+    ) !== null
   )
     return null;
   // A registry name denotes one symbol even when several source bindings

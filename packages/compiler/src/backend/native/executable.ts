@@ -445,6 +445,7 @@ export async function compileCInternal(
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
+    ...(opts.youngNursery ? ["-DSCR_YIN"] : []),
     "-fno-math-errno",
     // The runtime object model uses type-punned C: a hierarchy
     // upcast is a raw pointer cast, so one object's header (rc, vt) and
@@ -577,6 +578,7 @@ export async function compileCInternal(
     ...(opts.watch ? [rt(join(rtDir, "scr_watch.c"))] : []),
     ...(opts.foreignFfi ? [rt(join(rtDir, "scr_ffi_queue.c"))] : []),
     ...(opts.nodeTest ? [rt(join(rtDir, "scr_test.c"))] : []),
+    ...(opts.webcrypto ? [rt(join(rtDir, "scr_webcrypto.c"))] : []),
     // The CA-store unit rides its own gate OR the tls one: scr_tls.c
     // references its default-set override unconditionally.
     ...(tlsCa ? [rt(join(rtDir, "scr_tls_ca.c"))] : []),
@@ -643,6 +645,7 @@ export async function compileCInternal(
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
+    ...(opts.youngNursery ? ["-DSCR_YIN"] : []),
     "-fno-math-errno",
     "-fno-strict-aliasing", // the emitted object model type-puns — see buildArgs
     "-Wno-deprecated-declarations",

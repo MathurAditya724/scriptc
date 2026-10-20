@@ -10746,6 +10746,9 @@ double scr_date_utc(double y, double mo, double d,
 typedef struct ScrDateParts {
   long long year;
   int month, date, day, hours, minutes, seconds, milliseconds;
+  /* Local fields: tm_isdst at the instant (or its surrogate). It fills the
+   * padding before timezone_offset, so the struct keeps its size. */
+  bool isdst;
   double timezone_offset;
 } ScrDateParts;
 
@@ -10782,6 +10785,7 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   out->seconds = (int)(msday / 1000 % 60);
   out->milliseconds = (int)(msday % 1000);
   out->timezone_offset = 0;
+  out->isdst = false;
 }
 
 static bool scr_date_utc_parts(double ms, ScrDateParts *out) {
@@ -10865,6 +10869,7 @@ static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out) {
   scr_date_utc_parts_unchecked(clipped + local_offset * 1000.0, out);
   double timezone_offset = trunc(-local_offset / 60.0);
   out->timezone_offset = timezone_offset == 0 ? 0 : timezone_offset;
+  out->isdst = tmv.tm_isdst > 0;
   return true;
 }
 
@@ -10903,6 +10908,364 @@ double scr_date_get_timezone_offset(double ms) {
   ScrDateParts p;
   return scr_date_local_parts(ms, &p) ? p.timezone_offset : NAN;
 }
+
+/* ── Date time zone names ───────────────────────────────────────────────
+ * Long time zone names for Date.prototype.toString and toTimeString.
+ *
+ * Node prints "GMT-0500 (Central Daylight Time)": the name comes from ICU
+ * for the host zone, in standard or daylight form. ICU identifies the host
+ * zone from TZ when it looks like a zone ID, else from /etc/localtime (the
+ * symlink's target, or the zoneinfo file with the same contents), else
+ * from the libc zone abbreviation. The runtime follows the same steps and
+ * looks the ID up in the names Node prints for each tzdata zone
+ * (scr_timezone_data.h, generated). An ID without a row prints Node's
+ * fallback for a zone without a name, "GMT+hh:mm" with the zone's standard
+ * offset.
+ *
+ * Whether an instant is in daylight time follows V8: instants before 1970
+ * or after 2038-01-19 use the instant with the same month, day and time in
+ * an equivalent year between 2008 and 2037 (same leap-year status and
+ * weekday of January 1), and tm_isdst decides. A few zones carry Node's
+ * own daylight-time changes instead: those whose tzdata rules use a
+ * negative daylight saving (Europe/Dublin's winter time, Morocco's Ramadan
+ * time), where ICU's data calls the larger offset daylight time, and those
+ * Node shows in daylight time through 2038 (British Columbia's permanent
+ * UTC-7, which tzdata names standard time). */
+#include "scr_timezone_data.h"
+
+#define SCR_TZ_ROWS (sizeof scr_tz_names / sizeof scr_tz_names[0])
+
+/* Text that no other code in this file uses lives in named arrays: string
+ * literals would join the merged read-only strings of every program that
+ * links this file. */
+static const char scr_tz_posix_ids[4][8] = { "PST8PDT", "MST7MDT", "CST6CDT", "EST5EDT" };
+static const char scr_tz_prefixes[2][7] = { "posix/", "right/" };
+static const char scr_tz_env_name[] = "TZ";
+static const char scr_tz_utc[] = "UTC";
+static const char scr_tz_localtime_path[] = "/etc/localtime";
+static const char scr_tz_zoneinfo_tail[] = "/zoneinfo/";
+static const char scr_tz_zoneinfo_dir[] = "/usr/share/zoneinfo/";
+static const char scr_tz_skipped[4][11] = { ".", "..", "posixrules", "localtime" };
+static const char scr_tz_fallback_format[] = "GMT%c%02lld:%02lld";
+static const char scr_date_invalid_text[] = "Invalid Date";
+
+/* The thread's host zone, detected again after a write to process.env.TZ
+ * (scr_date_tz_generation). */
+typedef struct {
+  unsigned generation;
+  const ScrTzNames *row; /* NULL: no row, use the fallback */
+  bool resolved;
+  bool fallback_ready;
+  char fallback[16]; /* "GMT+hh:mm" */
+} ScrTzState;
+
+static SCR_TL ScrTzState scr_tz_state;
+
+/* The local UTC offset (seconds) and tm_isdst at an epoch second. */
+static bool scr_tz_offset_at(double sec, double *offset, bool *isdst) {
+  struct tm tmv;
+  if (!scr_date_localtime(sec, &tmv)) return false;
+  double local =
+    scr_days_from_civil((long long)tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday) * 86400.0 +
+    tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
+  *offset = local - sec;
+  *isdst = tmv.tm_isdst > 0;
+  return true;
+}
+
+/* ICU's isValidOlsonID: letters and punctuation up to an optional run of at
+ * most two digits ending the string ("GMT+11"), or one of the four POSIX
+ * zone IDs tzdata also names. */
+static bool scr_tz_valid_id(const char *id) {
+  size_t i = 0;
+  while (id[i] && !(id[i] >= '0' && id[i] <= '9') && id[i] != ',') i++;
+  size_t max = i + 2;
+  while (id[i] && id[i] >= '0' && id[i] <= '9' && i < max) i++;
+  if (id[i] == 0) return true;
+  for (size_t k = 0; k < 4; k++) {
+    if (!strcmp(id, scr_tz_posix_ids[k])) return true;
+  }
+  return false;
+}
+
+static const char *scr_tz_skip_prefix(const char *id) {
+  return !strncmp(id, scr_tz_prefixes[0], 6) || !strncmp(id, scr_tz_prefixes[1], 6) ? id + 6 : id;
+}
+
+static const ScrTzNames *scr_tz_find(const char *id) {
+  size_t lo = 0, hi = SCR_TZ_ROWS;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    int c = strcmp(id, scr_tz_ids + scr_tz_names[mid].id);
+    if (c == 0) return &scr_tz_names[mid];
+    if (c < 0) hi = mid;
+    else lo = mid + 1;
+  }
+  return NULL;
+}
+
+#if !defined(_WIN32) && !defined(__wasi__)
+
+/* The bytes of a file, or NULL. */
+static char *scr_tz_read_file(const char *path, size_t *len) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return NULL;
+  size_t cap = 4096, n = 0;
+  char *data = malloc(cap);
+  while (data) {
+    n += fread(data + n, 1, cap - n, f);
+    if (n < cap) break;
+    char *grown = realloc(data, cap * 2);
+    if (!grown) {
+      free(data);
+      data = NULL;
+      break;
+    }
+    data = grown;
+    cap *= 2;
+  }
+  fclose(f);
+  *len = n;
+  return data;
+}
+
+static bool scr_tz_same_file(const char *path, const char *data, size_t len) {
+  struct stat st;
+  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || (size_t)st.st_size != len) return false;
+  size_t other_len;
+  char *other = scr_tz_read_file(path, &other_len);
+  bool same = other && other_len == len && memcmp(other, data, len) == 0;
+  free(other);
+  return same;
+}
+
+/* ICU's search for a zoneinfo file with /etc/localtime's contents, in
+ * directory order, skipping "posixrules" and "localtime". Writes the
+ * path below the zoneinfo directory into `out`. */
+static bool scr_tz_search(char *dir, size_t dir_len, const char *data, size_t len, char *out, size_t cap) {
+  DIR *d = opendir(dir);
+  if (!d) return false;
+  bool found = false;
+  struct dirent *entry;
+  while (!found && (entry = readdir(d)) != NULL) {
+    const char *name = entry->d_name;
+    bool skipped = false;
+    for (size_t k = 0; k < 4; k++) skipped = skipped || !strcmp(name, scr_tz_skipped[k]);
+    if (skipped) continue;
+    size_t name_len = strlen(name);
+    if (dir_len + name_len + 2 > PATH_MAX) continue;
+    memcpy(dir + dir_len, name, name_len + 1);
+    DIR *sub = opendir(dir);
+    if (sub) {
+      closedir(sub);
+      dir[dir_len + name_len] = '/';
+      dir[dir_len + name_len + 1] = 0;
+      found = scr_tz_search(dir, dir_len + name_len + 1, data, len, out, cap);
+    } else if (scr_tz_same_file(dir, data, len)) {
+      const char *id = scr_tz_skip_prefix(dir + strlen(scr_tz_zoneinfo_dir));
+      size_t id_len = strlen(id);
+      if (id_len < cap) {
+        memcpy(out, id, id_len + 1);
+        found = true;
+      }
+    }
+    dir[dir_len] = 0;
+  }
+  closedir(d);
+  return found;
+}
+#endif
+
+/* The host zone's row, or NULL when ICU would not find a zone name. */
+static const ScrTzNames *scr_tz_detect(void) {
+#if defined(__wasi__)
+  /* WASI's libc keeps every local time in UTC. */
+  return scr_tz_find(scr_tz_utc);
+#else
+  const char *tz = getenv(scr_tz_env_name);
+  if (tz && scr_tz_valid_id(tz)) {
+    if (tz[0] == ':') tz++;
+    return scr_tz_find(scr_tz_skip_prefix(tz));
+  }
+#ifdef _WIN32
+  return NULL;
+#else
+  /* The zone ID is the path below a zoneinfo directory of the
+   * /etc/localtime symlink's target, or of a zoneinfo file with the same
+   * contents when /etc/localtime is a regular file. */
+  char path[PATH_MAX];
+  if (realpath(scr_tz_localtime_path, path) && strcmp(path, scr_tz_localtime_path) != 0) {
+    const char *tail = strstr(path, scr_tz_zoneinfo_tail);
+    if (tail) {
+      tail = scr_tz_skip_prefix(tail + strlen(scr_tz_zoneinfo_tail));
+      if (scr_tz_valid_id(tail)) return scr_tz_find(tail);
+    }
+  } else {
+    size_t len;
+    DIR *zoneinfo = opendir(scr_tz_zoneinfo_dir);
+    char *data = zoneinfo ? scr_tz_read_file(scr_tz_localtime_path, &len) : NULL;
+    if (zoneinfo) closedir(zoneinfo);
+    if (data) {
+      char dir[PATH_MAX];
+      memcpy(dir, scr_tz_zoneinfo_dir, sizeof scr_tz_zoneinfo_dir);
+      char id[PATH_MAX];
+      bool found = scr_tz_search(dir, strlen(dir), data, len, id, sizeof id);
+      free(data);
+      if (found && scr_tz_valid_id(id)) return scr_tz_find(id);
+    }
+  }
+  /* Otherwise the standard-time abbreviation names the zone ("UTC" when
+   * there is no /etc/localtime). */
+  tzset();
+  return scr_tz_find(tzname[0]);
+#endif
+#endif
+}
+
+static ScrTzState *scr_tz_current(void) {
+  ScrTzState *s = &scr_tz_state;
+  unsigned generation = scr_date_tz_generation;
+  if (s->generation != generation || !s->resolved) {
+    s->generation = generation;
+    s->row = scr_tz_detect();
+    s->resolved = true;
+    s->fallback_ready = false;
+  }
+  return s;
+}
+
+/* "GMT+hh:mm" for the zone's current standard offset: the name Node prints
+ * for a zone ID it does not know. */
+static const char *scr_tz_fallback(ScrTzState *s) {
+  if (!s->fallback_ready) {
+    double offset = 0;
+    bool isdst = false;
+    long long seconds = 0;
+    if (scr_tz_offset_at((double)time(NULL), &offset, &isdst)) seconds = (long long)offset - (isdst ? 3600 : 0);
+    long long minutes = (seconds < 0 ? -seconds : seconds) / 60;
+    snprintf(s->fallback, sizeof s->fallback, scr_tz_fallback_format, seconds < 0 ? '-' : '+',
+             minutes / 60, minutes % 60);
+    s->fallback_ready = true;
+  }
+  return s->fallback;
+}
+
+/* V8's EquivalentTime: the same month, day and time of day in a year
+ * between 2008 and 2037 with the same leap-year status and weekday of
+ * January 1. */
+static double scr_tz_equivalent_time(double ms) {
+  ScrDateParts p;
+  scr_date_utc_parts_unchecked(ms, &p);
+  double within = ms - floor(ms / 86400000.0) * 86400000.0;
+  long long year = p.year;
+  bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  long long week_day = ((long long)scr_days_from_civil(year, 1, 1) + 4) % 7;
+  if (week_day < 0) week_day += 7;
+  long long recent = (leap ? 1956 : 1967) + (week_day * 12) % 28;
+  long long equivalent = 2008 + (recent + 3 * 28 - 2008) % 28;
+  return (scr_days_from_civil(equivalent, p.month + 1, 1) + p.date - 1) * 86400000.0 + within;
+}
+
+static bool scr_tz_is_daylight(double ms, int isdst_hint, const ScrTzNames *row) {
+  /* V8 names instants in [0, 2^31 - 1] seconds directly. */
+  if (ms < 0 || (long long)ms > 2147483647000LL) {
+    ms = scr_tz_equivalent_time(ms);
+    isdst_hint = -1;
+  }
+  double sec = floor(ms / 1000.0);
+  if (row->change_count > 0) {
+    /* Daylight time after an odd number of changes. */
+    const int32_t *changes = scr_tz_daylight_changes + row->first_change;
+    size_t lo = 0, hi = row->change_count;
+    while (lo < hi) {
+      size_t mid = lo + (hi - lo) / 2;
+      if (changes[mid] <= sec) lo = mid + 1;
+      else hi = mid;
+    }
+    return (lo & 1) != 0;
+  }
+  if (isdst_hint >= 0) return isdst_hint != 0;
+  double offset;
+  bool isdst;
+  return scr_tz_offset_at(sec, &offset, &isdst) && isdst;
+}
+
+const char *scr_date_zone_name(double ms, int isdst) {
+  ScrTzState *s = scr_tz_current();
+  if (!s->row) return scr_tz_fallback(s);
+  bool daylight = scr_tz_is_daylight(ms, isdst, s->row);
+  return scr_tz_name_text + (daylight ? s->row->daylight : s->row->standard);
+}
+
+/* Date.prototype.toString, toDateString and toTimeString: V8's formats over
+ * the local calendar fields ("Sat Oct 18 2026 09:12:00 GMT-0500 (Central
+ * Daylight Time)"), with years before 1 as "-0001", and "Invalid Date" for
+ * an invalid date. */
+enum { SCR_DATE_TEXT_FULL, SCR_DATE_TEXT_DATE, SCR_DATE_TEXT_TIME };
+
+/* `value` (>= 0) in decimal, zero-padded to `width` digits. */
+static char *scr_date_put_digits(char *p, long long value, int width) {
+  char digits[24];
+  int n = 0;
+  do {
+    digits[n++] = (char)('0' + value % 10);
+    value /= 10;
+  } while (value > 0);
+  while (n < width) digits[n++] = '0';
+  while (n > 0) *p++ = digits[--n];
+  return p;
+}
+
+static ScrStr *scr_date_text(double ms, int mode) {
+  static const char week_days[7][3] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+  static const char months[12][3] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+  ScrDateParts p;
+  if (!scr_date_local_parts(ms, &p)) return scr_str_new(scr_date_invalid_text, sizeof scr_date_invalid_text - 1);
+  char buf[160];
+  char *o = buf;
+  if (mode != SCR_DATE_TEXT_TIME) {
+    memcpy(o, week_days[p.day], 3);
+    o[3] = ' ';
+    memcpy(o + 4, months[p.month], 3);
+    o[7] = ' ';
+    o = scr_date_put_digits(o + 8, p.date, 2);
+    *o++ = ' ';
+    /* "%04d", or "%05d" (a sign and four digits) before year 0. */
+    if (p.year < 0) *o++ = '-';
+    o = scr_date_put_digits(o, p.year < 0 ? -p.year : p.year, 4);
+  }
+  if (mode == SCR_DATE_TEXT_FULL) *o++ = ' ';
+  if (mode != SCR_DATE_TEXT_DATE) {
+    int offset = -(int)p.timezone_offset;
+    int magnitude = offset < 0 ? -offset : offset;
+    o = scr_date_put_digits(o, p.hours, 2);
+    *o++ = ':';
+    o = scr_date_put_digits(o, p.minutes, 2);
+    *o++ = ':';
+    o = scr_date_put_digits(o, p.seconds, 2);
+    *o++ = ' ';
+    *o++ = 'G';
+    *o++ = 'M';
+    *o++ = 'T';
+    *o++ = offset < 0 ? '-' : '+';
+    o = scr_date_put_digits(o, magnitude / 60, 2);
+    o = scr_date_put_digits(o, magnitude % 60, 2);
+    *o++ = ' ';
+    *o++ = '(';
+    /* Zone names are at most 64 bytes (scr_timezone_data.h). */
+    const char *zone = scr_date_zone_name(ms, p.isdst);
+    size_t zone_len = strlen(zone);
+    memcpy(o, zone, zone_len);
+    o += zone_len;
+    *o++ = ')';
+  }
+  return scr_str_new(buf, (size_t)(o - buf));
+}
+
+ScrStr *scr_date_to_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_FULL); }
+ScrStr *scr_date_to_date_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_DATE); }
+ScrStr *scr_date_to_time_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_TIME); }
 
 /* ── Number statics ────────────────────────────────────────────────────
  * JS-exact: the ES2015 Number statics never coerce (unlike the global
@@ -11043,6 +11406,137 @@ ScrStr *scr_num_to_fixed(double x, double fraction_digits) {
   char out[128];
   size_t len = scr_f64_to_fixed(x, (int)fd, out);
   return scr_str_new(out, len);
+}
+
+/* String.prototype.substr (Annex B.2.2.1) over substring's UTF-16
+ * clamp: -Infinity and other starts below -size clamp to 0, an Infinity
+ * length to the end. Comparisons only (no floating-point literal other
+ * than zero, which would join the constant pool every binary links).
+ * Nothing on an existing path calls this. */
+ScrStr *scr_str_substr(ScrStr *s, double start, double length, bool has_length) {
+  double size = scr_str_utf16_len(s);
+  double first = isnan(start) ? 0 : trunc(start);
+  if (first < 0) {
+    first = size + first;
+    if (first < 0) first = 0;
+  } else if (first > size) {
+    first = size;
+  }
+  double count = has_length ? (isnan(length) ? 0 : trunc(length)) : size;
+  if (count < 0) count = 0;
+  double end = first + count;
+  if (end > size) end = size;
+  return scr_str_substring(s, first, end);
+}
+
+/* The exponent suffix of toPrecision/toExponential: "e+5", "e-7". */
+static size_t scr_num_exp_suffix(char *o, int e) {
+  size_t n = 0;
+  o[n++] = 'e';
+  o[n++] = e < 0 ? '-' : '+';
+  int a = e < 0 ? -e : e;
+  char rev[8];
+  int k = 0;
+  do {
+    rev[k++] = (char)('0' + a % 10);
+    a /= 10;
+  } while (a != 0);
+  while (k > 0) o[n++] = rev[--k];
+  return n;
+}
+
+/* Number.prototype.toPrecision(precision) (ECMA-262 §21.1.3.5): undefined
+ * precision is ToString(x); ToIntegerOrInfinity runs (in the caller's
+ * coercion) before the non-finite arm, which precedes the 1..100 range
+ * check. Digits are the exact-value, ties-up n of
+ * scr_f64_precision_digits; exponential form when e < -6 or e >= p.
+ * Nothing on an existing path calls this. */
+ScrStr *scr_num_to_precision(double x, double precision, bool has_precision) {
+  if (!has_precision || !isfinite(x)) return scr_f64_to_scrstr(x);
+  double p = isnan(precision) ? 0 : trunc(precision);
+  if (!(p >= 1 && p <= 100)) {
+    static const char msg[] = "toPrecision() argument must be between 1 and 100";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  int digits_count = (int)p;
+  char out[160];
+  size_t o = 0;
+  double a = x;
+  if (x < 0) {
+    out[o++] = '-';
+    a = -x;
+  }
+  char d[104];
+  int e = 0;
+  if (a == 0) {
+    memset(d, '0', (size_t)digits_count);
+    d[digits_count] = '\0';
+  } else {
+    scr_f64_precision_digits(a, digits_count, d, &e);
+  }
+  if (e < -6 || e >= digits_count) {
+    out[o++] = d[0];
+    if (digits_count != 1) {
+      out[o++] = '.';
+      memcpy(out + o, d + 1, (size_t)(digits_count - 1));
+      o += (size_t)(digits_count - 1);
+    }
+    o += scr_num_exp_suffix(out + o, e);
+  } else if (e >= 0) {
+    memcpy(out + o, d, (size_t)(e + 1));
+    o += (size_t)(e + 1);
+    if (e + 1 < digits_count) {
+      out[o++] = '.';
+      memcpy(out + o, d + e + 1, (size_t)(digits_count - e - 1));
+      o += (size_t)(digits_count - e - 1);
+    }
+  } else {
+    out[o++] = '0';
+    out[o++] = '.';
+    for (int i = 0; i < -(e + 1); i++) out[o++] = '0';
+    memcpy(out + o, d, (size_t)digits_count);
+    o += (size_t)digits_count;
+  }
+  return scr_str_new(out, o);
+}
+
+/* Number.prototype.toExponential(fractionDigits) with a DEFINED argument
+ * (the undefined form is scr_num_to_exponential's shortest mantissa):
+ * f + 1 exact-value, ties-up digits, "d.ddde±X". Nothing on an existing
+ * path calls this. */
+ScrStr *scr_num_to_exponential_digits(double x, double fraction_digits) {
+  if (!isfinite(x)) return scr_f64_to_scrstr(x);
+  double f = isnan(fraction_digits) ? 0 : trunc(fraction_digits);
+  if (!(f >= 0 && f <= 100)) {
+    static const char msg[] = "toExponential() argument must be between 0 and 100";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  int count = (int)f + 1;
+  char out[160];
+  size_t o = 0;
+  double a = x;
+  if (x < 0) {
+    out[o++] = '-';
+    a = -x;
+  }
+  char d[104];
+  int e = 0;
+  if (a == 0) {
+    memset(d, '0', (size_t)count);
+    d[count] = '\0';
+  } else {
+    scr_f64_precision_digits(a, count, d, &e);
+  }
+  out[o++] = d[0];
+  if (count != 1) {
+    out[o++] = '.';
+    memcpy(out + o, d + 1, (size_t)(count - 1));
+    o += (size_t)(count - 1);
+  }
+  o += scr_num_exp_suffix(out + o, e);
+  return scr_str_new(out, o);
 }
 
 /* Increment a decimal digit string in place. Returns true on overflow —
@@ -11240,11 +11734,25 @@ double scr_dyn_native_date_value(const ScrDyn *value) {
   return ((ScrNativeDate *)value->v.handle.ptr)->milliseconds;
 }
 
+/* Method names without another use in this file, in named arrays (see
+ * scr_tz_posix_ids). */
+static const char scr_date_to_date_string_name[] = "toDateString";
+static const char scr_date_to_time_string_name[] = "toTimeString";
+
 static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *method,
     ScrDyn *const *args, size_t argc, const char *what) {
   (void)self; (void)args; (void)argc; (void)what;
   double ms = ((ScrNativeDate *)ptr)->milliseconds;
   if (!strcmp(method, "getTime") || !strcmp(method, "valueOf")) return scr_dyn_new_num(ms);
+  if (!strcmp(method, "toString") || !strcmp(method, scr_date_to_date_string_name) ||
+      !strcmp(method, scr_date_to_time_string_name)) {
+    ScrStr *text = !strcmp(method, "toString")                     ? scr_date_to_string(ms)
+                   : !strcmp(method, scr_date_to_date_string_name) ? scr_date_to_date_string(ms)
+                                                                   : scr_date_to_time_string(ms);
+    ScrDyn *result = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return result;
+  }
   if (!strcmp(method, "toISOString") || !strcmp(method, "toJSON")) {
     if (!strcmp(method, "toJSON") && !isfinite(ms)) return scr_dyn_new_null();
     ScrStr *text = scr_date_to_iso(ms);
@@ -11292,7 +11800,9 @@ ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
 
 /* The Date.prototype methods scr_native_date_invoke answers. */
 static const char *const scr_native_date_methods[] = {
-  "getTime", "valueOf", "toISOString", "toJSON", "getFullYear", "getUTCFullYear", "getMonth",
+  "getTime", "valueOf", "toISOString", "toJSON", "toString", scr_date_to_date_string_name,
+  scr_date_to_time_string_name,
+  "getFullYear", "getUTCFullYear", "getMonth",
   "getUTCMonth", "getDate", "getUTCDate", "getDay", "getUTCDay", "getHours", "getUTCHours",
   "getMinutes", "getUTCMinutes", "getSeconds", "getUTCSeconds", "getMilliseconds",
   "getUTCMilliseconds", "getTimezoneOffset",
@@ -11359,4 +11869,53 @@ ScrDyn *scr_dyn_native_date_from_ms(double ms) {
   ScrDyn *result = scr_dyn_new_handle(date, SCR_DYNH_DATE);
   scr_native_date_release(date);
   return result;
+}
+
+/* crypto.getRandomValues(typedArray) (WebCrypto, also node:crypto's
+ * export): integer typed arrays only (Node's TypeMismatchError DOMException
+ * for float arrays, DataViews and every other value), at most 65536 bytes
+ * (QuotaExceededError), filled in place and returned. Nothing on an
+ * existing path calls these. They stay at the end of the unit: clang emits
+ * a static helper (scr_random_write) where its first emitted caller
+ * appears, and an earlier caller would move it in every binary that links
+ * the random fills. */
+ScrBytes *scr_crypto_get_random_values(ScrBytes *view) {
+  static const char mismatch[] = "TypeMismatchError";
+  static const char mismatch_msg[] = "The data argument must be an integer-type TypedArray";
+  static const char quota[] = "QuotaExceededError";
+  static const char quota_msg[] = "The requested length exceeds 65,536 bytes";
+  if (view->is_data_view || view->elem == SCR_BYTES_F32 || view->elem == SCR_BYTES_F64 ||
+      view->elem == SCR_BYTES_F16) {
+    scr_throw_domex(mismatch, mismatch_msg);
+    return NULL;
+  }
+  /* Integer arithmetic: a new floating-point literal would land in the
+   * merged constant pool every binary links. */
+  size_t length = view->len * (size_t)scr_bytes_elem_size(view->elem);
+  if (length > 65536u) {
+    scr_throw_domex(quota, quota_msg);
+    return NULL;
+  }
+  scr_random_write(view, 0, length);
+  return scr_bytes_retain(view);
+}
+
+ScrDyn *scr_crypto_get_random_values_dyn(ScrDyn *value) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(value);
+    if (!materialized) return NULL;
+    ScrDyn *result = scr_crypto_get_random_values_dyn(materialized);
+    scr_dyn_release(materialized);
+    return result ? scr_dyn_retain(value) : NULL;
+  }
+  if (value->kind != SCR_DYN_BYTES) {
+    static const char mismatch[] = "TypeMismatchError";
+    static const char mismatch_msg[] = "The data argument must be an integer-type TypedArray";
+    scr_throw_domex(mismatch, mismatch_msg);
+    return NULL;
+  }
+  ScrBytes *filled = scr_crypto_get_random_values(value->v.bytes);
+  if (!filled) return NULL;
+  scr_bytes_release(filled);
+  return scr_dyn_retain(value);
 }

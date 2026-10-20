@@ -1,5 +1,5 @@
 Strings are stored as UTF-8, with lone surrogates kept as their own code units.
-Length and string methods use UTF-16 semantics, including for lone surrogates, but relational comparisons such as `<` and `>` use code-point order.
+Length, string methods and relational comparisons such as `<` and `>` use UTF-16 semantics, including for lone surrogates.
 `split` with a string separator and `replace` or `replaceAll` with a string pattern don't match a lone surrogate against half of a surrogate pair; regular-expression patterns do.
 Output, file contents, and other encoded text write each lone surrogate as U+FFFD, as Node does.
 File system paths and network host names that contain a lone surrogate reach the operating system unconverted.

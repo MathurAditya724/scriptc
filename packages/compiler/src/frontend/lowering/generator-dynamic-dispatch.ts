@@ -7,6 +7,7 @@ import {
   funcOf,
   typeEquals,
   typeKey,
+  VOID,
   type IrExpr,
   type IrFunction,
   type IrStmt,
@@ -18,6 +19,22 @@ import type { Lowerer } from "./lowerer.js";
 
 type GeneratorType = Extract<IrType, { kind: "generator" }>;
 type Invoke = Extract<IrExpr, { kind: "dynInvoke" }>;
+type KeyGet = Extract<IrExpr, { kind: "dynKeyGet" }>;
+
+/** The iterator helper methods the runtime answers on checked iterators. */
+const HELPER_METHODS = new Set([
+  "map",
+  "filter",
+  "take",
+  "drop",
+  "flatMap",
+  "reduce",
+  "toArray",
+  "forEach",
+  "some",
+  "every",
+  "find",
+]);
 
 /** An untyped consumer resumes the original native fiber. The capsule's
  * exact type key selects the channel conversions and result layout. */
@@ -29,6 +46,54 @@ export class GeneratorDynamicDispatch {
   >();
   private readonly generated = new Set<IrFunction>();
   private readonly properties = new Map<string, { fn: IrFunction; types: Set<string> }>();
+  /** Whether %main registers the next/return getters with the runtime. */
+  private membersRegistered = false;
+
+  /** The getter for a generator capsule's `method` (next, return, throw or
+   * an iterator helper): a checked function over the capsule's type keys
+   * that answers the method as a function value. `read` is the dyn read
+   * whose fallback it keeps for other receivers. */
+  private ensureProperty(lowerer: Lowerer, method: string, read: KeyGet): IrFunction {
+    const existing = this.properties.get(method);
+    if (existing) return existing.fn;
+    const loc = read.loc;
+    const fn: IrFunction = {
+      name: `%dyn.generator.get.${method}`,
+      params: [{ localId: "value", name: "value", type: DYN }],
+      returnType: DYN,
+      locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+      body: [{ kind: "return", value: { ...read, value: varRef("value", DYN, loc) }, loc }],
+      loc,
+    };
+    this.properties.set(method, { fn, types: new Set() });
+    this.generated.add(fn);
+    lowerer.liftedFns.push(fn);
+    // The runtime's own helper functions answer the helper methods.
+    if (HELPER_METHODS.has(method)) return fn;
+    lowerer.liftedFns.push({
+      name: `%dyn.generator.method.${method}`,
+      params: [{ localId: "arg", name: "arg", type: DYN }],
+      returnType: DYN,
+      locals: [{ id: "arg", name: "arg", type: DYN, mutable: false }],
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "dynInvoke",
+            method,
+            calleeName: `Generator.${method}`,
+            recv: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+            args: [varRef("arg", DYN, loc)],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+    return fn;
+  }
 
   process(
     lowerer: Lowerer,
@@ -37,6 +102,7 @@ export class GeneratorDynamicDispatch {
   ): boolean {
     const seen = new Set<string>();
     const rewrite = new Set<IrFunction>();
+    let runtimeSteps = false;
     const discover = (type: IrType): void => {
       const key = typeKey(type);
       if (seen.has(key)) return;
@@ -56,10 +122,22 @@ export class GeneratorDynamicDispatch {
           if (expr.kind === "dynFrom") discover(expr.value.type);
           if (expr.kind === "dynInvoke" && ["next", "return", "throw"].includes(expr.method))
             rewrite.add(fn);
+          // The runtime steps the values iterator helpers and destructuring
+          // receive.
+          if (
+            (expr.kind === "dynInvoke" && HELPER_METHODS.has(expr.method)) ||
+            (expr.kind === "dynKeyGet" &&
+              expr.key.kind === "strLit" &&
+              HELPER_METHODS.has(expr.key.value)) ||
+            expr.kind === "dynIterN" ||
+            (expr.kind === "libCall" && expr.fn === "dyn.destructureRest")
+          )
+            runtimeSteps = true;
           if (
             expr.kind === "dynKeyGet" &&
             expr.key.kind === "strLit" &&
-            ["next", "return", "throw"].includes(expr.key.value)
+            (["next", "return", "throw"].includes(expr.key.value) ||
+              HELPER_METHODS.has(expr.key.value))
           )
             rewrite.add(fn);
           return true;
@@ -74,56 +152,20 @@ export class GeneratorDynamicDispatch {
       fn.body = transformStmtList(fn.body, {
         stmt: (stmt) => stmt,
         expr: (expr) => {
+          // A helper method read reaches the runtime's helpers through the
+          // same getters once generators are boxed.
           if (
             expr.kind === "dynKeyGet" &&
             expr.key.kind === "strLit" &&
-            ["next", "return", "throw"].includes(expr.key.value)
+            (["next", "return", "throw"].includes(expr.key.value) ||
+              (HELPER_METHODS.has(expr.key.value) && this.generators.size > 0))
           ) {
             const method = expr.key.value;
-            let property = this.properties.get(method);
-            if (!property) {
-              const loc = expr.loc;
-              const fn: IrFunction = {
-                name: `%dyn.generator.get.${method}`,
-                params: [{ localId: "value", name: "value", type: DYN }],
-                returnType: DYN,
-                locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
-                body: [
-                  { kind: "return", value: { ...expr, value: varRef("value", DYN, loc) }, loc },
-                ],
-                loc,
-              };
-              property = { fn, types: new Set() };
-              this.properties.set(method, property);
-              this.generated.add(fn);
-              lowerer.liftedFns.push(fn);
-              lowerer.liftedFns.push({
-                name: `%dyn.generator.method.${method}`,
-                params: [{ localId: "arg", name: "arg", type: DYN }],
-                returnType: DYN,
-                locals: [{ id: "arg", name: "arg", type: DYN, mutable: false }],
-                body: [
-                  {
-                    kind: "return",
-                    value: {
-                      kind: "dynInvoke",
-                      method,
-                      calleeName: `Generator.${method}`,
-                      recv: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
-                      args: [varRef("arg", DYN, loc)],
-                      type: DYN,
-                      loc,
-                    },
-                    loc,
-                  },
-                ],
-                loc,
-              });
-              changed = true;
-            }
+            if (!this.properties.has(method)) changed = true;
+            const getter = this.ensureProperty(lowerer, method, expr);
             return {
               kind: "call",
-              callee: property.fn.name,
+              callee: getter.name,
               args: [expr.value],
               type: DYN,
               loc: expr.loc,
@@ -179,6 +221,50 @@ export class GeneratorDynamicDispatch {
         },
       });
     }
+    // Iterator helpers called on untyped values may reach a compiled
+    // generator's capsule; the runtime drives it through these getters,
+    // which %main registers first.
+    const firstFn = functions[0];
+    if (
+      runtimeSteps &&
+      !this.membersRegistered &&
+      firstFn !== undefined &&
+      [...this.generators.values()].some((t) => t.async !== true)
+    ) {
+      const loc = firstFn.loc;
+      const read = (method: string): KeyGet => ({
+        kind: "dynKeyGet",
+        value: varRef("value", DYN, loc),
+        key: { kind: "strLit", value: method, type: STRING, loc },
+        type: DYN,
+        loc,
+      });
+      const getterValue = (method: string): IrExpr => ({
+        kind: "dynFrom",
+        value: {
+          kind: "closure",
+          fnName: this.ensureProperty(lowerer, method, read(method)).name,
+          captures: [],
+          type: funcOf([DYN], DYN),
+          loc,
+        },
+        type: DYN,
+        loc,
+      });
+      lowerer.mainPrelude.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.setGeneratorMembers",
+          args: [getterValue("next"), getterValue("return")],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+      this.membersRegistered = true;
+      changed = true;
+    }
     for (const [method, property] of this.properties)
       for (const [key] of this.generators) {
         if (property.types.has(key)) continue;
@@ -196,18 +282,26 @@ export class GeneratorDynamicDispatch {
           then: [
             {
               kind: "return",
-              value: {
-                kind: "dynFrom",
-                value: {
-                  kind: "closure",
-                  fnName: `%dyn.generator.method.${method}`,
-                  captures: [],
-                  type: funcOf([DYN], DYN),
-                  loc,
-                },
-                type: DYN,
-                loc,
-              },
+              value: HELPER_METHODS.has(method)
+                ? {
+                    kind: "libCall",
+                    fn: "dyn.iteratorHelperMethod",
+                    args: [{ kind: "strLit", value: method, type: STRING, loc }],
+                    type: DYN,
+                    loc,
+                  }
+                : {
+                    kind: "dynFrom",
+                    value: {
+                      kind: "closure",
+                      fnName: `%dyn.generator.method.${method}`,
+                      captures: [],
+                      type: funcOf([DYN], DYN),
+                      loc,
+                    },
+                    type: DYN,
+                    loc,
+                  },
               loc,
             },
           ],
@@ -228,10 +322,14 @@ export class GeneratorDynamicDispatch {
         const supplied = dispatch.source.args.length > 0;
         const incoming = supplied ? varRef("p.1", DYN, loc) : dynUndefinedExpr(loc);
         const channel = mode === "next" ? type.nextT : type.retT;
+        // return() with no value completes with undefined, as the typed
+        // .return() does, whatever the return channel's type.
         const arg =
           mode === "throw"
             ? incoming
-            : channel.kind === "undefinedT" || channel.kind === "void"
+            : channel.kind === "undefinedT" ||
+                channel.kind === "void" ||
+                (mode === "return" && !supplied)
               ? null
               : lowerer.coerceToExpected(incoming, channel);
         const convertible = canConvertToDyn(
@@ -263,25 +361,36 @@ export class GeneratorDynamicDispatch {
             else_: null,
             loc,
           });
+        const resume = (sent: IrExpr | null): IrStmt => ({
+          kind: "return",
+          value: {
+            kind: "dynFrom",
+            value: {
+              kind: "genResume",
+              mode,
+              gen: { kind: "dynCheck", value: receiver, type, loc },
+              arg: sent,
+              type: resultType,
+              loc,
+            },
+            type: DYN,
+            loc,
+          },
+          loc,
+        });
+        const valid =
+          convertible && (arg === null || mode === "throw" || typeEquals(arg.type, channel));
+        if (valid && mode === "return" && arg !== null)
+          body.push({
+            kind: "if",
+            cond: { kind: "dynTest", test: "undefined", value: incoming, type: BOOL, loc },
+            then: [resume(null)],
+            else_: null,
+            loc,
+          });
         body.push(
-          convertible && (arg === null || mode === "throw" || typeEquals(arg.type, channel))
-            ? {
-                kind: "return",
-                value: {
-                  kind: "dynFrom",
-                  value: {
-                    kind: "genResume",
-                    mode,
-                    gen: { kind: "dynCheck", value: receiver, type, loc },
-                    arg,
-                    type: resultType,
-                    loc,
-                  },
-                  type: DYN,
-                  loc,
-                },
-                loc,
-              }
+          valid
+            ? resume(arg)
             : {
                 kind: "runtimeFence",
                 code: "SC1071",

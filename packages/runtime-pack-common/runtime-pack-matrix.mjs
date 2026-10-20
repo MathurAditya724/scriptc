@@ -103,6 +103,7 @@ const OPTIONAL = [
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
+  ["scr_webcrypto.c", "webcrypto"],
   ["scr_fetch.c", "nativeFetch"],
 ];
 
@@ -113,6 +114,15 @@ function variantsFor(source) {
       id: "text-decoder-legacy",
       when: { textDecoderLegacy: true },
       defines: ["SCR_TEXT_DECODER_LEGACY"],
+    });
+  }
+  if (source === "scr_cycle.c") {
+    // The young-in nursery (SCRIPTC_YOUNG_NURSERY=1): the collector with
+    // nursery collections; programs built without it link the default.
+    variants.push({
+      id: "young-nursery",
+      when: { youngNursery: true },
+      defines: ["SCR_YIN"],
     });
   }
   return variants;

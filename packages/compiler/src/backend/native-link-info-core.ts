@@ -16,6 +16,9 @@ import type { NativeTargetSpec } from "./targets.js";
 
 export interface NativeLinkFeatures {
   workers?: boolean;
+  /** The young-in nursery (backend/young-nursery.ts): the SCR_YIN
+   * variant of the collector unit. Absent when off. */
+  youngNursery?: boolean;
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
@@ -48,6 +51,9 @@ export interface NativeLinkFeatures {
    * archive. */
   cipher: boolean;
   tlsCa: boolean;
+  /** crypto.subtle importKey/sign/verify/digest and CryptoKey values:
+   * scr_webcrypto.c. */
+  webcrypto: boolean;
 }
 
 export interface NativeLinkInfo {

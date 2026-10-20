@@ -343,7 +343,7 @@ async function build() {
         ...(unitHelper === null ? {} : { speed_codegen: unitHelper.identity }),
       },
       macros: {
-        executable: ["SCR_TEXT_DECODER_LEGACY"],
+        executable: ["SCR_TEXT_DECODER_LEGACY", "SCR_YIN"],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],
         sanitizer: "external-toolchain-required",
       },

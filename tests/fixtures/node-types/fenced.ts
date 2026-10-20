@@ -97,4 +97,15 @@ void callbackified;
  * getAuthTag(), and setAuthTag(); the stream.Transform members are fenced. */
 const cipherStream = createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
 cipherStream.on("data", () => {});
+/* WebCrypto beyond the HMAC slice: @types/node declares the whole
+ * SubtleCrypto surface, and the methods outside importKey, sign, verify
+ * and digest fence by name. */
+async function encryptWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
+  await crypto.subtle.encrypt({ name: "AES-GCM", iv: new Uint8Array(12) }, key, new Uint8Array(1));
+}
+void encryptWithWebCrypto;
+/* Node's navigator global: typeof navigator and navigator.userAgent
+ * compile; the other members fence by name. */
+const cores = navigator.hardwareConcurrency;
+void cores;
 // End of the declared-but-not-lowered surface.

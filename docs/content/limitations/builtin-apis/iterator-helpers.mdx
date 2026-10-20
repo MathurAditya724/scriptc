@@ -3,5 +3,7 @@
   In TypeScript, `h.return!()` and `h.return?.()` compile when `h` is a helper call or a `const` initialized with one.
   `flatMap` callbacks return arrays, generators, Sets or Maps; a string result throws Node's TypeError.
   `Iterator.from` accepts arrays, strings, typed arrays, Sets, Maps and iterator objects such as generators.
-  In JavaScript, untyped array, string, Map and Set iterators answer the same methods.
-  `Iterator.from` over an object with its own `next` method or over an untyped value, the `Iterator` global as a value, and printing typed helper objects are unsupported.
+  In JavaScript, untyped generators and array, string, Map and Set iterators answer the same methods, and array destructuring of untyped values steps generators, iterators, Maps and Sets the way Node does.
+  Helper methods on untyped async generators are unsupported.
+  `console.log`, `util.inspect` and `Object.prototype.toString` print iterator objects as Node does: `Object [Iterator Helper] {}`, `Object [Generator] {}`, `Object [Array Iterator] {}`, and Map and Set iterators with the entries they have left.
+  `Iterator.from` over an object with its own `next` method or over an untyped value, the `Iterator` global as a value, and `String()` and template literals of typed iterator objects are unsupported.

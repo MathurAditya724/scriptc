@@ -69,7 +69,7 @@ test("retains source-file BOM stripping", () => {
 
   const load = loadProgram(entry);
   try {
-    expect(load.entry.statements[0]?.getStart(load.entry)).toBe(0);
+    expect(load.entry.statements.nodes[0]?.getStart(load.entry)).toBe(0);
     expect(load.entry.text).toBe("const value = 1;\n");
   } finally {
     load.dispose();

@@ -46,6 +46,8 @@ export interface CcOptions {
   frameworks?: readonly string[];
   /** Isolated native Worker contexts; every runtime object must use TLS. */
   workers?: boolean;
+  /** Compile the runtime with SCR_YIN (backend/young-nursery.ts). */
+  youngNursery?: boolean;
 
   regex?: boolean;
   /** The program uses one of the copying/typed-array bridge intrinsics
@@ -197,6 +199,8 @@ export interface CcOptions {
   /** crypto.createCipheriv/createDecipheriv: compiles scr_cipher.c and links
    * the mbedTLS archive (shared with tls). */
   cipher?: boolean;
+  /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
+  webcrypto?: boolean;
   /** Internal compiler hook: called only after a strict native artifact hit
    * or a successful stable build has installed `outPath`. The executable
    * frontend cache uses it to publish its stamp after native dependencies

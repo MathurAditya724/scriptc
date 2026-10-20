@@ -49,6 +49,7 @@ export interface EarlyExecutableNativeFeatures {
   /** Omitted is the historical release posture. */
   optimization?: "dev" | "speed";
   workers?: boolean;
+  youngNursery?: boolean;
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
@@ -79,6 +80,7 @@ export interface EarlyExecutableNativeFeatures {
   tls: boolean;
   cipher: boolean;
   tlsCa: boolean;
+  webcrypto: boolean;
 }
 
 interface EarlyExecutableCacheStamp {
@@ -111,6 +113,8 @@ export interface EarlyExecutableCacheOptions {
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
+  youngNursery?: true;
   npmStatic: readonly string[] | "auto" | null;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
@@ -190,6 +194,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "tls",
   "tlsCa",
   "cipher",
+  "webcrypto",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {
@@ -200,7 +205,8 @@ function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeat
       (native.optimization === undefined ||
         native.optimization === "dev" ||
         native.optimization === "speed") &&
-      (native.workers === undefined || typeof native.workers === "boolean"),
+      (native.workers === undefined || typeof native.workers === "boolean") &&
+      (native.youngNursery === undefined || typeof native.youngNursery === "boolean"),
   );
 }
 
@@ -221,6 +227,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.strip ? ["strip"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.youngNursery ? ["young-nursery"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -260,6 +267,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.strip) hash.update("strip\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.youngNursery) hash.update("young-nursery\0");
   hash
     .update(
       options.npmStatic === null

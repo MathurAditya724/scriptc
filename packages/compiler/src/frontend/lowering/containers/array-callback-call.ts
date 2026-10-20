@@ -16,7 +16,7 @@ export function lowerArrayCallbackCall(
   access: ts.ElementAccessExpression,
   array: IrExpr,
 ): IrExpr | null {
-  if (array.type.kind !== "array" || call.arguments.some(ts.isSpreadElement)) return null;
+  if (array.type.kind !== "array" || call.arguments.nodes.some(ts.isSpreadElement)) return null;
   const elem = array.type.elem;
   const arms = elem.kind === "union" ? (lowerer.unions.get(elem.unionId)?.arms ?? []) : [elem];
   const functions = arms.filter((arm) => arm.kind === "func");

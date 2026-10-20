@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { API, type Snapshot } from "typescript/unstable/sync";
+import { API, type Snapshot, type Symbol as SdkSymbol } from "typescript/unstable/sync";
 import { Ts7Api, ts7Executable } from "../../src/frontend/ts7/rpc-api.js";
 import { Ts7RpcClient } from "../../src/frontend/ts7/rpc-client.js";
 import type { Ts7FileSystem } from "../../src/frontend/ts7/rpc-filesystem.js";
@@ -15,6 +15,15 @@ import {
   SemanticSymbol,
   SemanticType,
 } from "../../src/frontend/ts7/semantic-model.js";
+
+// scriptc's symbols keep their declarations' node handles in
+// `declarationHandles`, and the SDK's in `declarations`.
+function declarationHandlesOf(symbol: SdkSymbol): SdkSymbol["declarations"] {
+  return (
+    (symbol as unknown as { declarationHandles?: SdkSymbol["declarations"] }).declarationHandles ??
+    symbol.declarations
+  );
+}
 
 function tsgoPath(path: string): string {
   return process.platform === "win32" ? path.replaceAll("\\", "/") : path;
@@ -43,7 +52,7 @@ function programFacts(snapshot: Snapshot, config: string, path: string) {
     text: file.text,
     type: checker.typeToString(type),
     symbol: symbol.name,
-    declaration: symbol.declarations[0]!.resolve()!.getText(file),
+    declaration: declarationHandlesOf(symbol)[0]!.resolve()!.getText(file),
     syntactic: project.program.getSyntacticDiagnostics(path),
     semantic: project.program.getSemanticDiagnostics(path),
     globals: project.program.getGlobalDiagnostics(),
@@ -83,28 +92,32 @@ test("production RPC bridge preserves pinned SDK parser/checker behavior", () =>
     expect(project.checker.getTypeAtPosition(path, source.text.indexOf("answer"))).toBe(first);
     const symbol = project.checker.getSymbolAtPosition(path, source.text.indexOf("answer"));
     expect(symbol).toBeInstanceOf(SemanticSymbol);
-    expect(symbol!.declarations[0]).toBeInstanceOf(SemanticNodeHandle);
+    expect(symbol!.declarationHandles[0]).toBeInstanceOf(SemanticNodeHandle);
     expect(project.checker.getSymbolAtPosition(path, source.text.indexOf("answer"))).toBe(symbol);
-    expect(symbol!.declarations[0]!.resolve()).toBe(symbol!.declarations[0]!.resolve());
-    const declaration = symbol!.declarations[0]!.resolve()!;
+    expect(symbol!.declarationHandles[0]!.resolve()).toBe(symbol!.declarationHandles[0]!.resolve());
+    const declaration = symbol!.declarationHandles[0]!.resolve()!;
     expect(declaration).toBeInstanceOf(AstNode);
-    const variable = source
-      .statements[0]! as import("../../src/frontend/ts7/ast-types.js").VariableStatement;
-    expect(variable.declarationList.declarations[0]).toBe(declaration);
+    const variable = source.statements
+      .nodes[0]! as import("../../src/frontend/ts7/ast-types.js").VariableStatement;
+    expect(variable.declarationList.declarations.nodes[0]).toBe(declaration);
     expect(
-      project.checker.getSymbolAtLocation(variable.declarationList.declarations[0]!.name),
+      project.checker.getSymbolAtLocation(variable.declarationList.declarations.nodes[0]!.name),
     ).toBe(symbol);
-    expect(project.checker.getTypeAtLocation(variable.declarationList.declarations[0]!.name)).toBe(
-      first,
-    );
+    expect(
+      project.checker.getTypeAtLocation(variable.declarationList.declarations.nodes[0]!.name),
+    ).toBe(first);
     const expectedSource = expected.getProject(config)!.program.getSourceFile(path)!;
-    expect(source.statements.map((node) => [node.kind, node.pos, node.end])).toEqual(
+    expect(source.statements.nodes.map((node) => [node.kind, node.pos, node.end])).toEqual(
       expectedSource.statements.map((node) => [node.kind, node.pos, node.end]),
     );
-    // Native arrays retain element identity; SDK-only properties no longer
-    // need a JavaScript Object.assign adapter on production source lists.
-    expect(Array.isArray(source.statements)).toBe(true);
-    expect(Object.hasOwn(source.statements, "pos")).toBe(false);
+    // A list carries its own position, as tsc-ts's NodeList does, and its
+    // nodes are a plain array that retains element identity.
+    expect([source.statements.pos, source.statements.end]).toEqual([
+      expectedSource.statements.pos,
+      expectedSource.statements.end,
+    ]);
+    expect(Array.isArray(source.statements.nodes)).toBe(true);
+    expect(Object.hasOwn(source.statements.nodes, "pos")).toBe(false);
     expect(Object.hasOwn(source.statements, "transformFlags")).toBe(false);
     expect(source.referencedFiles).toBe(source.referencedFiles);
     expect(source.imports).toBe(source.imports);
@@ -180,6 +193,10 @@ test("native semantic registries preserve project scope and snapshot lifetimes",
   writeFileSync(path, source);
   const api = new Ts7Api({ cwd: dir, fs: fallback });
   const sdk = new API({ cwd: dir });
+  // scriptc's node lists keep their nodes in `nodes`; the SDK's lists are arrays.
+  type SdkNode = import("typescript/unstable/ast").Node;
+  const nodesOf = (list: unknown): readonly SdkNode[] =>
+    Array.isArray(list) ? list : (list as { nodes: readonly SdkNode[] }).nodes;
   function facts(snapshot: Snapshot) {
     const a = snapshot.getProject(firstConfig)!;
     const b = snapshot.getProject(secondConfig)!;
@@ -190,18 +207,22 @@ test("native semantic registries preserve project scope and snapshot lifetimes",
     const typeB = b.checker.getTypeAtPosition(path, answer)!;
     const fileA = a.program.getSourceFile(path)!;
     const fileB = b.program.getSourceFile(path)!;
-    const signatureA = a.checker.getSignatureFromDeclaration(fileA.statements[0]!)!;
-    const signatureB = b.checker.getSignatureFromDeclaration(fileB.statements[0]!)!;
+    const signatureA = a.checker.getSignatureFromDeclaration(nodesOf(fileA.statements)[0]!)!;
+    const signatureB = b.checker.getSignatureFromDeclaration(nodesOf(fileB.statements)[0]!)!;
     return {
       shape: {
         sharedSymbol: symbolA === symbolB,
         sharedType: typeA === typeB,
         sharedSignature: signatureA === signatureB,
-        sameDeclaration: symbolA.declarations[0]!.resolve() === symbolB.declarations[0]!.resolve(),
+        sameDeclaration:
+          declarationHandlesOf(symbolA)[0]!.resolve() ===
+          declarationHandlesOf(symbolB)[0]!.resolve(),
         explicitDeclaration:
-          symbolB.declarations[0]!.resolve(b) ===
-          (fileB.statements[1] as import("typescript/unstable/ast").VariableStatement)
-            .declarationList.declarations[0],
+          declarationHandlesOf(symbolB)[0]!.resolve(b) ===
+          nodesOf(
+            (nodesOf(fileB.statements)[1] as import("typescript/unstable/ast").VariableStatement)
+              .declarationList.declarations,
+          )[0],
         texts: [a.checker.typeToString(typeA), b.checker.typeToString(typeB)],
         parameters: signatureA.getParameters().map((symbol) => symbol.name),
       },
@@ -227,7 +248,7 @@ test("native semantic registries preserve project scope and snapshot lifetimes",
     expect(next.signatureA).not.toBe(actual.signatureA);
     first.dispose();
     expect(() => actual.typeA.getSymbol()).toThrow("disposed");
-    expect(() => actual.symbolA.declarations[0]!.resolve()).toThrow("disposed");
+    expect(() => declarationHandlesOf(actual.symbolA)[0]!.resolve()).toThrow("disposed");
     expect(next.signatureA.getParameters()[0]!.name).toBe("value");
     expect(second.getProject(firstConfig)!.checker.typeToString(next.typeA)).toBe("42");
     second.dispose();

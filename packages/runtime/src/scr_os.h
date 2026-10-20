@@ -38,6 +38,8 @@ ScrStr *scr_os_cpus_model(double i);
 double scr_os_cpus_field(double i, double field);
 /* os.constants: the per-thread null-prototype constants object (+1). */
 ScrDyn *scr_os_constants(void);
+/* fs.constants: the target's null-prototype constants object (cached, +1). */
+ScrDyn *scr_fs_constants_object(void);
 /* The deprecated node:constants module object (scr_os.c): the os groups,
  * fs.constants and the crypto table the borrowed function answers, merged
  * and frozen (+1). */
