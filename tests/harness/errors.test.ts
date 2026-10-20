@@ -359,6 +359,37 @@ const arr = tuple.map(() => new Date(0));`,
     expect(r).toEqual({ stdout: reference.stdout, stderr: reference.stderr, exitCode: 0 });
   });
 
+  test.each([
+    ["an argument", "make(Upper, { objectMode: true });"],
+    ["a spread argument", "spread(Upper, [{ objectMode: true }]);"],
+  ])(
+    "%s through an untyped factory to an inherited stream constructor is a named deferred fence (JS lane)",
+    async (_, call) => {
+      // The constructor a ctor-less stream subclass inherits takes no
+      // arguments here; typed construction refuses them at compile time,
+      // and construction from untyped code refuses them at run time
+      // instead of constructing without them.
+      const r = await compileAndRun(
+        `inherited-stream-ctor-${call.startsWith("make") ? "args" : "spread"}`,
+        `'use strict';
+const { Transform } = require('node:stream');
+class Upper extends Transform {}
+function make(F, options) { return new F(options); }
+function bare(F) { return new F(); }
+function spread(F, args) { return new F(...args); }
+console.log('bare', bare(Upper) instanceof Upper, spread(Upper, []) instanceof Upper);
+${call}
+`,
+        "cjs",
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("bare true true\n");
+      expect(r.stderr).toMatch(
+        /^Uncaught Error: new Upper with arguments through an inherited stream constructor .* is not supported yet \[SC1090 at .*inherited-stream-ctor-\w+\.cjs:3\]\n$/,
+      );
+    },
+  );
+
   test("extending a property-assigned class ABOVE its assignment is a named deferred fence (JS lane)", async () => {
     // The property-assigned class-expression family (corpus 2032/2033
     // pins what lowers): `exports.O = class extends exports.I {}` with
