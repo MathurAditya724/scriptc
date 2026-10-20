@@ -942,6 +942,18 @@ export function streamTypedRefMaterializeAdapter(
       B.line(`${copied} = call ptr @scr_dyn_copy_property_descriptors(ptr ${out}, ptr ${bag})`);
       B.line(`call void @scr_dyn_release_v(ptr ${copied})`);
     }
+    // An Error subclass instance's own `name` sits where its class's
+    // construction creates it: after a field, or after every other
+    // property when no constructor sets it.
+    const nameAfter = meta.def.errorNameAfter;
+    if (meta.root.def.name === "%Error" && !meta.def.runtime && nameAfter !== null) {
+      host.declare(`declare void @scr_error_dyn_place_name(ptr, ptr, ${host.sizeType})`);
+      B.line(
+        nameAfter === undefined
+          ? `call void @scr_error_dyn_place_name(ptr ${out}, ptr null, ${host.sizeType} 0)`
+          : `call void @scr_error_dyn_place_name(ptr ${out}, ptr ${host.cstr(nameAfter)}, ${host.sizeType} ${Buffer.byteLength(nameAfter, "utf8")})`,
+      );
+    }
     // A frozen, sealed or non-extensible instance's view says so.
     if (withAttributes) {
       host.declare(`declare void @scr_dyn_class_view_attributes(ptr, double)`);

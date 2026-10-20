@@ -7006,10 +7006,6 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
   /* Node lists `stack` first among an error's own properties. */
   scr_error_dyn_add_stack(d);
-  if (e->name_present) {
-    scr_dyn_obj_set(d, "name", 4, scr_dyn_new_str(e->name));
-    d->v.obj.entries[d->v.obj.len - 1].enumerable = e->name_enumerable;
-  }
   if (!e->name_present || !e->message_present) {
     ScrDyn *prototype = scr_dyn_new_obj();
     if (!e->name_present) {
@@ -7085,7 +7081,35 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_obj_set(d, "errors", 6, scr_aggregate_errors((ScrError *)e));
     d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
   }
+  /* An own `name` is assigned after construction defines the others. */
+  if (e->name_present) {
+    scr_dyn_obj_set(d, "name", 4, scr_dyn_new_str(e->name));
+    d->v.obj.entries[d->v.obj.len - 1].enumerable = e->name_enumerable;
+  }
   return d;
+}
+
+/* Moves an Error subclass view's own `name` to follow the property
+ * `after`, or every other property when `after` is NULL: the position
+ * the class's construction creates it at. Nothing changes when the view
+ * has no own `name` or no `after` property. */
+void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len) {
+  if (view->kind != SCR_DYN_OBJ) return;
+  ScrDynEntry *entries = view->v.obj.entries;
+  size_t n = view->v.obj.len, from = n, to = n;
+  for (size_t i = 0; i < n; i++) {
+    if (entries[i].key_len == 4 && memcmp(entries[i].key, "name", 4) == 0) from = i;
+    else if (after && entries[i].key_len == after_len && memcmp(entries[i].key, after, after_len) == 0) to = i;
+  }
+  if (from == n || (after && to == n)) return;
+  size_t at = after ? (to > from ? to : to + 1) : n - 1;
+  if (at == from) return;
+  ScrDynEntry name = entries[from];
+  memmove(&entries[from], &entries[from + 1], (n - from - 1) * sizeof *entries);
+  memmove(&entries[at + 1], &entries[at], (n - 1 - at) * sizeof *entries);
+  entries[at] = name;
+  free(view->v.obj.index);
+  view->v.obj.index = NULL;
 }
 
 ScrDyn *scr_dyn_from_error(const ScrError *e) {

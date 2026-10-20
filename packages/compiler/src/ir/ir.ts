@@ -1406,6 +1406,11 @@ export interface IrClassDef {
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
   tracksOwnFields?: boolean;
+  /** Error subclasses: the field an instance's own `name` follows among its
+   * own properties, or null when it precedes every field. Absent when no
+   * class of the chain sets `name` during construction, and then an own
+   * `name` follows every other own property. */
+  errorNameAfter?: string | null;
   /** Stable module symbol identities for public instance layout fields. */
   symbolFields?: { field: string; globalId: string }[];
   /** RUNTIME-PROVIDED class (the builtin Error hierarchy): the struct, RC

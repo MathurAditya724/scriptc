@@ -70,6 +70,7 @@ import {
 } from "./instantiation-path.js";
 import { appendImplicitUndefinedReturn, hasExplicitJsDocReturn } from "./function-returns.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
+import { errorNameAfterField, errorViewFields } from "./error-name-order.js";
 import {
   checkedJsDocumentedParameter,
   documentedParameter,
@@ -4256,6 +4257,12 @@ export function collectClassShapeInner(
       ...(deferredInitFields.size > 0 ? { deferredInitFields } : {}),
       ...(escape.escapes ? { constructionEscapes: true as const } : {}),
     };
+    let root: ClassInfo | null = info;
+    while (root?.base) root = root.base;
+    if (root !== info && root?.def.name === "%Error") {
+      const after = errorNameAfterField(info, errorViewFields(info.def.fields));
+      if (after !== undefined) info.def.errorNameAfter = after;
+    }
     // GENERIC members get their declaring-class backlink now that the
     // info exists (instance lowering reads it for `this` typing and the
     // generic-class binding merge).
