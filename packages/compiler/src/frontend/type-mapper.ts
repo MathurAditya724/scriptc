@@ -5898,6 +5898,7 @@ interface RecordShapeParts {
   fields: { name: string; type: IrType }[];
   indexValue?: IrType;
   declaredOrder?: string[];
+  accessorOrder?: string[];
 }
 
 function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
@@ -5934,15 +5935,14 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // (generic type parameters, mixin instantiations) cannot intern by
       // checker-type identity — fence recursive generic-open shapes.
       if (contextResolutions !== sensitivityAtEntry) return null;
-      return {
-        kind: "record",
-        shapeId: shapes.finalizeRecursive(
-          widened,
-          inner.fields,
-          inner.indexValue,
-          inner.declaredOrder,
-        ),
-      };
+      const recursive = shapes.finalizeRecursive(
+        widened,
+        inner.fields,
+        inner.indexValue,
+        inner.declaredOrder,
+      );
+      adoptAccessorOrder(shapes.get(recursive), inner.accessorOrder);
+      return { kind: "record", shapeId: recursive };
     }
     // A record with no typed payload contract is a view of an existing
     // object, including across parameters and returns. Building a native
@@ -5960,10 +5960,9 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (merged !== null) return { kind: "record", shapeId: merged };
     const refined = refinedConstituentShape(widened, inner, ctx);
     if (refined !== null) return { kind: "record", shapeId: refined };
-    return {
-      kind: "record",
-      shapeId: shapes.intern(inner.fields, false, inner.indexValue, inner.declaredOrder),
-    };
+    const shapeId = shapes.intern(inner.fields, false, inner.indexValue, inner.declaredOrder);
+    adoptAccessorOrder(shapes.get(shapeId), inner.accessorOrder);
+    return { kind: "record", shapeId };
   } finally {
     shapes.inProgress.delete(widened);
   }
@@ -6191,6 +6190,12 @@ function dictSpreadSourceTs(checker: ts.TypeChecker, e: ts.Expression, depth: nu
       dictSpreadSourceTs(checker, (p as ts.SpreadAssignment).expression, depth + 1),
     )
   );
+}
+
+/** The first-seen accessor key order of a shape with accessor slots. */
+function adoptAccessorOrder(shape: IrRecordShape | undefined, order: string[] | undefined): void {
+  if (shape !== undefined && order !== undefined && shape.accessorOrder === undefined)
+    shape.accessorOrder = order;
 }
 
 /** A refinement intersection (`Expr & { kind: "mul" }`, which the checker
@@ -6552,8 +6557,18 @@ function mapRecordTypeInner(
     const declaredOrder = esOwnKeyOrder(
       fields.filter((f) => accessorSlotProp(f.name) === null).map((f) => f.name),
     );
+    // With accessors: every own key in that order, an accessor property
+    // named once for its get/set pair (the checked-dynamic copy lists it).
+    const accessorOrder = fields.some((f) => accessorSlotProp(f.name) !== null)
+      ? esOwnKeyOrder([...new Set(fields.map((f) => accessorSlotProp(f.name)?.prop ?? f.name))])
+      : undefined;
     fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    return { fields, ...(indexValue ? { indexValue } : {}), declaredOrder };
+    return {
+      fields,
+      ...(indexValue ? { indexValue } : {}),
+      declaredOrder,
+      ...(accessorOrder ? { accessorOrder } : {}),
+    };
   }
 }
 

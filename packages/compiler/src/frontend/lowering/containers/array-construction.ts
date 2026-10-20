@@ -44,6 +44,7 @@ import {
   lowerArrayCallback,
   callbackArrayElement,
 } from "./callback-arguments.js";
+import { classGeneratorIterable } from "../class-iterables.js";
 
 /** Build the argument array for a mutating/copying operation while keeping
  * the receiver's scalar payload ABI. A missing read is represented as the
@@ -913,7 +914,7 @@ export function lowerArrayFromCall(
   // and materializes holes while keeping element reference identity.
   if ((args.length === 1 || args.length === 2) && !ts.isObjectLiteralExpression(args[0]!)) {
     const source = lowerer.lowerExpr(args[0]!);
-    const src =
+    let src =
       source.type.kind === "string" && args.length === 2
         ? strCharsCall(lowerer, source, loc)
         : source;
@@ -1008,6 +1009,9 @@ export function lowerArrayFromCall(
     if (src.type.kind === "searchParams" && args.length === 1) {
       return lowerCheckedArrayFrom(lowerer, lowerer.coerceInto(args[0]!, src, DYN), loc);
     }
+    // A class whose [Symbol.iterator] is a generator method iterates the
+    // generator that method returns.
+    src = classGeneratorIterable(lowerer, src) ?? src;
     // A generator (or an iterator adapted into one) drains in order.
     if (src.type.kind === "generator" && args.length === 1) {
       const arrT = lowerer.mapTypeOf(lowerer.typeOf(call));

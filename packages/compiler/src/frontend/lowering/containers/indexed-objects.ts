@@ -28,6 +28,8 @@ import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { locOf } from "../../program.js";
 import { typeKey } from "../../type-mapper.js";
 import { type WidthLift } from "../lowerer.js";
+import { classGeneratorIterable, iteratesThroughGenerator } from "../class-iterables.js";
+import { generatorDrain } from "../iterator-adapters.js";
 
 /** Object() and new Object() preserve known object inputs. Primitive
  * boxing and unproven checked-dynamic values retain their refusal. */
@@ -472,9 +474,37 @@ function lowerTypedObjectFromEntriesCall(
   if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!))
     return null;
   const argNode = call.arguments.nodes[0]!;
-  const argIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+  let argIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+  // A generator of entries, or a class whose [Symbol.iterator] is one,
+  // drains into the entry array the object is built from.
+  let drained: IrExpr | null = null;
+  if (argIr?.kind === "generator" || (argIr && iteratesThroughGenerator(lowerer, argIr))) {
+    const value = lowerer.lowerExpr(argNode);
+    const generator =
+      classGeneratorIterable(lowerer, value) ?? (value.type.kind === "generator" ? value : null);
+    if (generator?.type.kind !== "generator") return null;
+    // The entries take the result's value type: `[string, V]` for an
+    // object `{ [k: string]: V }`.
+    const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+    const valueT =
+      result?.kind === "record" ? lowerer.shapes.get(result.shapeId)?.indexValue : undefined;
+    if (!valueT) return null;
+    const entry: IrType = {
+      kind: "record",
+      shapeId: lowerer.shapes.intern(
+        [
+          { name: "0", type: STRING },
+          { name: "1", type: valueT },
+        ],
+        true,
+      ),
+    };
+    drained = generatorDrain(lowerer, generator, entry, locOf(call));
+    if (!drained) return null;
+    argIr = drained.type;
+  }
   if (argIr?.kind !== "array") return null;
-  const represented = tryLowerExpression(lowerer, argNode);
+  const represented = drained ?? tryLowerExpression(lowerer, argNode);
   if (represented && !typeEquals(represented.type, argIr)) return null;
   // `Object.fromEntries(rows)` over a `string[][]` VALUE — the env-line
   // idiom (`envArray.map((env) => env.split('='))`). The checker has no
@@ -522,7 +552,7 @@ function lowerTypedObjectFromEntriesCall(
   // Enumeration/filtering may keep the array in checked-dynamic storage.
   // Validate its tuple layout before calling a helper with a native-array
   // ABI; opaque tuple values themselves retain their original references.
-  const receiver = lowerer.lowerExprExpecting(argNode, argIr);
+  const receiver = drained ?? lowerer.lowerExprExpecting(argNode, argIr);
   const key = `obj.fromEntries:${argIr.elem.shapeId}:${resultT.shapeId}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
