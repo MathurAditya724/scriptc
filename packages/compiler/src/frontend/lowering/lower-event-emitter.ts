@@ -72,6 +72,7 @@ import { STREAM_FORCED_EVENT_NAMES, streamForcedTuple, streamSidesOf } from "./l
 import { boolLit, strLit, varRef } from "../../ir/build.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerAddAbortListener } from "./builtin-calls.js";
+import { requestGeneralStreamSurface } from "./general-streams.js";
 
 /** True when the class descends from (or is) the runtime emitter. */
 export function emitterRooted(lowerer: Lowerer, info: ClassInfo | undefined | null): boolean {
@@ -2204,24 +2205,54 @@ function eventsOnceBoxer(
   return { kind: "closure", fnName: name, captures: [], type: fnType, loc };
 }
 
-/** events.once(emitter, name): a promise of the next `name` event's
- * arguments as an array, rejected by an earlier 'error' event (unless the
- * awaited event is 'error'). The emitter's listeners are typed by the
- * program-wide event table, so the runtime registers one-shot typed
- * listeners whose compiler-built boxers turn the event's tuple into the
- * array. EventTarget and stream receivers, computed names and options are
- * refused. */
+/** The `signal` of an events.once options object literal (a checked-
+ * dynamic AbortSignal or undefined), or null when the literal names none.
+ * Other options forms are refused. */
+function eventsOnceSignal(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  if (!ts.isObjectLiteralExpression(node)) {
+    lowerer.noLowering(
+      "events.once options that are not an object literal",
+      node,
+      "pass the options as an object literal: { signal }",
+    );
+    return null;
+  }
+  let signal: IrExpr | null = null;
+  for (const prop of node.properties.nodes) {
+    const name = prop.name && ts.isIdentifier(prop.name) ? prop.name.text : null;
+    if (
+      name === "signal" &&
+      signal === null &&
+      (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop))
+    ) {
+      signal = lowerer.lowerExprExpecting(
+        ts.isPropertyAssignment(prop) ? prop.initializer : (prop.name as ts.Identifier),
+        DYN,
+      );
+    } else {
+      lowerer.noLowering(
+        "events.once options other than one signal",
+        prop,
+        "the lowered options object takes signal: AbortSignal",
+      );
+    }
+  }
+  return signal;
+}
+
+/** events.once(emitter, name[, { signal }]): a promise of the next `name`
+ * event's arguments as an array, rejected by an earlier 'error' event
+ * (unless the awaited event is 'error') or by the signal's abort with an
+ * AbortError. The emitter's listeners are typed by the program-wide event
+ * table (a stream's runtime-emitted events by their fixed tuples), so the
+ * runtime registers one-shot typed listeners whose compiler-built boxers
+ * turn the event's tuple into the array. EventTarget receivers, a stream's
+ * 'data' event, computed names and options other than a literal { signal }
+ * are refused. */
 export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = call.arguments.nodes;
-  if (args.length < 2 || args.some(ts.isSpreadElement)) {
-    lowerer.noLowering("events.once without an emitter and an event name", call);
-  }
-  if (args.length > 2) {
-    lowerer.noLowering(
-      "events.once with options",
-      args[2]!,
-      "the lowered form is events.once(emitter, name); AbortSignal options are not supported yet",
-    );
+  if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering("events.once without an emitter, an event name and options", call);
   }
   // Node's Promise<any[]>: the arguments array of checked-dynamic values.
   const arrayT = arrayOf(DYN);
@@ -2229,11 +2260,14 @@ export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: 
   const receiver = lowerer.lowerExpr(args[0]!);
   const info =
     receiver.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : undefined;
-  if (!emitterRooted(lowerer, info) || streamSidesOf(lowerer, info) !== null) {
+  if (!emitterRooted(lowerer, info)) {
+    // A NodeJS stream interface slot that holds a stdio handle here: the
+    // program lowers again with the runtime stream classes.
+    requestGeneralStreamSurface(lowerer, args[0]!);
     lowerer.noLowering(
       "events.once over this value",
       args[0]!,
-      "the emitter must be an EventEmitter instance; EventTarget and stream receivers are not supported yet",
+      "the emitter must be an EventEmitter or stream instance; EventTarget receivers are not supported yet",
     );
   }
   const name = literalEventName(lowerer, args[1]!);
@@ -2245,6 +2279,14 @@ export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: 
     );
   }
   const event = name ?? "";
+  const sides = streamSidesOf(lowerer, info);
+  if ((sides === "r" || sides === "rw") && (event === "data" || event === "keypress")) {
+    lowerer.noLowering(
+      `events.once of a stream's '${event}' event`,
+      args[1]!,
+      `the chunk has no checked-dynamic boxing here; register stream.once('${event}', listener) instead`,
+    );
+  }
   const table = emitterEvents(lowerer);
   if (event !== "error" && flexibleJsEvent(event, table.get(event))) {
     lowerer.noLowering(
@@ -2252,14 +2294,22 @@ export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: 
       args[1]!,
     );
   }
-  const tuple = tupleOf(lowerer, table, event, call);
+  const tuple = streamForcedTuple(lowerer, info, event) ?? tupleOf(lowerer, table, event, call);
   const errorTuple: IrType[] = [{ kind: "object", className: "%Error" }];
   const boxer = eventsOnceBoxer(lowerer, call, tuple, arrayT, loc);
   const errorBoxer = eventsOnceBoxer(lowerer, call, errorTuple, arrayT, loc);
+  const signal = args.length > 2 ? eventsOnceSignal(lowerer, args[2]!) : null;
+  const common = [
+    receiver,
+    eventNameExpr(event, loc),
+    boxer,
+    errorBoxer,
+    boolLit(event !== "error", loc),
+  ];
   return {
     kind: "libCall",
-    fn: "events.once",
-    args: [receiver, eventNameExpr(event, loc), boxer, errorBoxer, boolLit(event !== "error", loc)],
+    fn: signal === null ? "events.once" : "events.onceSignal",
+    args: signal === null ? common : [...common, signal],
     type: resultT,
     loc,
   };

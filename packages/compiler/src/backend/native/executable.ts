@@ -217,6 +217,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // measures with.
   unit((u) => u.opts.events && u.regex, "scr_readline_tty.c"),
   unit((u) => u.opts.emitter || u.opts.workers, "scr_events_emitter.c"),
+  // events.once with options registers through the emitter and
+  // event-target units.
+  unit((u) => u.opts.eventsOnceSignal === true, "scr_events_once_signal.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
   // net families (http implies net), so handle-free binaries keep

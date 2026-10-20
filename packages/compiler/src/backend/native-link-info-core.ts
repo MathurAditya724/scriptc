@@ -43,6 +43,9 @@ export interface NativeLinkFeatures {
   /** Checked-dynamic stream slots: the scr_stream_dyn.c unit. Absent (not
    * false) for programs without them. */
   streamDyn?: boolean;
+  /** events.once with options: scr_events_once_signal.c. Absent (not
+   * false) for programs without it. */
+  eventsOnceSignal?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
