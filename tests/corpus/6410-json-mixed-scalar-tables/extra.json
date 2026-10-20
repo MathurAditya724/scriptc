@@ -1,1 +1,1 @@
-[["x", 1, "two", 3], [4, "five"], ["six"]]
+[["x", 1, "two", 3], [4, "five", null], ["six"], [null]]

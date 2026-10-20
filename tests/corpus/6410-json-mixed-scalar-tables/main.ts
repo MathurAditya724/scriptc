@@ -16,6 +16,11 @@ console.log(status(10), status(46), status(66), status(1000));
 for (const row of extra) {
   const head = row[0];
   const rest = row.slice(1);
-  console.log(typeof head, head, rest.length, rest.map((v) => (typeof v === "number" ? v + 1 : v.toUpperCase())).join(","));
+  console.log(
+    typeof head,
+    head,
+    rest.length,
+    rest.map((v) => (v === null ? "null" : typeof v === "number" ? v + 1 : v.toUpperCase())).join(","),
+  );
 }
 console.log(JSON.stringify(extra));
