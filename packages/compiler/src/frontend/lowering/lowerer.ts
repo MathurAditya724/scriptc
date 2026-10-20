@@ -5746,9 +5746,18 @@ export class Lowerer {
           if (own === null || own.length === 0) return [];
           const contextual = this.checker.getContextualType(node);
           const target = contextual ? this.mapTypeOf(contextual) : null;
-          if (target?.kind !== "array") return [];
+          // Union elements are the ABI whose reads trap on a hole the
+          // analysis does not know about (holey arrays widened into
+          // `(A | B)[]`); other element ABIs keep their facts.
+          if (target?.kind !== "array" || target.elem.kind !== "union") return [];
           const key = typeKey(target.elem);
-          return own.includes(key) ? [] : [key];
+          if (own.includes(key)) return [];
+          // Only a conversion that copies the elements (arrayWidthHelper)
+          // stores the array as a new array of the target ABI.
+          const source = this.mapTypeOf(this.typeOf(node));
+          if (source?.kind !== "array") return [];
+          const lift = this.widthLiftPlan(source.elem, target.elem);
+          return lift === null || lift.how === "copy" ? [] : [key];
         }, []),
       mayBeUndefined: (node) => {
         if (explicitlyNonNull(node)) return false;
@@ -5849,6 +5858,31 @@ export class Lowerer {
           nodes.push(node);
       });
       scanSites.set(sf, nodes);
+      // The values the element scan compares with their contextual array
+      // types, typed in one batch.
+      const values: ts.Node[] = [];
+      for (const node of nodes) {
+        if ((ts.isVariableDeclaration(node) || ts.isPropertyAssignment(node)) && node.initializer)
+          values.push(node.initializer);
+        else if (ts.isShorthandPropertyAssignment(node)) values.push(node.name);
+        else if (ts.isReturnStatement(node) && node.expression) values.push(node.expression);
+        else if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        )
+          values.push(node.right);
+        else if (ts.isCallExpression(node) || ts.isNewExpression(node))
+          for (const arg of node.arguments?.nodes ?? [])
+            if (!ts.isSpreadElement(arg)) values.push(arg);
+      }
+      // Owner lookups also type the receivers of property and element reads.
+      for (let i = 0; i < values.length; i++) {
+        const value = peel(values[i] as ts.Expression);
+        if (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value))
+          values.push(value.expression);
+      }
+      if (values.length > 0)
+        panicSafe(() => this.checker.prefetchCollectionTypes(values), undefined);
       return nodes;
     };
     const scanFile = (sf: ts.SourceFile): boolean => {

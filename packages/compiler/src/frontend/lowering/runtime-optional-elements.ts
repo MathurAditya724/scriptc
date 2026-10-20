@@ -111,11 +111,27 @@ export class ArrayElementStates {
     let changed = false;
     const convert = (value: ts.Expression | undefined): void => {
       if (!value || ts.isSpreadElement(value)) return;
+      // Only an array known to hold holes or undefined values has facts to
+      // carry; asking for the contextual type of every other value would
+      // cost a checker query per site. An array a call or literal builds
+      // carries what its construction gives it, not the facts the element
+      // ABI of its receiver shares with every array of that ABI.
+      const built =
+        ts.isCallExpression(peel(value)) ||
+        ts.isNewExpression(peel(value)) ||
+        ts.isArrayLiteralExpression(peel(value));
+      this.ownFactsOnly = built;
+      let contents: Contents | null;
+      try {
+        contents = this.contents(value);
+      } finally {
+        this.ownFactsOnly = false;
+      }
+      if (contents === null || (!contents.undefined && !contents.holes)) return;
       const keys = this.host.convertedArrayKeys(value);
       if (keys.length === 0) return;
-      const contents = this.contents(value);
-      if ((contents === null || contents.undefined) && this.addUndefined(keys)) changed = true;
-      if ((contents === null || contents.holes) && this.addHoles(keys)) changed = true;
+      if (contents.undefined && this.addUndefined(keys)) changed = true;
+      if (contents.holes && this.addHoles(keys)) changed = true;
     };
     if (ts.isVariableDeclaration(node) || ts.isPropertyAssignment(node)) convert(node.initializer);
     else if (ts.isShorthandPropertyAssignment(node) && ts.isIdentifier(node.name))
