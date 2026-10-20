@@ -1680,10 +1680,10 @@ export class LlDyn {
                     : []),
                 ]
               : [
-                  { index: 1, type: host.sizeType, name: "length" },
-                  { index: 2, type: host.sizeType, name: "capacity" },
+                  // The dense states follow the data slots: they move with data and capacity.
+                  { index: SCR_ARR_FIELD.len, type: "i32", name: "length" },
+                  { index: SCR_ARR_FIELD.cap, type: "i32", name: "capacity" },
                   { index: SCR_ARR_FIELD.data, type: "ptr" as const, name: "data" },
-                  { index: SCR_ARR_FIELD.present, type: "ptr" as const, name: "presence" },
                   { index: SCR_ARR_FIELD.filled, type: "i32" as const, name: "filled" },
                 ];
           members.forEach((member) => {

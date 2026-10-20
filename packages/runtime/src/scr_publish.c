@@ -205,8 +205,9 @@ void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem) {
   ScrPubFn fn = a->elem == SCR_ELEM_STR ? scr_pub_str_fn : a->elem == SCR_ELEM_REF ? elem : NULL;
   if (!fn) return;
   size_t dense = a->len < a->cap ? a->len : a->cap;
+  const uint8_t *states = scr_arr_states_end(a);
   for (size_t i = 0; i < dense; i++)
-    if (!a->present || a->present[i]) scr_pub_slot(ctx, a->data[i], fn);
+    if (!states || *scr_arr_state_in(states, i)) scr_pub_slot(ctx, a->data[i], fn);
   if (a->ext)
     for (size_t i = 0; i < a->ext->sparse_len; i++)
       if (a->ext->sparse[i].state) scr_pub_slot(ctx, a->ext->sparse[i].slot, fn);
