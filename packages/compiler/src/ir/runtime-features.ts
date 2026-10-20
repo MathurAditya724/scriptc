@@ -130,6 +130,7 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "events.onceSignal",
   "http.clientSignal",
   "http.requestDyn",
   "http.requestDynCb",
@@ -580,6 +581,8 @@ const RUNTIME_FEATURE_RULES = {
     fns: ["events.addAbortListener", ...ABORT_SIGNAL_LIB_FNS],
     prefixes: ["event."],
   }),
+  /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
+  eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
@@ -721,6 +724,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynTier: false,
     emitter: false,
     eventTarget: false,
+    eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
     fsWatch: false,

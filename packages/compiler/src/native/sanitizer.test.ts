@@ -78,6 +78,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
               wasm: false,
               dynTier: false,
               streamDyn: false,
+              eventsOnceSignal: false,
               warningReplace: false,
               stdioExtended: false,
               regex: true,

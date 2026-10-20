@@ -27,6 +27,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     dynAsync: features.dynAsync,
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
+    ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     events: features.processEvents,
     emitter: features.emitter,
     symbol: features.symbol,

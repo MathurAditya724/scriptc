@@ -78,6 +78,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
   ["scr_events_emitter.c", "emitter"],
+  // events.once with options registers through the emitter and event-target units.
+  ["scr_events_once_signal.c", "eventsOnceSignal"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   ["scr_symbol.c", "symbol"],
   ["scr_bigint_assert.c", all("assert", "bigint")],

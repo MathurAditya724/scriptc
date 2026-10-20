@@ -5599,8 +5599,11 @@ export class LlEmitter {
     return emitterFixedAdapter(this, cbT);
   }
 
-  emitterOnceAdapter(boxerT: IrType & { kind: "func" }): { fn: string; shim: string } {
-    return emitterOnceAdapter(this, boxerT);
+  emitterOnceAdapter(
+    boxerT: IrType & { kind: "func" },
+    fire?: string,
+  ): { fn: string; shim: string } {
+    return emitterOnceAdapter(this, boxerT, fire);
   }
 
   wrapEmitterListener(target: string, adapterFn: string): string {

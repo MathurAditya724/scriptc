@@ -205,6 +205,24 @@ test("node-types: events.once over typed EventEmitter listeners under @types/nod
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: events.once with a signal over streams, raced, under @types/node", async () => {
+  const outDir = outDirFor("events-once-signal-race");
+  const entry = join(nodeTypesDir, "events-once-signal-race.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "events-once-signal-race"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: socket.address and resetAndDestroy under @types/node", async () => {
   const outDir = outDirFor("net-reset-address");
   const entry = join(nodeTypesDir, "net-reset-address.ts");

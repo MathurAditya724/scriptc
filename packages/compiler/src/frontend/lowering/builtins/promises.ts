@@ -188,7 +188,11 @@ function lowerTuplePromiseAll(
  * type is the checker's combined promise, and each entry's inner type
  * must be that inner type, one of its union arms, or a sub-union of it
  * (the backend's interned adapters wrap/re-tag fulfillments; a wider
- * entry would need machinery that doesn't exist and fences).
+ * entry would need machinery that doesn't exist and fences). A
+ * Promise<never> entry fits any result, and an entry whose payload widens
+ * into the result's converts. When the checker's combined type has no
+ * representation, the result takes the type the entries that can fulfill
+ * share, or 'unknown'.
  * Promise.all/allSettled/any fence with the sequential-await hint;
  * resolve/reject and the rest fall to the member fence. Null for
  * non-Promise receivers. */
@@ -215,14 +219,47 @@ export function lowerPromiseStaticCall(
         "a non-empty array LITERAL of promises is the supported form: Promise.race([p, q])",
       );
     }
-    const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
-    if (resultT?.kind !== "promise") {
-      lowerer.noLowering(
-        "Promise.race with this combined result type",
-        call,
-        "the entries' value types must combine into a representable union",
-      );
+    // A Promise<never> entry (the deadline idiom: `new Promise<never>((_,
+    // reject) => setTimeout(reject, ms))`) can only reject, so it races
+    // under any result type; its inner type maps to void.
+    const neverEntry = (el: ts.Expression): boolean => {
+      const t = lowerer.typeOf(el);
+      const arg =
+        t.getSymbol()?.name === "Promise"
+          ? lowerer.checker.getTypeArguments(t as ts.TypeReference)[0]
+          : undefined;
+      return arg !== undefined && (arg.flags & ts.TypeFlags.Never) !== 0;
+    };
+    const elements = argNode.elements.nodes;
+    let combined = lowerer.mapTypeOf(lowerer.typeOf(call));
+    let lowered: IrExpr[] | null = null;
+    if (combined?.kind !== "promise") {
+      // The checker's combined type has no representation (an 'any'
+      // element array such as events.once's any[], or 'void | any[]'): the
+      // result takes the one type the entries that can fulfill share, or
+      // else 'unknown' when each of them widens into it.
+      lowered = elements.map((el) => lowerer.lowerExpr(el));
+      const fulfilling = lowered.filter((_, i) => !neverEntry(elements[i]!));
+      const first = fulfilling[0]?.type;
+      const dynResult: IrType & { kind: "promise" } = { kind: "promise", inner: DYN };
+      if (first?.kind === "promise" && fulfilling.every((e) => typeEquals(e.type, first))) {
+        combined = first;
+      } else if (
+        fulfilling.length > 0 &&
+        fulfilling.every(
+          (e) => e.type.kind === "promise" && lowerer.promisePayloadWidens(e.type, dynResult),
+        )
+      ) {
+        combined = dynResult;
+      } else {
+        lowerer.noLowering(
+          "Promise.race with this combined result type",
+          call,
+          "the entries' value types must combine into a representable union",
+        );
+      }
     }
+    const resultT = combined;
     const resultArms =
       resultT.inner.kind === "union"
         ? (lowerer.unions.get(resultT.inner.unionId)?.arms ?? [])
@@ -239,19 +276,8 @@ export function lowerPromiseStaticCall(
       }
       return resultArms.some((a) => typeEquals(a, inner));
     };
-    // A Promise<never> entry (the deadline idiom: `new Promise<never>((_,
-    // reject) => setTimeout(reject, ms))`) can only reject, so it races
-    // under any result type; its inner type maps to void.
-    const neverEntry = (el: ts.Expression): boolean => {
-      const t = lowerer.typeOf(el);
-      const arg =
-        t.getSymbol()?.name === "Promise"
-          ? lowerer.checker.getTypeArguments(t as ts.TypeReference)[0]
-          : undefined;
-      return arg !== undefined && (arg.flags & ts.TypeFlags.Never) !== 0;
-    };
-    const entries = argNode.elements.nodes.map((el) => {
-      const entry = lowerer.lowerExpr(el);
+    const entries = elements.map((el, i) => {
+      const entry = lowered?.[i] ?? lowerer.lowerExpr(el);
       if (entry.type.kind !== "promise") {
         lowerer.noLowering(
           "Promise.race over non-promise entries",
@@ -260,6 +286,10 @@ export function lowerPromiseStaticCall(
         );
       }
       if (!compatible(entry.type.inner) && !(entry.type.inner.kind === "void" && neverEntry(el))) {
+        // A payload that widens into the result's (into 'unknown', or a
+        // checked conversion) keeps its promise and settlement turn.
+        if (lowerer.promisePayloadWidens(entry.type, resultT))
+          return lowerer.coerceToExpected(entry, resultT);
         lowerer.unsupported(
           "SC1090",
           el,

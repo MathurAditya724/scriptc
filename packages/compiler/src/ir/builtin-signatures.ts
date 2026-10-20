@@ -4321,6 +4321,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * errorBoxer, listenForError] → a pending promise of any[]; the boxers
    * turn the event's and the 'error' tuple into that array. */
   "events.once": { argTypes: [null, STRING, null, null, BOOL], result: VOID },
+  /** events.once(emitter, name, { signal }) (scr_events_once_signal.c):
+   * events.once's arguments plus the checked-dynamic signal (an
+   * AbortSignal or undefined). */
+  "events.onceSignal": { argTypes: [null, STRING, null, null, BOOL, DYN], result: VOID },
   /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
    * value's type that copies the borrowed already-resolved `value` promise
    * when the timer (or immediate) fires; ref false unrefs it. The result

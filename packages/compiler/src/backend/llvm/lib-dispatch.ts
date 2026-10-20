@@ -755,7 +755,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   }
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
   // events.once builds typed listener adapters beside the emitter calls.
-  if (e.fn === "events.once") return host.emitErrorsEventsLibCall(e);
+  if (e.fn === "events.once" || e.fn === "events.onceSignal")
+    return host.emitErrorsEventsLibCall(e);
   switch (prefix) {
     case "fetch":
     case "abort":
