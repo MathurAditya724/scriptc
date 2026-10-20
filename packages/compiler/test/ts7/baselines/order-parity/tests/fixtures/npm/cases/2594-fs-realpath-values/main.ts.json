@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2594-fs-realpath-values/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Could not find a declaration file for module 'fs.realpath'. '<repo>/tests/fixtures/npm/node_modules/fs.realpath/index.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/fs.realpath` if it exists or add a new declaration (.d.ts) file containing `declare module 'fs.realpath';`",
+   "loc": {
+    "file": "<repo>/tests/fixtures/npm/cases/2594-fs-realpath-values/main.ts",
+    "start": 443,
+    "end": 456
+   }
+  }
+ ]
+}

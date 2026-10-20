@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6485-cjs-whole-export-members/plain.cjs",
+  "<repo>/tests/corpus/6485-cjs-whole-export-members/rebound.cjs",
+  "<repo>/tests/corpus/6485-cjs-whole-export-members/main.cjs"
+ ],
+ "diags": []
+}

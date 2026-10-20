@@ -51,7 +51,8 @@ function isRequireValue(expr: ts.Expression): boolean {
   const args = e.arguments.nodes;
   if (e.expression.text === "require")
     return (
-      args.length === 1 && (ts.isStringLiteral(args[0]!) || ts.isNoSubstitutionTemplateLiteral(args[0]!))
+      args.length === 1 &&
+      (ts.isStringLiteral(args[0]!) || ts.isNoSubstitutionTemplateLiteral(args[0]!))
     );
   if (e.expression.text === "__toESM")
     return (args.length === 1 || args.length === 2) && isRequireValue(args[0]!);
@@ -69,7 +70,11 @@ export function splitRequireDeclarations(sf: ts.SourceFile): string | null {
     const decls = list.declarations.nodes;
     const flags = list.flags;
     const keyword =
-      (flags & ts.NodeFlags.Const) !== 0 ? "const" : (flags & ts.NodeFlags.Let) !== 0 ? "let" : "var";
+      (flags & ts.NodeFlags.Const) !== 0
+        ? "const"
+        : (flags & ts.NodeFlags.Let) !== 0
+          ? "let"
+          : "var";
     const stores = decls.map((d) =>
       ts.isIdentifier(d.name) && d.initializer !== undefined ? exportStoreOf(d.initializer) : null,
     );

@@ -31,7 +31,8 @@ function expectSameBehavior(source: string): string {
   writeFileSync(join(dir, "lib", "index.js"), lib);
   writeFileSync(join(dir, "original.cjs"), source);
   writeFileSync(join(dir, "rewritten.cjs"), result!);
-  const run = (file: string) => spawnSync(process.execPath, [join(dir, file)], { encoding: "utf8" });
+  const run = (file: string) =>
+    spawnSync(process.execPath, [join(dir, file)], { encoding: "utf8" });
   const oracle = run("original.cjs");
   expect(oracle.status).toBe(0);
   expect(run("rewritten.cjs").stdout).toBe(oracle.stdout);
@@ -73,5 +74,7 @@ tok("A"); tok("B");
 re[t.B] = "b";
 console.log(JSON.stringify(exports.tokens), exports.re.length, t === exports.tokens);
 `);
-  expect(out).toContain("var re = []; exports.re = re; var t = {}; module.exports.tokens = t; var R = 0;");
+  expect(out).toContain(
+    "var re = []; exports.re = re; var t = {}; module.exports.tokens = t; var R = 0;",
+  );
 });

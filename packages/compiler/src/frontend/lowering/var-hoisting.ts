@@ -371,7 +371,11 @@ function cannotReenter(stmt: ts.Statement): boolean {
     } else if (ts.isIdentifier(n) && (n.text === "module" || n.text === "exports")) {
       // Only as the root of a store target.
       let target: ts.Node = n;
-      while (target.parent !== undefined && ts.isPropertyAccessExpression(target.parent) && target.parent.expression === target)
+      while (
+        target.parent !== undefined &&
+        ts.isPropertyAccessExpression(target.parent) &&
+        target.parent.expression === target
+      )
         target = target.parent;
       const assign = target.parent;
       if (

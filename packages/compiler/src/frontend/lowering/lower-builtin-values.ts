@@ -727,11 +727,7 @@ export function lowerFsRealpathSyncValue(lowerer: Lowerer, loc: SrcLoc): IrExpr 
     const path = varRef("path", DYN, loc);
     const options = varRef("options", DYN, loc);
     const fence = (what: string): IrStmt => {
-      const diag = unsupportedDiag(
-        "SC1090",
-        loc,
-        `fs.realpathSync as a value called with ${what}`,
-      );
+      const diag = unsupportedDiag("SC1090", loc, `fs.realpathSync as a value called with ${what}`);
       lowerer.runtimeFences.push(diag);
       return {
         kind: "runtimeFence",
@@ -748,7 +744,13 @@ export function lowerFsRealpathSyncValue(lowerer: Lowerer, loc: SrcLoc): IrExpr 
       type: BOOL,
       loc,
     });
-    const encoding: IrExpr = { kind: "dynKeyGet", key: strLit("encoding", loc), value: options, type: DYN, loc };
+    const encoding: IrExpr = {
+      kind: "dynKeyGet",
+      key: strLit("encoding", loc),
+      value: options,
+      type: DYN,
+      loc,
+    };
     const defaultEncoding: IrExpr = {
       kind: "logical",
       op: "||",

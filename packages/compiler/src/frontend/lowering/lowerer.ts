@@ -12877,7 +12877,8 @@ export class Lowerer {
       return lowerUtilTypeValue(this, bi.member, loc);
     if (bi.module === "util" && bi.member === "getSystemErrorMap")
       return lowerSystemErrorMapValue(this, loc);
-    if (bi.module === "fs" && bi.member === "realpathSync") return lowerFsRealpathSyncValue(this, loc);
+    if (bi.module === "fs" && bi.member === "realpathSync")
+      return lowerFsRealpathSyncValue(this, loc);
     if (
       bi.module === "fs" &&
       builtinModuleFnOf(this, bi.module, bi.member)?.fn === "fs.callbackCall"
