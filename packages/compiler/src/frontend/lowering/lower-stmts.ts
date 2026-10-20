@@ -1,3 +1,4 @@
+import { declaredMemberOf } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
 import {
   matchAllRowsReadByElements,
@@ -7504,6 +7505,31 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         const recvIr = lowerer.mapTypeOf(lowerer.typeOf(expr.left.expression));
         if (recvIr?.kind === "record") {
           const shape = lowerer.shapes.get(recvIr.shapeId);
+          if (
+            shape?.indexValue &&
+            shape.fields.length === 0 &&
+            declaredMemberOf(lowerer, expr.left.expression, expr.left.name.text)
+          ) {
+            // A declared member of a literal stored as a pure index-signature
+            // record (dictSpreadLiteralShape): a keyed write of that key.
+            const loc = locOf(expr);
+            const obj = lowerer.lowerExpr(expr.left.expression);
+            if (obj.type.kind === "record") {
+              const value = lowerer.intoIndexValueSlot(
+                lowerer.lowerExprExpecting(expr.right, shape.indexValue),
+                shape.indexValue,
+                expr.right,
+              );
+              return {
+                kind: "recordKeySet",
+                obj,
+                shapeId: obj.type.shapeId,
+                key: { kind: "strLit", value: expr.left.name.text, type: STRING, loc },
+                value,
+                loc,
+              };
+            }
+          }
           if (
             shape?.indexValue &&
             !shape.fields.some(
