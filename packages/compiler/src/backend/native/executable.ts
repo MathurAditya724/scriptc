@@ -505,6 +505,7 @@ export async function compileCInternal(
       : []),
     ...(opts.dynInvoke || opts.workers || nativeFetch ? [rt(join(rtDir, "scr_dyn_invoke.c"))] : []),
     ...(opts.dc ? [rt(join(rtDir, "scr_dc.c"))] : []),
+    ...(opts.dynTier === true ? [rt(join(rtDir, "scr_js_value.c"))] : []),
     ...(opts.eventTarget || nativeFetch ? [rt(join(rtDir, "scr_event_target.c"))] : []),
     ...(opts.dynAsync || opts.dynInvoke || opts.workers || opts.dc || opts.fileHandle || nativeFetch
       ? [rt(join(rtDir, "scr_async_dyn.c"))]

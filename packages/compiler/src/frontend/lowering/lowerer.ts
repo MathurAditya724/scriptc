@@ -120,6 +120,7 @@ import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
+import { promoteJsvals } from "../../ir/jsval.js";
 import {
   analyzeTiers,
   dynamicStatementCount,
@@ -6949,7 +6950,7 @@ export class Lowerer {
       this.diags.length > 0
         ? null
         : {
-            irVersion: 16,
+            irVersion: 17,
             sourceFile: this.entry.fileName,
             functions,
             classes: artifacts.classes,
@@ -6973,6 +6974,10 @@ export class Lowerer {
     this.dynamicFunctions = assignLegacyTiers(functions);
     if (this.dynamicFunctions.length > 0)
       this.dynamicBodies = functions.filter((fn) => fn.tier === "dynamic");
+    // Dynamic-tier functions compute with jsval values (ir/jsval.ts). The
+    // rewrite keeps every dynamic operation dynamic (each dyn operator
+    // becomes its js twin), so coverage's dynamic statements are unchanged.
+    if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
     return {
       module,
       diagnostics: this.diags,

@@ -1,3 +1,4 @@
+import { jsTruthy } from "./jsval.js";
 import { type ArraySearchKind, emitArraySearchHelpers } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitLlvmLayouts } from "./layouts.js";
@@ -5977,6 +5978,8 @@ export class LlEmitter {
         B.line(`${truthy} = call zeroext i1 @scr_dyn_truthy(ptr ${valueName})`);
         return truthy;
       }
+      case "jsval":
+        return jsTruthy(this, valueName);
       default:
         throw new LlvmUnsupportedError(`truthy:${unionArm ? "union:" : ""}${kind}`);
     }

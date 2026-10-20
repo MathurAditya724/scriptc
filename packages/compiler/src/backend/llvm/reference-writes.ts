@@ -118,6 +118,20 @@ const INERT_LIB_CALLS = new Set([
   "cp.spawnSyncOpts",
 ]);
 
+/** jsval conversions (ir/jsval.ts): no user code, no stores. */
+const JS_CONVERSIONS = new Set([
+  "js.fromDyn",
+  "js.toDyn",
+  "js.fromF64",
+  "js.fromBool",
+  "js.fromStr",
+  "js.fromBigInt",
+  "js.toF64",
+]);
+
+/** jsval conversions of static primitives. */
+const JS_PRIMITIVE_SOURCES = new Set(["js.fromF64", "js.fromBool", "js.fromStr", "js.fromBigInt"]);
+
 /** Array methods that never release an existing element or run user code. */
 const PRESERVING_ARRAY_METHODS = new Set([
   "length",
@@ -635,6 +649,13 @@ export class ReferenceWrites {
    * accessors) or absent. */
   private inertLibCall(e: IrExpr & { kind: "libCall" }): boolean {
     if (e.fn === "error.nodeThrow" || isStableReceiverOperand(e, "")) return true;
+    // jsval conversions run no user code: they move a value between its
+    // dyn and jsval forms, and js.toF64 is dynCheck's number check. A
+    // comparison is inert exactly when its dyn twin is: every operand a
+    // wrapped primitive.
+    if (JS_CONVERSIONS.has(e.fn)) return true;
+    if (e.fn === "js.compare")
+      return e.args.every((arg) => arg.type.kind !== "jsval" || this.jsPrimitive(arg));
     if (e.fn === "error.newOptions")
       return e.args.every(
         (arg) =>
@@ -652,6 +673,17 @@ export class ReferenceWrites {
           // A wrapped primitive has no methods to call back into.
           (arg.kind === "dynFrom" && this.primitive(arg.value.type))),
     );
+  }
+
+  /** A jsval operand made from a primitive: it has no methods to call
+   * back into. */
+  private jsPrimitive(e: IrExpr): boolean {
+    if (e.kind !== "libCall") return false;
+    if (e.fn === "js.fromDyn") {
+      const value = e.args[0]!;
+      return value.kind === "dynFrom" && this.primitive(value.value.type);
+    }
+    return JS_PRIMITIVE_SOURCES.has(e.fn);
   }
 
   /** Numbers, booleans, strings and unit values (and unions of them). */

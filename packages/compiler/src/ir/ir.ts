@@ -337,6 +337,17 @@ export type IrType =
    * <type>' first" hint — or, in JavaScript sources, met with per-site
    * checked lowerings (SEMANTICS.md 115-117). */
   | { kind: "dyn" }
+  /** A dynamic-tier value (two-tier design §5.1, stage S3): one 64-bit
+   * NaN-boxed word. Numbers, booleans, undefined and null are immediates
+   * (no allocation); strings and BigInts are the static tier's own objects
+   * under a pointer tag; every other value is a `dyn` cell under the cell
+   * tag. Only dynamic-tier functions operate on it (ir/tiers.ts, I1), and
+   * only through the `js.*` builtins, locals and moves: the jsval pass
+   * (ir/jsval.ts) introduces it after lowering, never the frontend. Static
+   * functions see it only as the operand or result of a boundary
+   * conversion. Refcounted: retain/release skip immediates. 32-bit targets
+   * represent it as a boxed `dyn` cell. */
+  | { kind: "jsval" }
   /** A catch binding or its closure capture (never parameters, returns,
    * fields, arms or elements). The one global form is a module's recorded
    * evaluation error, written only from that module's catch binding and
@@ -437,6 +448,7 @@ const POINTER_KIND_LIST = [
   "record",
   "union",
   "dyn",
+  "jsval",
   "caught",
   "promise",
   "generator",
@@ -490,6 +502,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   record: "",
   union: "scr_union",
   dyn: "scr_dyn",
+  jsval: "scr_js",
   caught: "scr_caught",
   promise: "scr_promise",
   generator: "scr_gen",
@@ -595,6 +608,7 @@ export const CHILDWRITER_T: IrType = { kind: "childWriter" };
 export const PROCSTREAM_T: IrType = { kind: "procStream" };
 export const VOID: IrType = { kind: "void" };
 export const DYN: IrType = { kind: "dyn" };
+export const JSVAL: IrType = { kind: "jsval" };
 export const CAUGHT: IrType = { kind: "caught" };
 export const UNDEFINED_T: IrType = { kind: "undefinedT" };
 export const NULL_T: IrType = { kind: "nullT" };
@@ -840,6 +854,7 @@ export function typeKey(t: IrType): string {
     case "searchParams":
     case "symbol":
     case "dyn":
+    case "jsval":
     case "caught":
     case "void":
       return t.kind;
@@ -967,7 +982,7 @@ export function isRefCounted(t: IrType): boolean {
 
 export interface IrModule {
   /** Bumped on any breaking IR change; serialize.ts refuses mismatches. */
-  irVersion: 16;
+  irVersion: 17;
   sourceFile: string;
   functions: IrFunction[];
   /** Class shapes. Constructors and methods are ordinary module functions
@@ -3966,6 +3981,7 @@ function isJsonSafeAt(
     // diagnostic.
     case "symbol":
     case "caught":
+    case "jsval":
     case "promise":
     case "generator":
     case "moduleNs":

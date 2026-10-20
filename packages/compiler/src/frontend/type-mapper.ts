@@ -648,6 +648,7 @@ export function formatIrType(
       case "bool":
         return append("boolean");
       case "dyn":
+      case "jsval":
         return append("unknown");
       case "caught":
         // What tsc calls the binding; the fence messages carry the real story.
