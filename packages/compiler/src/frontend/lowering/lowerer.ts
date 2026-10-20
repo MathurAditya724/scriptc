@@ -34,6 +34,7 @@ import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
+import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
@@ -11683,6 +11684,9 @@ export class Lowerer {
   isSelfReference(ident: ts.Identifier): boolean {
     const ctx = this.ctx;
     if (!ctx.selfSymbol) return false;
+    // A reassigned JavaScript declaration names its module global, which
+    // may hold another function by the time the body runs.
+    if (isRebindableFunctionSymbol(this, ctx.selfSymbol)) return false;
     // The self binding can be shadowed by a scoped local of the same symbol?
     // No — a shadow is a different symbol; symbol identity is exact.
     return this.checker.getSymbolAtLocation(ident) === ctx.selfSymbol;

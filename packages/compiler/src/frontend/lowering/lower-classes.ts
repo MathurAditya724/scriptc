@@ -100,7 +100,7 @@ import { isAssertClassNew } from "./assert-instances.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
-import { knownBufEncoding } from "./containers/bytes.js";
+import { knownBufEncoding, lowerNodeModulesBufferConstruct } from "./containers/bytes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
@@ -9204,6 +9204,11 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // A dependency's deprecated `new Buffer(...)` fallback (containers/bytes.ts).
+  {
+    const buffer = lowerNodeModulesBufferConstruct(lowerer, expr);
+    if (buffer) return buffer;
+  }
   // new Function(...): Node's EvalError under
   // --disallow-code-generation-from-strings (code-generation.ts).
   if (codeGenerationCalleeOf(lowerer, expr.expression) === "Function")

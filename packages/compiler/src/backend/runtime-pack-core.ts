@@ -86,6 +86,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   dynTier: boolean;
   streamDyn: boolean;
   eventsOnceSignal: boolean;
+  dynBufferNum: boolean;
   warningReplace: boolean;
   stdioExtended: boolean;
   nativeFetch: boolean;
@@ -279,6 +280,7 @@ export function effectiveRuntimeFeatures(
     dynTier: features.dynTier === true,
     streamDyn: features.streamDyn === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
+    dynBufferNum: features.dynBufferNum === true,
     warningReplace: features.warningReplace === true,
     stdioExtended: features.stdioExtended === true,
     nativeFetch,

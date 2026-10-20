@@ -5917,11 +5917,36 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
     writes = indexed;
     lowerer.jsBindingWritesByOwner.set(owner, writes);
   }
-  return (writes.get(decl.name.text) ?? []).some(
-    (node) =>
-      lowerer.resolveValueSymbol(node.left as ts.Identifier) === symbol &&
-      (lowerer.typeOf(node.right).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+  const candidates = (writes.get(decl.name.text) ?? []).filter(
+    (node) => lowerer.resolveValueSymbol(node.left as ts.Identifier) === symbol,
   );
+  if (
+    candidates.some(
+      (node) =>
+        (lowerer.typeOf(node.right).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+    )
+  )
+    return true;
+  // A plain JavaScript write of a value the declared type cannot hold (the
+  // checker does not report it): buffer-crc32 replaces its number[] table
+  // with `new Int32Array(table)`. Only a different representation counts;
+  // writes that coerce into the declared type keep it.
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+  if (declared === null || declared.kind === "dyn" || declared.kind === "union") return false;
+  return candidates.some((node) => {
+    if (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return false;
+    const written = lowerer.mapTypeOf(lowerer.typeOf(node.right));
+    return (
+      written !== null &&
+      written.kind !== "dyn" &&
+      written.kind !== "union" &&
+      !isUnitType(written) &&
+      lowerer.dynConvertible(written) &&
+      lowerer.dynConvertible(declared) &&
+      !typeEquals(written, declared) &&
+      (written.kind !== declared.kind || written.kind === "bytes")
+    );
+  });
 }
 
 function immediatelyGuardedAbsenceProbe(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
