@@ -34,7 +34,7 @@ const fn = (name: string, body: IrStmt[]): IrFunction => ({
   body,
 });
 const mod = (functions: IrFunction[], extra: Partial<IrModule> = {}): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: "stack-observations.ts",
   entry: "%main",
   functions,

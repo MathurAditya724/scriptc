@@ -6,6 +6,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#elif defined(__ARM_NEON) && defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 /* Live heap-string count for the RC audit lane (-DSCR_RC_AUDIT): the test
  * harness builds with it to prove the emitted retain/release discipline
@@ -836,24 +841,93 @@ static __attribute__((noinline)) int scr_str_cmp_u16_units(const ScrStr *a, cons
   }
 }
 
+/* The memory index of the first differing byte of two words; x is their
+ * xor and is not zero. */
+static inline size_t scr_word_mismatch(uint64_t x) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+  return (size_t)__builtin_clzll(x) >> 3;
+#else
+  return (size_t)__builtin_ctzll(x) >> 3;
+#endif
+}
+
+static inline size_t scr_word32_mismatch(uint32_t x) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+  return (size_t)__builtin_clz(x) >> 3;
+#else
+  return (size_t)__builtin_ctz(x) >> 3;
+#endif
+}
+
+/* The index of the first byte where the n-byte spans a and b differ, or n
+ * when they are equal. Spans of at least 8 bytes compare words up to byte
+ * 32, then 32-byte blocks with SSE2 or NEON where the target has them,
+ * then words; the last word overlaps bytes already compared. Shorter
+ * spans compare two overlapping 4-byte halves, or bytes. */
+static inline size_t scr_span_mismatch(const char *a, const char *b, size_t n) {
+  size_t i = 0;
+  uint64_t l, r;
+  if (n < sizeof(uint64_t)) {
+    if (n >= sizeof(uint32_t)) {
+      uint32_t l4, r4;
+      memcpy(&l4, a, 4);
+      memcpy(&r4, b, 4);
+      if (l4 != r4) return scr_word32_mismatch(l4 ^ r4);
+      memcpy(&l4, a + n - 4, 4);
+      memcpy(&r4, b + n - 4, 4);
+      return l4 != r4 ? n - 4 + scr_word32_mismatch(l4 ^ r4) : n;
+    }
+    while (i < n && a[i] == b[i]) i++;
+    return i;
+  }
+  memcpy(&l, a, 8);
+  memcpy(&r, b, 8);
+  if (l != r) return scr_word_mismatch(l ^ r);
+  size_t head = n < 32 ? n & ~(size_t)7 : 32;
+  for (i = sizeof(uint64_t); i < head; i += sizeof(uint64_t)) {
+    memcpy(&l, a + i, 8);
+    memcpy(&r, b + i, 8);
+    if (l != r) return i + scr_word_mismatch(l ^ r);
+  }
+#if defined(__SSE2__)
+  for (; n - i >= 32; i += 32) {
+    __m128i e0 = _mm_cmpeq_epi8(_mm_loadu_si128((const __m128i *)(a + i)),
+                                _mm_loadu_si128((const __m128i *)(b + i)));
+    __m128i e1 = _mm_cmpeq_epi8(_mm_loadu_si128((const __m128i *)(a + i + 16)),
+                                _mm_loadu_si128((const __m128i *)(b + i + 16)));
+    uint32_t equal = (uint32_t)_mm_movemask_epi8(e0) | (uint32_t)_mm_movemask_epi8(e1) << 16;
+    if (equal != UINT32_MAX) return i + (size_t)__builtin_ctz(~equal);
+  }
+#elif defined(__ARM_NEON) && defined(__aarch64__)
+  /* A differing block leaves the loop; the word loop below finds the byte. */
+  for (; n - i >= 32; i += 32) {
+    uint8x16_t e0 = vceqq_u8(vld1q_u8((const uint8_t *)a + i), vld1q_u8((const uint8_t *)b + i));
+    uint8x16_t e1 =
+        vceqq_u8(vld1q_u8((const uint8_t *)a + i + 16), vld1q_u8((const uint8_t *)b + i + 16));
+    if (vminvq_u8(vandq_u8(e0, e1)) != 0xff) break;
+  }
+#endif
+  for (; n - i >= sizeof(uint64_t); i += sizeof(uint64_t)) {
+    memcpy(&l, a + i, 8);
+    memcpy(&r, b + i, 8);
+    if (l != r) return i + scr_word_mismatch(l ^ r);
+  }
+  if (i == n) return n;
+  size_t j = n - sizeof(uint64_t);
+  memcpy(&l, a + j, 8);
+  memcpy(&r, b + j, 8);
+  return l != r ? j + scr_word_mismatch(l ^ r) : n;
+}
+
 /* UTF-16 ordering over canonical WTF-8. Equal bytes can be skipped even
  * inside a multibyte character: unequal continuation bytes preserve code
  * point order. Differing lead bytes for U+E000..U+FFFF versus a
  * supplementary character reverse byte order, because the latter starts
  * with a UTF-16 high surrogate below U+E000. A lone surrogate against a
  * supplementary character compares their units. */
-int scr_str_cmp_u16(ScrStr *a, ScrStr *b) {
-  if (a == b) return 0;
+__attribute__((noinline)) int scr_str_cmp_u16_bytes(const ScrStr *a, const ScrStr *b) {
   size_t common = a->len < b->len ? a->len : b->len;
-  size_t i = 0;
-  while (common - i >= sizeof(uint64_t)) {
-    uint64_t left, right;
-    memcpy(&left, a->data + i, sizeof(left));
-    memcpy(&right, b->data + i, sizeof(right));
-    if (left != right) break;
-    i += sizeof(left);
-  }
-  while (i < common && a->data[i] == b->data[i]) i++;
+  size_t i = scr_span_mismatch(a->data, b->data, common);
   if (i == common) return (a->len > b->len) - (a->len < b->len);
   unsigned char left = (unsigned char)a->data[i];
   unsigned char right = (unsigned char)b->data[i];
@@ -864,6 +938,16 @@ int scr_str_cmp_u16(ScrStr *a, ScrStr *b) {
                        0))
     return scr_str_cmp_u16_units(a, b, i);
   return left < right ? -1 : 1;
+}
+
+/* Byte order differs from UTF-16 order only where both differing bytes are
+ * at least 0xED, which a proven-ASCII string never has: such pairs compare
+ * with memcmp. The scan stays out of line in a global function, so program
+ * builds can import this body. */
+int scr_str_cmp_u16(ScrStr *a, ScrStr *b) {
+  if (a == b) return 0;
+  if (scr_str_known_ascii(a) || scr_str_known_ascii(b)) return scr_str_cmp(a, b);
+  return scr_str_cmp_u16_bytes(a, b);
 }
 
 /* ── interned strings ─────────────────────────────────────────────────

@@ -48,8 +48,8 @@ function fromUnion(u: E1 | E2): string {
 console.log(fromUnion({ kind: "one", b: "s", count: 1 }));
 
 const xs = [1, 2, 3];
-const { length: len } = xs; // object patterns over arrays keep the fence
-console.log(len);
+const { push: append } = xs; // object patterns over arrays read positions and length only
+console.log(typeof append);
 
 const indexed: Record<string, number> = { a: 1 };
 const { ...allOfIt } = indexed; // index-signature rest needs overflow packing

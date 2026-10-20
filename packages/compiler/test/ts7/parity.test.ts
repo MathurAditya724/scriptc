@@ -488,7 +488,7 @@ test("symbol declarations resolve back into the same client AST", () => {
   expect(sym7).toBeDefined();
   const aliased = w.c7.getAliasedSymbol(sym7!);
   expect(aliased.name).toBe("answer");
-  const declHandle = aliased.declarations[0];
+  const declHandle = aliased.declarationHandles[0];
   expect(declHandle).toBeDefined();
   const decl = declHandle!.resolve(w.p7.project);
   expect(decl).toBeDefined();
