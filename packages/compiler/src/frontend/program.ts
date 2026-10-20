@@ -5526,7 +5526,8 @@ function preflight7(load: LoadResult): {
         const arg = call.arguments.nodes[0];
         if (call.expression.kind !== ts.SyntaxKind.ImportKeyword || arg === undefined) continue;
         if (!ts.isStringLiteralLike(arg) || isUnloadedPackage(arg.text)) continue;
-        const root = resolveImport7(program, sf, arg.text) ?? npmStaticDepSf7(program, sf, arg.text);
+        const root =
+          resolveImport7(program, sf, arg.text) ?? npmStaticDepSf7(program, sf, arg.text);
         if (root === null || root.isDeclarationFile || startup.has(root)) continue;
         if (dynamicImportRejections.has(root) || covered.has(root)) continue;
         seen.clear();
