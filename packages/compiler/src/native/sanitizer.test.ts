@@ -101,6 +101,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
               http: false,
               http2: false,
               dgram: false,
+              dnsPromises: false,
               watch: false,
               foreignFfi: false,
               nodeTest: false,

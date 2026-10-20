@@ -53,11 +53,13 @@ Type-only imports follow Node.js's type stripping. `import type` and `export typ
 scriptc compiles a package automatically when it:
 
 - ships its own type declarations, or is typed by its DefinitelyTyped `@types/` package, or is a dependency of another package that has no declarations at all, and
-- ships readable JavaScript: unminified, or minified by a bundler whose helpers keep their names. Another minified entry point qualifies when the package also ships the per-file build it was bundled from, and their source maps show the same sources with the same contents, including any dependencies the bundle inlined. scriptc then compiles the per-file build.
+- ships readable JavaScript: unminified, or minified by a bundler whose helpers keep their names. Another minified entry point qualifies when the package also ships the per-file build it was bundled from, and their source maps show the same sources with the same contents. A dependency the bundle inlines must appear in it as that dependency's installed JavaScript, since the dependency's own source map cannot show which code it installs; a dependency the bundle imports is shared by both builds. scriptc then compiles the per-file build.
 
 The declarations check your program; the package's JavaScript compiles with the types scriptc infers from it. A program that doesn't typecheck against the inferred types, for example because an `@types/` package describes another release, fails the build at that use.
 
 A package that doesn't meet these requirements, or that uses something scriptc can't compile, gets a package-specific diagnostic that explains why. The usual fixes are to switch to a version or alternative package that compiles, or to replace the call with code you write yourself.
+
+`graceful-fs` is the exception: it compiles as `node:fs` instead of from its JavaScript, with one [documented difference](/docs/limitations#graceful-fs).
 
 <span id="value-conversion" />
 <span id="static-package-compilation-experimental" />
