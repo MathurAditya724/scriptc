@@ -6,7 +6,12 @@ import {
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
-import { builtinClassValue, builtinMemberClassKind } from "./builtins/builtin-class-dyn.js";
+import { isJsSourceFileName } from "../tsc-codes.js";
+import {
+  builtinClassKind,
+  builtinClassValue,
+  builtinMemberClassKind,
+} from "./builtins/builtin-class-dyn.js";
 import {
   lifetimeRegionType,
   lowerLifetimeRegionCall,
@@ -8925,7 +8930,33 @@ export class Lowerer {
       }
       // A runtime-provided class value has no checked-dynamic form that
       // inspects as Node's does (`[Function: EventEmitter] { ... }`).
+      // JavaScript sources already read EventEmitter and the stream
+      // classes as the runtime's untyped constructors (builtin-class-dyn.ts),
+      // so one of those classes turning untyped there becomes the same
+      // constructor. `require("events")` is the EventEmitter class itself,
+      // so its module binding is too (`ReleaseEmitter = EventEmitter` over
+      // `const EventEmitter = require("events")`).
+      if (
+        expr.type.kind === "moduleNs" &&
+        expr.type.moduleId === "builtin:events" &&
+        isJsSourceFileName(expr.loc.file)
+      ) {
+        const value = builtinClassValue(0, expr.loc);
+        if (expr.kind === "moduleNsRef") return value;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr, loc: expr.loc }],
+          result: value,
+          type: DYN,
+          loc: expr.loc,
+        };
+      }
       if (expr.type.kind === "classval" && this.classes.get(expr.type.className)?.def.runtime) {
+        // Only the class itself: a slot of the class's type may hold a
+        // program subclass, which this constructor would misidentify.
+        const kind = builtinClassKind(expr.type.className);
+        if (kind !== null && expr.kind === "classRef" && isJsSourceFileName(expr.loc.file))
+          return builtinClassValue(kind, expr.loc);
         this.pushDiag(
           unsupportedDiag(
             "SC1090",
@@ -9005,6 +9036,24 @@ export class Lowerer {
         );
       const handleOk = DYN_HANDLE_KINDS.has(expected.kind);
       noteUntypedStreamFlow(this, expected);
+      // `[EventEmitter]` in JavaScript builds an untyped array of the
+      // untyped constructor, which a typed array of the class cannot
+      // hold: no class check admits that constructor.
+      if (
+        expr.kind === "dynArrLit" &&
+        expected.kind === "array" &&
+        expected.elem.kind === "classval" &&
+        expr.elems.some((elem) => elem.kind === "libCall" && elem.fn === "dyn.builtinClass")
+      ) {
+        this.pushDiag(
+          unsupportedDiag(
+            "SC1090",
+            expr.loc,
+            `holding runtime-provided class values ('${expected.elem.className.slice(1)}') in a typed array`,
+          ),
+        );
+        throw new PoisonError();
+      }
       if (
         canDynCheckTo(
           expected,

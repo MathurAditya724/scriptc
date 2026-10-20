@@ -132,6 +132,7 @@ import { recordTextCodecClass } from "../../ir/ir.js";
 import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
 import type { ClassInfo } from "./lower-classes.js";
 import {
+  builtinRequireBaseOf,
   collectInheritedJsFieldWrites,
   collectVirtualJsMethods,
   decoratorNodesOf,
@@ -373,7 +374,8 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
       const heritage = decl.heritageClauses?.nodes.find(
         (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
       )?.types?.nodes[0]?.expression;
-      if (heritage && ts.isCallExpression(heritage)) computed.add(decl);
+      if (heritage && ts.isCallExpression(heritage) && !builtinRequireBaseOf(lowerer, heritage))
+        computed.add(decl);
     }
   // Descendants need the computed ancestor's completed layout before
   // their own fields and inherited methods can be collected.

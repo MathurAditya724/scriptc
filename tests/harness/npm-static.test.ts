@@ -1438,6 +1438,15 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     ]);
   }, 180_000);
 
+  // 2595: a minified chunk whose top-level var statement mixes require
+  // bindings with a class extending the events binding; the bindings own no
+  // storage, so the constructor reaches the modules through them.
+  test("bundled chunk 2595-bundled-chunk-emitter builds its emitters through require bindings", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2595-bundled-chunk-emitter/main.ts"), [
+      "gtchunkee",
+    ]);
+  }, 180_000);
+
   // A whitespace/syntax-minified bundle whose helpers keep their names is
   // judged by the recognizers, not refused up front as minified.
   test("--npm-static=auto opts a minified bundle with named helpers in", () => {
