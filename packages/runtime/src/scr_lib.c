@@ -10400,7 +10400,9 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem) {
  * keep other surrogates lone, WTF-8 encode. */
 static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), void *src) {
   if (n == 1) return scr_str_from_char_code_one((double)unit(src, 0));
-  char *out = malloc(n * 3 + 1); /* worst case: 3 bytes per UTF-16 unit */
+  /* Up to 64 units encode on the stack (3 bytes per UTF-16 unit at most). */
+  char small[64 * 3 + 1];
+  char *out = n <= 64 ? small : malloc(n * 3 + 1);
   if (!out) {
     scr_trap("scriptc: out of memory\n");
   }
@@ -10417,8 +10419,17 @@ static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), vo
     o += scr_wtf8_put(out + o, cp);
   }
   ScrStr *s = scr_str_new(out, o);
-  free(out);
+  if (out != small) free(out);
   return s;
+}
+
+static uint32_t scr_fcc_units_unit(void *src, size_t i) {
+  return scr_to_uint32(((const double *)src)[i]) & 0xFFFFu;
+}
+
+/* String.fromCharCode(c0, ..., cn-1) with the codes in a caller's array. */
+ScrStr *scr_str_from_char_codes(const double *codes, size_t n) {
+  return scr_str_from_units(n, scr_fcc_units_unit, (void *)codes);
 }
 
 static uint32_t scr_fcc_arr_unit(void *src, size_t i) {
