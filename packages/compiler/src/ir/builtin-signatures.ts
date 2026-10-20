@@ -3248,6 +3248,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** SameValue over checked values, including NaN, signed zero and reference identity. */
   "dyn.sameValue": { argTypes: [DYN, DYN], result: BOOL },
   "error.stack": { argTypes: [null], result: STRING },
+  "error.setStack": { argTypes: [null, STRING], result: VOID },
   "error.stackLimitGet": { argTypes: [], result: F64 },
   "error.stackLimitSet": { argTypes: [F64], result: VOID },
   // Receiver (any error-hierarchy object) and the program-dependent

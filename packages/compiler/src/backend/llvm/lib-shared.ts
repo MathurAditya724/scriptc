@@ -827,6 +827,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.sameValue": "scr_dyn_same_value",
   "error.toString": "scr_error_to_string",
   "error.stack": "scr_error_stack",
+  "error.setStack": "scr_error_set_stack",
   "error.stackLimitGet": "scr_stack_limit_get",
   "error.stackLimitSet": "scr_stack_limit_set",
   "class.name": "scr_classobj_name",

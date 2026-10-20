@@ -6854,10 +6854,111 @@ static void scr_errdyn_teardown(void) {
   free(cache);
 }
 
+/* An error's own `stack`: a non-enumerable accessor shared by every error,
+ * as V8 defines it. The getter formats the stack on first access, so its
+ * heading is the name and message at that point, and later reads answer
+ * the same string. Both functions find the error through the receiver or
+ * its prototype chain; on any other receiver the getter answers undefined
+ * and the setter changes nothing but the receiver's own accessor. */
+static SCR_TL ScrDyn *scr_error_stack_accessors[2];
+static SCR_TL bool scr_error_stack_accessors_registered;
+
+static void scr_error_stack_accessors_cleanup(void) {
+  for (size_t i = 0; i < 2; i++) {
+    scr_dyn_release(scr_error_stack_accessors[i]);
+    scr_error_stack_accessors[i] = NULL;
+  }
+  scr_error_stack_accessors_registered = false;
+}
+
+/* The native error behind an accessor receiver. +1 or NULL. */
+static ScrError *scr_error_stack_holder(const ScrDyn *receiver) {
+  for (const ScrDyn *current = receiver; current; current = scr_dyn_proto_next(current)) {
+    ScrError *error = scr_errdyn_err_of(current);
+    if (error) return error;
+    if (current->kind != SCR_DYN_OBJ) return NULL;
+  }
+  return NULL;
+}
+
+static ScrDyn *scr_error_stack_get_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrError *error = scr_error_stack_holder(self);
+  scr_dyn_release(self);
+  if (!error) return scr_dyn_retain(scr_dyn_undefined());
+  ScrStr *stack = scr_error_stack(error);
+  scr_error_release(error);
+  /* A name or message getter that throws leaves its exception pending. */
+  if (!stack) return NULL;
+  ScrDyn *out = scr_dyn_new_str(stack);
+  scr_str_release(stack);
+  return out;
+}
+
+static ScrDyn *scr_error_stack_set_call(ScrClosure *closure, ScrDyn *const *args, size_t argc);
+
+/* Whether an own property is an error's `stack` accessor. */
+static bool scr_dyn_entry_is_error_stack(const ScrDynEntry *entry) {
+  return entry->accessor && entry->setter && entry->setter->kind == SCR_DYN_FUNC &&
+         entry->setter->v.fn.thunk == scr_error_stack_set_call;
+}
+
+static ScrDyn *scr_error_stack_set_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrError *error = scr_error_stack_holder(self);
+  ScrDyn *value = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (error && value->kind == SCR_DYN_STR) {
+    scr_error_set_stack(error, value->v.str);
+  } else if (self->kind == SCR_DYN_OBJ) {
+    /* The native slot holds strings only, and a typed reference's
+     * snapshot names no error: the receiver's own accessor becomes a data
+     * property holding the value, which a snapshot's commit stores. */
+    ScrStr *key = scr_str_new("stack", 5);
+    ScrDynEntry *entry = scr_dyn_entry(self, key);
+    scr_str_release(key);
+    if (entry && scr_dyn_entry_is_error_stack(entry)) {
+      ScrDyn *old_value = entry->value, *old_getter = entry->getter, *old_setter = entry->setter;
+      entry->value = scr_dyn_retain(value);
+      entry->getter = entry->setter = NULL;
+      entry->accessor = false;
+      entry->writable = true;
+      scr_dyn_release(old_value);
+      scr_dyn_release(old_getter);
+      scr_dyn_release(old_setter);
+    }
+  }
+  scr_error_release(error);
+  scr_dyn_release(self);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static void scr_error_dyn_add_stack(ScrDyn *d) {
+  if (!scr_error_stack_accessors_registered) {
+    scr_error_stack_accessors_registered = true;
+    scr_atexit(scr_error_stack_accessors_cleanup);
+  }
+  if (!scr_error_stack_accessors[0]) {
+    scr_error_stack_accessors[0] =
+        scr_dyn_new_func(scr_closure_new(NULL, 0), scr_error_stack_get_call, 0, "native:error.stack", NULL);
+    scr_error_stack_accessors[1] =
+        scr_dyn_new_func(scr_closure_new(NULL, 0), scr_error_stack_set_call, 1, "native:error.stack", NULL);
+  }
+  scr_dyn_obj_set(d, "stack", 5, scr_dyn_retain(scr_dyn_undefined()));
+  ScrDynEntry *entry = &d->v.obj.entries[d->v.obj.len - 1];
+  entry->accessor = true;
+  entry->getter = scr_dyn_retain(scr_error_stack_accessors[0]);
+  entry->setter = scr_dyn_retain(scr_error_stack_accessors[1]);
+  entry->enumerable = false;
+}
+
 ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   ScrDyn *d = scr_dyn_new_obj();
   scr_dyn_obj_set(d, "%error", 6, scr_dyn_new_bool(true)); /* the checked-dynamic tree's error marker */
   d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
+  /* Node lists `stack` first among an error's own properties. */
+  scr_error_dyn_add_stack(d);
   if (e->name_present) {
     scr_dyn_obj_set(d, "name", 4, scr_dyn_new_str(e->name));
     d->v.obj.entries[d->v.obj.len - 1].enumerable = e->name_enumerable;
@@ -6878,11 +6979,6 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   if (e->message_present) {
     scr_dyn_obj_set(d, "message", 7, scr_dyn_new_str(e->message));
     d->v.obj.entries[d->v.obj.len - 1].enumerable = e->message_enumerable;
-  }
-  if (e->stack) {
-    /* Node's own `stack` is non-enumerable. */
-    scr_dyn_obj_set(d, "stack", 5, scr_dyn_new_str(e->stack));
-    d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
   }
   if (e->system_message) {
     /* SystemError: code, the read-only `info` context ({ message, path,
@@ -10998,6 +11094,17 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
     ScrDyn *out = scr_dyn_new_obj();
     for (size_t i = 0; i < v->v.obj.len; i++) {
       const ScrDynEntry *e = &v->v.obj.entries[i];
+      if (scr_dyn_entry_is_error_stack(e)) {
+        /* A stack that was already formatted copies as a non-enumerable
+         * data property; an unformatted one has nothing to copy. */
+        ScrError *error = scr_errdyn_err_of(v);
+        if (error && error->stack) {
+          scr_dyn_obj_set(out, "stack", 5, scr_dyn_new_str(error->stack));
+          out->v.obj.entries[out->v.obj.len - 1].enumerable = false;
+        }
+        scr_error_release(error);
+        continue;
+      }
       ScrDyn *c = scr_sc_clone(e->value, &self, region);
       if (c == NULL) {
         scr_dyn_release(out);
@@ -11521,7 +11628,20 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
     scr_dyn_release(table);
     return out;
   }
-  if (value->kind == SCR_DYN_OBJ) return scr_dyn_obj_own_keys(value);
+  if (value->kind == SCR_DYN_OBJ) {
+    ScrDyn *keys = scr_dyn_obj_own_keys(value);
+    if (!scr_dyn_obj_get(value, "%error", 6)) return keys;
+    /* The checked-dynamic tree's error marker is not a property. */
+    ScrDyn *names = scr_dyn_new_arr();
+    scr_dyn_arr_reserve(names, keys->v.arr.len);
+    for (size_t i = 0; i < keys->v.arr.len; i++) {
+      const ScrStr *key = keys->v.arr.items[i]->v.str;
+      if (key->len == 6 && memcmp(key->data, "%error", 6) == 0) continue;
+      scr_dyn_arr_push(names, scr_dyn_retain(keys->v.arr.items[i]));
+    }
+    scr_dyn_release(keys);
+    return names;
+  }
   if (value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES) {
     ScrDyn *keys = scr_dyn_new_arr();
     size_t length = value->kind == SCR_DYN_ARR ? value->v.arr.len :
