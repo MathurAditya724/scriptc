@@ -192,6 +192,14 @@ export function moduleWasiUnavailableSurface(
         found = { surface: "OS signals (WASI Preview 1 has no signal API)", loc };
         return false;
       }
+      if (node.fn.startsWith("wasm.")) {
+        found = {
+          surface:
+            "the WebAssembly API (a wasm32-wasi program cannot load translated modules into its own linear memory yet)",
+          loc,
+        };
+        return false;
+      }
       if (node.fn === "crypto.cipherNew") {
         found = {
           surface:

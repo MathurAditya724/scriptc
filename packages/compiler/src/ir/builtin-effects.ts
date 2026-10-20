@@ -75,6 +75,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.stdoutWriteBytes",
   "process.stderrWriteBytes",
   "procStream.write",
+  "child.stdioStream",
+  "stream.unboxDyn",
   "weakMap.new",
   "weakSet.new",
   "dyn.fromEntries",
@@ -133,6 +135,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "blob.new",
   "blob.fileNew",
   "blob.slice",
+  "wasm.compile",
+  "wasm.validate",
+  "wasm.instantiate",
+  "wasm.moduleNew",
+  "wasm.instanceNew",
+  "wasm.errorNew",
   "events.addAbortListener",
   "fetch.streamNew",
   "fetch.streamFrom",
@@ -263,6 +271,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // ("Invalid URL") or a non-http scheme (ERR_INVALID_PROTOCOL).
   "http.requestUrl",
   "http.requestUrlCb",
+  // The runtime options walk throws Node's validation errors and the
+  // fence for documented options it does not implement.
+  "http.requestDyn",
+  "http.requestDynCb",
+  "https.requestDyn",
+  "https.requestDynCb",
+  // address() of a Unix-socket server read as the AddressInfo record.
+  "net.serverAddressCheck",
   // The h2 client's throwing entries: connect on a bad/non-http
   // authority (ERR_INVALID_URL / ERR_INVALID_PROTOCOL), request on a
   // closed/destroyed session (ERR_HTTP2_INVALID_SESSION), setEncoding on
@@ -324,6 +340,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.onDyn",
   "readable.resume",
   "readable.pipe",
+  "readable.pipeGeneral",
   "readable.unpipe",
   "writable.write",
   "writable.writeStr",
@@ -346,6 +363,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.kill",
   "process.killNum",
   "process.setExitCode",
+  "process.setExitCodeTracked",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
   "process.emitWarning",
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
@@ -490,6 +508,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "json.stringifyReplacer",
   "json.stringifyValue",
   "date.nativeNew",
+  "date.nativeNewFields",
+  "date.nativeNewValue",
   "date.checkedValue",
   "util.parseArgs",
   "util.parseEnv",
@@ -559,8 +579,6 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
-  // a destination that is not a stream throws the not-supported Error
-  "dyn.builtinStreamPipe",
   "dyn.getOwnPropertyNames",
   "dyn.ownKeys",
   "dyn.getOwnPropertySymbols",
@@ -602,6 +620,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.mapSeedEntry",
   "dyn.freeze",
   "dyn.isFrozen",
+  "class.defineField",
+  "class.throwReadOnly",
+  "class.throwNotExtensible",
   "dyn.toString",
   "dyn.valueOf",
   "string.fromCodePoint",
@@ -793,6 +814,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's argument checks (ERR_INVALID_ARG_TYPE/VALUE, ERR_SOCKET_BAD_PORT).
   "dns.lookupDyn",
   "dns.lookupService",
+  "dns.promisesLookup",
+  "dns.promisesLookupService",
   "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",

@@ -1245,7 +1245,19 @@ export function lowerEmitterMethodCall(
         );
       }
       const p = cbT.params[0];
-      if (p !== undefined && !(p.kind === "bytes" && p.elem === "u8") && p.kind !== "string") {
+      // A `Buffer | string` chunk (NodeJS.ReadableStream's listener
+      // shape) takes whichever side the stream delivers.
+      const chunkUnion =
+        p?.kind === "union" &&
+        (lowerer.unions.get(p.unionId)?.arms ?? []).every(
+          (arm) => (arm.kind === "bytes" && arm.elem === "u8") || arm.kind === "string",
+        );
+      if (
+        p !== undefined &&
+        !(p.kind === "bytes" && p.elem === "u8") &&
+        p.kind !== "string" &&
+        !chunkUnion
+      ) {
         lowerer.noLowering(
           `a 'data' listener whose chunk parameter is '${lowerer.fmt(p)}'`,
           args[1]!,

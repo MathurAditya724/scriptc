@@ -1659,14 +1659,20 @@ ScrStream *scr_dyn_builtin_stream_check(const ScrDyn *value, double kind) {
   return ok ? scr_stream_retain(s) : NULL;
 }
 
-/* readable.pipe(untyped) from typed code: a constructor-function stream
- * or a boxed runtime stream as the destination. src borrowed; answers
- * nothing (the expression's value is the destination). */
-void scr_dyn_builtin_stream_pipe(ScrStream *src, ScrDyn *dest, bool end) {
-  ScrDyn *options = scr_dyn_new_obj();
-  bcs_set(options, "end", scr_dyn_new_bool(end));
-  ScrDyn *args[2] = { dest, options };
-  ScrDyn *result = bcs_pipe(src, args, 2);
-  if (result) scr_dyn_release(result);
-  scr_dyn_release(options);
+/* stream.unboxDyn (an untyped pipe destination or pipeline stage) in
+ * programs that link this unit: a constructor-function stream answers its
+ * runtime stream (+1), unless it overrides write() or end(), which the
+ * runtime's pipe would bypass; other values take scr_stream_unbox_dyn. */
+ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr *message) {
+  ScrStream *s = bcs_of(value);
+  if (s && value->kind == SCR_DYN_OBJ) {
+    ScrDyn *dest = (ScrDyn *)value;
+    if (bcs_overrides(dest, "write") || bcs_overrides(dest, "end")) {
+      if (!scr_exc_pending())
+        bcs_unsupported("pipes into a constructor-function stream with its own write() or end() are not supported yet");
+      return NULL;
+    }
+    return scr_stream_retain(s);
+  }
+  return scr_stream_unbox_dyn(value, message);
 }

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 // Case-sharded harnesses run in every job without Vitest file sharding.
 export const effectFiles = ["tests/harness/effect.test.ts", "tests/harness/effect4.test.ts"];
@@ -97,7 +98,28 @@ export const darwinFiles = [
   "tests/harness/terminal-geometry.test.ts",
 ];
 
-export function ciTestPlan({ shard, flavor, workers = 4, suite = "full" }) {
+// LeakSanitizer over the sanitized corpus on Linux (macOS ASan has none, and
+// the workflow keeps it off everywhere else): a leak fails its program. The
+// suppressions file lists intentional leaks, with the reason for each.
+export const leakSuppressions = fileURLToPath(
+  new URL("../tests/harness/lsan.supp", import.meta.url),
+);
+
+function corpusLeakEnv(flavor, platform) {
+  if (flavor !== "san" || platform !== "linux") return {};
+  return {
+    ASAN_OPTIONS: "detect_leaks=1",
+    LSAN_OPTIONS: `suppressions=${leakSuppressions}:print_suppressions=0`,
+  };
+}
+
+export function ciTestPlan({
+  shard,
+  flavor,
+  workers = 4,
+  suite = "full",
+  platform = process.platform,
+}) {
   const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(shard);
   if (
     !match ||
@@ -194,6 +216,7 @@ export function ciTestPlan({ shard, flavor, workers = 4, suite = "full" }) {
       args: ["test", ...corpusFiles],
       env: {
         ...env,
+        ...corpusLeakEnv(flavor, platform),
         SCRIPTC_TEST_WORKERS: String(workers - sideWorkers),
         SCRIPTC_LLVM_TEST_MODE: "dev",
       },

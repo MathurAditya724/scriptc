@@ -23,7 +23,19 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
   }
   if (dst.kind === "union") {
     if (src.kind === "union") {
-      return lowerer.unionRetagMappable(src.unionId, dst.unionId) ? { how: "retag" } : null;
+      if (lowerer.unionRetagMappable(src.unionId, dst.unionId)) return { how: "retag" };
+      // A field the checker types `undefined` alone (an object literal's
+      // omitted member, normalized to `?: undefined` across a union of
+      // literal types) carries the unit-only union. Into a slot with an
+      // undefined arm it lifts as that arm; its null arm cannot occur.
+      const srcArms = lowerer.unions.get(src.unionId)?.arms ?? [];
+      if (
+        srcArms.length > 0 &&
+        srcArms.every(isUnitType) &&
+        lowerer.armTag(dst.unionId, UNDEFINED_T) >= 0
+      )
+        return { how: "unitRetag" };
+      return null;
     }
     // A unit-typed source can't wrap here (unionWrap requires the
     // LITERAL unit — and no lowered shape carries a bare unit field).

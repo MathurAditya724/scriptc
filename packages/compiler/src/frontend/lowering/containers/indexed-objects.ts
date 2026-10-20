@@ -28,6 +28,8 @@ import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { locOf } from "../../program.js";
 import { typeKey } from "../../type-mapper.js";
 import { type WidthLift } from "../lowerer.js";
+import { classGeneratorIterable, iteratesThroughGenerator } from "../class-iterables.js";
+import { generatorDrain } from "../iterator-adapters.js";
 
 /** Object() and new Object() preserve known object inputs. Primitive
  * boxing and unproven checked-dynamic values retain their refusal. */
@@ -148,12 +150,29 @@ export function objectIterOverIndexShape(
   }
   // The overflow value must surface as the element type (identity, an
   // arm of a union element, or a dyn element over a dyn signature).
+  // A cast that narrows the signature's union (`Object.entries(headers as
+  // Record<string, string | string[] | undefined>)` over a signature that
+  // also holds numbers): each overflow value checks into the element type,
+  // so a value of a dropped arm throws instead of mistyping.
+  let ivNarrows = false;
   if (valueT) {
     const ivSurfaces =
       typeEquals(iv, valueT) ||
       (valueT.kind === "union" && lowerer.armTag(valueT.unionId, iv) >= 0) ||
       (valueT.kind === "dyn" && iv.kind === "dyn");
-    if (!ivSurfaces) {
+    if (
+      !ivSurfaces &&
+      iv.kind === "union" &&
+      lowerer.dynConvertible(iv) &&
+      lowerer.dynConvertible(valueT)
+    ) {
+      const ivUnion = iv;
+      const narrowArms =
+        valueT.kind === "union" ? (lowerer.unions.get(valueT.unionId)?.arms ?? []) : [valueT];
+      ivNarrows =
+        narrowArms.length > 0 && narrowArms.every((a) => lowerer.armTag(ivUnion.unionId, a) >= 0);
+    }
+    if (!ivSurfaces && !ivNarrows) {
       lowerer.unsupported(
         "SC1090",
         node,
@@ -267,6 +286,21 @@ export function objectIterOverIndexShape(
             }
           }
         }
+        // A cast that narrows the field's type (the element type keeps
+        // some of its arms): the value checks into the element type, so a
+        // dropped arm throws instead of mistyping.
+        if (lowerer.dynConvertible(f.type) && lowerer.dynConvertible(valueT)) {
+          const armsOf = (t: IrType): IrType[] =>
+            t.kind === "union" ? (lowerer.unions.get(t.unionId)?.arms ?? []) : [t];
+          const target = armsOf(valueT);
+          if (armsOf(f.type).some((a) => target.some((b) => typeEquals(a, b))))
+            return {
+              kind: "dynCheck",
+              value: { kind: "dynFrom", value: raw, type: DYN, loc },
+              type: valueT,
+              loc,
+            };
+        }
         return null;
       };
       const pushedOf = (element: IrExpr): IrExpr =>
@@ -337,17 +371,37 @@ export function objectIterOverIndexShape(
     const ksT = arrayOf(STRING);
     const ksRef = varRef("ks.0", ksT, loc);
     const kRef = varRef("k.0", STRING, loc);
-    const readValue: IrExpr | null = valueT
-      ? {
-          kind: "recordKeyGet",
-          obj: rRef,
-          shapeId: argIr.shapeId,
-          key: kRef,
-          overflowOnly: true,
-          type: valueT,
-          loc,
-        }
-      : null;
+    const readValue: IrExpr | null = !valueT
+      ? null
+      : ivNarrows
+        ? {
+            kind: "dynCheck",
+            value: {
+              kind: "dynFrom",
+              value: {
+                kind: "recordKeyGet",
+                obj: rRef,
+                shapeId: argIr.shapeId,
+                key: kRef,
+                overflowOnly: true,
+                type: iv,
+                loc,
+              },
+              type: DYN,
+              loc,
+            },
+            type: valueT,
+            loc,
+          }
+        : {
+            kind: "recordKeyGet",
+            obj: rRef,
+            shapeId: argIr.shapeId,
+            key: kRef,
+            overflowOnly: true,
+            type: valueT,
+            loc,
+          };
     const loopPushed: IrExpr =
       member === "keys"
         ? kRef
@@ -472,9 +526,37 @@ function lowerTypedObjectFromEntriesCall(
   if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!))
     return null;
   const argNode = call.arguments.nodes[0]!;
-  const argIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+  let argIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+  // A generator of entries, or a class whose [Symbol.iterator] is one,
+  // drains into the entry array the object is built from.
+  let drained: IrExpr | null = null;
+  if (argIr?.kind === "generator" || (argIr && iteratesThroughGenerator(lowerer, argIr))) {
+    const value = lowerer.lowerExpr(argNode);
+    const generator =
+      classGeneratorIterable(lowerer, value) ?? (value.type.kind === "generator" ? value : null);
+    if (generator?.type.kind !== "generator") return null;
+    // The entries take the result's value type: `[string, V]` for an
+    // object `{ [k: string]: V }`.
+    const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+    const valueT =
+      result?.kind === "record" ? lowerer.shapes.get(result.shapeId)?.indexValue : undefined;
+    if (!valueT) return null;
+    const entry: IrType = {
+      kind: "record",
+      shapeId: lowerer.shapes.intern(
+        [
+          { name: "0", type: STRING },
+          { name: "1", type: valueT },
+        ],
+        true,
+      ),
+    };
+    drained = generatorDrain(lowerer, generator, entry, locOf(call));
+    if (!drained) return null;
+    argIr = drained.type;
+  }
   if (argIr?.kind !== "array") return null;
-  const represented = tryLowerExpression(lowerer, argNode);
+  const represented = drained ?? tryLowerExpression(lowerer, argNode);
   if (represented && !typeEquals(represented.type, argIr)) return null;
   // `Object.fromEntries(rows)` over a `string[][]` VALUE — the env-line
   // idiom (`envArray.map((env) => env.split('='))`). The checker has no
@@ -522,7 +604,7 @@ function lowerTypedObjectFromEntriesCall(
   // Enumeration/filtering may keep the array in checked-dynamic storage.
   // Validate its tuple layout before calling a helper with a native-array
   // ABI; opaque tuple values themselves retain their original references.
-  const receiver = lowerer.lowerExprExpecting(argNode, argIr);
+  const receiver = drained ?? lowerer.lowerExprExpecting(argNode, argIr);
   const key = `obj.fromEntries:${argIr.elem.shapeId}:${resultT.shapeId}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {

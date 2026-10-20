@@ -108,6 +108,27 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "blob.bytes": { argTypes: [DYN], result: { kind: "promise", inner: BYTES_U8 } },
   "blob.arrayBuffer": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "blob.is": { argTypes: [DYN, F64], result: BOOL },
+  /** WebAssembly (scr_wasm.c): modules translated at build time
+   * (wasm/translate.ts), found at run time by the SHA-256 of their bytes.
+   * compile and instantiate over bytes settle on a later loop turn;
+   * instantiate over a Module settles now, as in Node. `wasm.is` answers
+   * instanceof for Module, Instance, Memory, Table and Global (kinds 0-4)
+   * and CompileError, LinkError and RuntimeError (5-7); `wasm.errorNew`
+   * constructs one of the error classes (kind 5-7, message, options). */
+  "wasm.compile": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "wasm.validate": { argTypes: [DYN], result: BOOL },
+  "wasm.instantiate": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "wasm.moduleNew": { argTypes: [DYN], result: DYN },
+  "wasm.instanceNew": { argTypes: [DYN, DYN], result: DYN },
+  "wasm.is": { argTypes: [DYN, F64], result: BOOL },
+  "wasm.errorNew": { argTypes: [F64, DYN, DYN], result: DYN },
+  /** WebAssembly.compile (0), instantiate (1) and validate (2) as function
+   * values, and the namespace object holding them. */
+  "wasm.function": { argTypes: [F64], result: DYN },
+  "wasm.namespace": { argTypes: [], result: DYN },
+  /** The global object viewed through a cast to a type with a WebAssembly
+   * member: an object holding the namespace. */
+  "wasm.globalView": { argTypes: [], result: DYN },
   "abort.timeout": { argTypes: [DYN], result: DYN },
   "abort.now": { argTypes: [DYN], result: DYN },
   "abort.any": { argTypes: [DYN], result: DYN },
@@ -206,12 +227,47 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.in": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.freeze": { argTypes: [DYN], result: DYN },
   "dyn.isFrozen": { argTypes: [DYN], result: BOOL },
+  /** Object.defineProperty on a declared class field (scr_json.c): the
+   * field's current value (borrowed), its FIELD_* attribute word, the
+   * instance's CLASS_* integrity word, the field name and the descriptor.
+   * Validates as Node does (TypeError "Cannot redefine property: f") and
+   * answers a one-property holder of the defined value and attributes (+1),
+   * read back with class.definedBits and class.definedValue. */
+  "class.defineField": { argTypes: [DYN, F64, F64, STRING, DYN], result: DYN },
+  "class.definedBits": { argTypes: [DYN, STRING], result: F64 },
+  "class.definedValue": { argTypes: [DYN, STRING], result: DYN },
+  /** Whether a property descriptor has a `value` member. */
+  "class.descriptorHasValue": { argTypes: [DYN], result: BOOL },
+  /** Throws Node's TypeError for a write to a read-only class field: the
+   * field name and the instance's class name. */
+  "class.throwReadOnly": { argTypes: [STRING, STRING], result: VOID },
+  /** Throws Node's TypeError for a class field initializer on a
+   * non-extensible instance: the field name. */
+  "class.throwNotExtensible": { argTypes: [STRING], result: VOID },
   "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
   "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeDateIs": { argTypes: [DYN], result: BOOL },
+  /** A builtin constructor (`Object`, `Date`, `RegExp`, `Map`, `Set`,
+   * `Promise`, `WeakMap`, `WeakSet`) read as a JavaScript value: one
+   * interned function per name, the same one dynamic values answer for
+   * `.constructor`. The name is a compiler-chosen literal. */
+  "dyn.globalConstructor": { argTypes: [STRING], result: DYN },
+  /** A builtin global function (setTimeout, setInterval, setImmediate,
+   * the clear functions, queueMicrotask, process.nextTick) read as a
+   * JavaScript value: one interned function per name whose calls run the
+   * timer APIs (it pulls in the event loop). The name is a compiler-chosen
+   * literal. */
+  "dyn.builtinFunction": { argTypes: [STRING], result: DYN },
   "date.nativeNew": { argTypes: [DYN], result: DYN },
+  /** `new Date(year, monthIndex, ...)` in JavaScript: the argument array's
+   * first seven values pass through ToNumber in order (later ones are
+   * evaluated, never converted), then the local-time field constructor. */
+  "date.nativeNewFields": { argTypes: [DYN], result: DYN },
+  /** `new Date(value)` in JavaScript: a string argument parses with V8's
+   * full date parser; every other value constructs as date.nativeNew. */
+  "date.nativeNewValue": { argTypes: [DYN], result: DYN },
   "date.checkedValue": { argTypes: [DYN], result: DATE_T },
   "dyn.nativeRegexIs": { argTypes: [DYN], result: BOOL },
   /** toString() on a checked-dynamic receiver: runtime kind dispatch
@@ -239,6 +295,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.promiseAll": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "dyn.promiseAllSettled": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "dyn.promiseAny": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  /** PromiseResolve over one checked-dynamic value: the promise it holds,
+   * a promise that adopts a thenable's settlement, or a promise fulfilled
+   * with the value. The second argument reads `then` as above. */
+  "dyn.promiseResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   /** Bare `typeof v` on a dyn value AS A STRING (arg: the dyn value,
    * borrowed; result: an owned string) — the dyn kind's JS answer:
    * undefined→"undefined", null/object/array/bytes→"object" (JS's oldest
@@ -1241,6 +1301,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.createServer": { argTypes: [], result: NETSERVER_T },
   "net.createServerCb": { argTypes: [null], result: NETSERVER_T },
   "net.listen": { argTypes: [NETSERVER_T, F64], result: VOID },
+  /** listen(path[, cb]): a Unix-socket server; the socket file is removed
+   * when the server closes. Failures are the async 'error'. */
+  "net.listenPath": { argTypes: [NETSERVER_T, STRING], result: VOID },
+  "net.listenPathCb": {
+    argTypes: [NETSERVER_T, STRING, { kind: "func", params: [], ret: VOID }],
+    result: VOID,
+  },
   "net.listenCb": {
     argTypes: [NETSERVER_T, F64, { kind: "func", params: [], ret: VOID }],
     result: VOID,
@@ -1283,6 +1350,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * answers null (the serverPort stance). */
   "net.serverAddress": { argTypes: [NETSERVER_T], result: VOID },
   "net.serverClose": { argTypes: [NETSERVER_T], result: VOID },
+  /** server.close((err) => ...): the callback (a dyn function) gets
+   * undefined once the server closes, or Node's ERR_SERVER_NOT_RUNNING
+   * when it was not listening. */
+  "net.serverCloseDyn": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  /** server.address() in programs that may listen on a Unix socket: the
+   * path a listening server answers ("" for a TCP server), and the check
+   * a record-typed address() makes first (throws for a Unix server). */
+  "net.serverUnixPath": { argTypes: [NETSERVER_T], result: STRING },
+  "net.serverAddressCheck": { argTypes: [NETSERVER_T], result: VOID },
   "net.serverCloseCb": {
     argTypes: [NETSERVER_T, { kind: "func", params: [], ret: VOID }],
     result: VOID,
@@ -1446,6 +1522,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * callback) and lookupService(address, port, callback). */
   "dns.lookupDyn": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
   "dns.lookupService": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+  /** node:dns/promises: lookup(hostname, options) and lookupService(address,
+   * port) over the callback forms; the promise fulfills with the dyn
+   * { address, family } (array for all: true) / { hostname, service }.
+   * Argument errors throw synchronously (may-throw), unlike the
+   * util.promisify forms below. */
+  "dns.promisesLookup": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "dns.promisesLookupService": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "dns.getServers": { argTypes: [], result: DYN },
   "dns.getDefaultResultOrder": { argTypes: [], result: STRING },
   "dns.setDefaultResultOrder": { argTypes: [DYN], result: VOID },
@@ -1865,6 +1948,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * non-http scheme. */
   "http.requestUrl": { argTypes: [STRING, STRING, BOOL], result: HTTPCLIENTREQ_T },
   "http.requestUrlCb": { argTypes: [STRING, STRING, BOOL, null], result: HTTPCLIENTREQ_T },
+  /** request/get with a runtime options record: a RequestOptions
+   * variable, or a literal that spreads one or sets socketPath. Args
+   * (options, autoEnd[, cb]). The runtime reads the record in the
+   * ClientRequest constructor's order (host/port or socketPath, path,
+   * method, headers, timeout, agent, signal, maxHeaderSize) with Node's
+   * errors, and documented options it does not implement throw the
+   * runtime fence. The "https." pair adds the TLS options. MAY THROW. */
+  "http.requestDyn": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
+  "http.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+  "https.requestDyn": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
+  "https.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
   /** The paused-mode demux surface (portless's first-byte TLS peek:
    * once('readable') + read(1) + unshift + emit('connection')).
    * sockOnReadable registers a zero-param listener (a consumer: arrived
@@ -1910,6 +2004,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Listeners with a parameter, as dyn functions: close(hadError),
    * write's cb(err) and end's cb. */
   "net.sockOnCloseDyn": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
+  /** socket.on/once('lookup', listener): the listener (a dyn function)
+   * gets (err, address, family, host) once per resolved address, or once
+   * with the lookup error, before the connect. */
+  "net.sockOnLookup": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
   "net.sockOnWriteFlush": {
     argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }],
     result: VOID,
@@ -2391,6 +2489,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Rest listeners use the checked function bridge to pack event arguments. */
   "child.onDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
   "process.connected": { argTypes: [], result: BOOL },
+  /** Whether this fork child opened its channel; part of process.send's
+   * presence in programs with fork targets. Never throws. */
+  "process.ipcOpen": { argTypes: [], result: BOOL },
   "process.send": { argTypes: [STRING], result: BOOL },
   "process.sendCb": { argTypes: [STRING, null], result: BOOL },
   "process.disconnect": { argTypes: [], result: VOID },
@@ -2514,8 +2615,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * queue, end/destroy settle it, writable is a pure state read, and
    * listener callbacks move into the writer registry. */
   "child.stdin": { argTypes: [CHILD_T], result: VOID },
+  /** Under the general stream representation (general-streams.ts), a
+   * stdio read (slot 0, 1 or 2) answers the child's bridged runtime stream
+   * — `Writable | null` for stdin, `Readable | null` otherwise; the bridge
+   * throws when the program lacks the stream unit's boxing helpers. */
+  "child.stdioStream": { argTypes: [CHILD_T, F64], result: VOID },
   // Listener registrations: callback func shapes are program-dependent
-  // (zero-param / Buffer / Buffer-armed union) — the slots pin arity,
+  // (zero-param / Buffer / string / unknown / Buffer-armed union) — the slots pin arity,
   // the stream receiver, and the once-flag.
   "stream.onData": { argTypes: [CHILDSTREAM_T, null, BOOL], result: VOID },
   "stream.onDataStr": { argTypes: [CHILDSTREAM_T, null, BOOL], result: VOID },
@@ -2535,6 +2641,21 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * stderrWrite paths so buffering and ordering stay identical. Data
    * borrowed; the bool is Node's always-true backpressure signal. */
   "procStream.write": { argTypes: [PROCSTREAM_T, STRING], result: BOOL },
+  /** process.stdout/stderr flowing into a runtime Writable slot under the
+   * general stream representation: an fd-backed Writable (+1) whose
+   * writes take process.stdout.write's synchronous path. */
+  /** A pipeline() stage that is a checked-dynamic value: a boxed native
+   * stream unwraps by identity (+1); anything else throws the given
+   * not-supported message. Typed as a Duplex so every stage position
+   * accepts it; the runtime pipeline checks the stream's real sides. */
+  "stream.unboxDyn": {
+    argTypes: [DYN, STRING],
+    result: { kind: "object", className: "%Duplex" },
+  },
+  "stream.stdioWritable": {
+    argTypes: [PROCSTREAM_T],
+    result: { kind: "object", className: "%Writable" },
+  },
   "child.killed": { argTypes: [CHILD_T], result: BOOL },
   "child.kill": { argTypes: [CHILD_T, STRING], result: BOOL },
   "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },
@@ -3025,8 +3146,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "process.exit": { argTypes: [F64], result: VOID },
   /** Numeric process.exitCode write (integer validation, implicit exit status). */
   "process.setExitCode": { argTypes: [F64], result: VOID },
+  /** The process.exitCode write of a program that also reads the
+   * property: the same validation, and the code counts as assigned. */
+  "process.setExitCodeTracked": { argTypes: [F64], result: VOID },
   /** The code for process.exit() with no argument, or zero when unset. */
   "process.currentExitCode": { argTypes: [], result: F64 },
+  /** Whether process.exitCode reads a code rather than undefined. Never throws. */
+  "process.hasExitCode": { argTypes: [], result: BOOL },
   "process.cwd": { argTypes: [], result: STRING },
   /** getpid(2) / getuid(2): zero args → f64. POSIX-only target, so both
    * always answer (the checker's `getuid?` optionality covers Windows —
@@ -3231,6 +3357,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** SameValue over checked values, including NaN, signed zero and reference identity. */
   "dyn.sameValue": { argTypes: [DYN, DYN], result: BOOL },
   "error.stack": { argTypes: [null], result: STRING },
+  "error.setStack": { argTypes: [null, STRING], result: VOID },
   "error.stackLimitGet": { argTypes: [], result: F64 },
   "error.stackLimitSet": { argTypes: [F64], result: VOID },
   // Receiver (any error-hierarchy object) and the program-dependent
@@ -3417,10 +3544,6 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * functions over them get native stream state
    * (scr_dyn_builtin_stream.c). */
   "dyn.builtinStreamClass": { argTypes: [F64], result: DYN },
-  /** readable.pipe(untyped): a constructor-function stream or a boxed
-   * runtime stream as the destination; other values throw the not-
-   * supported Error (scr_dyn_builtin_stream.c). */
-  "dyn.builtinStreamPipe": { argTypes: [null, DYN, BOOL], result: VOID },
   /** `value instanceof C` for those constructors, over the value's
    * prototype chain. */
   "dyn.builtinInstanceOf": { argTypes: [DYN, F64], result: BOOL },
@@ -3584,7 +3707,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * returns the below-hwm answer. readable.read: (recv, size — -1 for
    * absent) → Buffer|null union. pause/resume return recv +1 (`this`);
    * isPaused answers the flag. readable.pipe: (recv, dst, end) → dst +1,
-   * fires 'pipe' on dst; readable.unpipe (recv[, dst]) → recv +1.
+   * fires 'pipe' on dst; readable.pipeGeneral: the same, with `end` off
+   * when dst is the converted process.stdout / process.stderr;
+   * readable.unpipe (recv[, dst]) → recv +1.
    * writable.write/writeStr: (recv, chunk[, cb]) → below-hwm bool (cb
    * MOVES when present, called after the user write completes).
    * writable.end: (recv, flags[, chunk][, cb]) → recv +1. cork/uncork are
@@ -3782,6 +3907,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "readable.resume": { argTypes: [null], result: VOID },
   "readable.isPaused": { argTypes: [null], result: BOOL },
   "readable.pipe": { argTypes: [null, null, BOOL], result: VOID },
+  "readable.pipeGeneral": { argTypes: [null, null, BOOL], result: VOID },
   "readable.unpipe": { argTypes: [null], result: VOID },
   "readable.flowing": { argTypes: [null], result: VOID },
   "writable.write": { argTypes: [null, BYTES_U8], result: BOOL },
@@ -4331,13 +4457,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.toDateString": { argTypes: [DATE_T], result: STRING },
   "date.toTimeString": { argTypes: [DATE_T], result: STRING },
   /** The composed `new Date(dateString).getTime()` read: one borrowed
-   * string, f64 milliseconds since epoch. The parsed grammar is BOUNDED
-   * (documented divergence — V8's parser accepts far more): the ASN.1
-   * validity shape X509Certificate.validFrom/validTo answer ("Jul  1
-   * 00:00:00 2026 GMT" — the portless cert-expiry read), and ECMA's own
-   * date-time string format (YYYY-MM-DD[THH:mm[:ss[.sss]]][Z|±HH:MM] —
-   * date-only forms are UTC, exactly the spec). Anything else is NaN,
-   * Node's invalid-date getTime. Never throws. */
+   * string, f64 milliseconds since epoch, with V8's date-string grammar
+   * (the ES5 format, then the legacy forms: RFC 1123/2822, Date#toString,
+   * "Jan 2, 2024", ...). Zone-less dates are local time; anything V8
+   * rejects is NaN, Node's invalid-date getTime. Never throws. */
   "date.parseGetTime": { argTypes: [STRING], result: F64 },
   /** `Date.UTC(...)` — seven f64 arguments (the frontend completes the
    * spec's defaults for omitted trailing parts: month 0, date 1, time
@@ -4345,6 +4468,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * map to 1900+year, out-of-range months/dates roll over, non-finite
    * parts and out-of-range results answer NaN. Never throws. */
   "date.utc": { argTypes: [F64, F64, F64, F64, F64, F64, F64], result: F64 },
+  /** `new Date(year, monthIndex[, date, hours, minutes, seconds, ms])` —
+   * the same seven-f64 completion as date.utc, but the fields are LOCAL
+   * time: V8's MakeDay/MakeTime, then UTC(t) in the host zone (DST gaps
+   * read with the offset before the transition, overlaps answer the
+   * earlier instant), then TimeClip. Never throws. */
+  "date.newLocal": { argTypes: [F64, F64, F64, F64, F64, F64, F64], result: DATE_T },
   /** WHATWG TextDecoder.decode over u8 bytes (scr_bytes.c): utf-8 with
    * default options — the same maximal-subpart replacement decode as
    * Buffer.toString("utf8"), with the leading BOM stripped (the one

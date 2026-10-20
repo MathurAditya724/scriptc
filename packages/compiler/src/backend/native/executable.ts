@@ -182,6 +182,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c"),
   unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
+  unit((u) => u.opts.wasm, "scr_wasm.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||
@@ -236,7 +237,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_util_callable.c",
   ),
   unit(
-    (u) => u.opts.dynBuiltinClass && u.opts.inspect && u.opts.dynInvoke && u.opts.symbol,
+    (u) =>
+      u.opts.dynBuiltinClass &&
+      u.opts.inspect &&
+      u.opts.dynInvoke &&
+      u.opts.symbol &&
+      (u.opts.emitter || u.opts.workers),
     "scr_dyn_builtin_class.c",
   ),
   unit(
@@ -266,6 +272,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.http, "scr_http.c"),
   unit((u) => u.opts.http2, "scr_http2.c"),
   unit((u) => u.opts.dgram, "scr_dgram.c"),
+  unit((u) => u.opts.dgram && u.opts.dnsPromises, "scr_dns_promises.c"),
   unit((u) => u.opts.watch, "scr_watch.c"),
   unit((u) => u.opts.foreignFfi, "scr_ffi_queue.c"),
   unit((u) => u.opts.nodeTest, "scr_test.c"),

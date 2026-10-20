@@ -43,9 +43,19 @@ export function collectClassMethodMutations(
   const jsAssignments: (ts.PropertyAccessExpression | ts.ElementAccessExpression)[] = [];
   const computedMethods: ts.Expression[] = [];
   const typedClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
+  const symbolMethods = new Set<string>();
   let unknownKey: ts.Node | undefined;
   let numericKey: ts.Node | undefined;
   let unknownOwnField = false;
+  // `sym:iterator` for `Symbol.iterator`: the name a class method declared
+  // with a well-known symbol key takes.
+  const wellKnownMethodName = (key: ts.Expression): string | null => {
+    while (ts.isParenthesizedExpression(key)) key = key.expression;
+    if (!ts.isPropertyAccessExpression(key)) return null;
+    const member = lowerer.stdlibGlobalMember(key, "Symbol");
+    if (member === null || !(lowerer.typeOf(key).flags & ts.TypeFlags.ESSymbolLike)) return null;
+    return `sym:${member}`;
+  };
   // JavaScript method inference and dynamic class factories keep their
   // existing dispatch contract. The native-call proof applies to typed
   // declarations (including JavaScript files TypeScript checks), while
@@ -555,6 +565,19 @@ export function collectClassMethodMutations(
     lowerer.prototypeMethodAccesses.set(name, site);
   }
   for (const { key, receiver, site } of computedWrites) {
+    // A class method declared with a well-known symbol key is not a write;
+    // any other write with one can replace that method.
+    const symbolName = key ? wellKnownMethodName(unwrap(key)) : null;
+    if (symbolName) {
+      const declaration =
+        (ts.isMethodDeclaration(site) ||
+          ts.isGetAccessorDeclaration(site) ||
+          ts.isSetAccessorDeclaration(site)) &&
+        (ts.isClassDeclaration(site.parent) || ts.isClassExpression(site.parent));
+      if (declaration) symbolMethods.add(symbolName);
+      else lowerer.replacedSymbolMethods.add(symbolName);
+      continue;
+    }
     const type = key ? lowerer.typeOf(key) : undefined;
     const names = type && (literalValues(type) ?? (key ? literalLoopKeys(unwrap(key)) : null));
     if (names) {
@@ -585,8 +608,10 @@ export function collectClassMethodMutations(
       if (String(Number(name)) === name) markName(name, numericKey);
     }
   }
-  if (unknownKey)
+  if (unknownKey) {
     for (const method of methods) lowerer.prototypeMethodAccesses.set(method, unknownKey);
+    for (const method of symbolMethods) lowerer.replacedSymbolMethods.add(method);
+  }
   if (!unknownKey && !unknownOwnField)
     for (const field of arrowFields) {
       if (!receiverFields.has(field)) lowerer.receiverFreeCallbackFields.add(field);

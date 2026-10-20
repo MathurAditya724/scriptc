@@ -21,6 +21,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
+  "dyn.promiseResolve",
   "process.onUncaughtException",
   "process.offUncaughtException",
   "process.onUnhandledRejection",
@@ -130,6 +131,10 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.clientSignal",
+  "http.requestDyn",
+  "http.requestDynCb",
+  "https.requestDyn",
+  "https.requestDynCb",
   "rl.createSignal",
   "rl.questionAsyncSignal",
   "sp.finishedOptsSignal",
@@ -144,6 +149,7 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "child.stdioStream",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",
@@ -162,6 +168,8 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.destroyErr",
   "stream.errored",
   "stream.prop",
+  "stream.stdioWritable",
+  "stream.unboxDyn",
   "stream.workerStdio",
 ]);
 
@@ -198,12 +206,24 @@ const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "rea
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
   "dyn.arrayPrototype",
+  "dyn.builtinFunction",
   "dyn.builtinMethod",
   "dyn.defineProperty",
   "dyn.defineProps",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
+  "dyn.globalConstructor",
   "dyn.objCreateWithProperties",
+  "dyn.objectTag",
+]);
+
+/** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
+const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "constructor",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+  "toString",
+  "valueOf",
 ]);
 
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
@@ -211,6 +231,7 @@ const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.connected",
   "process.disconnect",
   "process.forkTarget",
+  "process.ipcOpen",
   "process.onDisconnect",
   "process.onMessage",
   "process.send",
@@ -220,12 +241,23 @@ const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** libCall name prefixes that link the child-process unit. */
 const CHILD_PROCESS_LIB_PREFIXES: readonly string[] = ["child.", "cp.", "spawnRes.", "writer."];
 
+/** The entry points scr_dyn_builtin_class.c defines. The unit calls
+ * listeners through the dyn-invoke unit, renders unhandled 'error'
+ * payloads through the inspect unit, creates EventEmitter's private
+ * symbols through the symbol unit and shares defaultMaxListeners with the
+ * emitter unit, so each of them links all five. */
+const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
+  "dyn.builtinClass",
+  // the stream classes, through scr_dyn_builtin_stream.c
+  "dyn.builtinStreamClass",
+  "dyn.builtinInstanceOf",
+  "dyn.functionInstanceOf",
+];
+
 /** Entry points that link the symbol unit, besides the sym. and disposable. families. */
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // EventEmitter's kShapeMode and kCapture properties
-  "dyn.builtinClass",
-  "dyn.builtinStreamClass",
-  "dyn.builtinStreamPipe",
+  ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",
   "dyn.usingMethod",
   "util.isDeepStrictEqual",
@@ -453,7 +485,12 @@ const RUNTIME_FEATURE_RULES = {
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
-  bigint: rule({ fns: ["process.hrtimeValue"], prefixes: ["bigint."], types: ["bigint"] }),
+  /** scr_wasm.c converts i64 values through BigInt. */
+  bigint: rule({
+    fns: ["process.hrtimeValue"],
+    prefixes: ["bigint.", "wasm."],
+    types: ["bigint"],
+  }),
   childProcess: rule({
     fns: [...CHILD_PROCESS_LIB_FNS],
     prefixes: CHILD_PROCESS_LIB_PREFIXES,
@@ -471,6 +508,8 @@ const RUNTIME_FEATURE_RULES = {
   dc: rule({ prefixes: ["dc."] }),
   /** dns.lookup lives in the dgram unit. */
   dgram: rule({ prefixes: ["dgram.", "dns."], types: ["dgramSocket"] }),
+  /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
+  dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
@@ -478,14 +517,15 @@ const RUNTIME_FEATURE_RULES = {
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
     // The legacy url functions and crypto.createCipheriv emit their
-    // deprecation warnings through the dyn-async unit.
+    // deprecation warnings through the dyn-async unit; scr_wasm.c boxes its
+    // handles and promises through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
     ],
-    prefixes: READABLE_DYN_ASYNC_PREFIXES,
+    prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
       (node.kind === "awaitExpr" && node.type.kind === "dyn") ||
       // Rejection reasons cross as dyn values (allSettled's records, any's
@@ -499,28 +539,22 @@ const RUNTIME_FEATURE_RULES = {
    * unit, render unhandled 'error' payloads through the inspect unit and
    * create EventEmitter's private symbols through the symbol unit. */
   dynBuiltinClass: rule({
-    fns: [
-      "dyn.builtinClass",
-      "dyn.builtinStreamClass",
-      "dyn.builtinStreamPipe",
-      "dyn.builtinInstanceOf",
-      "dyn.functionInstanceOf",
-    ],
+    fns: [...BUILTIN_CLASS_LIB_FNS],
   }),
   /** The stream classes as untyped constructor values with their stream
    * half (scr_dyn_builtin_stream.c): native stream state for constructor
    * functions, over the stream unit. */
-  dynBuiltinStream: rule({ fns: ["dyn.builtinStreamClass", "dyn.builtinStreamPipe"] }),
+  dynBuiltinStream: rule({ fns: ["dyn.builtinStreamClass"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
-    fns: [
-      ...DYN_INVOKE_LIB_FNS,
-      ...UTIL_CALLABLE_LIB_FNS,
-      "dyn.builtinClass",
-      "dyn.builtinStreamClass",
-      "dyn.builtinStreamPipe",
-    ],
-    expr: (node, _tables) => node.kind === "dynInvoke",
+    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
+    // Constant-key reads of Object.prototype member names answer the
+    // inherited member through scr_dyn_invoke.c.
+    expr: (node, _tables) =>
+      node.kind === "dynInvoke" ||
+      (node.kind === "dynKeyGet" &&
+        node.key.kind === "strLit" &&
+        INHERITED_MEMBER_NAMES.has(node.key.value)),
   }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
@@ -530,7 +564,7 @@ const RUNTIME_FEATURE_RULES = {
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
-    fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass", "dyn.builtinStreamPipe"],
+    fns: [...STREAM_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
     prefixes: ["emitter.", ...STREAM_LIB_PREFIXES],
   }),
   /** Subclasses of the runtime EventTarget/Event bases tear down and box
@@ -546,6 +580,9 @@ const RUNTIME_FEATURE_RULES = {
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
+  /** A socket 'lookup' listener: the C main installs the net unit's
+   * lookup records (scr_net_lookup_install). */
+  netLookup: rule({ fns: ["net.sockOnLookup"] }),
   http: rule({
     prefixes: ["http.", "tls.", "https.", "http2."],
     types: ["httpReq", "httpRes", "httpClientReq", "secureCtx"],
@@ -565,9 +602,7 @@ const RUNTIME_FEATURE_RULES = {
       "global.native",
       "util.styleText",
       "crypto.cipherNew",
-      "dyn.builtinClass",
-      "dyn.builtinStreamClass",
-      "dyn.builtinStreamPipe",
+      ...BUILTIN_CLASS_LIB_FNS,
       ...UTIL_CALLABLE_LIB_FNS,
     ],
     prefixes: ["insp.", "console.", "test."],
@@ -631,7 +666,7 @@ const RUNTIME_FEATURE_RULES = {
   }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
-    fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass", "dyn.builtinStreamPipe"],
+    fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
@@ -646,6 +681,8 @@ const RUNTIME_FEATURE_RULES = {
   tlsCa: rule({ prefixes: ["tlsca."] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** The WebAssembly API (scr_wasm.c). */
+  wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
    * scr_webcrypto.c. */
   webcrypto: rule({ prefixes: ["webcrypto."] }),
@@ -671,6 +708,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     copying: false,
     dc: false,
     dgram: false,
+    dnsPromises: false,
     dynAsync: false,
     dynBuiltinClass: false,
     dynBuiltinStream: false,
@@ -681,6 +719,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsWatch: false,
+    netLookup: false,
     http: false,
     http2: false,
     inspect: false,
@@ -699,6 +738,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     tls: false,
     tlsCa: false,
     warningReplace: false,
+    wasm: false,
     webcrypto: false,
     zlib: false,
   };

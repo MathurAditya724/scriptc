@@ -19,13 +19,22 @@ import { SyntaxKind, NodeFlags } from "./enums.js";
 /** A list of child nodes with the list's own position, the shape of tsc-ts's
  * NodeList. The file keeps the nodes array, not this object: each read of a
  * list field returns a new AstNodeList over the same array, so `nodes` keeps
- * its identity and a decoded file holds no list objects. */
+ * its identity and a decoded file holds no list objects. The position is
+ * decoded from the wire when it is read; most readers only use `nodes`. */
 export class AstNodeList<T extends AstNode = AstNode> {
   constructor(
-    readonly pos: number,
-    readonly end: number,
+    private readonly wire: AstWireFile,
+    private readonly index: number,
     readonly nodes: readonly T[],
   ) {}
+
+  get pos(): number {
+    return this.wire.pos(this.index) >>> 0;
+  }
+
+  get end(): number {
+    return this.wire.end(this.index) >>> 0;
+  }
 }
 
 /** One immutable AST response owns one object per node and one array per
@@ -83,7 +92,7 @@ export class AstFile {
       this.lists[index] = nodes;
       this.materialized?.();
     }
-    return new AstNodeList(this.wire.pos(index) >>> 0, this.wire.end(index) >>> 0, nodes);
+    return new AstNodeList(this.wire, index, nodes);
   }
 
   namedChild(node: AstNode, name: string): number {

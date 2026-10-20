@@ -548,7 +548,12 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     mockTimerSym(host, e) ??
     (e.fn === "timers.queueMicrotaskDyn" && host.schedulesInContext
       ? "scr_queue_microtask_dyn_als"
-      : LIB_FN_SYMS[e.fn]);
+      : // Programs with constructor-function streams unbox untyped pipe
+        // destinations and pipeline stages through scr_dyn_builtin_stream.c,
+        // which also takes those streams.
+        e.fn === "stream.unboxDyn" && host.usesDynBuiltinStream
+        ? "scr_dyn_builtin_stream_unbox"
+        : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
     ? emitBorrowedInputs(host, e.args)
@@ -857,6 +862,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "event":
     case "events":
     case "blob":
+    case "wasm":
     case "record":
     case "disposable":
     case "punycode":

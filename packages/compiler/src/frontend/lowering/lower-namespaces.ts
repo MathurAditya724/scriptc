@@ -42,6 +42,7 @@ import { boundIdentifiersOf } from "./lowerer.js";
 import type { FileParts } from "./lower-modules.js";
 import { locOf, resolveImport } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
+import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 
 /** True when this module declaration produces NO runtime construct at all:
  * ambient (`declare namespace/module`, `declare global`, string-named
@@ -425,7 +426,7 @@ export function ambientUndefVarRootOf(lowerer: Lowerer, e: ts.Expression): ts.Id
     const sym = lowerer.resolveValueSymbol(root);
     if (!sym) return null;
     if (lowerer.trapBindings.has(sym)) return root;
-    if (lowerer.isStdlibSymbol(sym)) return null;
+    if (lowerer.isStdlibSymbol(sym)) return isTemporalGlobalRoot(lowerer, root, sym) ? root : null;
     if (ambientUndefinedFnSymbolOf(lowerer, root) !== null) return root;
     const decls = sym.declarations;
     if (decls.length === 0) return null;
@@ -438,6 +439,24 @@ export function ambientUndefVarRootOf(lowerer: Lowerer, e: ts.Expression): ts.Id
   } finally {
     lowerer.collecting = wasCollecting;
   }
+}
+
+/** True when `ident` reads the ESNext temporal global, which the program
+ * type-checks against TS 7's lib slice (program.ts adds it only to programs
+ * that name it) but Node 24 does not define: Node's read throws the
+ * catchable ReferenceError "<name> is not defined", so every chain rooted
+ * here lowers to that throw (typeof answers "undefined" in lower-exprs). */
+export function isTemporalGlobalRoot(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+  sym: ts.Symbol | undefined | null,
+): boolean {
+  return (
+    ident.text === TEMPORAL_GLOBAL &&
+    sym !== undefined &&
+    sym !== null &&
+    lowerer.isStdlibSymbol(sym)
+  );
 }
 
 /** The declaration-classification form of ambientUndefVarRootOf: the root

@@ -28,6 +28,7 @@ const within = (path) => {
 };
 for (const name of [
   "ts7",
+  "tsc_ts",
   "llvm_package",
   "runtime_pack",
   "runtime_sources",

@@ -125,6 +125,17 @@ void scr_stream_init_passthrough(ScrStream *s, double rhwm, double whwm, bool au
 ScrStream *scr_stream_new_readable_dyn(struct ScrDyn *opts);
 void scr_stream_worker_stdio(void);
 ScrStream *scr_stream_new_writable_dyn(struct ScrDyn *opts);
+/* The general stream representation's conversions (+1): a child's bridged
+ * stdio stream by key (NULL when unpiped), and process.stdout/stderr as a
+ * Writable (fd 1 or 2). */
+ScrStream *scr_stream_child_stdio(void *child, const char *key, size_t key_len);
+ScrStream *scr_stream_stdio_writable(double fd);
+/* readable.pipe() under the general representation: a converted
+ * process.stdout / process.stderr destination is never ended (dst +1). */
+ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end);
+/* A boxed native stream out of a checked-dynamic pipeline stage (+1), or
+ * NULL with `message` thrown as the not-supported Error. */
+ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *message);
 ScrStream *scr_stream_new_duplex_dyn(struct ScrDyn *opts);
 ScrStream *scr_stream_new_transform_dyn(struct ScrDyn *opts);
 ScrStream *scr_stream_new_passthrough_dyn(struct ScrDyn *opts);

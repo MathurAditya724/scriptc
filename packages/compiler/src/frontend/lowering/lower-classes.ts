@@ -16,6 +16,8 @@ import { InternalCompilerError } from "../../errors.js";
  * accessor access, upcasts, `new` expressions, and the builtin Error
  * hierarchy registration. */
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
+import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
+import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
 import { everyStmtList } from "../../ir/traverse.js";
@@ -70,6 +72,7 @@ import {
 } from "./instantiation-path.js";
 import { appendImplicitUndefinedReturn, hasExplicitJsDocReturn } from "./function-returns.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
+import { errorNameAfterField, errorViewFields } from "./error-name-order.js";
 import {
   checkedJsDocumentedParameter,
   documentedParameter,
@@ -88,7 +91,6 @@ import {
   isCjsJsFile,
   isJsSourceFile,
   isModuleExportsAccess,
-  isNodeTypesPath,
   locOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
@@ -145,6 +147,7 @@ import {
   ambientUndefReadType,
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
+  contextualUndefReadType,
   fenceEarlyAliasUse,
   fenceEarlyNsMemberRef,
   nsMemberIdentOf,
@@ -1046,9 +1049,11 @@ export function builtinStreamInfoOf(
     if (rec.lib === symbol.name) irName = name;
   }
   if (!irName) return null;
+  // Both the bundled declarations and @types/node declare the classes
+  // inside `declare module "stream"` (@types/node nests them in the module's
+  // `internal` namespace).
   const declared = symbol.declarations.some((d) => {
     if (!ts.isClassDeclaration(d)) return false;
-    if (isNodeTypesPath(d.getSourceFile().fileName)) return false;
     let node: ts.Node | undefined = d.parent;
     while (node) {
       if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
@@ -4255,6 +4260,12 @@ export function collectClassShapeInner(
       ...(deferredInitFields.size > 0 ? { deferredInitFields } : {}),
       ...(escape.escapes ? { constructionEscapes: true as const } : {}),
     };
+    let root: ClassInfo | null = info;
+    while (root?.base) root = root.base;
+    if (root !== info && root?.def.name === "%Error") {
+      const after = errorNameAfterField(info, errorViewFields(info.def.fields));
+      if (after !== undefined) info.def.errorNameAfter = after;
+    }
     // GENERIC members get their declaring-class backlink now that the
     // info exists (instance lowering reads it for `this` typing and the
     // generic-class binding merge).
@@ -8053,6 +8064,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
         className: info.def.name,
         field: f.name,
         value: dynUndefinedExpr(loc),
+        define: true,
         loc,
       });
     }
@@ -8068,6 +8080,7 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
         className: info.def.name,
         field: f.name,
         value,
+        define: true,
         loc: locOf(f.initializer),
       });
     } catch (e) {
@@ -8725,6 +8738,34 @@ function inheritsBuiltinStreamCtor(lowerer: Lowerer, info: ClassInfo): boolean {
   return false;
 }
 
+/** The run-time form of refuseInheritedBuiltinCtorArgs, for construction
+ * from checked-dynamic code (`new F(options)` with F an untyped value
+ * holding C), whose argument count is known only to the caller: a
+ * runtimeFence located at C, or null when C's constructor takes its
+ * arguments. */
+export function inheritedBuiltinCtorFence(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  loc: SrcLoc,
+): IrStmt | null {
+  let feature: string | null = null;
+  if (inheritsBuiltinStreamCtor(lowerer, info))
+    feature = `new ${info.def.name.replace(/^%/, "")} with arguments through an inherited stream constructor (declare a constructor that passes an inline options object to super(...))`;
+  else if (lowerer.inheritsBuiltinEmitterCtor(info))
+    feature = "EventEmitter constructor options ('captureRejections')";
+  if (feature === null) return null;
+  // Located at the class, whose constructor takes no arguments.
+  const at = info.decl !== null ? locOf(info.decl) : loc;
+  const diag = unsupportedDiag("SC1090", at, feature);
+  lowerer.runtimeFences.push(diag);
+  const line =
+    info.decl !== null
+      ? ts.getLineAndCharacterOfPosition(info.decl.getSourceFile(), at.start).line + 1
+      : null;
+  const where = line !== null ? ` [${diag.code} at ${at.file}:${line}]` : "";
+  return { kind: "runtimeFence", code: diag.code, message: `${diag.message}${where}`, loc };
+}
+
 /** `new C(args)` where C's constructor is the inherited runtime stream or
  * EventEmitter constructor (a ctor-less chain into the base): that
  * constructor takes zero arguments here (the options bag fences, like the
@@ -8922,6 +8963,20 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // new Function(...): Node's EvalError under
+  // --disallow-code-generation-from-strings (code-generation.ts).
+  if (codeGenerationCalleeOf(lowerer, expr.expression) === "Function")
+    return lowerCodeGenerationCall(lowerer, expr, "Function");
+  // `new <temporal>.X(...)`: Node 24 has no such global, so the callee's
+  // root read throws the ReferenceError before any argument evaluates.
+  {
+    const root = ambientUndefVarRootOf(lowerer, expr.expression);
+    if (root !== null && root.text === TEMPORAL_GLOBAL) {
+      const t =
+        ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
+      return nsUndefRead(lowerer, root.text, expr, t);
+    }
+  }
   // `new (require("./x").C)()`: the module's %init at the require's
   // position, then construction through the member as for a binding.
   if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
@@ -9466,18 +9521,57 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // fenced, so copying the scalar cannot create an observable lie.
     if (symbol && symbol.name === "Date" && lowerer.isStdlibSymbol(symbol)) {
       const args = expr.arguments?.nodes ?? [];
-      if (args.some(ts.isSpreadElement) || args.length > 1) {
+      if (args.some(ts.isSpreadElement)) {
         lowerer.noLowering(
-          `new Date with ${args.length} arguments`,
+          `new Date with spread arguments`,
           expr,
-          "new Date(), new Date(milliseconds), and new Date(dateString) are supported; the local-time year/month field constructor has no lowering",
+          "new Date(), new Date(milliseconds), new Date(dateString), and new Date(year, monthIndex, ...) with listed arguments are supported",
           symbol,
         );
+      }
+      // new Date(year, monthIndex[, date[, hours[, minutes[, seconds[, ms]]]]]):
+      // local-time fields, converted to UTC in the host zone at run time.
+      // JavaScript callers pass their arguments to the runtime's ToNumber
+      // (in order, exactly the constructor's coercions); typed callers
+      // pass numbers, completed with the spec's defaults (date 1, time
+      // parts 0) for the seven-f64 ABI.
+      if (args.length > 1) {
+        if (isJsSourceFile(expr.getSourceFile())) {
+          return {
+            kind: "libCall",
+            fn: "date.nativeNewFields",
+            args: [
+              {
+                kind: "dynArrLit",
+                elems: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+                type: DYN,
+                loc,
+              },
+            ],
+            type: DYN,
+            loc,
+          };
+        }
+        if (args.length > 7) {
+          lowerer.noLowering(`new Date with ${args.length} arguments`, expr, undefined, symbol);
+        }
+        const defaults = [0, 0, 1, 0, 0, 0, 0];
+        const fields: IrExpr[] = [];
+        for (let i = 0; i < 7; i++) {
+          const arg = args[i];
+          fields.push(
+            arg !== undefined
+              ? lowerer.lowerExprExpecting(arg, F64)
+              : { kind: "numLit", value: defaults[i]!, type: F64, loc },
+          );
+        }
+        return { kind: "libCall", fn: "date.newLocal", args: fields, type: DATE_T, loc };
       }
       if (isJsSourceFile(expr.getSourceFile())) {
         return {
           kind: "libCall",
-          fn: "date.nativeNew",
+          // One argument: a string parses with the full date parser.
+          fn: args.length === 1 ? "date.nativeNewValue" : "date.nativeNew",
           args: [
             {
               kind: "dynArrLit",

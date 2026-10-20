@@ -91,11 +91,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Untyped EventEmitter and stream constructor values call listeners
   // through the dyn-invoke unit, inspect unhandled 'error' payloads and
   // create EventEmitter's private symbols.
-  ["scr_dyn_builtin_class.c", all("dynBuiltinClass", "inspect", "dynInvoke", "symbol")],
+  ["scr_dyn_builtin_class.c", all("dynBuiltinClass", "inspect", "dynInvoke", "symbol", "emitter")],
   // Their stream half also references the stream unit.
   [
     "scr_dyn_builtin_stream.c",
-    all("dynBuiltinStream", "dynBuiltinClass", "stream", "inspect", "dynInvoke", "symbol"),
+    all("dynBuiltinStream", "dynBuiltinClass", "stream", "inspect", "dynInvoke", "symbol", "emitter"),
   ],
   ["scr_stream.c", "stream"],
   // The zlib stream classes reference both the zlib engine and the stream unit.
@@ -113,12 +113,15 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_http.c", "httpEffective"],
   ["scr_http2.c", "http2"],
   ["scr_dgram.c", "dgram"],
+  // The dns promise forms run over the dgram unit's callback forms.
+  ["scr_dns_promises.c", all("dgram", "dnsPromises")],
   ["scr_watch.c", "watch"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
+  ["scr_wasm.c", "wasm"],
   ["scr_webcrypto.c", "webcrypto"],
   ["scr_fetch.c", "nativeFetch"],
 ];

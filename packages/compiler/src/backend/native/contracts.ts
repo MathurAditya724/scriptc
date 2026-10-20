@@ -118,6 +118,8 @@ export interface CcOptions {
    * native fetch AbortSignal built on the same engine: compiles
    * scr_event_target.c. */
   eventTarget?: boolean;
+  /** The WebAssembly API: compiles scr_wasm.c. */
+  wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
@@ -186,6 +188,11 @@ export interface CcOptions {
    * on the IR): compiles scr_dgram.c into the binary — the net gating
    * precedent, so dgram-free binaries keep their exact link line. */
   dgram?: boolean;
+  /** The program uses node:dns/promises (the dns.promisesLookup libCalls):
+   * compiles scr_dns_promises.c over the dgram unit, so callback-only
+   * binaries keep their exact link line. */
+  dnsPromises?: boolean;
+
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free
    * binaries keep their exact link line. */

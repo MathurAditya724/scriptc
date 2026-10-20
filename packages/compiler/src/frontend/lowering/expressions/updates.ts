@@ -1,5 +1,6 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
 import * as ts from "../../ts7/adapter.js";
+import { isStrictCode } from "../strict-mode.js";
 import { isPrivateWriteReceiver } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
 import {
@@ -41,6 +42,7 @@ import type { CompoundOp } from "../surfaces.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { declareContextLocal } from "../function-context.js";
+import { keyedFieldTarget, keyedFieldWrite, saveKeyedFieldKey } from "./keyed-field-targets.js";
 
 /** Read-modify-write updates read the member first: an unassigned
  * deferred-init receiver throws Node's member-read TypeError. */
@@ -336,10 +338,11 @@ export function lowerIncDec(
     }
     const target = ts.isPropertyAccessExpression(access)
       ? lowerer.fieldTarget(access)
-      : symbolFieldTarget(lowerer, access);
+      : (symbolFieldTarget(lowerer, access) ?? keyedFieldTarget(lowerer, access, true));
     if (target && lowerer.dynConvertible(target.fieldType)) {
       checkDeferredMemberReceiver(lowerer, target, access);
       target.obj = save(target.obj, "%incrementReceiver");
+      saveKeyedFieldKey(target, save);
       return finish(lowerer.fieldGetExpr(target, loc, access), (value) =>
         lowerer.fieldSetStmt(
           target,
@@ -616,6 +619,7 @@ export function fieldSetStmt(
       };
     }
   }
+  if (target.container === "recordKeyed") return keyedFieldWrite(lowerer, target, value, loc);
   if (target.container === "dynamic")
     return {
       kind: "exprStmt",
@@ -751,6 +755,7 @@ export function fieldSetStmt(
         className: target.className,
         field: target.field,
         value,
+        ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
         loc,
       }
     : {
@@ -870,12 +875,13 @@ export function lowerFieldCompoundValue(
   const targetOf = (): FieldTarget | null =>
     ts.isPropertyAccessExpression(access)
       ? lowerer.fieldTarget(access)
-      : symbolFieldTarget(lowerer, access);
+      : (symbolFieldTarget(lowerer, access) ?? keyedFieldTarget(lowerer, access, true));
   const target = targetOf();
   if (!target)
     lowerer.unsupported("SC1090", access, "compound assignment to unsupported field targets");
   checkDeferredMemberReceiver(lowerer, target, access);
   target.obj = save(target.obj, "%compoundReceiver");
+  saveKeyedFieldKey(target, save);
   // Accessors observe getter, RHS side effects, then setter, all through
   // the saved receiver.
   const fieldRead = lowerer.fieldGetExpr(target, locOf(access), access);
