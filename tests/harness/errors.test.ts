@@ -1150,6 +1150,65 @@ export function plain(x) { return x + 1; }
       /^Uncaught Error: calling a module export that reads 'this' through its module binding \('who': .*\) is not supported yet \[SC1090 at .*namespace-member-this\.mjs:3\]\n$/,
     );
   });
+
+  test("a namespace import's export that passes this on with apply or call compiles", async () => {
+    // Effect 4's provideService: `dual(...).apply(this, arguments)` hands the
+    // receiver to a function that never reads it, as here.
+    const r = await compileAndRun(
+      "namespace-member-forwards-this",
+      `import * as ns from './lib.mjs';
+export const added = ns.provide(1, 2);
+console.log(added, ns.sum(3, 4));
+`,
+      "mjs",
+      {
+        "lib.mjs": `const dual = (body) => function () { return body.apply(this, arguments); };
+export const provide = function () { return dual((a, b) => a + b).apply(this, arguments); };
+const twice = function (a, b) { return (a + b) * 2; };
+export const sum = function (a, b) { return twice.call(this, a, b); };
+`,
+      },
+    );
+    expect(r).toEqual({ stdout: "3 14\n", stderr: "", exitCode: 0 });
+  });
+
+  test("a require binding's export that passes this on with apply compiles", async () => {
+    const r = await compileAndRun(
+      "require-member-forwards-this",
+      `'use strict';
+const m = require('./lib.cjs');
+console.log(m.scale(5));
+`,
+      "cjs",
+      {
+        "lib.cjs": `'use strict';
+const triple = function (x) { return x * 3; };
+exports.scale = function () { return triple.apply(this, arguments); };
+`,
+      },
+    );
+    expect(r).toEqual({ stdout: "15\n", stderr: "", exitCode: 0 });
+  });
+
+  test("an export that also reads this beside passing it on is a named deferred fence", async () => {
+    const r = await compileAndRun(
+      "namespace-member-forwards-and-reads-this",
+      `import * as ns from './lib.mjs';
+console.log(ns.tag('x'));
+`,
+      "mjs",
+      {
+        "lib.mjs": `const join = function (a, b) { return a + ':' + b; };
+export function tag(x) { return join.call(this, x, typeof this); }
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('tag': .*\) is not supported yet \[SC1090 at .*namespace-member-forwards-and-reads-this\.mjs:2\]\n$/,
+    );
+  });
 });
 
 // CommonJS forms around the module's exports that keep a refusal name the

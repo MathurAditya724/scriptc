@@ -25,8 +25,19 @@ function exportedFunction(decl: ts.Node): ts.Node | null {
   return null;
 }
 
+/** Whether `node` is `f.apply(this, ...)` or `f.call(this, ...)`, which
+ * passes the receiver on without reading it. */
+function forwardsThis(node: ts.Node): node is ts.CallExpression {
+  if (!ts.isCallExpression(node)) return false;
+  const callee = node.expression;
+  if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.name)) return false;
+  if (callee.name.text !== "apply" && callee.name.text !== "call") return false;
+  return node.arguments.nodes[0]?.kind === ts.SyntaxKind.ThisKeyword;
+}
+
 /** Whether a function's own body reads `this` (arrows share it; other
- * functions and classes have their own). */
+ * functions and classes have their own). A `this` that `.apply` or `.call`
+ * only passes on is not a read. */
 function readsOwnThis(fn: ts.Node): boolean {
   let found = false;
   const visit = (node: ts.Node): void => {
@@ -37,6 +48,11 @@ function readsOwnThis(fn: ts.Node): boolean {
     }
     if ((ts.isFunctionLike(node) && !ts.isArrowFunction(node)) || ts.isClassLikeDeclaration(node))
       return;
+    if (forwardsThis(node)) {
+      visit(node.expression);
+      for (const arg of node.arguments.nodes.slice(1)) visit(arg);
+      return;
+    }
     node.forEachChild(visit);
   };
   fn.forEachChild(visit);
