@@ -195,7 +195,7 @@ export function lowerDgramDnsModuleCall(
         sawType = true;
       } else if (name === "reuseAddr") {
         reuseAddr = lowerer.lowerExprExpecting(prop.initializer, BOOL);
-      } else if (name === "signal" && isJsSourceFile(expr.getSourceFile())) {
+      } else if (name === "signal" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         // A provably-non-AbortSignal signal (the invalid-input probes:
         // strings, numbers, plain records) throws Node's
         // validateAbortSignal ladder; plausible signal values keep the
@@ -578,7 +578,7 @@ export function lowerDgramMethodCall(
       return { kind: "libCall", fn, args: [receiver, data, port, host], type: VOID, loc };
     }
     if (
-      isJsSourceFile(call.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       args.length <= 5 &&
       !args.some(ts.isSpreadElement)
     ) {

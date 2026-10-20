@@ -148,7 +148,9 @@ export function documentedParameter(param: ts.ParameterDeclaration): boolean {
   return (
     param.type !== undefined ||
     /@(?:param|type)\b/.test(
-      param.getSourceFile().text.slice(param.parent?.pos ?? param.pos, param.getStart()),
+      ts
+        .getSourceFileOfNode(param)
+        .text.slice(param.parent?.pos ?? param.pos, ts.tokenStartOfNode(param)),
     )
   );
 }
@@ -158,7 +160,7 @@ export function checkedJsDocumentedParameter(
   lowerer: Lowerer,
   param: ts.ParameterDeclaration,
 ): boolean {
-  return lowerer.checkedJsFile(param.getSourceFile()) && documentedParameter(param);
+  return lowerer.checkedJsFile(ts.getSourceFileOfNode(param)) && documentedParameter(param);
 }
 
 /** One parameter's ParamShape — the shared signature-shaped collection
@@ -180,10 +182,10 @@ export function checkedJsDocumentedParameter(
 export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): ParamShape {
   const stage = lowerer.stageSourceType(param.name);
   if (stage) return { type: stage, mode: "required" };
-  if (isJsSourceFile(param.getSourceFile()) && ts.isSetAccessorDeclaration(param.parent))
+  if (isJsSourceFile(ts.getSourceFileOfNode(param)) && ts.isSetAccessorDeclaration(param.parent))
     return { type: DYN, mode: "required" };
   if (
-    isJsSourceFile(param.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     ts.isConstructorDeclaration(param.parent) &&
     !param.dotDotDotToken &&
     !checkedJsDocumentedParameter(lowerer, param)
@@ -207,12 +209,14 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     lowerer.isStdlibGlobal(construction.expression, "Promise");
   if (
     !nativeExecutor &&
-    isJsSourceFile(param.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     !param.type &&
     !param.dotDotDotToken &&
     !ts.isSetAccessorDeclaration(param.parent) &&
     !/@(?:param|type)\b/.test(
-      param.getSourceFile().text.slice(param.parent?.pos ?? param.pos, param.getStart()),
+      ts
+        .getSourceFileOfNode(param)
+        .text.slice(param.parent?.pos ?? param.pos, ts.tokenStartOfNode(param)),
     )
   ) {
     return param.initializer
@@ -221,10 +225,12 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   }
   if (
     param.initializer &&
-    isJsSourceFile(param.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     !param.type &&
     !/@(?:param|type)\b/.test(
-      param.getSourceFile().text.slice(param.parent?.pos ?? param.pos, param.getStart()),
+      ts
+        .getSourceFileOfNode(param)
+        .text.slice(param.parent?.pos ?? param.pos, ts.tokenStartOfNode(param)),
     )
   ) {
     return { type: DYN, mode: "omittable", bodyType: DYN };
@@ -233,10 +239,12 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   // contract. Consume the actual iterable, including surplus elements.
   if (
     ts.isArrayBindingPattern(param.name) &&
-    isJsSourceFile(param.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     !param.type &&
     !/@(?:param|type)\b/.test(
-      param.getSourceFile().text.slice(param.parent?.pos ?? param.pos, param.getStart()),
+      ts
+        .getSourceFileOfNode(param)
+        .text.slice(param.parent?.pos ?? param.pos, ts.tokenStartOfNode(param)),
     )
   ) {
     if (param.dotDotDotToken) return { type: DYN, mode: "dynRest" };
@@ -298,7 +306,7 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     // ARRAY param the dyn call thunk fills with the call's surplus
     // arguments; the binding is that array (dynRest — funcType marks
     // `rest`, and the value only ever calls through the boxed thunk).
-    if (isJsSourceFile(param.getSourceFile())) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(param))) {
       const restMapped = lowerer.mapTypeOf(lowerer.typeOf(param.name));
 
       // Unmapped JS rest parameters use the native variadic checked-value ABI.
@@ -325,7 +333,7 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     // including typed arrays passed through checked callbacks. Extracting
     // a native array here would copy it and discard element writes.
     if (
-      isJsSourceFile(param.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(param)) &&
       !param.type &&
       (raw.kind === "array" ||
         (raw.kind === "union" &&
@@ -337,7 +345,7 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   }
   let type = lowerer.runtimeOptionalBindingType(param.name, lowerer.irTypeOf(param.name));
   const body = param.parent?.body;
-  if (isJsSourceFile(param.getSourceFile()) && body && type.kind !== "dyn") {
+  if (isJsSourceFile(ts.getSourceFileOfNode(param)) && body && type.kind !== "dyn") {
     const symbol = lowerer.checker.getSymbolAtLocation(param.name);
     let acceptsUndefined = false;
     ts.walkPreorder(body, (node) => {
@@ -397,7 +405,7 @@ export function restTupleShapes(
   if (
     param.dotDotDotToken === undefined ||
     !ts.isIdentifier(param.name) ||
-    isJsSourceFile(param.getSourceFile())
+    isJsSourceFile(ts.getSourceFileOfNode(param))
   ) {
     return null;
   }
@@ -435,7 +443,7 @@ export function paramShapes(
     // rather than as the declaration's unbound type parameter.
     if (
       blameOf !== undefined &&
-      !isJsSourceFile(declParam.getSourceFile()) &&
+      !isJsSourceFile(ts.getSourceFileOfNode(declParam)) &&
       (tsType.flags & ts.TypeFlags.Any) === 0 &&
       declParam.type !== undefined &&
       mentionsTypeParameter(lowerer, lowerer.checker.getTypeFromTypeNode(declParam.type)) &&
@@ -450,7 +458,8 @@ export function paramShapes(
         lowerer.mapTypeOf(tsType) ??
           // A TypeScript instantiation at `any` (a type argument inferred
           // from an untyped value) takes the checked-dynamic slot.
-          ((tsType.flags & ts.TypeFlags.Any) !== 0 && !isJsSourceFile(declParam.getSourceFile())
+          ((tsType.flags & ts.TypeFlags.Any) !== 0 &&
+          !isJsSourceFile(ts.getSourceFileOfNode(declParam))
             ? DYN
             : lowerer.irTypeOf(declParam.name)),
       ),
@@ -668,7 +677,7 @@ export function requireExactArityValue(
     const ownType = lowerer.typeOf(contextual);
     mappedFn =
       lowerer.mapTypeOf(ownType) ??
-      (isJsSourceFile(contextual.getSourceFile())
+      (isJsSourceFile(ts.getSourceFileOfNode(contextual))
         ? dynFallbackType(lowerer, contextual, ownType)
         : null);
   }
@@ -706,7 +715,7 @@ export function requireExactArityValue(
     target === undefined &&
     contextual !== null &&
     (ts.isArrowFunction(contextual) || ts.isFunctionExpression(contextual)) &&
-    npmStaticPackageOfPath(contextual.getSourceFile().fileName) !== null
+    npmStaticPackageOfPath(ts.getSourceFileOfNode(contextual).fileName) !== null
   ) {
     return;
   }
@@ -771,7 +780,7 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
   // routes generic declarations (direct calls, namespace/CJS member
   // calls, value references) resolves it through genericFnsBySymbol
   // unchanged.
-  if (implicitMonoFile(decl.getSourceFile()) && !isAsync && !isGenerator) {
+  if (implicitMonoFile(ts.getSourceFileOfNode(decl)) && !isAsync && !isGenerator) {
     const implicit = implicitAnyParamSymbolsOf(lowerer, decl);
     if (implicit) {
       const nameText = decl.name?.text ?? "%default";
@@ -780,7 +789,7 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
       lowerer.genericFnsBySymbol.set(symbol, {
         decl,
         baseName: nameText,
-        qualifiedName: lowerer.qualify(decl.getSourceFile(), nsPathPrefix(decl) + nameText),
+        qualifiedName: lowerer.qualify(ts.getSourceFileOfNode(decl), nsPathPrefix(decl) + nameText),
         typeParams: [],
         instances: new Map(),
         implicitParams: implicit,
@@ -815,7 +824,7 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
     // collide. The anonymous default export takes the synthetic
     // "%default" spelling ('%' cannot appear in a user identifier).
     name: lowerer.qualify(
-      decl.getSourceFile(),
+      ts.getSourceFileOfNode(decl),
       nsPathPrefix(decl) + (decl.name?.text ?? "%default"),
     ),
     params,
@@ -844,7 +853,7 @@ function appendArgumentsParameter(
       ts.isFunctionDeclaration(node) ||
       ts.isMethodDeclaration(node)
     ) ||
-    !isJsSourceFile(node.getSourceFile()) ||
+    !isJsSourceFile(ts.getSourceFileOfNode(node)) ||
     !bodyReadsArguments(node)
   )
     return;
@@ -854,7 +863,7 @@ function appendArgumentsParameter(
       (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent));
     if (
       !classMethod &&
-      !isNodeEsmFile(node.getSourceFile(), lowerer.program) &&
+      !isNodeEsmFile(ts.getSourceFileOfNode(node), lowerer.program) &&
       !unmappedArguments(node)
     ) {
       lowerer.unsupported(
@@ -925,7 +934,7 @@ export function lambdaSignature(
   // actual call tuple, including overloads and omitted arguments. Node's
   // contextual overload signature cannot define this closure's ABI.
   if (
-    isJsSourceFile(node.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
     !node.type &&
     (ts.isFunctionExpression(node) || ts.isArrowFunction(node)) &&
     node.parameters.nodes.every(
@@ -1043,7 +1052,7 @@ export function lambdaSignature(
       : [];
     const ctxDecl = ctxSigs.length === 1 ? ctxSigs[0]!.declaration : undefined;
     const ctxRetRaw =
-      ctxDecl && !ctxDecl.getSourceFile().isDeclarationFile
+      ctxDecl && !ts.getSourceFileOfNode(ctxDecl).isDeclarationFile
         ? lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!))
         : null;
     // An async lambda always produces a promise, so a slot returning a
@@ -1065,7 +1074,7 @@ export function lambdaSignature(
     // must match the slot's ABI exactly.
     const dynVariadicSlot =
       ctxRet?.kind === "dyn" &&
-      !isJsSourceFile(node.getSourceFile()) &&
+      !isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       shapes.some((shape) => shape.mode === "dynRest");
     if (
       dynVariadicSlot ||

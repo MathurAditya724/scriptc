@@ -40,12 +40,12 @@ import { DYN, type IrExpr, type IrGlobal } from "../../ir/ir.js";
  * source declaration) in a CommonJS JS file. */
 export function isCjsExportsIdentifier(lowerer: Lowerer, node: ts.Expression): boolean {
   if (!ts.isIdentifier(node) || node.text !== "exports") return false;
-  if (!isCjsJsFile(node.getSourceFile(), lowerer.program)) return false;
+  if (!isCjsJsFile(ts.getSourceFileOfNode(node), lowerer.program)) return false;
   const symbol = lowerer.checker.getSymbolAtLocation(node);
   const decls = symbol ? symbol.declarations : [];
   return !decls.some(
     (d) =>
-      !d.getSourceFile().isDeclarationFile &&
+      !ts.getSourceFileOfNode(d).isDeclarationFile &&
       (ts.isVariableDeclaration(d) ||
         ts.isParameter(d) ||
         ts.isBindingElement(d) ||
@@ -62,7 +62,7 @@ export function isCjsModuleExports(lowerer: Lowerer, node: ts.Expression): boole
   return (
     isModuleExportsAccess(node) &&
     isCjsModuleGlobal(lowerer, node.expression) &&
-    isCjsJsFile(node.getSourceFile(), lowerer.program)
+    isCjsJsFile(ts.getSourceFileOfNode(node), lowerer.program)
   );
 }
 
@@ -75,7 +75,7 @@ export function cjsInFileExportGlobalOf(
   access: ts.PropertyAccessExpression,
 ): IrGlobal | null {
   if (access.questionDotToken || !ts.isIdentifier(access.name)) return null;
-  const sf = access.getSourceFile();
+  const sf = ts.getSourceFileOfNode(access);
   const recv =
     isModuleExportsAccess(access.expression) ||
     (ts.isIdentifier(access.expression) &&
@@ -186,7 +186,7 @@ function exportsAssignments(
  * it runs: `exports` unless the file rebinds it; `module.exports` unless the
  * file rebinds `exports` or replaces `module.exports`. */
 function namesOriginalExports(lowerer: Lowerer, node: ts.Expression): boolean {
-  const assigned = exportsAssignments(lowerer, node.getSourceFile());
+  const assigned = exportsAssignments(lowerer, ts.getSourceFileOfNode(node));
   if (assigned.exports) return false;
   return ts.isIdentifier(node) || !assigned.moduleExports;
 }
@@ -252,7 +252,7 @@ export function usesCjsExportsIdentity(lowerer: Lowerer, sf: ts.SourceFile): boo
  * refusal. Null when `node` is not such a use. */
 export function lowerCjsExportsObjectValue(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
   if (!isCjsExportsObjectValue(lowerer, node)) return null;
-  const sf = node.getSourceFile();
+  const sf = ts.getSourceFileOfNode(node);
   // A module that replaces module.exports answers `module.exports` reads
   // through the replacement's own machinery (the class-expression whole
   // export, the replaced-exports reads).
@@ -328,7 +328,7 @@ export function cjsExportMemberWriteGlobalOf(
   lowerer: Lowerer,
   target: ts.PropertyAccessExpression,
 ): IrGlobal | null {
-  const sf = target.getSourceFile();
+  const sf = ts.getSourceFileOfNode(target);
   if (!isCjsJsFile(sf, lowerer.program)) return null;
   const assigned = exportsAssignments(lowerer, sf);
   if (assigned.exports || assigned.moduleExports) return null;
@@ -458,7 +458,7 @@ export function cjsMemberAliasValueOf(lowerer: Lowerer, ref: ts.Identifier): ts.
     )
       return null;
     const spec = importDecl.moduleSpecifier.text;
-    const from = importDecl.getSourceFile();
+    const from = ts.getSourceFileOfNode(importDecl);
     const dep =
       resolveImport(lowerer.program, from, spec, "import") ??
       npmStaticDepSf7(lowerer.program, from, spec, "import");
@@ -552,7 +552,7 @@ function rereadableMemberValue(
   const sym = lowerer.resolveValueSymbol(value);
   if (sym === null || sym.declarations.length !== 1) return false;
   const decl = sym.declarations[0]!;
-  if (decl.getSourceFile() !== stmt.getSourceFile()) return false;
+  if (ts.getSourceFileOfNode(decl) !== ts.getSourceFileOfNode(stmt)) return false;
   // A function declaration is initialized when the module starts; any
   // other binding must be initialized before the write stores it.
   if (!ts.isFunctionDeclaration(decl) && decl.end > stmt.pos) return false;
