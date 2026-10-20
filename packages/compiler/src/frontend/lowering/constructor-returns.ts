@@ -153,7 +153,7 @@ function returnsThis(
   const name = callee.name.text;
   const symbol = lowerer.checker.getSymbolAtLocation(callee.name);
   if (symbol === undefined) return false;
-  const methods: ts.Node[] = [...lowerer.checker.declarationsOf(symbol)];
+  const methods: ts.Node[] = [...symbol.declarations];
   if (receiver === ts.SyntaxKind.ThisKeyword) {
     const pending = [...info.subclasses];
     while (pending.length > 0) {

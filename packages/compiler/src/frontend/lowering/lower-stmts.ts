@@ -2085,7 +2085,7 @@ function javaScriptAnyOrigin(lowerer: Lowerer, node: ts.Expression, depth: numbe
       : expr.expression;
     if (!ts.isIdentifier(callee)) return false;
     const symbol = lowerer.resolveValueSymbol(callee);
-    const declarations = symbol ? lowerer.checker.declarationsOf(symbol) : [];
+    const declarations = symbol ? symbol.declarations : [];
     return (
       declarations.length > 0 &&
       declarations.every((d) => isJsSourceFile(d.getSourceFile()) && ts.isFunctionLike(d))
@@ -2093,7 +2093,7 @@ function javaScriptAnyOrigin(lowerer: Lowerer, node: ts.Expression, depth: numbe
   }
   if (ts.isIdentifier(expr) && depth === 0) {
     const symbol = lowerer.resolveValueSymbol(expr);
-    const declaration = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+    const declaration = symbol ? symbol.valueDeclaration : undefined;
     return (
       declaration !== undefined &&
       ts.isVariableDeclaration(declaration) &&
