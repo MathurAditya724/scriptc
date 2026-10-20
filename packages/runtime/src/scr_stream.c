@@ -6451,8 +6451,10 @@ static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t 
         end = option->kind == SCR_DYN_UNDEF || scr_dyn_truthy(option);
         scr_dyn_release(option);
       }
+      /* scr_stream_pipe_general: a JavaScript caller can pipe into the
+       * converted process.stdout / process.stderr, which a pipe never ends. */
       ScrStream *returned = !strcmp(method, "pipe")
-          ? scr_stream_pipe(stream, destination, end) : scr_stream_unpipe(stream, destination);
+          ? scr_stream_pipe_general(stream, destination, end) : scr_stream_unpipe(stream, destination);
       scr_stream_release(returned);
       if (!strcmp(method, "pipe") && !scr_exc_pending()) result = scr_dyn_retain(first);
     }
@@ -6696,8 +6698,9 @@ ScrStream *scr_stream_stdio_writable(double fd) {
 }
 
 /* readable.pipe() into a Writable slot under the general representation
- * (the readable.pipeGeneral libCall): Node never ends process.stdout or
- * process.stderr from a pipe, so their converted Writable keeps `end` off. */
+ * (the readable.pipeGeneral libCall), and pipe() called from JavaScript on
+ * a native stream: Node never ends process.stdout or process.stderr from a
+ * pipe, so their converted Writable keeps `end` off. */
 ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end) {
   if (dst == scr_stream_stdio_writables[0] || dst == scr_stream_stdio_writables[1]) end = false;
   return scr_stream_pipe(src, dst, end);
