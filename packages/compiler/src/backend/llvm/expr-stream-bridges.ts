@@ -15,6 +15,7 @@ import {
   isDirentShape,
   isDynTypedRefType,
   isRefCounted,
+  shapeHasAccessorSlots,
   typeKey,
 } from "../../ir/ir.js";
 import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
@@ -765,8 +766,13 @@ export function streamTypedRefMaterializeAdapter(
       !meta.def.instancePrototypeHelper &&
       !meta.def.prototypeDataHelper
     ) {
-      host.declare(`declare ptr @scr_stream_dyn_view(ptr)`);
-      B.line(`${out} = call ptr @scr_stream_dyn_view(ptr %p)`);
+      // Programs with constructor-function streams view them through
+      // scr_dyn_builtin_stream.c, which answers their own objects.
+      const view = host.usesDynBuiltinStream
+        ? "scr_dyn_builtin_stream_view"
+        : "scr_stream_dyn_view";
+      host.declare(`declare ptr @${view}(ptr)`);
+      B.line(`${out} = call ptr @${view}(ptr %p)`);
     } else B.line(`${out} = call ptr @scr_dyn_new_obj()`);
     const withAttributes = meta.def.fields.some((field) => field.name === CLASS_ATTRIBUTES);
     if (meta.def.tracksOwnFields) {
@@ -941,6 +947,18 @@ export function streamTypedRefMaterializeAdapter(
       B.line(`${copied} = call ptr @scr_dyn_copy_property_descriptors(ptr ${out}, ptr ${bag})`);
       B.line(`call void @scr_dyn_release_v(ptr ${copied})`);
     }
+    // An Error subclass instance's own `name` sits where its class's
+    // construction creates it: after a field, or after every other
+    // property when no constructor sets it.
+    const nameAfter = meta.def.errorNameAfter;
+    if (meta.root.def.name === "%Error" && !meta.def.runtime && nameAfter !== null) {
+      host.declare(`declare void @scr_error_dyn_place_name(ptr, ptr, ${host.sizeType})`);
+      B.line(
+        nameAfter === undefined
+          ? `call void @scr_error_dyn_place_name(ptr ${out}, ptr null, ${host.sizeType} 0)`
+          : `call void @scr_error_dyn_place_name(ptr ${out}, ptr ${host.cstr(nameAfter)}, ${host.sizeType} ${Buffer.byteLength(nameAfter, "utf8")})`,
+      );
+    }
     // A frozen, sealed or non-extensible instance's view says so.
     if (withAttributes) {
       host.declare(`declare void @scr_dyn_class_view_attributes(ptr, double)`);
@@ -965,6 +983,7 @@ export function streamTypedRefMaterializeAdapter(
      * Declared-field records and tuples cover the live stream values. */
     const ordinary =
       shape.indexValue ||
+      shapeHasAccessorSlots(shape) ||
       shape.fields.some((field) => field.name === "handleEvent" && field.type.kind === "func");
     if (ordinary) {
       const out = B.tmp();

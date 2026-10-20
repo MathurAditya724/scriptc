@@ -120,7 +120,7 @@ function lowerBytesSortCall(
     fnArg.type.params.every((param) => lowerer.coercibleValue(F64, param))
   ) {
     const result =
-      fnArg.type.ret.kind === "dyn" && isJsSourceFile(argNode.getSourceFile())
+      fnArg.type.ret.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(argNode))
         ? F64
         : fnArg.type.ret;
     const expected = funcOf(
@@ -187,7 +187,7 @@ export function lowerBytesNew(
 ): IrExpr | null {
   if (
     symbol != null &&
-    (symbol.name === "ArrayBuffer" || symbol.name === "SharedArrayBuffer") &&
+    (ts.symbolName(symbol) === "ArrayBuffer" || ts.symbolName(symbol) === "SharedArrayBuffer") &&
     lowerer.isStdlibSymbol(symbol)
   ) {
     const args = expr.arguments?.nodes ?? [];
@@ -203,18 +203,19 @@ export function lowerBytesNew(
       : dynUndefinedExpr(locOf(expr));
     return {
       kind: "libCall",
-      fn: symbol.name === "SharedArrayBuffer" ? "sharedArrayBuffer.new" : "arrayBuffer.new",
+      fn:
+        ts.symbolName(symbol) === "SharedArrayBuffer" ? "sharedArrayBuffer.new" : "arrayBuffer.new",
       args: [length],
       type: DYN,
       loc: locOf(expr),
     };
   }
-  if (symbol && symbol.name === "DataView" && lowerer.isStdlibSymbol(symbol)) {
+  if (symbol && ts.symbolName(symbol) === "DataView" && lowerer.isStdlibSymbol(symbol)) {
     return lowerDataViewNew(lowerer, expr);
   }
-  const elem = symbol ? own(BYTES_CTORS, symbol.name) : undefined;
+  const elem = symbol ? own(BYTES_CTORS, ts.symbolName(symbol)) : undefined;
   if (!elem || !symbol || !lowerer.isStdlibSymbol(symbol)) return null;
-  const name = symbol.name;
+  const name = ts.symbolName(symbol);
   const type = bytesOf(elem);
   const loc = locOf(expr);
   const args = expr.arguments?.nodes ?? [];
@@ -291,7 +292,7 @@ export function lowerBytesStaticCall(
   }
   if (access.name.text !== "from" || !ts.isIdentifier(access.expression)) return null;
   const symbol = lowerer.resolveValueSymbol(access.expression);
-  const elem = symbol ? own(BYTES_CTORS, symbol.name) : undefined;
+  const elem = symbol ? own(BYTES_CTORS, ts.symbolName(symbol)) : undefined;
   if (!elem || !lowerer.isStdlibSymbol(symbol ?? undefined)) return null;
   if (
     call.arguments.nodes.length < 1 ||
@@ -442,7 +443,7 @@ export function lowerBytesMethodCall(
   const nArgs = call.arguments.nodes.length;
   // Encoded stream callbacks can receive strings even when JavaScript's
   // contextual inference still describes their parameter as a Buffer.
-  if (name === "toString" && nArgs <= 1 && isJsSourceFile(call.getSourceFile())) {
+  if (name === "toString" && nArgs <= 1 && isJsSourceFile(ts.getSourceFileOfNode(call))) {
     const lowered = lowerer.lowerExpr(access.expression);
     const receiver =
       lowered.kind === "dynCheck" && lowered.value.type.kind === "dyn" ? lowered.value : lowered;
@@ -455,7 +456,7 @@ export function lowerBytesMethodCall(
           call.arguments.nodes[0]
             ? lowerer.lowerExprExpecting(call.arguments.nodes[0], DYN)
             : dynUndefinedExpr(loc),
-          { kind: "strLit", value: access.getText(), type: STRING, loc },
+          { kind: "strLit", value: ts.getTextOfNode(access), type: STRING, loc },
         ],
         type: STRING,
         loc,
@@ -1334,7 +1335,8 @@ function lowerBufferStaticValue(
       args.length <= 3 &&
       !args.some(ts.isSpreadElement) &&
       ((symbol) =>
-        symbol != null && (symbol.name === "ArrayBuffer" || symbol.name === "SharedArrayBuffer"))(
+        symbol != null &&
+        (ts.symbolName(symbol) === "ArrayBuffer" || ts.symbolName(symbol) === "SharedArrayBuffer"))(
         lowerer.typeOf(args[0]!).getSymbol(),
       )
     ) {
@@ -1650,7 +1652,9 @@ function lowerBufferStaticValue(
       // flavor. Plain bytes are Uint8Arrays at this boundary; inspecting
       // only the bytes tag would incorrectly identify them as Buffers.
       const checked =
-        isJsSourceFile(call.getSourceFile()) && v.kind === "dynCheck" && v.value.type.kind === "dyn"
+        isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+        v.kind === "dynCheck" &&
+        v.value.type.kind === "dyn"
           ? v.value
           : v;
       if (checked.type.kind === "dyn") {

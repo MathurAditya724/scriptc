@@ -42,6 +42,8 @@ import {
 import { strCharsCall } from "./array-construction.js";
 import { arrayElementRead } from "./array-iteration.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
+import { classGeneratorIterable } from "../class-iterables.js";
+import { generatorDrain } from "../iterator-adapters.js";
 
 /** Ambient Map method calls. `get`/`set`/`has`/`delete`/`clear` lower to
  * mapIntrinsic; `forEach` desugars to a direct call of a synthetic loop
@@ -58,7 +60,7 @@ export function lowerMapMethodCall(
   if (!MAP_METHODS.has(name)) return null;
   let receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   let probedUntyped = false;
-  if (receiverIr?.kind !== "map" && isJsSourceFile(access.getSourceFile())) {
+  if (receiverIr?.kind !== "map" && isJsSourceFile(ts.getSourceFileOfNode(access))) {
     const probed = tryLowerExpression(lowerer, access.expression);
     if (probed?.type.kind === "map") {
       receiverIr = probed.type;
@@ -425,7 +427,7 @@ export function lowerCollectionSpread(
         loc,
       },
       then: entries,
-      else_: nodeThrowExpr(1, "", `${node.getText()} is not iterable`, entries.type, loc),
+      else_: nodeThrowExpr(1, "", `${ts.getTextOfNode(node)} is not iterable`, entries.type, loc),
       type: entries.type,
       loc,
     },
@@ -542,7 +544,7 @@ export function lowerSetMethodCall(
   // Set<union-of-signatures>, but the VALUE lowered as a real Set of
   // identity tokens (the new-Set probe) — the lowered receiver's type
   // is the honest dispatch key.
-  if (receiverIr?.kind !== "set" && isJsSourceFile(access.getSourceFile())) {
+  if (receiverIr?.kind !== "set" && isJsSourceFile(ts.getSourceFileOfNode(access))) {
     const probed = tryLowerExpression(lowerer, access.expression);
     if (probed?.type.kind === "set") {
       receiverIr = probed.type;
@@ -971,7 +973,7 @@ export function lowerSetSeedNew(
         {
           kind: "libCall",
           fn: "dyn.iterPack",
-          args: [source, strLit(node.getText(), loc)],
+          args: [source, strLit(ts.getTextOfNode(node), loc)],
           type: DYN,
           loc,
         },
@@ -1047,6 +1049,14 @@ function setFromSeedValue(
           loc,
         }
       : null;
+  }
+  // A generator, or a class whose [Symbol.iterator] is a generator method:
+  // the Set takes every value it yields, in order.
+  const generator =
+    classGeneratorIterable(lowerer, source) ?? (source.type.kind === "generator" ? source : null);
+  if (generator) {
+    const drained = generatorDrain(lowerer, generator, setT.elem, loc);
+    return drained ? { kind: "setNew", seed: drained, type: setT, loc } : null;
   }
   let seed: IrExpr;
   if (source.type.kind === "set" && typeEquals(source.type, setT)) {
@@ -1155,7 +1165,7 @@ export function lowerMapSeedNew(
   }
   if (ts.isArrayLiteralExpression(argNode)) {
     if (
-      isJsSourceFile(argNode.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(argNode)) &&
       argNode.elements.nodes.some((entry) => !ts.isArrayLiteralExpression(entry))
     ) {
       return mapFromSeedValue(lowerer, lowerer.lowerExprExpecting(argNode, DYN), mapT);
@@ -1245,6 +1255,24 @@ export function mapFromSeedValue(
           loc,
         }
       : null;
+  }
+  // A generator of entries, or a class whose [Symbol.iterator] is one: the
+  // Map takes every [key, value] pair it yields, in order.
+  const generator =
+    classGeneratorIterable(lowerer, seed) ?? (seed.type.kind === "generator" ? seed : null);
+  if (generator) {
+    const entry: IrType = {
+      kind: "record",
+      shapeId: lowerer.shapes.intern(
+        [
+          { name: "0", type: mapT.key },
+          { name: "1", type: mapT.value },
+        ],
+        true,
+      ),
+    };
+    const drained = generatorDrain(lowerer, generator, entry, loc);
+    return drained ? mapFromSeedValue(lowerer, drained, mapT) : null;
   }
   if (seed.type.kind === "map") {
     if (!typeEquals(seed.type, mapT)) return null;

@@ -18,6 +18,7 @@ import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { classInstanceOf } from "./class-dynamic-dispatch.js";
+import { inheritedBuiltinCtorFence } from "./lower-classes.js";
 
 const PREFIX = "%class.construct:";
 const PACKED = `${PREFIX}packed`;
@@ -380,6 +381,29 @@ export class ClassConstructionDispatch {
           changed = true;
           continue;
         }
+        const type: IrType = { kind: "classval", className: name };
+        const callee = varRef("p.0", DYN, loc);
+        // A constructor inherited from a runtime stream or EventEmitter
+        // takes no arguments here: arguments report at run time, as they do
+        // at compile time for typed construction.
+        const fence = inheritedBuiltinCtorFence(lowerer, info, loc);
+        if (fence !== null && fn.name !== PACKED && fn.params.length > 1) {
+          fn.body.unshift({
+            kind: "if",
+            cond: {
+              kind: "libCall",
+              fn: "dyn.classIs",
+              args: [callee, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
+              type: BOOL,
+              loc,
+            },
+            then: [fence],
+            else_: null,
+            loc,
+          });
+          changed = true;
+          continue;
+        }
         const args = constructorArguments(
           lowerer,
           info.ctorParams,
@@ -388,8 +412,6 @@ export class ClassConstructionDispatch {
           fn.name === PACKED ? varRef("p.1", DYN, loc) : undefined,
         );
         if (!args) continue;
-        const type: IrType = { kind: "classval", className: name };
-        const callee = varRef("p.0", DYN, loc);
         const value = constructedValue(lowerer, info, {
           kind: "newValue",
           callee: { kind: "dynCheck", value: callee, type, loc },
@@ -400,6 +422,28 @@ export class ClassConstructionDispatch {
         const body: IrStmt[] = [
           { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
         ];
+        // A spread call's argument count is known only at run time.
+        if (fence !== null && fn.name === PACKED)
+          body.unshift({
+            kind: "if",
+            cond: {
+              kind: "bin",
+              op: ">",
+              left: {
+                kind: "libCall",
+                fn: "dyn.arrLen",
+                args: [varRef("p.1", DYN, loc)],
+                type: F64,
+                loc,
+              },
+              right: { kind: "numLit", value: 0, type: F64, loc },
+              type: BOOL,
+              loc,
+            },
+            then: [fence],
+            else_: null,
+            loc,
+          });
         fn.body.unshift({
           kind: "if",
           cond: {

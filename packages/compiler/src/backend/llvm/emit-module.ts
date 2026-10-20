@@ -1,4 +1,5 @@
 /* LlEmitter's module-level output: module parts, helper definitions, library declarations and FFI callback definitions. */
+import { emitWasmModules } from "./wasm-modules.js";
 import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import {
   mangleAsyncSpawn,
@@ -177,6 +178,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // programs additionally stamp the httpReq/httpRes ops — the C main's
   // install lines, gated on the same predicates native/executable.ts links by.
   const usesNet = runtimeFeatures.net;
+  const usesNetLookup = runtimeFeatures.netLookup;
   const usesDgram = runtimeFeatures.dgram;
   const usesHttp2 = runtimeFeatures.http2;
   const usesHttp = runtimeFeatures.http;
@@ -226,6 +228,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesFsWatch) emitter.declare(`declare void @scr_watch_install()`);
   if (emitter.ffiHasForeignCallback) emitter.declare(`declare void @scr_ffi_install()`);
   if (usesStream) emitter.declare(`declare void @scr_stream_install()`);
+  if (usesNetLookup) emitter.declare(`declare void @scr_net_lookup_install()`);
   if (usesNet) {
     emitter.declare(`declare void @scr_net_install()`);
     emitter.declare(`declare void @scr_net_dyn_install()`);
@@ -310,6 +313,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     emitter.declare(`declare zeroext i1 @scr_loop_run(ptr)`);
     if (emitter.mod.commonJsEntry === true)
       emitter.declare(`declare void @scr_loop_commonjs_entry()`);
+    if (emitter.readsLoopMetrics()) emitter.declare(`declare void @scr_perf_loop_mark()`);
     emitter.declare(`declare zeroext i1 @scr_report_unhandled_rejections()`);
     emitter.declare(`declare void @scr_discard_unhandled_rejections()`);
   }
@@ -686,11 +690,17 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // runtime finds them before data + cap * 9), and the ScrArr header over
     // it (rc == SIZE_MAX, len == cap == filled, SCR_ELEM_STR = 2, no REF
     // entry points). Every dense slot is present; reads retain immortal
-    // strings — a no-op.
+    // strings — a no-op. Slots are 8 bytes on every target: on 32-bit
+    // targets each holds the pointer in its low half and zero in its high
+    // half, so the states start where the runtime looks for them.
     const n = inst.slots.length;
     const present = n === 0 ? "zeroinitializer" : `[ ${inst.slots.map(() => "i8 1").join(", ")} ]`;
+    const wide = emitter.sizeType === "i64";
+    const slot = wide ? "ptr" : "<{ ptr, i32 }>";
+    const slotValue = (s: string): string =>
+      wide ? `ptr ${s}` : `<{ ptr, i32 }> <{ ptr ${s}, i32 0 }>`;
     out.push(
-      `@${inst.sym}_data = internal constant <{ [${n} x ptr], [${n} x i8] }> <{ [${n} x ptr] [ ${inst.slots.map((s) => `ptr ${s}`).join(", ")} ], [${n} x i8] ${present} }>, align 8`,
+      `@${inst.sym}_data = internal constant <{ [${n} x ${slot}], [${n} x i8] }> <{ [${n} x ${slot}] [ ${inst.slots.map(slotValue).join(", ")} ], [${n} x i8] ${present} }>, align 8`,
       `@${inst.sym} = internal global %ScrArr { ${emitter.sizeType} -1, i32 ${n}, i32 ${n}, i8 2, i8 0, i16 0, i32 ${n}, ptr null, ptr @${inst.sym}_data, ptr null }`,
     );
   }
@@ -729,6 +739,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   out.push(fnDefs[0] ?? "");
   for (let i = 1; i < fnDefs.length; i++) out.push("", fnDefs[i]!);
   out.push("");
+  // WebAssembly modules translated into this program, and the registry.
+  for (const line of emitWasmModules(emitter.mod, flushedDecls, emitter.wasmBoundsChecks))
+    out.push(line);
 
   // main(): scr_init, the program-dependent error-vt interval stamps,
   // scr_lib_init(argc, argv), then the entry function. An uncaught
@@ -838,6 +851,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
+    ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
@@ -871,6 +885,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(runsLoop
       ? [
           ...(emitter.mod.commonJsEntry === true ? [`  call void @scr_loop_commonjs_entry()`] : []),
+          // performance.eventLoopUtilization measures from here on.
+          ...(emitter.readsLoopMetrics() ? [`  call void @scr_perf_loop_mark()`] : []),
           `  %loop_rejection = call zeroext i1 @scr_loop_run(ptr ${asyncEntry ? "%top" : "null"})`,
           `  %lexc = call zeroext i1 @scr_exc_pending()`,
           `  br i1 %lexc, label %luncaught, label %lok`,

@@ -306,3 +306,28 @@ test("sums that only feed a bitwise conversion of int32 operands add in 32 bits"
   }
   expect(body("number_add")).not.toMatch(/ = add i32 |fcmp ord/);
 });
+
+test.each([32, 64] as const)(
+  "tagged-template string arrays keep 8-byte slots before their states on %i-bit targets",
+  (bits) => {
+    const strings: IrExpr = {
+      kind: "templateStrings",
+      key: "site",
+      cooked: ["a", "b", "c"],
+      type: { kind: "array", elem: STRING },
+      loc,
+    };
+    const mod = fixture();
+    mod.functions[0]!.body = [{ kind: "exprStmt", expr: strings, loc }];
+    const llvm = emitLlvmModule(mod, { pointerBits: bits });
+    const data = /^@sc_tsa_0_data = internal constant .*$/m.exec(llvm)![0];
+    // The runtime reads each slot as 8 bytes and finds the states after
+    // cap * 8 bytes of slots (scr_arr_states_end).
+    if (bits === 64) expect(data).toContain("<{ [3 x ptr], [3 x i8] }>");
+    else {
+      expect(data).toContain("<{ [3 x <{ ptr, i32 }>], [3 x i8] }>");
+      expect(data.match(/<\{ ptr @\S+, i32 0 \}>/g)).toHaveLength(3);
+    }
+    expect(data).toContain("[3 x i8] [ i8 1, i8 1, i8 1 ]");
+  },
+);

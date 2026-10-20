@@ -30,12 +30,15 @@ const features: NativeLinkFeatures = {
   bigint: false,
   searchParams: false,
   qs: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
   parseArgs: false,
   stream: false,
   net: false,
   http: false,
   http2: false,
   dgram: false,
+  dnsPromises: false,
   watch: false,
   foreignFfi: false,
   nodeTest: false,
@@ -43,6 +46,7 @@ const features: NativeLinkFeatures = {
   tlsCa: false,
   cipher: false,
   webcrypto: false,
+  perfLoop: false,
 };
 
 test("native toolchain configuration, staging and helper validation are static", async () => {
@@ -121,6 +125,7 @@ for (const backend of ["llvm"] as const) {
         compiler_version: manifest.version,
         target: target.name,
         ts7: "ts7",
+        tsc_ts: "tsc-ts",
         llvm_package: "llvm",
         runtime_pack: "pack",
         linker: "ld",

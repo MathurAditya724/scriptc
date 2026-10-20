@@ -145,7 +145,7 @@ import { forkTargetPaths } from "../fork-target.js";
 import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { handleEventReaderPrelude } from "./lower-event-target.js";
-import { jsHoldsDynObject } from "./lower-exprs.js";
+import { cjsAccessorSnapshotStores, jsHoldsDynObject } from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
@@ -692,7 +692,10 @@ export function collectJsonImports(lowerer: Lowerer, parts: FileParts[]): void {
       const nameSym = lowerer.checker.getSymbolAtLocation(clause.name);
       if (!nameSym || !(nameSym.flags & ts.SymbolFlags.Alias)) continue;
       const target = lowerer.checker.getAliasedSymbol(nameSym);
-      const jsonSf = target.declarations[0]?.getSourceFile();
+      const jsonSf =
+        target.declarations.length === 0
+          ? undefined
+          : ts.getSourceFileOfNode(target.declarations[0]!);
       if (!jsonSf || !jsonSf.fileName.endsWith(".json")) continue;
       try {
         const tsType = lowerer.typeOf(clause.name);
@@ -870,6 +873,14 @@ export function moduleArtifacts(
             if (!root) continue;
             while (root.base) root = root.base;
             valueInstanceOfRoots.add(root.def.name);
+          }
+          break;
+        case "libCall":
+          // The general stream representation's child stdio read bridges
+          // through the runtime install that boxes both stream classes.
+          if (node.fn === "child.stdioStream") {
+            visitClass("%Readable");
+            visitClass("%Writable");
           }
           break;
         case "dynFrom":
@@ -1167,7 +1178,7 @@ function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefi
   if (
     (ts.isFunctionExpression(e) || ts.isArrowFunction(e)) &&
     !e.typeParameters?.nodes.length &&
-    isJsSourceFile(e.getSourceFile())
+    isJsSourceFile(ts.getSourceFileOfNode(e))
   )
     return true;
   if (ts.isIdentifier(e) || ts.isArrowFunction(e) || ts.isFunctionExpression(e)) {
@@ -1266,7 +1277,7 @@ export function collectGlobals(
         const mutableVar =
           vd !== undefined &&
           ts.isVariableDeclaration(vd) &&
-          !vd.getSourceFile().isDeclarationFile &&
+          !ts.getSourceFileOfNode(vd).isDeclarationFile &&
           (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0;
         // Immutable targets: alias plumbing — importers resolve to the
         // target's storage (the alias-resolved read IS the snapshot when
@@ -1538,7 +1549,7 @@ export function collectGlobals(
       const mutableVar =
         vd !== undefined &&
         ts.isVariableDeclaration(vd) &&
-        !vd.getSourceFile().isDeclarationFile &&
+        !ts.getSourceFileOfNode(vd).isDeclarationFile &&
         (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0;
       if (!mutableVar) continue;
       const diagsBefore = lowerer.diags.length;
@@ -1549,7 +1560,7 @@ export function collectGlobals(
         }
         if (type.kind === "void") lowerer.badType(stmt.name, lowerer.typeOf(stmt.name));
         const g: IrGlobal = {
-          id: `%g.${tag}${nsPathPrefix(stmt)}%alias.${stmt.name.text}%${stmt.getStart()}`,
+          id: `%g.${tag}${nsPathPrefix(stmt)}%alias.${stmt.name.text}%${ts.tokenStartOfNode(stmt)}`,
           name: stmt.name.text,
           type,
           mutable: false,
@@ -2274,12 +2285,12 @@ export function collectGlobals(
               : undefined;
           const callDeclaration = callSignature && callSignature.declaration;
           const callType =
-            callDeclaration && isJsSourceFile(callDeclaration.getSourceFile())
+            callDeclaration && isJsSourceFile(ts.getSourceFileOfNode(callDeclaration))
               ? lowerer.mapTypeOf(lowerer.typeOf(nameNode))
               : null;
           const inferredJsCall =
             callDeclaration &&
-            isJsSourceFile(callDeclaration.getSourceFile()) &&
+            isJsSourceFile(ts.getSourceFileOfNode(callDeclaration)) &&
             (!callType ||
               (unannotatedCall &&
                 callType.kind === "union" &&
@@ -2702,7 +2713,7 @@ export function declSymbolOf(
     ts.canHaveModifiers(decl) &&
     ts.getModifiers(decl)?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword) === true;
   if (!isDefault) return undefined;
-  const sym = defaultExportSymbolOf(lowerer, decl.getSourceFile());
+  const sym = defaultExportSymbolOf(lowerer, ts.getSourceFileOfNode(decl));
   return sym ?? undefined;
 }
 
@@ -2720,7 +2731,7 @@ export function declSymbolOf(
  * expression so the expression's OWN diagnostic wins when it has one,
  * then poisons. */
 export function lowerDefaultExport(lowerer: Lowerer, stmt: ts.ExportAssignment): IrStmt | null {
-  const symbol = defaultExportSymbolOf(lowerer, stmt.getSourceFile());
+  const symbol = defaultExportSymbolOf(lowerer, ts.getSourceFileOfNode(stmt));
   if (symbol && symbol.flags & ts.SymbolFlags.Alias && !lowerer.globalsBySymbol.has(symbol))
     return null;
   const g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
@@ -2733,7 +2744,7 @@ export function lowerDefaultExport(lowerer: Lowerer, stmt: ts.ExportAssignment):
       while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
       if (
         ts.isClassExpression(inner) &&
-        !isJsSourceFile(stmt.getSourceFile()) &&
+        !isJsSourceFile(ts.getSourceFileOfNode(stmt)) &&
         inner.typeParameters === undefined &&
         (decoratorNodesOf(inner).length > 0 ||
           inner.members.nodes.some((m) => decoratorNodesOf(m).length > 0)) &&
@@ -2851,6 +2862,14 @@ export function lowerFileInit(
             });
           } else {
             header.push({ kind: "exprStmt", expr: call, loc });
+            // An ES-module importer links a CommonJS dependency: Node
+            // copies its lexer-visible exports here.
+            if (
+              (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) &&
+              !isCjsJsFile(sf, lowerer.program) &&
+              isCjsJsFile(dep, lowerer.program)
+            )
+              header.push(...cjsAccessorSnapshotStores(lowerer, dep, loc));
           }
         }
       }
@@ -2945,7 +2964,7 @@ export function lowerFileInit(
           c.decl &&
           ts.isClassDeclaration(c.decl) &&
           !c.mixinInstance &&
-          c.decl.getSourceFile() === sf &&
+          ts.getSourceFileOfNode(c.decl) === sf &&
           (lowerer.classInitFlags.has(c.def.name) ||
             c.callableBase !== undefined ||
             c.def.baseValueGlobal !== undefined ||
@@ -2954,7 +2973,7 @@ export function lowerFileInit(
             (c.staticBlocks?.length ?? 0) > 0 ||
             c.classDecorators !== undefined),
       )
-      .map((c) => ({ pos: c.decl!.getStart(), info: c }));
+      .map((c) => ({ pos: ts.tokenStartOfNode(c.decl!), info: c }));
     // Statics-bearing MIXIN instantiations whose call evaluates in THIS
     // file: their declaration-time code runs when the call does — the
     // top-level statement lower-mixins recorded. Insertion order is
@@ -2974,7 +2993,7 @@ export function lowerFileInit(
       // anything the statement's lowering emits. Hoisted class
       // declarations never share a kept statement's start, so `<=`
       // changes nothing for them.
-      while (at < statics.length && statics[at]!.pos <= stmt.getStart()) {
+      while (at < statics.length && statics[at]!.pos <= ts.tokenStartOfNode(stmt)) {
         body.push(
           ...withClassInitFlag(
             lowerer,

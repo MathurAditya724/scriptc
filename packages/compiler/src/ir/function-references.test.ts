@@ -154,6 +154,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "classes[].jsName": "other",
   "classes[].genericOf": "other",
   "classes[].baseValueGlobal": "other",
+  "classes[].errorNameAfter": "other",
   "classes[].prototypeDataHelper": "reference",
   "classes[].instancePrototypeHelper": "reference",
   "classes[].localCaptures[].name": "other",
@@ -170,6 +171,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "records[].id": "other",
   "records[].fields[].name": "other",
   "records[].declaredOrder[]": "other",
+  "records[].accessorOrder[]": "other",
   "unions[].id": "other",
   "unions[].discriminant.field": "other",
   "unions[].discriminant.cases[].values[]": "other",
@@ -210,6 +212,8 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "contracts.acyclic[]": "other",
   "contracts.immortalGlobals[]": "other",
   "contracts.programLifetime[]": "other",
+  "wasmModules[].sha256": "other",
+  "wasmModules[].bytes": "other",
   "threadSlotKeys[]": "other",
 };
 
