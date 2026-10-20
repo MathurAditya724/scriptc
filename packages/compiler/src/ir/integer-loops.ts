@@ -51,13 +51,16 @@ function constantStep(update: IrStmt | null, id: string): number | null {
  * additionally have to remain invariant throughout the loop. An array length
  * is hoisted from a condition only when `stableLength` proves the loop never
  * changes it; otherwise it is allowed only in the initializer. Typed-array
- * lengths are fixed for a given receiver. */
+ * lengths are fixed for a given receiver unless the program can resize a
+ * buffer (`fixedBytes` false), when they are allowed only in the
+ * initializer. */
 function stableLoopValue(
   value: IrExpr,
   locals: ReadonlyMap<string, IrLocal>,
   body: IrStmt[],
   invariant: boolean,
   counter: string,
+  fixedBytes: boolean,
   stableLength: (receiver: string) => boolean = () => false,
 ): boolean {
   switch (value.kind) {
@@ -80,8 +83,8 @@ function stableLoopValue(
           value.op === "&" ||
           value.op === ">>>" ||
           value.op === "|") &&
-        stableLoopValue(value.left, locals, body, invariant, counter, stableLength) &&
-        stableLoopValue(value.right, locals, body, invariant, counter, stableLength)
+        stableLoopValue(value.left, locals, body, invariant, counter, fixedBytes, stableLength) &&
+        stableLoopValue(value.right, locals, body, invariant, counter, fixedBytes, stableLength)
       );
     case "bytesIntrinsic":
     case "arrIntrinsic":
@@ -89,8 +92,10 @@ function stableLoopValue(
         (value.method === "length" ||
           (value.kind === "bytesIntrinsic" && value.method === "byteLength")) &&
         value.receiver.kind === "varRef" &&
-        (value.kind === "bytesIntrinsic" || !invariant || stableLength(value.receiver.localId)) &&
-        stableLoopValue(value.receiver, locals, body, invariant, counter)
+        (value.kind === "bytesIntrinsic"
+          ? fixedBytes || !invariant
+          : !invariant || stableLength(value.receiver.localId)) &&
+        stableLoopValue(value.receiver, locals, body, invariant, counter, fixedBytes)
       );
     default:
       return false;
@@ -107,6 +112,7 @@ export function matchIntegerCountedForLoop(
   locals: ReadonlyMap<string, IrLocal>,
   ranges: IntegerRanges = new Map(),
   unaliased: ReadonlySet<string> | null = null,
+  fixedBytes = true,
 ): IntegerCountedForLoop | null {
   const init = stmt.init;
   if (init?.kind !== "varDecl" || !init.init) return null;
@@ -124,7 +130,7 @@ export function matchIntegerCountedForLoop(
     !startRange ||
     startRange.min < -Number.MAX_SAFE_INTEGER ||
     startRange.max > Number.MAX_SAFE_INTEGER ||
-    !stableLoopValue(start, locals, stmt.body, false, local.id)
+    !stableLoopValue(start, locals, stmt.body, false, local.id, fixedBytes)
   )
     return null;
   const step = constantStep(stmt.update, local.id);
@@ -170,7 +176,8 @@ export function matchIntegerCountedForLoop(
       locals,
       unaliased,
     );
-  if (!stableLoopValue(limit, locals, stmt.body, true, local.id, stableLength)) return null;
+  if (!stableLoopValue(limit, locals, stmt.body, true, local.id, fixedBytes, stableLength))
+    return null;
   const inclusive = op === "<=" || op === ">=";
   const guardLimit = step > 0 ? 2 ** 53 - (inclusive ? 1 : 0) : -(2 ** 53) + (inclusive ? 1 : 0);
   const boundRange =

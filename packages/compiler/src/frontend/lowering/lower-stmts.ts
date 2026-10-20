@@ -7,6 +7,7 @@ import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
+import { viewIterationCheck } from "./containers/bytes.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -2007,6 +2008,12 @@ function lowerNumericIteratorDecl(
   });
   return [
     { kind: "varDecl", localId: indexedSource.id, init: source, loc },
+    ...viewIterationCheck(
+      lowerer,
+      { kind: "varRef", localId: indexedSource.id, type: source.type, loc },
+      "%TypedArray%.prototype.values",
+      loc,
+    ),
     { kind: "varDecl", localId: index.id, init: { kind: "numLit", value: 0, type: F64, loc }, loc },
     {
       kind: "varDecl",
@@ -9959,6 +9966,12 @@ function lowerForOfBytes(
     kind: "block",
     body: [
       { kind: "varDecl", localId: source.id, init: iterable, loc },
+      ...viewIterationCheck(
+        lowerer,
+        { kind: "varRef", localId: source.id, type: iterable.type, loc },
+        "%TypedArray%.prototype.values",
+        loc,
+      ),
       {
         kind: "varDecl",
         localId: index.id,
@@ -10094,6 +10107,9 @@ function lowerForOfStoredNumericIterator(
         else_: null,
         loc,
       },
+      // Each step of a typed array iterator throws while its view is out
+      // of bounds; a view that shrank in bounds ends the iteration below.
+      ...viewIterationCheck(lowerer, sourceRef(), "Array Iterator.prototype.next", loc),
       {
         kind: "if",
         cond: {

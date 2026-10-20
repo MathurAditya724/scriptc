@@ -190,6 +190,7 @@ ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len) {
   b->external = false;
   b->untransferable = false;
   b->shared = NULL;
+  b->sized = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -295,6 +296,279 @@ ScrBytes *scr_bytes_as_buffer(ScrBytes *bytes) {
 
 /* Nothing on an existing path calls this. */
 bool scr_bytes_is_buffer(const ScrBytes *bytes) { return bytes->is_buffer; }
+
+/* ── resizable storage ─────────────────────────────────────────────────── */
+
+/* scr_bytes_new_resizable installs the operations on sizing records, so
+ * programs that never create resizable storage link none of this code:
+ * the ScrBytes.sized bit guards every call. External linkage keeps the
+ * compiler from binding the calls to the one value stored here. */
+SCR_TL const ScrBytesResizableOps *scr_bytes_resizable = NULL;
+
+ScrBytesSizing *scr_bytes_sizing(const ScrBytes *b) {
+  return b->sized ? scr_bytes_resizable->sizing(b) : NULL;
+}
+
+/* Sizing records by ScrBytes, in a per-thread open-addressing table with
+ * deleted markers. Resizable storage never leaves its thread: shared
+ * storage does not resize, and views of it are not linked. */
+typedef struct {
+  const ScrBytes *key;
+  ScrBytesSizing *value;
+} ScrBytesSizingSlot;
+#define SCR_SIZING_DELETED ((const ScrBytes *)(uintptr_t)1)
+static SCR_TL ScrBytesSizingSlot *scr_sizing_slots;
+static SCR_TL size_t scr_sizing_capacity, scr_sizing_used;
+
+static size_t scr_sizing_bucket(const ScrBytes *b) {
+  uint64_t h = (uint64_t)(uintptr_t)b * UINT64_C(0x9E3779B97F4A7C15);
+  return (size_t)(h >> 32) & (scr_sizing_capacity - 1);
+}
+
+static ScrBytesSizingSlot *scr_sizing_slot(const ScrBytes *b) {
+  size_t mask = scr_sizing_capacity - 1;
+  for (size_t i = scr_sizing_bucket(b);; i = (i + 1) & mask)
+    if (scr_sizing_slots[i].key == b) return &scr_sizing_slots[i];
+}
+
+static ScrBytesSizing *scr_sizing_of(const ScrBytes *b) {
+  return scr_sizing_slot(b)->value;
+}
+
+/* Keeps live entries plus deleted markers at most half the table. */
+static void scr_sizing_reserve(void) {
+  if (scr_sizing_capacity && (scr_sizing_used + 1) * 2 <= scr_sizing_capacity) return;
+  size_t live = 0;
+  for (size_t i = 0; i < scr_sizing_capacity; i++)
+    if (scr_sizing_slots[i].key && scr_sizing_slots[i].key != SCR_SIZING_DELETED) live++;
+  size_t old_capacity = scr_sizing_capacity;
+  ScrBytesSizingSlot *old = scr_sizing_slots;
+  scr_sizing_capacity = 16;
+  while ((live + 1) * 4 > scr_sizing_capacity) scr_sizing_capacity *= 2;
+  scr_sizing_slots = calloc(scr_sizing_capacity, sizeof *scr_sizing_slots);
+  if (!scr_sizing_slots) scr_bytes_oom();
+  scr_sizing_used = 0;
+  for (size_t i = 0; i < old_capacity; i++) {
+    if (!old[i].key || old[i].key == SCR_SIZING_DELETED) continue;
+    size_t slot = scr_sizing_bucket(old[i].key);
+    while (scr_sizing_slots[slot].key) slot = (slot + 1) & (scr_sizing_capacity - 1);
+    scr_sizing_slots[slot] = old[i];
+    scr_sizing_used++;
+  }
+  free(old);
+}
+
+static ScrBytesSizing *scr_sizing_new(ScrBytes *b) {
+  ScrBytesSizing *sizing = calloc(1, sizeof *sizing);
+  if (!sizing) scr_bytes_oom();
+  scr_sizing_reserve();
+  size_t slot = scr_sizing_bucket(b);
+  while (scr_sizing_slots[slot].key && scr_sizing_slots[slot].key != SCR_SIZING_DELETED)
+    slot = (slot + 1) & (scr_sizing_capacity - 1);
+  if (!scr_sizing_slots[slot].key) scr_sizing_used++;
+  scr_sizing_slots[slot] = (ScrBytesSizingSlot){ b, sizing };
+  b->sized = true;
+  return sizing;
+}
+
+static void scr_sizing_free(ScrBytes *b) {
+  ScrBytesSizingSlot *slot = scr_sizing_slot(b);
+  free(slot->value);
+  slot->key = SCR_SIZING_DELETED;
+  slot->value = NULL;
+  b->sized = false;
+}
+
+/* The element count of view `v` of resizable `owner` for the owner's
+ * current byte length: 0 when out of bounds. A length-tracking view is out
+ * of bounds when its offset passes the end, a fixed-length one when its
+ * end does. */
+static size_t scr_sizing_view_len(const ScrBytes *owner, const ScrBytes *v) {
+  size_t width = scr_bytes_elem_size(v->elem);
+  size_t offset = (size_t)(v->data - owner->data), bytes = owner->len;
+  size_t fixed_len = scr_sizing_of(v)->fixed_len;
+  if (fixed_len == SCR_BYTES_TRACKING) return offset > bytes ? 0 : (bytes - offset) / width;
+  return offset + fixed_len * width > bytes ? 0 : fixed_len;
+}
+
+/* A view of resizable storage joins its owner's list and records its
+ * requested length (`fixed_len`, or SCR_BYTES_TRACKING); its len is what
+ * the owner's current length allows. */
+static void scr_sizing_link(ScrBytes *owner, ScrBytes *v, size_t fixed_len) {
+  ScrBytesSizing *owner_sizing = scr_sizing_of(owner);
+  ScrBytesSizing *sizing = scr_sizing_new(v);
+  sizing->fixed_len = fixed_len;
+  sizing->prev = owner;
+  sizing->next = owner_sizing->next;
+  if (sizing->next) scr_sizing_of(sizing->next)->prev = v;
+  owner_sizing->next = v;
+  v->len = scr_sizing_view_len(owner, v);
+}
+
+/* Every disposed object passes here once resizable storage exists (the
+ * runtime's dispose observer), before its fields are released: a member of
+ * the table is a sized ScrBytes, whose view leaves its owner's list and
+ * whose record is freed. */
+static void scr_sizing_disposed(void *object) {
+  if (!scr_sizing_capacity) return;
+  size_t mask = scr_sizing_capacity - 1;
+  for (size_t i = scr_sizing_bucket(object);; i = (i + 1) & mask) {
+    const ScrBytes *key = scr_sizing_slots[i].key;
+    if (!key) return;
+    if (key != object) continue;
+    ScrBytes *b = object;
+    if (b->backing) {
+      ScrBytesSizing *sizing = scr_sizing_slots[i].value;
+      scr_sizing_of(sizing->prev)->next = sizing->next;
+      if (sizing->next) scr_sizing_of(sizing->next)->prev = sizing->prev;
+    }
+    scr_sizing_free(b);
+    return;
+  }
+}
+
+/* The new view is constructed like `new T(buffer, offset[, count])`, so it
+ * throws Node's RangeErrors when the storage no longer covers it. A
+ * length-tracking receiver with no end (an omitted end arrives as
+ * +Infinity) gives a length-tracking view. */
+static bool scr_sizing_subarray(ScrBytes *b, size_t s, size_t count, double end, size_t *fixed_len) {
+  ScrBytes *owner = b->backing ? b->backing : b;
+  size_t width = scr_bytes_elem_size(b->elem);
+  size_t offset = (size_t)(b->data - owner->data) + s * width;
+  bool tracking = b->backing && scr_sizing_of(b)->fixed_len == SCR_BYTES_TRACKING && end == INFINITY;
+  static const char start_message[] = "Start offset %zu is outside the bounds of the buffer";
+  static const char length_message[] = "Invalid typed array length: %zu";
+  char msg[96];
+  int n = -1;
+  if (tracking) {
+    if (offset > owner->len) n = snprintf(msg, sizeof msg, start_message, offset);
+  } else if (offset + count * width > owner->len) {
+    n = snprintf(msg, sizeof msg, length_message, count);
+  }
+  if (n >= 0) {
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)n);
+    return false;
+  }
+  *fixed_len = tracking ? SCR_BYTES_TRACKING : count;
+  return true;
+}
+
+static void scr_sizing_retrack(ScrBytes *view, size_t fixed_len) {
+  scr_sizing_of(view)->fixed_len = fixed_len;
+  view->len = scr_sizing_view_len(view->backing, view);
+}
+
+/* Growth exposes zeroed bytes: storage cut by an earlier shrink is
+ * cleared when it comes back. */
+static void scr_sizing_resize(ScrBytes *owner, size_t length) {
+  if (length > owner->len) memset(owner->data + owner->len, 0, length - owner->len);
+  owner->len = length;
+  for (ScrBytes *v = scr_sizing_of(owner)->next; v; v = scr_sizing_of(v)->next)
+    v->len = scr_sizing_view_len(owner, v);
+}
+
+/* The dynamic paths' checks (scr_dyn_invoke, the dyn conversions). */
+static bool scr_sizing_check(const ScrBytes *b, ScrViewCheck what, const char *name) {
+  if (!scr_bytes_out_of_bounds(b)) return true;
+  /* One NUL-separated list keeps the names in this function's own data. */
+  static const char methods[] =
+    "at\0copyWithin\0entries\0every\0fill\0filter\0find\0findIndex\0findLast\0"
+    "findLastIndex\0forEach\0includes\0indexOf\0join\0keys\0lastIndexOf\0map\0"
+    "reduce\0reduceRight\0reverse\0set\0slice\0some\0sort\0toLocaleString\0"
+    "toReversed\0toSorted\0toString\0values\0with\0";
+  static const char typed_array[] = "%%TypedArray%%.prototype.%s";
+  static const char data_view[] = "DataView.prototype.get%s";
+  static const char data_view_getter[] = "get DataView.prototype.%s";
+  static const char values[] = "values";
+  static const char byte_length[] = "byteLength";
+  static const char byte_offset[] = "byteOffset";
+  static const char iterator_next[] = "Array Iterator.prototype.next";
+  char label[64];
+  switch (what) {
+    case SCR_VIEW_VALUES:
+      snprintf(label, sizeof label, typed_array, values);
+      break;
+    case SCR_VIEW_METHOD: {
+      bool known = false;
+      for (const char *m = methods; *m && !known; m += strlen(m) + 1) known = strcmp(name, m) == 0;
+      if (!known) return true;
+      snprintf(label, sizeof label, typed_array, name);
+      break;
+    }
+    case SCR_VIEW_DATA_VIEW_ACCESS:
+      snprintf(label, sizeof label, data_view, name);
+      break;
+    case SCR_VIEW_DATA_VIEW_BYTE_LENGTH:
+      snprintf(label, sizeof label, data_view_getter, byte_length);
+      break;
+    case SCR_VIEW_DATA_VIEW_BYTE_OFFSET:
+      snprintf(label, sizeof label, data_view_getter, byte_offset);
+      break;
+    case SCR_VIEW_ITERATOR_NEXT:
+      snprintf(label, sizeof label, "%s", iterator_next);
+      break;
+  }
+  scr_bytes_validate_c(b, label);
+  return false;
+}
+
+static double scr_sizing_byte_offset(const ScrBytes *b) {
+  return scr_bytes_out_of_bounds(b) ? 0 : scr_bytes_byte_offset(b);
+}
+
+static const ScrBytesResizableOps scr_bytes_resizable_ops = {
+  scr_sizing_of,      scr_sizing_link,  scr_sizing_subarray,    scr_sizing_retrack,
+  scr_sizing_resize,  scr_sizing_check, scr_sizing_byte_offset,
+};
+
+static inline void scr_bytes_link_view(ScrBytes *owner, ScrBytes *v, size_t fixed_len) {
+  v->sized = false;
+  if (owner->sized) scr_bytes_resizable->link(owner, v, fixed_len);
+}
+
+bool scr_bytes_out_of_bounds(const ScrBytes *b) {
+  if (!b->sized || !b->backing) return false;
+  size_t width = scr_bytes_elem_size(b->elem);
+  size_t offset = (size_t)(b->data - b->backing->data);
+  size_t fixed_len = scr_bytes_sizing(b)->fixed_len;
+  if (fixed_len == SCR_BYTES_TRACKING) return offset > b->backing->len;
+  return offset + fixed_len * width > b->backing->len;
+}
+
+void scr_bytes_validate_c(const ScrBytes *b, const char *what) {
+  if (!scr_bytes_out_of_bounds(b)) return;
+  static const char message[] = "Cannot perform %s on a detached ArrayBuffer";
+  char msg[160];
+  int n = snprintf(msg, sizeof msg, message, what);
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+}
+
+void scr_bytes_validate(const ScrBytes *b, ScrStr *what) {
+  if (!scr_bytes_out_of_bounds(b)) return;
+  char label[128];
+  size_t n = what->len < sizeof label - 1 ? what->len : sizeof label - 1;
+  memcpy(label, what->data, n);
+  label[n] = '\0';
+  scr_bytes_validate_c(b, label);
+}
+
+double scr_bytes_view_byte_offset(const ScrBytes *b) {
+  return scr_bytes_out_of_bounds(b) ? 0 : scr_bytes_byte_offset(b);
+}
+
+ScrBytes *scr_bytes_new_resizable(size_t length, size_t max_bytes) {
+  uint8_t *data = calloc(max_bytes ? max_bytes : 1, 1);
+  if (!data) return NULL;
+  if (!scr_bytes_resizable) {
+    scr_bytes_resizable = &scr_bytes_resizable_ops;
+    scr_dispose_observe_bytes(&scr_sizing_disposed);
+  }
+  ScrBytes *owner = scr_bytes_take_data(data, max_bytes);
+  owner->len = length;
+  scr_sizing_new(owner)->max_bytes = max_bytes;
+  return owner;
+}
+
 
 void scr_bytes_release(ScrBytes *b) {
   if (!b || b->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
@@ -724,6 +998,8 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
   size_t e = scr_bytes_rel_index(end, b->len);
   size_t count = e > s ? e - s : 0;
   ScrBytes *owner = b->backing ? b->backing : b;
+  size_t fixed_len = count;
+  if (b->sized && !scr_bytes_resizable->subarray(b, s, count, end, &fixed_len)) return NULL;
   ScrBytes *v = malloc(sizeof(ScrBytes));
   if (!v) scr_bytes_oom();
   v->rc = 1;
@@ -736,6 +1012,7 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
   v->external = false;
   v->untransferable = false;
   v->shared = owner->shared;
+  scr_bytes_link_view(owner, v, fixed_len);
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -859,7 +1136,17 @@ ScrBytes *scr_bytes_from_dyn(ScrBytesElem elem, const ScrDyn *value, bool from) 
     scr_dyn_release(view);
     return out;
   }
-  if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(elem, value->v.bytes);
+  if (value->kind == SCR_DYN_BYTES) {
+    /* An out-of-bounds or detached view: TypedArray.from iterates it, the
+     * constructor copies it. */
+    if (value->v.bytes->sized && scr_bytes_out_of_bounds(value->v.bytes)) {
+      static const char values[] = "%TypedArray%.prototype.values";
+      static const char construct[] = "Construct";
+      scr_bytes_validate_c(value->v.bytes, from ? values : construct);
+      return NULL;
+    }
+    return scr_bytes_convert(elem, value->v.bytes);
+  }
   if (!from && scr_buffer_storage_is(value)) return scr_array_buffer_view(elem, value, scr_dyn_undefined(), scr_dyn_undefined());
   if (!from && (value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_BOOL ||
                 value->kind == SCR_DYN_STR || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF)) {
@@ -973,6 +1260,7 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
   v->external = false;
   v->untransferable = false;
   v->shared = owner->shared;
+  scr_bytes_link_view(owner, v, has_len ? (size_t)len : SCR_BYTES_TRACKING);
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -989,7 +1277,7 @@ ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
   if (off < 0 || off > 9007199254740991.0 || off > available ||
       fmod(off, (double)width) != 0 ||
       (has_len && (count < 0 || count > 9007199254740991.0 || count > (available - off) / (double)width)) ||
-      (!has_len && fmod(available - off, (double)width) != 0)) {
+      (!has_len && !owner->sized && fmod(available - off, (double)width) != 0)) {
     static const char msg[] = "Invalid typed array buffer range";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return NULL;
@@ -1000,6 +1288,7 @@ ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
   view->elem = elem;
   view->len /= width;
   view->is_data_view = false;
+  if (view->sized) scr_bytes_resizable->retrack(view, has_len ? (size_t)count : SCR_BYTES_TRACKING);
   return view;
 }
 
@@ -2848,6 +3137,7 @@ static ScrBytes *scr_pool_take(size_t len) {
   v->external = false;
   v->untransferable = false;
   v->shared = NULL;
+  scr_bytes_link_view(scr_pool_slab, v, len);
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif

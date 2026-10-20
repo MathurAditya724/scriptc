@@ -973,6 +973,13 @@ export function emitContainerExpr(
         return out;
       }
       if (e.source.type.kind === "bytes") {
+        if (host.mod.resizableBuffers) {
+          host.declare(`declare void @scr_bytes_validate_c(ptr, ptr)`);
+          // TypedArray.from iterates the view; the constructor copies it.
+          const what = e.from ? "%TypedArray%.prototype.values" : "Construct";
+          B.line(`call void @scr_bytes_validate_c(ptr ${src.name}, ptr ${host.cstr(what)})`);
+          host.emitPendingCheck();
+        }
         host.declare(`declare ptr @scr_bytes_convert(i32, ptr)`);
         B.line(`${t} = call ptr @scr_bytes_convert(i32 ${kind}, ptr ${src.name})`);
         return host.own({ name: t, type: e.type });

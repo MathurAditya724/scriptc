@@ -52,6 +52,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sharedArrayBuffer.new": "scr_shared_array_buffer_new",
   "sharedArrayBuffer.is": "scr_shared_array_buffer_is",
   "arrayBuffer.new": "scr_array_buffer_new",
+  "arrayBuffer.newOptions": "scr_array_buffer_new_options",
   "ffi.argument": "scr_ffi_argument",
   "ffi.memoryModule": "scr_ffi_memory_module",
   "arrayBuffer.is": "scr_array_buffer_is",

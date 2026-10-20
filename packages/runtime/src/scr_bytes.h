@@ -51,9 +51,24 @@ double scr_f16_to_f64(uint16_t bits);
 
 typedef struct ScrSharedBytes ScrSharedBytes;
 
+/* The sizing of resizable storage. An owner has one when its ArrayBuffer
+ * is resizable (`new ArrayBuffer(n, { maxByteLength })`); a view has one
+ * when its owner does. The views of resizable storage form a list, so
+ * resizing the owner updates their lengths: the owner's `next` is its
+ * first view, and each view links to its siblings. */
+typedef struct ScrBytesSizing {
+  size_t max_bytes; /* owner: maxByteLength, the reserved storage */
+  size_t fixed_len; /* view: its element count, or SCR_BYTES_TRACKING */
+  struct ScrBytes *prev; /* view: the owner or the previous view */
+  struct ScrBytes *next; /* the next view */
+} ScrBytesSizing;
+#define SCR_BYTES_TRACKING SIZE_MAX
+
 typedef struct ScrBytes {
   size_t rc;
-  size_t len; /* ELEMENT count, fixed at construction */
+  /* ELEMENT count. It changes only when the owner's ArrayBuffer is resized
+   * (ScrBytesResizableOps.resize); the storage never moves. */
+  size_t len;
   ScrBytesElem elem;
   uint8_t *data; /* len * elem_size bytes; owned unless backing is set */
   /* NULL for owners. A view (DataView, subarray, Buffer-slice) sets this
@@ -65,6 +80,10 @@ typedef struct ScrBytes {
   bool is_data_view; /* DataView is distinct from a numeric typed array. */
   bool external; /* Root aliases foreign memory; releasing it never frees data. */
   bool untransferable; /* A Buffer pool slab: its ArrayBuffer cannot be transferred. */
+  /* Resizable storage or a view of it: its ScrBytesSizing is in the
+   * per-thread sizing table (scr_bytes_sizing). It sits in the padding
+   * before `shared`, which the LLVM type leaves unnamed. */
+  bool sized;
   ScrSharedBytes *shared; /* Neutral backing, borrowed by views from their local owner. */
 } ScrBytes;
 
@@ -167,6 +186,7 @@ ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
                                double offset, bool has_len, double length);
 ScrDyn *scr_array_buffer_constructor(void);
 ScrDyn *scr_array_buffer_new(ScrDyn *length);
+ScrDyn *scr_array_buffer_new_options(ScrDyn *length, ScrDyn *options);
 ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view);
 bool scr_array_buffer_is(const ScrDyn *value);
 bool scr_array_buffer_is_view(const ScrDyn *value);
@@ -317,6 +337,52 @@ ScrBytes *scr_bytes_fill_elem(ScrBytes *b, double v, double start, double end); 
  * (chain depth exactly 1, the DataView rule) and its byteOffset composes.
  * Same index clamping as slice; never throws. */
 ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end); /* +1 */
+/* The sizing record of resizable storage or a view of it; NULL for every
+ * other ScrBytes. */
+ScrBytesSizing *scr_bytes_sizing(const ScrBytes *b);
+/* The checks the dynamic paths make on a sized view (ScrBytes.sized). */
+typedef enum ScrViewCheck {
+  SCR_VIEW_VALUES,                /* iteration, spread */
+  SCR_VIEW_METHOD,                /* a %TypedArray%.prototype method, by name */
+  SCR_VIEW_DATA_VIEW_ACCESS,      /* a DataView get/set, by element kind name */
+  SCR_VIEW_DATA_VIEW_BYTE_LENGTH, /* DataView byteLength */
+  SCR_VIEW_DATA_VIEW_BYTE_OFFSET, /* DataView byteOffset */
+  SCR_VIEW_ITERATOR_NEXT,         /* one step of an iterator over the view */
+} ScrViewCheck;
+/* The operations on sizing records, installed by scr_bytes_new_resizable:
+ * every caller first tests ScrBytes.sized, so programs without resizable
+ * storage never reach them and do not link them. */
+typedef struct ScrBytesResizableOps {
+  ScrBytesSizing *(*sizing)(const ScrBytes *b);
+  /* Links view `v` of a sized owner; `fixed_len` is its requested length. */
+  void (*link)(ScrBytes *owner, ScrBytes *v, size_t fixed_len);
+  /* subarray of sized `b` from element `s`, `count` elements: false after
+   * throwing Node's RangeError; otherwise the new view's requested length. */
+  bool (*subarray)(ScrBytes *b, size_t s, size_t count, double end, size_t *fixed_len);
+  /* Sets the requested element length of a sized typed view. */
+  void (*retrack)(ScrBytes *view, size_t fixed_len);
+  /* Resizes a sized owner: zeroes exposed bytes and updates every view. */
+  void (*resize)(ScrBytes *owner, size_t length);
+  /* false after throwing Node's TypeError for an out-of-bounds view. */
+  bool (*check)(const ScrBytes *b, ScrViewCheck what, const char *name);
+  /* byteOffset of a sized typed array: 0 when out of bounds. */
+  double (*byte_offset)(const ScrBytes *b);
+} ScrBytesResizableOps;
+extern SCR_TL const ScrBytesResizableOps *scr_bytes_resizable;
+/* Registers resizable storage's observer of disposed objects with the
+ * runtime's dispose hook (scr_json.c). */
+void scr_dispose_observe_bytes(void (*observer)(void *object));
+/* Resizable storage: an owner reserving `max_bytes` with `length` in use
+ * (+1, NULL when the reservation fails). A view is out of bounds when the
+ * owner's current length no longer covers it. */
+ScrBytes *scr_bytes_new_resizable(size_t length, size_t max_bytes);
+bool scr_bytes_out_of_bounds(const ScrBytes *b);
+/* The typed-array and DataView operations' check: a view out of bounds of
+ * its resizable storage throws Node's TypeError, "Cannot perform <what> on
+ * a detached ArrayBuffer". byteOffset of such a typed array reads 0. */
+void scr_bytes_validate(const ScrBytes *b, ScrStr *what);
+void scr_bytes_validate_c(const ScrBytes *b, const char *what);
+double scr_bytes_view_byte_offset(const ScrBytes *b);
 
 /* dst.set(src, offset): overlapping-safe, element-coerced copy.
  * offset goes through ToIntegerOrInfinity; a negative offset or

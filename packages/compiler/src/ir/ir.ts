@@ -1029,6 +1029,11 @@ export interface IrModule {
    * evaluation is itself awaited, so promise jobs queued by its body run
    * first. The event loop selects the matching first checkpoint. */
   commonJsEntry?: boolean;
+  /** The program can resize an ArrayBuffer, so a typed array's length can
+   * change while its binding stays the same: analyses that treat it as
+   * fixed stand down, and typed-array methods check that the view is in
+   * bounds. */
+  resizableBuffers?: true;
   /** Outbound native FFI declarations used by `ffiCall` expressions.
    * These are link-time C ABI imports, not runtime dynamic-library handles:
    * executable builds resolve their symbols from the manifest's archive
@@ -2327,6 +2332,10 @@ export type IrStrIntrinsicMethod =
  * (integer kinds by modular truncation, Float32 by double→float
  * rounding). No BIG setters exist — bigint arguments never lower. */
 export type IrBytesIntrinsicMethod =
+  /** [strLit label]: throws Node's TypeError ("Cannot perform <label> on a
+   * detached ArrayBuffer") when the view is out of bounds of its resizable
+   * storage; emitted only for programs that can resize a buffer. */
+  | "validate"
   | "buffer"
   | "length"
   | "byteLength"
@@ -2433,6 +2442,7 @@ export type IrBytesIntrinsicMethod =
 /** The bytesIntrinsic methods that can raise a catchable error — backends'
  * may-throw analyses seed on these exactly like MAY_THROW_LIB_FNS. */
 export const MAY_THROW_BYTES_METHODS: ReadonlySet<IrBytesIntrinsicMethod> = new Set([
+  "validate",
   "sortCompare",
   "toStringVar",
   "with",
@@ -2844,6 +2854,8 @@ export type IrExpr =
    * - dyn — checked native input; can throw on invalid lengths/coercion.
    *   `from` selects TypedArray.from's iterable/array-like semantics instead
    *   of constructor length coercion (notably for strings and numbers).
+   *   On a bytes source, `from` names the view check after iteration
+   *   (%TypedArray%.prototype.values) instead of construction.
    * The source is BORROWED; the result is owned (+1). */
   | { kind: "bytesNew"; source: IrExpr | null; from?: true; type: IrType; loc: SrcLoc }
   /** Typed-array/Buffer method or property on a bytes receiver — see

@@ -437,7 +437,12 @@ import {
   lowerSetForEachCall,
 } from "./containers/collection-methods.js";
 import { lowerEnvToPairsHelper } from "./containers/indexed-objects.js";
-import { lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew } from "./containers/bytes.js";
+import {
+  lowerBufferStaticCall,
+  lowerBytesMethodCall,
+  lowerBytesNew,
+  resizableBuffersReachable,
+} from "./containers/bytes.js";
 import { lowerRegexMethodCall, lowerStringMethodCall } from "./containers/string-and-regexp.js";
 import {
   lowerEmitOverrideSpec,
@@ -2084,6 +2089,8 @@ export class Lowerer {
    * listen call whose first argument is a string. Computed once on first
    * use (null until then); address() answers the path only when true. */
   unixListenReachable: boolean | null = null;
+  /** Whether the program can resize an ArrayBuffer (resizableBuffersReachable). */
+  resizableBuffersReachable: boolean | null = null;
   /** IMPLICIT-ANY instances lowered EAGERLY at first demand (their return
    * types are inferred from the body — the call site needs them settled),
    * collected here for run()'s function list (the liftedFns discipline). */
@@ -4787,6 +4794,7 @@ export class Lowerer {
         },
         returnIsNumber: (fn) => signatureBySymbol.get(fn)?.returnType.kind === "f64",
         methodOverridden: (fn) => (familyBySymbol.get(fn)?.length ?? 1) > 1,
+        buffersResizable: () => resizableBuffersReachable(this),
       },
       sourceFiles,
     );
@@ -7226,6 +7234,7 @@ export class Lowerer {
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
+            ...(resizableBuffersReachable(this) ? { resizableBuffers: true as const } : {}),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
@@ -8188,7 +8197,7 @@ export class Lowerer {
         "the rest is ICU locale data the binary does not carry";
       const typeHints: Record<string, string | undefined> = {
         ArrayBuffer:
-          "fixed ArrayBuffer storage and typed-array views are supported; resizable and detached storage are not modeled",
+          "fixed-length and resizable ArrayBuffer storage and typed-array views are supported; detached storage is not modeled",
         SharedArrayBuffer:
           "fixed SharedArrayBuffer storage is supported; growable shared storage is not modeled",
         NumberFormat: intlHint,

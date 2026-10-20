@@ -143,6 +143,7 @@ import {
   lowerStringCodesValue,
 } from "../lower-builtin-values.js";
 import { lowerArrayFromValue } from "../containers/array-construction.js";
+import { checkedDataViewGetter } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
 import { arrayValueRead, arrayValueType } from "../array-values.js";
@@ -2084,7 +2085,14 @@ export function lowerIntrinsicProperty(
 
       // property read, exiting at the declared number type (the array
 
-      return { kind: "bytesIntrinsic", method: name, receiver, args: [], type: F64, loc };
+      return checkedDataViewGetter(lowerer, expr.expression, {
+        kind: "bytesIntrinsic",
+        method: name,
+        receiver,
+        args: [],
+        type: F64,
+        loc,
+      });
     }
     if (name === "byteOffset") {
       // 0 for owners (scriptc typed arrays own their whole storage —
@@ -2094,7 +2102,14 @@ export function lowerIntrinsicProperty(
       const expected = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
       const receiver =
         expected?.kind === "bytes" ? strictReceiver(expected) : lowerer.lowerExpr(expr.expression);
-      return { kind: "bytesIntrinsic", method: "byteOffset", receiver, args: [], type: F64, loc };
+      return checkedDataViewGetter(lowerer, expr.expression, {
+        kind: "bytesIntrinsic",
+        method: "byteOffset",
+        receiver,
+        args: [],
+        type: F64,
+        loc,
+      });
     }
     if (name === "buffer") {
       const expected = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));

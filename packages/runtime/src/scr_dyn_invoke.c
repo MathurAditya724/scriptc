@@ -1536,6 +1536,8 @@ static ScrDyn *scr_dyn_invoke_impl(
         }
         const bool le = argc > (get ? 1 : 2) && scr_dyn_truthy(args[get ? 1 : 2]);
         if (get) {
+          if (bytes->sized && !scr_bytes_resizable->check(bytes, SCR_VIEW_DATA_VIEW_ACCESS, kinds[kind]))
+            return NULL;
           if (kind == SCR_DV_BIGU64 || kind == SCR_DV_BIGI64) {
             ScrBigInt *value = scr_bigint_dataview_get(bytes, offset, kind == SCR_DV_BIGI64, le);
             if (scr_exc_pending()) return NULL;
@@ -1549,11 +1551,17 @@ static ScrDyn *scr_dyn_invoke_impl(
         if (kind == SCR_DV_BIGU64 || kind == SCR_DV_BIGI64) {
           ScrBigInt *value = scr_dyn_bigint_coerce(argc > 1 ? args[1] : scr_dyn_undefined());
           if (scr_exc_pending()) return NULL;
+          if (bytes->sized && !scr_bytes_resizable->check(bytes, SCR_VIEW_DATA_VIEW_ACCESS, kinds[kind])) {
+            scr_bigint_release(value);
+            return NULL;
+          }
           scr_bigint_dataview_set(bytes, offset, value, le);
           scr_bigint_release(value);
         } else {
           double value;
           if (!scr_dyn_number_coerce_js(argc > 1 ? args[1] : scr_dyn_undefined(), &value)) return NULL;
+          if (bytes->sized && !scr_bytes_resizable->check(bytes, SCR_VIEW_DATA_VIEW_ACCESS, kinds[kind]))
+            return NULL;
           scr_dataview_set(bytes, offset, value, (ScrDataViewGet)kind, le);
         }
         return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
@@ -1570,6 +1578,11 @@ static ScrDyn *scr_dyn_invoke_impl(
       dyn_throw_not_fn(what);
       return NULL;
     }
+    /* A typed array out of bounds of its resizable storage: its methods
+     * throw before reading their arguments. Buffer's own methods and
+     * subarray keep their checks. */
+    if (bytes->sized && !recv->buffer && !scr_bytes_resizable->check(bytes, SCR_VIEW_METHOD, method))
+      return NULL;
     size_t blen = bytes->len;
     if (dyn_name_is(method, "at")) {
       double iD = dyn_bytes_index_arg(args, argc, 0, 0);
@@ -1583,10 +1596,13 @@ static ScrDyn *scr_dyn_invoke_impl(
        * owns an independent copy; all keep the receiver's Buffer flavor. */
       double startD = dyn_bytes_index_arg(args, argc, 0, 0);
       if (scr_exc_pending()) return NULL;
-      double endD = dyn_bytes_index_arg(args, argc, 1, (double)blen);
+      /* An omitted end arrives as +Infinity, as on the static path: subarray
+       * of a length-tracking view then tracks too. */
+      double endD = dyn_bytes_index_arg(args, argc, 1, INFINITY);
       if (scr_exc_pending()) return NULL;
       ScrBytes *out = recv->buffer || dyn_name_is(method, "subarray")
         ? scr_bytes_subarray(bytes, startD, endD) : scr_bytes_slice(bytes, startD, endD);
+      if (!out) return NULL;
       ScrDyn *d = recv->buffer ? scr_dyn_new_buffer(out) : scr_dyn_new_bytes(out);
       scr_bytes_release(out);
       return d;

@@ -1,80 +1,62 @@
-es2025-fences.ts:8:12 - error SC2020: 'resizable ArrayBuffer construction' is part of the standard library types but has no scriptc lowering yet
+es2025-fences.ts:8:13 - error SC2020: 'growable SharedArrayBuffer construction' is part of the standard library types but has no scriptc lowering yet
 
-  7 | // Resizable ArrayBuffer + transfer (ES2024).
-  8 | const ab = new ArrayBuffer(8, { maxByteLength: 16 });
-    |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  9 | ab.resize(16);
+  7 | // SharedArrayBuffer growth.
+  8 | const sab = new SharedArrayBuffer(8, { maxByteLength: 16 });
+    |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  9 | sab.grow(16);
 
-  hint: fixed-length ArrayBuffers accept a byte length; resizable storage is not supported yet
+  hint: SharedArrayBuffer accepts a byte length; ArrayBuffer accepts a byte length and options
 
-es2025-fences.ts:14:27 - error SC2020: 'resizable ArrayBuffer construction' is part of the standard library types but has no scriptc lowering yet
+es2025-fences.ts:13:7 - error SC2009: values of type '{ async: false; value: "not-equal" | "timed-out"; } | { async: true; value: Promise<"ok" | "timed-out">; }' cannot be compiled: the union shape is supported, but its arm '{ async: false; value: "not-equal" | "timed-out"; }' does not compile
 
-  13 | // fixed-length new Uint8Array(new ArrayBuffer(8)) lowers).
-  14 | const rz = new Uint8Array(new ArrayBuffer(8, { maxByteLength: 16 }));
-     |                           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  15 | 
-
-  hint: fixed-length ArrayBuffers accept a byte length; resizable storage is not supported yet
-
-es2025-fences.ts:17:13 - error SC2020: 'resizable ArrayBuffer construction' is part of the standard library types but has no scriptc lowering yet
-
-  16 | // SharedArrayBuffer growth.
-  17 | const sab = new SharedArrayBuffer(8, { maxByteLength: 16 });
-     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  18 | sab.grow(16);
-
-  hint: fixed-length ArrayBuffers accept a byte length; resizable storage is not supported yet
-
-es2025-fences.ts:22:7 - error SC2009: values of type '{ async: false; value: "not-equal" | "timed-out"; } | { async: true; value: Promise<"ok" | "timed-out">; }' cannot be compiled: the union shape is supported, but its arm '{ async: false; value: "not-equal" | "timed-out"; }' does not compile
-
-  21 | const ia = new Int32Array(4);
-  22 | const waited = Atomics.waitAsync(ia, 0, 0, 1);
+  12 | const ia = new Int32Array(4);
+  13 | const waited = Atomics.waitAsync(ia, 0, 0, 1);
      |       ^~~~~~
-  23 | 
+  14 | 
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-es2025-fences.ts:22:16 - error SC2020: 'Atomics.waitAsync' is part of the standard library types but has no scriptc lowering yet
+es2025-fences.ts:13:16 - error SC2020: 'Atomics.waitAsync' is part of the standard library types but has no scriptc lowering yet
 
-  21 | const ia = new Int32Array(4);
-  22 | const waited = Atomics.waitAsync(ia, 0, 0, 1);
+  12 | const ia = new Int32Array(4);
+  13 | const waited = Atomics.waitAsync(ia, 0, 0, 1);
      |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  23 | 
+  14 | 
 
   hint: use integer load, store, exchange, compareExchange, add, sub, and, or, xor, wait or notify
 
-es2025-fences.ts:25:12 - error SC2020: 'Iterator.from' is part of the standard library types but has no scriptc lowering yet
+es2025-fences.ts:16:12 - error SC2020: 'Iterator.from' is part of the standard library types but has no scriptc lowering yet
 
-  24 | // Iterator.from over an object with its own next method.
-  25 | const it = Iterator.from({ next: (): IteratorResult<number> => ({ value: 1, done: false }) });
+  15 | // Iterator.from over an object with its own next method.
+  16 | const it = Iterator.from({ next: (): IteratorResult<number> => ({ value: 1, done: false }) });
      |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  26 | 
+  17 | 
 
   hint: Iterator.from accepts arrays, strings, typed arrays, Sets, Maps and iterator objects such as generators
 
-es2025-fences.ts:28:27 - error SC2020: 'Promise.try over a callback of type '(a: number, b?: number | undefined) => number' with 1 argument' is part of the standard library types but has no scriptc lowering yet
+es2025-fences.ts:19:27 - error SC2020: 'Promise.try over a callback of type '(a: number, b?: number | undefined) => number' with 1 argument' is part of the standard library types but has no scriptc lowering yet
 
-  27 | // Promise.try with fewer arguments than the callback's parameters.
-  28 | const tried = Promise.try((a: number, b?: number) => a + (b ?? 0), 1);
+  18 | // Promise.try with fewer arguments than the callback's parameters.
+  19 | const tried = Promise.try((a: number, b?: number) => a + (b ?? 0), 1);
      |                           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  29 | 
+  20 | 
 
   hint: pass one argument per callback parameter: Promise.try((a, b) => a + b, 1, 2)
 
-es2025-fences.ts:31:17 - error SC2020: 'Object.groupBy at this result type' is part of the standard library types but has no scriptc lowering yet
+es2025-fences.ts:22:17 - error SC2020: 'Object.groupBy at this result type' is part of the standard library types but has no scriptc lowering yet
 
-  30 | // Object.groupBy at a literal-union key type (a fixed-field record).
-  31 | const grouped = Object.groupBy([1, 2, 3], (n) => (n % 2 === 0 ? "even" : "odd"));
+  21 | // Object.groupBy at a literal-union key type (a fixed-field record).
+  22 | const grouped = Object.groupBy([1, 2, 3], (n) => (n % 2 === 0 ? "even" : "odd"));
      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  32 | 
+  23 | 
 
   hint: a string-keyed result (Partial<Record<string, T[]>>) is the supported form — a literal-union key type makes a fixed-field record: widen the callback's key type to string (numbers stringify like JS property keys)
 
-es2025-fences.ts:36:19 - error SC2020: 'Set.prototype.union over a set-like argument of type '{ size: number; has: (x: number) => x is 1; keys: () => ArrayIterator<number>; }'' is part of the standard library types but has no scriptc lowering yet
+es2025-fences.ts:27:19 - error SC2020: 'Set.prototype.union over a set-like argument of type '{ size: number; has: (x: number) => x is 1; keys: () => ArrayIterator<number>; }'' is part of the standard library types but has no scriptc lowering yet
 
-  35 | const like = { size: 1, has: (x: number) => x === 1, keys: () => [1].values() };
-  36 | const u = s.union(like);
+  26 | const like = { size: 1, has: (x: number) => x === 1, keys: () => [1].values() };
+  27 | const u = s.union(like);
      |                   ^~~~
-  37 | 
+  28 | 
 
   hint: only a real Set or Map lowers (the argument's has/size/keys must be the builtins) — build one first: new Set(...)

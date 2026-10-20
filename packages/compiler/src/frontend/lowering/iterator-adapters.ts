@@ -18,6 +18,7 @@ import { typeKey, genResultRecord } from "../type-mapper.js";
 import type { Lowerer } from "./lowerer.js";
 import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import { lowerSafeIndexRead } from "./array-values.js";
+import { viewStepCondition } from "./containers/bytes.js";
 
 /** The conversion into an iterator-typed slot (a generator type): a
  * checked-dynamic iterator or a generator with other channel types steps
@@ -454,21 +455,26 @@ export function lowerBytesIteratorValue(
         },
         {
           kind: "while",
-          cond: {
-            kind: "bin",
-            op: "<",
-            left: index,
-            right: {
-              kind: "bytesIntrinsic",
-              method: "length",
-              receiver: list,
-              args: [],
-              type: F64,
+          cond: viewStepCondition(
+            lowerer,
+            list,
+            {
+              kind: "bin",
+              op: "<",
+              left: index,
+              right: {
+                kind: "bytesIntrinsic",
+                method: "length",
+                receiver: list,
+                args: [],
+                type: F64,
+                loc,
+              },
+              type: BOOL,
               loc,
             },
-            type: BOOL,
             loc,
-          },
+          ),
           body: [
             { kind: "exprStmt", expr: { kind: "yieldExpr", value: yielded, type: VOID, loc }, loc },
             {

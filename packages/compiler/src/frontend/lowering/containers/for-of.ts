@@ -1,3 +1,4 @@
+import { viewIterationCheck, viewStepCondition } from "./bytes.js";
 import { numLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -395,31 +396,36 @@ export function lowerForOfArrayIter(
     const loop: IrStmt = {
       kind: "for",
       init: { kind: "varDecl", localId: i.id, init: numLit(0, loc), loc },
-      cond: {
-        kind: "bin",
-        op: "<",
-        left: varRef(i.id, F64, loc),
-        right:
-          arrT.kind === "array"
-            ? {
-                kind: "arrIntrinsic",
-                method: "length",
-                receiver: varRef(arr.id, arrT, loc),
-                args: [],
-                type: F64,
-                loc,
-              }
-            : {
-                kind: "bytesIntrinsic",
-                method: "length",
-                receiver: varRef(arr.id, arrT, loc),
-                args: [],
-                type: F64,
-                loc,
-              },
-        type: BOOL,
+      cond: viewStepCondition(
+        lowerer,
+        varRef(arr.id, arrT, loc),
+        {
+          kind: "bin",
+          op: "<",
+          left: varRef(i.id, F64, loc),
+          right:
+            arrT.kind === "array"
+              ? {
+                  kind: "arrIntrinsic",
+                  method: "length",
+                  receiver: varRef(arr.id, arrT, loc),
+                  args: [],
+                  type: F64,
+                  loc,
+                }
+              : {
+                  kind: "bytesIntrinsic",
+                  method: "length",
+                  receiver: varRef(arr.id, arrT, loc),
+                  args: [],
+                  type: F64,
+                  loc,
+                },
+          type: BOOL,
+          loc,
+        },
         loc,
-      },
+      ),
       update: {
         kind: "assign",
         localId: i.id,
@@ -438,7 +444,16 @@ export function lowerForOfArrayIter(
     };
     return {
       kind: "block",
-      body: [{ kind: "varDecl", localId: arr.id, init: iterable, loc }, loop],
+      body: [
+        { kind: "varDecl", localId: arr.id, init: iterable, loc },
+        ...viewIterationCheck(
+          lowerer,
+          varRef(arr.id, arrT, loc),
+          `%TypedArray%.prototype.${proj}`,
+          loc,
+        ),
+        loop,
+      ],
       loc,
     };
   } finally {

@@ -269,13 +269,19 @@ export function computeMayThrow(
           const source = rec.source;
           if (source && (source.type?.kind === "f64" || source.type?.kind === "dyn"))
             f.throws = true;
+          // A typed-array source out of bounds of resizable storage throws.
+          if (source?.type?.kind === "bytes" && mod.resizableBuffers) f.throws = true;
           break;
         }
         case "bytesIntrinsic":
           // setFrom and the numeric read/write families throw catchable
           // RangeErrors (Node's bounds discipline); the rest trap or
-          // cannot fail.
-          if (MAY_THROW_BYTES_METHODS.has(rec.method)) {
+          // cannot fail. With resizable buffers, subarray and the
+          // iteration behind toArray also check the view's bounds.
+          if (
+            MAY_THROW_BYTES_METHODS.has(rec.method) ||
+            (mod.resizableBuffers && (rec.method === "subarray" || rec.method === "toArray"))
+          ) {
             f.throws = true;
           }
           break;

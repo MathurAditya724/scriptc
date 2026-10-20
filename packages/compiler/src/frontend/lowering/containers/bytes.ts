@@ -11,6 +11,7 @@ import {
   type IrBytesElem,
   type IrBytesIntrinsicMethod,
   type IrExpr,
+  type IrStmt,
   type IrLibFn,
   type IrType,
   STRING,
@@ -151,6 +152,45 @@ function lowerBytesSortCall(
   };
 }
 
+/** Whether any source can reach ArrayBuffer.prototype.resize: a `resize`
+ * member read (`x.resize`, `x["resize"]`, `{ resize } = x`) on a receiver
+ * typed ArrayBuffer or untyped. Without one, a typed array's length never
+ * changes after construction. */
+export function resizableBuffersReachable(lowerer: Lowerer): boolean {
+  if (lowerer.resizableBuffersReachable !== null) return lowerer.resizableBuffersReachable;
+  let reachable = false;
+  const dynamicReceiver = (receiver: ts.Expression): boolean => {
+    const kind = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(receiver))?.kind;
+    return kind === undefined || kind === "dyn";
+  };
+  for (const file of lowerer.program.getSourceFiles()) {
+    if (file.isDeclarationFile || !file.text.includes("resize")) continue;
+    ts.walkPreorder(file, (node) => {
+      if (reachable) return "skip";
+      if (ts.isPropertyAccessExpression(node) && node.name.text === "resize")
+        reachable = dynamicReceiver(node.expression);
+      else if (
+        ts.isElementAccessExpression(node) &&
+        ts.isStringLiteralLike(node.argumentExpression) &&
+        node.argumentExpression.text === "resize"
+      )
+        reachable = dynamicReceiver(node.expression);
+      else if (
+        ts.isBindingElement(node) &&
+        ((node.propertyName &&
+          ts.isIdentifier(node.propertyName) &&
+          node.propertyName.text === "resize") ||
+          (!node.propertyName && ts.isIdentifier(node.name) && node.name.text === "resize"))
+      )
+        reachable = true;
+      return undefined;
+    });
+    if (reachable) break;
+  }
+  lowerer.resizableBuffersReachable = reachable;
+  return reachable;
+}
+
 /* ── typed arrays / Buffer ─────────────────────────────────────────────── */
 
 /** The typed-array constructors with a runtime representation, by lib
@@ -192,20 +232,33 @@ export function lowerBytesNew(
     lowerer.isStdlibSymbol(symbol)
   ) {
     const args = expr.arguments?.nodes ?? [];
-    if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    const shared = ts.symbolName(symbol) === "SharedArrayBuffer";
+    if (args.length > 2 || (shared && args.length > 1) || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
-        "resizable ArrayBuffer construction",
+        shared
+          ? "growable SharedArrayBuffer construction"
+          : `new ArrayBuffer with ${args.length} arguments`,
         expr,
-        "fixed-length ArrayBuffers accept a byte length; resizable storage is not supported yet",
+        "SharedArrayBuffer accepts a byte length; ArrayBuffer accepts a byte length and options",
       );
     }
     const length = args[0]
       ? lowerer.coerceInto(args[0], lowerer.lowerExpr(args[0]), DYN)
       : dynUndefinedExpr(locOf(expr));
+    if (args.length === 2) {
+      // `{ maxByteLength }` makes the buffer resizable.
+      const options = lowerer.coerceInto(args[1]!, lowerer.lowerExpr(args[1]!), DYN);
+      return {
+        kind: "libCall",
+        fn: "arrayBuffer.newOptions",
+        args: [length, options],
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
     return {
       kind: "libCall",
-      fn:
-        ts.symbolName(symbol) === "SharedArrayBuffer" ? "sharedArrayBuffer.new" : "arrayBuffer.new",
+      fn: shared ? "sharedArrayBuffer.new" : "arrayBuffer.new",
       args: [length],
       type: DYN,
       loc: locOf(expr),
@@ -372,6 +425,9 @@ export function lowerBytesStaticCall(
     source.type.kind === "bytes" ||
     (source.type.kind === "array" && source.type.elem.kind === "f64")
   ) {
+    // A typed-array source is iterated (its view check names values).
+    if (source.type.kind === "bytes")
+      return { kind: "bytesNew", source, from: true, type: bytesOf(elem), loc: locOf(call) };
     return { kind: "bytesNew", source, type: bytesOf(elem), loc: locOf(call) };
   }
   return {
@@ -431,6 +487,125 @@ function lowerDataViewNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
  * else the lib declares (fill, indexOf, reverse, ...) falls through to
  * the SC2020 member fence. Null when this isn't a bytes method call. */
 export function lowerBytesMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const lowered = lowerBytesMethodCallUnchecked(lowerer, call, access);
+  if (lowered === null || !resizableBuffersReachable(lowerer)) return lowered;
+  const label = viewMethodLabel(lowerer, access);
+  return label === null ? lowered : withViewCheck(lowerer, lowered, label);
+}
+
+/** The label of a typed-array or DataView method that requires its view
+ * in bounds, as Node's TypeError spells it. Null for Buffer's own methods
+ * and for subarray, which keep their own checks. */
+function viewMethodLabel(lowerer: Lowerer, access: ts.PropertyAccessExpression): string | null {
+  const name = access.name.text;
+  if (name === "subarray") return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(access.name);
+  const declarations = symbol ? symbol.declarations : [];
+  const owners = declarations.flatMap((d) =>
+    ts.isInterfaceDeclaration(d.parent) ? [d.parent.name.text] : [],
+  );
+  if (owners.includes("Buffer")) return null;
+  // V8 names a DataView setter after the matching getter.
+  if (owners.includes("DataView"))
+    return `DataView.prototype.${name.startsWith("set") ? `get${name.slice(3)}` : name}`;
+  return `%TypedArray%.prototype.${name}`;
+}
+
+/** The check that starts an iteration of a typed array (`for...of`,
+ * `entries()`) in a program that can resize a buffer; none otherwise. */
+export function viewIterationCheck(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  label: string,
+  loc: SrcLoc,
+): IrStmt[] {
+  if (receiver.type.kind !== "bytes" || !resizableBuffersReachable(lowerer)) return [];
+  return [
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "bytesIntrinsic",
+        method: "validate",
+        receiver,
+        args: [{ kind: "strLit", value: label, type: STRING, loc }],
+        type: VOID,
+        loc,
+      },
+      loc,
+    },
+  ];
+}
+
+/** `cond` (the index-below-length test of one typed array iteration step)
+ * after the check that throws while the view is out of bounds, in a
+ * program that can resize a buffer; `cond` itself otherwise. */
+export function viewStepCondition(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  cond: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const stmts = viewIterationCheck(lowerer, receiver, "Array Iterator.prototype.next", loc);
+  return stmts.length ? { kind: "seqExpr", stmts, result: cond, type: cond.type, loc } : cond;
+}
+
+/** `dv.byteLength` / `dv.byteOffset` on a DataView, whose getters throw
+ * when the view is out of bounds of its resizable storage. */
+export function checkedDataViewGetter(
+  lowerer: Lowerer,
+  receiverNode: ts.Expression,
+  op: IrExpr & { kind: "bytesIntrinsic" },
+): IrExpr {
+  if (!resizableBuffersReachable(lowerer)) return op;
+  const symbol = lowerer.typeOf(receiverNode).getSymbol();
+  if (!symbol || ts.symbolName(symbol) !== "DataView" || !lowerer.isStdlibSymbol(symbol)) return op;
+  return withViewCheck(lowerer, op, `get DataView.prototype.${op.method}`);
+}
+
+/** Runs `op` after checking that its receiver is in bounds: the receiver and
+ * the arguments are evaluated first, in order, then the check, then the
+ * operation over those values (Node's order). `op` is a bytesIntrinsic, a
+ * helper call taking the receiver first (sort), or a sequence ending in
+ * one. Only for programs that can resize a buffer. */
+export function withViewCheck(lowerer: Lowerer, op: IrExpr, label: string): IrExpr {
+  if (op.kind === "seqExpr")
+    return { ...op, result: withViewCheck(lowerer, op.result, label), type: op.type };
+  if (op.kind !== "bytesIntrinsic" && (op.kind !== "call" || op.args[0]?.type.kind !== "bytes"))
+    return op;
+  const loc = op.loc;
+  const stmts: IrStmt[] = [];
+  const hoist = (e: IrExpr): IrExpr => {
+    if (e.kind === "strLit" || e.kind === "numLit" || e.kind === "boolLit") return e;
+    const local = lowerer.declareHiddenLocal("%viewOperand", e.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: e, loc });
+    return { kind: "varRef", localId: local.id, type: e.type, loc };
+  };
+  const operands = op.kind === "bytesIntrinsic" ? [op.receiver, ...op.args] : op.args;
+  const [receiver, ...args] = operands.map(hoist);
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "bytesIntrinsic",
+      method: "validate",
+      receiver: receiver!,
+      args: [{ kind: "strLit", value: label, type: STRING, loc }],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  const result: IrExpr =
+    op.kind === "bytesIntrinsic"
+      ? { ...op, receiver: receiver!, args }
+      : { ...op, args: [receiver!, ...args] };
+  return { kind: "seqExpr", stmts, result, type: op.type, loc };
+}
+
+function lowerBytesMethodCallUnchecked(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,

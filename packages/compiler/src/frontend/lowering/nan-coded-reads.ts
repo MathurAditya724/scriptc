@@ -58,6 +58,8 @@ export interface NanCodedHost {
   returnIsNumber(fn: ts.Symbol): boolean;
   /** The method shares its dispatch slot with another class's method. */
   methodOverridden(fn: ts.Symbol): boolean;
+  /** The program can resize an ArrayBuffer (resizableBuffersReachable). */
+  buffersResizable(): boolean;
 }
 
 interface ValueInfo {
@@ -473,9 +475,10 @@ export class NanCodedReads {
 
   /** A typed-array binding that always names the same typed array: a
    * fixed-length allocation, or a parameter or `let`/`const` binding that
-   * no code ever writes. A typed array's length never changes (static
-   * code cannot resize or detach a buffer), so a guard on its length
-   * stays true for that binding. */
+   * no code ever writes. Unless the program can resize a buffer, a typed
+   * array's length never changes, so a guard on its length stays true for
+   * that binding; a resizable buffer can shorten a view, so then only the
+   * allocations, which own their storage, qualify. */
   private stableReceiver(symbol: ts.Symbol): boolean {
     const known = this.stableReceivers.get(symbol);
     if (known !== undefined) return known;
@@ -484,6 +487,7 @@ export class NanCodedReads {
       this.stableReceivers.set(symbol, true);
       return true;
     }
+    if (this.host.buffersResizable()) return false;
     const decl = this.host.declarationOf(symbol);
     if (
       !decl ||

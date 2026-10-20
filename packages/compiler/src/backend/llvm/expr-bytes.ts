@@ -672,13 +672,14 @@ export function emitBytesIntrinsic(
       );
     case "subarray":
       // A +1 VIEW aliasing the receiver's storage (subarray / Buffer's
-      // slice); same index defaults as slice.
+      // slice); same index defaults as slice. A view of resizable storage
+      // can throw a RangeError.
       return call(
         "scr_bytes_subarray",
         "ptr (ptr, double, double)",
         `ptr ${r.name}, double ${args[0]?.name ?? f64Lit(0)}, double ${args[1]?.name ?? F64_INF}`,
         true,
-        false,
+        host.mod.resizableBuffers === true,
       );
     case "toReversed":
       return call("scr_bytes_to_reversed", "ptr (ptr)", `ptr ${r.name}`, true, false);
@@ -730,6 +731,15 @@ export function emitBytesIntrinsic(
         false,
       );
     case "toArray":
+      // Spread and Array.from iterate the view (its values()).
+      if (host.mod.resizableBuffers)
+        call(
+          "scr_bytes_validate_c",
+          "void (ptr, ptr)",
+          `ptr ${r.name}, ptr ${host.cstr("%TypedArray%.prototype.values")}`,
+          false,
+          true,
+        );
       return call("scr_bytes_to_arr", "ptr (ptr)", `ptr ${r.name}`, true, false);
     case "setFrom":
     case "setFromDyn":
@@ -896,7 +906,18 @@ export function emitBytesIntrinsic(
     case "buffer":
       return call("scr_array_buffer_from_bytes", "ptr (ptr)", `ptr ${r.name}`, true, false);
     case "byteOffset":
-      return call("scr_bytes_byte_offset", "double (ptr)", `ptr ${r.name}`, false, false);
+      // A view out of bounds of resizable storage reads 0.
+      return host.mod.resizableBuffers
+        ? call("scr_bytes_view_byte_offset", "double (ptr)", `ptr ${r.name}`, false, false)
+        : call("scr_bytes_byte_offset", "double (ptr)", `ptr ${r.name}`, false, false);
+    case "validate":
+      return call(
+        "scr_bytes_validate",
+        "void (ptr, ptr)",
+        `ptr ${r.name}, ptr ${args[0]!.name}`,
+        false,
+        true,
+      );
     case "dataViewNew":
       // new DataView(x.buffer, byteOffset?, byteLength?) — the has_len
       // flag keeps an omitted length distinct from every numeric value.

@@ -370,6 +370,8 @@ _Static_assert(offsetof(ScrBytes, is_buffer) == 40, "LLVM ScrBytes.is_buffer off
 _Static_assert(offsetof(ScrBytes, is_data_view) == 41, "LLVM ScrBytes.is_data_view offset changed");
 _Static_assert(offsetof(ScrBytes, external) == 42, "LLVM ScrBytes.external offset changed");
 _Static_assert(offsetof(ScrBytes, untransferable) == 43, "LLVM ScrBytes.untransferable offset changed");
+/* Runtime-only; the LLVM type leaves the padding before shared unnamed. */
+_Static_assert(offsetof(ScrBytes, sized) == 44, "ScrBytes.sized must stay in the padding");
 _Static_assert(offsetof(ScrBytes, shared) == 48, "LLVM ScrBytes.shared offset changed");
 `,
     );

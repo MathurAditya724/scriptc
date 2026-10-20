@@ -863,10 +863,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               emitter.numericLocals,
               emitter.integerRanges,
               emitter.unaliasedArrays,
+              emitter.mod.resizableBuffers !== true,
             )
           : null;
       const window =
-        countedLoop && emitter.byteWindowsEnabled
+        countedLoop && emitter.byteWindowsEnabled && !emitter.mod.resizableBuffers
           ? matchByteWindow(
               s,
               countedLoop,

@@ -2108,8 +2108,8 @@ function validateFunction(
             err(`bytesNew source of kind ${sk.kind}`, e.loc);
           }
         }
-        if (e.from && e.source?.type.kind !== "dyn")
-          err("bytesNew from requires a dyn source", e.loc);
+        if (e.from && e.source?.type.kind !== "dyn" && e.source?.type.kind !== "bytes")
+          err("bytesNew from requires a dyn or bytes source", e.loc);
         break;
       }
       case "bytesIntrinsic": {
@@ -2174,6 +2174,7 @@ function validateFunction(
           { argTypes: IrType[]; minArgs: number; result: IrType } | undefined
         > = {
           buffer: { argTypes: [], minArgs: 0, result: DYN },
+          validate: { argTypes: [STRING], minArgs: 1, result: VOID },
           setFromDyn: { argTypes: [DYN, F64], minArgs: 1, result: VOID },
           copyWithin: { argTypes: [F64, F64, F64], minArgs: 3, result: bytesOf(recv.elem) },
           sortNumeric: { argTypes: [F64], minArgs: 1, result: BOOL },

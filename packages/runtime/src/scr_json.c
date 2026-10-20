@@ -1397,6 +1397,7 @@ void scr_dyn_arr_push_spread(ScrDyn *arr, const ScrDyn *src, const char *what) {
     return;
   }
   if (src->kind == SCR_DYN_BYTES) {
+    if (src->v.bytes->sized && !scr_bytes_resizable->check(src->v.bytes, SCR_VIEW_VALUES, NULL)) return;
     for (size_t i = 0; i < src->v.bytes->len; i++) {
       scr_dyn_arr_push(arr, scr_dyn_new_num(scr_bytes_get(src->v.bytes, (double)i)));
     }
@@ -2615,11 +2616,20 @@ static void scr_record_source_disposed(void *rec) {
   scr_dyn_release(view);
 }
 
-/* The single native dispose hook serves weak collections and the table
- * above; each observer runs only while it has entries to forget. */
+static SCR_TL void (*scr_bytes_dispose_observer)(void *object);
+
+/* The single native dispose hook serves weak collections, the table above
+ * and resizable storage (scr_bytes.c); each observer runs only while it
+ * has entries to forget. */
 static void scr_dispose_observers(void *object) {
   if (scr_weak_observing) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
+  if (scr_bytes_dispose_observer) scr_bytes_dispose_observer(object);
+}
+
+void scr_dispose_observe_bytes(void (*observer)(void *object)) {
+  scr_bytes_dispose_observer = observer;
+  scr_weak_dispose_hook = &scr_dispose_observers;
 }
 
 /* Keeps live entries plus deleted markers at most half the table: grows
@@ -3537,7 +3547,8 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
   if (callee->kind == SCR_DYN_FUNC && scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo)
     return scr_array_ctor_call(callee->v.fn.clo, args->v.arr.items, args->v.arr.len);
   if (callee->kind == SCR_DYN_FUNC && scr_array_buffer_ctor && callee->v.fn.clo == scr_array_buffer_ctor->v.fn.clo)
-    return scr_array_buffer_new(args->v.arr.len ? args->v.arr.items[0] : scr_dyn_undefined());
+    return scr_array_buffer_new_options(args->v.arr.len ? args->v.arr.items[0] : scr_dyn_undefined(),
+                                        args->v.arr.len > 1 ? args->v.arr.items[1] : scr_dyn_undefined());
   for (size_t i = 0; i < SCR_BYTES_ELEM_COUNT; i++) {
     if (callee->kind != SCR_DYN_FUNC || !scr_bytes_ctors[i] || callee->v.fn.clo != scr_bytes_ctors[i]->v.fn.clo) continue;
     const ScrDyn *input = args->v.arr.len > 0 ? args->v.arr.items[0] : scr_dyn_undefined();
@@ -3560,8 +3571,18 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
 /* Shared view metadata and indexed reads for both compiler backends. */
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
   ScrBytes *bytes = value->v.bytes;
-  if (key->len == 10 && memcmp(key->data, "byteLength", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_len(bytes));
-  if (key->len == 10 && memcmp(key->data, "byteOffset", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_offset(bytes));
+  bool byte_length = key->len == 10 && memcmp(key->data, "byteLength", 10) == 0;
+  bool byte_offset = key->len == 10 && memcmp(key->data, "byteOffset", 10) == 0;
+  if ((byte_length || byte_offset) && bytes->sized) {
+    /* A view out of bounds of its resizable storage: a typed array reads
+     * 0, a DataView's getters throw. */
+    if (bytes->is_data_view &&
+        !scr_bytes_resizable->check(bytes, byte_length ? SCR_VIEW_DATA_VIEW_BYTE_LENGTH : SCR_VIEW_DATA_VIEW_BYTE_OFFSET, NULL))
+      return NULL;
+    if (byte_offset) return scr_dyn_new_num(scr_bytes_resizable->byte_offset(bytes));
+  }
+  if (byte_length) return scr_dyn_new_num(scr_bytes_byte_len(bytes));
+  if (byte_offset) return scr_dyn_new_num(scr_bytes_byte_offset(bytes));
   if (key->len == 6 && memcmp(key->data, "buffer", 6) == 0) return scr_array_buffer_from_bytes(bytes);
   if (bytes->is_data_view) {
     /* A DataView has no length or indexed elements. */
@@ -4755,6 +4776,14 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
   ScrDyn *view = source && source->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(source) : NULL;
   if (scr_exc_pending()) { scr_dyn_release(view); scr_dyn_release(source); return NULL; }
   ScrDyn *items = view ? view : source;
+  /* Each step over a view of resizable storage throws while it is out of
+   * bounds; a view that shrank in bounds ends the iteration below. */
+  if (items && items->kind == SCR_DYN_BYTES && items->v.bytes->sized &&
+      !scr_bytes_resizable->check(items->v.bytes, SCR_VIEW_ITERATOR_NEXT, NULL)) {
+    scr_dyn_release(view);
+    scr_dyn_release(source);
+    return NULL;
+  }
   ScrMap *map = source && (iterator->kind == 2 || iterator->kind == 3) ? source->v.handle.ptr : NULL;
   if (map) iterator->index = scr_map_iter_skip(map, iterator->index);
   double length = !items ? 0 : iterator->array_like ? iterator->limit : map ? scr_map_iter_count(map) : items->kind == SCR_DYN_ARR ? (double)items->v.arr.len
@@ -5705,6 +5734,11 @@ static ScrDyn *scr_builtin_array_iterator_call(ScrClosure *closure, ScrDyn *cons
 
 static ScrDyn *scr_builtin_bytes_iterator_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure; (void)args; (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  bool valid = self->kind != SCR_DYN_BYTES || !self->v.bytes->sized ||
+    scr_bytes_resizable->check(self->v.bytes, SCR_VIEW_VALUES, NULL);
+  scr_dyn_release(self);
+  if (!valid) return NULL;
   return scr_builtin_iterator_checked(SCR_DYN_BYTES);
 }
 
@@ -13223,13 +13257,60 @@ bool scr_array_buffer_is_view(const ScrDyn *value) {
   return value->kind == SCR_DYN_BYTES;
 }
 
+/* ArrayBuffer.prototype.resize(newLength): ToIndex, then a RangeError past
+ * maxByteLength; fixed-length receivers throw the incompatible-receiver
+ * TypeError. */
+static ScrDyn *scr_array_buffer_resize(ScrDyn *receiver, ScrDyn *length) {
+  ScrBytes *storage = scr_array_buffer_is(receiver) ? receiver->v.handle.ptr : NULL;
+  if (!storage || !storage->sized) {
+    static const char msg[] = "Method ArrayBuffer.prototype.resize called on incompatible receiver #<ArrayBuffer>";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  double number;
+  if (!scr_dyn_number_coerce_js(length, &number)) return NULL;
+  double size = isnan(number) ? 0 : trunc(number);
+  if (!(size >= 0) || size > (double)scr_bytes_sizing(storage)->max_bytes) {
+    static const char msg[] = "ArrayBuffer.prototype.resize: Invalid length parameter";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  scr_bytes_resizable->resize(storage, (size_t)size);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static SCR_TL ScrDyn *scr_array_buffer_resize_value;
+static void scr_array_buffer_resize_cleanup(void) {
+  scr_dyn_release(scr_array_buffer_resize_value);
+  scr_array_buffer_resize_value = NULL;
+}
+static ScrDyn *scr_array_buffer_resize_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  ScrDyn *receiver = scr_dyn_this_get();
+  ScrDyn *result = scr_array_buffer_resize(receiver, argc ? args[0] : scr_dyn_undefined());
+  scr_dyn_release(receiver);
+  return result;
+}
+
 static ScrDyn *scr_array_buffer_get(void *h, const char *key, size_t len) {
-  if ((len == 10 && memcmp(key, "byteLength", len) == 0) ||
-      (len == 13 && memcmp(key, "maxByteLength", len) == 0))
-    return scr_dyn_new_num(scr_bytes_byte_len(h));
-  if (len == 8 && !memcmp(key, "growable", len) && ((ScrBytes *)h)->shared) return scr_dyn_new_bool(false);
-  if (!((ScrBytes *)h)->shared && ((len == 9 && memcmp(key, "resizable", len) == 0) ||
-      (len == 8 && memcmp(key, "detached", len) == 0))) return scr_dyn_new_bool(false);
+  const ScrBytes *storage = h;
+  static const char resize[] = "resize";
+  if (len == 6 && memcmp(key, resize, len) == 0 && !storage->shared) {
+    static const char native_name[] = "native:ArrayBuffer.prototype.resize";
+    if (!scr_array_buffer_resize_value) {
+      scr_array_buffer_resize_value = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_array_buffer_resize_call,
+        1, native_name, resize);
+      scr_atexit(scr_array_buffer_resize_cleanup);
+    }
+    return scr_dyn_retain(scr_array_buffer_resize_value);
+  }
+  if (len == 10 && memcmp(key, "byteLength", len) == 0) return scr_dyn_new_num(scr_bytes_byte_len(h));
+  if (len == 13 && memcmp(key, "maxByteLength", len) == 0)
+    return scr_dyn_new_num(storage->sized ? (double)scr_bytes_sizing(storage)->max_bytes : scr_bytes_byte_len(h));
+  if (len == 8 && !memcmp(key, "growable", len) && storage->shared) return scr_dyn_new_bool(false);
+  if (!storage->shared && len == 9 && memcmp(key, "resizable", len) == 0)
+    return scr_dyn_new_bool(storage->sized);
+  if (!storage->shared && len == 8 && memcmp(key, "detached", len) == 0) return scr_dyn_new_bool(false);
   if (len == 11 && !memcmp(key, "constructor", len) && !((ScrBytes *)h)->shared)
     return scr_array_buffer_constructor();
   return NULL;
@@ -13243,6 +13324,9 @@ static bool scr_array_buffer_set(void *h, const char *key, size_t len, const Scr
 static ScrDyn *scr_array_buffer_invoke(void *h, ScrDyn *self, const char *method,
     ScrDyn *const *args, size_t argc, const char *what) {
   (void)self; (void)what;
+  static const char resize[] = "resize";
+  if (strcmp(method, resize) == 0 && !((ScrBytes *)h)->shared)
+    return scr_array_buffer_resize(self, argc ? args[0] : scr_dyn_undefined());
   if (strcmp(method, "slice") == 0) {
     double start = 0, end = scr_bytes_byte_len(h);
     if (argc && !scr_dyn_number_coerce_js(args[0], &start)) return NULL;
@@ -13963,15 +14047,68 @@ ScrDyn *scr_dyn_from_entries(ScrDyn *seed) {
   return result;
 }
 
-ScrDyn *scr_array_buffer_new(ScrDyn *length) {
+/* ToIndex for ArrayBuffer sizes; false after throwing Node's RangeError. */
+static bool scr_array_buffer_size(const ScrDyn *value, const char *message, double *out) {
   double number;
-  if (!scr_dyn_number_coerce_js(length, &number)) return NULL;
+  if (!scr_dyn_number_coerce_js(value, &number)) return false;
   double size = isnan(number) ? 0 : trunc(number);
   if (!(size >= 0) || size > 9007199254740991.0 || size > (double)(SIZE_MAX / 8)) {
-    static const char msg[] = "Invalid array buffer length";
+    scr_throw_error_msg(SCR_ERR_RANGE, message, strlen(message));
+    return false;
+  }
+  *out = size;
+  return true;
+}
+
+/* new ArrayBuffer(length, options): options.maxByteLength, read after the
+ * length is coerced, makes the buffer resizable. Options that are not an
+ * object, or whose maxByteLength is undefined, give a fixed-length buffer.
+ * The storage for maxByteLength is reserved at construction. */
+ScrDyn *scr_array_buffer_new_options(ScrDyn *length, ScrDyn *options) {
+  static const char length_message[] = "Invalid array buffer length";
+  static const char max_message[] = "Invalid array buffer max length";
+  static const char max_byte_length[] = "maxByteLength";
+  double size;
+  if (!scr_array_buffer_size(length, length_message, &size)) return NULL;
+  ScrDyn *max_value = NULL;
+  if (scr_dyn_is_object(options)) {
+    ScrStr *name = scr_str_new(max_byte_length, sizeof max_byte_length - 1);
+    ScrDyn *key = scr_dyn_new_str(name);
+    scr_str_release(name);
+    max_value = scr_dyn_reflect_get(options, key, options);
+    scr_dyn_release(key);
+    if (!max_value) return NULL;
+  }
+  if (!max_value || max_value->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(max_value);
+    ScrDyn *fixed = scr_dyn_new_num(size);
+    ScrDyn *result = scr_array_buffer_new(fixed);
+    scr_dyn_release(fixed);
+    return result;
+  }
+  double max;
+  bool ok = scr_array_buffer_size(max_value, max_message, &max);
+  scr_dyn_release(max_value);
+  if (!ok) return NULL;
+  if (size > max) {
+    scr_throw_error_msg(SCR_ERR_RANGE, max_message, sizeof max_message - 1);
+    return NULL;
+  }
+  ScrBytes *storage = scr_bytes_new_resizable((size_t)size, (size_t)max);
+  if (!storage) {
+    static const char msg[] = "Array buffer allocation failed";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return NULL;
   }
+  ScrDyn *result = scr_array_buffer_from_bytes(storage);
+  scr_bytes_release(storage);
+  return result;
+}
+
+ScrDyn *scr_array_buffer_new(ScrDyn *length) {
+  static const char msg[] = "Invalid array buffer length";
+  double size;
+  if (!scr_array_buffer_size(length, msg, &size)) return NULL;
   ScrBytes *storage = scr_bytes_new(SCR_BYTES_U8, size);
   if (!storage) return NULL;
   ScrDyn *result = scr_array_buffer_from_bytes(storage);

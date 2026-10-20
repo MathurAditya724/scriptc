@@ -3518,6 +3518,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "sharedArrayBuffer.new": { argTypes: [DYN], result: DYN },
   "sharedArrayBuffer.is": { argTypes: [DYN], result: BOOL },
   "arrayBuffer.new": { argTypes: [DYN], result: DYN },
+  "arrayBuffer.newOptions": { argTypes: [DYN, DYN], result: DYN },
   "ffi.argument": { argTypes: [DYN, STRING], result: DYN },
   "ffi.memoryModule": { argTypes: [DYN], result: DYN },
   "intl.segmenterNew": { argTypes: [], result: DYN },
