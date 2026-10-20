@@ -867,6 +867,80 @@ test("an array length bounds while and for counters even when the body resizes t
   expect(analyzeIntegerRanges(g).get(cursor)).toEqual({ min: 0, max: 4294967295 });
 });
 
+test("a counter plus or minus a literal compared with a bound narrows the counter", () => {
+  // for (let i = 0; i + 1 < items.length; i++) { pair(items, i, i + 1); }
+  const ARR = { kind: "array", elem: F64 } as const;
+  const items: IrExpr = { loc, kind: "varRef", localId: "items", type: ARR };
+  const length: IrExpr = {
+    loc,
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: items,
+    args: [],
+    type: F64,
+  };
+  const inside = ref("i"),
+    next = bin("+", ref("i"), num(1)),
+    step = bin("+", ref("i"), num(1));
+  const call: IrStmt = {
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "call", callee: "pair", args: [items, inside, next], type: F64 },
+  };
+  const f = fn([
+    {
+      loc,
+      kind: "for",
+      init: { loc, kind: "varDecl", localId: "i", init: num(0) },
+      cond: condition("<", bin("+", ref("i"), num(1)), length),
+      update: { loc, kind: "assign", localId: "i", value: step },
+      body: [call],
+    },
+  ]);
+  f.locals.push(
+    { id: "i", name: "i", type: F64, mutable: true },
+    { id: "items", name: "items", type: ARR, mutable: false },
+  );
+  const ranges = analyzeIntegerRanges(f);
+  expect(ranges.get(inside)).toEqual({ min: 0, max: 4294967293 });
+  expect(ranges.get(next)).toEqual({ min: 1, max: 4294967294 });
+  expect(ranges.get(step)).toEqual({ min: 1, max: 4294967294 });
+
+  // if (1 + x < 10) observe(x); if (x - 2 >= 0) observe(x); with x in [0, 100]
+  const below = ref(),
+    above = ref(),
+    wide = ref();
+  const g = fn([
+    assign(bin("&", ref("unknown"), num(100))),
+    {
+      loc,
+      kind: "if",
+      cond: condition("<", bin("+", num(1), ref()), num(10)),
+      then: [observe(below)],
+      else_: null,
+    },
+    {
+      loc,
+      kind: "if",
+      cond: condition(">=", bin("-", ref(), num(2)), num(0)),
+      then: [observe(above)],
+      else_: null,
+    },
+    // A bound beyond 2^52 narrows nothing through an offset.
+    {
+      loc,
+      kind: "if",
+      cond: condition("<", bin("+", ref(), num(1)), num(2 ** 53)),
+      then: [observe(wide)],
+      else_: null,
+    },
+  ]);
+  const gRanges = analyzeIntegerRanges(g);
+  expect(gRanges.get(below)).toEqual({ min: 0, max: 8 });
+  expect(gRanges.get(above)).toEqual({ min: 2, max: 100 });
+  expect(gRanges.get(wide)).toEqual({ min: 0, max: 100 });
+});
+
 test("whole-program slot facts seed parameters, field reads and call results", () => {
   const field: IrExpr = {
     loc,
