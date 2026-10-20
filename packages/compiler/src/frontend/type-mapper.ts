@@ -5139,11 +5139,15 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
   const obj = type.getObjectType();
   if (obj === undefined || !(obj.flags & ts.TypeFlags.TypeParameter)) return null;
   const bound = resolveTypeParam(obj);
+  const idx = type.getIndexType();
+  if (idx === undefined) return null;
+  // `T[keyof T]` over a T bound to an unknown-valued record view
+  // (`Record<string, unknown>` maps to the checked-dynamic value, see
+  // mapRecordType): every member reads as unknown.
+  if (bound?.kind === "dyn" && idx.isIndexType() && idx.getTarget() === obj) return DYN;
   if (!bound || bound.kind !== "record") return null;
   const shape = shapes.get(bound.shapeId);
   if (!shape || shape.tuple) return null;
-  const idx = type.getIndexType();
-  if (idx === undefined) return null;
   let covered: IrType[] | null = null;
   if (idx.isStringLiteralType()) {
     const f = shape.fields.find((x) => x.name === idx.value);
@@ -5199,6 +5203,17 @@ function mapBoundKeyofNeverConditional(type: ts.Type, ctx: TypeMapperCtx): IrTyp
   const target = check.getTarget();
   if (!target || !(target.flags & ts.TypeFlags.TypeParameter)) return null;
   const bound = resolveTypeParam(target);
+  // A T bound to the checked-dynamic value (`Record<string, unknown>`, an
+  // unknown-valued record view) has no static key set to decide the
+  // branch, but both branches of the lib's `keyof T extends never ?
+  // unknown : T[keyof T]` read as unknown there: one answer either way.
+  if (bound?.kind === "dyn") {
+    const whenEmpty = type.getTrueType();
+    const otherwise = type.getFalseType();
+    const a = whenEmpty ? mapType(whenEmpty, ctx) : null;
+    const b = otherwise ? mapType(otherwise, ctx) : null;
+    return a && b && typeEquals(a, b) ? a : null;
+  }
   if (bound?.kind !== "record") return null;
   const shape = shapes.get(bound.shapeId);
   if (!shape || shape.tuple) return null;
