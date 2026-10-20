@@ -2689,6 +2689,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * (1) or writable (2) side — or null for any other value. Never throws;
    * the result union is `%Readable | null` or `%Writable | null`. */
   "stream.dynNative": { argTypes: [DYN, F64], result: VOID },
+  /** stream.dynNative for a pipe or unpipe destination: also a
+   * constructor-function stream's runtime stream, in programs that link
+   * that unit, unless it overrides write() or end(). */
+  "stream.dynNativePipe": { argTypes: [DYN, F64], result: VOID },
   /** readable.pipe(destination, end) into a checked-dynamic destination
    * that is not a native stream: [source, the source boxed, destination,
    * end]. Node's pipe listener protocol over the destination's members
