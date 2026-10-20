@@ -644,6 +644,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  // Checked-cast fallback reads (scr_json.c); take answers +1.
+  "checkedCast.fallbackTaken": "scr_dyn_check_fallback_taken",
+  "checkedCast.fallbackTake": "scr_dyn_check_fallback_take",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).
