@@ -9264,6 +9264,7 @@ export class Lowerer {
    * lowering goes through here (via lowerExprExpecting) or calls this
    * directly when the expression was already lowered. */
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
+    refuseInferredCallbackDrops(this, node, expr.type, expected);
     // A union destination can accept the binding's tagged storage directly.
     // The checker's single-arm flow type can be stale after a callback writes
     // the binding. Extracting that arm and wrapping it again would discard the
@@ -12983,4 +12984,75 @@ export class Lowerer {
   ): IrExpr | null {
     return lowerStdlibMethodCall(this, call, access);
   }
+}
+
+/** A callback passed to a generic call without a return annotation, whose
+ * returns the checker unified into a narrower result type: `trace(name,
+ * async () => (cond ? items : items.map((i) => ({ ...i, sum }))))` infers
+ * `T` from the narrower `Item[]`, though at run time the extended objects
+ * keep `sum`. Converting such a return into the inferred type copies the
+ * records and drops the members the narrower type lacks, which Node keeps
+ * and any later wider view (`Promise<ItemWithSum[]>`) reads back. Refuse
+ * that conversion by name rather than lose the members silently; an
+ * annotation on the callback's return type or on the call's type argument
+ * names a type that keeps them. */
+function refuseInferredCallbackDrops(
+  lowerer: Lowerer,
+  node: ts.Node,
+  actual: IrType,
+  expected: IrType,
+): void {
+  if (typeEquals(actual, expected)) return;
+  const structured = (t: IrType): boolean =>
+    t.kind === "record" || t.kind === "array" || t.kind === "promise";
+  if (!structured(actual) || !structured(expected)) return;
+  let site: ts.Node = node;
+  while (ts.isParenthesizedExpression(site.parent) || ts.isAwaitExpression(site.parent))
+    site = site.parent;
+  let fn: ts.Node | undefined;
+  if (ts.isReturnStatement(site.parent) && site.parent.expression === site) {
+    fn = site.parent.parent;
+    while (fn && !ts.isFunctionLike(fn)) fn = fn.parent;
+  } else if (ts.isArrowFunction(site.parent) && site.parent.body === site) {
+    fn = site.parent;
+  }
+  if (!fn || !(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) || fn.type) return;
+  let arg: ts.Node = fn;
+  while (ts.isParenthesizedExpression(arg.parent)) arg = arg.parent;
+  const call = arg.parent;
+  if (!(ts.isCallExpression(call) || ts.isNewExpression(call))) return;
+  if (!call.arguments?.nodes.includes(arg as ts.Expression)) return;
+  const dropped = droppedMembers(lowerer, actual, expected, new Set());
+  if (dropped.length === 0) return;
+  lowerer.unsupported(
+    "SC1090",
+    node,
+    `returning '${lowerer.fmt(actual)}' from a callback whose result the checker infers as the narrower '${lowerer.fmt(expected)}' (the conversion would drop ${dropped.map((d) => `'${d}'`).join(", ")}, which the object keeps at run time — annotate the callback's return type or the call's type argument with a type that declares them)`,
+  );
+}
+
+/** Member names a structural conversion from `from` into `to` drops:
+ * declared fields of a source record the target record lacks, through
+ * array elements and promise payloads. */
+function droppedMembers(lowerer: Lowerer, from: IrType, to: IrType, seen: Set<string>): string[] {
+  if (typeEquals(from, to)) return [];
+  if (from.kind === "array" && to.kind === "array")
+    return droppedMembers(lowerer, from.elem, to.elem, seen);
+  if (from.kind === "promise" && to.kind === "promise")
+    return droppedMembers(lowerer, from.inner, to.inner, seen);
+  if (from.kind !== "record" || to.kind !== "record") return [];
+  const key = `${from.shapeId}>${to.shapeId}`;
+  if (seen.has(key)) return [];
+  seen.add(key);
+  const source = lowerer.shapes.get(from.shapeId);
+  const target = lowerer.shapes.get(to.shapeId);
+  if (!source || !target || source.tuple || target.tuple || target.indexValue) return [];
+  const out: string[] = [];
+  for (const f of source.fields) {
+    if (f.name.startsWith("%")) continue;
+    const t = target.fields.find((x) => x.name === f.name);
+    if (!t) out.push(f.name);
+    else out.push(...droppedMembers(lowerer, f.type, t.type, seen).map((n) => `${f.name}.${n}`));
+  }
+  return out;
 }
