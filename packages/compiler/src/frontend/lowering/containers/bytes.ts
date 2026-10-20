@@ -20,6 +20,7 @@ import {
   arrayOf,
   bytesOf,
   funcOf,
+  isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -119,7 +120,7 @@ function lowerBytesSortCall(
     fnArg.type.params.every((param) => lowerer.coercibleValue(F64, param))
   ) {
     const result =
-      fnArg.type.ret.kind === "dyn" && isJsSourceFile(argNode.getSourceFile())
+      fnArg.type.ret.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(argNode))
         ? F64
         : fnArg.type.ret;
     const expected = funcOf(
@@ -186,7 +187,7 @@ export function lowerBytesNew(
 ): IrExpr | null {
   if (
     symbol != null &&
-    (symbol.name === "ArrayBuffer" || symbol.name === "SharedArrayBuffer") &&
+    (ts.symbolName(symbol) === "ArrayBuffer" || ts.symbolName(symbol) === "SharedArrayBuffer") &&
     lowerer.isStdlibSymbol(symbol)
   ) {
     const args = expr.arguments?.nodes ?? [];
@@ -202,18 +203,19 @@ export function lowerBytesNew(
       : dynUndefinedExpr(locOf(expr));
     return {
       kind: "libCall",
-      fn: symbol.name === "SharedArrayBuffer" ? "sharedArrayBuffer.new" : "arrayBuffer.new",
+      fn:
+        ts.symbolName(symbol) === "SharedArrayBuffer" ? "sharedArrayBuffer.new" : "arrayBuffer.new",
       args: [length],
       type: DYN,
       loc: locOf(expr),
     };
   }
-  if (symbol && symbol.name === "DataView" && lowerer.isStdlibSymbol(symbol)) {
+  if (symbol && ts.symbolName(symbol) === "DataView" && lowerer.isStdlibSymbol(symbol)) {
     return lowerDataViewNew(lowerer, expr);
   }
-  const elem = symbol ? own(BYTES_CTORS, symbol.name) : undefined;
+  const elem = symbol ? own(BYTES_CTORS, ts.symbolName(symbol)) : undefined;
   if (!elem || !symbol || !lowerer.isStdlibSymbol(symbol)) return null;
-  const name = symbol.name;
+  const name = ts.symbolName(symbol);
   const type = bytesOf(elem);
   const loc = locOf(expr);
   const args = expr.arguments?.nodes ?? [];
@@ -290,7 +292,7 @@ export function lowerBytesStaticCall(
   }
   if (access.name.text !== "from" || !ts.isIdentifier(access.expression)) return null;
   const symbol = lowerer.resolveValueSymbol(access.expression);
-  const elem = symbol ? own(BYTES_CTORS, symbol.name) : undefined;
+  const elem = symbol ? own(BYTES_CTORS, ts.symbolName(symbol)) : undefined;
   if (!elem || !lowerer.isStdlibSymbol(symbol ?? undefined)) return null;
   if (
     call.arguments.nodes.length < 1 ||
@@ -441,7 +443,7 @@ export function lowerBytesMethodCall(
   const nArgs = call.arguments.nodes.length;
   // Encoded stream callbacks can receive strings even when JavaScript's
   // contextual inference still describes their parameter as a Buffer.
-  if (name === "toString" && nArgs <= 1 && isJsSourceFile(call.getSourceFile())) {
+  if (name === "toString" && nArgs <= 1 && isJsSourceFile(ts.getSourceFileOfNode(call))) {
     const lowered = lowerer.lowerExpr(access.expression);
     const receiver =
       lowered.kind === "dynCheck" && lowered.value.type.kind === "dyn" ? lowered.value : lowered;
@@ -454,7 +456,7 @@ export function lowerBytesMethodCall(
           call.arguments.nodes[0]
             ? lowerer.lowerExprExpecting(call.arguments.nodes[0], DYN)
             : dynUndefinedExpr(loc),
-          { kind: "strLit", value: access.getText(), type: STRING, loc },
+          { kind: "strLit", value: ts.getTextOfNode(access), type: STRING, loc },
         ],
         type: STRING,
         loc,
@@ -554,9 +556,9 @@ export function lowerBytesMethodCall(
         const nameSym = lowerer.checker.getSymbolAtLocation(access.name);
         return (
           nameSym !== undefined &&
-          lowerer.checker
-            .declarationsOf(nameSym)
-            .some((d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer")
+          nameSym.declarations.some(
+            (d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer",
+          )
         );
       })();
     const method = name === "subarray" || declaredOnBuffer ? "subarray" : "slice";
@@ -580,13 +582,11 @@ export function lowerBytesMethodCall(
       const symbol = lowerer.checker.getSymbolAtLocation(access.name);
       return (
         symbol !== undefined &&
-        lowerer.checker
-          .declarationsOf(symbol)
-          .some(
-            (declaration) =>
-              ts.isInterfaceDeclaration(declaration.parent) &&
-              declaration.parent.name.text === "Buffer",
-          )
+        symbol.declarations.some(
+          (declaration) =>
+            ts.isInterfaceDeclaration(declaration.parent) &&
+            declaration.parent.name.text === "Buffer",
+        )
       );
     })()
   ) {
@@ -646,9 +646,9 @@ export function lowerBytesMethodCall(
       const nameSym = lowerer.checker.getSymbolAtLocation(access.name);
       return (
         nameSym !== undefined &&
-        lowerer.checker
-          .declarationsOf(nameSym)
-          .some((d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer")
+        nameSym.declarations.some(
+          (d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer",
+        )
       );
     })();
     if (receiverIr.elem !== "u8" || !declaredOnBuffer) {
@@ -724,9 +724,9 @@ export function lowerBytesMethodCall(
     const nameSym = lowerer.checker.getSymbolAtLocation(access.name);
     return (
       nameSym !== undefined &&
-      lowerer.checker
-        .declarationsOf(nameSym)
-        .some((d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer")
+      nameSym.declarations.some(
+        (d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer",
+      )
     );
   })();
   if (declOnBuffer && receiverIr.elem === "u8") {
@@ -1273,16 +1273,14 @@ function knownBufferProducer(
     const symbol = lowerer.checker.getSymbolAtLocation(node);
     if (!symbol || seen.has(symbol)) return false;
     seen.add(symbol);
-    return lowerer.checker
-      .declarationsOf(symbol)
-      .some(
-        (decl) =>
-          ts.isVariableDeclaration(decl) &&
-          ts.isVariableDeclarationList(decl.parent) &&
-          (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
-          decl.initializer !== undefined &&
-          knownBufferProducer(lowerer, decl.initializer, seen),
-      );
+    return symbol.declarations.some(
+      (decl) =>
+        ts.isVariableDeclaration(decl) &&
+        ts.isVariableDeclarationList(decl.parent) &&
+        (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        decl.initializer !== undefined &&
+        knownBufferProducer(lowerer, decl.initializer, seen),
+    );
   }
   if (!ts.isCallExpression(node)) return false;
   const callee = node.expression;
@@ -1337,7 +1335,8 @@ function lowerBufferStaticValue(
       args.length <= 3 &&
       !args.some(ts.isSpreadElement) &&
       ((symbol) =>
-        symbol != null && (symbol.name === "ArrayBuffer" || symbol.name === "SharedArrayBuffer"))(
+        symbol != null &&
+        (ts.symbolName(symbol) === "ArrayBuffer" || ts.symbolName(symbol) === "SharedArrayBuffer"))(
         lowerer.typeOf(args[0]!).getSymbol(),
       )
     ) {
@@ -1429,7 +1428,14 @@ function lowerBufferStaticValue(
           }
           return { kind: "libCall", fn, args: [s, enc], type: BYTES_U8, loc };
         }
-        if (args.length === 1 && srcIr?.kind === "bytes" && srcIr.elem === "u8") {
+        // A checker type with no mapping (pako's conditional `O extends
+        // { toText: true } ? string : Uint8Array` result) whose lowered
+        // value is a u8 view copies like the typed form.
+        if (
+          args.length === 1 &&
+          ((srcIr?.kind === "bytes" && srcIr.elem === "u8") ||
+            (srcIr === null && value.type.kind === "bytes" && value.type.elem === "u8"))
+        ) {
           return {
             kind: "libCall",
             fn: "buffer.poolFromBytes",
@@ -1443,6 +1449,34 @@ function lowerBufferStaticValue(
             kind: "libCall",
             fn: "buffer.poolFromArray",
             args: [value],
+            type: BYTES_U8,
+            loc,
+          };
+        }
+        // A union of strings, u8 views and undefined/null (a JS-inferred
+        // npm result such as pako's deflate): the checked form dispatches
+        // on the runtime kind exactly as for an untyped JS value, Node's
+        // TypeError for the unit arms included.
+        if (
+          args.length === 1 &&
+          value.type.kind === "union" &&
+          lowerer.dynConvertible(value.type) &&
+          lowerer.unions
+            .get(value.type.unionId)
+            ?.arms.every(
+              (arm) =>
+                arm.kind === "string" ||
+                (arm.kind === "bytes" && arm.elem === "u8") ||
+                isUnitType(arm),
+            ) === true
+        ) {
+          return {
+            kind: "libCall",
+            fn: "buffer.poolFromDyn",
+            args: [
+              lowerer.coerceToExpected(value, DYN),
+              { kind: "strLit", value: "utf8", type: STRING, loc },
+            ],
             type: BYTES_U8,
             loc,
           };
@@ -1618,7 +1652,9 @@ function lowerBufferStaticValue(
       // flavor. Plain bytes are Uint8Arrays at this boundary; inspecting
       // only the bytes tag would incorrectly identify them as Buffers.
       const checked =
-        isJsSourceFile(call.getSourceFile()) && v.kind === "dynCheck" && v.value.type.kind === "dyn"
+        isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+        v.kind === "dynCheck" &&
+        v.value.type.kind === "dyn"
           ? v.value
           : v;
       if (checked.type.kind === "dyn") {
@@ -1658,6 +1694,12 @@ function lowerBufferStaticValue(
             loc,
           };
         }
+      }
+      // A typed view of unknown provenance (a Uint8Array parameter,
+      // safe-buffer's Buffer.from result): Buffer is a brand of the view,
+      // which the runtime keeps, so the test reads it.
+      if (v.type.kind === "bytes") {
+        return { kind: "libCall", fn: "buffer.isBranded", args: [v], type: BOOL, loc };
       }
       lowerer.noLowering(
         `Buffer.isBuffer of '${lowerer.fmt(v.type)}' values`,

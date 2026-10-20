@@ -504,9 +504,7 @@ function jsonNullishArgument(lowerer: Lowerer, node: ts.Expression): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(node);
   return (
     symbol !== undefined &&
-    lowerer.checker
-      .declarationsOf(symbol)
-      .every((decl) => lowerer.isStdlibFile(decl.getSourceFile()))
+    symbol.declarations.every((decl) => lowerer.isStdlibFile(ts.getSourceFileOfNode(decl)))
   );
 }
 

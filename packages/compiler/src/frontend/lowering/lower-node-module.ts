@@ -42,10 +42,10 @@ function cjsGlobal(lowerer: Lowerer, node: ts.Expression, name: "module" | "requ
   if (!ts.isIdentifier(node) || node.text !== name) return false;
   if (lowerer.isStdlibGlobal(node, name)) return true;
   const symbol = lowerer.checker.getSymbolAtLocation(node);
-  const decls = symbol ? lowerer.checker.declarationsOf(symbol) : [];
+  const decls = symbol ? symbol.declarations : [];
   const sourceShadow = decls.some(
     (decl) =>
-      !decl.getSourceFile().isDeclarationFile &&
+      !ts.getSourceFileOfNode(decl).isDeclarationFile &&
       (ts.isVariableDeclaration(decl) ||
         ts.isParameter(decl) ||
         ts.isBindingElement(decl) ||
@@ -55,7 +55,7 @@ function cjsGlobal(lowerer: Lowerer, node: ts.Expression, name: "module" | "requ
         ts.isNamespaceImport(decl) ||
         ts.isImportEqualsDeclaration(decl)),
   );
-  return !sourceShadow && !isNodeEsmFile(node.getSourceFile(), lowerer.program);
+  return !sourceShadow && !isNodeEsmFile(ts.getSourceFileOfNode(node), lowerer.program);
 }
 
 function graphSyntax(lowerer: Lowerer, sf: ts.SourceFile): boolean {
@@ -174,7 +174,7 @@ export function cjsModuleRegistryPrelude(lowerer: Lowerer, loc: IrExpr["loc"]): 
 }
 
 export function cjsModuleRef(lowerer: Lowerer, node: ts.Node): IrExpr | null {
-  const id = lowerer.cjsModuleIdOf.get(node.getSourceFile());
+  const id = lowerer.cjsModuleIdOf.get(ts.getSourceFileOfNode(node));
   return id === undefined ? null : numLit(id, locOf(node));
 }
 
@@ -203,23 +203,21 @@ function nodeModuleType(lowerer: Lowerer, node: ts.Expression): boolean {
   const symbol = type.getSymbol();
   if (
     symbol &&
-    (symbol.name === "Module" || symbol.name === "ScriptcModule") &&
-    lowerer.checker
-      .declarationsOf(symbol)
-      .some((decl) => lowerer.isStdlibFile(decl.getSourceFile()))
+    (ts.symbolName(symbol) === "Module" || ts.symbolName(symbol) === "ScriptcModule") &&
+    symbol.declarations.some((decl) => lowerer.isStdlibFile(ts.getSourceFileOfNode(decl)))
   ) {
     return true;
   }
   const property = lowerer.checker.getPropertyOfType(type, "filename");
   const declaredByModule =
     property &&
-    lowerer.checker.declarationsOf(property).some((decl) => {
+    property.declarations.some((decl) => {
       for (let parent: ts.Node | undefined = decl.parent; parent; parent = parent.parent) {
         if (
           (ts.isInterfaceDeclaration(parent) || ts.isClassDeclaration(parent)) &&
           parent.name &&
           (parent.name.text === "ScriptcModule" || parent.name.text === "Module") &&
-          lowerer.isStdlibFile(parent.getSourceFile())
+          lowerer.isStdlibFile(ts.getSourceFileOfNode(parent))
         ) {
           return true;
         }
@@ -239,7 +237,7 @@ function nodeModuleType(lowerer: Lowerer, node: ts.Expression): boolean {
  * file assigns an object or function. */
 function moduleExportsAlwaysTruthy(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
   if (!truthinessOnly(expr)) return false;
-  const sf = expr.getSourceFile();
+  const sf = ts.getSourceFileOfNode(expr);
   if (isNodeEsmFile(sf, lowerer.program)) return false;
   let truthy = true;
   ts.walkPreorder(sf, (node) => {
@@ -309,7 +307,7 @@ export function isCjsTopLevelThis(lowerer: Lowerer, node: ts.Node): boolean {
     )
       return false;
   }
-  return isCjsJsFile(node.getSourceFile(), lowerer.program);
+  return isCjsJsFile(ts.getSourceFileOfNode(node), lowerer.program);
 }
 
 export function usesCjsTopLevelThis(lowerer: Lowerer, sf: ts.SourceFile): boolean {
@@ -343,7 +341,7 @@ export function usesCjsTopLevelThis(lowerer: Lowerer, sf: ts.SourceFile): boolea
  * behave as in Node. */
 export function lowerCjsTopLevelThis(lowerer: Lowerer, expr: ts.Expression): IrExpr | null {
   if (!isCjsTopLevelThis(lowerer, expr)) return null;
-  const global = lowerer.cjsExportsThis.get(expr.getSourceFile());
+  const global = lowerer.cjsExportsThis.get(ts.getSourceFileOfNode(expr));
   if (!global) return null;
   let receiver: ts.Node = expr;
   while (ts.isParenthesizedExpression(receiver.parent)) receiver = receiver.parent;
@@ -435,7 +433,7 @@ export function lowerNodeModuleIdentifier(lowerer: Lowerer, expr: ts.Identifier)
   if (!isCjsModuleGlobal(lowerer, expr)) return null;
   const ref = cjsModuleRef(lowerer, expr);
   if (ref) return ref;
-  if (isCjsJsFile(expr.getSourceFile(), lowerer.program)) {
+  if (isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)) {
     lowerer.unsupported(
       "SC1090",
       expr,

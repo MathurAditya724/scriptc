@@ -633,7 +633,8 @@ function requestRcHelper(host: ShapeHost, family: string, op: RcOp): string {
   for (const decl of rcHelperDecls(family, op)) host.declare(decl);
   // Its body is written last (emitInlineRcHelpers), after the requests are
   // collected: a release that can buffer a candidate requests the append
-  // helper now.
+  // helper now. The jsval row (JS_RC_ROW) has no collector header; its
+  // cells release through dyn's helper, which makes its own request.
   if (op === "release" && row.cycle === "always") requestCycleAppend(host);
   return `@${inlineRcName(family, op)}`;
 }

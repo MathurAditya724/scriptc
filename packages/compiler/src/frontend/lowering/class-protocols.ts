@@ -37,20 +37,18 @@ export class ClassProtocols {
         const instance = symbol ? this.checker.getDeclaredTypeOfSymbol(symbol) : undefined;
         for (const property of instance ? this.checker.getPropertiesOfType(instance) : []) {
           if (
-            !this.checker
-              .declarationsOf(property)
-              .some(
-                (member) =>
-                  ts.isMethodDeclaration(member) &&
-                  !member.modifiers?.nodes.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
-                  ),
-              )
+            !property.declarations.some(
+              (member) =>
+                ts.isMethodDeclaration(member) &&
+                !member.modifiers?.nodes.some(
+                  (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
+                ),
+            )
           )
             continue;
-          const entries = this.methods.get(property.name) ?? [];
+          const entries = this.methods.get(ts.symbolName(property)) ?? [];
           entries.push(node);
-          this.methods.set(property.name, entries);
+          this.methods.set(ts.symbolName(property), entries);
         }
       }
       if (
@@ -289,7 +287,7 @@ export class ClassProtocols {
       for (const part of parts) {
         if ((part.flags & ts.TypeFlags.TypeParameter) === 0) continue;
         const symbol = part.getSymbol();
-        for (const declaration of symbol ? this.checker.declarationsOf(symbol) : [])
+        for (const declaration of symbol ? symbol.declarations : [])
           if (ts.isTypeParameterDeclaration(declaration) && declaration.parent !== undefined)
             facts.genericObservers.add(declaration.parent);
       }
@@ -474,7 +472,7 @@ export class ClassProtocols {
     if (facts.observed.has(symbol) || facts.written.has(symbol)) return true;
     const target = facts.targets.get(symbol);
     if (target === undefined) return true;
-    const names = new Set(this.checker.getPropertiesOfType(target).map((p) => p.name));
+    const names = new Set(this.checker.getPropertiesOfType(target).map((p) => ts.symbolName(p)));
     const origins = facts.origins.get(symbol) ?? new Set<ts.Symbol>();
     const writesNames = (written: Set<string> | "all"): boolean =>
       written === "all" || [...written].some((name) => names.has(name));
@@ -501,7 +499,7 @@ export class ClassProtocols {
           if (context !== undefined && this.acceptsAnyValue(context)) return true;
           if (facts.genericObservers.size === 0) return false;
           const signature = this.checker.getResolvedSignature(arg.call);
-          const declaration = signature && this.checker.signatureDeclaration(signature);
+          const declaration = signature && signature.declaration;
           return (
             declaration !== undefined &&
             (facts.genericObservers.has(declaration) ||
@@ -519,14 +517,11 @@ export class ClassProtocols {
       .getPropertiesOfType(declared)
       .some(
         (property) =>
-          names.has(property.name) &&
-          this.checker
-            .declarationsOf(property)
-            .some(
-              (declaration) =>
-                ts.isGetAccessorDeclaration(declaration) ||
-                ts.isSetAccessorDeclaration(declaration),
-            ),
+          names.has(ts.symbolName(property)) &&
+          property.declarations.some(
+            (declaration) =>
+              ts.isGetAccessorDeclaration(declaration) || ts.isSetAccessorDeclaration(declaration),
+          ),
       );
   }
 
@@ -580,9 +575,9 @@ export class ClassProtocols {
     return (
       symbol !== undefined &&
       (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
-      this.checker
-        .declarationsOf(symbol)
-        .some((declaration) => !declaration.getSourceFile().isDeclarationFile) &&
+      symbol.declarations.some(
+        (declaration) => !ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      ) &&
       // `typeof C` (the class value) shares the class symbol.
       this.checker.getConstructSignatures(type).length === 0
     );
@@ -603,13 +598,11 @@ export class ClassProtocols {
     // A program interface a class matches by its methods (protocol below).
     return (
       this.methods.size > 0 &&
-      this.checker
-        .declarationsOf(symbol)
-        .some(
-          (declaration) =>
-            ts.isInterfaceDeclaration(declaration) &&
-            !declaration.getSourceFile().isDeclarationFile,
-        ) &&
+      symbol.declarations.some(
+        (declaration) =>
+          ts.isInterfaceDeclaration(declaration) &&
+          !ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      ) &&
       this.protocol(type)
     );
   }
@@ -624,10 +617,10 @@ export class ClassProtocols {
     if (this.checker.getConstructSignatures(type).length > 0) return false;
     const symbol = type.getSymbol();
     if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Class) !== 0) return false;
-    const declarations = this.checker.declarationsOf(symbol);
+    const declarations = symbol.declarations;
     return (
       declarations.length > 0 &&
-      declarations.every((declaration) => !declaration.getSourceFile().isDeclarationFile)
+      declarations.every((declaration) => !ts.getSourceFileOfNode(declaration).isDeclarationFile)
     );
   }
 
@@ -712,19 +705,17 @@ export class ClassProtocols {
     if (symbol && protocols.has(symbol)) return true;
     if (
       !symbol ||
-      !this.checker
-        .declarationsOf(symbol)
-        .some(
-          (declaration) =>
-            ts.isInterfaceDeclaration(declaration) &&
-            !declaration.getSourceFile().isDeclarationFile,
-        )
+      !symbol.declarations.some(
+        (declaration) =>
+          ts.isInterfaceDeclaration(declaration) &&
+          !ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      )
     )
       return false;
     for (const property of properties) {
       const memberType = this.checker.getTypeOfSymbol(property);
       if (this.checker.getCallSignatures(memberType).length === 0) continue;
-      for (const declaration of this.methods.get(property.name) ?? []) {
+      for (const declaration of this.methods.get(ts.symbolName(property)) ?? []) {
         const classSymbol = declaration.name
           ? this.checker.getSymbolAtLocation(declaration.name)
           : undefined;

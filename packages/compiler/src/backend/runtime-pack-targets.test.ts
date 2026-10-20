@@ -107,18 +107,23 @@ const features = {
   bigint: false,
   searchParams: false,
   qs: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
   parseArgs: false,
   stream: false,
   net: false,
   http: false,
   http2: false,
   dgram: false,
+  dnsPromises: false,
   watch: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
   tlsCa: false,
   cipher: false,
+  webcrypto: false,
+  perfLoop: false,
 };
 
 test.each([

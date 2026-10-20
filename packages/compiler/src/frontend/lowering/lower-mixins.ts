@@ -174,7 +174,7 @@ function mixinFnShapeInner(
     if (n === t.expression) return undefined;
     if (
       ts.isIdentifier(n) &&
-      n.text === p.name.getText() &&
+      n.text === ts.getTextOfNode(p.name) &&
       lowerer.checker.getSymbolAtLocation(n) === paramSym
     ) {
       extraRef = true;
@@ -223,7 +223,7 @@ export function mixinFnOfCallee(lowerer: Lowerer, callee: ts.Expression): MixinF
   let sym = lowerer.checker.getSymbolAtLocation(callee) ?? null;
   if (sym && sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
   if (!sym) return null;
-  const decls = lowerer.checker.declarationsOf(sym);
+  const decls = sym.declarations;
   if (decls.length !== 1 || decls[0] === undefined) return null; // overloads / merged declarations
   const d = decls[0];
   if (ts.isFunctionDeclaration(d)) return mixinFnShapeOf(lowerer, d);
@@ -348,7 +348,7 @@ export function mixinResultBindingClassOf(
   sym: ts.Symbol | null | undefined,
 ): ClassInfo | null {
   if (!sym) return null;
-  const decls = lowerer.checker.declarationsOf(sym);
+  const decls = sym.declarations;
   if (decls.length !== 1 || decls[0] === undefined || !ts.isVariableDeclaration(decls[0]))
     return null;
   const decl = decls[0];
@@ -451,8 +451,8 @@ function instantiateMixinCall(
 
   const base = mixinBaseClassOf(lowerer, call.arguments.nodes[0]!);
   const instName = lowerer.qualify(
-    call.getSourceFile(),
-    `%mx${call.getStart()}.${shape.classNode.name?.text ?? ""}`,
+    ts.getSourceFileOfNode(call),
+    `%mx${ts.tokenStartOfNode(call)}.${shape.classNode.name?.text ?? ""}`,
   );
   const ordinal = lowerer.mixinOrdinals.get(shape.classNode) ?? 0;
   lowerer.mixinOrdinals.set(shape.classNode, ordinal + 1);
@@ -513,7 +513,10 @@ function instantiateMixinCall(
       );
     }
     if (info.mixinInstance) {
-      info.mixinInstance.statics = { sf: call.getSourceFile(), pos: holder.getStart() };
+      info.mixinInstance.statics = {
+        sf: ts.getSourceFileOfNode(call),
+        pos: ts.tokenStartOfNode(holder),
+      };
     }
   }
   return info;
@@ -541,7 +544,7 @@ export function mixinIntersectionInstanceType(lowerer: Lowerer, widened: ts.Type
   const plainParts: string[] = [];
   for (const part of parts) {
     const sym = part.getSymbol();
-    const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
+    const decl = sym ? sym.valueDeclaration : undefined;
     const node =
       decl &&
       (ts.isClassDeclaration(decl) || ts.isClassExpression(decl)) &&

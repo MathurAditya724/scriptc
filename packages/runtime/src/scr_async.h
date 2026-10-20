@@ -29,6 +29,20 @@ void *scr_promise_retain_v(void *p);
 void scr_promise_release_v(void *p);
 
 typedef struct ScrFiber ScrFiber;
+/* Bytes of each async fiber's native stack (scr_async.c), mapped without a
+ * guard page: compiled code checks scr_stack_guard instead, which sits
+ * scr_stack_guard_for's reserve above the mapping's start. Deep enough for
+ * ordinary recursion inside async bodies and generators once that reserve
+ * is taken off; idle and shallow fibers only touch the pages they use.
+ * AddressSanitizer's larger frames get more. */
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SCR_FIBER_STACK (8 * 1024 * 1024)
+#endif
+#endif
+#ifndef SCR_FIBER_STACK
+#define SCR_FIBER_STACK (512 * 1024)
+#endif
 /* Spawn + run eagerly to the first suspension; returns the promise, +1. */
 ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack);
 /* `await f(...)` of a fiber-backed async f: spawn and await in one call,
@@ -216,6 +230,12 @@ void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
+/* process.emitWarning = fn (borrowed; the runtime keeps its own
+ * reference). Later process.emitWarning(...) calls apply the replacement
+ * to their arguments, and runtime-built warnings (Node's own modules call
+ * process.emitWarning) reach it as (message, type[, code]) instead of the
+ * report and the 'warning' listeners. */
+void scr_process_set_emit_warning(ScrDyn *fn);
 /* node:punycode's first load (scr_async_dyn.c): later calls are module
  * cache hits. The first reports DEP0040 when `report` (false for a require
  * made from node_modules) — at once for a static ES import, which Node

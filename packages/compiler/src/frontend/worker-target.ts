@@ -25,7 +25,7 @@ function workerNamespace(program: ts.Program, expression: ts.Expression): boolea
   if (isBuiltinNamespaceImport(program, expression, "worker_threads")) return true;
   const checker = program.getTypeChecker(),
     symbol = checker.getSymbolAtLocation(expression);
-  const declaration = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const declaration = symbol ? symbol.declarations[0] : undefined;
   return (
     declaration !== undefined &&
     ts.isVariableDeclaration(declaration) &&
@@ -53,7 +53,7 @@ export function isWorkerConstructor(program: ts.Program, expression: ts.Expressi
   if (isBuiltinMemberImport(program, expression, "worker_threads", "Worker")) return true;
   const checker = program.getTypeChecker(),
     symbol = checker.getSymbolAtLocation(expression);
-  const declaration = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const declaration = symbol ? symbol.declarations[0] : undefined;
   if (
     declaration &&
     ts.isBindingElement(declaration) &&
@@ -84,7 +84,8 @@ export function isWorkerConstructor(program: ts.Program, expression: ts.Expressi
 
 export function workerModulePath(program: ts.Program, expression: ts.Expression): string | null {
   if (ts.isIdentifier(expression) && expression.text === "__filename") {
-    if (isNodeGlobal(program, expression)) return resolve(expression.getSourceFile().fileName);
+    if (isNodeGlobal(program, expression))
+      return resolve(ts.getSourceFileOfNode(expression).fileName);
   }
   const value = staticForkString(program, expression);
   if (value === null) return null;

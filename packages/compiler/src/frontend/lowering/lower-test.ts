@@ -86,8 +86,8 @@ function requireStatementPosition(lowerer: Lowerer, call: ts.CallExpression, wha
  * reports the `test` property's column), at the call for plain ones. */
 function atStringOf(expr: ts.CallExpression): string {
   const target = ts.isPropertyAccessExpression(expr.expression) ? expr.expression.name : expr;
-  const sf = expr.getSourceFile();
-  const pos = sf.getLineAndCharacterOfPosition(target.getStart());
+  const sf = ts.getSourceFileOfNode(expr);
+  const pos = sf.getLineAndCharacterOfPosition(ts.tokenStartOfNode(target));
   return `${sf.fileName}:${pos.line + 1}:${pos.character + 1}`;
 }
 
@@ -334,7 +334,7 @@ function staticFunctionName(lowerer: Lowerer, node: ts.Expression): string | nul
   if (!ts.isIdentifier(node)) return null;
   const symbol = lowerer.resolveValueSymbol(node);
   if (!symbol) return null;
-  for (const decl of lowerer.checker.declarationsOf(symbol)) {
+  for (const decl of symbol.declarations) {
     if (ts.isFunctionDeclaration(decl)) return decl.name?.text ?? "default";
     if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) && decl.initializer) {
       let init = decl.initializer;
@@ -728,7 +728,7 @@ export function lowerTestDirectCall(
   if (!ts.isIdentifier(callee)) return null;
   if (lowerer.builtinNamespaceModuleOf(callee) !== "test") return null;
   const calleeSym = lowerer.checker.getSymbolAtLocation(callee);
-  const decl = calleeSym ? lowerer.checker.declarationsOf(calleeSym)[0] : undefined;
+  const decl = calleeSym ? calleeSym.declarations[0] : undefined;
   if (decl && ts.isNamespaceImport(decl)) {
     lowerer.unsupported(
       "SC1013",

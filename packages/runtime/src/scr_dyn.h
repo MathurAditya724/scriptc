@@ -114,77 +114,6 @@ typedef enum {
   SCR_DYN_SYMBOL, /* native symbol identity, retained by the box */
 } ScrDynKind;
 
-/* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
- * HANDLE kinds whose member surfaces already have complete static
- * lowerings (the http/net receiver surface); new kinds join by adding a
- * tag + an ops registration in their owning unit.
- *
- * Tags are sorted by name and every value is explicit and permanent: the
- * LLVM backend hardcodes some of them (DYN_HANDLE_TAG_NUM in
- * packages/compiler/src/backend/llvm/dyn.ts). A new tag goes in its sorted
- * place with the next value after the largest one in use, below
- * SCR_DYNH_CAPACITY. packages/compiler/src/backend/llvm/dyn-handle-tags.test.ts
- * checks that values are unique and in range and that the backend's
- * numbers match. */
-typedef enum {
-  SCR_DYNH_ABORT_CONTROLLER = 15, /* native static-fetch AbortController */
-  SCR_DYNH_ABORT_SIGNAL = 8, /* native static-fetch AbortSignal */
-  SCR_DYNH_ARRAY_BUFFER = 18, /* fixed-length ArrayBuffer storage */
-  SCR_DYNH_BLOB = 41, /* ScrBlob — new Blob() and Blob#slice() */
-  SCR_DYNH_BROADCAST_CHANNEL = 51, /* worker_threads BroadcastChannel (scr_worker_events.c) */
-  SCR_DYNH_BUILTIN_MODULE = 21, /* native builtin export object */
-  SCR_DYNH_CHILD = 16, /* child_process.ChildProcess */
-  SCR_DYNH_CIPHER = 45, /* node:crypto Cipheriv (scr_cipher.c) */
-  SCR_DYNH_CONSOLE = 32, /* stored global console value */
-  SCR_DYNH_CONSOLE_INSTANCE = 38, /* node:console Console instance */
-  SCR_DYNH_CUSTOM_EVENT = 40, /* ScrEvent with detail — new CustomEvent() */
-  SCR_DYNH_DATE = 30, /* JavaScript Date with stable native identity */
-  SCR_DYNH_DECIPHER = 46, /* node:crypto Decipheriv (scr_cipher.c) */
-  SCR_DYNH_DIR = 44, /* fs.Dir (scr_lib.c) */
-  SCR_DYNH_DISPOSABLE_STACK = 49, /* DisposableStack (scr_symbol.c) */
-  SCR_DYNH_EVENT = 14, /* ScrEvent — new Event() and AbortSignal's abort events */
-  SCR_DYNH_EVENT_TARGET = 39, /* ScrEventTarget — new EventTarget() */
-  SCR_DYNH_FETCH_HEADERS = 13, /* native static-fetch response Headers */
-  SCR_DYNH_FETCH_REQUEST = 34,
-  SCR_DYNH_FETCH_RESPONSE = 12, /* native static-fetch Response */
-  SCR_DYNH_FILE = 42, /* ScrBlob with a name — new File() */
-  SCR_DYNH_FILE_HANDLE = 17, /* fs/promises.FileHandle */
-  SCR_DYNH_GLOBAL = 22, /* native global object identity */
-  SCR_DYNH_H2_SESSION = 4, /* ScrH2Session — Http2Session (client & server) */
-  SCR_DYNH_H2_STREAM = 5, /* ScrH2Stream — Http2Stream (client & server) */
-  SCR_DYNH_HASH = 52, /* node:crypto Hash (scr_lib.c) */
-  SCR_DYNH_HMAC = 53, /* node:crypto Hmac (scr_lib.c) */
-  SCR_DYNH_HTTP_AGENT = 7, /* ScrHttpAgent — http.Agent / https.Agent */
-  SCR_DYNH_HTTP_CLIENT = 6, /* ScrHttpClientReq — http.ClientRequest */
-  SCR_DYNH_HTTP_REQ = 0, /* ScrHttpReq — IncomingMessage (server req & client res) */
-  SCR_DYNH_HTTP_RES = 1, /* ScrHttpRes — ServerResponse */
-  SCR_DYNH_ITERATOR = 31, /* live native array/string/byte iterator */
-  SCR_DYNH_ITERATOR_HELPER = 54, /* an iterator helper object over a checked iterator (scr_json.c) */
-  SCR_DYNH_KEY_OBJECT = 43, /* node:crypto secret KeyObject (scr_lib.c) */
-  SCR_DYNH_MAP = 29, /* native Map<unknown, unknown>, shared backing */
-  SCR_DYNH_MATCH_SOURCE = 55, /* a match result's pending metadata (scr_regex.c) */
-  SCR_DYNH_MESSAGE_EVENT = 50, /* ScrEvent with data — BroadcastChannel's 'message' */
-  SCR_DYNH_MESSAGE_PORT = 36,
-  SCR_DYNH_NET_BLOCK_LIST = 48, /* net.BlockList (scr_net.c) */
-  SCR_DYNH_NET_SERVER = 3, /* ScrNetServer — net.Server (http.Server rides the same handle) */
-  SCR_DYNH_NET_SOCKET = 2, /* ScrNetSocket — net.Socket */
-  SCR_DYNH_NET_SOCKET_ADDRESS = 47, /* net.SocketAddress (scr_net.c) */
-  SCR_DYNH_REGEXP = 26, /* native RegExp, shared compiled pattern */
-  SCR_DYNH_SEARCH_PARAMS = 33, /* live WHATWG URLSearchParams */
-  SCR_DYNH_SEGMENTER = 19, /* default Unicode grapheme segmentation */
-  SCR_DYNH_SEGMENTS = 20, /* iterable immutable segmentation result */
-  SCR_DYNH_SET = 25, /* native Set<unknown>, shared backing map */
-  SCR_DYNH_SHARED_ARRAY_BUFFER = 37,
-  SCR_DYNH_STDIO = 27, /* stable process stdin/stdout/stderr values */
-  SCR_DYNH_URL = 28, /* native WHATWG URL */
-  SCR_DYNH_WEAK_MAP = 23, /* native weak-key metadata */
-  SCR_DYNH_WEAK_SET = 24, /* native weak membership */
-  SCR_DYNH_WEB_CONTROLLER = 11, /* native ReadableStreamDefaultController */
-  SCR_DYNH_WEB_READER = 10, /* native ReadableStreamDefaultReader */
-  SCR_DYNH_WEB_STREAM = 9, /* native WHATWG ReadableStream */
-  SCR_DYNH_WORKER = 35,
-} ScrDynHandleTag;
-
 /* Every per-tag table (scr_dynh_ops in scr_json.c, the message clone hooks
  * in scr_message.c) is sized by this fixed capacity, never by the number of
  * tags. Adding a tag for a link-gated unit therefore changes no
@@ -193,6 +122,108 @@ typedef enum {
  * layout change; do it in a change of its own, measured as neutral, and
  * only when the tags outgrow it. */
 #define SCR_DYNH_CAPACITY 128
+
+/* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
+ * HANDLE kinds whose member surfaces already have complete static
+ * lowerings (the http/net receiver surface); new kinds join by adding a
+ * tag + an ops registration in their owning unit.
+ *
+ * SCR_DYNH_TAGS is the one list of tags: X(NAME, value) declares
+ * SCR_DYNH_NAME. Rows are sorted by name and every value is explicit and
+ * permanent: the LLVM backend hardcodes some of them (DYN_HANDLE_TAG_NUM in
+ * packages/compiler/src/backend/llvm/dyn.ts). A new tag goes in its sorted
+ * place with the next value after the largest one in use, below
+ * SCR_DYNH_CAPACITY. Two changes that add tags therefore edit different
+ * lines and merge without a textual conflict; when they picked the same
+ * value, scr_dynh_tags_distinct below has a duplicate case label and every
+ * runtime unit fails to compile, and a value at or above the capacity
+ * fails its _Static_assert. packages/compiler/src/backend/llvm/dyn-handle-tags.test.ts
+ * checks the same properties and that the backend's numbers match. */
+#define SCR_DYNH_TAGS(X) \
+  X(ABORT_CONTROLLER, 15) /* native static-fetch AbortController */ \
+  X(ABORT_SIGNAL, 8) /* native static-fetch AbortSignal */ \
+  X(ARRAY_BUFFER, 18) /* fixed-length ArrayBuffer storage */ \
+  X(BLOB, 41) /* ScrBlob — new Blob() and Blob#slice() */ \
+  X(BROADCAST_CHANNEL, 51) /* worker_threads BroadcastChannel (scr_worker_events.c) */ \
+  X(BUILTIN_MODULE, 21) /* native builtin export object */ \
+  X(CHILD, 16) /* child_process.ChildProcess */ \
+  X(CIPHER, 45) /* node:crypto Cipheriv (scr_cipher.c) */ \
+  X(CONSOLE, 32) /* stored global console value */ \
+  X(CONSOLE_INSTANCE, 38) /* node:console Console instance */ \
+  X(CRYPTO_KEY, 56) /* WebCrypto CryptoKey (scr_webcrypto.c) */ \
+  X(CUSTOM_EVENT, 40) /* ScrEvent with detail — new CustomEvent() */ \
+  X(DATE, 30) /* JavaScript Date with stable native identity */ \
+  X(DECIPHER, 46) /* node:crypto Decipheriv (scr_cipher.c) */ \
+  X(DIR, 44) /* fs.Dir (scr_lib.c) */ \
+  X(DISPOSABLE_STACK, 49) /* DisposableStack (scr_symbol.c) */ \
+  X(EVENT, 14) /* ScrEvent — new Event() and AbortSignal's abort events */ \
+  X(EVENT_TARGET, 39) /* ScrEventTarget — new EventTarget() */ \
+  X(FETCH_HEADERS, 13) /* native static-fetch response Headers */ \
+  X(FETCH_REQUEST, 34) \
+  X(FETCH_RESPONSE, 12) /* native static-fetch Response */ \
+  X(FILE, 42) /* ScrBlob with a name — new File() */ \
+  X(FILE_HANDLE, 17) /* fs/promises.FileHandle */ \
+  X(GLOBAL, 22) /* native global object identity */ \
+  X(H2_SESSION, 4) /* ScrH2Session — Http2Session (client & server) */ \
+  X(H2_STREAM, 5) /* ScrH2Stream — Http2Stream (client & server) */ \
+  X(HASH, 52) /* node:crypto Hash (scr_lib.c) */ \
+  X(HMAC, 53) /* node:crypto Hmac (scr_lib.c) */ \
+  X(HTTP_AGENT, 7) /* ScrHttpAgent — http.Agent / https.Agent */ \
+  X(HTTP_CLIENT, 6) /* ScrHttpClientReq — http.ClientRequest */ \
+  X(HTTP_REQ, 0) /* ScrHttpReq — IncomingMessage (server req & client res) */ \
+  X(HTTP_RES, 1) /* ScrHttpRes — ServerResponse */ \
+  X(ITERATOR, 31) /* live native array/string/byte iterator */ \
+  X(ITERATOR_HELPER, 54) /* an iterator helper object over a checked iterator (scr_json.c) */ \
+  X(KEY_OBJECT, 43) /* node:crypto secret KeyObject (scr_lib.c) */ \
+  X(MAP, 29) /* native Map<unknown, unknown>, shared backing */ \
+  X(MATCH_SOURCE, 55) /* a match result's pending metadata (scr_regex.c) */ \
+  X(MESSAGE_EVENT, 50) /* ScrEvent with data — BroadcastChannel's 'message' */ \
+  X(MESSAGE_PORT, 36) \
+  X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
+  X(NET_SERVER, 3) /* ScrNetServer — net.Server (http.Server rides the same handle) */ \
+  X(NET_SOCKET, 2) /* ScrNetSocket — net.Socket */ \
+  X(NET_SOCKET_ADDRESS, 47) /* net.SocketAddress (scr_net.c) */ \
+  X(REGEXP, 26) /* native RegExp, shared compiled pattern */ \
+  X(SEARCH_PARAMS, 33) /* live WHATWG URLSearchParams */ \
+  X(SEGMENTER, 19) /* default Unicode grapheme segmentation */ \
+  X(SEGMENTS, 20) /* iterable immutable segmentation result */ \
+  X(SET, 25) /* native Set<unknown>, shared backing map */ \
+  X(SHARED_ARRAY_BUFFER, 37) \
+  X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
+  X(URL, 28) /* native WHATWG URL */ \
+  X(WASM_GLOBAL, 61) /* WebAssembly.Global */ \
+  X(WASM_INSTANCE, 58) /* WebAssembly.Instance */ \
+  X(WASM_MEMORY, 59) /* WebAssembly.Memory */ \
+  X(WASM_MODULE, 57) /* WebAssembly.Module (scr_wasm.c) */ \
+  X(WASM_TABLE, 60) /* WebAssembly.Table */ \
+  X(WEAK_MAP, 23) /* native weak-key metadata */ \
+  X(WEAK_SET, 24) /* native weak membership */ \
+  X(WEB_CONTROLLER, 11) /* native ReadableStreamDefaultController */ \
+  X(WEB_READER, 10) /* native ReadableStreamDefaultReader */ \
+  X(WEB_STREAM, 9) /* native WHATWG ReadableStream */ \
+  X(WORKER, 35)
+
+typedef enum {
+#define SCR_DYNH_ENUM_ROW(name, value) SCR_DYNH_##name = value,
+  SCR_DYNH_TAGS(SCR_DYNH_ENUM_ROW)
+#undef SCR_DYNH_ENUM_ROW
+} ScrDynHandleTag;
+
+#define SCR_DYNH_RANGE_ROW(name, value) \
+  _Static_assert((value) < SCR_DYNH_CAPACITY, "SCR_DYNH_" #name " is not below SCR_DYNH_CAPACITY");
+SCR_DYNH_TAGS(SCR_DYNH_RANGE_ROW)
+#undef SCR_DYNH_RANGE_ROW
+
+/* Never called: a case label per tag, so two tags with one value are a
+ * duplicate case value and the header does not compile. */
+static inline void scr_dynh_tags_distinct(ScrDynHandleTag tag) {
+  switch (tag) {
+#define SCR_DYNH_CASE_ROW(name, value) case SCR_DYNH_##name:
+    SCR_DYNH_TAGS(SCR_DYNH_CASE_ROW)
+#undef SCR_DYNH_CASE_ROW
+    break;
+  }
+}
 
 typedef struct ScrDyn ScrDyn;
 typedef struct ScrBytes ScrBytes; /* full definition below (C11 repeat) */
@@ -630,6 +661,9 @@ ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);
 bool scr_dyn_native_search_params_is(const ScrDyn *value);
 bool scr_dyn_native_date_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments);
+ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments);
+ScrDyn *scr_dyn_native_date_new_value(const ScrDyn *arguments);
+ScrStr *scr_dyn_object_tag_of(const ScrDyn *d);
 ScrDyn *scr_dyn_native_date_from_ms(double ms);
 double scr_dyn_native_date_value(const ScrDyn *value);
 ScrDyn *scr_dyn_native_regex(ScrRegex *value);
@@ -681,6 +715,19 @@ ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*r
 ScrDyn *scr_dyn_new_str(ScrStr *s);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
+/* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
+ * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
+ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+/* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
+ * as an interned dynamic function value: +1. */
+ScrDyn *scr_dyn_builtin_function(const ScrStr *name);
+/* A constant-key read of an Object.prototype member name: takes the
+ * ordinary read's +1 result and answers the inherited member in place of
+ * an undefined one (scr_dyn_invoke.c). */
+ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read);
+/* The member `key` read on Object.prototype itself, or NULL for any other
+ * receiver (scr_dyn_invoke.c). */
+ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key);
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);
@@ -921,7 +968,17 @@ double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);
 void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
+void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
+void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits);
+void scr_dyn_class_view_attributes(ScrDyn *view, double bits);
+ScrDyn *scr_class_define_field(ScrDyn *current, double field_bits, double object_bits, ScrStr *name,
+                               ScrDyn *descriptor);
+double scr_class_defined_bits(ScrDyn *holder, ScrStr *name);
+ScrDyn *scr_class_defined_value(ScrDyn *holder, ScrStr *name);
+bool scr_class_descriptor_has_value(ScrDyn *descriptor);
+void scr_class_throw_read_only(ScrStr *field, ScrStr *owner);
+void scr_class_throw_not_extensible(ScrStr *field);
 ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key);
 ScrDyn *scr_dyn_array_proto_call(ScrDyn *target, ScrStr *method, ScrDyn *args);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
@@ -936,6 +993,10 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
 void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict);
+/* This thread's global object box (borrowed). Every spelling of the global
+ * object answers it; its symbol-keyed properties are the global object's
+ * (scr_node_builtin.c). */
+ScrDyn *scr_global_object(void);
 ScrDyn *scr_dyn_global_symbol_get(ScrSym *key); /* borrowed key; +1 value */
 void scr_dyn_global_symbol_set(ScrSym *key, ScrDyn *value); /* both borrowed */
 bool scr_dyn_global_symbol_has(ScrSym *key);
@@ -1046,6 +1107,12 @@ extern SCR_TL size_t scr_uncloneable_count;
 ScrDyn *scr_dyn_from_error(const ScrError *e);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
+void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len);
+/* An accessor property of a fresh object: enumerable and configurable,
+ * with the given getter and setter (either may be NULL). Moves both. */
+void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter);
+/* The getter or setter of an own accessor property, +1 (undefined when none). */
+ScrDyn *scr_dyn_obj_accessor_fn(const ScrDyn *obj, const char *key, size_t key_len, bool setter);
 void scr_error_commit_dyn(ScrError *e, const ScrDyn *view);
 /* The reverse extraction, riding the same identity cache: a dyn error
  * that came from a runtime ScrError answers THAT instance (+1;
@@ -1096,6 +1163,45 @@ ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *pr
  * must be static literals (the box never frees them; name may be NULL). */
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name);
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
+/* EventEmitter and the stream constructors as untyped constructor values,
+ * and instanceof over untyped constructor functions
+ * (scr_dyn_builtin_class.c, linked with the dynBuiltinClass feature). */
+ScrDyn *scr_dyn_builtin_class(double kind);
+bool scr_dyn_builtin_instanceof(ScrDyn *value, double kind);
+bool scr_dyn_function_instanceof(ScrDyn *value, ScrDyn *callee);
+/* The stream half of those constructors (scr_dyn_builtin_stream.c, linked
+ * with the dynBuiltinStream feature), registered with
+ * scr_dyn_builtin_class_streams before the first stream class value is
+ * read: construct runs `Readable.call(this, opts)` and the other stream
+ * kinds (+1 or NULL with an exception pending), prototype installs a stream
+ * kind's methods, and event answers EventEmitter.prototype's methods for a
+ * receiver with stream state (true when it handled the call; *result +1 or
+ * NULL with an exception pending). */
+enum {
+  SCR_EE_M_ON, SCR_EE_M_PREPEND, SCR_EE_M_ONCE, SCR_EE_M_PREPEND_ONCE, SCR_EE_M_OFF,
+  SCR_EE_M_REMOVE_ALL, SCR_EE_M_EMIT, SCR_EE_M_LISTENERS, SCR_EE_M_RAW_LISTENERS,
+  SCR_EE_M_LISTENER_COUNT, SCR_EE_M_EVENT_NAMES, SCR_EE_M_SET_MAX, SCR_EE_M_GET_MAX,
+};
+typedef struct ScrDynStreamOps {
+  ScrDyn *(*construct)(int kind, ScrDyn *self, ScrDyn *const *args, size_t argc);
+  void (*prototype)(int kind, ScrDyn *prototype);
+  bool (*event)(int method, ScrDyn *self, ScrDyn *const *args, size_t argc, ScrDyn **result);
+} ScrDynStreamOps;
+void scr_dyn_builtin_class_streams(const ScrDynStreamOps *ops);
+/* A stream class value with its stream half (scr_dyn_builtin_stream.c),
+ * +1; the stream a JavaScript value stands for (a constructor-function
+ * stream or a boxed runtime stream), +1 or NULL; and the constructor-
+ * function object of a runtime stream, +1 or NULL. */
+ScrDyn *scr_dyn_builtin_stream_class(double kind);
+struct ScrStream *scr_dyn_builtin_stream_of(const ScrDyn *value);
+ScrDyn *scr_dyn_builtin_stream_object(struct ScrStream *s);
+/* The untyped view of a runtime stream in programs that link that unit
+ * (+1), a checked cast to a runtime stream class kind (+1 or NULL), and
+ * the stream.unboxDyn libCall in those programs (scr_stream_unbox_dyn's
+ * contract, also taking constructor-function streams). */
+ScrDyn *scr_dyn_builtin_stream_view(struct ScrStream *s);
+struct ScrStream *scr_dyn_builtin_stream_check(const ScrDyn *value, double kind);
+struct ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr *message);
 bool scr_dyn_class_is_key(const ScrDyn *value, const ScrStr *type_key);
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key);
 /* Calls a dyn value: a non-function kind throws the catchable TypeError
@@ -1229,7 +1335,8 @@ typedef struct ScrDynHandleOps {
    * inspector returns `this`) instead of the bare class name. */
   bool inspect_bracketed_past_depth;
   /* The @@toStringTag when it differs from cls: String() answers
-   * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`. */
+   * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`, or
+   * `<tag> <view>` when the tag ends with "." and cls, as Node does. */
   const char *to_string_tag;
   /* The view has no properties, so util.inspect prints it in full at any
    * depth, as Node prints `{}`. */
@@ -1289,6 +1396,10 @@ extern SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len);
 ScrPromise *scr_dyn_promise_all(const ScrDyn *entries, const ScrDyn *reader);
 ScrPromise *scr_dyn_promise_all_settled(const ScrDyn *entries, const ScrDyn *reader);
 ScrPromise *scr_dyn_promise_any(const ScrDyn *entries, const ScrDyn *reader);
+/* PromiseResolve over one dyn value (borrowed): a native promise is
+ * itself, a thenable adopts through its resolve job, a throwing `then`
+ * read rejects, and any other value fulfills. +1. */
+ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader);
 
 /* Native predicates for typed reference capsules and boxed errors. */
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name);

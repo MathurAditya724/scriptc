@@ -305,6 +305,28 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.line(`${raw} = call ptr @${get}(ptr ${recv.name}) ; +1 or NULL`);
     return host.wrapNullable(raw, raw, def!.arms[streamTag]!, streamTag, e.type, nullTag);
   }
+  if (e.fn === "child.stdioStream") {
+    // The general stream representation's stdio read: the child's bridged
+    // runtime stream (+1) or NULL for an unpiped slot.
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const streamTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
+    const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
+    const fd = e.args[1];
+    if (streamTag < 0 || nullTag < 0 || fd?.kind !== "numLit")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} lacks its arms or slot`);
+    const recv = host.emitExpr(e.args[0]!);
+    const key = fd.value === 0 ? "stdin" : fd.value === 1 ? "stdout" : "stderr";
+    host.declare(`declare ptr @scr_stream_child_stdio(ptr, ptr, ${host.sizeType})`);
+    const raw = B.tmp();
+    B.line(
+      `${raw} = call ptr @scr_stream_child_stdio(ptr ${recv.name}, ptr ${host.cstr(key)}, ${host.sizeType} ${key.length}) ; +1 or NULL`,
+    );
+    const out = host.wrapNullable(raw, raw, def!.arms[streamTag]!, streamTag, e.type, nullTag);
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "writer.writeString" || e.fn === "writer.writeBytes") {
     const writer = host.emitExpr(e.args[0]!);
     const data = host.emitExpr(e.args[1]!);
@@ -546,15 +568,24 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       B.line(`call void @scr_stdin_on_end(ptr ${cb.name}, i1 ${once.name})`);
       return { name: "", type: e.type };
     }
+    // A string listener takes the setEncoding-decoded chunk.
+    const stringData = e.fn === "stdin.onData" && cbT.params[0]?.kind === "string";
     const adapter =
       e.fn === "stdin.onData"
         ? cbT.params.length === 0
           ? "scr_stdin_data_thunk0"
-          : "scr_stdin_data_thunk_bytes"
+          : stringData
+            ? "scr_stdin_data_thunk_str"
+            : "scr_stdin_data_thunk_bytes"
         : cbT.params.length === 0
           ? "scr_child_err_thunk0"
           : "scr_child_err_thunk_error";
-    const sym = e.fn === "stdin.onData" ? "scr_stdin_on_data" : "scr_stdin_on_error";
+    const sym =
+      e.fn === "stdin.onData"
+        ? stringData
+          ? "scr_stdin_on_data_str"
+          : "scr_stdin_on_data"
+        : "scr_stdin_on_error";
     host.declare(`declare void @${adapter}(ptr, ptr)`);
     host.declare(`declare void @${sym}(ptr, ptr, i1 zeroext)`);
     B.line(`call void @${sym}(ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`);
@@ -700,27 +731,34 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     host.emitAlwaysPendingUnwind();
     return out;
   }
-  if (e.fn === "events.once") {
-    // (recv, name, boxer, errorBoxer, listenForError): scr_events_once
-    // registers one-shot typed listeners behind adapters that box the
-    // event's tuple (and the 'error' tuple) into the fulfilled array. The
-    // runtime retains the boxers; the frame's temporaries release as usual.
-    // May-throw ('newListener' meta listeners run inside).
+  if (e.fn === "events.once" || e.fn === "events.onceSignal") {
+    // (recv, name, boxer, errorBoxer, listenForError[, signal]):
+    // scr_events_once registers one-shot typed listeners behind adapters
+    // that box the event's tuple (and the 'error' tuple) into the fulfilled
+    // array. The runtime retains the boxers; the frame's temporaries
+    // release as usual. May-throw ('newListener' meta listeners run
+    // inside). The signal form's adapters end in its own fire entry.
     const boxerT = e.args[2]!.type;
     const errorT = e.args[3]!.type;
     if (boxerT.kind !== "func" || errorT.kind !== "func")
-      throw new InternalCompilerError("llvm emitter bug: events.once boxer not a func");
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} boxer not a func`);
+    const signal = e.fn === "events.onceSignal";
     const args = e.args.map((a) => host.emitExpr(a));
-    const event = host.emitterOnceAdapter(boxerT);
-    const error = host.emitterOnceAdapter(errorT);
-    host.declare(`declare ptr @scr_events_once(ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr)`);
+    const fire = signal ? "scr_events_once_signal_fire" : undefined;
+    const event = host.emitterOnceAdapter(boxerT, fire);
+    const error = host.emitterOnceAdapter(errorT, fire);
+    const entry = signal ? "scr_events_once_signal" : "scr_events_once";
+    host.declare(
+      `declare ptr @${entry}(ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr${signal ? ", ptr" : ""})`,
+    );
     const errorBoxer = B.tmp();
     B.line(`${errorBoxer} = select i1 ${args[4]!.name}, ptr ${args[3]!.name}, ptr null`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_events_once(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
+      `${t} = call ptr @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
         `ptr ${args[2]!.name}, ptr @${event.fn}, ptr @${event.shim}, ` +
-        `ptr ${errorBoxer}, ptr @${error.fn}, ptr @${error.shim})`,
+        `ptr ${errorBoxer}, ptr @${error.fn}, ptr @${error.shim}` +
+        `${signal ? `, ptr ${args[5]!.name}` : ""})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();

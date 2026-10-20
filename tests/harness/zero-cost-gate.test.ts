@@ -5,13 +5,14 @@ import {
   compareArtifact,
   compareCounts,
   compareExecutables,
+  definedFunctionNames,
   dynamicTierSymbols,
   nmOutput,
   programVerdict,
 } from "../../scripts/zero-cost-compare.mjs";
 
 const ir = (functions: object[], globals: object[]) =>
-  Buffer.from(JSON.stringify({ irVersion: 17, functions, globals, sourceFile: "/p/main.ts" }));
+  Buffer.from(JSON.stringify({ irVersion: 16, functions, globals, sourceFile: "/p/main.ts" }));
 
 const llvm = (body: string, extra = "") =>
   Buffer.from(
@@ -139,6 +140,34 @@ test("the zero-cost gate recognizes dynamic-tier runtime symbols", () => {
       "scr_dyn_obj_read",
     ]),
   ).toEqual(["scr_dyn_obj_read", "scr_js_load_ic"]);
+});
+
+test("the zero-cost gate reads function names from ELF and Mach-O nm output", () => {
+  const elf = [
+    "0000000000001000 0000000000000010 T scr_dyn_call",
+    "0000000000001010 0000000000000008 t scr_dyn_obj_get",
+    "0000000000002000 0000000000000004 D scr_dyn_table",
+    "                 U memcpy",
+  ].join("\n");
+  expect(definedFunctionNames(elf, "linux")).toEqual(["scr_dyn_call", "scr_dyn_obj_get"]);
+  // Mach-O names carry a leading underscore, which would hide every
+  // dynamic-tier symbol from the prefix match.
+  const macho = [
+    "0000000100001000 T _scr_dyn_call",
+    "0000000100001010 t _scr_dyn_obj_get",
+    "0000000100002000 W __main",
+    "0000000100003000 s _scr_dyn_add.message",
+    "                 U _memcpy",
+  ].join("\n");
+  expect(definedFunctionNames(macho, "darwin")).toEqual([
+    "scr_dyn_call",
+    "scr_dyn_obj_get",
+    "_main",
+  ]);
+  expect(dynamicTierSymbols(definedFunctionNames(macho, "darwin"))).toEqual([
+    "scr_dyn_call",
+    "scr_dyn_obj_get",
+  ]);
 });
 
 test("the zero-cost gate fails differing programs unless they match the signature", () => {

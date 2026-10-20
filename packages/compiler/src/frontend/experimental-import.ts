@@ -18,7 +18,7 @@ export function experimentalImportOf(
 ): ExperimentalMember | null {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(ident);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isImportSpecifier(decl)) return null;
   const importDecl = decl.parent?.parent?.parent;
   if (
@@ -67,13 +67,13 @@ export function lifetimeRegionMemberOf(
 ): "run" | "release" | null {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(access.name);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isMethodDeclaration(decl)) return null;
   const owner = decl.parent;
   if (
     !ts.isClassDeclaration(owner) ||
     owner.name?.text !== "LifetimeRegion" ||
-    !isExperimentalDeclarationFile(owner.getSourceFile(), known)
+    !isExperimentalDeclarationFile(ts.getSourceFileOfNode(owner), known)
   )
     return null;
   const name = access.name.text;
@@ -91,7 +91,7 @@ export function internTableMemberOf(
 ): InternTableMember | null {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(access.name);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (
     decl === undefined ||
     !(
@@ -105,7 +105,7 @@ export function internTableMemberOf(
   if (
     !ts.isClassDeclaration(owner) ||
     owner.name?.text !== "InternTable" ||
-    !isExperimentalDeclarationFile(owner.getSourceFile(), known)
+    !isExperimentalDeclarationFile(ts.getSourceFileOfNode(owner), known)
   )
     return null;
   const name = access.name.text;
@@ -129,13 +129,13 @@ export function threadSlotsMemberOf(
 ): ThreadSlotsMember | null {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(access.name);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isMethodDeclaration(decl)) return null;
   const owner = decl.parent;
   if (
     !ts.isClassDeclaration(owner) ||
     owner.name?.text !== "ThreadSlots" ||
-    !isExperimentalDeclarationFile(owner.getSourceFile(), known)
+    !isExperimentalDeclarationFile(ts.getSourceFileOfNode(owner), known)
   )
     return null;
   const name = access.name.text;

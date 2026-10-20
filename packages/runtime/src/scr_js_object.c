@@ -37,6 +37,13 @@ _Static_assert(sizeof(ScrJsIcEntry) == 40 && sizeof(ScrJsIc) == 168, "cache layo
  * take the generic path and its hash index. */
 #define SCR_JS_SHAPE_MAX 64
 
+/* Shapes live until the thread exits, so a thread creates at most this
+ * many, holding at most this many key bytes. Once either budget is spent,
+ * objects whose key sequence has no shape yet stay unshaped; shapes that
+ * exist keep serving. */
+#define SCR_JS_SHAPE_BUDGET ((size_t)1 << 16)
+#define SCR_JS_SHAPE_KEY_BYTES_BUDGET ((size_t)4 << 20)
+
 struct ScrJsShape {
   const ScrJsShape *parent;
   char *key; /* one reference to shared key bytes (scr_json.c) */
@@ -53,7 +60,13 @@ static SCR_TL ScrJsShape *scr_js_all_shapes;
 static SCR_TL ScrJsShape **scr_js_transitions;
 static SCR_TL size_t scr_js_transition_mask; /* capacity - 1; 0 when absent */
 static SCR_TL size_t scr_js_transition_count;
+static SCR_TL size_t scr_js_shape_key_bytes;
 static SCR_TL bool scr_js_shapes_registered;
+
+/* The shape word of an object whose key sequence has no shape within the
+ * budgets. No cache entry names it, so its accesses take the probes,
+ * which answer with a miss until the key set changes. */
+static ScrJsShape scr_js_unshaped;
 
 static void scr_js_shapes_reset(void) {
   while (scr_js_all_shapes) {
@@ -66,6 +79,7 @@ static void scr_js_shapes_reset(void) {
   scr_js_transitions = NULL;
   scr_js_transition_mask = 0;
   scr_js_transition_count = 0;
+  scr_js_shape_key_bytes = 0;
   scr_js_shapes_registered = false;
 }
 
@@ -92,7 +106,7 @@ static void scr_js_transitions_grow(void) {
 }
 
 /* The child of `parent` for appending `key` (borrowed bytes), created on
- * first use. */
+ * first use; NULL when creating it would exceed a budget. */
 static const ScrJsShape *scr_js_transition(const ScrJsShape *parent, const char *key, size_t key_len) {
   uint64_t hash = scr_key_hash(key, key_len);
   if (scr_js_transition_mask) {
@@ -103,6 +117,9 @@ static const ScrJsShape *scr_js_transition(const ScrJsShape *parent, const char 
         return child;
     }
   }
+  if (scr_js_transition_count >= SCR_JS_SHAPE_BUDGET ||
+      key_len > SCR_JS_SHAPE_KEY_BYTES_BUDGET - scr_js_shape_key_bytes)
+    return NULL;
   if ((scr_js_transition_count + 1) * 2 > (scr_js_transition_mask ? scr_js_transition_mask + 1 : 0))
     scr_js_transitions_grow();
   ScrJsShape *child = malloc(sizeof *child);
@@ -116,12 +133,13 @@ static const ScrJsShape *scr_js_transition(const ScrJsShape *parent, const char 
   }
   scr_js_transition_insert(child);
   scr_js_transition_count++;
+  scr_js_shape_key_bytes += key_len;
   return child;
 }
 
 /* An object's shape, computed from its entries when it has none; NULL for
  * objects that stay unshaped (other kinds, the builtin Object.prototype,
- * dictionary-sized objects). */
+ * dictionary-sized objects, key sequences past the budgets). */
 #ifdef SCR_JS_VERIFY
 /* Debugging aid (build the runtime with -DSCR_JS_VERIFY and compile with
  * SCRIPTC_JS_IC_WAYS=0 so every access probes): traps when an object's
@@ -141,6 +159,7 @@ static void scr_js_verify(const ScrDyn *object, const ScrJsShape *shape) {
 static const ScrJsShape *scr_js_shape_of(ScrDyn *object) {
   if (object->kind != SCR_DYN_OBJ) return NULL;
   const ScrJsShape *shape = object->v.obj.shape;
+  if (shape == &scr_js_unshaped) return NULL;
 #ifdef SCR_JS_VERIFY
   if (shape) scr_js_verify(object, shape);
 #endif
@@ -151,6 +170,10 @@ static const ScrJsShape *scr_js_shape_of(ScrDyn *object) {
   for (size_t i = 0; i < len; i++) {
     ScrDynEntry *entry = &object->v.obj.entries[i];
     shape = scr_js_transition(shape, entry->key, entry->key_len);
+    if (!shape) {
+      object->v.obj.shape = &scr_js_unshaped;
+      return NULL;
+    }
   }
   object->v.obj.shape = (ScrJsShape *)shape;
   return shape;
@@ -296,6 +319,7 @@ bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJ
       shape->count >= SCR_JS_SHAPE_MAX)
     return false;
   const ScrJsShape *target = scr_js_transition(shape, key->data, key->len);
+  if (!target) return false;
   scr_js_ic_add(ic, stale, (ScrJsIcEntry){shape, target, prototype, prototype_shape, target->count - 1});
   return scr_js_append_shaped(receiver, target, value);
 }

@@ -203,14 +203,12 @@ function isGeneratorMember(lowerer: Lowerer, access: ts.PropertyAccessExpression
   const member = lowerer.checker.getSymbolAtLocation(access.name);
   return (
     member !== undefined &&
-    lowerer.checker
-      .declarationsOf(member)
-      .some(
-        (d) =>
-          ts.isInterfaceDeclaration(d.parent) &&
-          (d.parent.name.text === "Generator" || d.parent.name.text === "AsyncGenerator") &&
-          lowerer.isStdlibFile(d.getSourceFile()),
-      )
+    member.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d.parent) &&
+        (d.parent.name.text === "Generator" || d.parent.name.text === "AsyncGenerator") &&
+        lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
   );
 }
 
@@ -268,33 +266,29 @@ export function isSettledIteratorValueRead(
   const member = lowerer.checker.getSymbolAtLocation(node.name);
   if (
     !member ||
-    !lowerer.checker
-      .declarationsOf(member)
-      .some(
-        (d) =>
-          ts.isPropertySignature(d) &&
-          ts.isInterfaceDeclaration(d.parent) &&
-          (d.parent.name.text === "IteratorYieldResult" ||
-            d.parent.name.text === "IteratorReturnResult") &&
-          lowerer.isStdlibFile(d.getSourceFile()),
-      )
+    !member.declarations.some(
+      (d) =>
+        ts.isPropertySignature(d) &&
+        ts.isInterfaceDeclaration(d.parent) &&
+        (d.parent.name.text === "IteratorYieldResult" ||
+          d.parent.name.text === "IteratorReturnResult") &&
+        lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
   )
     return false;
   const receiver = lowerer.typeOf(node.expression);
   const stdlib = (sym: ts.Symbol | undefined): boolean =>
     sym !== undefined &&
-    lowerer.checker
-      .declarationsOf(sym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) &&
-          lowerer.isStdlibFile(d.getSourceFile()),
-      );
+    sym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) &&
+        lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
+    );
   const alias = receiver.getAliasSymbol();
   const symbol = receiver.getSymbol();
   if (
-    !(alias?.name === "IteratorResult" && stdlib(alias)) &&
-    !(symbol?.name === "IteratorReturnResult" && stdlib(symbol))
+    !(alias !== undefined && ts.symbolName(alias) === "IteratorResult" && stdlib(alias)) &&
+    !(symbol !== undefined && ts.symbolName(symbol) === "IteratorReturnResult" && stdlib(symbol))
   )
     return false;
   const checked = lowerer.mapTypeOf(lowerer.typeOf(node));

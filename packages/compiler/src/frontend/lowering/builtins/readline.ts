@@ -18,6 +18,7 @@ import { READLINE_DOCUMENTED_OPTIONS, fenceOrDropOptionKey } from "../surfaces.j
 import { streamSidesOf } from "../lower-stream.js";
 import type { IrLibFn } from "../../../ir/builtin-signatures.js";
 import { voidizedCallback } from "../lower-server.js";
+import { builtinImportOf } from "./module-bindings.js";
 
 /** The ambient module declaring `d`, or null. */
 function ambientModuleOf(d: ts.Node): string | null {
@@ -45,10 +46,10 @@ function isReadlineModule(spec: string | null): boolean {
 export function isReadlineTyped(lowerer: Lowerer, node: ts.Expression): boolean {
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getAliasSymbol() ?? t.getSymbol();
-  if (sym?.name !== "Interface") return false;
-  return lowerer.checker.declarationsOf(sym).some((d) => {
+  if (sym === undefined || ts.symbolName(sym) !== "Interface") return false;
+  return sym.declarations.some((d) => {
     if (!ts.isClassDeclaration(d) && !ts.isInterfaceDeclaration(d)) return false;
-    if (!lowerer.isStdlibFile(d.getSourceFile())) return false;
+    if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(d))) return false;
     return isReadlineModule(ambientModuleOf(d));
   });
 }
@@ -73,7 +74,7 @@ const RL_EVENT_LIST =
  * readline/promises question. */
 function returnsPromise(lowerer: Lowerer, call: ts.CallExpression): boolean {
   const t = lowerer.checker.getTypeAtLocation(call);
-  return (t.getSymbol()?.name ?? "") === "Promise";
+  return (ts.symbolNameOf(t.getSymbol()) ?? "") === "Promise";
 }
 
 /** The `{ signal }` options argument of the promise question: the signal
@@ -106,10 +107,10 @@ function questionSignal(lowerer: Lowerer, node: ts.Expression | undefined): ts.E
 function isReadlineUiTyped(lowerer: Lowerer, node: ts.Expression): boolean {
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getAliasSymbol() ?? t.getSymbol();
-  if (sym?.name !== "Readline") return false;
-  return lowerer.checker.declarationsOf(sym).some((d) => {
+  if (sym === undefined || ts.symbolName(sym) !== "Readline") return false;
+  return sym.declarations.some((d) => {
     if (!ts.isClassDeclaration(d) && !ts.isInterfaceDeclaration(d)) return false;
-    if (!lowerer.isStdlibFile(d.getSourceFile())) return false;
+    if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(d))) return false;
     const spec = ambientModuleOf(d);
     return spec === "readline/promises" || spec === "node:readline/promises";
   });
@@ -270,6 +271,80 @@ function lowerReadlineUiCall(
   return { kind: "seqExpr", stmts, result: recv, type: F64, loc };
 }
 
+/** The module ("readline" or "readline/promises") whose Interface class
+ * `node` names, or null. */
+function interfaceClassModule(lowerer: Lowerer, node: ts.Expression): string | null {
+  const builtin = ts.isIdentifier(node)
+    ? builtinImportOf(lowerer, node)
+    : ts.isPropertyAccessExpression(node) && !node.questionDotToken
+      ? lowerer.builtinMemberOf(node)
+      : null;
+  if (builtin?.member !== "Interface") return null;
+  return builtin.module === "readline" || builtin.module === "readline/promises"
+    ? builtin.module
+    : null;
+}
+
+/** `rl instanceof readline.Interface` and `rl instanceof
+ * readlinePromises.Interface` over a readline Interface: an interface is
+ * an instance of the class of the module that created it (Node's
+ * readline/promises Interface does not extend node:readline's). Null for
+ * other instanceof tests. */
+export function lowerReadlineInstanceof(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+): IrExpr | null {
+  const module = interfaceClassModule(lowerer, expr.right);
+  if (module === null || !isReadlineTyped(lowerer, expr.left)) return null;
+  const loc = locOf(expr);
+  const recv = lowerer.lowerExprExpecting(expr.left, F64);
+  const isPromises: IrExpr = {
+    kind: "libCall",
+    fn: "rl.isPromises",
+    args: [recv],
+    type: BOOL,
+    loc,
+  };
+  if (module === "readline/promises") return isPromises;
+  return { kind: "unary", op: "!", operand: isPromises, type: BOOL, loc };
+}
+
+/** `rl[Symbol.dispose]()` on a readline Interface: Node's dispose method
+ * calls close(), which does nothing on a closed interface. Null for other
+ * element-access calls. */
+export function lowerReadlineDisposeCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (
+    !ts.isPropertyAccessExpression(key) ||
+    lowerer.stdlibGlobalMember(key, "Symbol") !== "dispose"
+  ) {
+    return null;
+  }
+  if (!isReadlineTyped(lowerer, access.expression)) return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("readline.Interface[Symbol.dispose] with arguments", call);
+  }
+  const recv = lowerer.lowerExprExpecting(access.expression, F64);
+  return { kind: "libCall", fn: "rl.close", args: [recv], type: VOID, loc: locOf(call) };
+}
+
+/** A question query or setPrompt argument: the string, or for a value
+ * that need not be one (JavaScript), the checked-dynamic value, which the
+ * runtime writes the way Node's kWriteToOutput does (dyn: true). */
+function lowerPromptArg(lowerer: Lowerer, node: ts.Expression): { value: IrExpr; dyn: boolean } {
+  if (lowerer.typeOf(node).flags & ts.TypeFlags.StringLike) {
+    return { value: lowerer.lowerExprExpecting(node, STRING), dyn: false };
+  }
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind === "string") return { value, dyn: false };
+  return { value: lowerer.coerceInto(node, value, DYN), dyn: true };
+}
+
 /** Method calls on readline Interface receivers (both modules):
  * - question(query, cb) — the callback form; question(query, { signal }?)
  *   — the promise form (readline/promises);
@@ -303,18 +378,20 @@ export function lowerReadlineMethodCall(
     args.length <= 2
   ) {
     const recv = receiver();
-    const query = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const query = lowerPromptArg(lowerer, args[0]!);
     const signal = questionSignal(lowerer, args[1]);
     const type = { kind: "promise", inner: STRING } as const;
     if (signal === null) {
-      return { kind: "libCall", fn: "rl.questionAsync", args: [recv, query], type, loc };
+      const fn = query.dyn ? "rl.questionAsyncDyn" : "rl.questionAsync";
+      return { kind: "libCall", fn, args: [recv, query.value], type, loc };
     }
     const sig = lowerer.lowerExprExpecting(signal, DYN);
-    return { kind: "libCall", fn: "rl.questionAsyncSignal", args: [recv, query, sig], type, loc };
+    const fn = query.dyn ? "rl.questionAsyncSignalDyn" : "rl.questionAsyncSignal";
+    return { kind: "libCall", fn, args: [recv, query.value, sig], type, loc };
   }
   if (name === "question" && args.length === 2) {
     const recv = receiver();
-    const query = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const query = lowerPromptArg(lowerer, args[0]!);
     const cb = lowerer.lowerExpr(args[1]!);
     if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {
       lowerer.unsupported(
@@ -331,7 +408,8 @@ export function lowerReadlineMethodCall(
         `question callbacks whose parameter is not 'string' (got '${lowerer.fmt(param)}')`,
       );
     }
-    return { kind: "libCall", fn: "rl.question", args: [recv, query, cb], type: VOID, loc };
+    const fn = query.dyn ? "rl.questionDyn" : "rl.question";
+    return { kind: "libCall", fn, args: [recv, query.value, cb], type: VOID, loc };
   }
   const simple: Record<string, "rl.close" | "rl.pause" | "rl.resume" | "rl.prompt"> = {
     close: "rl.close",
@@ -366,8 +444,9 @@ export function lowerReadlineMethodCall(
   }
   if (name === "setPrompt" && args.length === 1) {
     const recv = receiver();
-    const prompt = lowerer.lowerExprExpecting(args[0]!, STRING);
-    return { kind: "libCall", fn: "rl.setPrompt", args: [recv, prompt], type: VOID, loc };
+    const prompt = lowerPromptArg(lowerer, args[0]!);
+    const fn = prompt.dyn ? "rl.setPromptDyn" : "rl.setPrompt";
+    return { kind: "libCall", fn, args: [recv, prompt.value], type: VOID, loc };
   }
   if (name === "getPrompt" && args.length === 0) {
     return { kind: "libCall", fn: "rl.getPrompt", args: [receiver()], type: STRING, loc };
@@ -871,6 +950,25 @@ export function lowerReadlineCursorCall(
   return { kind: "seqExpr", stmts, result, type: BOOL, loc };
 }
 
+/** A checked-dynamic input or output (a JavaScript function's result, an
+ * object's member, an element that may be undefined) as the stream it
+ * holds: the runtime refuses a value that is not a stream with that
+ * side, and answers null for an output of null or undefined. Other
+ * values pass through. */
+function streamFromDyn(lowerer: Lowerer, node: ts.Expression, output: boolean): IrExpr {
+  let v = lowerer.lowerExpr(node);
+  if (v.type.kind === "union") v = lowerer.coerceInto(node, v, DYN);
+  if (v.type.kind !== "dyn") return v;
+  const loc = locOf(node);
+  return {
+    kind: "libCall",
+    fn: output ? "rl.outputFromDyn" : "rl.inputFromDyn",
+    args: [v, boolLit(output, loc)],
+    type: { kind: "object", className: output ? "%Writable" : "%Readable" },
+    loc,
+  };
+}
+
 /** The interface's input: process.stdin (null) or a readable stream. */
 function lowerInput(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
   if (
@@ -879,7 +977,7 @@ function lowerInput(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
   ) {
     return null;
   }
-  const v = lowerer.lowerExpr(node);
+  const v = streamFromDyn(lowerer, node, false);
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
   const sides = streamSidesOf(lowerer, info);
   if (sides !== "r" && sides !== "rw") {
@@ -904,7 +1002,7 @@ function lowerOutput(lowerer: Lowerer, node: ts.Expression): IrExpr | "stdout" |
     return "none";
   }
   if (ts.isIdentifier(node) && node.text === "undefined") return "none";
-  const v = lowerer.lowerExpr(node);
+  const v = streamFromDyn(lowerer, node, true);
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
   const sides = streamSidesOf(lowerer, info);
   if (sides !== "w" && sides !== "rw") {
@@ -923,8 +1021,8 @@ function lowerOutput(lowerer: Lowerer, node: ts.Expression): IrExpr | "stdout" |
  * stream; the output process.stdout, a writable stream, or absent
  * (prompts are then not written). rl.create's arguments: the mode literal
  * (1 stream input, 2 stream output, 4 stdout output, 8 signal, 16
- * prompt), then the input and output streams when present, crlfDelay,
- * the prompt and the signal when present. An interface that can be a
+ * prompt, 32 node:readline/promises), then the input and output streams
+ * when present, crlfDelay, the prompt and the signal when present. An interface that can be a
  * terminal one (a `terminal` option that is not false, or none with
  * process.stdout as the output, which is a terminal when it is a TTY)
  * goes through rl.terminal with the completer. */
@@ -1107,7 +1205,8 @@ export function lowerReadlineCreateCall(
     (typeof output === "object" ? 2 : 0) |
     (output === "stdout" ? 4 : 0) |
     (signal !== null ? 8 : 0) |
-    (prompt !== null ? 16 : 0);
+    (prompt !== null ? 16 : 0) |
+    (promises ? 32 : 0);
   const args: IrExpr[] = [numLit(mode, loc)];
   if (input !== null) args.push(input);
   if (typeof output === "object") args.push(output);
