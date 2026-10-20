@@ -1988,7 +1988,7 @@
       "kind": "node-builtin",
       "name": "process.exitCode",
       "status": "static",
-      "note": "numeric writes in statement position set the implicit exit status; process.exit() reads it"
+      "note": "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it"
     },
     {
       "id": "node-builtin.process.getBuiltinModule",
@@ -2532,7 +2532,7 @@
       "name": "util.promisify",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart; call the bound function directly"
+      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",
@@ -5675,6 +5675,20 @@
       "status": "unsupported",
       "code": "SC2020",
       "note": "WebAssembly support is planned as translation of each module whose bytes the build can see (an inline literal, or a file read from a path the compiler resolves) into native code; 'scriptc coverage' lists the modules this program would load (https://scriptc.dev/limitations)"
+    },
+    {
+      "id": "stdlib.webcrypto.CryptoKey",
+      "kind": "stdlib",
+      "name": "CryptoKey",
+      "status": "static",
+      "note": "secret HMAC keys with type, extractable, algorithm and usages, and instanceof CryptoKey"
+    },
+    {
+      "id": "stdlib.webcrypto.subtle",
+      "kind": "stdlib",
+      "name": "globalThis.crypto.subtle",
+      "status": "static",
+      "note": "importKey('raw') for HMAC keys, HMAC sign and verify, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused"
     },
     {
       "id": "syntax.async-generators",

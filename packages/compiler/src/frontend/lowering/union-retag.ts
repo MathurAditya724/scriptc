@@ -41,15 +41,11 @@ export interface RecordUnionWrapPlan {
 
 /** Recursive variants can retain distinct ids for the same field layout.
  * An independently inferred record may intern to either id, so that id
- * alone cannot select its semantic destination when wrapping into a union.
- * With `widthLift`, members the record only width-lifts into are routes
- * too: a record's own fields do not say which of them its discriminant
- * names, so the value's discriminant selects the member at run time. */
+ * alone cannot select its semantic destination when wrapping into a union. */
 export function planRecordUnionWrap(
   source: IrRecordShape,
   to: IrUnionDef,
   shapeOf: (id: string) => IrRecordShape | undefined,
-  widthLift?: (src: IrType, dst: IrType) => WidthLift | null,
 ): RecordUnionWrapPlan | null {
   const discriminant = to.discriminant;
   if (!discriminant || source.tuple || source.indexValue || shapeHasAccessorSlots(source))
@@ -61,25 +57,63 @@ export function planRecordUnionWrap(
     const arm = to.arms[tag]!;
     if (arm.kind !== "record") continue;
     const target = shapeOf(arm.shapeId);
-    if (!target || target.tuple || target.indexValue) continue;
-    let same = target.fields.length === source.fields.length;
-    for (let i = 0; same && i < source.fields.length; i++) {
+    if (
+      !target ||
+      target.tuple ||
+      target.indexValue ||
+      target.fields.length !== source.fields.length
+    )
+      continue;
+    let same = true;
+    for (let i = 0; i < source.fields.length; i++) {
       const a = source.fields[i]!,
         b = target.fields[i]!;
-      if (a.name !== b.name || !typeEquals(a.type, b.type)) same = false;
+      if (a.name !== b.name || !typeEquals(a.type, b.type)) {
+        same = false;
+        break;
+      }
     }
-    let lift: WidthLift | null = same
-      ? { how: arm.shapeId === source.id ? "copy" : "width" }
-      : null;
-    if (lift === null && widthLift !== undefined)
-      lift = widthLift({ kind: "record", shapeId: source.id }, arm);
-    if (lift === null) continue;
+    if (!same) continue;
     const entry = discriminant.cases.find((candidate) => candidate.tag === tag);
     if (!entry) return null;
-    routes.push({ tag, lift, values: entry.values });
+    routes.push({
+      tag,
+      lift: { how: arm.shapeId === source.id ? "copy" : "width" },
+      values: entry.values,
+    });
   }
   if (routes.length < 2 || discriminantOwners(to, shapeOf) === null) return null;
   return { field: discriminant.field, fieldType, routes };
+}
+
+/** A record whose layout converts into more than one arm of a
+ * discriminated union. The IR keeps the discriminant field as a plain
+ * string, so its layout alone cannot say which variant it is; the value of
+ * the discriminant does, as in JavaScript. Every record arm the record
+ * converts into (by copy or width) becomes a route selected by that arm's
+ * discriminant values. A value no route names throws the catchable
+ * TypeError. */
+export function planRecordUnionLift(
+  source: IrRecordShape,
+  to: IrUnionDef,
+  shapeOf: (id: string) => IrRecordShape | undefined,
+  widthLift: (src: IrType, dst: IrType) => WidthLift | null,
+): RecordUnionWrapPlan | null {
+  const discriminant = to.discriminant;
+  if (!discriminant || source.tuple || source.indexValue || shapeHasAccessorSlots(source))
+    return null;
+  const fieldType = discriminantField(source, discriminant.field);
+  if (!fieldType || discriminantOwners(to, shapeOf) === null) return null;
+  const sourceType: IrType = { kind: "record", shapeId: source.id };
+  const routes: UnionRetagRoute[] = [];
+  for (const entry of discriminant.cases) {
+    const arm = to.arms[entry.tag];
+    if (!arm || arm.kind !== "record") continue;
+    const lift = arm.shapeId === source.id ? { how: "copy" as const } : widthLift(sourceType, arm);
+    if (lift === null) continue;
+    routes.push({ tag: entry.tag, lift, values: entry.values });
+  }
+  return routes.length > 0 ? { field: discriminant.field, fieldType, routes } : null;
 }
 
 /** Pure conversion planning. A source storage tag need not denote just

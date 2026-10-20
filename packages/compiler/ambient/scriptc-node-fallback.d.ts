@@ -511,14 +511,119 @@ declare var DOMException: {
   readonly prototype: DOMException;
 };
 
-/* Capability-gated globals harness code probes behind feature guards
- * (globalThis.crypto under a hasCrypto check, the SQLite-backed storage
- * pair): typed `unknown` — no lowering exists, the guard is expected to
- * be false in a compiled binary, and any reached use fences per site. */
-declare var crypto: unknown;
+/* WebCrypto's HMAC slice (scr_webcrypto.c): crypto.subtle's importKey for
+ * raw HMAC keys, HMAC sign/verify and the SHA-1/SHA-2 digests, typed as
+ * exactly that surface (the declarations mirror @types/node's webcrypto
+ * shapes). Every other SubtleCrypto method and crypto member is absent,
+ * so a use is an honest type error. CryptoKey values are native handles
+ * whose four members read through the handle. */
+declare var crypto: Crypto;
+/* The Crypto and SubtleCrypto constructors (feature probes only) stay
+ * `unknown`; the values keep this declaration order. */
 declare var Crypto: unknown;
-declare var CryptoKey: unknown;
+declare var CryptoKey: {
+  prototype: CryptoKey;
+  new (): CryptoKey;
+};
 declare var SubtleCrypto: unknown;
+type KeyUsage =
+  | "encrypt"
+  | "decrypt"
+  | "sign"
+  | "verify"
+  | "deriveKey"
+  | "deriveBits"
+  | "encapsulateBits"
+  | "decapsulateBits"
+  | "encapsulateKey"
+  | "decapsulateKey"
+  | "wrapKey"
+  | "unwrapKey";
+type KeyType = "private" | "public" | "secret";
+interface Algorithm {
+  name: string;
+}
+type AlgorithmIdentifier = Algorithm | string;
+type HashAlgorithmIdentifier = AlgorithmIdentifier;
+interface HmacImportParams extends Algorithm {
+  hash: HashAlgorithmIdentifier;
+  length?: number;
+}
+interface KeyAlgorithm {
+  name: string;
+}
+interface HmacKeyAlgorithm extends KeyAlgorithm {
+  hash: KeyAlgorithm;
+  length: number;
+}
+interface CryptoKey {
+  readonly algorithm: KeyAlgorithm;
+  readonly extractable: boolean;
+  readonly type: KeyType;
+  readonly usages: KeyUsage[];
+}
+type KeyFormat =
+  | "jwk"
+  | "pkcs8"
+  | "raw"
+  | "raw-private"
+  | "raw-public"
+  | "raw-secret"
+  | "raw-seed"
+  | "spki";
+interface JsonWebKey {
+  alg?: string;
+  crv?: string;
+  d?: string;
+  dp?: string;
+  dq?: string;
+  e?: string;
+  ext?: boolean;
+  k?: string;
+  key_ops?: string[];
+  kty?: string;
+  n?: string;
+  p?: string;
+  q?: string;
+  qi?: string;
+  use?: string;
+  x?: string;
+  y?: string;
+}
+/* The 'jwk' form type-checks like @types/node's; the compiler refuses it
+ * (the JsonWebKey import is not implemented). */
+interface SubtleCrypto {
+  digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
+  importKey(
+    format: "jwk",
+    keyData: JsonWebKey,
+    algorithm: AlgorithmIdentifier | HmacImportParams,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKey>;
+  importKey(
+    format: Exclude<KeyFormat, "jwk">,
+    keyData: BufferSource,
+    algorithm: AlgorithmIdentifier | HmacImportParams,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKey>;
+  sign(algorithm: AlgorithmIdentifier, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer>;
+  verify(
+    algorithm: AlgorithmIdentifier,
+    key: CryptoKey,
+    signature: BufferSource,
+    data: BufferSource,
+  ): Promise<boolean>;
+}
+interface Crypto {
+  readonly subtle: SubtleCrypto;
+}
+
+/* Capability-gated globals harness code probes behind feature guards
+ * (the SQLite-backed storage pair): typed `unknown` — no lowering exists,
+ * the guard is expected to be false in a compiled binary, and any reached
+ * use fences per site. */
 declare var localStorage: unknown;
 declare var sessionStorage: unknown;
 
@@ -3267,6 +3372,13 @@ declare module "util" {
     info: import("node:crypto").BinaryLike,
     keylen: number,
   ) => Promise<ArrayBuffer>;
+  /* A callback-only function (`obj.close.bind(obj)`): before the targets
+   * whose leading parameters would otherwise capture it. Builtins that take
+   * arguments before their callback never match these. */
+  export function promisify<TResult>(
+    fn: (callback: (err: any, result: TResult) => void) => void,
+  ): () => Promise<TResult>;
+  export function promisify(fn: (callback: (err?: any) => void) => void): () => Promise<void>;
   export function promisify(
     fn: typeof import("node:crypto").randomFill,
   ): <T extends ArrayBufferView | ArrayBufferLike>(
@@ -3901,7 +4013,10 @@ declare module "readline" {
     meta?: boolean;
     shift?: boolean;
   }
-  export interface Interface extends Disposable {
+  export class Interface implements Disposable {
+    /* createInterface creates interfaces; instanceof tells the two
+     * modules' classes apart. */
+    protected constructor();
     /* terminal says whether the interface edits lines as a terminal;
      * line and cursor are the terminal's (line is '' otherwise). history
      * is the history option itself (or the interface's own empty array);
@@ -4016,7 +4131,10 @@ declare module "readline/promises" {
   /* The readline Interface with the promise question: it resolves with
    * the next line, rejects with an AbortError when options.signal aborts,
    * and with ERR_USE_AFTER_CLOSE after close(). */
-  export interface Interface extends Disposable {
+  export class Interface implements Disposable {
+    /* createInterface creates interfaces; instanceof tells the two
+     * modules' classes apart. */
+    protected constructor();
     /* terminal says whether the interface edits lines as a terminal;
      * line and cursor are the terminal's (line is '' otherwise). history
      * is the history option itself (or the interface's own empty array);
@@ -5133,6 +5251,8 @@ declare module "tls" {
     getProtocol(): string | null;
     /* OpenSSL's suite name, the IANA name and the suite's version */
     getCipher(): CipherNameAndProtocol;
+    /* whether the handshake resumed a cached session */
+    isSessionReused(): boolean;
   }
   export interface CipherNameAndProtocol {
     name: string;

@@ -28,7 +28,7 @@ export function builtinImportOf(
     ts.isShorthandPropertyAssignment(ident.parent) && ident.parent.name === ident
       ? lowerer.checker.getShorthandAssignmentValueSymbol(ident.parent)
       : lowerer.checker.getSymbolAtLocation(ident);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl) return null;
   // The CommonJS twin of the named import: a destructured require
   // binding (`const { readFileSync } = require("fs")`, renames via
@@ -123,7 +123,7 @@ export function builtinImportOf(
   // keys the same tables under the builtin's own member name.
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
     const target = lowerer.checker.getAliasedSymbol(symbol);
-    const tdecl = lowerer.checker.declarationsOf(target)[0];
+    const tdecl = target.declarations[0];
     if (tdecl !== undefined && tdecl.getSourceFile().isDeclarationFile) {
       for (
         let p: ts.Node | undefined = tdecl.parent;
@@ -153,7 +153,7 @@ export function esmImportBindingKind(
   ident: ts.Identifier,
 ): "namespace" | "named" | null {
   const symbol = lowerer.checker.getSymbolAtLocation(ident);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined) return null;
   if (ts.isNamespaceImport(decl)) return "namespace";
   return ts.isImportSpecifier(decl) ? "named" : null;
@@ -290,7 +290,7 @@ export function createRequireCalleeFileOf(
   }
   if (!ts.isIdentifier(e)) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(e);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) return null;
   return createRequireBindingDecl(lowerer, decl.name, decl.initializer)
     ? decl.getSourceFile()
@@ -391,7 +391,7 @@ export function createRequireProgramModuleDecl(
  * binding poison with the same module-naming diagnostic. */
 export function fencedBuiltinImportOf(lowerer: Lowerer, ident: ts.Identifier): string | null {
   const symbol = lowerer.checker.getSymbolAtLocation(ident);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl) return null;
   // The CommonJS twins: `const x = require("net")` and
   // `const { createServer } = require("net")` — the require statement

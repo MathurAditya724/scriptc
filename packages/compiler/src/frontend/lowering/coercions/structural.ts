@@ -1,3 +1,4 @@
+import { constructedValue } from "../constructor-returns.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import type { FieldLift } from "./structural-plans.js";
 import { buildArrayConversion } from "./builders.js";
@@ -99,15 +100,20 @@ export function applyWidthLift(
     case "discriminantWrap": {
       if (dst.kind !== "union" || value.type.kind !== "record")
         throw new InternalCompilerError("lowerer bug: record discriminator lift shape");
-      const helper = lowerer.recordUnionWrapHelper(
-        value.type,
-        dst.unionId,
-        loc,
-        lift.width === true,
-      );
+      const helper = lowerer.recordUnionWrapHelper(value.type, dst.unionId, loc);
       if (!helper)
         throw new InternalCompilerError(
           "lowerer bug: planned record discriminator lift failed to intern",
+        );
+      return { kind: "call", callee: helper, args: [value], type: dst, loc };
+    }
+    case "discriminantRoute": {
+      if (dst.kind !== "union" || value.type.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: record discriminant route shape");
+      const helper = lowerer.recordUnionRouteHelper(value.type, dst.unionId, loc);
+      if (!helper)
+        throw new InternalCompilerError(
+          "lowerer bug: planned record discriminant route failed to intern",
         );
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
@@ -529,7 +535,13 @@ export function recordClassWidthHelper(
     params: [{ localId: "r.0", name: "r", type: fromT }],
     returnType: toT,
     locals: [{ id: "r.0", name: "r", type: fromT, mutable: true }],
-    body: [{ kind: "return", value: { kind: "new", className, args, type: toT, loc }, loc }],
+    body: [
+      {
+        kind: "return",
+        value: constructedValue(lowerer, info, { kind: "new", className, args, type: toT, loc }),
+        loc,
+      },
+    ],
     loc,
   });
   return name;
@@ -608,6 +620,10 @@ function buildRecordProjection(
   const localId = parameter + ".0";
   const receiver = varRef(localId, source, loc);
   const result: IrType = { kind: "record", shapeId: target.id };
+  // A record source's copy keeps the source's key order; a class
+  // instance's fields keep today's table.
+  const copyOf = (node: IrExpr): IrExpr =>
+    source.kind === "record" ? lowerer.keyOrder.copy(node, source.shapeId) : node;
   return {
     name,
     params: [{ localId, name: parameter, type: source }],
@@ -616,7 +632,7 @@ function buildRecordProjection(
     body: [
       {
         kind: "return",
-        value: {
+        value: copyOf({
           kind: "recordLit",
           fields: target.fields.map((field) => {
             const conversion = plan.get(field.name)!;
@@ -666,7 +682,7 @@ function buildRecordProjection(
           }),
           type: result,
           loc,
-        },
+        }),
         loc,
       },
     ],

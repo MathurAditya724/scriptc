@@ -794,6 +794,10 @@ export interface BuiltinModuleFn {
    * omission or explicit undefined; rest parameters pack into one typed
    * array slot. Entries with call-site-specific validation remain absent. */
   valueParams?: BuiltinValueParam[];
+  /** The libCall a function value's adapter makes when it differs from the
+   * direct-call row's `fn` (a direct call picks an arity-specific entry
+   * point; the value accepts every arity through one). */
+  valueFn?: IrLibFn;
 }
 
 export type BuiltinValueParam =
@@ -1503,7 +1507,15 @@ export const BUILTIN_MODULE_FNS: Record<
     userInfo: { fn: "os.userName", params: [], result: VOID },
   },
   crypto: {
-    randomUUID: { fn: "crypto.randomUUID", params: [], result: STRING },
+    randomUUID: {
+      fn: "crypto.randomUUID",
+      params: [],
+      result: STRING,
+      // As a value (uuid's `export default { randomUUID }`), the optional
+      // options argument goes through the validating entry point.
+      valueFn: "crypto.randomUUIDOpts",
+      valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+    },
     // A real Buffer result. The composed randomBytes(n).toString(enc)
     // form KEEPS its one-libCall lowering (lowerCryptoComposedCall runs
     // first and the Buffer never materializes there); this entry covers
@@ -1525,7 +1537,12 @@ export const BUILTIN_MODULE_FNS: Record<
     getRandomValues: { fn: "crypto.getRandomValues", params: [BYTES_U8], result: BYTES_U8 },
     randomInt: { fn: "crypto.randomInt", params: [F64, F64], result: F64 },
     randomFill: { fn: "crypto.randomFillCb", params: [], result: VOID },
-    randomUUIDv7: { fn: "crypto.randomUUIDv7", params: [DYN], result: STRING },
+    randomUUIDv7: {
+      fn: "crypto.randomUUIDv7",
+      params: [DYN],
+      result: STRING,
+      valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+    },
     createSecretKey: { fn: "crypto.createSecretKey", params: [DYN, DYN], result: DYN },
     generateKeySync: { fn: "crypto.generateKeySync", params: [DYN, DYN], result: DYN },
     generateKey: { fn: "crypto.generateKeyCb", params: [], result: VOID },
@@ -2163,6 +2180,20 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     note: "a Blob with name and lastModified (Date.now() when absent)",
   },
   {
+    id: "stdlib.webcrypto.subtle",
+    kind: "stdlib",
+    name: "globalThis.crypto.subtle",
+    fns: ["webcrypto.importKey", "webcrypto.sign", "webcrypto.verify", "webcrypto.digest"],
+    note: "importKey('raw') for HMAC keys, HMAC sign and verify, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
+  },
+  {
+    id: "stdlib.webcrypto.CryptoKey",
+    kind: "stdlib",
+    name: "CryptoKey",
+    fns: ["webcrypto.isCryptoKey"],
+    note: "secret HMAC keys with type, extractable, algorithm and usages, and instanceof CryptoKey",
+  },
+  {
     id: "stdlib.atomics",
     kind: "stdlib",
     name: "Atomics",
@@ -2625,8 +2656,8 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     id: "node-builtin.process.exitCode",
     kind: "node-builtin",
     name: "process.exitCode",
-    fns: ["process.setExitCode"],
-    note: "numeric writes in statement position set the implicit exit status; process.exit() reads it",
+    fns: ["process.setExitCode", "process.setExitCodeTracked", "process.hasExitCode"],
+    note: "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it",
   },
   // ── the tls CA store (lowerTlsCaCall / lowerTlsRootCertificates): the
   // host's trust anchors, read and replaced. Dedicated paths, and
@@ -2938,7 +2969,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   util: {
     promisify:
-      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart; call the bound function directly",
+      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly",
   },
   "stream/consumers": {
     blob:
@@ -3232,7 +3263,7 @@ export function isChildSurfaceMember(
 ): boolean {
   if (isStdlibMember(lowerer, access)) return true;
   const sym = lowerer.checker.getSymbolAtLocation(access.name);
-  const decl = sym ? lowerer.checker.declarationsOf(sym)[0] : undefined;
+  const decl = sym ? sym.declarations[0] : undefined;
   const iface = decl?.parent;
   if (!decl || !iface || !ts.isInterfaceDeclaration(iface)) return false;
   if (lowerer.isStdlibFile(decl.getSourceFile())) return false;
@@ -3245,10 +3276,7 @@ export function isChildSurfaceMember(
  * with lib interfaces, so a member can carry declarations from both. A
  * user's own declaration is in neither, so shadowing never matches. */
 export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined): boolean {
-  return (
-    !!symbol &&
-    lowerer.checker.declarationsOf(symbol).some((d) => lowerer.isStdlibFile(d.getSourceFile()))
-  );
+  return !!symbol && symbol.declarations.some((d) => lowerer.isStdlibFile(d.getSourceFile()));
 }
 
 /** The canonical stdlib-global name `expr` denotes, or null. Three
@@ -3274,9 +3302,7 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // symbol has no ordinary declarations for the provenance check.
     if (
       expr.text === "globalThis" &&
-      (!symbol ||
-        lowerer.checker.declarationsOf(symbol).length === 0 ||
-        lowerer.isStdlibSymbol(symbol))
+      (!symbol || symbol.declarations.length === 0 || lowerer.isStdlibSymbol(symbol))
     )
       return "globalThis";
     if (!symbol) return null;
@@ -3284,7 +3310,7 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     if (alias !== undefined) return alias;
     const classAlias = lowerer.builtinClassAliasOf(symbol);
     if (classAlias?.kind === "collection") return classAlias.which;
-    const decl = lowerer.checker.declarationsOf(symbol)[0];
+    const decl = symbol.declarations[0];
     if (decl !== undefined && ts.isImportClause(decl) && decl.name !== undefined) {
       const importDecl = decl.parent;
       if (ts.isImportDeclaration(importDecl) && ts.isStringLiteral(importDecl.moduleSpecifier)) {
@@ -3447,7 +3473,7 @@ export function stdlibGlobalAliasDecl(
  * the SC2020 fence's wording: "typed by @types/node", not "standard
  * library". */
 export function nodeTypesOnlySymbol(lowerer: Lowerer, sym: ts.Symbol | null | undefined): boolean {
-  const decls = sym ? lowerer.checker.declarationsOf(sym) : undefined;
+  const decls = sym ? sym.declarations : undefined;
   if (!decls || decls.length === 0) return false;
   let viaNode = false;
   for (const d of decls) {

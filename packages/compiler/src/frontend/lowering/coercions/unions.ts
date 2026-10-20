@@ -4,6 +4,7 @@ import { nodeThrowExpr } from "../../../ir/build.js";
 import {
   planUnionRetag,
   buildUnionRetag,
+  planRecordUnionLift,
   planRecordUnionWrap,
   buildRecordUnionWrap,
 } from "../union-retag.js";
@@ -265,22 +266,48 @@ export function recordUnionWrapHelper(
   source: IrType & { kind: "record" },
   toId: string,
   loc: SrcLoc,
-  width = false,
 ): string | null {
   const shape = lowerer.shapes.get(source.shapeId);
   const to = lowerer.unions.get(toId);
   if (!shape || !to) return null;
-  const plan = planRecordUnionWrap(
-    shape,
-    to,
-    (id) => lowerer.shapes.get(id),
-    width ? (from, dst) => lowerer.widthLiftPlan(from, dst) : undefined,
-  );
+  const plan = planRecordUnionWrap(shape, to, (id) => lowerer.shapes.get(id));
   if (!plan) return null;
-  const key = `recordWrap${width ? "Width" : ""}:${source.shapeId}:${toId}`;
+  const key = `recordWrap:${source.shapeId}:${toId}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
   const name = `%record.wrap.${lowerer.coercions.retags.size}`;
+  lowerer.coercions.retags.set(key, name);
+  lowerer.liftedFns.push(
+    buildRecordUnionWrap(name, source, to, plan, loc, (lift, value, dst) =>
+      lowerer.applyWidthLift(lift, value, dst, loc),
+    ),
+  );
+  return name;
+}
+
+/** Interned `%record.route.<n>(r)`: a record that fits several arms of a
+ * discriminated union, converted into the arm its discriminant names
+ * (planRecordUnionLift). The width plan's `discriminantRoute` lift. */
+export function recordUnionRouteHelper(
+  lowerer: Lowerer,
+  source: IrType & { kind: "record" },
+  toId: string,
+  loc: SrcLoc,
+): string | null {
+  const shape = lowerer.shapes.get(source.shapeId);
+  const to = lowerer.unions.get(toId);
+  if (!shape || !to) return null;
+  const key = `recordRoute:${source.shapeId}:${toId}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const plan = planRecordUnionLift(
+    shape,
+    to,
+    (id) => lowerer.shapes.get(id),
+    (from, dst) => lowerer.widthLiftPlan(from, dst),
+  );
+  if (!plan) return null;
+  const name = `%record.route.${lowerer.coercions.retags.size}`;
   lowerer.coercions.retags.set(key, name);
   lowerer.liftedFns.push(
     buildRecordUnionWrap(name, source, to, plan, loc, (lift, value, dst) =>
