@@ -23,3 +23,38 @@ function lookup(source, field) {
 }
 const record = { color: "red", colorCount: 3, size: 4 };
 console.log(lookup(record, "color"), lookup(record, "size"), lookup(record, "shape"));
+
+// A nullish source throws before a runtime first key is evaluated.
+let keyCalls = 0;
+function keyOf(name) {
+  keyCalls++;
+  return name;
+}
+const nothing = () => JSON.parse("null");
+const flag = process.argv.length > 99;
+for (const attempt of [
+  () => {
+    const { [keyOf("a")]: v } = nothing();
+    return v;
+  },
+  () => {
+    const { [keyOf("a")]: v = 1 } = flag ? nothing() : undefined;
+    return v;
+  },
+  () => {
+    const { a: { [keyOf("b")]: v } } = JSON.parse('{"a":null}');
+    return v;
+  },
+]) {
+  try {
+    attempt();
+  } catch (e) {
+    console.log(e instanceof TypeError, keyCalls);
+  }
+}
+try {
+  const { [keyOf("a")]: v } = nothing();
+  console.log(v);
+} catch (e) {
+  console.log(e.message, keyCalls);
+}

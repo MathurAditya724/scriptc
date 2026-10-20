@@ -45,3 +45,9 @@ for (const resource of ["cpu", "memory", "disk"]) {
   } = config;
   console.log(resource, limit);
 }
+
+// A module-scope binding from a missing index-signature entry holds
+// undefined.
+const missingKey = process.argv.length > 99 ? "a" : "missing";
+const { [missingKey]: missingWeight } = weights;
+console.log(missingWeight, missingWeight === undefined);

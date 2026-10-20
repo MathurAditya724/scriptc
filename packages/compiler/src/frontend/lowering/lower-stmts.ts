@@ -7,7 +7,7 @@ import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
-import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -2265,12 +2265,21 @@ export function lowerDestructuringDecl(
   // destructure property 'a' of 'f(...)' as it is null.") for the source
   // spellings the assignment form reproduces; other sources are refused,
   // as in the assignment form. JavaScript files keep their existing
-  // per-read errors.
-  if (
+  // per-read errors, except that a runtime computed first key checks the
+  // source first: Node throws before it evaluates any key, and V8's bare
+  // message names the source.
+  const jsRuntimeKeyCheck =
     init.type.kind === "dyn" &&
     ts.isObjectBindingPattern(decl.name) &&
-    !isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-    lowerer.anyOrigin(decl.initializer)
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    startsWithRuntimeKey(lowerer, decl.name) &&
+    destrSpellingOf(decl.initializer) !== null;
+  if (
+    jsRuntimeKeyCheck ||
+    (init.type.kind === "dyn" &&
+      ts.isObjectBindingPattern(decl.name) &&
+      !isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+      lowerer.anyOrigin(decl.initializer))
   ) {
     const spelling = destrSpellingOf(decl.initializer);
     if (spelling === null) {
@@ -2280,7 +2289,7 @@ export function lowerDestructuringDecl(
         "destructuring declaration from an `any` source whose expression spelling is unsupported (use a variable, ordinary property chain, or ordinary call)",
       );
     }
-    const first = decl.name.elements.nodes[0];
+    const first = (decl.name as ts.ObjectBindingPattern).elements.nodes[0];
     const firstKey =
       first === undefined || first.dotDotDotToken !== undefined
         ? undefined
@@ -2868,6 +2877,27 @@ export function lowerBindingPattern(
     return;
   }
   if (srcType.kind === "dyn") {
+    // A runtime computed first key evaluates after RequireObjectCoercible:
+    // a nullish source throws before the key's side effects run. Later
+    // keys follow a read that already threw.
+    if (ts.isObjectBindingPattern(pattern) && startsWithRuntimeKey(lowerer, pattern)) {
+      const loc = locOf(pattern);
+      for (const unit of ["null", "undefined"] as const) {
+        out.push({
+          kind: "if",
+          cond: { kind: "dynTest", test: unit, value: srcRef(), type: BOOL, loc },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: nodeThrowExpr(1, "", `Cannot read properties of ${unit}`, VOID, loc),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+      }
+    }
     for (const el of pattern.elements.nodes) {
       if (el.name === undefined) continue;
       const loc = locOf(el);
@@ -3476,6 +3506,16 @@ function lowerModuleNamespacePattern(
     if (el.initializer) value = applyBindingDefault(lowerer, el, value);
     lowerer.bindPatternTarget(el.name, value, isLet, out);
   }
+}
+
+/** Whether a pattern's first element has a computed key that does not
+ * fold to one property name, so the key evaluates at run time. */
+function startsWithRuntimeKey(lowerer: Lowerer, pattern: ts.ObjectBindingPattern): boolean {
+  const first = pattern.elements.nodes[0];
+  const key = first?.dotDotDotToken === undefined ? first?.propertyName : undefined;
+  return (
+    key !== undefined && ts.isComputedPropertyName(key) && patternKeyNameOf(lowerer, key) === null
+  );
 }
 
 function patternKeyNameOf(lowerer: Lowerer, prop: ts.PropertyName): string | null {

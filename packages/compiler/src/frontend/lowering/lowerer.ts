@@ -5387,9 +5387,19 @@ export class Lowerer {
       for (const el of name.elements.nodes) {
         if (el.dotDotDotToken || el.initializer || !ts.isIdentifier(el.name)) continue;
         const key = el.propertyName ?? el.name;
-        if (!ts.isIdentifier(key) && !ts.isStringLiteral(key) && !ts.isNumericLiteral(key))
+        // A computed key that folds to one name reads like that name; a
+        // runtime key reads the entry of a record with no declared fields
+        // (runtimeKeyPatternRead), which can be missing too.
+        const keyName = ts.isComputedPropertyName(key)
+          ? this.foldedStringKeyOf(key.expression)
+          : ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key)
+            ? key.text
+            : undefined;
+        if (keyName === undefined) continue;
+        if (
+          keyName === null ? shape.fields.length > 0 : shape.fields.some((f) => f.name === keyName)
+        )
           continue;
-        if (shape.fields.some((field) => field.name === key.text)) continue;
         const symbol = symbolOf(el.name);
         if (!symbol || optionalSymbols.has(symbol)) continue;
         const read = this.mapTypeOf(this.typeOf(el.name));
