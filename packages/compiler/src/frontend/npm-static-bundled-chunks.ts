@@ -111,6 +111,128 @@ export function declaredNames(root: ts.Node): Set<string> {
   return names;
 }
 
+/** Adds the identifiers a binding name (an identifier or a destructuring
+ * pattern) declares. */
+function addBindingNames(name: ts.BindingName, out: Set<string>): void {
+  if (ts.isIdentifier(name)) {
+    out.add(name.text);
+    return;
+  }
+  for (const element of name.elements.nodes) {
+    if (!ts.isOmittedExpression(element) && element.name !== undefined)
+      addBindingNames(element.name, out);
+  }
+}
+
+function isFunctionScope(n: ts.Node): n is ts.SignatureDeclaration {
+  return (
+    ts.isFunctionDeclaration(n) ||
+    ts.isFunctionExpression(n) ||
+    ts.isArrowFunction(n) ||
+    ts.isMethodDeclaration(n) ||
+    ts.isGetAccessorDeclaration(n) ||
+    ts.isSetAccessorDeclaration(n) ||
+    ts.isConstructorDeclaration(n)
+  );
+}
+
+/** The `var` names a function body declares, without entering nested
+ * functions. Function declarations in nested blocks count as block-scoped
+ * here; treating one as free only adds an unused helper copy. */
+function varScopedNames(body: ts.Node): Set<string> {
+  const out = new Set<string>();
+  ts.walkPreorder(body, (n) => {
+    if (n !== body && (isFunctionScope(n) || ts.isClassDeclaration(n) || ts.isClassExpression(n)))
+      return "skip";
+    if (ts.isVariableDeclarationList(n) && (n.flags & ts.NodeFlags.BlockScoped) === 0) {
+      for (const d of n.declarations.nodes) addBindingNames(d.name, out);
+    }
+    return undefined;
+  });
+  return out;
+}
+
+/** The names one scope node binds for the references inside it. */
+function scopeNames(scope: ts.Node): Set<string> {
+  const out = new Set<string>();
+  if (isFunctionScope(scope)) {
+    for (const param of scope.parameters.nodes) addBindingNames(param.name, out);
+    if (ts.isFunctionExpression(scope) && scope.name !== undefined) out.add(scope.name.text);
+    if (scope.body !== undefined) for (const name of varScopedNames(scope.body)) out.add(name);
+  } else if (ts.isBlock(scope) || ts.isSourceFile(scope) || ts.isCaseBlock(scope)) {
+    const statements = ts.isCaseBlock(scope)
+      ? scope.clauses.nodes.flatMap((clause) => clause.statements.nodes)
+      : scope.statements.nodes;
+    for (const stmt of statements) {
+      if ((ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt)) && stmt.name)
+        out.add(stmt.name.text);
+      else if (
+        ts.isVariableStatement(stmt) &&
+        (stmt.declarationList.flags & ts.NodeFlags.BlockScoped) !== 0
+      ) {
+        for (const d of stmt.declarationList.declarations.nodes) addBindingNames(d.name, out);
+      }
+    }
+  } else if (ts.isCatchClause(scope) && scope.variableDeclaration !== undefined) {
+    addBindingNames(scope.variableDeclaration.name, out);
+  } else if (
+    (ts.isForStatement(scope) || ts.isForInStatement(scope) || ts.isForOfStatement(scope)) &&
+    scope.initializer !== undefined &&
+    ts.isVariableDeclarationList(scope.initializer) &&
+    (scope.initializer.flags & ts.NodeFlags.BlockScoped) !== 0
+  ) {
+    for (const d of scope.initializer.declarations.nodes) addBindingNames(d.name, out);
+  } else if (
+    (ts.isClassDeclaration(scope) || ts.isClassExpression(scope)) &&
+    scope.name !== undefined
+  ) {
+    out.add(scope.name.text);
+  }
+  return out;
+}
+
+/** Resolves references against one bundle's scopes, keeping each scope's
+ * names for the bundle's split. */
+class BundleScopes {
+  private readonly names = new Map<ts.Node, Set<string>>();
+
+  private of(scope: ts.Node): Set<string> {
+    let names = this.names.get(scope);
+    if (names === undefined) {
+      names = scopeNames(scope);
+      this.names.set(scope, names);
+    }
+    return names;
+  }
+
+  /** True when a scope between the reference and `root` (inclusive)
+   * binds its name. */
+  boundWithin(id: ts.Identifier, root: ts.Node): boolean {
+    for (let n = id.parent; n !== undefined; n = n.parent) {
+      if (this.of(n).has(id.text)) return true;
+      if (n === root) return false;
+    }
+    return false;
+  }
+
+  /** True when a scope inside `root` (exclusive) binds the reference's
+   * name. */
+  boundInside(id: ts.Identifier, root: ts.Node): boolean {
+    for (let n = id.parent; n !== undefined && n !== root; n = n.parent) {
+      if (this.of(n).has(id.text)) return true;
+    }
+    return false;
+  }
+
+  /** True when the reference resolves to a top-level binding of `sf`. */
+  topLevel(id: ts.Identifier, sf: ts.SourceFile): boolean {
+    for (let n = id.parent; n !== undefined && n !== sf; n = n.parent) {
+      if (this.of(n).has(id.text)) return false;
+    }
+    return true;
+  }
+}
+
 /** Every binding reference inside a subtree. */
 export function references(root: ts.Node): ts.Identifier[] {
   const out: ts.Identifier[] = [];
@@ -236,6 +358,52 @@ function copyableInitializer(init: ts.Expression | undefined): boolean {
   return depth > 0 && ts.isIdentifier(walk) && walk.text === "Object";
 }
 
+/** A top-level declaration whose value is a function. */
+function isFunctionValued(node: ts.VariableDeclaration | ts.FunctionDeclaration): boolean {
+  if (ts.isFunctionDeclaration(node)) return true;
+  const init = node.initializer && unparen(node.initializer);
+  return init !== undefined && (ts.isArrowFunction(init) || ts.isFunctionExpression(init));
+}
+
+/** True when a named function expression initializer (`var f = function
+ * self() {}`) uses its own name only as a callee: `self` is the copied
+ * function, so it is as observable as the top-level binding. */
+function selfCalledOnly(
+  node: ts.VariableDeclaration | ts.FunctionDeclaration,
+  scopes: BundleScopes,
+): boolean {
+  if (!ts.isVariableDeclaration(node) || node.initializer === undefined) return true;
+  const fn = unparen(node.initializer);
+  if (!ts.isFunctionExpression(fn) || fn.name === undefined || fn.body === undefined) return true;
+  const self = fn.name.text;
+  // A parameter or `var` of the same name hides the function's own name.
+  const own = varScopedNames(fn.body);
+  for (const param of fn.parameters.nodes) addBindingNames(param.name, own);
+  if (own.has(self)) return true;
+  // Its parameter initializers see the name too.
+  return references(fn).every((r) => r.text !== self || scopes.boundInside(r, fn) || isCallee(r));
+}
+
+/** True when a reference is the function a call invokes: `f(...)`, or the
+ * `(0, f)(...)` form that drops the receiver. */
+function isCallee(id: ts.Identifier): boolean {
+  let callee: ts.Node = id;
+  const p = id.parent;
+  if (
+    p !== undefined &&
+    ts.isBinaryExpression(p) &&
+    p.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+    p.right === id &&
+    p.parent !== undefined &&
+    ts.isParenthesizedExpression(p.parent)
+  )
+    callee = p.parent;
+  while (callee.parent !== undefined && ts.isParenthesizedExpression(callee.parent))
+    callee = callee.parent;
+  const call = callee.parent;
+  return call !== undefined && ts.isCallExpression(call) && call.expression === callee;
+}
+
 /** One recognized chunk declaration. */
 interface Chunk {
   name: string;
@@ -310,6 +478,12 @@ export function splitBundledChunks(
   if (declaredAnywhere.has("Object") || written.has("Object"))
     return { degrade: CHUNK_SHAPE_DEGRADE };
   const stable = (name: string): boolean => !duplicate.has(name) && !written.has(name);
+  // Names whose every reference in the bundle is a callee: `f(...)` or the
+  // `(0, f)(...)` form.
+  const scopes = new BundleScopes();
+  const valueUsed = new Set<string>();
+  for (const r of allRefs) if (!isCallee(r) && scopes.topLevel(r, sf)) valueUsed.add(r.text);
+  const calledOnly = (name: string): boolean => !valueUsed.has(name);
   const ownNames = (name: string): boolean => {
     const t = top.get(name);
     if (t === undefined || !stable(name) || !ts.isVariableDeclaration(t.node)) return false;
@@ -463,7 +637,17 @@ export function splitBundledChunks(
       bundleEdits.push({ start: chunk.stmt.getStart(sf), end: chunk.stmt.getEnd(), text: "" });
       continue;
     }
-    const result = chunkSource(sf, chunk, chunks, top, stable, callEdits, bundleStrict);
+    const result = chunkSource(
+      sf,
+      chunk,
+      chunks,
+      top,
+      stable,
+      calledOnly,
+      scopes,
+      callEdits,
+      bundleStrict,
+    );
     if (typeof result !== "string") return result;
     out.push({ path: chunk.path, source: result });
     bundleEdits.push({ start: chunk.stmt.getStart(sf), end: chunk.stmt.getEnd(), text: "" });
@@ -692,6 +876,8 @@ function chunkSource(
   chunks: ReadonlyMap<string, Chunk>,
   top: ReadonlyMap<string, TopLevel>,
   stable: (name: string) => boolean,
+  calledOnly: (name: string) => boolean,
+  scopes: BundleScopes,
   callEdits: readonly Edit[],
   bundleStrict: boolean,
 ): string | { degrade: string } {
@@ -738,7 +924,8 @@ function chunkSource(
       }
       continue;
     }
-    if (local.has(name)) continue;
+    // The factory function itself binds the parameters and `var`s.
+    if (scopes.boundWithin(r, body.parent ?? body)) continue;
     if (name === "exports" || name === "module")
       return why(`reads the bundle's own '${name}' binding`);
     if (name === "__filename") return why("reads __filename, which names the bundle file");
@@ -762,9 +949,14 @@ function chunkSource(
         (ts.isVariableDeclaration(node) && copyableInitializer(node.initializer)));
     if (!pure || chunks.has(name))
       return why(`reads the bundle's top-level binding '${name}', which it cannot carry along`);
-    const own = declaredNames(node);
+    // Each chunk gets its own copy, so a function's identity and its
+    // properties must stay unobservable: the bundle only ever calls it.
+    if (isFunctionValued(node) && (!calledOnly(name) || !selfCalledOnly(node, scopes)))
+      return why(
+        `uses the bundle's top-level function '${name}' as a value, which its chunks cannot share`,
+      );
     for (const r of references(node)) {
-      if (own.has(r.text) || !top.has(r.text) || copied.has(r.text)) continue;
+      if (scopes.boundWithin(r, node) || !top.has(r.text) || copied.has(r.text)) continue;
       copied.add(r.text);
       copyQueue.push(r.text);
     }
