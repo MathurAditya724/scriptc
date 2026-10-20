@@ -10807,8 +10807,8 @@ function lowerForOfDyn(
 }
 
 /** One step of `for await` over a checked-dynamic iterator: await next()'s
- * result, read done before value, and await the value of a synchronous
- * iterator, as the async-from-sync iterator does. */
+ * result, read done before value, and await each value of a synchronous
+ * iterator, including its final one, as the async-from-sync iterator does. */
 function asyncIteratorValue(
   lowerer: Lowerer,
   iterator: IrExpr,
@@ -10866,14 +10866,29 @@ function asyncIteratorValue(
         loc,
       },
     ],
+    // A synchronous iterator's final value is still read and awaited, so a
+    // throwing getter or a rejected promise there rejects the loop.
     result: {
       kind: "ternary",
-      cond: varRef(done.id, BOOL, loc),
-      then: dynUndefinedExpr(loc),
+      cond: sync,
+      then: {
+        kind: "ternary",
+        cond: varRef(done.id, BOOL, loc),
+        then: {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: awaitDyn(get("value")), loc }],
+          result: dynUndefinedExpr(loc),
+          type: DYN,
+          loc,
+        },
+        else_: awaitDyn(get("value")),
+        type: DYN,
+        loc,
+      },
       else_: {
         kind: "ternary",
-        cond: sync,
-        then: awaitDyn(get("value")),
+        cond: varRef(done.id, BOOL, loc),
+        then: dynUndefinedExpr(loc),
         else_: get("value"),
         type: DYN,
         loc,
