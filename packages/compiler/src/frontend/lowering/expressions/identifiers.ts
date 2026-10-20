@@ -365,19 +365,25 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // MODULE compile-time constants, the containing file's location
   // (Node's exact values when the same tree runs in place; WASI uses
   // the equivalent guest-visible path; locals shadowing the names
-  // resolved above). In a file with ESM syntax Node never defines them
-  // (ReferenceError) — fence rather than invent a value there.
+  // resolved above), the same strings as import.meta.dirname/filename.
+  // In a JavaScript ES module Node never defines them, so the read throws
+  // Node's catchable ReferenceError. A .ts/.tsx file keeps them even when
+  // Node's strip-types rule would load it as ESM: TypeScript projects are
+  // commonly built as CommonJS bundles (tsc, esbuild, tsx) where these
+  // globals exist, and @types/node declares them for every file.
   if (
     (expr.text === "__dirname" || expr.text === "__filename") &&
     lowerer.isStdlibGlobal(expr, expr.text)
   ) {
     const sf = expr.getSourceFile();
-    if (isNodeEsmFile(sf, lowerer.program)) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        `'${expr.text}' in an ES module (Node defines the CJS module globals only in CommonJS modules)`,
-      );
+    if (isNodeEsmFile(sf, lowerer.program) && !/\.tsx?$/.test(sf.fileName)) {
+      return {
+        kind: "libCall",
+        fn: "global.undefRead",
+        args: [{ kind: "strLit", value: expr.text, type: STRING, loc }],
+        type: STRING,
+        loc,
+      };
     }
     // The WASI runner mounts the host cwd at guest `/` and the host temp
     // directory at `/tmp`. Bake the matching GUEST spelling so resource

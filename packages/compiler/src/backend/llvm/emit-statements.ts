@@ -1,5 +1,10 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
-import { type LlEmitter, type LlScopeEntry, adoptingAwaitOf } from "./emitter.js";
+import {
+  type LlEmitter,
+  type LlScopeEntry,
+  adoptingAwaitOf,
+  MAX_BYTES_LOOP_VERSION_DEPTH,
+} from "./emitter.js";
 import { CAUGHT, F64, type IrExpr, type IrStmt, STRING, isRefCounted } from "../../ir/ir.js";
 import { emitStringSliceSnapshot } from "./string-slices.js";
 import {
@@ -40,7 +45,8 @@ import {
 } from "../../ir/integer-loops.js";
 import { emitByteWindowGuard, matchByteWindow } from "./byte-windows.js";
 import { countedDenseShape, emitDenseLoopGuard, matchDenseArrayLoop } from "./dense-array-loops.js";
-import { emitCountedLoopLimit } from "./counted-loops.js";
+import { emitCountedLoopLimit, emitCountedLoopSafety } from "./counted-loops.js";
+import { emitBytesLoopVersionGuard } from "./bytes-loop-versions.js";
 import { mangleLocal } from "../mangle.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlValue } from "./expr-context.js";
@@ -939,48 +945,43 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.startBlock(done);
         break;
       }
+      const version =
+        emitter.bytesLoopVersionsEnabled &&
+        emitter.bytesLoopVersioning.size < MAX_BYTES_LOOP_VERSION_DEPTH &&
+        !emitter.bytesLoopVersioning.has(s)
+          ? emitter.matchBytesLoopVersion(s, countedLoop)
+          : null;
+      if (version) {
+        const fast = B.newLabel("bytes.version.fast"),
+          slow = B.newLabel("bytes.version.slow"),
+          done = B.newLabel("bytes.version.done");
+        emitBytesLoopVersionGuard(emitter, version, fast, slow);
+        const originalBounds = emitter.bytesBounds,
+          originalRanges = emitter.integerRanges;
+        emitter.bytesLoopVersioning.add(s);
+        try {
+          B.startBlock(slow);
+          emitter.emitStmt(s);
+          B.br(done);
+          B.startBlock(fast);
+          emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
+          if (version.ranges.size > 0)
+            emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
+          if (version.counted?.guarded) emitter.provenCountedGuards.add(s);
+          emitter.emitStmt(s);
+          B.br(done);
+        } finally {
+          emitter.bytesBounds = originalBounds;
+          emitter.integerRanges = originalRanges;
+          emitter.provenCountedGuards.delete(s);
+          emitter.bytesLoopVersioning.delete(s);
+        }
+        B.startBlock(done);
+        break;
+      }
       let countedJoin: string | null = null;
-      if (countedLoop?.guarded) {
-        let safe = "true";
-        if (countedLoop.limitGuarded) {
-          const bound = emitter.emitExpr(countedLoop.limit);
-          safe = B.tmp();
-          B.line(
-            `${safe} = fcmp ${countedLoop.step > 0 ? "ole" : "oge"} double ${bound.name}, ${f64Lit(countedLoop.guardLimit)}`,
-          );
-        }
-        if (countedLoop.startGuarded) {
-          // An exact integer of at most 2^53 - 1 in magnitude, and not -0
-          // (the bit patterns of the value and its round trip agree).
-          // NaN and infinities fail the ordered range tests.
-          const start = emitter.emitExpr(countedLoop.start);
-          const low = B.tmp(),
-            high = B.tmp(),
-            raw = B.tmp(),
-            wide = B.tmp(),
-            back = B.tmp(),
-            bits = B.tmp(),
-            backBits = B.tmp(),
-            exact = B.tmp(),
-            inRange = B.tmp(),
-            ok = B.tmp();
-          B.line(`${low} = fcmp oge double ${start.name}, ${f64Lit(-Number.MAX_SAFE_INTEGER)}`);
-          B.line(`${high} = fcmp ole double ${start.name}, ${f64Lit(Number.MAX_SAFE_INTEGER)}`);
-          B.line(`${inRange} = and i1 ${low}, ${high}`);
-          B.line(`${raw} = fptosi double ${start.name} to i64`);
-          B.line(`${wide} = freeze i64 ${raw}`);
-          B.line(`${back} = sitofp i64 ${wide} to double`);
-          B.line(`${bits} = bitcast double ${start.name} to i64`);
-          B.line(`${backBits} = bitcast double ${back} to i64`);
-          B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
-          B.line(`${ok} = and i1 ${inRange}, ${exact}`);
-          if (safe === "true") safe = ok;
-          else {
-            const both = B.tmp();
-            B.line(`${both} = and i1 ${safe}, ${ok}`);
-            safe = both;
-          }
-        }
+      if (countedLoop?.guarded && !emitter.provenCountedGuards.has(s)) {
+        const safe = emitCountedLoopSafety(emitter, countedLoop);
         const fast = B.newLabel("counted.fast");
         const slow = B.newLabel("counted.slow");
         countedJoin = B.newLabel("counted.done");
@@ -1091,7 +1092,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.line(
             `${lenPtr} = getelementptr inbounds %${integerArrayLoop ? "ScrArr" : "ScrBytes"}, ptr ${receiver.name}, i64 0, i32 1`,
           );
-          if (integerArrayLoop) emitter.markMemoryPointer(lenPtr, "array:header");
+          emitter.markMemoryPointer(lenPtr, integerArrayLoop ? "array:header" : "bytes:header");
           B.line(
             `${len} = load ${emitter.sizeType}, ptr ${lenPtr}${emitter.fieldAliasAttachment(lenPtr)}`,
           );
