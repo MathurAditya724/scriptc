@@ -639,7 +639,10 @@ export function splitBundledChunks(
       // A bundled copy of a package scriptc implements itself is the
       // package's shim (package-shims.ts), reached through a forwarder
       // declaration the checker follows.
-      out.push({ path: shimDeclPath(chunk), source: bundledShimForwarder(shimDeclPath(chunk), shim) });
+      out.push({
+        path: shimDeclPath(chunk),
+        source: bundledShimForwarder(shimDeclPath(chunk), shim),
+      });
       bundleEdits.push({ start: chunk.stmt.getStart(sf), end: chunk.stmt.getEnd(), text: "" });
       continue;
     }

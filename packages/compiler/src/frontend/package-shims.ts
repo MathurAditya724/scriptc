@@ -95,7 +95,11 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
 /** The shim module that stands in for a bundled copy of a package's main
  * file (a __commonJS chunk keyed `…/<name>@<version>/…/<name>/<file>`), or
  * null when the package, version or file is not one the registry serves. */
-export function packageShimForBundledFile(name: string, version: string, file: string): string | null {
+export function packageShimForBundledFile(
+  name: string,
+  version: string,
+  file: string,
+): string | null {
   const shim = IMPLEMENTATION_SHIMS.get(name);
   if (shim === undefined || file.replace(/^\.\//, "") !== shim.mainFile) return null;
   const major = Number(/^(\d+)\./.exec(version)?.[1] ?? NaN);

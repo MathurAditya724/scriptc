@@ -398,7 +398,11 @@ function esModuleExportIgnoresThis(
     )
       continue;
     const dep = resolveImport(lowerer.program, sf, stmt.moduleSpecifier.text);
-    if (dep !== null && !dep.isDeclarationFile && esModuleExportIgnoresThis(lowerer, dep, name, depth + 1))
+    if (
+      dep !== null &&
+      !dep.isDeclarationFile &&
+      esModuleExportIgnoresThis(lowerer, dep, name, depth + 1)
+    )
       return true;
   }
   return false;
