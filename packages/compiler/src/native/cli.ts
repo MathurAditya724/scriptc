@@ -98,6 +98,7 @@ async function main(): Promise<number> {
               http2: false,
               dgram: false,
               dnsPromises: false,
+              dgramDyn: false,
               watch: false,
               foreignFfi: false,
               nodeTest: false,

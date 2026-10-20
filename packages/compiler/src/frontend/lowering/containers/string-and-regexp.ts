@@ -1504,6 +1504,7 @@ function lowerLocaleCompareCall(
 /** String.prototype members (Annex B included) whose typed-receiver
  * lowering lives here. */
 export const EXTRA_STRING_METHODS: ReadonlySet<string> = new Set([
+  "concat",
   "substr",
   "toLocaleLowerCase",
   "toLocaleUpperCase",
@@ -1647,6 +1648,13 @@ function buildStringMethod(
 ): IrExpr | null {
   const loc = locOf(call);
   const node = (i: number): ts.Expression => call.arguments.nodes[i] ?? call;
+  // concat(...values): each argument's ToString, in order, after all of
+  // them evaluated.
+  if (name === "concat") {
+    return args
+      .map((arg, i) => stringArg(lowerer, arg, node(i)))
+      .reduce((left, right) => ({ kind: "strConcat", left, right, type: STRING, loc }), s);
+  }
   if (name === "substr") {
     const start = args[0]
       ? positionNumber(lowerer, args[0], numLit(0, loc), node(0), "substr start")

@@ -65,6 +65,8 @@ export interface NativeLinkFeatures {
   dgram: boolean;
   /** node:dns/promises: scr_dns_promises.c. */
   dnsPromises: boolean;
+  /** dgram sockets as untyped values: scr_dgram_dyn.c. */
+  dgramDyn: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;

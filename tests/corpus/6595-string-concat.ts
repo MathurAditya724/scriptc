@@ -1,0 +1,9 @@
+// String.prototype.concat converts each argument with ToString, in order.
+const base = "dd.internal.entity_id:";
+console.log(base.concat("pod-7"));
+console.log("a".concat());
+console.log("n=".concat(String(1), "+", (2).toString()));
+const parts: string[] = ["x", "y"];
+console.log("list:".concat(parts[0]!, parts[1]!));
+const value: unknown = { toString: () => "custom" };
+console.log("obj:".concat(String(value)));

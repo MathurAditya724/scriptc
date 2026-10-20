@@ -562,6 +562,7 @@ async function compileExecutableNative(
     http2: features.http2,
     dgram: features.dgram,
     dnsPromises: features.dnsPromises,
+    dgramDyn: features.dgramDyn,
     watch: features.watch,
     foreignFfi: features.foreignFfi,
     ...(features.workers ? { workers: true } : {}),

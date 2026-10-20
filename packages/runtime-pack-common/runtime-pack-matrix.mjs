@@ -129,6 +129,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dgram.c", "dgram"],
   // The dns promise forms run over the dgram unit's callback forms.
   ["scr_dns_promises.c", all("dgram", "dnsPromises")],
+  // Sockets as untyped values run over the dgram unit.
+  ["scr_dgram_dyn.c", all("dgram", "dgramDyn")],
   ["scr_watch.c", "watch"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],

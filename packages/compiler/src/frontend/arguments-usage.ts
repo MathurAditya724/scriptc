@@ -33,3 +33,85 @@ export function bodyReadsArguments(fn: ts.Node): boolean {
   });
   return found;
 }
+
+/** Whether an expression is assigned, updated or deleted. */
+function isWritten(expr: ts.Node): boolean {
+  let node = expr;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (ts.isBinaryExpression(parent))
+    return (
+      parent.left === node &&
+      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    );
+  if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+    return (
+      parent.operator === ts.SyntaxKind.PlusPlusToken ||
+      parent.operator === ts.SyntaxKind.MinusMinusToken
+    );
+  if (ts.isForInStatement(parent) || ts.isForOfStatement(parent))
+    return parent.initializer === node;
+  if (
+    ts.isArrayLiteralExpression(parent) ||
+    ts.isSpreadElement(parent) ||
+    ts.isShorthandPropertyAssignment(parent) ||
+    (ts.isPropertyAssignment(parent) && parent.initializer === node)
+  )
+    return isWritten(parent);
+  if (ts.isObjectLiteralExpression(parent) || ts.isSpreadAssignment(parent))
+    return isWritten(parent);
+  return ts.isDeleteExpression(parent);
+}
+
+/** Whether sloppy-mode `arguments` in `fn`'s own body behaves exactly like
+ * an unmapped copy of the call's arguments. A mapped arguments object
+ * aliases the named parameters, so it differs from a copy only when one
+ * side is written after the other is read: reading `arguments.length`
+ * never observes the aliasing, and element reads cannot observe it while
+ * nothing writes an element or a parameter. The object itself must not
+ * escape, since another holder could write through it. */
+export function argumentsAliasingUnobservable(fn: ts.SignatureDeclaration): boolean {
+  if (fn.body === undefined) return false;
+  let elementReads = false;
+  let escapes = false;
+  ts.walkPreorder(fn.body, (node) => {
+    if (ts.isTypeNode(node)) return "skip";
+    if (ts.isFunctionLike(node) && !ts.isArrowFunction(node) && node !== fn) return "skip";
+    if (!ts.isIdentifier(node) || node.text !== "arguments" || !isArgumentsRead(node))
+      return undefined;
+    const parent = node.parent;
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === node &&
+      parent.name.text === "length" &&
+      !isWritten(parent)
+    )
+      return undefined;
+    if (ts.isElementAccessExpression(parent) && parent.expression === node && !isWritten(parent)) {
+      elementReads = true;
+      return undefined;
+    }
+    escapes = true;
+    return "stop";
+  });
+  if (escapes) return false;
+  if (!elementReads) return true;
+  const names = new Set<string>();
+  for (const p of fn.parameters.nodes) {
+    if (!ts.isIdentifier(p.name)) return false;
+    names.add(p.name.text);
+  }
+  // Any write to a parameter's name, including from nested closures and
+  // shadowing bindings, conservatively counts as a parameter write.
+  let paramWritten = false;
+  ts.walkPreorder(fn.body, (node) => {
+    if (ts.isTypeNode(node)) return "skip";
+    if (ts.isIdentifier(node) && names.has(node.text) && isWritten(node)) {
+      paramWritten = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return !paramWritten;
+}

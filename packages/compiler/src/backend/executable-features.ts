@@ -43,6 +43,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     http2: features.http2,
     dgram: features.dgram,
     dnsPromises: features.dnsPromises,
+    dgramDyn: features.dgramDyn,
     watch: features.fsWatch,
     foreignFfi: hasForeignFfiCallback(mod.ffiImports ?? []),
     nodeTest: features.nodeTest,
