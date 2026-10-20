@@ -1,6 +1,6 @@
 // `Object.fromEntries(...) as T` for a declared record T keeps exactly
 // the keys the entries created, in their order, as Node keeps the object
-// itself.
+// itself, as long as the entries hold scalars or checked-dynamic values.
 type Tags = { "error.type": string; "error.msg": string; "error.cause"?: string };
 
 function scrub(input: string): string {
@@ -27,3 +27,17 @@ const p = Object.fromEntries([
   ["z", 3],
 ]) as Point;
 console.log(p, p.x + p.y, Object.keys(p), JSON.stringify(p));
+
+// Entries held as unknown keep their identity: the object's members are
+// the same array and record, and writes through either reach both.
+type Holder = { list: number[]; point: { x: number } };
+const list = [1, 2];
+const point = { x: 1 };
+const entries: [string, unknown][] = [
+  ["list", list],
+  ["point", point],
+];
+const held = Object.fromEntries(entries) as Holder;
+held.list.push(3);
+held.point.x = 5;
+console.log(list.length, point.x, held.list === list, held.point === point);

@@ -1194,9 +1194,11 @@ function classInstanceOrAbsent(lowerer: Lowerer, type: IrType): boolean {
  * fresh object nothing else references, so the checked-dynamic bridge,
  * which keeps keys and their order the same way `JSON.parse(text) as T`
  * does, cannot be told apart from the original object; a value outside
- * T throws the catchable TypeError of every checked cast. Other sources
- * may be aliased, where a rebuilt object would sever mutation, so they
- * keep the exact-shape fence. */
+ * T throws the catchable TypeError of every checked cast. The entries'
+ * values must be scalars or checked-dynamic values, which the bridge
+ * passes by value or by identity; native arrays and records would be
+ * copied. Other sources may be aliased, where a rebuilt object would sever
+ * mutation, so they keep the exact-shape fence. */
 function freshEntriesRecordAssertion(
   lowerer: Lowerer,
   expr: ts.AsExpression | ts.TypeAssertion,
@@ -1208,6 +1210,10 @@ function freshEntriesRecordAssertion(
   const dest = lowerer.shapes.get(target.shapeId);
   if (!source?.indexValue || source.tuple || source.fields.length > 0) return null;
   if (!dest || dest.tuple || dest.indexValue || shapeHasAccessorSlots(dest)) return null;
+  // Native arrays and records in the entries would be copied on the way
+  // through the checked-dynamic bridge, severing their identity: only
+  // slots of scalars or checked-dynamic values pass.
+  if (extractionCopiesReference(lowerer, source.indexValue)) return null;
   let operand: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
   if (
