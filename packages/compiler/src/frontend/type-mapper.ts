@@ -1834,7 +1834,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (ts.isInterfaceDeclaration(d) ||
           ts.isTypeAliasDeclaration(d) ||
           ts.isTypeLiteralNode(d) ||
-          ts.isMappedTypeNode(d)),
+          ts.isMappedTypeNode(d) ||
+          isDeclaredDataClass(d) ||
+          (decls.some(isDeclaredDataClass) && isTypeOnlyNamespace(d))),
     );
   const aliasDecls = packageOnly(widened.getAliasSymbol());
   const ownDecls = packageOnly(widened.getSymbol());
@@ -5502,6 +5504,48 @@ function isMappedShape(t: ts.Type): boolean {
  * of a package the program does not compile. Its pure type shapes —
  * interfaces, aliases, type literals — describe data a program can build
  * itself (`import type` from a types-only package such as type-fest). */
+/** A class an SDK declares only to describe data (aws-sdk's
+ * `declare class PresignedPost { url: string; fields: Fields }`, which
+ * arrives as JSON and is never constructed): public instance fields and
+ * nothing else — no constructor, methods, accessors, index signatures,
+ * static, private or protected members, base classes, implemented
+ * interfaces or type parameters. Its instances are exactly the records
+ * of those fields, so the type maps structurally like an interface. */
+function isDeclaredDataClass(d: ts.Node): boolean {
+  if (!ts.isClassDeclaration(d) || !d.getSourceFile().isDeclarationFile) return false;
+  if (d.heritageClauses !== undefined && d.heritageClauses.nodes.length > 0) return false;
+  if (d.typeParameters !== undefined && d.typeParameters.nodes.length > 0) return false;
+  return d.members.nodes.every(
+    (member) =>
+      ts.isPropertyDeclaration(member) &&
+      !ts.isPrivateIdentifier(member.name) &&
+      !(member.modifiers?.nodes ?? []).some(
+        (modifier) =>
+          modifier.kind === ts.SyntaxKind.StaticKeyword ||
+          modifier.kind === ts.SyntaxKind.PrivateKeyword ||
+          modifier.kind === ts.SyntaxKind.ProtectedKeyword ||
+          modifier.kind === ts.SyntaxKind.AbstractKeyword,
+      ),
+  );
+}
+
+/** A namespace merged into a declared data class that holds only types
+ * (`namespace PresignedPost { interface Fields { … } }`): it adds no value
+ * the program could reach. */
+function isTypeOnlyNamespace(d: ts.Node): boolean {
+  if (!ts.isModuleDeclaration(d)) return false;
+  const body = d.body;
+  if (body === undefined) return true;
+  if (ts.isModuleDeclaration(body)) return isTypeOnlyNamespace(body);
+  if (!ts.isModuleBlock(body)) return false;
+  return body.statements.nodes.every(
+    (statement) =>
+      ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement) ||
+      isTypeOnlyNamespace(statement),
+  );
+}
+
 function packageTypeFile(sf: ts.SourceFile, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
   return (
     sf.isDeclarationFile && /[\\/]node_modules[\\/]/.test(sf.fileName) && !ctx.isStdlibFile(sf)
@@ -5968,10 +6012,11 @@ function mapRecordTypeInner(
     let v: IrType | null = null;
     for (const info of indexInfos) {
       if (!stringKey(info.keyType) && !(info.keyType.flags & ts.TypeFlags.Number)) return null;
-      const iv = mapType(info.valueType, ctx);
-
-      // JSONValue>` (a package's own JSON alias) and `Record<string, any>`
-
+      // An `any`-valued signature (`{ [key: string]: any }`, an SDK's
+      // `Dictionary<any>`) holds whatever the program stores: its
+      // overflow values are checked-dynamic, exactly `Record<string,
+      // unknown>`'s.
+      const iv = info.valueType.flags & ts.TypeFlags.Any ? DYN : mapType(info.valueType, ctx);
       if (!iv || !isSupportedIndexValue(iv)) return null;
       if (v !== null && !typeEquals(v, iv)) return null;
       v = iv;
@@ -6197,6 +6242,22 @@ function mapRecordTypeInner(
         pt = arrayOf(unitOnlyUnion(ctx.unions));
       }
       if (pt === null && (fieldTs.flags & ts.TypeFlags.Any) !== 0) pt = DYN;
+      // An `any[]` field (`list: any[]` in an SDK's message type, also
+      // optional or nullable) is the checked-dynamic array, exactly as
+      // `unknown[]` maps; the checked-dynamic value holds the units too.
+      // Declared members only: an object literal's inferred `any[]` member
+      // keeps its existing story.
+      if (
+        pt === null &&
+        declaredMember(p) &&
+        (fieldTs.isUnionType() ? ts.constituentTypes(fieldTs) : [fieldTs]).every(
+          (part) =>
+            isAnyArrayType(part, checker) ||
+            (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0,
+        ) &&
+        !isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam)
+      )
+        pt = DYN;
       // Unit-only FIELDS (`{ msg?: undefined }` — the discriminated-union
       // absent-field idiom — and `{ p: undefined }` spellings): the
       // unit-only union. The runtime value is the interned unit, JSON
@@ -6556,15 +6617,117 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
       if (erasedOverloadMemberType(fieldTs, ctx) !== undefined) continue;
       return `the record shape is supported, but its member '${p.name}' ${describeOverloadSetBlocker(fieldTs, ctx)}`;
     }
-    let pt = isGenericCallableMemberType(fieldTs, checker)
-      ? erasedGenericMemberType(fieldTs, ctx)
-      : mapType(fieldTs, ctx);
-    if (pt === undefined) continue;
-    if (pt?.kind === "void" && isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam))
-      pt = unitOnlyUnion(ctx.unions);
-    if (!pt || pt.kind === "void") {
-      return `the record shape is supported, but its member '${p.name}' has type '${checker.typeToString(fieldTs)}', which does not compile`;
+    if (memberMaps(fieldTs, ctx, p)) continue;
+    // Name the deepest member the failure comes from (`order.deployment.
+    // builds[].config`): a large message type otherwise points only at
+    // its outermost member.
+    const inner = innerBlockedMember(fieldTs, ctx, new Set());
+    if (inner !== null && inner.path !== "") {
+      return `the record shape is supported, but its member '${p.name}${inner.path}' has type '${checker.typeToString(inner.type)}', which does not compile`;
     }
+    return `the record shape is supported, but its member '${p.name}' has type '${checker.typeToString(fieldTs)}', which does not compile`;
   }
   return null;
+}
+
+/** A member an interface, type literal or class declares (not one an
+ * object literal's inferred type carries). */
+function declaredMember(member: ts.Symbol): boolean {
+  return (
+    member.declarations.length > 0 &&
+    member.declarations.every((d) => ts.isPropertySignature(d) || ts.isPropertyDeclaration(d))
+  );
+}
+
+/** Whether a record member of type `fieldTs` maps, by the member rules of
+ * mapRecordTypeInner (generic members erase; `any` and `any[]` members
+ * are checked-dynamic; unit-only members are the unit union). Overloaded
+ * members answer true: describeOverloadSetBlocker tells their story. */
+function memberMaps(fieldTs: ts.Type, ctx: TypeMapperCtx, member?: ts.Symbol): boolean {
+  const { checker } = ctx;
+  if (isOverloadedCallableMemberType(fieldTs, checker)) return true;
+  const pt = isGenericCallableMemberType(fieldTs, checker)
+    ? erasedGenericMemberType(fieldTs, ctx)
+    : mapType(fieldTs, ctx);
+  if (pt === undefined) return true;
+  if (pt === null && (fieldTs.flags & ts.TypeFlags.Any) !== 0) return true;
+  if (
+    pt === null &&
+    (member === undefined || declaredMember(member)) &&
+    (fieldTs.isUnionType() ? ts.constituentTypes(fieldTs) : [fieldTs]).every(
+      (part) =>
+        isAnyArrayType(part, checker) ||
+        (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0,
+    ) &&
+    !isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam)
+  )
+    return true;
+  if (pt?.kind === "void" && isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam)) return true;
+  return pt !== null && pt.kind !== "void";
+}
+
+/** The member path inside the unmapped type `t` that its failure comes
+ * from, and that member's type: `.name` steps into record members, `[]`
+ * into array elements, `()` into a function's return; union arms and
+ * promise payloads are transparent. The empty path means `t` itself is
+ * the blocker; null means `t` maps (or is `any`). */
+function innerBlockedMember(
+  t: ts.Type,
+  ctx: TypeMapperCtx,
+  seen: Set<ts.Type>,
+): { path: string; type: ts.Type } | null {
+  const { checker } = ctx;
+  // `any` is no component to name: the member holding it is the blocker.
+  if ((t.flags & ts.TypeFlags.Any) !== 0 || mapType(t, ctx) !== null) return null;
+  const here = { path: "", type: t };
+  if (seen.has(t) || seen.size >= 16) return here;
+  seen.add(t);
+  const step = (prefix: string, inner: ts.Type): { path: string; type: ts.Type } => {
+    const found = innerBlockedMember(inner, ctx, seen);
+    return found === null ? here : { path: prefix + found.path, type: found.type };
+  };
+  if (t.isUnionType()) {
+    const UNIT = ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null;
+    for (const part of ts.constituentTypes(t)) {
+      if ((part.flags & UNIT) !== 0 || mapType(part, ctx) !== null) continue;
+      return step("", part);
+    }
+    return here;
+  }
+  if ((t.flags & ts.TypeFlags.Object) === 0) return here;
+  if (checker.isArrayType(t)) {
+    const elem = checker.getTypeArguments(t as ts.TypeReference)[0];
+    return elem === undefined ? here : step("[]", elem);
+  }
+  const symbol = t.getSymbol();
+  if (
+    symbol?.name === "Promise" &&
+    symbol.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
+  ) {
+    const payload = checker.getTypeArguments(t as ts.TypeReference)[0];
+    return payload === undefined ? here : step("", payload);
+  }
+  const calls = checker.getCallSignatures(t);
+  if (calls.length === 1) {
+    const sig = calls[0]!;
+    if (sig.getTypeParameters().length > 0) return here;
+    if (sig.getParameters().some((p) => mapType(checker.getTypeOfSymbol(p), ctx) === null))
+      return here;
+    return step("()", checker.getReturnTypeOfSignature(sig));
+  }
+  if (
+    calls.length > 0 ||
+    checker.getConstructSignatures(t).length > 0 ||
+    checker.isTupleType(t) ||
+    checker.getIndexInfosOfType(t).length > 0
+  )
+    return here;
+  for (const p of checker.getPropertiesOfType(t)) {
+    if ((p.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0) continue;
+    if (p.name.startsWith("__@")) continue;
+    const fieldTs = checker.getTypeOfSymbol(p);
+    if (memberMaps(fieldTs, ctx, p)) continue;
+    return step(`.${p.name}`, fieldTs);
+  }
+  return here;
 }

@@ -570,6 +570,19 @@ export class ClassProtocols {
     }
   }
 
+  /** `Pick<C, K>` or `Omit<C, K>` over a program class instance type: a
+   * view of the class's own members, spelled inline instead of as an
+   * interface. Like an interface the class matches, a view that exposes a
+   * method needs a live receiver (see protocol). */
+  private pickOfProgramClass(type: ts.Type): boolean {
+    const alias = type.getAliasSymbol();
+    if (alias === undefined || (alias.name !== "Pick" && alias.name !== "Omit")) return false;
+    if (!alias.declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile))
+      return false;
+    const source = type.getAliasTypeArguments()[0];
+    return source !== undefined && this.isProgramClassInstance(source);
+  }
+
   private isProgramClassInstance(type: ts.Type): boolean {
     const symbol = type.getSymbol();
     return (
@@ -701,11 +714,13 @@ export class ClassProtocols {
     const properties = this.checker.getPropertiesOfType(type);
     if (symbol && protocols.has(symbol)) return true;
     if (
-      !symbol ||
-      !symbol.declarations.some(
-        (declaration) =>
-          ts.isInterfaceDeclaration(declaration) && !declaration.getSourceFile().isDeclarationFile,
-      )
+      !this.pickOfProgramClass(type) &&
+      (!symbol ||
+        !symbol.declarations.some(
+          (declaration) =>
+            ts.isInterfaceDeclaration(declaration) &&
+            !declaration.getSourceFile().isDeclarationFile,
+        ))
     )
       return false;
     for (const property of properties) {
