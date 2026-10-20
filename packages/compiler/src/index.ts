@@ -537,6 +537,7 @@ async function compileExecutableNative(
     dc: features.dc,
     dynAsync: features.dynAsync,
     ...(features.dynTier ? { dynTier: true } : {}),
+    ...(features.streamDyn ? { streamDyn: true } : {}),
     events: features.events,
     emitter: features.emitter,
     symbol: features.symbol,

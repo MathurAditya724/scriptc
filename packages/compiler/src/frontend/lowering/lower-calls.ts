@@ -1,4 +1,5 @@
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
+import { lowerDynStreamMemberCall } from "./dyn-streams.js";
 import { refuseModuleMemberThis } from "./module-member-this.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
@@ -1397,6 +1398,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   }
   if (ts.isPropertyAccessExpression(expr.expression)) {
     const intrinsic =
+      // Checked-dynamic stream slots dispatch per value (dyn-streams.ts).
+      lowerDynStreamMemberCall(lowerer, expr, expr.expression) ??
       fenceNodeModuleMutationCall(lowerer, expr, expr.expression) ??
       // Builtin namespace imports first (`fs.readFileSync(...)` where fs
       // is `import * as fs from "node:fs"`): the same tables and fences
@@ -9289,6 +9292,7 @@ export function lowerObjectMethodCall(
 ): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
   let mappedReceiver =
+    lowerer.receiverTypeOverrides.get(access.expression) ??
     structuralReadType(lowerer, access.expression) ??
     lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   // EventEmitter's static side (the class, a value of it, or the events

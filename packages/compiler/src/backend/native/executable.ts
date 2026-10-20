@@ -240,6 +240,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // stream unit.
   unit((u) => u.opts.zlib && u.opts.stream, "scr_zlib_stream.c"),
   unit((u) => u.opts.stream && u.opts.dynAsync, "scr_stream_ops.c"),
+  // Checked-dynamic stream slots test values and call JavaScript stream
+  // members through the dyn-invoke unit.
+  unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,

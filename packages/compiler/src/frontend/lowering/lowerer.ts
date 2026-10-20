@@ -1,4 +1,8 @@
-import { needsGeneralNodeStreams, stdioIntoGeneralStream } from "./general-streams.js";
+import {
+  needsGeneralNodeStreams,
+  noteUntypedStreamFlow,
+  stdioIntoGeneralStream,
+} from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
 import {
@@ -882,6 +886,11 @@ export interface LowererMode {
    * generalNodeStreams). lowerToIr turns it on only after a pass without
    * it saw a stream flow that needs it (requiresGeneralNodeStreams). */
   generalNodeStreams?: boolean;
+  /** With generalNodeStreams, the checked-dynamic stream slots
+   * (TypeMapperCtx.dynNodeStreams). lowerToIr turns it on only after a
+   * pass saw an untyped value flow into a stream slot
+   * (requiresDynNodeStreams). */
+  dynNodeStreams?: boolean;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LowerOptions.libraryCallbacks (see there). */
@@ -1047,7 +1056,11 @@ export function lowerToIr(
   // a general stream into a stdio-represented stream slot lowers again
   // with it. Every other program keeps the single pass above unchanged.
   const generalNodeStreams = reachableEmit.requiresGeneralNodeStreams;
-  if (generalNodeStreams) {
+  // Checked-dynamic stream slots (dyn-streams.ts) are a further per-program
+  // decision under the general representation: only a program that moves an
+  // untyped value into a stream slot lowers again with them.
+  let dynNodeStreams = reachableEmit.requiresDynNodeStreams;
+  const streamPass = (dyn: boolean): Lowerer => {
     const general = new Lowerer(program, entry, moduleOrder, {
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
@@ -1063,6 +1076,7 @@ export function lowerToIr(
       tierMode,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       generalNodeStreams: true,
+      ...(dyn ? { dynNodeStreams: true } : {}),
     });
     for (const d of extraModuleCycleDiags) general.pushDiag(d);
     for (const d of ffiValidation.diagnostics) general.pushDiag(d);
@@ -1070,7 +1084,15 @@ export function lowerToIr(
     reachable = generalEmitted.reachable;
     result = generalEmitted.result;
     resultLowerer = general;
-    timing("general-streams-relower", { reachable: reachable.size });
+    timing(dyn ? "dyn-streams-relower" : "general-streams-relower", { reachable: reachable.size });
+    return general;
+  };
+  if (generalNodeStreams) {
+    const general = streamPass(dynNodeStreams);
+    if (!dynNodeStreams && general.requiresDynNodeStreams) {
+      dynNodeStreams = true;
+      streamPass(true);
+    }
   }
   // A generic class-rest support decision can depend on record metadata
   // whose historical owner is discovered only while retained bodies lower.
@@ -1084,6 +1106,7 @@ export function lowerToIr(
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
       ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
+      ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       reachable,
       targetPlatform,
       startupCrash,
@@ -1140,11 +1163,12 @@ export function lowerToIr(
     };
   else if (contracts.count > 0) result = { ...result, contracts };
   if (options.coverage !== true) return result;
-  const remainderPass = (general: boolean): Lowerer =>
+  const remainderPass = (general: boolean, dyn = dynNodeStreams): Lowerer =>
     new Lowerer(program, entry, moduleOrder, {
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
       ...(general ? { generalNodeStreams: true } : {}),
+      ...(general && dyn ? { dynNodeStreams: true } : {}),
       reachable,
       remainder: true,
       alreadyFlushed: resultLowerer.flushedSymbols,
@@ -1165,7 +1189,11 @@ export function lowerToIr(
   // stream flow there that needs the general representation lowers the
   // remainder again with it, as reachable emit would.
   if (!generalNodeStreams && remainder.requiresGeneralNodeStreams) {
-    remainder = remainderPass(true);
+    remainder = remainderPass(true, remainder.requiresDynNodeStreams);
+    rem = remainder.run();
+  }
+  if (!dynNodeStreams && remainder.generalNodeStreams && remainder.requiresDynNodeStreams) {
+    remainder = remainderPass(true, true);
     rem = remainder.run();
   }
   timing("coverage-remainder");
@@ -2548,6 +2576,15 @@ export class Lowerer {
    * a stdio handle reached an 'unknown' slot. lowerToIr then lowers the
    * program again under the general stream representation. */
   requiresGeneralNodeStreams = false;
+  /** An untyped value reached a stream slot (a checked unwrap into a
+   * runtime stream class, or an untyped pipe/pipeline stage). lowerToIr
+   * then lowers the program again with checked-dynamic stream slots
+   * (dyn-streams.ts). */
+  requiresDynNodeStreams = false;
+  /** Receiver representations forced by the per-value stream dispatch
+   * (dyn-streams.ts): the native arm lowers a member call on the unboxed
+   * stream through the ordinary class-method path. */
+  readonly receiverTypeOverrides = new Map<ts.Node, IrType>();
   /** Helpers that snapshot shape declaration order into their bodies.
    * Reachability lowers inits before the declarations they discover, so
    * these rebuild after the worklist restores historical shape metadata. */
@@ -2996,6 +3033,7 @@ export class Lowerer {
    * committed refusals in "auto" and keeps them refusals in "static-only". */
   readonly tierMode: TierMode;
   readonly generalNodeStreams: boolean;
+  readonly dynNodeStreams: boolean;
   /** Functions finishModule placed in the dynamic tier (ir/tiers.ts). */
   dynamicFunctions: DynamicFunction[] = [];
   /** Their IR, for coverage's dynamic statement count. */
@@ -3125,6 +3163,7 @@ export class Lowerer {
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.tierMode = mode.tierMode ?? "auto";
     this.generalNodeStreams = mode.generalNodeStreams ?? false;
+    this.dynNodeStreams = this.generalNodeStreams && (mode.dynNodeStreams ?? false);
     this.workerTargets = mode.workerTargets ?? [];
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
@@ -3222,6 +3261,7 @@ export class Lowerer {
         this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))),
       typeMemo: this.typeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
+      ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
       canMemoizeType: () =>
         this.typeParamBindings === null &&
         this.typeParamTsBindings === null &&
@@ -8506,8 +8546,12 @@ export class Lowerer {
    * validator ICEs on them as the usual backstop. */
   requireExactShape(node: ts.Node, actual: IrType, expected: IrType): void {
     if (typeEquals(actual, expected)) return;
-    if (!this.generalNodeStreams && needsGeneralNodeStreams(this, actual, expected))
+    if (!this.generalNodeStreams && needsGeneralNodeStreams(this, actual, expected)) {
       this.requiresGeneralNodeStreams = true;
+      // An untyped value into a stream slot also needs the checked-dynamic
+      // slots (dyn-streams.ts).
+      if (actual.kind === "dyn") this.requiresDynNodeStreams = true;
+    }
     // dyn mismatches first. A dyn ('unknown') value flowing into a typed
     // slot needs a CHECKED cast — the hint points at `as <type>`; tsc
     // usually rejects this before we do, so the fence is mostly defensive.
@@ -8888,6 +8932,7 @@ export class Lowerer {
           (id) => this.unions.get(id),
         );
       const handleOk = DYN_HANDLE_KINDS.has(expected.kind);
+      noteUntypedStreamFlow(this, expected);
       if (
         canDynCheckTo(
           expected,

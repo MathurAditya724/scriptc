@@ -728,6 +728,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "procStream.write": "scr_proc_stream_write",
   "stream.stdioWritable": "scr_stream_stdio_writable",
   "stream.unboxDyn": "scr_stream_unbox_dyn",
+  "stream.pipeDyn": "scr_stream_pipe_dyn",
   "process.kill": "scr_process_kill_named",
   "process.killNum": "scr_process_kill",
   // fs.promises (scr_bytes_io.c / scr_lib.c): the promise forms settle

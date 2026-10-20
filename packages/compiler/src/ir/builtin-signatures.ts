@@ -2571,6 +2571,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [DYN, STRING],
     result: { kind: "object", className: "%Duplex" },
   },
+  /** Checked-dynamic stream slots (dyn-streams.ts): the native stream a
+   * checked-dynamic value boxes (+1) — a runtime stream with the readable
+   * (1) or writable (2) side — or null for any other value. Never throws;
+   * the result union is `%Readable | null` or `%Writable | null`. */
+  "stream.dynNative": { argTypes: [DYN, F64], result: VOID },
+  /** readable.pipe(destination, end) into a checked-dynamic destination
+   * that is not a native stream: [source, the source boxed, destination,
+   * end]. Node's pipe listener protocol over the destination's members
+   * (scr_stream_dyn.c); throws what those members throw. */
+  "stream.pipeDyn": { argTypes: [null, DYN, DYN, BOOL], result: VOID },
   "stream.stdioWritable": {
     argTypes: [PROCSTREAM_T],
     result: { kind: "object", className: "%Writable" },

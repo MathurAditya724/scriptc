@@ -49,7 +49,8 @@ import { sideEffectFreeOptionValue } from "./surfaces.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { genResultRecord } from "../type-mapper.js";
-import { requestGeneralStreamSurface } from "./general-streams.js";
+import { noteUntypedStreamFlow, requestGeneralStreamSurface } from "./general-streams.js";
+import { dynNativeBranch } from "./dyn-streams.js";
 import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import {
   BOOL,
@@ -2049,13 +2050,16 @@ function lowerStreamArg(
   // a boxed native stream unwraps at run time; other values (iterables,
   // functions) throw the not-supported Error there.
   if (v.type.kind === "dyn" && what === "pipeline") {
+    noteUntypedStreamFlow(lowerer, null);
     return {
       kind: "libCall",
       fn: "stream.unboxDyn",
       args: [
         v,
         strLit(
-          "pipeline stages other than native streams (iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet",
+          lowerer.dynNodeStreams
+            ? "pipeline stages other than native streams (JavaScript stream objects, iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet"
+            : "pipeline stages other than native streams (iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet",
           locOf(node),
         ),
       ],
@@ -3381,6 +3385,7 @@ function pipeIntoDyn(
   target: IrExpr,
 ): IrExpr {
   const loc = locOf(call);
+  noteUntypedStreamFlow(lowerer, null);
   const receiverValue = lowerer.lowerExpr(access.expression);
   const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
   const destination = lowerer.declareHiddenLocal("%pipeDestination", target.type);
@@ -3390,6 +3395,56 @@ function pipeIntoDyn(
   ];
   const end = pipeEndOption(lowerer, call.arguments.nodes[1], loc);
   const duplex: IrType = { kind: "object", className: "%Duplex" };
+  // Checked-dynamic stream slots (dyn-streams.ts): a JavaScript stream
+  // object is a destination too, piped with Node's listener protocol.
+  if (lowerer.dynNodeStreams) {
+    const sourceRef: IrExpr = { kind: "varRef", localId: source.id, type: receiverValue.type, loc };
+    const destinationRef: IrExpr = {
+      kind: "varRef",
+      localId: destination.id,
+      type: target.type,
+      loc,
+    };
+    const ending = lowerer.declareHiddenLocal("%pipeEnd", BOOL);
+    stmts.push({ kind: "varDecl", localId: ending.id, init: end, loc });
+    const endRef: IrExpr = { kind: "varRef", localId: ending.id, type: BOOL, loc };
+    stmts.push(
+      dynNativeBranch(
+        lowerer,
+        destinationRef,
+        "w",
+        (native) => ({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "readable.pipe",
+            args: [sourceRef, native, endRef],
+            type: native.type,
+            loc,
+          },
+          loc,
+        }),
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "stream.pipeDyn",
+            args: [sourceRef, lowerer.coerceToExpected(sourceRef, DYN), destinationRef, endRef],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ),
+    );
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: destinationRef,
+      type: target.type,
+      loc,
+    };
+  }
   stmts.push({
     kind: "exprStmt",
     expr: {

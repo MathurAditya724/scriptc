@@ -5224,6 +5224,21 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "stream.dynNative") {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const side = e.args[1];
+      const className =
+        side?.kind === "numLit" ? (side.value === 1 ? "%Readable" : "%Writable") : null;
+      const ok =
+        def &&
+        className !== null &&
+        e.args[0]?.type.kind === "dyn" &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "object" && a.className === className) &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) err(`libCall ${e.fn} must return its side's stream class or null`, e.loc);
+      return true;
+    }
     if (e.fn === "child.stdioStream") {
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const slot = e.args[1];
