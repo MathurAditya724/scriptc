@@ -234,7 +234,7 @@ const entry = (body: IrStmt[] = []): IrFunction => ({
   loc,
 });
 const module = (body: IrStmt[] = []): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: loc.file,
   entry: "%main",
   functions: [target, entry(body)],

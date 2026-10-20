@@ -20,7 +20,7 @@ function sharedGraph(roots: number): IrModule {
     unionId: `input${index}`,
   }));
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [
@@ -161,7 +161,7 @@ test("class instance capsules bind prototype member names by exact class", () =>
   const loc = { file: "live-references.ts", start: 0, end: 0 };
   const base: IrType = { kind: "object", className: "Base" };
   const module: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     classes: [

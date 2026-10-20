@@ -537,6 +537,7 @@ async function compileExecutableNative(
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,
+    ...(features.dynTier ? { dynTier: true } : {}),
     events: features.events,
     emitter: features.emitter,
     symbol: features.symbol,
@@ -1349,6 +1350,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
     dynInvoke: features.dynInvoke,
+    ...(features.dynTier ? { dynTier: true } : {}),
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
   };
 }
@@ -1442,6 +1444,7 @@ async function compileLibraryNative(
     copying: features.copying,
     textDecoderLegacy: features.textDecoderLegacy,
     dynInvoke: features.dynInvoke,
+    ...(features.dynTier === true ? { dynTier: true } : {}),
   };
   if (packTarget !== null) await compilePackedLibrary(archiveOptions, packTarget);
   else await compileExternalCLibrary(archiveOptions);

@@ -63,6 +63,7 @@ interface EarlyLibraryCacheStamp {
 export interface EarlyLibraryNativeFeatures {
   backend: "llvm";
   dynInvoke: boolean;
+  dynTier?: boolean;
   regex: boolean;
   assert: boolean;
   inspect: boolean;
