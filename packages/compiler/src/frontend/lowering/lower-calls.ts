@@ -249,6 +249,8 @@ import {
   genericCallInstance,
 } from "./generic-functions.js";
 
+import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
+
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
@@ -269,6 +271,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const json = lowerJsonRequireCall(lowerer, expr);
   if (json) return json;
 
+  // eval(...) and Function(...): Node's EvalError under
+  // --disallow-code-generation-from-strings (code-generation.ts).
+  {
+    const codeGeneration = codeGenerationCalleeOf(lowerer, expr.expression);
+    if (codeGeneration !== null) return lowerCodeGenerationCall(lowerer, expr, codeGeneration);
+  }
   // Inline require() of a program module (cjs-inline-require.ts): a
   // member call over its export table resolves like a binding's member
   // call after the module's %init at this position; the require itself

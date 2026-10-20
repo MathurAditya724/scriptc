@@ -277,6 +277,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // ("Invalid URL") or a non-http scheme (ERR_INVALID_PROTOCOL).
   "http.requestUrl",
   "http.requestUrlCb",
+  // The runtime options walk throws Node's validation errors and the
+  // fence for documented options it does not implement.
+  "http.requestDyn",
+  "http.requestDynCb",
+  "https.requestDyn",
+  "https.requestDynCb",
+  // address() of a Unix-socket server read as the AddressInfo record.
+  "net.serverAddressCheck",
   // The h2 client's throwing entries: connect on a bad/non-http
   // authority (ERR_INVALID_URL / ERR_INVALID_PROTOCOL), request on a
   // closed/destroyed session (ERR_HTTP2_INVALID_SESSION), setEncoding on
@@ -505,6 +513,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "json.stringifyReplacer",
   "json.stringifyValue",
   "date.nativeNew",
+  "date.nativeNewFields",
+  "date.nativeNewValue",
   "date.checkedValue",
   "util.parseArgs",
   "util.parseEnv",
@@ -806,6 +816,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's argument checks (ERR_INVALID_ARG_TYPE/VALUE, ERR_SOCKET_BAD_PORT).
   "dns.lookupDyn",
   "dns.lookupService",
+  "dns.promisesLookup",
+  "dns.promisesLookupService",
   "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",

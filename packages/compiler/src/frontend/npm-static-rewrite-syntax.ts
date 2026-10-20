@@ -22,6 +22,9 @@ export interface CjsRewriteHost {
    * exists, so Node's lexer-visible name set bounds nothing and every
    * name the export plumbing defines is part of its surface. */
   requireOnly?: ((filePath: string) => boolean) | undefined;
+  /** Told the names Node's lexer detects in the original file that the
+   * rewritten text spells only as accessors (which the lexer skips). */
+  lexerVisibleNames?: ((filePath: string, names: readonly string[]) => void) | undefined;
 }
 
 /** True when esbuild's export object (`module.exports = __toCommonJS(T)`
@@ -119,8 +122,12 @@ interface EntrySpec {
   name: string;
   /** "ident": VALUE is a plain identifier spelled directly in the table.
    * "hoist": VALUE is an expression text hoisted to a tail const first.
+   * "getter": VALUE is a getter body's returned expression the table
+   *   keeps as a live accessor (read on every access, like the original
+   *   getter, so a lazily initialized module still initializes at the
+   *   first read).
    * "any": the checked-dynamic fallback (`__scriptc_any`). */
-  kind: "ident" | "hoist" | "any";
+  kind: "ident" | "hoist" | "getter" | "any";
   value?: string;
 }
 
@@ -156,6 +163,26 @@ function chaseValue(e: ts.Expression): { kind: "ident" | "hoist"; text: string }
   }
   if (ts.isIdentifier(walk)) return { kind: "hoist", text: cur.getText() };
   return null;
+}
+
+/** An object literal of side-effect-free member values (`exports.default
+ * = { context: context_api_1.context, metrics: metrics_api_1.metrics }`,
+ * tsc's default-export object): the tail const can build it once, like a
+ * chased value. Null for any other shape (spreads, methods, accessors,
+ * computed keys, or a value chaseValue rejects). */
+function chaseObjectLiteral(e: ts.Expression): { kind: "hoist"; text: string } | null {
+  let cur: ts.Expression = e;
+  while (ts.isParenthesizedExpression(cur)) cur = cur.expression;
+  if (!ts.isObjectLiteralExpression(cur)) return null;
+  for (const prop of cur.properties.nodes) {
+    if (
+      !ts.isPropertyAssignment(prop) ||
+      !(ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) ||
+      (chaseValue(prop.initializer) === null && chaseObjectLiteral(prop.initializer) === null)
+    )
+      return null;
+  }
+  return { kind: "hoist", text: cur.getText() };
 }
 
 /** The getter body's returned expression for the two descriptor getter
@@ -760,7 +787,14 @@ export function rewriteBundlerCjsSyntax(
       ...exportTables.filter((t) => t.target !== esbuildMainTarget),
     ];
     for (const t of tablesOrdered) {
-      for (const [name, value] of t.entries) claim(name, classify(name, value));
+      for (const [name, value] of t.entries) {
+        const spec = classify(name, value);
+        // The table feeding module.exports keeps a getter it cannot chase
+        // as a live accessor rather than a snapshot.
+        if (spec.kind === "any" && value !== null && t.target === esbuildMainTarget)
+          claim(name, { name, kind: "getter", value: value.getText() });
+        else claim(name, spec);
+      }
     }
     for (const d of definePropEntries) claim(d.name, classify(d.name, d.value));
 
@@ -792,7 +826,7 @@ export function rewriteBundlerCjsSyntax(
         // anything else keeps the file untouched (the offender path owns
         // it: neutralizing would drop an evaluation, keeping it meets the
         // lowering's discard fence at load).
-        const chased = chaseValue(cur);
+        const chased = chaseValue(cur) ?? chaseObjectLiteral(cur);
         if (chased === null) {
           return toEsm.pads.length > 0 ? { degrade: TO_ESM_MIXED_DEGRADE } : null;
         }
@@ -893,6 +927,7 @@ export function rewriteBundlerCjsSyntax(
       "__toESM",
       "__toCommonJS",
       "__commonJS",
+      "__esm",
       "__exportStar",
       "__createBinding",
       "__setModuleDefault",
@@ -1038,6 +1073,8 @@ export function rewriteBundlerCjsSyntax(
       const v = `__scriptc_e${hoistN++}`;
       hoists.push(`const ${v} = ${dropInteropDefault(spec.value!)};`);
       plainParts.push(`${keyOf(spec.name)}: ${v},`);
+    } else if (spec.kind === "getter") {
+      plainParts.push(`get ${keyOf(spec.name)}() { return ${dropInteropDefault(spec.value!)}; },`);
     } else {
       plainParts.push(`${keyOf(spec.name)}: __scriptc_any,`);
     }
@@ -1063,5 +1100,12 @@ export function rewriteBundlerCjsSyntax(
   lines.push(
     `module.exports = {${spreadParts.join("")}${plainParts.join("")}${esModulePart}${memberParts.join("")}};`,
   );
+  /* Node's lexer skips accessors (and stops reading an object literal at
+   * the first one), so a canonical table with accessor entries hides
+   * names the original showed it (esbuild's dead annotation): the host
+   * keeps the original's lexer answer, so ES-module importers link
+   * exactly as they do against the original. */
+  if ([...entries.values()].some((spec) => spec.kind === "getter"))
+    host.lexerVisibleNames?.(filePath, [...lexed.exports]);
   return text + lines.join("\n") + "\n";
 }

@@ -119,6 +119,7 @@ const RUNTIME_DECLS = [
   "declare void @scr_wasm_table_init(ptr, i32, i32, i32, i32, i32)",
   "declare void @scr_wasm_elem_drop(ptr, i32)",
   "declare void @scr_wasm_global_set_ref(ptr, ptr)",
+  "declare ptr @scr_wasm_global_get_ref(ptr)",
 ];
 
 function llType(t: number): string {
@@ -1631,12 +1632,14 @@ class FunctionTranslator {
       case 0x21: {
         const i = c.u32();
         const v = this.pop();
+        this.expectType(v.t, this.localTypes[i]!);
         this.add(`  store ${llType(v.t)} ${v.v}, ptr %l${i}`);
         return;
       }
       case 0x22: {
         const i = c.u32();
         const v = this.stack[this.stack.length - 1]!;
+        this.expectType(v.t, this.localTypes[i]!);
         this.add(`  store ${llType(v.t)} ${v.v}, ptr %l${i}`);
         return;
       }
@@ -1644,12 +1647,17 @@ class FunctionTranslator {
         const g = c.u32();
         const t = this.m.globals[g]!.type;
         const cell = this.loadPtrSlot(this.mt.globalSlot(g));
-        this.push(this.emit(`load ${llType(t)}, ptr ${cell}, align 8`), t);
+        // An externref read stays alive until the outermost export call
+        // returns, whatever later replaces the global's value.
+        if (t === VAL_EXTERNREF)
+          this.push(this.emit(`call ptr @scr_wasm_global_get_ref(ptr ${cell})`), t);
+        else this.push(this.emit(`load ${llType(t)}, ptr ${cell}, align 8`), t);
         return;
       }
       case 0x24: {
         const g = c.u32();
         const v = this.pop();
+        this.expectType(v.t, this.m.globals[g]!.type);
         const cell = this.loadPtrSlot(this.mt.globalSlot(g));
         if (v.t === VAL_EXTERNREF)
           this.add(`  call void @scr_wasm_global_set_ref(ptr ${cell}, ptr ${v.v})`);
@@ -1669,6 +1677,7 @@ class FunctionTranslator {
         const t = c.u32();
         const v = this.pop();
         const i = this.pop();
+        this.expectType(v.t, this.m.tables[t]!.elemType);
         this.add(`  call void @scr_wasm_table_set(ptr %inst, i32 ${t}, i32 ${i.v}, ptr ${v.v})`);
         return;
       }
@@ -1725,8 +1734,7 @@ class FunctionTranslator {
         break;
     }
     if (op >= 0x28 && op <= 0x35) {
-      c.u32();
-      const offset = c.u32();
+      const offset = this.memargOffset(c);
       const [vt, mt, bytes, ext] = LOAD_INFO[op]!;
       const addr = this.pop();
       const p = this.address(addr.v, offset, bytes);
@@ -1740,8 +1748,7 @@ class FunctionTranslator {
       return;
     }
     if (op >= 0x36 && op <= 0x3e) {
-      c.u32();
-      const offset = c.u32();
+      const offset = this.memargOffset(c);
       const [, mt, bytes] = STORE_INFO[op]!;
       const v = this.pop();
       const addr = this.pop();
@@ -1754,6 +1761,24 @@ class FunctionTranslator {
       return;
     }
     this.numeric(op);
+  }
+
+  /** The offset of a load or store's memarg; a memory other than 0 is
+   * refused (only one memory translates). */
+  memargOffset(c: WasmCursor): number {
+    const { memory, offset } = c.memarg();
+    if (memory !== 0) throw new WasmTranslateError("multiple memories are not supported");
+    return offset;
+  }
+
+  /** A value written to a local, global or table has the destination's
+   * type; validation guarantees it, so a mismatch means the translator
+   * lost track of the operand stack. */
+  expectType(actual: number, expected: number): void {
+    if (actual !== expected)
+      throw new Error(
+        `wasm translator: value of type 0x${actual.toString(16)} where 0x${expected.toString(16)} is expected`,
+      );
   }
 
   numeric(op: number): void {

@@ -21,21 +21,30 @@ import {
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import { captureContextArguments } from "../function-context.js";
-import { isCjsExportTableLiteral, isJsSourceFile, isNodeEsmFile, locOf } from "../../program.js";
+import {
+  isCjsExportTableLiteral,
+  isCjsJsFile,
+  isJsSourceFile,
+  isNodeEsmFile,
+  locOf,
+} from "../../program.js";
 import { builtinClassAliasOwnsNoSlot, runtimeClassValueOf } from "../builtins/class-values.js";
 import {
   cjsAccessorCall,
+  cjsAccessorSnapshotOf,
   primitiveCtorClosure,
   runtimeOptionalElementKey,
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { runtimeOptionalReceiverRead } from "./narrowing.js";
+import { builtinGlobalValueAt } from "./property-access.js";
 import { varRef } from "../../../ir/build.js";
 import {
   ambientUndefReadType,
   ambientUndefinedFnSymbolOf,
   contextualUndefReadType,
   fenceEarlyAliasUse,
+  isTemporalGlobalRoot,
   lowerNsIdentifierValue,
   nsUndefRead,
 } from "../lower-namespaces.js";
@@ -535,7 +544,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           return builtinFunctionFenceValue(lowerer, bi, expr, loc);
         return {
           kind: "strLit",
-          value: `[builtin ${bi.module}.${bi.member}]`,
+          // node:stream/web exports the web stream globals themselves:
+          // the same identity token as the global spelling.
+          value:
+            bi.module === "stream/web"
+              ? `[builtin ${bi.member}]`
+              : `[builtin ${bi.module}.${bi.member}]`,
           type: STRING,
           loc,
         };
@@ -715,9 +729,26 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   }
   {
     const sym = lowerer.checker.getSymbolAtLocation(expr);
+    // The temporal global is typed (TS 7's lib slice) but Node 24 does
+    // not define it: the read throws Node's ReferenceError.
+    if (isTemporalGlobalRoot(lowerer, expr, sym)) {
+      const t =
+        ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
+      return nsUndefRead(lowerer, expr.text, expr, t);
+    }
     if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
+      const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
+      // Builtin constructors have real function values in both source
+      // languages (TypeScript reads them as dynamic values).
+      const builtinValue = builtinGlobalValueAt(
+        lowerer,
+        expr,
+        canonical,
+        loc,
+        isJsSourceFile(expr.getSourceFile()),
+      );
+      if (builtinValue !== null) return builtinValue;
       if (isJsSourceFile(expr.getSourceFile())) {
-        const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
         return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
       }
       // The families with a WHY: each hint states what makes the
@@ -929,6 +960,19 @@ function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr |
   if (!getter) return null;
   if (!ts.isObjectLiteralExpression(getter.parent) || !isCjsExportTableLiteral(getter.parent)) {
     return null;
+  }
+  // An ES-module import binding reads the value Node copied when the
+  // importer linked the CommonJS module (cjsAccessorSnapshotStores).
+  const raw = lowerer.checker.getSymbolAtLocation(ident);
+  const binding = raw ? raw.declarations[0] : undefined;
+  if (
+    binding !== undefined &&
+    (ts.isImportSpecifier(binding) || ts.isExportSpecifier(binding)) &&
+    !isCjsJsFile(binding.getSourceFile(), lowerer.program)
+  ) {
+    const snapshot = cjsAccessorSnapshotOf(lowerer, getter);
+    if (snapshot !== null)
+      return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc: locOf(ident) };
   }
   return cjsAccessorCall(lowerer, getter, locOf(ident));
 }

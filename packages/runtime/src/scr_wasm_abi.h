@@ -188,6 +188,12 @@ typedef struct ScrWasmMemory {
    * live as long as the memory. */
   uint8_t **retired;
   size_t retired_count;
+  /* The byte stores of every ArrayBuffer handed out over this memory's
+   * storage (retained). The storage outlives the memory while JavaScript
+   * still holds one of them or a view over it. */
+  struct ScrBytes **exposed;
+  size_t exposed_count;
+  struct ScrWasmMemory *next_parked; /* released, storage still exposed */
 } ScrWasmMemory;
 
 typedef struct ScrWasmFuncRef {

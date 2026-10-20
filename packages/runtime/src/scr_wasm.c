@@ -122,6 +122,7 @@ void scr_wasm_table_copy(void *inst, int32_t dt, int32_t st, int32_t d, int32_t 
 void scr_wasm_table_init(void *inst, int32_t t, int32_t seg, int32_t d, int32_t s, int32_t n);
 void scr_wasm_elem_drop(void *inst, int32_t seg);
 void scr_wasm_global_set_ref(void *cell, void *value);
+void *scr_wasm_global_get_ref(void *cell);
 
 #define SCR_WASM_PAGE 65536u
 #define SCR_WASM_MAX_PAGES 65536u
@@ -344,13 +345,17 @@ static _Thread_local ScrWasmEntry *scr_wasm_top;
 static _Thread_local bool scr_wasm_running; /* translated code (not an import) is on top */
 static _Thread_local int scr_wasm_trap_code;
 
-/* Externref values an import returned: translated code holds them without
- * a reference, so they stay alive until the outermost export call
- * returns. */
+/* Externref values translated code holds without a reference (import
+ * results and values read from tables and globals): they stay alive until
+ * the outermost export call has converted its results
+ * (scr_wasm_exit_outermost), whatever later replaces the slot they came
+ * from. */
 static _Thread_local ScrDyn **scr_wasm_kept;
 static _Thread_local size_t scr_wasm_kept_count, scr_wasm_kept_cap;
 
 static void scr_wasm_keep(ScrDyn *d) {
+  /* A loop that reads the same slot keeps it once. */
+  if (scr_wasm_kept_count && scr_wasm_kept[scr_wasm_kept_count - 1] == d) return;
   if (scr_wasm_kept_count == scr_wasm_kept_cap) {
     size_t cap = scr_wasm_kept_cap ? scr_wasm_kept_cap * 2 : 16;
     ScrDyn **grown = realloc(scr_wasm_kept, cap * sizeof *grown);
@@ -363,6 +368,13 @@ static void scr_wasm_keep(ScrDyn *d) {
 
 static void scr_wasm_release_kept(void) {
   while (scr_wasm_kept_count) scr_dyn_release(scr_wasm_kept[--scr_wasm_kept_count]);
+}
+
+/* After an outermost export, initializer or start call: its results hold
+ * their own references by now, so the kept values can go. Nested calls
+ * (an import that calls an export) leave them to the outermost one. */
+static void scr_wasm_exit_outermost(void) {
+  if (!scr_wasm_top && scr_wasm_kept_count) scr_wasm_release_kept();
 }
 
 #ifdef SCR_WASM_ASAN
@@ -434,7 +446,6 @@ static __attribute__((noinline)) int scr_wasm_enter_ref(ScrWasmThunk fn, ScrWasm
   }
   scr_wasm_running = was_running;
   scr_wasm_top = entry.prev;
-  if (!entry.prev && scr_wasm_kept_count) scr_wasm_release_kept();
   return code;
 }
 
@@ -665,9 +676,17 @@ static ScrWasmMemory *scr_wasm_memory_retain(ScrWasmMemory *m) {
   return m;
 }
 
-static void scr_wasm_memory_release(ScrWasmMemory *m) {
-  if (!m || --m->rc) return;
-  scr_dyn_release(m->buffer);
+/* True when JavaScript holds none of the memory's ArrayBuffers or views
+ * over them: each byte store's only reference is the memory's own. */
+static bool scr_wasm_memory_unexposed(const ScrWasmMemory *m) {
+  for (size_t i = 0; i < m->exposed_count; i++)
+    if (m->exposed[i]->rc != 1) return false;
+  return true;
+}
+
+static void scr_wasm_memory_free(ScrWasmMemory *m) {
+  for (size_t i = 0; i < m->exposed_count; i++) scr_bytes_release(m->exposed[i]);
+  free(m->exposed);
   for (size_t i = 0; i < m->retired_count; i++) free(m->retired[i]);
   free(m->retired);
 #if SCR_WASM_SIGNALS
@@ -680,10 +699,41 @@ static void scr_wasm_memory_release(ScrWasmMemory *m) {
   free(m);
 }
 
+/* Released memories whose storage JavaScript still reaches through a
+ * buffer; freed once it no longer does (checked whenever a memory is
+ * created or released). */
+static _Thread_local ScrWasmMemory *scr_wasm_parked;
+
+static void scr_wasm_sweep_parked(void) {
+  for (ScrWasmMemory **p = &scr_wasm_parked; *p;) {
+    ScrWasmMemory *m = *p;
+    if (scr_wasm_memory_unexposed(m)) {
+      *p = m->next_parked;
+      scr_wasm_memory_free(m);
+    } else {
+      p = &m->next_parked;
+    }
+  }
+}
+
+static void scr_wasm_memory_release(ScrWasmMemory *m) {
+  if (!m || --m->rc) return;
+  scr_dyn_release(m->buffer);
+  m->buffer = NULL;
+  scr_wasm_sweep_parked();
+  if (scr_wasm_memory_unexposed(m)) {
+    scr_wasm_memory_free(m);
+  } else {
+    m->next_parked = scr_wasm_parked;
+    scr_wasm_parked = m;
+  }
+}
+
 /* A memory of `min` pages growing to at most `max` pages (UINT64_MAX:
  * no declared maximum); NULL with Node's RangeError pending when the
  * address space or memory is short. */
 static ScrWasmMemory *scr_wasm_memory_new(uint64_t min, uint64_t max, bool guarded, const char *what) {
+  if (scr_wasm_parked) scr_wasm_sweep_parked();
   ScrWasmMemory *m = calloc(1, sizeof *m);
   if (!m) scr_trap("scriptc: out of memory\n");
   m->rc = 1;
@@ -857,7 +907,9 @@ static ScrWasmTable *scr_wasm_inst_table(void *inst, int32_t t) { return ((ScrWa
 void *scr_wasm_table_get(void *inst, int32_t ti, int32_t i) {
   ScrWasmTable *t = scr_wasm_inst_table(inst, ti);
   if ((uint32_t)i >= t->size) scr_wasm_trap(SCR_WASM_TRAP_TABLE_OOB);
-  return t->elems[(uint32_t)i];
+  void *v = t->elems[(uint32_t)i];
+  if (t->elem == 'x' && v) scr_wasm_keep(v);
+  return v;
 }
 
 void scr_wasm_table_set(void *inst, int32_t ti, int32_t i, void *value) {
@@ -938,6 +990,13 @@ static void scr_wasm_global_release(ScrWasmGlobal *g) {
   if (!g || --g->rc) return;
   if (g->type == 'x') scr_dyn_release((ScrDyn *)(uintptr_t)g->value);
   free(g);
+}
+
+void *scr_wasm_global_get_ref(void *cell) {
+  ScrWasmGlobal *g = cell;
+  ScrDyn *v = (ScrDyn *)(uintptr_t)g->value;
+  if (v) scr_wasm_keep(v);
+  return v;
 }
 
 void scr_wasm_global_set_ref(void *cell, void *value) {
@@ -1185,6 +1244,7 @@ static ScrDyn *scr_wasm_export_call(ScrClosure *clo, ScrDyn *const *args, size_t
       for (size_t i = 0; i < nr; i++) scr_dyn_arr_push(result, scr_wasm_to_js(res[i], r[i]));
     }
   }
+  scr_wasm_exit_outermost();
   if (a != stack_args) free(a);
   if (r != stack_res) free(r);
   scr_wasm_inst_release(host);
@@ -1293,8 +1353,18 @@ static ScrDyn *scr_wasm_memory_buffer(ScrWasmMemory *m) {
   if (!m->buffer) {
     m->buffer_size = m->size;
     ScrBytes *bytes = scr_bytes_from_external(m->base, (size_t)m->size);
+    /* Earlier buffers JavaScript no longer holds need no tracking. */
+    size_t kept = 0;
+    for (size_t i = 0; i < m->exposed_count; i++) {
+      if (m->exposed[i]->rc == 1) scr_bytes_release(m->exposed[i]);
+      else m->exposed[kept++] = m->exposed[i];
+    }
+    m->exposed_count = kept;
+    ScrBytes **grown = realloc(m->exposed, (m->exposed_count + 1) * sizeof *grown);
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    m->exposed = grown;
+    m->exposed[m->exposed_count++] = bytes; /* the memory's reference */
     m->buffer = scr_array_buffer_from_bytes(bytes);
-    scr_bytes_release(bytes);
   }
   return scr_dyn_retain(m->buffer);
 }
@@ -1841,6 +1911,7 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
   bool was = scr_wasm_instantiating;
   scr_wasm_instantiating = true;
   int trap = scr_wasm_enter(scr_wasm_init_thunk, inst, NULL, NULL);
+  scr_wasm_exit_outermost();
   scr_wasm_instantiating = was;
   if (trap) {
     if (trap == SCR_WASM_TRAP_DATA_SEGMENT) {
@@ -1858,6 +1929,7 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
   }
   if (desc->start) {
     trap = scr_wasm_enter(scr_wasm_start_thunk, inst, NULL, NULL);
+    scr_wasm_exit_outermost();
     if (trap) {
       scr_wasm_throw_trap(trap);
       return NULL;

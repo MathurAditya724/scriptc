@@ -155,6 +155,15 @@ export class WasmCursor {
     }
   }
 
+  /** A memarg: the alignment flags, the memory index when flag bit 6 is
+   * set (multi-memory), then the offset. binary.ts validates it the same
+   * way. */
+  memarg(): { memory: number; offset: number } {
+    const flags = this.u32();
+    const memory = flags & 0x40 ? this.u32() : 0;
+    return { memory, offset: this.u32() };
+  }
+
   /** A signed LEB128 of at most 33 bits. */
   s33(): number {
     let result = 0;
@@ -371,10 +380,7 @@ export function skipImmediates(c: WasmCursor, op: number): void {
       }
     }
     default:
-      if (op >= 0x28 && op <= 0x3e) {
-        c.u32();
-        c.u32();
-      }
+      if (op >= 0x28 && op <= 0x3e) c.memarg();
       return;
   }
 }

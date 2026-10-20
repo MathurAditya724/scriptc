@@ -104,6 +104,20 @@ describe("translateWasmModule", () => {
     expect(checked).toContain("%msize");
   });
 
+  test("reads a memarg with an explicit memory index as one immediate", () => {
+    // (func (result i32) (i32.load 0 offset=8 (i32.const 0))) with memory 1:
+    // memarg flags 0x42 (alignment 2, memory index present), memory 0,
+    // offset 8, then `end`.
+    const bytes = new Uint8Array([
+      0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 127, 3, 2, 1, 0, 5, 3, 1, 0, 1, 10, 10, 1, 8,
+      0, 65, 0, 40, 66, 0, 8, 11,
+    ]);
+    expect(analyzeWasm(bytes).status).toBe("valid");
+    const text = translateWasmModule(bytes, SHA, { boundsChecks: false }).text.join("\n");
+    expect(text).toContain("add i64 %v1, 8");
+    expect(text).toContain("load i32, ptr %v3");
+  });
+
   test("translates every valid module of the WebAssembly spec test suite", () => {
     const cases = readFileSync(join(import.meta.dirname, "../../test/wasm-spec-cases.txt"), "utf8")
       .split("\n")

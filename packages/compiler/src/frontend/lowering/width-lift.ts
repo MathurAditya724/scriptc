@@ -9,6 +9,7 @@ export type WidthLift =
   | { how: "discriminantWrap" }
   | { how: "discriminantRoute" }
   | { how: "retag" }
+  | { how: "unitRetag" }
   | { how: "liftWrap"; tag: number; arm: IrType }
   | { how: "width" }
   | { how: "unionWidth" }
