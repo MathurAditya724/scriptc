@@ -292,6 +292,10 @@ export function funcCoerceAdapter(
     const actual = toT.params[i]!;
     const expected = fromT.params[i]!;
     if (lowerer.coercibleValue(actual, expected)) continue;
+    // A record argument the parameter's shape is a structural width of
+    // (members missing from the argument are optional there): the
+    // record width conversion.
+    if (lowerer.widthLiftPlan(actual, expected)) continue;
     if (actual.kind === "union" && expected.kind === "dyn") {
       const arms =
         lowerer.unions.get(actual.unionId)?.arms.filter((arm) => lowerer.dynConvertible(arm)) ?? [];
@@ -355,6 +359,19 @@ export function funcCoerceAdapter(
       (id) => lowerer.unions.get(id),
     );
   if (checkedRet) strandRet = false;
+  // A Promise result whose payload widens into the slot's (a record with
+  // extra, optional or nested members, `Promise<Narrow>` into
+  // `Promise<Wide>`): the result keeps its identity and converts its
+  // payload when it settles (coerceToExpected's boxed-settlement rule).
+  if (
+    strandRet &&
+    fromT.ret.kind === "promise" &&
+    toT.ret.kind === "promise" &&
+    lowerer.promisePayloadWidens(fromT.ret, toT.ret)
+  )
+    strandRet = false;
+  // A record result the slot's result is a structural width of.
+  if (strandRet && lowerer.widthLiftPlan(fromT.ret, toT.ret)) strandRet = false;
   const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
