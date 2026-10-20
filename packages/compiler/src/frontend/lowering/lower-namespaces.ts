@@ -77,7 +77,7 @@ function nsTypeOnlyBody(decl: ts.ModuleDeclaration): boolean {
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined) return true;
   if (!ts.isModuleBlock(body)) return true;
-  return body.statements.every(
+  return body.statements.nodes.every(
     (s) =>
       ts.isInterfaceDeclaration(s) ||
       ts.isTypeAliasDeclaration(s) ||
@@ -96,7 +96,7 @@ function nsSymbolRuntimeKind(
   if (!(sym.flags & (ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule))) return null;
   let sawTypeOnly = false;
   let sawNamespace = false;
-  for (const d of lowerer.checker.declarationsOf(sym)) {
+  for (const d of sym.declarations) {
     if (!ts.isModuleDeclaration(d)) continue;
     sawNamespace = true;
     let body = d.body;
@@ -129,7 +129,7 @@ export function collectNamespaceStmt(
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined || !ts.isModuleBlock(body)) return; // bodyless non-ambient: tsc-rejected
   lowerer.nsBlocks.set(body, "flattened");
-  for (const s of body.statements) {
+  for (const s of body.statements.nodes) {
     if (ts.isFunctionDeclaration(s)) fp.fnDecls.push(s);
     else if (ts.isClassDeclaration(s)) fp.classDecls.push(s);
     else if (ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s)) continue;
@@ -146,7 +146,7 @@ function registerTypeOnlyBlocks(lowerer: Lowerer, decl: ts.ModuleDeclaration): v
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined || !ts.isModuleBlock(body)) return;
   lowerer.nsBlocks.set(body, "typeOnly");
-  for (const s of body.statements) {
+  for (const s of body.statements.nodes) {
     if (ts.isModuleDeclaration(s)) registerTypeOnlyBlocks(lowerer, s);
   }
 }
@@ -189,7 +189,7 @@ export function nsPathPrefix(node: ts.Node, modifierDecl?: ts.Node): string {
  * null. The walk stops at class/function boundaries: a static member of a
  * class INSIDE a namespace is the class's business, not the namespace's. */
 function nsBlockKindOfSymbol(lowerer: Lowerer, sym: ts.Symbol): "flattened" | "typeOnly" | null {
-  for (const d of lowerer.checker.declarationsOf(sym)) {
+  for (const d of sym.declarations) {
     // TYPE declarations don't make a member a namespace VALUE: a class
     // static `C.B` whose name also carries `namespace C { export
     // interface B }` is the static's business — value references consult
@@ -253,7 +253,7 @@ function moduleNsSourceFileOf(lowerer: Lowerer, e: ts.Expression): ts.SourceFile
   }
   if (!sym) return null;
   if (sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
-  for (const d of lowerer.checker.declarationsOf(sym)) {
+  for (const d of sym.declarations) {
     if (
       sym.flags & ts.SymbolFlags.ValueModule &&
       ts.isSourceFile(d) &&
@@ -322,7 +322,7 @@ export function ambientNsRootOf(lowerer: Lowerer, e: ts.Expression): ts.Identifi
   if (!sym || !(sym.flags & (ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule)))
     return null;
   if (lowerer.isStdlibSymbol(sym)) return null;
-  const decls = lowerer.checker.declarationsOf(sym);
+  const decls = sym.declarations;
   if (decls.length === 0) return null;
   for (const d of decls) {
     // A namespace declaration, or the fundule/clazzdule merge partners
@@ -427,7 +427,7 @@ export function ambientUndefVarRootOf(lowerer: Lowerer, e: ts.Expression): ts.Id
     if (lowerer.trapBindings.has(sym)) return root;
     if (lowerer.isStdlibSymbol(sym)) return null;
     if (ambientUndefinedFnSymbolOf(lowerer, root) !== null) return root;
-    const decls = lowerer.checker.declarationsOf(sym);
+    const decls = sym.declarations;
     if (decls.length === 0) return null;
     for (const d of decls) {
       if (!ts.isVariableDeclaration(d) || d.initializer !== undefined) return null;
@@ -608,7 +608,7 @@ export function ambientUndefinedFnSymbolOf(
   if (!sym || !(sym.flags & ts.SymbolFlags.Function)) return null;
   if (lowerer.isStdlibSymbol(sym)) return null;
   let sawFn = false;
-  for (const d of lowerer.checker.declarationsOf(sym)) {
+  for (const d of sym.declarations) {
     if (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) continue; // type-world merge partners
     if (ts.isFunctionDeclaration(d)) {
       if (d.body) return null; // an implementation exists — not ambient-undefined
@@ -656,7 +656,7 @@ function initExecutingPosition(node: ts.Node): boolean {
 
 function earliestSameFileDeclStart(lowerer: Lowerer, sym: ts.Symbol, sf: ts.SourceFile): number {
   let earliest = Infinity;
-  for (const d of lowerer.checker.declarationsOf(sym)) {
+  for (const d of sym.declarations) {
     if (d.getSourceFile() === sf) earliest = Math.min(earliest, d.getStart());
   }
   return earliest;
@@ -669,7 +669,7 @@ function earliestSameFileDeclStart(lowerer: Lowerer, sym: ts.Symbol, sf: ts.Sour
 export function fenceEarlyAliasUse(lowerer: Lowerer, ident: ts.Identifier, refNode: ts.Node): void {
   const sym = lowerer.checker.getSymbolAtLocation(ident);
   if (!sym || !(sym.flags & ts.SymbolFlags.Alias)) return;
-  const aliasDecl = lowerer.checker.declarationsOf(sym).find(ts.isImportEqualsDeclaration);
+  const aliasDecl = sym.declarations.find(ts.isImportEqualsDeclaration);
   if (!aliasDecl || ts.isExternalModuleReference(aliasDecl.moduleReference)) return;
   if (!initExecutingPosition(refNode)) return;
   const sf = refNode.getSourceFile();
@@ -766,7 +766,7 @@ export function fenceCrossBlockNsRef(
   ) {
     if (lowerer.nsBlocks.has(q)) refBlocks.push(q);
   }
-  for (const d of lowerer.checker.declarationsOf(symbol)) {
+  for (const d of symbol.declarations) {
     for (
       let q: ts.Node | undefined = d.parent;
       q !== undefined && !ts.isSourceFile(q);

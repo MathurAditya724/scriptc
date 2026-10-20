@@ -324,6 +324,13 @@ ScrEmitter *scr_emitter_new(void) {
   return em;
 }
 
+/* x.constructor.name of an emitter, a stream, or an instance of an emitted
+ * subclass: the class name every allocation stamps (EventEmitter,
+ * Readable, ReadStream, Gzip, Socket, the program class's name). +1. */
+ScrStr *scr_emitter_class_name(const ScrEmitter *em) {
+  return scr_str_new(em->cls, strlen(em->cls));
+}
+
 /* super() into the emitter prefix of an emitted subclass: the allocation
  * already zeroed reg and stamped the concrete class's display name, so
  * construction has nothing left to do — the call exists so the super()

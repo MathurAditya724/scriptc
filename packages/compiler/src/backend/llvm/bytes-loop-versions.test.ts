@@ -186,7 +186,7 @@ test("emitted loops version the body and tag typed-array memory", () => {
   ]);
   const kernel = fn([loop]);
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     functions: [
@@ -236,7 +236,7 @@ test("Float16Array accesses version in elements and share the element tag", () =
   ]);
 
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     functions: [
@@ -263,7 +263,7 @@ test("bodies compiled without optimization keep one checked loop", () => {
   const loop = counted([set(ref("out", f64s), ref("i"), get(ref("src", f64s), ref("i")))]);
   const boxes = Array.from({ length: 512 }, (_, k) => local(`box${k}`, F64, true, { boxed: true }));
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     functions: [

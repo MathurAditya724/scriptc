@@ -65,7 +65,7 @@ export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlV
       "  br i1 %more, label %body, label %finish",
       "body:",
       "  %record = call ptr @scr_arr_get_ref(ptr %addresses, double %index)",
-      `  %addressp = getelementptr inbounds %${struct}, ptr %record, i64 0, i32 ${field + 1}`,
+      `  %addressp = getelementptr inbounds %${struct}, ptr %record, i64 0, i32 ${field + host.nullableUnions.fieldBase(addresses.elem.shapeId)}`,
       "  %address = load ptr, ptr %addressp",
       "  %owned.address = call ptr @scr_str_retain_v(ptr %address)",
       "  call double @scr_arr_push_ref(ptr %ips, ptr %owned.address)",
@@ -86,7 +86,7 @@ export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlV
     );
   }
   host.usesTimers = true;
-  host.moveTemp(cb);
+  host.toHeap(cb);
   return finishRuntimeCall(host, e, "scr_net_connect_lookup", [
     ...args.map((arg) => abiValue(host, arg)),
     ptr("@" + symbol),

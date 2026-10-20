@@ -25,6 +25,7 @@ import type { IrClassDef, IrRecordShape, IrType, IrUnionDef, SrcLoc } from "../.
 import { mapOf, STRING, typeKey } from "../../ir/ir.js";
 import { mangleClassStruct, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS } from "./shapes.js";
+import { shapeTagFn } from "./nullable-unions.js";
 import type { InlineUnionFields } from "./inline-unions.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -44,6 +45,10 @@ export interface PublishHost {
   readonly inlineUnions: InlineUnionFields;
   /** The nullable-pointer representation of a union, when it has one. */
   nullableArm(t: IrType): IrType | null;
+  /** The union's values are tagged record pointers (nullable-unions.ts). */
+  shapeUnion(t: IrType): boolean;
+  /** The struct index of a record shape's first field. */
+  fieldBase(shapeId: string): number;
   /** Class layout: hierarchy membership, preorder interval, field slots
    * (with their storage types), runtime roots. */
   classInfo(className: string): PublishClassInfo;
@@ -210,6 +215,19 @@ export class PublishWalkers {
         if (def.arms.some((arm) => scalarRefusal(arm)))
           throw new LlvmUnsupportedError(`publish of ${typeKey(t)}`, loc);
         const live = arms.flatMap((a) => (a.fn === null ? [] : [{ tag: a.tag, fn: a.fn }]));
+        if (this.host.shapeUnion(t)) {
+          // The value is the record itself (or a unit encoding): no box to
+          // mark; the arm's walker marks and walks the record.
+          const lines = [head, `entry:`];
+          lines.push(
+            `  %tag = call i32 ${shapeTagFn(t.unionId)}(ptr %o)`,
+            `  switch i32 %tag, label %done [ ${live.map((a) => `i32 ${a.tag}, label %arm${a.tag}`).join(" ")} ]`,
+          );
+          for (const a of live)
+            lines.push(`arm${a.tag}:`, `  call void ${a.fn}(ptr %o, ptr %ctx)`, `  br label %done`);
+          lines.push(`done:`, `  ret void`, `}`);
+          return lines;
+        }
         const lines = [
           head,
           `entry:`,
@@ -240,17 +258,18 @@ export class PublishWalkers {
         const shape = this.host.recordsById.get(t.shapeId);
         if (!shape)
           throw new LlvmUnsupportedError(`publish of an unknown record ${t.shapeId}`, loc);
+        const base = this.host.fieldBase(shape.id);
         const members = [
           ...shape.fields.flatMap((f, i) =>
             this.host.inlineUnions.record(f.type)
               ? []
-              : [{ name: f.name, index: i + 1, type: f.type }],
+              : [{ name: f.name, index: i + base, type: f.type }],
           ),
           ...(shape.indexValue
             ? [
                 {
                   name: "[key: string]",
-                  index: shape.fields.length + 1,
+                  index: shape.fields.length + base,
                   type: mapOf(STRING, shape.indexValue),
                 },
               ]

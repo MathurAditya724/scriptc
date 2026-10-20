@@ -162,7 +162,7 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
         const p = B.tmp();
         B.line(`${p} = call ptr @scr_promise_new()`);
         const out = host.own({ name: p, type: e.type });
-        host.moveTemp(reason); // the cell takes ownership
+        host.toHeap(reason); // the cell takes ownership
         host.emitThrowValue({ name: reason.name, type: reasonT });
         B.line(`call void @scr_promise_reject_pending(ptr ${p})`);
         return out;
@@ -191,12 +191,12 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
           host.declare(`declare void @scr_promise_fulfill_bool(ptr, i1 zeroext)`);
           B.line(`call void @scr_promise_fulfill_bool(ptr ${p}, i1 ${v.name})`);
         } else if (t.kind === "string") {
-          host.moveTemp(v);
+          host.toHeap(v);
           host.declare(`declare void @scr_promise_fulfill_str(ptr, ptr)`);
           B.line(`call void @scr_promise_fulfill_str(ptr ${p}, ptr ${v.name})`);
         } else {
           const rc = vAdapters(host.shapeHost, t);
-          host.moveTemp(v);
+          host.toHeap(v);
           host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
           B.line(
             `call void @scr_promise_fulfill_ref(ptr ${p}, ptr ${v.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, t)})`,
@@ -537,7 +537,7 @@ export function emitAsyncExpr(
           B.line(`call void @scr_gen_yield_bool(i1 ${v.name})`);
         }
       } else {
-        host.moveTemp(v); // the OUT slot takes ownership
+        host.toHeap(v); // the OUT slot takes ownership
         if (host.currentCoro !== null) {
           const coro = host.currentCoro;
           const release = vAdapters(host.shapeHost, yt).release;
@@ -601,7 +601,7 @@ export function emitAsyncExpr(
       // Refcounted channels: the slot's +1 moves out.
       host.declare(`declare ptr @scr_gen_take_in_ref()`);
       B.line(`${t} = call ptr @scr_gen_take_in_ref()`);
-      return host.own({ name: t, type: e.type });
+      return host.own({ name: host.adoptHeap(t, e.type), type: e.type });
     }
     case "genResume": {
       // One consumer resume: park the sent value (typed per mode), hop
@@ -731,7 +731,7 @@ export function emitAsyncExpr(
             );
           host.declare(`declare ptr @scr_gen_take_out_ref(ptr)`);
           B.line(`${t} = call ptr @scr_gen_take_out_ref(ptr ${gb.name})`);
-          return host.own({ name: t, type: e.type });
+          return host.own({ name: host.adoptHeap(t, e.type), type: e.type });
         }
         // Valueless: an empty IN slot reads as undefined on any channel.
         host.declare(`declare zeroext i1 @scr_gen_step(ptr)`);
@@ -748,7 +748,7 @@ export function emitAsyncExpr(
       const g = host.emitExpr(e.gen); // borrowed for the calls below
       const sendArg = (store: (aName: string, t: IrType) => void): void => {
         const a = host.emitExpr(e.arg!);
-        if (isRefCounted(e.arg!.type)) host.moveTemp(a); // the slot takes ownership
+        if (isRefCounted(e.arg!.type)) host.toHeap(a); // the slot takes ownership
         store(a.name, e.arg!.type);
       };
       const parkIn = (name: string, t: IrType): void => {
@@ -786,7 +786,7 @@ export function emitAsyncExpr(
           } else {
             const a = host.emitExpr(e.arg);
             const t = e.arg.type;
-            if (isRefCounted(t)) host.moveTemp(a);
+            if (isRefCounted(t)) host.toHeap(a);
             if (t.kind === "f64" || t.kind === "date") {
               host.declare(`declare ptr @scr_async_gen_next_f64(ptr, double)`);
               call = `call ptr @scr_async_gen_next_f64(ptr ${g.name}, double ${a.name})`;
@@ -805,7 +805,7 @@ export function emitAsyncExpr(
           } else {
             const a = host.emitExpr(e.arg);
             const t = e.arg.type;
-            if (isRefCounted(t)) host.moveTemp(a);
+            if (isRefCounted(t)) host.toHeap(a);
             if (t.kind === "f64" || t.kind === "date") {
               host.declare(`declare ptr @scr_async_gen_return_f64(ptr, double)`);
               call = `call ptr @scr_async_gen_return_f64(ptr ${g.name}, double ${a.name})`;
@@ -823,7 +823,7 @@ export function emitAsyncExpr(
               "llvm emitter bug: async genResume throw with no payload",
             );
           const a = host.emitExpr(e.arg);
-          if (isRefCounted(e.arg.type)) host.moveTemp(a);
+          if (isRefCounted(e.arg.type)) host.toHeap(a);
           host.emitThrowValue({ name: a.name, type: e.arg.type });
           host.declare(`declare ptr @scr_async_gen_throw(ptr)`);
           call = `call ptr @scr_async_gen_throw(ptr ${g.name})`;
@@ -873,7 +873,7 @@ export function emitAsyncExpr(
         if (e.arg === null)
           throw new InternalCompilerError("llvm emitter bug: genResume throw with no payload");
         const a = host.emitExpr(e.arg);
-        if (isRefCounted(e.arg.type)) host.moveTemp(a); // the cell takes ownership
+        if (isRefCounted(e.arg.type)) host.toHeap(a); // the cell takes ownership
         host.emitThrowValue({ name: a.name, type: e.arg.type });
         host.declare(`declare void @scr_gen_resume_throw(ptr)`);
         B.line(`call void @scr_gen_resume_throw(ptr ${g.name})`);
@@ -955,7 +955,7 @@ export function emitAsyncExpr(
         host.declare(`declare ptr @${refAwait}(ptr)`);
         B.line(`${t} = call ptr @${refAwait}(ptr ${pr.name})`);
       }
-      const out = host.own({ name: t, type: e.type });
+      const out = host.own({ name: host.adoptHeap(t, e.type), type: e.type });
       host.emitPendingCheck();
       return out;
     }

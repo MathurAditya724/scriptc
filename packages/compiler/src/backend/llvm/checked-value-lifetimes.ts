@@ -42,5 +42,10 @@ export function borrowsJsonInputs(fn: string): boolean {
  * loop. Runtime steps borrow that state but may invoke indexed getters, so
  * this permits stable-local borrowing without preserving reference edges. */
 export function borrowsIteratorInputs(fn: string): boolean {
-  return fn === "dyn.iteratorCanStep" || fn === "dyn.iteratorStep" || fn === "dyn.iteratorStepDone";
+  return (
+    fn === "dyn.iteratorCanStep" ||
+    fn === "dyn.iteratorStep" ||
+    fn === "dyn.iteratorStepDone" ||
+    fn === "dyn.collectionIteratorIndex"
+  );
 }

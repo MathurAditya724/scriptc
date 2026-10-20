@@ -119,6 +119,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.requestNew",
   "fetch.headersNew",
   "fetch.responseNew",
+  "fetch.responseJsonStatic",
   "fetch.abortTimeout",
   "fetch.abortAny",
   "abort.timeout",
@@ -136,7 +137,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.streamNew",
   "fetch.streamFrom",
   "num.toFixed",
+  "num.toPrecision",
+  "num.toExponentialDigits",
+  "str.localeCase",
   "num.toStringRadix",
+  "num.toStringRadixF64",
   "insp.jsonDyn",
   // diagnostics_channel: publish runs subscribers synchronously (a throw
   // propagates — the documented divergence from triggerUncaughtException);
@@ -166,6 +171,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteHeadDyn",
   "http.resSetHeaderDyn",
   "http.clientSignal",
+  "http.clientSignalCheck",
   "http.serverMaxHeaderSize",
   "http.clientMaxHeaderSize",
   "http.resAppendHeader",
@@ -377,6 +383,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyKey",
   "dyn.toNumeric",
   "dyn.increment",
+  // The dynamic-tier operators run the same coercions (scr_js_value.c), and
+  // js.toF64 throws dynCheck's TypeError for a non-number.
+  "js.toF64",
+  "js.add",
+  "js.arithmetic",
+  "js.bitwise",
+  "js.compare",
+  "js.toNumeric",
+  "js.increment",
+  "js.toNumberCoerce",
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",
   "error.ctorOptions",
@@ -432,6 +448,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "https.requestFn",
   "https.requestFnCb",
   "rl.question",
+  "rl.questionDyn",
   "rl.checkOptions",
   "rl.checkCompleter",
   "readable.fromArr",
@@ -454,6 +471,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.resume",
   "rl.prompt",
   "rl.promptWith",
+  "rl.setPromptDyn",
+  "rl.getPrompt",
+  "rl.cursorPos",
+  "rl.inputFromDyn",
+  "rl.outputFromDyn",
   "rl.write",
   "rl.writeKey",
   "rl.cursor",
@@ -489,6 +511,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "str.encodeUri",
   "qs.escape",
   "qs.stringify",
+  // node:punycode's RangeErrors (encode/toASCII only past 32-bit deltas)
+  // and String.fromCodePoint's for ucs2.encode.
+  "punycode.decode",
+  "punycode.encode",
+  "punycode.toASCII",
+  "punycode.toUnicode",
+  "punycode.ucs2Encode",
   // The base64 globals: atob/btoa throw the catchable DOMException
   // InvalidCharacterError on malformed input; the zero-argument form
   // always throws Node's TypeError [ERR_MISSING_ARGS].
@@ -559,6 +588,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
   "dyn.iterPack",
+  "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",
   "dyn.iteratorResult",
@@ -667,6 +697,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.randomIntMax",
   "crypto.randomFillView",
   "crypto.randomFillViewRest",
+  "crypto.getRandomValues",
+  "crypto.getRandomValuesDyn",
   "crypto.randomFillSyncDyn",
   "crypto.randomFillCb",
   "crypto.randomFillCbDyn",
@@ -686,6 +718,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.scryptCb",
   "buffer.concat",
   "buffer.concatLen",
+  "buffer.concatDyn",
+  "buffer.concatLenDyn",
   "buffer.fromDyn",
   "buffer.fromStrChecked",
   "buffer.alloc",

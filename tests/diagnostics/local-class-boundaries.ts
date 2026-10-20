@@ -1,4 +1,4 @@
-function privateBrand() { return class { #value = 1; read(): number { return this.#value; } }; }
+function privateBrand() { return class { #value = 1; has(other: object): boolean { return #value in other; } }; }
 function selfName() { return class Local { copy() { return new Local(); } }; }
 class Base {}
 function derived() { return class extends Base {}; }
@@ -7,8 +7,4 @@ privateBrand();
 selfName();
 derived();
 generic();
-function genericFactory<T>(value: T) {
-  return class Stored { read(): T { return value; } };
-}
-genericFactory<number>(7);
 // End of unsupported local-class forms.

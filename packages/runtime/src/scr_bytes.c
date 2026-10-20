@@ -293,10 +293,13 @@ ScrBytes *scr_bytes_as_buffer(ScrBytes *bytes) {
   return scr_bytes_retain(bytes);
 }
 
+/* Nothing on an existing path calls this. */
+bool scr_bytes_is_buffer(const ScrBytes *bytes) { return bytes->is_buffer; }
+
 void scr_bytes_release(ScrBytes *b) {
   if (!b || b->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--b->rc == 0) {
-    scr_weak_dispose(b);
+    scr_weak_dispose_inline(b);
     if (b->backing) {
       scr_bytes_release(b->backing); /* a view: data points into the owner */
     } else if (b->shared) {

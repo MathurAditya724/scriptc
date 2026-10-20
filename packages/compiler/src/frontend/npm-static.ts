@@ -157,8 +157,6 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
       return;
     }
     const obj = v as Record<string, unknown>;
-    delete obj["types"];
-    delete obj["typings"];
     // 0. The "node" condition HOISTS: Node's runtime resolution matches it
     //    (yaml's `{ types, node: "./dist/index.js", default: "./browser/
     //    index.js" }` runs the node dist; the browser dist is a DIFFERENT
@@ -187,9 +185,21 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
         }
       }
     }
+    // 1. The types claims go AFTER the hoist: a node object's own
+    //    "types" key (uuid's `node: { types: "./dist/index.d.ts", default:
+    //    "./dist-node/index.js" }`) splices in with its siblings, and left
+    //    in place tsgo follows it, maps the hidden declaration to its
+    //    same-stem JS (dist/index.js, the browser build) and disagrees with
+    //    this resolver's runtime answer.
+    delete obj["types"];
+    delete obj["typings"];
     for (const value of Object.values(obj)) transform(value);
   };
   if (pkg["exports"] !== undefined) transform(pkg["exports"]);
+  // The "imports" field maps "#" specifiers with the same condition objects
+  // (chalk 5's `"#supports-color": { node, default }`), so Node's "node"
+  // target hoists there too.
+  if (pkg["imports"] !== undefined) transform(pkg["imports"]);
 }
 
 /** npmStaticTransformPkgJson over a package.json TEXT (the fs shadow's
@@ -204,6 +214,13 @@ function npmStaticTransformPkgJsonText(text: string): string {
   }
   if (doc === null || typeof doc !== "object" || Array.isArray(doc)) return text;
   npmStaticTransformPkgJson(doc as Record<string, unknown>);
+  // tsgo deduplicates installs by package id (name + version): a second
+  // copy of the same name@version (express/node_modules/fresh beside
+  // send/node_modules/fresh) becomes a redirect to the first copy loaded,
+  // so its own path never joins the program. Node loads every installed
+  // copy as its own module, and resolve.ts answers each importer's own
+  // copy; without a version the checker keeps the copies apart too.
+  delete (doc as Record<string, unknown>)["version"];
   return JSON.stringify(doc);
 }
 
@@ -269,6 +286,20 @@ function packageIsUntyped(path: string): boolean {
   }
   untypedPkgCache.set(pkgDir, untyped);
   return untyped;
+}
+
+/** An installed TypeScript source with no runtime JavaScript at its stem
+ * (tldts ships `index.ts` beside `main: "dist/cjs/index.js"`). Node never
+ * executes TypeScript under node_modules and resolve.ts answers only
+ * runtime JS for opted-in packages, yet tsgo's TypeScript-first lookup
+ * would take the package-root `index.ts` over `main`. A same-stem JS twin
+ * keeps the source visible: that pair is the shape npmStaticProgramDep
+ * accepts in the JavaScript's place. */
+function isUnloadableInstalledTsSource(path: string): boolean {
+  if (!/\.(ts|tsx|mts|cts)$/.test(path) || isDeclarationFileName(path)) return false;
+  if (!isNodeModulesPathNorm(path)) return false;
+  const stem = path.replace(/\.(ts|tsx|mts|cts)$/, "");
+  return ![".js", ".jsx", ".mjs", ".cjs"].some((ext) => trackedExists(stem + ext));
 }
 
 export interface NpmStaticFsShadow {
@@ -379,7 +410,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
       const target = shadowTargetOf(path);
       if (!target) return false;
       if (target.viaTypes) return true; // the @types twin hides whole
-      return isDeclarationFileName(path);
+      return isDeclarationFileName(path) || isUnloadableInstalledTsSource(path);
     },
   };
 }

@@ -10,6 +10,7 @@ import {
   typeKey,
   type IrExpr,
   type IrFunction,
+  classValueConstructor,
 } from "../../ir/ir.js";
 import { liveRefView } from "./expr-stream-bridges.js";
 import { typedRefConstructor, vAdapters } from "./shapes.js";
@@ -165,7 +166,7 @@ export function emitCallExpr(
       // This also preserves snapshots when a later argument mutates its
       // source, and releases earlier arguments if evaluation throws.
       args.forEach((a, index) => {
-        if (!borrowed?.has(index)) host.moveTemp(a);
+        if (!borrowed?.has(index)) host.toFrame(a);
       });
       const abi = awaitEntry ? undefined : host.int32Abis.get(e.callee);
       const argList = args
@@ -224,14 +225,14 @@ export function emitCallExpr(
       if (e.type.kind === "void") {
         B.line(`call void ${target}(${argList})`);
         if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
-        if (borrowed) host.releaseFrame(host.frames.pop()!);
+        if (borrowed) host.releaseTemps(host.frames.pop()!);
         return { name: "", type: e.type };
       }
       const t = B.tmp();
       if (abi?.union) {
         B.line(`${t} = call ${SCALAR_UNION_RESULT} ${target}(${argList})`);
         if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
-        if (borrowed) host.releaseFrame(host.frames.pop()!);
+        if (borrowed) host.releaseTemps(host.frames.pop()!);
         if (stackResult) return host.stackScalarUnion(t, e.type);
         return host.own({ name: host.boxScalarUnion(t, e.type), type: e.type });
       }
@@ -239,7 +240,7 @@ export function emitCallExpr(
         B.line(`${t} = call i32 ${target}(${argList})`);
         const out = host.int32Result(t, e.type);
         if (host.mayThrow.has(e.callee)) host.emitPendingCheck(out);
-        if (borrowed) host.releaseFrame(host.frames.pop()!);
+        if (borrowed) host.releaseTemps(host.frames.pop()!);
         return out;
       }
       B.line(`${t} = call ${host.llType(e.type)} ${target}(${argList})`);
@@ -249,14 +250,14 @@ export function emitCallExpr(
         // test the exception first, then own the result before the
         // argument snapshots that keep it reachable are released.
         if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
-        out = host.own({ name: host.retainValue(t, e.type), type: e.type });
+        out = host.own({ name: host.retainFrame(t, e.type), type: e.type });
       } else {
         out = host.own({ name: t, type: e.type });
         if (host.mayThrow.has(e.callee)) host.emitPendingCheck(out);
       }
       if (borrowed) {
-        host.moveTemp(out);
-        host.releaseFrame(host.frames.pop()!);
+        host.toFrame(out);
+        host.releaseTemps(host.frames.pop()!);
         return host.own(out);
       }
       return out;
@@ -718,7 +719,7 @@ export function emitCallExpr(
         // every mention yields the same pointer, so `f === f` is true.
         host.fnValues.add(e.fnName);
         return host.own({
-          name: host.retainValue(`@${mangleFnClosure(e.fnName)}`, e.type),
+          name: host.retainFrame(`@${mangleFnClosure(e.fnName)}`, e.type),
           type: e.type,
         });
       }
@@ -880,7 +881,7 @@ export function emitCallExpr(
         lent?.has(i) && lend[i] ? host.emitReadReceiver(a) : host.emitExpr(a),
       );
       args.forEach((a, i) => {
-        if (!lent?.has(i)) host.moveTemp(a);
+        if (!lent?.has(i)) host.toFrame(a);
       });
       const argListOf = (values: readonly LlValue[]): string =>
         [
@@ -891,7 +892,7 @@ export function emitCallExpr(
       const ownedArgs = (): LlValue[] =>
         lent
           ? args.map((a, i) =>
-              lent.has(i) ? { name: host.retainValue(a.name, a.type), type: a.type } : a,
+              lent.has(i) ? { name: host.retainFrame(a.name, a.type), type: a.type } : a,
             )
           : args;
       const invoke = (target: string, needsReceiver: boolean, values = args): string => {
@@ -978,7 +979,7 @@ export function emitCallExpr(
       }
       if (e.type.kind === "void") {
         if (host.indirectMayThrow) host.emitPendingCheck();
-        if (lent) host.releaseFrame(host.frames.pop()!);
+        if (lent) host.releaseTemps(host.frames.pop()!);
         return { name: "", type: e.type };
       }
       // The check runs AFTER the result temp joins the frame: an unwind
@@ -986,15 +987,15 @@ export function emitCallExpr(
       const out = host.own({ name: t, type: e.type });
       if (host.indirectMayThrow) host.emitPendingCheck();
       if (lent) {
-        host.moveTemp(out);
-        host.releaseFrame(host.frames.pop()!);
+        host.toFrame(out);
+        host.releaseTemps(host.frames.pop()!);
         return host.own(out);
       }
       return out;
     }
     case "selfRef":
       // The running closure itself (env is borrowed; the result owned).
-      return host.own({ name: host.retainValue("%sc_env", e.type), type: e.type });
+      return host.own({ name: host.retainFrame("%sc_env", e.type), type: e.type });
     case "new": {
       // Allocate (fields zeroed, vt stamped), then run the ctor. The
       // ctor owns and releases its `this` param like any callee, so it
@@ -1034,7 +1035,7 @@ export function emitCallExpr(
         });
         return host.own({ name: value, type: e.type });
       }
-      return host.own({ name: host.retainValue(`@${sym}`, e.type), type: e.type });
+      return host.own({ name: host.retainFrame(`@${sym}`, e.type), type: e.type });
     }
     case "newValue": {
       // Construction through a class VALUE: call the class object's
@@ -1043,20 +1044,21 @@ export function emitCallExpr(
       if (e.callee.type.kind !== "classval")
         throw new InternalCompilerError("llvm emitter bug: newValue on non-classval callee");
       const cls = e.callee.type.className;
-      const ctor = host.fnByName.get(`%${cls}.constructor`);
+      const valueCtor = classValueConstructor(host.classMetaOf(cls).def);
+      const ctor = host.fnByName.get(valueCtor.fn);
       if (!ctor)
         throw new InternalCompilerError(
           `llvm emitter bug: newValue on ${cls} without a constructor`,
         );
       const callee = host.emitExpr(e.callee);
       const args = e.args.map((a) => host.emitExpr(a));
-      for (const a of args) host.moveTemp(a); // the constructor owns its params
+      for (const a of args) host.toFrame(a); // the constructor owns its params
       const ctorp = B.tmp();
       const thunk = B.tmp();
       B.line(`${ctorp} = getelementptr inbounds %ScrClassObj, ptr ${callee.name}, i64 0, i32 3`);
       B.line(`${thunk} = load ptr, ptr ${ctorp}`);
       const argList = args
-        .map((a, i) => `${host.llType(ctor.params[i + 1]!.type)} ${a.name}`)
+        .map((a, i) => `${host.llType(ctor.params[i + valueCtor.firstArg]!.type)} ${a.name}`)
         .join(", ");
       const t = B.tmp();
       B.line(`${t} = call ptr ${thunk}(ptr ${callee.name}${argList ? ", " + argList : ""})`);
@@ -1121,7 +1123,7 @@ export function emitCallExpr(
       // One ScrPromise* either way — ownership transfers, type-only
       //.
       const v = host.emitExpr(e.value);
-      host.moveTemp(v);
+      host.toFrame(v);
       return host.own({ name: v.name, type: e.type });
     }
     case "upcast":
@@ -1134,7 +1136,7 @@ export function emitCallExpr(
       const v = host.emitExpr(e.value);
       if (e.kind === "downcast" && e.type.kind === "object" && v.type.kind === "object")
         emitDowncastGuard(host, v.name, v.type.className, e.type.className);
-      if (isRefCounted(v.type)) host.moveTemp(v);
+      if (isRefCounted(v.type)) host.toFrame(v);
       return host.own({ name: v.name, type: e.type });
     }
     case "instanceOf": {
@@ -1188,7 +1190,7 @@ export function emitCallExpr(
         borrowed.has(index) && inputs[index] ? host.emitReadReceiver(a) : host.emitExpr(a),
       );
       args.forEach((a, index) => {
-        if (!borrowed.has(index)) host.moveTemp(a);
+        if (!borrowed.has(index)) host.toFrame(a);
       });
       const recv = args[0]!.name;
       const vtp = B.tmp();
@@ -1239,7 +1241,7 @@ export function emitCallExpr(
         B.startBlock(done);
         if (e.type.kind === "void") {
           if (host.mayThrowMethods.has(e.method)) host.emitPendingCheck();
-          if (borrowed.size > 0) host.releaseFrame(host.frames.pop()!);
+          if (borrowed.size > 0) host.releaseTemps(host.frames.pop()!);
           return { name: "", type: e.type };
         }
         const t = B.tmp();
@@ -1247,8 +1249,8 @@ export function emitCallExpr(
         const out = host.own({ name: t, type: e.type });
         if (host.mayThrowMethods.has(e.method)) host.emitPendingCheck();
         if (borrowed.size > 0) {
-          host.moveTemp(out);
-          host.releaseFrame(host.frames.pop()!);
+          host.toFrame(out);
+          host.releaseTemps(host.frames.pop()!);
           return host.own(out);
         }
         return out;
@@ -1256,7 +1258,7 @@ export function emitCallExpr(
       if (e.type.kind === "void") {
         B.line(`call void ${fn}(${argList})`);
         if (host.mayThrowMethods.has(e.method)) host.emitPendingCheck();
-        if (borrowed.size > 0) host.releaseFrame(host.frames.pop()!);
+        if (borrowed.size > 0) host.releaseTemps(host.frames.pop()!);
         return { name: "", type: e.type };
       }
       const t = B.tmp();
@@ -1264,8 +1266,8 @@ export function emitCallExpr(
       const out = host.own({ name: t, type: e.type });
       if (host.mayThrowMethods.has(e.method)) host.emitPendingCheck();
       if (borrowed.size > 0) {
-        host.moveTemp(out);
-        host.releaseFrame(host.frames.pop()!);
+        host.toFrame(out);
+        host.releaseTemps(host.frames.pop()!);
         return host.own(out);
       }
       return out;
@@ -1392,7 +1394,7 @@ export function emitConstruction(
       return host.emitExpr(a);
     });
     args.forEach((a, i) => {
-      if (!borrowed.has(i + 1)) host.moveTemp(a);
+      if (!borrowed.has(i + 1)) host.toFrame(a);
     });
     const self = borrowed.has(0)
       ? o
@@ -1408,11 +1410,11 @@ export function emitConstruction(
       `call void @${mangleBorrowedFunction(ctorName)}${host.int32Abis.has(ctorName) ? INT32_ABI_SUFFIX : ""}(${argList})`,
     );
     if (host.mayThrow.has(ctorName)) host.emitPendingCheck();
-    host.releaseFrame(host.frames.pop()!);
+    host.releaseTemps(host.frames.pop()!);
     return;
   }
   const args = e.args.map((a) => host.emitExpr(a));
-  for (const a of args) host.moveTemp(a);
+  for (const a of args) host.toFrame(a);
   const r = B.tmp();
   B.line(`${r} = call ptr @${mangleClassRetain(e.className)}(ptr ${o})`);
   const argList = [`ptr ${r}`, ...ctorArguments(host, ctorName, ctor, args, e.args)].join(", ");
@@ -1454,8 +1456,8 @@ function emitNumericIndexRead(
   B.startBlock(slow);
   host.frames.push([]);
   const read = emitCallExpr(host, e, false, false, undefined, true);
-  host.moveTemp(read);
-  host.releaseFrame(host.frames.pop()!);
+  host.toFrame(read);
+  host.releaseTemps(host.frames.pop()!);
   const slowLabel = B.currentLabel();
   B.terminate(`br label %${join}`);
   B.startBlock(join);

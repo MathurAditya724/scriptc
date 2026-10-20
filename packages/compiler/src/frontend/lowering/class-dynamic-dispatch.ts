@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
+import { constructedValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
   BOOL,
@@ -43,6 +44,7 @@ import {
   observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
+import { perEvaluationPrivateNames } from "./private-brands.js";
 import {
   errorPropertyRead,
   errorPropertyWrite,
@@ -830,6 +832,12 @@ export class ClassDynamicDispatch {
               break;
             case "dynCheck":
               if (isDynTypedRefType(expr.type)) rewrite.add(fn);
+              // A dynamic function checked into a native function type
+              // receives its arguments as dynamic values: class instances
+              // passed to it cross the boundary when it is called (a JS
+              // `list.map((rec) => rec.match(x))` callback with an untyped
+              // parameter).
+              if (expr.type.kind === "func") expr.type.params.forEach(discover);
               break;
             case "libCall":
               if (
@@ -1159,7 +1167,9 @@ export class ClassDynamicDispatch {
         // Runtime-owned roots keep their dedicated property contracts. A
         // family whose fields all exist from construction and are never
         // deleted keeps a fixed layout, as TypeScript classes do.
-        this.deletedNames ??= deletedPropertyNames(lowerer.moduleOrder);
+        // null is a result too; undefined means not computed yet.
+        if (this.deletedNames === undefined)
+          this.deletedNames = deletedPropertyNames(lowerer.moduleOrder);
         if (!root.base?.def.runtime && !fixedFieldFamily(root, this.deletedNames)) track(root);
       }
       const loc = this.propertyBag.loc;
@@ -2875,11 +2885,13 @@ export class ClassDynamicDispatch {
           if (info.symbolMethods)
             for (const [symbol, name] of info.symbolMethods) symbolEntries.push([symbol, name]);
           for (const [symbol, name] of symbolEntries) {
-            const declaration = lowerer.checker.valueDeclarationOf(symbol);
+            const declaration = symbol.valueDeclaration;
+            // Module-scope consts and CommonJS key-table properties
+            // (classSymbolKeyOfSymbol) both hold their key in a global.
             if (
               declaration &&
-              ts.isVariableDeclaration(declaration) &&
-              ts.isIdentifier(declaration.name)
+              ((ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) ||
+                ts.isPropertyAssignment(declaration))
             ) {
               const global = lowerer.globalsBySymbol.get(symbol);
               if (global)
@@ -3156,13 +3168,13 @@ export class ClassDynamicDispatch {
         }
         if (!supported || !info.decl) continue;
         const cls = classValueRef(lowerer, info, info.decl);
-        const result: IrExpr = {
+        const result = constructedValue(lowerer, info, {
           kind: "new",
           className: name,
           args,
           type: { kind: "object", className: name },
           loc,
-        };
+        });
         this.constructDispatch.body.unshift({
           kind: "if",
           cond: {
@@ -4302,19 +4314,43 @@ export class ClassDynamicDispatch {
       loc,
     };
     if (accessor && info.decl) {
-      const method = classMethodValue(lowerer, info.decl, info, member, loc);
-      if (method) {
-        const call: IrExpr = {
-          kind: "libCall",
-          fn: "dyn.reflectApply",
-          args: [
-            lowerer.coerceToExpected(method, DYN),
-            actualReceiver,
-            { kind: "dynArrLit", elems: write ? [varRef("p.1", DYN, loc)] : [], type: DYN, loc },
-          ],
-          type: DYN,
-          loc,
-        };
+      // An accessor whose private names belong to one evaluation runs as
+      // the instance's own evaluation's prototype accessor.
+      const declarer = accessor.declarer;
+      const prototype = perEvaluationPrivateNames(declarer)
+        ? classPrototypeData(lowerer, declarer, loc, upcastTo(lowerer, receiver, declarer.def.name))
+        : null;
+      const method = prototype ? null : classMethodValue(lowerer, info.decl, info, member, loc);
+      if (prototype || method) {
+        const call: IrExpr = prototype
+          ? {
+              kind: "libCall",
+              fn: write ? "dyn.reflectSet" : "dyn.reflectGet",
+              args: [
+                prototype,
+                lowerer.coerceToExpected(key, DYN),
+                ...(write ? [varRef("p.1", DYN, loc)] : []),
+                actualReceiver,
+              ],
+              type: write ? BOOL : DYN,
+              loc,
+            }
+          : {
+              kind: "libCall",
+              fn: "dyn.reflectApply",
+              args: [
+                lowerer.coerceToExpected(method!, DYN),
+                actualReceiver,
+                {
+                  kind: "dynArrLit",
+                  elems: write ? [varRef("p.1", DYN, loc)] : [],
+                  type: DYN,
+                  loc,
+                },
+              ],
+              type: DYN,
+              loc,
+            };
         return [
           {
             kind: "if",

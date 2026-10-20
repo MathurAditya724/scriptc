@@ -193,7 +193,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const cbT = e.args[1]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: zlib callback not a func");
-    host.moveTemp(args[1]!);
+    host.toHeap(args[1]!);
     const adapter = host.zlibBytesThunkFor(cbT);
     const compressing =
       e.fn === "zlib.deflateCb" || e.fn === "zlib.deflateRawCb" || e.fn === "zlib.gzipCb";
@@ -246,7 +246,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const cbT = e.args[3]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: zlib callback not a func");
-    host.moveTemp(args[3]!);
+    host.toHeap(args[3]!);
     const adapter = host.zlibBytesThunkFor(cbT);
     const sym =
       e.fn === "zlib.cbOpts" ? "scr_zlib_codec_async_opts" : "scr_zlib_codec_async_opts_dyn";
@@ -293,7 +293,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const operands = args.slice(0, withCb ? -1 : undefined).map((a) => `ptr ${a.name}`);
     let cb = "null";
     if (withCb) {
-      host.moveTemp(args[args.length - 1]!);
+      host.toHeap(args[args.length - 1]!);
       cb = args[args.length - 1]!.name;
     }
     const sym =
@@ -356,7 +356,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const cbT = e.args[2]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: fs.rename callback not a func");
-    host.moveTemp(args[2]!);
+    host.toHeap(args[2]!);
     const adapter = host.fsRenameThunkFor(cbT);
     host.declare(`declare void @scr_fs_rename_async(ptr, ptr, ptr, ptr)`);
     B.line(
@@ -403,7 +403,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const countField =
       e.fn === "fileHandle.read" || e.fn === "fileHandle.readv" ? "bytesRead" : "bytesWritten";
     host.storeField(host.recordFieldPtr(rec, inner.shapeId, countField).ptr, F64, count, false);
-    const payload = host.retainValue(args[1]!.name, e.args[1]!.type);
+    const payload = host.retainHeap(args[1]!.name, e.args[1]!.type);
     B.line(
       `store ptr ${payload}, ptr ${host.recordFieldPtr(rec, inner.shapeId, vector ? "buffers" : "buffer").ptr}`,
     );
@@ -465,7 +465,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
       throw new InternalCompilerError("llvm emitter bug: fs.watchCb callback not a func");
     const path = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     const adapter = cbT.params.length === 0 ? "scr_watch_thunk0" : "scr_watch_thunk_event";
     host.declare(`declare void @${adapter}(ptr, ptr)`);
     host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr)`);
@@ -618,7 +618,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(`${nm} = call ptr @scr_fs_scandir_name(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
     B.line(`store ptr ${nm}, ptr ${host.recordFieldPtr(row, recT.shapeId, "name").ptr}`);
     B.line(
-      `store ptr ${host.retainValue(path.name, STRING)}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`,
+      `store ptr ${host.retainHeap(path.name, STRING)}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`,
     );
     host.arrPush(arr, "ref", row); // push takes ownership of the row
     const i2 = B.tmp();
@@ -630,7 +630,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     if (!promiseForm) return arrayOut;
     const rc = vAdapters(host.shapeHost, arrayT);
     host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
-    host.moveTemp(arrayOut); // promise fulfillment owns the result array
+    host.toHeap(arrayOut); // promise fulfillment owns the result array
     const promise = B.tmp();
     B.line(
       `${promise} = call ptr @scr_promise_settled_ref(ptr ${arr}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, arrayT)})`,
@@ -696,7 +696,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     if (!promiseForm) return value;
     const rc = vAdapters(host.shapeHost, unionT);
     host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
-    host.moveTemp(value);
+    host.toHeap(value);
     const promise = B.tmp();
     B.line(
       `${promise} = call ptr @scr_promise_settled_ref(ptr ${value.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, unionT)})`,
@@ -912,11 +912,8 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
           scopeid.inline,
         );
       }
-      const rc = vAdapters(host.shapeHost, t);
-      const rowU = B.tmp();
-      B.line(
-        `${rowU} = call ptr @scr_union_new_ref(i32 ${tag}, ptr ${r}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, t)})`,
-      );
+      // The row (+1) moves into its union arm (a shape union is the row).
+      const rowU = host.unionNewOwned(infoT.unionId, tag, { name: r, type: t });
       B.line(`store ptr ${rowU}, ptr ${rowSlot}`);
       B.br(lRow);
     };
@@ -944,7 +941,7 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const retained = B.tmp();
     B.line(`${retained} = call ptr @scr_arr_retain_v(ptr ${peeked})`);
     B.line(`store ptr ${retained}, ptr ${rowsSlot}`);
-    host.releaseValue(cell, iv);
+    host.releaseFrame(cell, iv);
     B.br(lj);
     B.startBlock(lm);
     const fresh = B.tmp();
@@ -1098,6 +1095,30 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
       host.declare(`declare ptr @scr_str_from_char_code_one(double)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_str_from_char_code_one(double ${code.name})`);
+      return host.own({ name: t, type: e.type });
+    }
+    if (
+      e.fn === "string.fromCharCode" &&
+      packed.kind === "arrayLit" &&
+      packed.elems.length <= 16 &&
+      !packed.spreads?.length
+    ) {
+      // A short argument list passes its codes in a stack array.
+      const codes = packed.elems.map((elem) => host.emitExpr(elem));
+      const slot = B.slot();
+      B.entryAllocas.push(`${slot} = alloca [${Math.max(codes.length, 1)} x double]`);
+      codes.forEach((code, i) => {
+        const p = B.tmp();
+        B.line(
+          `${p} = getelementptr inbounds [${Math.max(codes.length, 1)} x double], ptr ${slot}, i64 0, i64 ${i}`,
+        );
+        B.line(`store double ${code.name}, ptr ${p}`);
+      });
+      host.declare(`declare ptr @scr_str_from_char_codes(ptr, ${host.sizeType})`);
+      const t = B.tmp();
+      B.line(
+        `${t} = call ptr @scr_str_from_char_codes(ptr ${slot}, ${host.sizeType} ${codes.length})`,
+      );
       return host.own({ name: t, type: e.type });
     }
     // One packed f64[] (the frontend built it) or one bytes value (the

@@ -40,6 +40,8 @@ static void scr_arr_oom(void) {
 /* Readers of the out-of-line storage see an all-empty one until the first
  * sparse entry, noncanonical property or metadata allocates it. */
 static const ScrArrExt scr_arr_no_ext;
+
+SCR_TL bool (*scr_arr_match_copy)(ScrArr *a, ScrDyn *target) = NULL;
 #define SCR_AX(a) ((const ScrArrExt *)((a)->ext ? (a)->ext : &scr_arr_no_ext))
 
 ScrArrExt *scr_arr_ext(ScrArr *a) {
@@ -1179,7 +1181,7 @@ static void scr_arr_destroy(void *object) {
 #ifdef SCR_RC_AUDIT
     scr_live_arrays--;
 #endif
-    scr_weak_dispose(a);
+    scr_weak_dispose_inline(a);
     scr_mem_free(a);
   }
 }
@@ -4423,6 +4425,10 @@ ScrStr *scr_str_raw(ScrArr *raw, ScrArr *subs) {
 }
 
 void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
+  const ScrDyn *metadata = SCR_AX(a)->metadata;
+  if (metadata && metadata->kind == SCR_DYN_HANDLE && metadata->v.handle.tag == SCR_DYNH_MATCH_SOURCE &&
+      scr_arr_match_copy(a, target))
+    return;
   if (!SCR_AX(a)->metadata) return;
   for (size_t i = 0; i < SCR_AX(a)->metadata->v.obj.len; i++) {
     ScrDynEntry *entry = &SCR_AX(a)->metadata->v.obj.entries[i];

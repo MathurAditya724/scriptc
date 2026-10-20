@@ -236,6 +236,7 @@ typedef struct {
   size_t len;
   size_t cap;
   bool all_num; /* every entry so far flagged numeric (grouping order) */
+  const void *seen; /* the value this frame pushed on the seen stack, or NULL */
 } InspFrame;
 
 static SCR_TL InspFrame *g_frames;
@@ -264,6 +265,10 @@ static void insp_circ_reset(void); /* circular-reference state, below */
 /* Begin a non-empty composite: formatRaw's `recurseTimes += 1;
  * ctx.currentDepth = recurseTimes` plus the uniform +2 the children
  * format under. `recurse` is the CHILDREN's recursion depth. */
+/* A value whose frame the next scr_insp_begin opens: that frame pushes it
+ * on the seen stack (the runtime inspector's class instances). */
+static SCR_TL const void *g_pending_seen;
+
 void scr_insp_begin(double recurse) {
   if (recurse == 1) insp_circ_reset(); /* a fresh top-level value: Node's per-inspect ctx */
   if (g_nframes == g_frames_cap) {
@@ -276,8 +281,14 @@ void scr_insp_begin(double recurse) {
   f->len = 0;
   f->cap = 0;
   f->all_num = true;
+  f->seen = NULL;
   g_cur_depth = recurse;
   g_indent += 2;
+  if (g_pending_seen) {
+    const void *v = g_pending_seen;
+    g_pending_seen = NULL;
+    scr_insp_seen_push(v);
+  }
 }
 
 /* Append one already-rendered entry (borrowed; retained here). is_num
@@ -352,6 +363,7 @@ void scr_insp_seen_push(const void *v) {
   g_seen[g_nseen].ptr = v;
   g_seen[g_nseen].id = 0;
   g_nseen++;
+  if (g_nframes > 0) insp_top()->seen = v;
 }
 
 ScrStr *scr_insp_circular(double id) {
@@ -360,17 +372,12 @@ ScrStr *scr_insp_circular(double id) {
   return scr_str_new(buf, (size_t)n);
 }
 
+/* Pops the value's seen entry after its frame closed. scr_insp_end already
+ * wrote the `<ref *N>` prefix of a circular target. */
 ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s) {
+  (void)v;
   if (g_nseen > 0) g_nseen--;
-  int id = insp_circ_id(v);
-  if (id == 0) return scr_str_retain(s);
-  char buf[32];
-  int n = snprintf(buf, sizeof buf, "<ref *%d> ", id);
-  ScrStr *out = scr_str_alloc_raw(s->len + (size_t)n, s->len + (size_t)n);
-  memcpy(out->data, buf, (size_t)n);
-  memcpy(out->data + n, s->data, s->len);
-  out->data[out->len] = '\0';
-  return out;
+  return scr_str_retain(s);
 }
 
 /* formatRaw's Date base: toISOString(), or toString()'s "Invalid Date"
@@ -507,6 +514,20 @@ ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse, bool 
    * and Map and Set entries) by their rendered text, in UTF-16 code-unit
    * order; arrays keep their element order. */
   if (g_sorted && !array_extras && f->len > 1) qsort(f->items, f->len, sizeof *f->items, insp_item_cmp);
+  /* Node adds a circular target's `<ref *N>` to the base before it chooses
+   * the layout, so the reference counts toward the line width. */
+  ScrStr *ref_base = NULL;
+  int ref_id = f->seen ? insp_circ_id(f->seen) : 0;
+  if (ref_id) {
+    char buf[32];
+    int n = snprintf(buf, sizeof buf, base->len ? "<ref *%d> " : "<ref *%d>", ref_id);
+    size_t len = (size_t)n + base->len;
+    ref_base = scr_str_alloc_raw(len, len);
+    memcpy(ref_base->data, buf, (size_t)n);
+    memcpy(ref_base->data + n, base->data, base->len);
+    ref_base->data[len] = '\0';
+    base = ref_base;
+  }
   size_t entries = f->len;
   bool compact = g_compact >= 1;
   if (compact && array_extras && entries > 6) insp_group(f, trailing_more);
@@ -553,6 +574,7 @@ done:;
   for (size_t i = 0; i < f->len; i++) scr_str_release(f->items[i]);
   free(f->items);
   g_nframes--;
+  if (ref_base) scr_str_release(ref_base);
   return ib_take(&out);
 }
 
@@ -801,14 +823,67 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
   return out;
 }
 
+/* DataView: formatValue's `DataView { [byteLength], [byteOffset],
+ * [buffer] }`, the buffer rendered one level deeper. `[DataView]` beyond
+ * depth. */
+static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double depth) {
+  if (recurse > depth) return scr_str_new("[DataView]", 10);
+  const ScrBytes *owner = b->backing ? b->backing : b;
+  char line[64];
+  scr_insp_begin(recurse + 1);
+  int n = snprintf(line, sizeof line, "[byteLength]: %.0f", scr_bytes_byte_len(b));
+  ScrStr *entry = scr_str_new(line, (size_t)n);
+  scr_insp_entry(entry, false);
+  scr_str_release(entry);
+  n = snprintf(line, sizeof line, "[byteOffset]: %.0f", scr_bytes_byte_offset(b));
+  entry = scr_str_new(line, (size_t)n);
+  scr_insp_entry(entry, false);
+  scr_str_release(entry);
+  ScrStr *buffer = scr_insp_array_buffer(owner, owner->shared ? "SharedArrayBuffer" : "ArrayBuffer",
+                                         recurse + 1, depth);
+  InspBuf eb = {0};
+  ib_cstr(&eb, "[buffer]: ");
+  ib_bytes(&eb, buffer->data, buffer->len);
+  scr_str_release(buffer);
+  entry = ib_take(&eb);
+  scr_insp_entry(entry, false);
+  scr_str_release(entry);
+  ScrStr *base = scr_str_new("", 0);
+  ScrStr *b0 = scr_str_new("DataView {", 10);
+  ScrStr *b1 = scr_str_new("}", 1);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);
+  scr_str_release(base);
+  scr_str_release(b0);
+  scr_str_release(b1);
+  return out;
+}
+
+static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth);
+
+/* A runtime error through its node: the cached one, or one built from its
+ * fields. */
+ScrStr *scr_insp_error_node(ScrError *e, double recurse, double depth) {
+  ScrDyn *view = scr_errdyn_view_of(e);
+  if (view != NULL && view->kind == SCR_DYN_OBJ) return scr_insp_dyn_error(view, recurse, depth);
+  ScrDyn *fields = scr_error_dyn_fields(e);
+  ScrStr *out = scr_insp_dyn_error(fields, recurse, depth);
+  scr_dyn_release(fields);
+  return out;
+}
+
 /* Errors: the STACKLESS rendering — compiled binaries carry no stack, so
  * the base is formatError's bracket form `[Name: message]` / `[Name]`
  * (Node prints these exact forms for an error whose stack is empty;
- * stack-carrying Node output is a documented divergence). A stamped
- * `code` slot renders as the one extra own property Node would show:
- * `[Error: m] { code: 'X' }`, `[Error]` beyond depth. Message newlines
- * indent like Node's formatError tail. */
+ * stack-carrying Node output is a documented divergence). A runtime error
+ * renders through its checked-dynamic node, so the own properties Node
+ * shows follow in key order: the system-error fields, code, and the extra
+ * properties a throw site attached (`[Error: m] { errno: -2, code:
+ * 'ENOENT', ... }`). Other errors render a stamped `code` slot as their
+ * one extra property: `[Error: m] { code: 'X' }`, `[Error]` beyond depth.
+ * Message newlines indent like Node's formatError tail. */
 ScrStr *scr_insp_error(ScrError *e, double recurse, double depth) {
+  if (e->vt >= &scr_error_vts[0] && e->vt < &scr_error_vts[SCR_ERR_COUNT])
+    return scr_insp_error_node(e, recurse, depth);
   bool has_code = e->code != NULL; /* the stamped slot, read directly (borrowed) */
   if (has_code && recurse > depth) {
     /* `[${getCtxStyle(...)}]` with the trailing space sliced: [Name] */
@@ -897,13 +972,53 @@ static const ScrDyn *insp_error_slot(const ScrDyn *d, const char *key, size_t le
   return v != NULL && v->kind == SCR_DYN_STR ? v : NULL;
 }
 
+/* AssertionError's custom inspect (lib/internal/assert/assertion_error.js)
+ * renders the error at depth 0 and shortens string actual/expected values
+ * with addEllipsis: past 10 lines, the first 10 and "\n..."; otherwise past
+ * 512 characters, the text from offset 512 on and "...". +1. */
+static ScrDyn *insp_assertion_ellipsis(ScrDyn *value) {
+  if (value->kind != SCR_DYN_STR) return scr_dyn_retain(value);
+  ScrStr *text = value->v.str;
+  size_t lines = 1, cut = 0;
+  for (size_t i = 0; i < text->len; i++) {
+    if (text->data[i] != '\n') continue;
+    if (++lines == 11) {
+      cut = i;
+      break;
+    }
+  }
+  InspBuf b = {0};
+  if (lines > 10) {
+    ib_bytes(&b, text->data, cut);
+    ib_cstr(&b, "\n...");
+  } else if (scr_str_utf16_len(text) > 512) {
+    ScrStr *tail = scr_str_slice(text, 512, scr_str_utf16_len(text));
+    ib_str(&b, tail);
+    ib_cstr(&b, "...");
+    scr_str_release(tail);
+  } else {
+    return scr_dyn_retain(value);
+  }
+  ScrStr *shortened = ib_take(&b);
+  ScrDyn *out = scr_dyn_new_str(shortened);
+  scr_str_release(shortened);
+  return out;
+}
+
 /* The checked-dynamic Error encoding (scr_error_dyn_fields) rendered like
  * scr_insp_error: the stackless bracket form `[Name: message]`, then the
  * remaining enumerable own properties (code, errno, syscall, ...) in
  * Node's `{ ... }` tail. */
 static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
+  /* An error already on the traversal stack (a spawnSync error's own
+   * `error`): Node's [Circular *N], and <ref *N> on the outer rendering. */
+  double circular = scr_insp_circ_check(d);
+  if (circular != 0) return scr_insp_circular(circular);
   const ScrDyn *name = insp_error_slot(d, "name", 4);
   const ScrDyn *message = insp_error_slot(d, "message", 7);
+  bool assertion = name != NULL && name->v.str->len == 14 &&
+                   memcmp(name->v.str->data, "AssertionError", 14) == 0;
+  double value_depth = assertion ? recurse : depth;
   size_t extra = 0;
   for (size_t i = 0; i < d->v.obj.len; i++) {
     ScrDynEntry *ent = &d->v.obj.entries[i];
@@ -934,6 +1049,7 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
   ScrStr *base_str = ib_take(&base);
   if (extra == 0) return base_str;
   scr_insp_begin(recurse + 1);
+  scr_insp_seen_push(d);
   for (size_t i = 0; i < d->v.obj.len; i++) {
     ScrDynEntry *ent = &d->v.obj.entries[i];
     if (!ent->enumerable) continue;
@@ -941,7 +1057,11 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
         (ent->key_len == 7 && memcmp(ent->key, "message", 7) == 0) ||
         (ent->key_len == 5 && memcmp(ent->key, "stack", 5) == 0))
       continue;
-    ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
+    bool shortened = assertion && ((ent->key_len == 6 && memcmp(ent->key, "actual", 6) == 0) ||
+                                   (ent->key_len == 8 && memcmp(ent->key, "expected", 8) == 0));
+    ScrDyn *shown = shortened ? insp_assertion_ellipsis(ent->value) : scr_dyn_retain(ent->value);
+    ScrStr *val = scr_insp_dyn(shown, recurse + 1, value_depth);
+    scr_dyn_release(shown);
     InspBuf eb = {0};
     insp_key_into(&eb, ent->key, ent->key_len);
     ib_cstr(&eb, ": ");
@@ -953,10 +1073,12 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
   }
   ScrStr *b0 = scr_str_new("{", 1);
   ScrStr *b1 = scr_str_new("}", 1);
-  ScrStr *out = scr_insp_end(base_str, b0, b1, recurse + 1, false, false);
+  ScrStr *body = scr_insp_end(base_str, b0, b1, recurse + 1, false, false);
   scr_str_release(b0);
   scr_str_release(b1);
   scr_str_release(base_str);
+  ScrStr *out = scr_insp_ref_wrap(d, body);
+  scr_str_release(body);
   return out;
 }
 
@@ -990,6 +1112,99 @@ static ScrStr *scr_insp_weak_collection(const char *label, double recurse, doubl
   }
   ib_cstr(&out, label);
   ib_cstr(&out, " { <items unknown> }");
+  return ib_take(&out);
+}
+
+/* A native iterator: the array and string iterators print Node's empty
+ * `Object [Array Iterator] {}`; the Map and Set iterators print the
+ * entries their next steps would produce, under Node's labels
+ * (`[Set Iterator] { 1, 2 }`, `[Map Entries] { [ 'a', 1 ] }`), without
+ * advancing. NULL for a handle's iterator (kind 4), which keeps the
+ * unsupported answer. */
+static ScrStr *scr_insp_native_iterator(ScrDyn *d, double recurse, double depth) {
+  unsigned kind, selection;
+  ScrMap *map;
+  double index;
+  scr_dyn_native_iterator_state(d, &kind, &selection, &map, &index);
+  if (kind == 0) return scr_str_new("Object [Array Iterator] {}", 26);
+  if (kind == 1) return scr_str_new("Object [String Iterator] {}", 27);
+  if (kind != 2 && kind != 3) return NULL;
+  bool pairs = selection == 2;
+  const char *label = kind == 3 ? (pairs ? "[Set Entries]" : "[Set Iterator]")
+                                : (pairs ? "[Map Entries]" : "[Map Iterator]");
+  if (recurse > depth) {
+    InspBuf out = {0};
+    ib_cstr(&out, "[Object ");
+    ib_cstr(&out, label);
+    ib_char(&out, ']');
+    return ib_take(&out);
+  }
+  size_t remaining = 0;
+  if (map) {
+    for (double i = scr_map_iter_skip(map, index); i < scr_map_iter_count(map); i++)
+      if (scr_map_iter_live(map, i)) remaining++;
+  }
+  if (remaining == 0) {
+    InspBuf out = {0};
+    ib_cstr(&out, label);
+    ib_cstr(&out, " {  }");
+    return ib_take(&out);
+  }
+  ScrStr *base = scr_str_new(label, strlen(label));
+  scr_insp_begin(recurse + 1);
+  scr_map_iter_enter(map);
+  size_t shown = 0;
+  for (double i = scr_map_iter_skip(map, index); i < scr_map_iter_count(map) && shown < 100; i++) {
+    if (!scr_map_iter_live(map, i)) continue;
+    shown++;
+    ScrDyn *item;
+    if (pairs) {
+      item = scr_dyn_new_arr();
+      scr_dyn_arr_push(item, scr_map_dyn_key(map, i));
+      scr_dyn_arr_push(item, kind == 3 ? scr_map_dyn_key(map, i) : scr_map_dyn_value(map, i));
+    } else {
+      item = kind == 2 && selection == 0 ? scr_map_dyn_value(map, i) : scr_map_dyn_key(map, i);
+    }
+    ScrStr *text = scr_insp_dyn(item, recurse + 1, depth);
+    scr_dyn_release(item);
+    scr_insp_entry(text, false);
+    scr_str_release(text);
+  }
+  scr_map_iter_exit(map);
+  if (remaining > shown) {
+    ScrStr *more = scr_insp_more_items((double)(remaining - shown));
+    scr_insp_entry(more, false);
+    scr_str_release(more);
+  }
+  ScrStr *b0 = scr_str_new("{", 1);
+  ScrStr *b1 = scr_str_new("}", 1);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);
+  scr_str_release(base);
+  scr_str_release(b0);
+  scr_str_release(b1);
+  return out;
+}
+
+/* A compiled generator object: Node's empty `Object [<tag>] {}`, with the
+ * tag the compiler set (scr_gen_set_tag). A generator standing in for an
+ * object of another class (a tag starting with '!') throws the
+ * "not supported yet" Error instead. */
+static bool scr_insp_is_generator(const ScrDyn *d) {
+  const char *key = d->v.typed_ref.type_key;
+  return !strncmp(key, "generator<", 10) || !strncmp(key, "async-generator<", 16);
+}
+
+static ScrStr *scr_insp_generator(const ScrDyn *d) {
+  const char *tag = scr_gen_tag_reader(d->v.typed_ref.ptr);
+  if (tag[0] == '!') {
+    static const char message[] = "util.inspect of this iterator object is not supported yet";
+    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    return scr_str_new("", 0);
+  }
+  InspBuf out = {0};
+  ib_cstr(&out, "Object [");
+  ib_cstr(&out, tag);
+  ib_cstr(&out, "] {}");
   return ib_take(&out);
 }
 
@@ -1182,20 +1397,35 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_STR:
       return scr_insp_str(d->v.str);
     case SCR_DYN_ARR: {
-      if (d->v.arr.len == 0) return scr_str_new("[]", 2);
+      size_t len = d->v.arr.len;
+      if (len == 0) return scr_str_new("[]", 2);
       if (recurse > depth) return scr_str_new("[Array]", 7);
       scr_insp_begin(recurse + 1);
-      size_t shown = d->v.arr.len < 100 ? d->v.arr.len : 100;
-      for (size_t i = 0; i < shown; i++) {
-        ScrDyn *item = d->v.arr.items[i];
+      /* Node's maxArrayLength (100) counts output entries; a run of holes
+       * is one `<n empty items>` entry (formatSpecialArray). */
+      const unsigned char *presence = d->v.arr.presence;
+      size_t i = 0;
+      for (size_t shown = 0; i < len && shown < 100; shown++) {
+        if (presence && !presence[i]) {
+          size_t next = i + 1;
+          while (next < len && !presence[next]) next++;
+          char hole[48];
+          int hn = snprintf(hole, sizeof hole, "<%zu empty item%s>", next - i, next - i == 1 ? "" : "s");
+          ScrStr *s = scr_str_new(hole, (size_t)hn);
+          scr_insp_entry(s, false);
+          scr_str_release(s);
+          i = next;
+          continue;
+        }
+        ScrDyn *item = d->v.arr.items[i++];
         ScrStr *s = scr_insp_dyn(item, recurse + 1, depth);
         scr_insp_entry(s, item->kind == SCR_DYN_NUM);
         scr_str_release(s);
       }
-      bool more = d->v.arr.len > 100;
+      bool more = i < len;
       if (more) {
-        ScrStr *m = scr_insp_more_items((double)(d->v.arr.len - 100));
-        scr_insp_entry(m, d->v.arr.items[100]->kind == SCR_DYN_NUM);
+        ScrStr *m = scr_insp_more_items((double)(len - i));
+        scr_insp_entry(m, d->v.arr.items[i]->kind == SCR_DYN_NUM);
         scr_str_release(m);
       }
       ScrStr *base = scr_str_new("", 0);
@@ -1244,6 +1474,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         return scr_insp_weak_collection(d->v.handle.tag == SCR_DYNH_WEAK_MAP ? "WeakMap" : "WeakSet",
                                         recurse, depth);
       if (d->v.handle.tag == SCR_DYNH_DATE) return scr_insp_date(scr_dyn_native_date_value(d));
+      if (d->v.handle.tag == SCR_DYNH_ITERATOR) {
+        ScrStr *iterator = scr_insp_native_iterator(d, recurse, depth);
+        if (iterator) return iterator;
+      }
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
       if (ops->inspect_view) {
         /* Node's custom inspectors answer the bare class name beyond the
@@ -1284,6 +1518,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     }
 
     case SCR_DYN_TYPED_REF: {
+      if (scr_insp_is_generator(d)) return scr_insp_generator(d);
       const char *cls = NULL;
       ScrDyn *view = scr_event_ref_hooks ? scr_event_ref_hooks->inspect_view(d, &cls) : NULL;
       if (view) {
@@ -1301,6 +1536,12 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_str_release(body);
         return ib_take(&out);
       }
+      /* A class instance already on the traversal stack renders as
+       * [Circular *N]. The key is the native instance, the same key the
+       * compiled inspect helpers push, so a cycle through both resolves. */
+      const void *instance = d->v.typed_ref.ptr;
+      double circular = scr_insp_circ_check(instance);
+      if (circular > 0) return scr_insp_circular(circular);
       ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
       /* A class instance prints with its class's name, which the checked
        * view of its fields does not carry. */
@@ -1312,7 +1553,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         if (!cls) scr_trap("scriptc: out of memory\n");
         memcpy(cls, name->data, name->len);
         cls[name->len] = '\0';
+        size_t nseen = g_nseen;
+        g_pending_seen = instance;
         out = scr_insp_obj(materialized, recurse, depth, cls);
+        g_pending_seen = NULL;
+        if (g_nseen > nseen) g_nseen = nseen;
         free(cls);
       } else {
         out = scr_insp_dyn(materialized, recurse, depth);
@@ -1332,6 +1577,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     }
     case SCR_DYN_BYTES: {
       ScrBytes *b = d->v.bytes;
+      if (b->is_data_view) return scr_insp_data_view(b, recurse, depth);
       if (d->buffer) {
         /* Buffer-flavored (a stream chunk): Node's <Buffer ..> form. */
         return scr_insp_buffer(b);

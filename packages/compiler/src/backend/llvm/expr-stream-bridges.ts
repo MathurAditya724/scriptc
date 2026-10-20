@@ -500,16 +500,17 @@ export function streamTypedRefCommitAdapter(
     `  br i1 %missing, label %done, label %swap`,
     `swap:`,
   ];
+  const base = host.nullableUnions.fieldBase(t.shapeId);
   const members = [
     ...shape.fields.map((field, index) => ({
-      index: index + 1,
+      index: index + base,
       type: llFieldType(field.type, host.inlineUnions.record(field.type)),
       name: field.name,
     })),
     ...(shape.indexValue
       ? [
           {
-            index: shape.fields.length + 1,
+            index: shape.fields.length + base,
             type: "ptr" as const,
             name: "[key: string] overflow",
           },
@@ -707,6 +708,10 @@ export function streamTypedRefMaterializeAdapter(
   }
   // Publish both symbols before their bodies: class-array and callback
   // converters can request this same adapter while emitting the commit.
+  // A recursive field type binds capsules of this class there too, so the
+  // class view ops are published first.
+  const opsMeta = isDynTypedRefType(t) ? host.classMeta.get(t.className) : undefined;
+  if (opsMeta && liveClassOpsEligible(opsMeta)) adapter.classOps = `@${snapshot}_cops`;
   adapter.commit = `@${snapshot}_commit`;
   adapter.commit = host.streamTypedRefCommitAdapter(t, snapshot);
   const B = new BlockBuilder();
@@ -718,10 +723,7 @@ export function streamTypedRefMaterializeAdapter(
         `llvm emitter bug: typed-ref materialize of unknown class ${t.className}`,
       );
     }
-    if (liveClassOpsEligible(meta)) {
-      adapter.classOps = `@${snapshot}_cops`;
-      liveClassOps(host, snapshot, meta);
-    }
+    if (adapter.classOps !== undefined) liveClassOps(host, snapshot, meta);
     if (meta.hierarchy && meta.children.length) {
       const vtSlot = B.tmp(),
         vt = B.tmp(),
@@ -943,7 +945,7 @@ export function streamTypedRefMaterializeAdapter(
       B.line(`${out} = call ptr @scr_dyn_new_arr()`);
       const fields = [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name));
       for (const field of fields) {
-        const index = shape.fields.indexOf(field) + 1;
+        const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
         const fieldPtr = B.tmp();
         B.line(
           `${fieldPtr} = getelementptr inbounds %${mangleRecordStruct(t.shapeId)}, ptr %p, i64 0, i32 ${index}`,
@@ -980,7 +982,7 @@ export function streamTypedRefMaterializeAdapter(
         liveRecordOps(host, t, snapshot, fields);
       }
       for (const field of fields) {
-        const index = shape.fields.indexOf(field) + 1;
+        const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
         const fieldPtr = B.tmp();
         B.line(
           `${fieldPtr} = getelementptr inbounds %${mangleRecordStruct(t.shapeId)}, ptr %p, i64 0, i32 ${index}`,
@@ -1202,7 +1204,7 @@ function liveRecordOps(
   const names = `${snapshot}_names`;
   const ops = `${snapshot}_rops`;
   const loadField = (B: BlockBuilder, field: IrRecordShape["fields"][number]): string => {
-    const index = shape.fields.indexOf(field) + 1;
+    const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
     const fieldPtr = B.tmp();
     B.line(`${fieldPtr} = getelementptr inbounds %${struct}, ptr %p, i64 0, i32 ${index}`);
     return loadStructField(

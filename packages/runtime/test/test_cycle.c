@@ -712,8 +712,11 @@ static void check_deferred_white_restoration(void) {
  * once the type's objects die in nursery cycles again, the next probe window
  * finds that and it is walked again. Window, ratio and probe interval mirror
  * SCR_CYC_BYPASS_*. */
-/* Tests only (SCR_CYC_TESTING): one pass at exactly `gen`. */
+/* Tests only (SCR_CYC_TESTING): one pass at exactly `gen`, and the routing
+ * of appended candidates whose type bypasses a level, which the next
+ * scheduling decision or pass would do. */
 size_t scr_cyc_pass_at(unsigned gen);
+void scr_cyc_route_bypassed_at(void);
 static size_t bypass_traced; /* trace calls on bypass-kind nodes */
 static size_t bypass_freed;  /* bypass-kind nodes freed */
 static void bypass_trace(void *obj, ScrTraceVisit visit, void *ctx) {
@@ -785,6 +788,22 @@ static void check_nursery_bypass(void) {
   scr_collect_cycles();
   check(bypass_freed - before == 2 * RINGS, "an older pass missed dead rings of a bypassed type");
 
+  /* The same through the inline release path, which leaves the candidates
+   * in the nursery buffer: the next pass routes them past the nursery. */
+  before = bypass_freed;
+  for (size_t r = 0; r < RINGS; r++) {
+    Node *a = make_bypass_node(), *b = make_bypass_node();
+    a->next = b;
+    b->next = a;
+    a->rc++;
+    a->rc--;
+    scr_cyc_released(a);
+  }
+  run_release_passes();
+  check(bypass_freed - before < 2 * RINGS, "inline-buffered bypassed rings were walked by the nursery");
+  scr_collect_cycles();
+  check(bypass_freed - before == 2 * RINGS, "an older pass missed inline-buffered rings");
+
   /* Now the type's objects die in nursery cycles. Once INTERVAL windows'
    * worth of candidates went past the nursery, a probe window walks them
    * there again, and its yield turns the bypass off. A nursery pass after
@@ -832,13 +851,16 @@ static Node *make_mature_kind_node(void) {
 }
 
 /* How many of PROBE fresh, externally owned candidates a release buffers
- * straight into the old generation. */
+ * straight into the old generation, by the time anything reads the buffers
+ * (a release may append the candidate to the nursery buffer, which the next
+ * decision routes past the levels its type bypasses). */
 static size_t probe_old_on_release(Node **owned, size_t probe) {
   scr_collect_cycles(); /* reset the growth baselines: no pass runs below */
   size_t old = 0;
   for (size_t i = 0; i < probe; i++) {
     owned[i] = make_mature_kind_node();
     read_live(owned[i]);
+    scr_cyc_route_bypassed_at();
     old += scr_cyc_gen(scr_cyc_hdr(owned[i])) == SCR_CYC_OLD;
   }
   return old;
@@ -1032,6 +1054,35 @@ static void check_rebuffer_past_mature(void) {
  * cycle-headered count has grown by SCR_CYC_NURSERY_ALLOCATIONS (4096 in
  * scr_cycle.c) since the last one, so the dead nodes left uncollected stay
  * within that much plus the ring in hand. */
+size_t scr_cyc_backlog_threshold_at(unsigned gen);
+void scr_cyc_forget_backlog_at(unsigned gen);
+
+/* A heap that grows while its mature buffer stays empty: every release is
+ * of one old object, so the mature passes that growth brings have no
+ * candidates and only widen the mature growth fraction. Until a mature pass
+ * has had candidates, the backlog threshold widens with it, so a program
+ * that then reads the structure it built does not walk a quarter of it at
+ * once to find nothing. */
+static void check_unjudged_backlog_follows_growth(void) {
+  enum { LIVE = 65536 };
+  Node **leaves = calloc(LIVE, sizeof(*leaves));
+  if (!leaves) scr_trap("cycle test: out of memory\n");
+  Node *anchor = make_leaf();
+  age_to_old(anchor);
+  scr_cyc_forget_backlog_at(SCR_CYC_MATURE);
+  for (size_t i = 0; i < LIVE; i++) {
+    leaves[i] = make_leaf();
+    read_live(anchor);
+  }
+  check(scr_cyc_backlog_threshold_at(SCR_CYC_MATURE) > scr_cyc_live / 4,
+        "an unjudged mature backlog stayed at a quarter of the live heap");
+  drop_leaves(leaves, LIVE);
+  anchor->rc--;
+  scr_cyc_on_dead(anchor);
+  node_free(anchor);
+  free(leaves);
+}
+
 static void check_allocation_growth_runs_passes(void) {
   enum { RINGS = 80, NODES_PER_RING = 64, ALLOCATION_WINDOW = 4096 };
   scr_collect_cycles();
@@ -1187,6 +1238,53 @@ static void check_large_old_buffer_with_nursery_candidates(void) {
   }
 }
 
+/* Releases through scr_cyc_released append nursery candidates inline while
+ * the window allows, and fall back to scr_cyc_on_release exactly when a
+ * collection is due: the candidate that brings the buffered total to the
+ * trigger runs the pass, as it would through the call. */
+static void check_inline_buffering(void) {
+  enum { MAX = 4096 };
+  static Node *nodes[MAX];
+  size_t threshold = configured_nursery_threshold();
+  if (threshold > MAX) return;
+  scr_collect_cycles();
+  size_t before = traced;
+  for (size_t i = 0; i < threshold; i++) {
+    nodes[i] = make_ring(1);
+    nodes[i]->rc--; /* drop the self edge: a live leaf held by its owner */
+    nodes[i]->next = NULL;
+    nodes[i]->rc++;
+    nodes[i]->rc--;
+    scr_cyc_released(nodes[i]);
+    ScrCycHdr *h = scr_cyc_hdr(nodes[i]);
+    if (i + 1 < threshold) {
+      check(scr_cyc_is_buffered(h) && scr_cyc_gen(h) == SCR_CYC_NURSERY,
+            "a nursery release did not buffer its candidate");
+#if SCR_CYC_INLINE_BUFFERING
+      check(scr_cyc_buffers.roots[SCR_CYC_NURSERY].v[scr_cyc_buf_index(h)] == nodes[i],
+            "an inline append is not where the header says");
+#endif
+      check(traced == before, "a pass ran before the trigger");
+    }
+  }
+  /* The last release reached the trigger: one nursery pass walked them all
+   * and promoted the survivors, which wait in the mature buffer. */
+  check(traced > before, "the release that reached the trigger did not collect");
+  for (size_t i = 0; i < threshold; i++) {
+    ScrCycHdr *h = scr_cyc_hdr(nodes[i]);
+    check(scr_cyc_gen(h) == SCR_CYC_MATURE, "a nursery survivor was not promoted");
+    check(nodes[i]->rc == 1, "a survivor lost its count");
+  }
+  size_t freed_before = freed;
+  for (size_t i = 0; i < threshold; i++) {
+    nodes[i]->rc = 0;
+    scr_cyc_on_dead(nodes[i]);
+    node_free(nodes[i]);
+  }
+  check(freed - freed_before == threshold, "the leaves were not freed");
+  scr_collect_cycles();
+}
+
 /* The death rule: once objects have died outside passes (the live count
  * fell by 1/32 of the heap the last full pass left, here the floor's), a
  * full pass is due as soon as the heap has grown the base quarter past it,
@@ -1266,6 +1364,7 @@ static void check_death_brings_full_pass(void) {
 }
 
 int main(void) {
+  check_inline_buffering();
   check_old_garbage_reclaimed_while_growing();
   check_older_rings_into_old();
   check_cycle_spanning_mature_and_old();
@@ -1294,6 +1393,7 @@ int main(void) {
   check_publication_takes_candidates();
   check_limited_pass();
   check_large_old_buffer_with_nursery_candidates();
+  check_unjudged_backlog_follows_growth();
   printf("cycle collection checks passed: threshold=%zu growth_cap=%zu\n",
          configured_nursery_threshold(), configured_growth_cap());
   return 0;

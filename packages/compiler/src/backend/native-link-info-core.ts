@@ -16,18 +16,30 @@ import type { NativeTargetSpec } from "./targets.js";
 
 export interface NativeLinkFeatures {
   workers?: boolean;
+  /** The young-in nursery (backend/young-nursery.ts): the SCR_YIN
+   * variant of the collector unit. Absent when off. */
+  youngNursery?: boolean;
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
+  /** The program assigns process.emitWarning: links the
+   * SCR_WARNING_REPLACE variant of the dyn-async unit. */
+  warningReplace?: boolean;
+  /** The program uses process.stdin.setEncoding, string 'data' listeners
+   * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
+  stdioExtended?: boolean;
   zlib: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
   dc: boolean;
   dynAsync: boolean;
+  /** Dynamic-tier jsval operations: the scr_js_* units. Absent (not false)
+   * for programs without them, so their link features stay unchanged. */
+  dynTier?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
@@ -48,6 +60,9 @@ export interface NativeLinkFeatures {
    * archive. */
   cipher: boolean;
   tlsCa: boolean;
+  /** crypto.subtle importKey/sign/verify/digest and CryptoKey values:
+   * scr_webcrypto.c. */
+  webcrypto: boolean;
 }
 
 export interface NativeLinkInfo {

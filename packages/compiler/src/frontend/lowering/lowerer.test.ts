@@ -241,25 +241,26 @@ test("optional union widening keeps refused and missing contracts current", () =
 });
 
 test("stdlib provenance is cached by symbol identity, including merged and shadowed declarations", () => {
-  const builtin = {} as Symbol,
-    shadow = {} as Symbol;
   const userFile = { fileName: "user.ts" } as SourceFile;
   const library = { fileName: "library.d.ts" } as SourceFile;
   const userDeclaration = { getSourceFile: () => userFile } as Node;
   const libraryDeclaration = { getSourceFile: () => library } as Node;
-  const declarationsOf = vi.fn((symbol: Symbol) =>
-    symbol === builtin ? [userDeclaration, libraryDeclaration] : [userDeclaration],
-  );
-  const lowerer = new Lowerer(
-    { getTypeChecker: () => ({ declarationsOf }) } as unknown as Program,
-    userFile,
-    [],
-  );
+  let declarationReads = 0;
+  const symbolWith = (declarations: readonly Node[]): Symbol =>
+    ({
+      get declarations() {
+        declarationReads++;
+        return declarations;
+      },
+    }) as unknown as Symbol;
+  const builtin = symbolWith([userDeclaration, libraryDeclaration]),
+    shadow = symbolWith([userDeclaration]);
+  const lowerer = new Lowerer({ getTypeChecker: () => ({}) } as unknown as Program, userFile, []);
   vi.spyOn(lowerer, "isStdlibFile").mockImplementation((file) => file === library);
   for (let i = 0; i < 20; i++) {
     expect(lowerer.isStdlibSymbol(builtin)).toBe(true);
     expect(lowerer.isStdlibSymbol(shadow)).toBe(false);
     expect(lowerer.isStdlibSymbol(undefined)).toBe(false);
   }
-  expect(declarationsOf).toHaveBeenCalledTimes(2);
+  expect(declarationReads).toBe(2);
 });

@@ -22,7 +22,7 @@ import {
   VOID,
   arrayOf,
 } from "../../ir/ir.js";
-import { isNodeTypesPath, requireSpecOf } from "../program.js";
+import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
 
 /** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
@@ -140,7 +140,7 @@ export function sideEffectFreeOptionValue(node: ts.Expression): boolean {
     return sideEffectFreeOptionValue(e.operand);
   }
   if (ts.isObjectLiteralExpression(e)) {
-    return e.properties.every(
+    return e.properties.nodes.every(
       (p) =>
         ts.isShorthandPropertyAssignment(p) ||
         (ts.isPropertyAssignment(p) &&
@@ -149,7 +149,7 @@ export function sideEffectFreeOptionValue(node: ts.Expression): boolean {
     );
   }
   if (ts.isArrayLiteralExpression(e)) {
-    return e.elements.every((el) => !ts.isSpreadElement(el) && sideEffectFreeOptionValue(el));
+    return e.elements.nodes.every((el) => !ts.isSpreadElement(el) && sideEffectFreeOptionValue(el));
   }
   return false;
 }
@@ -276,8 +276,8 @@ export const HTTP_SERVER_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
 /** new http.Agent(options)'s documented keys (Node v24 — the Agent
  * constructor table plus the socket.connect() options it forwards into
  * each dial). The lowered set is keepAlive/keepAliveMsecs/maxSockets/
- * maxFreeSockets/timeout/port (+ scheduling, dropped: no free pool
- * exists); the rest fence by name and unknown keys drop like Node. */
+ * maxFreeSockets/timeout/port/scheduling; the rest fence by name and
+ * unknown keys drop like Node. */
 export const AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "family",
   "hints",
@@ -773,6 +773,7 @@ export const STATIC_NUMBER_METHODS: Record<
   { fns: readonly IrLibFn[]; minArgs: number; maxArgs: number } | undefined
 > = {
   toFixed: { fns: ["num.toFixed0", "num.toFixed"], minArgs: 0, maxArgs: 1 },
+  toPrecision: { fns: ["num.toPrecision"], minArgs: 0, maxArgs: 1 },
 };
 
 /** One lowerable builtin-module FUNCTION: `fn`'s libCall with `params`
@@ -793,6 +794,10 @@ export interface BuiltinModuleFn {
    * omission or explicit undefined; rest parameters pack into one typed
    * array slot. Entries with call-site-specific validation remain absent. */
   valueParams?: BuiltinValueParam[];
+  /** The libCall a function value's adapter makes when it differs from the
+   * direct-call row's `fn` (a direct call picks an arity-specific entry
+   * point; the value accepts every arity through one). */
+  valueFn?: IrLibFn;
 }
 
 export type BuiltinValueParam =
@@ -1502,7 +1507,15 @@ export const BUILTIN_MODULE_FNS: Record<
     userInfo: { fn: "os.userName", params: [], result: VOID },
   },
   crypto: {
-    randomUUID: { fn: "crypto.randomUUID", params: [], result: STRING },
+    randomUUID: {
+      fn: "crypto.randomUUID",
+      params: [],
+      result: STRING,
+      // As a value (uuid's `export default { randomUUID }`), the optional
+      // options argument goes through the validating entry point.
+      valueFn: "crypto.randomUUIDOpts",
+      valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+    },
     // A real Buffer result. The composed randomBytes(n).toString(enc)
     // form KEEPS its one-libCall lowering (lowerCryptoComposedCall runs
     // first and the Buffer never materializes there); this entry covers
@@ -1521,9 +1534,15 @@ export const BUILTIN_MODULE_FNS: Record<
     hash: { fn: "crypto.hashDigestStr", params: [STRING, STRING, STRING], result: STRING },
     timingSafeEqual: { fn: "crypto.timingSafeEqual", params: [BYTES_U8, BYTES_U8], result: BOOL },
     randomFillSync: { fn: "crypto.randomFill", params: [BYTES_U8, F64, F64], result: BYTES_U8 },
+    getRandomValues: { fn: "crypto.getRandomValues", params: [BYTES_U8], result: BYTES_U8 },
     randomInt: { fn: "crypto.randomInt", params: [F64, F64], result: F64 },
     randomFill: { fn: "crypto.randomFillCb", params: [], result: VOID },
-    randomUUIDv7: { fn: "crypto.randomUUIDv7", params: [DYN], result: STRING },
+    randomUUIDv7: {
+      fn: "crypto.randomUUIDv7",
+      params: [DYN],
+      result: STRING,
+      valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+    },
     createSecretKey: { fn: "crypto.createSecretKey", params: [DYN, DYN], result: DYN },
     generateKeySync: { fn: "crypto.generateKeySync", params: [DYN, DYN], result: DYN },
     generateKey: { fn: "crypto.generateKeyCb", params: [], result: VOID },
@@ -1822,6 +1841,22 @@ export const BUILTIN_MODULE_FNS: Record<
       valueParams: [{ mode: "required", type: STRING }],
     },
   },
+  // node:punycode (deprecated): punycode.js 2.1.0's conversions over
+  // strings (scr_url.c). ucs2.decode/encode are members of the module's
+  // ucs2 object, dispatched as module members (builtinMemberOf). The
+  // DEP0040 report rides the module's load sites (punycodeLoadWarning).
+  punycode: {
+    decode: { fn: "punycode.decode", params: [STRING], result: STRING },
+    encode: { fn: "punycode.encode", params: [STRING], result: STRING },
+    toASCII: { fn: "punycode.toASCII", params: [STRING], result: STRING },
+    toUnicode: { fn: "punycode.toUnicode", params: [STRING], result: STRING },
+    "ucs2.decode": { fn: "punycode.ucs2Decode", params: [STRING], result: arrayOf(F64) },
+    "ucs2.encode": { fn: "punycode.ucs2Encode", params: [arrayOf(F64)], result: STRING },
+  },
+  // node:constants (deprecated) is one frozen object (Object.assign of
+  // os.constants' groups, fs.constants and crypto.constants): bindings of
+  // the module read it as a checked-dynamic value (builtinConstantsObject).
+  constants: {},
   // node:readline: createInterface's options are entirely special-cased
   // (exactly { input: process.stdin, output?: process.stdout } — see
   // lowerBuiltinModuleCall); the entry carries the canonical shape. The
@@ -1951,6 +1986,7 @@ export const BUILTIN_MODULE_CONSTS: Record<
   os: { EOL: "\n", devNull: "/dev/null" },
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
+  punycode: { version: "2.1.0" },
   // zlib's module-level copies of its constants (every member outside
   // BROTLI_*, Node's own loop over zlib.constants).
   zlib: Object.fromEntries(
@@ -2069,6 +2105,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomFillPromiseDyn",
     ],
     timingSafeEqual: ["crypto.timingSafeEqualDyn"],
+    getRandomValues: ["crypto.getRandomValuesDyn"],
     randomInt: ["crypto.randomIntMax", "crypto.randomIntCb", "crypto.randomIntPromise"],
     randomUUID: ["crypto.randomUUIDOpts"],
   },
@@ -2143,6 +2180,20 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     note: "a Blob with name and lastModified (Date.now() when absent)",
   },
   {
+    id: "stdlib.webcrypto.subtle",
+    kind: "stdlib",
+    name: "globalThis.crypto.subtle",
+    fns: ["webcrypto.importKey", "webcrypto.sign", "webcrypto.verify", "webcrypto.digest"],
+    note: "importKey('raw') for HMAC keys, HMAC sign and verify, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
+  },
+  {
+    id: "stdlib.webcrypto.CryptoKey",
+    kind: "stdlib",
+    name: "CryptoKey",
+    fns: ["webcrypto.isCryptoKey"],
+    note: "secret HMAC keys with type, extractable, algorithm and usages, and instanceof CryptoKey",
+  },
+  {
     id: "stdlib.atomics",
     kind: "stdlib",
     name: "Atomics",
@@ -2206,6 +2257,13 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     name: "Date.prototype.toISOString",
     fns: ["date.toISOString", "date.toISOStringValue"],
     note: "UTC ISO formatting over constructed and stored Date values",
+  },
+  {
+    id: "stdlib.date.toUTCString",
+    kind: "stdlib",
+    name: "Date.prototype.toUTCString",
+    fns: ["date.toUTCString"],
+    note: "RFC 7231 IMF-fixdate formatting over stored Date values",
   },
   {
     id: "stdlib.date.getFullYear",
@@ -2303,6 +2361,25 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "stdlib",
     name: "Date.prototype.getTimezoneOffset",
     fns: ["date.getTimezoneOffset"],
+  },
+  {
+    id: "stdlib.date.toString",
+    kind: "stdlib",
+    name: "Date.prototype.toString",
+    fns: ["date.toString"],
+    note: "local time with the host zone's long English name; String(date) and template literals use it",
+  },
+  {
+    id: "stdlib.date.toDateString",
+    kind: "stdlib",
+    name: "Date.prototype.toDateString",
+    fns: ["date.toDateString"],
+  },
+  {
+    id: "stdlib.date.toTimeString",
+    kind: "stdlib",
+    name: "Date.prototype.toTimeString",
+    fns: ["date.toTimeString"],
   },
   // ── perf_hooks (lowerPerfHooksCall): the monotonic clock.
   {
@@ -2619,6 +2696,15 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     name: "os.constants",
     fns: ["os.constants"],
     note: "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined",
+  },
+  // fs.constants as a value, and its members beyond the baked access-mode
+  // bits: the target libc's null-prototype constants object.
+  {
+    id: "node-builtin.fs.constants",
+    kind: "node-builtin",
+    name: "fs.constants",
+    fns: ["fs.constants"],
+    note: "node_constants.cc's fs group under the target libc's macros; members a platform lacks read as undefined",
   },
 ];
 
@@ -3177,7 +3263,7 @@ export function isChildSurfaceMember(
 ): boolean {
   if (isStdlibMember(lowerer, access)) return true;
   const sym = lowerer.checker.getSymbolAtLocation(access.name);
-  const decl = sym ? lowerer.checker.declarationsOf(sym)[0] : undefined;
+  const decl = sym ? sym.declarations[0] : undefined;
   const iface = decl?.parent;
   if (!decl || !iface || !ts.isInterfaceDeclaration(iface)) return false;
   if (lowerer.isStdlibFile(decl.getSourceFile())) return false;
@@ -3190,10 +3276,7 @@ export function isChildSurfaceMember(
  * with lib interfaces, so a member can carry declarations from both. A
  * user's own declaration is in neither, so shadowing never matches. */
 export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined): boolean {
-  return (
-    !!symbol &&
-    lowerer.checker.declarationsOf(symbol).some((d) => lowerer.isStdlibFile(d.getSourceFile()))
-  );
+  return !!symbol && symbol.declarations.some((d) => lowerer.isStdlibFile(d.getSourceFile()));
 }
 
 /** The canonical stdlib-global name `expr` denotes, or null. Three
@@ -3207,7 +3290,9 @@ export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined):
  *     `global.process`) — `declare var` globals ARE properties of
  *     `typeof globalThis`, same symbol either way;
  *   - a local alias binding (`const process = globalThis.process`, the
- *     tamper-guard prologue) registered in stdlibGlobalAliases. */
+ *     tamper-guard prologue) registered in stdlibGlobalAliases;
+ *   - a const binding of the Map or Set constructor (`const M = Map`,
+ *     builtinClassAliasOf). */
 export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
   if (ts.isParenthesizedExpression(expr)) return stdlibGlobalNameOf(lowerer, expr.expression);
   if (ts.isIdentifier(expr)) {
@@ -3217,15 +3302,15 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // symbol has no ordinary declarations for the provenance check.
     if (
       expr.text === "globalThis" &&
-      (!symbol ||
-        lowerer.checker.declarationsOf(symbol).length === 0 ||
-        lowerer.isStdlibSymbol(symbol))
+      (!symbol || symbol.declarations.length === 0 || lowerer.isStdlibSymbol(symbol))
     )
       return "globalThis";
     if (!symbol) return null;
     const alias = lowerer.stdlibGlobalAliases.get(symbol);
     if (alias !== undefined) return alias;
-    const decl = lowerer.checker.declarationsOf(symbol)[0];
+    const classAlias = lowerer.builtinClassAliasOf(symbol);
+    if (classAlias?.kind === "collection") return classAlias.which;
+    const decl = symbol.declarations[0];
     if (decl !== undefined && ts.isImportClause(decl) && decl.name !== undefined) {
       const importDecl = decl.parent;
       if (ts.isImportDeclaration(importDecl) && ts.isStringLiteral(importDecl.moduleSpecifier)) {
@@ -3241,7 +3326,21 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // `Buffer` resolves to a user-file declaration and still misses.
     const resolved =
       symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-    if (!lowerer.isStdlibSymbol(resolved)) return null;
+    if (!lowerer.isStdlibSymbol(resolved)) {
+      // A CommonJS binding of the buffer module's Buffer (`var Buffer =
+      // require('buffer').Buffer`, `const { Buffer } = require('buffer')`
+      // — safe-buffer and compression): the module member IS the global
+      // constructor.
+      if (
+        decl !== undefined &&
+        (ts.isVariableDeclaration(decl) || ts.isBindingElement(decl)) &&
+        isJsSourceFile(decl.getSourceFile())
+      ) {
+        const imported = lowerer.builtinImportOf(expr);
+        if (imported?.module === "buffer" && imported.member === "Buffer") return "Buffer";
+      }
+      return null;
+    }
     return resolved.name === "global" ? "globalThis" : resolved.name;
   }
   if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
@@ -3316,7 +3415,9 @@ export function stdlibGlobalAliasNameOf(
   const name =
     requireSpec === "process" || requireSpec === "node:process"
       ? "process"
-      : stdlibGlobalNameOf(lowerer, aliasExpr);
+      : bufferNamespaceMember(lowerer, aliasExpr)
+        ? "Buffer"
+        : stdlibGlobalNameOf(lowerer, aliasExpr);
   if (name === null) return null;
   // These globals have provenance-aware call or member lowering, so a
   // stable snapshot keeps the same dispatch as the original global.
@@ -3335,6 +3436,14 @@ export function stdlibGlobalAliasNameOf(
   ].includes(name)
     ? name
     : null;
+}
+
+/** `buffer.Buffer` through a buffer-module namespace binding (`var buffer
+ * = require('buffer')`): the module's Buffer IS the global constructor. */
+export function bufferNamespaceMember(lowerer: Lowerer, expr: ts.Expression): boolean {
+  if (!ts.isPropertyAccessExpression(expr) || expr.name.text !== "Buffer") return false;
+  const member = lowerer.builtinMemberOf(expr);
+  return member?.module === "buffer" && member.member === "Buffer";
 }
 
 export function stdlibGlobalAliasDecl(
@@ -3364,7 +3473,7 @@ export function stdlibGlobalAliasDecl(
  * the SC2020 fence's wording: "typed by @types/node", not "standard
  * library". */
 export function nodeTypesOnlySymbol(lowerer: Lowerer, sym: ts.Symbol | null | undefined): boolean {
-  const decls = sym ? lowerer.checker.declarationsOf(sym) : undefined;
+  const decls = sym ? sym.declarations : undefined;
   if (!decls || decls.length === 0) return false;
   let viaNode = false;
   for (const d of decls) {

@@ -824,6 +824,26 @@ static void scr_node_debug_capture(const ScrStr *name) {
   if (name->len == 10 && memcmp(name->data, "NODE_DEBUG", 10) == 0) (void)scr_node_debug_initial();
 }
 
+/* Counts writes and deletes of process.env.TZ. The local-time getters keep
+ * their last conversion for the generation it was made in. */
+#ifdef SCR_WORKERS
+static atomic_uint scr_date_tz_generation;
+#else
+static unsigned scr_date_tz_generation;
+#endif
+
+/* After a write or delete of the process's TZ, local time follows the new
+ * value, as in Node: tzset(3) rereads it for later localtime calls. */
+static void scr_env_tz_changed(const ScrStr *name) {
+  /* Compared by character: a string literal would join the merged
+   * read-only strings of every program that links this file. */
+  if (name->len != 2 || name->data[0] != 'T' || name->data[1] != 'Z') return;
+#if !defined(_WIN32) && !defined(__wasi__)
+  tzset();
+#endif
+  scr_date_tz_generation++;
+}
+
 /* process.env.NAME = v — setenv(3): later scr_env_get reads and spawned
  * children (posix_spawn inherits environ) observe the write, like Node.
  * Both args borrowed (NUL-terminated ScrStr data); setenv copies. */
@@ -842,6 +862,7 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
 #else
   setenv(k, v, 1);
 #endif
+  scr_env_tz_changed(name);
 #ifdef SCR_WORKERS
 done:
 #endif
@@ -861,6 +882,7 @@ void scr_env_unset(const ScrStr *name) {
 #else
   unsetenv(name->data);
 #endif
+  scr_env_tz_changed(name);
 }
 
 static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii);
@@ -7241,45 +7263,112 @@ static ScrStr *scr_digest_encode(const unsigned char *d, size_t n, int enc) {
 
 /* ── MD5 (RFC 1321) ───────────────────────────────────────────────── */
 
-static const uint32_t scr_md5_k[64] = {
-    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a,
-    0xa8304613, 0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
-    0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340,
-    0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8,
-    0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
-    0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
-    0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92,
-    0xffeff47d, 0x85845dd1, 0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
-    0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391};
-static const unsigned char scr_md5_r[64] = {
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-    5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20,
-    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
+/* The 64 steps are unrolled with their message word, constant and
+ * rotation inlined. a + m + K does not depend on the previous step, so
+ * each step's critical path is the round function of b, an add, the
+ * rotate and the add of b. G is written as (b & d) + (c & ~d) (the two
+ * terms share no bits) so that its c & ~d half joins that early sum. The
+ * empty asm statement keeps the compiler from moving the constant's add
+ * after the round function, which puts it back on the critical path. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__wasm__)
+#define SCR_MD5_PIN(v) __asm__("" : "+r"(v))
+#else
+#define SCR_MD5_PIN(v) ((void)0)
+#endif
+#define SCR_MD5_F(b, c, d) ((d) ^ ((b) & ((c) ^ (d))))
+#define SCR_MD5_H(b, c, d) ((b) ^ (c) ^ (d))
+#define SCR_MD5_I(b, c, d) ((c) ^ ((b) | ~(d)))
+#define SCR_MD5_STEP(f, a, b, c, d, xk, s)        \
+  do {                                            \
+    (a) += (xk);                                  \
+    SCR_MD5_PIN(a);                               \
+    (a) += f((b), (c), (d));                      \
+    (a) = ((a) << (s) | (a) >> (32 - (s))) + (b); \
+  } while (0)
+#define SCR_MD5_GSTEP(a, b, c, d, xk, s)          \
+  do {                                            \
+    (a) += ((c) & ~(d)) + (xk);                   \
+    SCR_MD5_PIN(a);                               \
+    (a) += (b) & (d);                             \
+    (a) = ((a) << (s) | (a) >> (32 - (s))) + (b); \
+  } while (0)
 
-SCR_DIGEST_ALIGNED static void scr_md5_block(uint32_t h[4], const unsigned char *p) {
-  uint32_t m[16];
-  for (int i = 0; i < 16; i++) {
-    m[i] = (uint32_t)p[i * 4] | ((uint32_t)p[i * 4 + 1] << 8) |
-           ((uint32_t)p[i * 4 + 2] << 16) | ((uint32_t)p[i * 4 + 3] << 24);
-  }
+SCR_DIGEST_ALIGNED static void scr_md5_blocks(uint32_t h[4], const unsigned char *p, size_t blocks) {
   uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
-  for (int i = 0; i < 64; i++) {
-    uint32_t f, g;
-    if (i < 16) { f = (b & c) | (~b & d); g = (uint32_t)i; }
-    else if (i < 32) { f = (d & b) | (~d & c); g = (5u * i + 1) & 15; }
-    else if (i < 48) { f = b ^ c ^ d; g = (3u * i + 5) & 15; }
-    else { f = c ^ (b | ~d); g = (7u * i) & 15; }
-    uint32_t t = d;
-    d = c;
-    c = b;
-    uint32_t x = a + f + scr_md5_k[i] + m[g];
-    b = b + ((x << scr_md5_r[i]) | (x >> (32 - scr_md5_r[i])));
-    a = t;
+  for (; blocks != 0; blocks--, p += 64) {
+    uint32_t m[16];
+    for (int i = 0; i < 16; i++) {
+      m[i] = (uint32_t)p[i * 4] | ((uint32_t)p[i * 4 + 1] << 8) |
+             ((uint32_t)p[i * 4 + 2] << 16) | ((uint32_t)p[i * 4 + 3] << 24);
+    }
+    uint32_t a0 = a, b0 = b, c0 = c, d0 = d;
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[0] + 0xd76aa478u, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[1] + 0xe8c7b756u, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[2] + 0x242070dbu, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[3] + 0xc1bdceeeu, 22);
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[4] + 0xf57c0fafu, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[5] + 0x4787c62au, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[6] + 0xa8304613u, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[7] + 0xfd469501u, 22);
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[8] + 0x698098d8u, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[9] + 0x8b44f7afu, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[10] + 0xffff5bb1u, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[11] + 0x895cd7beu, 22);
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[12] + 0x6b901122u, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[13] + 0xfd987193u, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[14] + 0xa679438eu, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[15] + 0x49b40821u, 22);
+    SCR_MD5_GSTEP(a, b, c, d, m[1] + 0xf61e2562u, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[6] + 0xc040b340u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[11] + 0x265e5a51u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[0] + 0xe9b6c7aau, 20);
+    SCR_MD5_GSTEP(a, b, c, d, m[5] + 0xd62f105du, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[10] + 0x02441453u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[15] + 0xd8a1e681u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[4] + 0xe7d3fbc8u, 20);
+    SCR_MD5_GSTEP(a, b, c, d, m[9] + 0x21e1cde6u, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[14] + 0xc33707d6u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[3] + 0xf4d50d87u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[8] + 0x455a14edu, 20);
+    SCR_MD5_GSTEP(a, b, c, d, m[13] + 0xa9e3e905u, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[2] + 0xfcefa3f8u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[7] + 0x676f02d9u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[12] + 0x8d2a4c8au, 20);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[5] + 0xfffa3942u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[8] + 0x8771f681u, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[11] + 0x6d9d6122u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[14] + 0xfde5380cu, 23);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[1] + 0xa4beea44u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[4] + 0x4bdecfa9u, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[7] + 0xf6bb4b60u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[10] + 0xbebfbc70u, 23);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[13] + 0x289b7ec6u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[0] + 0xeaa127fau, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[3] + 0xd4ef3085u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[6] + 0x04881d05u, 23);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[9] + 0xd9d4d039u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[12] + 0xe6db99e5u, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[15] + 0x1fa27cf8u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[2] + 0xc4ac5665u, 23);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[0] + 0xf4292244u, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[7] + 0x432aff97u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[14] + 0xab9423a7u, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[5] + 0xfc93a039u, 21);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[12] + 0x655b59c3u, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[3] + 0x8f0ccc92u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[10] + 0xffeff47du, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[1] + 0x85845dd1u, 21);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[8] + 0x6fa87e4fu, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[15] + 0xfe2ce6e0u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[6] + 0xa3014314u, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[13] + 0x4e0811a1u, 21);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[4] + 0xf7537e82u, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[11] + 0xbd3af235u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[2] + 0x2ad7d2bbu, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[9] + 0xeb86d391u, 21);
+    a += a0; b += b0; c += c0; d += d0;
   }
-  h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+  h[0] = a; h[1] = b; h[2] = c; h[3] = d;
 }
 
 typedef struct ScrMd5Ctx {
@@ -7307,14 +7396,15 @@ static void scr_md5_update(ScrMd5Ctx *ctx, const unsigned char *data, size_t len
     data += take;
     len -= take;
     if (ctx->tail_len == 64) {
-      scr_md5_block(ctx->h, ctx->tail);
+      scr_md5_blocks(ctx->h, ctx->tail, 1);
       ctx->tail_len = 0;
     }
   }
-  while (len >= 64) {
-    scr_md5_block(ctx->h, data);
-    data += 64;
-    len -= 64;
+  if (len >= 64) {
+    size_t blocks = len / 64;
+    scr_md5_blocks(ctx->h, data, blocks);
+    data += blocks * 64;
+    len -= blocks * 64;
   }
   if (len != 0) {
     memcpy(ctx->tail, data, len);
@@ -7332,8 +7422,7 @@ static size_t scr_md5_final(const ScrMd5Ctx *source, unsigned char out[32]) {
   memset(tail + rem + 1, 0, pad - rem - 1 - 8);
   uint64_t bits = ctx.bytes * 8;
   for (int b = 0; b < 8; b++) tail[pad - 8 + b] = (unsigned char)(bits >> (8 * b));
-  scr_md5_block(ctx.h, tail);
-  if (pad == 128) scr_md5_block(ctx.h, tail + 64);
+  scr_md5_blocks(ctx.h, tail, pad / 64);
   for (int j = 0; j < 4; j++) {
     for (int b = 0; b < 4; b++) out[j * 4 + b] = (unsigned char)(ctx.h[j] >> (8 * b));
   }
@@ -8076,6 +8165,201 @@ void scr_crypto_hash_release(ScrCryptoHash *hash) {
 void *scr_crypto_hash_retain_v(void *p) { return scr_crypto_hash_retain(p); }
 void scr_crypto_hash_release_v(void *p) { scr_crypto_hash_release(p); }
 
+/* Node's TypeError for calling a missing member: "<what> is not a
+ * function", where `what` is the callee's source text, of any length. */
+static void scr_lib_throw_not_a_function(const char *what) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, what);
+  scr_jb_puts(&b, " is not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+/* Hash and Hmac values seen as 'unknown' are native handles. update(),
+ * digest() and Hash's copy() dispatch through the handle, called or read
+ * as values; the other members Node defines on a Hash or Hmac (the
+ * Transform and emitter surface) throw a coded SC2020 error, and other
+ * names read as undefined, as they do in Node. The member names are one
+ * NUL-separated char array, which the linker drops from programs that
+ * never box a Hash (an array of string pointers keeps the strings in the
+ * unit's shared string section). */
+static const char scr_crypto_hash_dyn_members[] =
+    "_destroy\0_events\0_eventsCount\0_final\0_flush\0_maxListeners\0_options\0_read\0"
+    "_readableState\0_transform\0_undestroy\0_writableState\0_write\0_writev\0addListener\0"
+    "allowHalfOpen\0closed\0compose\0constructor\0cork\0destroy\0destroyed\0digest\0drop\0"
+    "emit\0end\0errored\0eventNames\0every\0filter\0find\0flatMap\0forEach\0getMaxListeners\0"
+    "isPaused\0iterator\0listenerCount\0listeners\0map\0off\0on\0once\0pause\0pipe\0"
+    "prependListener\0prependOnceListener\0push\0rawListeners\0read\0readable\0"
+    "readableAborted\0readableBuffer\0readableDidRead\0readableEncoding\0readableEnded\0"
+    "readableFlowing\0readableHighWaterMark\0readableLength\0readableObjectMode\0reduce\0"
+    "removeAllListeners\0removeListener\0resume\0setDefaultEncoding\0setEncoding\0"
+    "setMaxListeners\0some\0take\0toArray\0uncork\0unpipe\0unshift\0update\0wrap\0writable\0"
+    "writableBuffer\0writableCorked\0writableEnded\0writableFinished\0writableHighWaterMark\0"
+    "writableLength\0writableNeedDrain\0writableObjectMode\0write\0";
+
+static bool scr_crypto_hash_dyn_member(const ScrCryptoHash *hash, const char *key, size_t len) {
+  if (len == 4 && memcmp(key, "copy", 4) == 0) return !hash->hmac;
+  for (const char *name = scr_crypto_hash_dyn_members; *name; name += strlen(name) + 1)
+    if (strlen(name) == len && memcmp(name, key, len) == 0) return true;
+  return false;
+}
+
+static void scr_crypto_hash_dyn_unsupported(const ScrCryptoHash *hash) {
+  static const char hash_msg[] =
+      "Hash members other than update(), digest() and copy() have no lowering on an 'unknown' "
+      "value; cast the value to Hash first";
+  static const char hmac_msg[] =
+      "Hmac members other than update() and digest() have no lowering on an 'unknown' value; "
+      "cast the value to Hmac first";
+  if (hash->hmac) scr_throw_error_msg_code(SCR_ERR_ERROR, hmac_msg, sizeof hmac_msg - 1, "SC2020");
+  else scr_throw_error_msg_code(SCR_ERR_ERROR, hash_msg, sizeof hash_msg - 1, "SC2020");
+}
+
+/* The method values: update() is one function for Hash and Hmac, as in
+ * Node; digest() is one per class, and copy() is Hash's. */
+enum { SCR_HASH_DYN_UPDATE, SCR_HASH_DYN_HASH_DIGEST, SCR_HASH_DYN_HMAC_DIGEST, SCR_HASH_DYN_COPY };
+static const char *const scr_crypto_hash_dyn_method_names[] = {"update", "digest", "digest", "copy"};
+static SCR_TL ScrDyn *scr_crypto_hash_dyn_methods[4];
+static SCR_TL bool scr_crypto_hash_dyn_methods_registered;
+
+static void scr_crypto_hash_dyn_methods_cleanup(void) {
+  for (size_t i = 0; i < 4; i++) {
+    ScrDyn *method = scr_crypto_hash_dyn_methods[i];
+    scr_crypto_hash_dyn_methods[i] = NULL;
+    scr_dyn_release(method);
+  }
+}
+
+static int scr_crypto_hash_dyn_method_index(const ScrCryptoHash *hash, const char *key, size_t len) {
+  if (len == 6 && memcmp(key, "update", 6) == 0) return SCR_HASH_DYN_UPDATE;
+  if (len == 6 && memcmp(key, "digest", 6) == 0)
+    return hash->hmac ? SCR_HASH_DYN_HMAC_DIGEST : SCR_HASH_DYN_HASH_DIGEST;
+  if (len == 4 && memcmp(key, "copy", 4) == 0 && !hash->hmac) return SCR_HASH_DYN_COPY;
+  return -1;
+}
+
+/* Runs method `index` on `hash`; `self` is the receiving box, which
+ * update() answers. */
+static ScrDyn *scr_crypto_hash_dyn_run(ScrCryptoHash *hash, ScrDyn *self, int index,
+                                       ScrDyn *const *args, size_t argc) {
+  ScrDyn *undefined = scr_dyn_undefined();
+  ScrDyn *first = argc > 0 ? args[0] : undefined;
+  ScrDyn *second = argc > 1 ? args[1] : undefined;
+  ScrDyn *result = NULL;
+  if (index == SCR_HASH_DYN_UPDATE) {
+    ScrCryptoHash *updated = scr_crypto_hash_update_dyn(hash, first, second);
+    if (updated) {
+      scr_crypto_hash_release(updated);
+      result = scr_dyn_retain(self);
+    }
+  } else if (index == SCR_HASH_DYN_COPY) {
+    ScrCryptoHash *copy = scr_crypto_hash_copy_opts(hash, first);
+    if (copy) {
+      result = scr_dyn_new_handle(copy, SCR_DYNH_HASH);
+      scr_crypto_hash_release(copy);
+    }
+  } else {
+    result = scr_crypto_hash_digest_dyn(hash, first);
+  }
+  scr_dyn_release(undefined);
+  return result;
+}
+
+static ScrDyn *scr_crypto_hash_dyn_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  int index = (int)scr_box_get_f64(clo->caps[0]);
+  ScrDyn *self = scr_dyn_this_get();
+  bool hash_this = self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_HASH;
+  bool hmac_this = self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_HMAC;
+  bool valid = index == SCR_HASH_DYN_UPDATE ? hash_this || hmac_this
+               : index == SCR_HASH_DYN_HMAC_DIGEST ? hmac_this
+                                                   : hash_this;
+  ScrDyn *result = NULL;
+  if (valid) {
+    result = scr_crypto_hash_dyn_run(self->v.handle.ptr, self, index, args, argc);
+  } else {
+    static const char msg[] =
+        "Hash and Hmac methods called with a receiver other than their own Hash or Hmac have no "
+        "lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+static ScrDyn *scr_crypto_hash_dyn_method_value(int index) {
+  if (!scr_crypto_hash_dyn_methods_registered) {
+    scr_crypto_hash_dyn_methods_registered = true;
+    scr_atexit(scr_crypto_hash_dyn_methods_cleanup);
+  }
+  if (!scr_crypto_hash_dyn_methods[index]) {
+    ScrClosure *clo = scr_closure_new(NULL, 1);
+    clo->caps[0] = scr_box_new(SCR_BOX_F64);
+    scr_box_set_f64(clo->caps[0], (double)index);
+    uint32_t arity = index == SCR_HASH_DYN_UPDATE ? 2 : 1;
+    scr_crypto_hash_dyn_methods[index] = scr_dyn_new_func(
+        clo, scr_crypto_hash_dyn_method_call, arity, "", scr_crypto_hash_dyn_method_names[index]);
+  }
+  return scr_dyn_retain(scr_crypto_hash_dyn_methods[index]);
+}
+
+static ScrDyn *scr_crypto_hash_dyn_invoke(void *h, ScrDyn *self, const char *method,
+                                          ScrDyn *const *args, size_t argc, const char *what) {
+  ScrCryptoHash *hash = h;
+  size_t len = strlen(method);
+  int index = scr_crypto_hash_dyn_method_index(hash, method, len);
+  if (index >= 0) return scr_crypto_hash_dyn_run(hash, self, index, args, argc);
+  if (scr_crypto_hash_dyn_member(hash, method, len)) {
+    scr_crypto_hash_dyn_unsupported(hash);
+    return NULL;
+  }
+  scr_lib_throw_not_a_function(what);
+  return NULL;
+}
+
+static ScrDyn *scr_crypto_hash_dyn_get(void *h, const char *key, size_t len) {
+  int index = scr_crypto_hash_dyn_method_index(h, key, len);
+  if (index >= 0) return scr_crypto_hash_dyn_method_value(index);
+  if (scr_crypto_hash_dyn_member(h, key, len)) scr_crypto_hash_dyn_unsupported(h);
+  return NULL;
+}
+
+static bool scr_crypto_hash_dyn_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_crypto_hash_dyn_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  static const ScrDynHandleOps hash_ops = {
+      .cls = "Hash",
+      .retain = scr_crypto_hash_retain_v,
+      .release = scr_crypto_hash_release_v,
+      .invoke = scr_crypto_hash_dyn_invoke,
+      .get = scr_crypto_hash_dyn_get,
+      .set = scr_crypto_hash_dyn_set,
+  };
+  static const ScrDynHandleOps hmac_ops = {
+      .cls = "Hmac",
+      .retain = scr_crypto_hash_retain_v,
+      .release = scr_crypto_hash_release_v,
+      .invoke = scr_crypto_hash_dyn_invoke,
+      .get = scr_crypto_hash_dyn_get,
+      .set = scr_crypto_hash_dyn_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_HASH, &hash_ops);
+  scr_dyn_handle_install(SCR_DYNH_HMAC, &hmac_ops);
+}
+
+ScrDyn *scr_crypto_hash_to_dyn(ScrCryptoHash *hash) {
+  scr_crypto_hash_dyn_install();
+  return scr_dyn_new_handle(hash, hash->hmac ? SCR_DYNH_HMAC : SCR_DYNH_HASH);
+}
+
 static ScrCryptoHash *scr_crypto_hash_update_raw(ScrCryptoHash *hash,
                                                  const unsigned char *data, size_t len) {
   if (!scr_crypto_hash_updatable(hash)) return NULL;
@@ -8255,6 +8539,8 @@ void scr_crypto_hash_stream_close(ScrCryptoHash *hash) {
   hash->stream_closed = true;
   if (stream) stream_release(stream);
 }
+
+bool scr_crypto_hash_is_hmac(const ScrCryptoHash *hash) { return hash->hmac; }
 
 bool scr_crypto_hash_stream_usable(const ScrCryptoHash *hash) {
   if (!hash->stream_closed) return true;
@@ -8521,12 +8807,10 @@ static void scr_crypto_not_xof(void) {
   ScrStr *text = scr_str_new(message, sizeof message - 1);
   ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
   scr_str_release(text);
-  ScrDyn *view = scr_dyn_from_error(e);
-  scr_dyn_obj_set(view, "library", 7, scr_crypto_dyn_str(scr_str_new("digital envelope routines", 25)));
-  scr_dyn_obj_set(view, "reason", 6, scr_crypto_dyn_str(scr_str_new("not XOF or invalid length", 25)));
+  scr_error_set_prop(e, "library", 7, scr_crypto_dyn_str(scr_str_new("digital envelope routines", 25)));
+  scr_error_set_prop(e, "reason", 6, scr_crypto_dyn_str(scr_str_new("not XOF or invalid length", 25)));
   scr_error_set_code(e, code);
-  scr_dyn_obj_set(view, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
-  scr_dyn_release(view);
+  scr_error_set_prop(e, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
@@ -9314,9 +9598,7 @@ static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, 
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
-  char message[160];
-  int n = snprintf(message, sizeof message, "%s is not a function", what);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  scr_lib_throw_not_a_function(what);
   return NULL;
 }
 
@@ -10120,7 +10402,9 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem) {
  * keep other surrogates lone, WTF-8 encode. */
 static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), void *src) {
   if (n == 1) return scr_str_from_char_code_one((double)unit(src, 0));
-  char *out = malloc(n * 3 + 1); /* worst case: 3 bytes per UTF-16 unit */
+  /* Up to 64 units encode on the stack (3 bytes per UTF-16 unit at most). */
+  char small[64 * 3 + 1];
+  char *out = n <= 64 ? small : malloc(n * 3 + 1);
   if (!out) {
     scr_trap("scriptc: out of memory\n");
   }
@@ -10137,8 +10421,17 @@ static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), vo
     o += scr_wtf8_put(out + o, cp);
   }
   ScrStr *s = scr_str_new(out, o);
-  free(out);
+  if (out != small) free(out);
   return s;
+}
+
+static uint32_t scr_fcc_units_unit(void *src, size_t i) {
+  return scr_to_uint32(((const double *)src)[i]) & 0xFFFFu;
+}
+
+/* String.fromCharCode(c0, ..., cn-1) with the codes in a caller's array. */
+ScrStr *scr_str_from_char_codes(const double *codes, size_t n) {
+  return scr_str_from_units(n, scr_fcc_units_unit, (void *)codes);
 }
 
 static uint32_t scr_fcc_arr_unit(void *src, size_t i) {
@@ -10272,6 +10565,72 @@ ScrStr *scr_date_to_iso(double ms) {
     len = snprintf(buf, sizeof buf, "%04lld-%02llu-%02lluT%02d:%02d:%02d.%03dZ", y, m, d, hh, mi, ss, sss);
   }
   return scr_str_new(buf, (size_t)len);
+}
+
+/* Node's Date.prototype.toUTCString over a stored (TimeClip'd) time
+ * value: "Www, DD Mmm YYYY HH:mm:ss GMT", a "-" and at least four digits
+ * for negative years, and "Invalid Date" for NaN. Never throws. +1.
+ * The text is assembled from function-local arrays rather than string
+ * literals: literals would land in this unit's shared mergeable string
+ * section and grow every executable, while these arrays are removed with
+ * the function by --gc-sections when a program never calls it. */
+ScrStr *scr_date_to_utc_string(double ms) {
+  /* Sized without the terminating NUL, so none is a C string the
+   * compiler could move into a mergeable string section. */
+  static const char invalid[12] = "Invalid Date";
+  static const char weekdays[21] = "SunMonTueWedThuFriSat";
+  static const char months[36] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  if (!(fabs(ms) <= 8640000000000000.0)) return scr_str_new(invalid, sizeof invalid);
+  double t = trunc(ms);
+  double dayd = floor(t / 86400000.0);
+  long long msday = (long long)(t - dayd * 86400000.0);
+  long long days = (long long)dayd;
+  int weekday = (int)(((days + 4) % 7 + 7) % 7);
+  long long z = days + 719468;
+  long long era = (z >= 0 ? z : z - 146096) / 146097;
+  unsigned long long doe = (unsigned long long)(z - era * 146097);
+  unsigned long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  long long y = (long long)yoe + era * 400;
+  unsigned long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  unsigned long long mp = (5 * doy + 2) / 153;
+  unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
+  unsigned long long m = mp < 10 ? mp + 3 : mp - 9;
+  if (m <= 2) y += 1;
+  int hh = (int)(msday / 3600000), mi = (int)(msday / 60000 % 60),
+      ss = (int)(msday / 1000 % 60);
+  char buf[40];
+  size_t n = 0;
+  memcpy(buf, weekdays + 3 * weekday, 3);
+  n = 3;
+  buf[n++] = ',';
+  buf[n++] = ' ';
+  buf[n++] = (char)('0' + d / 10);
+  buf[n++] = (char)('0' + d % 10);
+  buf[n++] = ' ';
+  memcpy(buf + n, months + 3 * (m - 1), 3);
+  n += 3;
+  buf[n++] = ' ';
+  if (y < 0) buf[n++] = '-';
+  unsigned long long year = (unsigned long long)(y < 0 ? -y : y);
+  char digits[20];
+  size_t count = 0;
+  do {
+    digits[count++] = (char)('0' + year % 10);
+    year /= 10;
+  } while (year > 0);
+  while (count < 4) digits[count++] = '0';
+  while (count > 0) buf[n++] = digits[--count];
+  int parts[3] = {hh, mi, ss};
+  for (int i = 0; i < 3; i++) {
+    buf[n++] = i == 0 ? ' ' : ':';
+    buf[n++] = (char)('0' + parts[i] / 10);
+    buf[n++] = (char)('0' + parts[i] % 10);
+  }
+  buf[n++] = ' ';
+  buf[n++] = 'G';
+  buf[n++] = 'M';
+  buf[n++] = 'T';
+  return scr_str_new(buf, n);
 }
 
 /* ── new Date(dateString).getTime() ──────────────────────────────────────
@@ -10467,6 +10826,9 @@ double scr_date_utc(double y, double mo, double d,
 typedef struct ScrDateParts {
   long long year;
   int month, date, day, hours, minutes, seconds, milliseconds;
+  /* Local fields: tm_isdst at the instant (or its surrogate). It fills the
+   * padding before timezone_offset, so the struct keeps its size. */
+  bool isdst;
   double timezone_offset;
 } ScrDateParts;
 
@@ -10475,9 +10837,14 @@ typedef struct ScrDateParts {
  * endpoint. The checked wrapper is the public UTC-getter gate; the inner
  * walk accepts those bounded local-time values too. */
 static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
-  double dayd = floor(t / 86400000.0);
-  long long msday = (long long)(t - dayd * 86400000.0);
-  long long z = (long long)dayd + 719468;
+  /* t is an integral number of milliseconds within about 2^53. */
+  long long tms = (long long)t;
+  long long day = tms / 86400000, msday = tms % 86400000;
+  if (msday < 0) {
+    msday += 86400000;
+    day--;
+  }
+  long long z = day + 719468;
   long long era = (z >= 0 ? z : z - 146096) / 146097;
   unsigned long long doe = (unsigned long long)(z - era * 146097);
   unsigned long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
@@ -10487,7 +10854,7 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
   unsigned long long m = mp < 10 ? mp + 3 : mp - 9;
   if (m <= 2) y++;
-  long long wday = ((long long)dayd + 4) % 7;
+  long long wday = (day + 4) % 7;
   if (wday < 0) wday += 7;
   out->year = y;
   out->month = (int)m - 1;
@@ -10498,6 +10865,7 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   out->seconds = (int)(msday / 1000 % 60);
   out->milliseconds = (int)(msday % 1000);
   out->timezone_offset = 0;
+  out->isdst = false;
 }
 
 static bool scr_date_utc_parts(double ms, ScrDateParts *out) {
@@ -10516,10 +10884,39 @@ static bool scr_date_localtime(double secd, struct tm *out) {
 #endif
 }
 
+/* The thread's last local conversion: reading several local fields of one
+ * Date (getFullYear, getMonth, getDate, getHours, ...) converts it once.
+ * A change of process.env.TZ starts a new generation. */
+typedef struct {
+  bool valid;
+  unsigned generation;
+  double ms;
+  ScrDateParts parts;
+} ScrDateLocalCache;
+static SCR_TL ScrDateLocalCache scr_date_local_cache;
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out);
+
 static bool scr_date_local_parts(double ms, ScrDateParts *out) {
   if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
   double clipped = trunc(ms);
-  double secd = floor(clipped / 1000.0);
+  ScrDateLocalCache *c = &scr_date_local_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (c->valid && c->ms == clipped && c->generation == generation) {
+    *out = c->parts;
+    return true;
+  }
+  if (!scr_date_local_parts_uncached(clipped, out)) return false;
+  c->valid = true;
+  c->generation = generation;
+  c->ms = clipped;
+  c->parts = *out;
+  return true;
+}
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out) {
+  long long cms = (long long)clipped;
+  double secd = (double)(cms / 1000 - (cms % 1000 < 0));
   struct tm tmv;
   double basis_secd = secd;
   if (!scr_date_localtime(basis_secd, &tmv)) {
@@ -10552,6 +10949,7 @@ static bool scr_date_local_parts(double ms, ScrDateParts *out) {
   scr_date_utc_parts_unchecked(clipped + local_offset * 1000.0, out);
   double timezone_offset = trunc(-local_offset / 60.0);
   out->timezone_offset = timezone_offset == 0 ? 0 : timezone_offset;
+  out->isdst = tmv.tm_isdst > 0;
   return true;
 }
 
@@ -10590,6 +10988,364 @@ double scr_date_get_timezone_offset(double ms) {
   ScrDateParts p;
   return scr_date_local_parts(ms, &p) ? p.timezone_offset : NAN;
 }
+
+/* ── Date time zone names ───────────────────────────────────────────────
+ * Long time zone names for Date.prototype.toString and toTimeString.
+ *
+ * Node prints "GMT-0500 (Central Daylight Time)": the name comes from ICU
+ * for the host zone, in standard or daylight form. ICU identifies the host
+ * zone from TZ when it looks like a zone ID, else from /etc/localtime (the
+ * symlink's target, or the zoneinfo file with the same contents), else
+ * from the libc zone abbreviation. The runtime follows the same steps and
+ * looks the ID up in the names Node prints for each tzdata zone
+ * (scr_timezone_data.h, generated). An ID without a row prints Node's
+ * fallback for a zone without a name, "GMT+hh:mm" with the zone's standard
+ * offset.
+ *
+ * Whether an instant is in daylight time follows V8: instants before 1970
+ * or after 2038-01-19 use the instant with the same month, day and time in
+ * an equivalent year between 2008 and 2037 (same leap-year status and
+ * weekday of January 1), and tm_isdst decides. A few zones carry Node's
+ * own daylight-time changes instead: those whose tzdata rules use a
+ * negative daylight saving (Europe/Dublin's winter time, Morocco's Ramadan
+ * time), where ICU's data calls the larger offset daylight time, and those
+ * Node shows in daylight time through 2038 (British Columbia's permanent
+ * UTC-7, which tzdata names standard time). */
+#include "scr_timezone_data.h"
+
+#define SCR_TZ_ROWS (sizeof scr_tz_names / sizeof scr_tz_names[0])
+
+/* Text that no other code in this file uses lives in named arrays: string
+ * literals would join the merged read-only strings of every program that
+ * links this file. */
+static const char scr_tz_posix_ids[4][8] = { "PST8PDT", "MST7MDT", "CST6CDT", "EST5EDT" };
+static const char scr_tz_prefixes[2][7] = { "posix/", "right/" };
+static const char scr_tz_env_name[] = "TZ";
+static const char scr_tz_utc[] = "UTC";
+static const char scr_tz_localtime_path[] = "/etc/localtime";
+static const char scr_tz_zoneinfo_tail[] = "/zoneinfo/";
+static const char scr_tz_zoneinfo_dir[] = "/usr/share/zoneinfo/";
+static const char scr_tz_skipped[4][11] = { ".", "..", "posixrules", "localtime" };
+static const char scr_tz_fallback_format[] = "GMT%c%02lld:%02lld";
+static const char scr_date_invalid_text[] = "Invalid Date";
+
+/* The thread's host zone, detected again after a write to process.env.TZ
+ * (scr_date_tz_generation). */
+typedef struct {
+  unsigned generation;
+  const ScrTzNames *row; /* NULL: no row, use the fallback */
+  bool resolved;
+  bool fallback_ready;
+  char fallback[16]; /* "GMT+hh:mm" */
+} ScrTzState;
+
+static SCR_TL ScrTzState scr_tz_state;
+
+/* The local UTC offset (seconds) and tm_isdst at an epoch second. */
+static bool scr_tz_offset_at(double sec, double *offset, bool *isdst) {
+  struct tm tmv;
+  if (!scr_date_localtime(sec, &tmv)) return false;
+  double local =
+    scr_days_from_civil((long long)tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday) * 86400.0 +
+    tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
+  *offset = local - sec;
+  *isdst = tmv.tm_isdst > 0;
+  return true;
+}
+
+/* ICU's isValidOlsonID: letters and punctuation up to an optional run of at
+ * most two digits ending the string ("GMT+11"), or one of the four POSIX
+ * zone IDs tzdata also names. */
+static bool scr_tz_valid_id(const char *id) {
+  size_t i = 0;
+  while (id[i] && !(id[i] >= '0' && id[i] <= '9') && id[i] != ',') i++;
+  size_t max = i + 2;
+  while (id[i] && id[i] >= '0' && id[i] <= '9' && i < max) i++;
+  if (id[i] == 0) return true;
+  for (size_t k = 0; k < 4; k++) {
+    if (!strcmp(id, scr_tz_posix_ids[k])) return true;
+  }
+  return false;
+}
+
+static const char *scr_tz_skip_prefix(const char *id) {
+  return !strncmp(id, scr_tz_prefixes[0], 6) || !strncmp(id, scr_tz_prefixes[1], 6) ? id + 6 : id;
+}
+
+static const ScrTzNames *scr_tz_find(const char *id) {
+  size_t lo = 0, hi = SCR_TZ_ROWS;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    int c = strcmp(id, scr_tz_ids + scr_tz_names[mid].id);
+    if (c == 0) return &scr_tz_names[mid];
+    if (c < 0) hi = mid;
+    else lo = mid + 1;
+  }
+  return NULL;
+}
+
+#if !defined(_WIN32) && !defined(__wasi__)
+
+/* The bytes of a file, or NULL. */
+static char *scr_tz_read_file(const char *path, size_t *len) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return NULL;
+  size_t cap = 4096, n = 0;
+  char *data = malloc(cap);
+  while (data) {
+    n += fread(data + n, 1, cap - n, f);
+    if (n < cap) break;
+    char *grown = realloc(data, cap * 2);
+    if (!grown) {
+      free(data);
+      data = NULL;
+      break;
+    }
+    data = grown;
+    cap *= 2;
+  }
+  fclose(f);
+  *len = n;
+  return data;
+}
+
+static bool scr_tz_same_file(const char *path, const char *data, size_t len) {
+  struct stat st;
+  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || (size_t)st.st_size != len) return false;
+  size_t other_len;
+  char *other = scr_tz_read_file(path, &other_len);
+  bool same = other && other_len == len && memcmp(other, data, len) == 0;
+  free(other);
+  return same;
+}
+
+/* ICU's search for a zoneinfo file with /etc/localtime's contents, in
+ * directory order, skipping "posixrules" and "localtime". Writes the
+ * path below the zoneinfo directory into `out`. */
+static bool scr_tz_search(char *dir, size_t dir_len, const char *data, size_t len, char *out, size_t cap) {
+  DIR *d = opendir(dir);
+  if (!d) return false;
+  bool found = false;
+  struct dirent *entry;
+  while (!found && (entry = readdir(d)) != NULL) {
+    const char *name = entry->d_name;
+    bool skipped = false;
+    for (size_t k = 0; k < 4; k++) skipped = skipped || !strcmp(name, scr_tz_skipped[k]);
+    if (skipped) continue;
+    size_t name_len = strlen(name);
+    if (dir_len + name_len + 2 > PATH_MAX) continue;
+    memcpy(dir + dir_len, name, name_len + 1);
+    DIR *sub = opendir(dir);
+    if (sub) {
+      closedir(sub);
+      dir[dir_len + name_len] = '/';
+      dir[dir_len + name_len + 1] = 0;
+      found = scr_tz_search(dir, dir_len + name_len + 1, data, len, out, cap);
+    } else if (scr_tz_same_file(dir, data, len)) {
+      const char *id = scr_tz_skip_prefix(dir + strlen(scr_tz_zoneinfo_dir));
+      size_t id_len = strlen(id);
+      if (id_len < cap) {
+        memcpy(out, id, id_len + 1);
+        found = true;
+      }
+    }
+    dir[dir_len] = 0;
+  }
+  closedir(d);
+  return found;
+}
+#endif
+
+/* The host zone's row, or NULL when ICU would not find a zone name. */
+static const ScrTzNames *scr_tz_detect(void) {
+#if defined(__wasi__)
+  /* WASI's libc keeps every local time in UTC. */
+  return scr_tz_find(scr_tz_utc);
+#else
+  const char *tz = getenv(scr_tz_env_name);
+  if (tz && scr_tz_valid_id(tz)) {
+    if (tz[0] == ':') tz++;
+    return scr_tz_find(scr_tz_skip_prefix(tz));
+  }
+#ifdef _WIN32
+  return NULL;
+#else
+  /* The zone ID is the path below a zoneinfo directory of the
+   * /etc/localtime symlink's target, or of a zoneinfo file with the same
+   * contents when /etc/localtime is a regular file. */
+  char path[PATH_MAX];
+  if (realpath(scr_tz_localtime_path, path) && strcmp(path, scr_tz_localtime_path) != 0) {
+    const char *tail = strstr(path, scr_tz_zoneinfo_tail);
+    if (tail) {
+      tail = scr_tz_skip_prefix(tail + strlen(scr_tz_zoneinfo_tail));
+      if (scr_tz_valid_id(tail)) return scr_tz_find(tail);
+    }
+  } else {
+    size_t len;
+    DIR *zoneinfo = opendir(scr_tz_zoneinfo_dir);
+    char *data = zoneinfo ? scr_tz_read_file(scr_tz_localtime_path, &len) : NULL;
+    if (zoneinfo) closedir(zoneinfo);
+    if (data) {
+      char dir[PATH_MAX];
+      memcpy(dir, scr_tz_zoneinfo_dir, sizeof scr_tz_zoneinfo_dir);
+      char id[PATH_MAX];
+      bool found = scr_tz_search(dir, strlen(dir), data, len, id, sizeof id);
+      free(data);
+      if (found && scr_tz_valid_id(id)) return scr_tz_find(id);
+    }
+  }
+  /* Otherwise the standard-time abbreviation names the zone ("UTC" when
+   * there is no /etc/localtime). */
+  tzset();
+  return scr_tz_find(tzname[0]);
+#endif
+#endif
+}
+
+static ScrTzState *scr_tz_current(void) {
+  ScrTzState *s = &scr_tz_state;
+  unsigned generation = scr_date_tz_generation;
+  if (s->generation != generation || !s->resolved) {
+    s->generation = generation;
+    s->row = scr_tz_detect();
+    s->resolved = true;
+    s->fallback_ready = false;
+  }
+  return s;
+}
+
+/* "GMT+hh:mm" for the zone's current standard offset: the name Node prints
+ * for a zone ID it does not know. */
+static const char *scr_tz_fallback(ScrTzState *s) {
+  if (!s->fallback_ready) {
+    double offset = 0;
+    bool isdst = false;
+    long long seconds = 0;
+    if (scr_tz_offset_at((double)time(NULL), &offset, &isdst)) seconds = (long long)offset - (isdst ? 3600 : 0);
+    long long minutes = (seconds < 0 ? -seconds : seconds) / 60;
+    snprintf(s->fallback, sizeof s->fallback, scr_tz_fallback_format, seconds < 0 ? '-' : '+',
+             minutes / 60, minutes % 60);
+    s->fallback_ready = true;
+  }
+  return s->fallback;
+}
+
+/* V8's EquivalentTime: the same month, day and time of day in a year
+ * between 2008 and 2037 with the same leap-year status and weekday of
+ * January 1. */
+static double scr_tz_equivalent_time(double ms) {
+  ScrDateParts p;
+  scr_date_utc_parts_unchecked(ms, &p);
+  double within = ms - floor(ms / 86400000.0) * 86400000.0;
+  long long year = p.year;
+  bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  long long week_day = ((long long)scr_days_from_civil(year, 1, 1) + 4) % 7;
+  if (week_day < 0) week_day += 7;
+  long long recent = (leap ? 1956 : 1967) + (week_day * 12) % 28;
+  long long equivalent = 2008 + (recent + 3 * 28 - 2008) % 28;
+  return (scr_days_from_civil(equivalent, p.month + 1, 1) + p.date - 1) * 86400000.0 + within;
+}
+
+static bool scr_tz_is_daylight(double ms, int isdst_hint, const ScrTzNames *row) {
+  /* V8 names instants in [0, 2^31 - 1] seconds directly. */
+  if (ms < 0 || (long long)ms > 2147483647000LL) {
+    ms = scr_tz_equivalent_time(ms);
+    isdst_hint = -1;
+  }
+  double sec = floor(ms / 1000.0);
+  if (row->change_count > 0) {
+    /* Daylight time after an odd number of changes. */
+    const int32_t *changes = scr_tz_daylight_changes + row->first_change;
+    size_t lo = 0, hi = row->change_count;
+    while (lo < hi) {
+      size_t mid = lo + (hi - lo) / 2;
+      if (changes[mid] <= sec) lo = mid + 1;
+      else hi = mid;
+    }
+    return (lo & 1) != 0;
+  }
+  if (isdst_hint >= 0) return isdst_hint != 0;
+  double offset;
+  bool isdst;
+  return scr_tz_offset_at(sec, &offset, &isdst) && isdst;
+}
+
+const char *scr_date_zone_name(double ms, int isdst) {
+  ScrTzState *s = scr_tz_current();
+  if (!s->row) return scr_tz_fallback(s);
+  bool daylight = scr_tz_is_daylight(ms, isdst, s->row);
+  return scr_tz_name_text + (daylight ? s->row->daylight : s->row->standard);
+}
+
+/* Date.prototype.toString, toDateString and toTimeString: V8's formats over
+ * the local calendar fields ("Sat Oct 18 2026 09:12:00 GMT-0500 (Central
+ * Daylight Time)"), with years before 1 as "-0001", and "Invalid Date" for
+ * an invalid date. */
+enum { SCR_DATE_TEXT_FULL, SCR_DATE_TEXT_DATE, SCR_DATE_TEXT_TIME };
+
+/* `value` (>= 0) in decimal, zero-padded to `width` digits. */
+static char *scr_date_put_digits(char *p, long long value, int width) {
+  char digits[24];
+  int n = 0;
+  do {
+    digits[n++] = (char)('0' + value % 10);
+    value /= 10;
+  } while (value > 0);
+  while (n < width) digits[n++] = '0';
+  while (n > 0) *p++ = digits[--n];
+  return p;
+}
+
+static ScrStr *scr_date_text(double ms, int mode) {
+  static const char week_days[7][3] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+  static const char months[12][3] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+  ScrDateParts p;
+  if (!scr_date_local_parts(ms, &p)) return scr_str_new(scr_date_invalid_text, sizeof scr_date_invalid_text - 1);
+  char buf[160];
+  char *o = buf;
+  if (mode != SCR_DATE_TEXT_TIME) {
+    memcpy(o, week_days[p.day], 3);
+    o[3] = ' ';
+    memcpy(o + 4, months[p.month], 3);
+    o[7] = ' ';
+    o = scr_date_put_digits(o + 8, p.date, 2);
+    *o++ = ' ';
+    /* "%04d", or "%05d" (a sign and four digits) before year 0. */
+    if (p.year < 0) *o++ = '-';
+    o = scr_date_put_digits(o, p.year < 0 ? -p.year : p.year, 4);
+  }
+  if (mode == SCR_DATE_TEXT_FULL) *o++ = ' ';
+  if (mode != SCR_DATE_TEXT_DATE) {
+    int offset = -(int)p.timezone_offset;
+    int magnitude = offset < 0 ? -offset : offset;
+    o = scr_date_put_digits(o, p.hours, 2);
+    *o++ = ':';
+    o = scr_date_put_digits(o, p.minutes, 2);
+    *o++ = ':';
+    o = scr_date_put_digits(o, p.seconds, 2);
+    *o++ = ' ';
+    *o++ = 'G';
+    *o++ = 'M';
+    *o++ = 'T';
+    *o++ = offset < 0 ? '-' : '+';
+    o = scr_date_put_digits(o, magnitude / 60, 2);
+    o = scr_date_put_digits(o, magnitude % 60, 2);
+    *o++ = ' ';
+    *o++ = '(';
+    /* Zone names are at most 64 bytes (scr_timezone_data.h). */
+    const char *zone = scr_date_zone_name(ms, p.isdst);
+    size_t zone_len = strlen(zone);
+    memcpy(o, zone, zone_len);
+    o += zone_len;
+    *o++ = ')';
+  }
+  return scr_str_new(buf, (size_t)(o - buf));
+}
+
+ScrStr *scr_date_to_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_FULL); }
+ScrStr *scr_date_to_date_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_DATE); }
+ScrStr *scr_date_to_time_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_TIME); }
 
 /* ── Number statics ────────────────────────────────────────────────────
  * JS-exact: the ES2015 Number statics never coerce (unlike the global
@@ -10660,6 +11416,64 @@ ScrStr *scr_num_to_fixed0(double x) {
  * the receiver's non-finite arm, as ECMA-262 requires. Invalid precision
  * raises V8's catchable RangeError text; otherwise the result is +1. The
  * exact-binary-value digits come from scr_f64_to_fixed (scr_number.c). */
+/* Number.prototype.toString(radix) with a number radix, which
+ * ToIntegerOrInfinity truncates (NaN to 0). Radix digit generation follows
+ * V8's DoubleToRadixStringView algorithm. Copyright 2012 the V8 project
+ * authors. BSD license in ../vendor/v8-number-radix/LICENSE. The decimal
+ * path retains Ryū. */
+ScrStr *scr_num_to_string_radix_f64(double value, double requested) {
+  requested = isnan(requested) ? 0 : trunc(requested);
+  if (requested < 2 || requested > 36 || !isfinite(requested)) {
+    static const char message[] = "toString() radix argument must be between 2 and 36";
+    scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+    return NULL;
+  }
+  int radix = (int)requested;
+  if (radix == 10 || !isfinite(value) || value == 0) return scr_f64_to_scrstr(value);
+  static const char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+  char buffer[2200];
+  const size_t middle = sizeof buffer / 2;
+  size_t begin = middle, end = middle;
+  bool negative = value < 0;
+  value = fabs(value);
+  double integer = floor(value), fraction = value - integer;
+  double tolerance = 0.5 * (nextafter(value, INFINITY) - value);
+  if (tolerance <= 0) tolerance = nextafter(0, INFINITY);
+  if (fraction >= tolerance) {
+    buffer[end++] = '.';
+    do {
+      fraction *= radix;
+      tolerance *= radix;
+      int digit = (int)fraction;
+      buffer[end++] = digits[digit];
+      fraction -= digit;
+      if ((fraction > 0.5 || (fraction == 0.5 && (digit & 1))) && fraction + tolerance > 1) {
+        for (;;) {
+          end--;
+          if (end == middle) { integer += 1; break; }
+          char last = buffer[end];
+          digit = last > '9' ? last - 'a' + 10 : last - '0';
+          if (digit + 1 < radix) { buffer[end++] = digits[digit + 1]; break; }
+        }
+        break;
+      }
+    } while (fraction >= tolerance);
+  }
+  /* V8's Double::Exponent is the unbiased exponent minus 52. Beyond
+   * that precision boundary, trailing digits are unrepresented zeros. */
+  while (integer / radix >= 0x1p53) {
+    integer /= radix;
+    buffer[--begin] = '0';
+  }
+  do {
+    double remainder = fmod(integer, radix);
+    buffer[--begin] = digits[(int)remainder];
+    integer = (integer - remainder) / radix;
+  } while (integer > 0);
+  if (negative) buffer[--begin] = '-';
+  return scr_str_new(buffer + begin, end - begin);
+}
+
 ScrStr *scr_num_to_fixed(double x, double fraction_digits) {
   double fd = isnan(fraction_digits) ? 0 : trunc(fraction_digits);
   if (!(fd >= 0 && fd <= 100)) {
@@ -10672,6 +11486,137 @@ ScrStr *scr_num_to_fixed(double x, double fraction_digits) {
   char out[128];
   size_t len = scr_f64_to_fixed(x, (int)fd, out);
   return scr_str_new(out, len);
+}
+
+/* String.prototype.substr (Annex B.2.2.1) over substring's UTF-16
+ * clamp: -Infinity and other starts below -size clamp to 0, an Infinity
+ * length to the end. Comparisons only (no floating-point literal other
+ * than zero, which would join the constant pool every binary links).
+ * Nothing on an existing path calls this. */
+ScrStr *scr_str_substr(ScrStr *s, double start, double length, bool has_length) {
+  double size = scr_str_utf16_len(s);
+  double first = isnan(start) ? 0 : trunc(start);
+  if (first < 0) {
+    first = size + first;
+    if (first < 0) first = 0;
+  } else if (first > size) {
+    first = size;
+  }
+  double count = has_length ? (isnan(length) ? 0 : trunc(length)) : size;
+  if (count < 0) count = 0;
+  double end = first + count;
+  if (end > size) end = size;
+  return scr_str_substring(s, first, end);
+}
+
+/* The exponent suffix of toPrecision/toExponential: "e+5", "e-7". */
+static size_t scr_num_exp_suffix(char *o, int e) {
+  size_t n = 0;
+  o[n++] = 'e';
+  o[n++] = e < 0 ? '-' : '+';
+  int a = e < 0 ? -e : e;
+  char rev[8];
+  int k = 0;
+  do {
+    rev[k++] = (char)('0' + a % 10);
+    a /= 10;
+  } while (a != 0);
+  while (k > 0) o[n++] = rev[--k];
+  return n;
+}
+
+/* Number.prototype.toPrecision(precision) (ECMA-262 §21.1.3.5): undefined
+ * precision is ToString(x); ToIntegerOrInfinity runs (in the caller's
+ * coercion) before the non-finite arm, which precedes the 1..100 range
+ * check. Digits are the exact-value, ties-up n of
+ * scr_f64_precision_digits; exponential form when e < -6 or e >= p.
+ * Nothing on an existing path calls this. */
+ScrStr *scr_num_to_precision(double x, double precision, bool has_precision) {
+  if (!has_precision || !isfinite(x)) return scr_f64_to_scrstr(x);
+  double p = isnan(precision) ? 0 : trunc(precision);
+  if (!(p >= 1 && p <= 100)) {
+    static const char msg[] = "toPrecision() argument must be between 1 and 100";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  int digits_count = (int)p;
+  char out[160];
+  size_t o = 0;
+  double a = x;
+  if (x < 0) {
+    out[o++] = '-';
+    a = -x;
+  }
+  char d[104];
+  int e = 0;
+  if (a == 0) {
+    memset(d, '0', (size_t)digits_count);
+    d[digits_count] = '\0';
+  } else {
+    scr_f64_precision_digits(a, digits_count, d, &e);
+  }
+  if (e < -6 || e >= digits_count) {
+    out[o++] = d[0];
+    if (digits_count != 1) {
+      out[o++] = '.';
+      memcpy(out + o, d + 1, (size_t)(digits_count - 1));
+      o += (size_t)(digits_count - 1);
+    }
+    o += scr_num_exp_suffix(out + o, e);
+  } else if (e >= 0) {
+    memcpy(out + o, d, (size_t)(e + 1));
+    o += (size_t)(e + 1);
+    if (e + 1 < digits_count) {
+      out[o++] = '.';
+      memcpy(out + o, d + e + 1, (size_t)(digits_count - e - 1));
+      o += (size_t)(digits_count - e - 1);
+    }
+  } else {
+    out[o++] = '0';
+    out[o++] = '.';
+    for (int i = 0; i < -(e + 1); i++) out[o++] = '0';
+    memcpy(out + o, d, (size_t)digits_count);
+    o += (size_t)digits_count;
+  }
+  return scr_str_new(out, o);
+}
+
+/* Number.prototype.toExponential(fractionDigits) with a DEFINED argument
+ * (the undefined form is scr_num_to_exponential's shortest mantissa):
+ * f + 1 exact-value, ties-up digits, "d.ddde±X". Nothing on an existing
+ * path calls this. */
+ScrStr *scr_num_to_exponential_digits(double x, double fraction_digits) {
+  if (!isfinite(x)) return scr_f64_to_scrstr(x);
+  double f = isnan(fraction_digits) ? 0 : trunc(fraction_digits);
+  if (!(f >= 0 && f <= 100)) {
+    static const char msg[] = "toExponential() argument must be between 0 and 100";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  int count = (int)f + 1;
+  char out[160];
+  size_t o = 0;
+  double a = x;
+  if (x < 0) {
+    out[o++] = '-';
+    a = -x;
+  }
+  char d[104];
+  int e = 0;
+  if (a == 0) {
+    memset(d, '0', (size_t)count);
+    d[count] = '\0';
+  } else {
+    scr_f64_precision_digits(a, count, d, &e);
+  }
+  out[o++] = d[0];
+  if (count != 1) {
+    out[o++] = '.';
+    memcpy(out + o, d + 1, (size_t)(count - 1));
+    o += (size_t)(count - 1);
+  }
+  o += scr_num_exp_suffix(out + o, e);
+  return scr_str_new(out, o);
 }
 
 /* Increment a decimal digit string in place. Returns true on overflow —
@@ -10869,11 +11814,25 @@ double scr_dyn_native_date_value(const ScrDyn *value) {
   return ((ScrNativeDate *)value->v.handle.ptr)->milliseconds;
 }
 
+/* Method names without another use in this file, in named arrays (see
+ * scr_tz_posix_ids). */
+static const char scr_date_to_date_string_name[] = "toDateString";
+static const char scr_date_to_time_string_name[] = "toTimeString";
+
 static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *method,
     ScrDyn *const *args, size_t argc, const char *what) {
   (void)self; (void)args; (void)argc; (void)what;
   double ms = ((ScrNativeDate *)ptr)->milliseconds;
   if (!strcmp(method, "getTime") || !strcmp(method, "valueOf")) return scr_dyn_new_num(ms);
+  if (!strcmp(method, "toString") || !strcmp(method, scr_date_to_date_string_name) ||
+      !strcmp(method, scr_date_to_time_string_name)) {
+    ScrStr *text = !strcmp(method, "toString")                     ? scr_date_to_string(ms)
+                   : !strcmp(method, scr_date_to_date_string_name) ? scr_date_to_date_string(ms)
+                                                                   : scr_date_to_time_string(ms);
+    ScrDyn *result = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return result;
+  }
   if (!strcmp(method, "toISOString") || !strcmp(method, "toJSON")) {
     if (!strcmp(method, "toJSON") && !isfinite(ms)) return scr_dyn_new_null();
     ScrStr *text = scr_date_to_iso(ms);
@@ -10921,7 +11880,9 @@ ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
 
 /* The Date.prototype methods scr_native_date_invoke answers. */
 static const char *const scr_native_date_methods[] = {
-  "getTime", "valueOf", "toISOString", "toJSON", "getFullYear", "getUTCFullYear", "getMonth",
+  "getTime", "valueOf", "toISOString", "toJSON", "toString", scr_date_to_date_string_name,
+  scr_date_to_time_string_name,
+  "getFullYear", "getUTCFullYear", "getMonth",
   "getUTCMonth", "getDate", "getUTCDate", "getDay", "getUTCDay", "getHours", "getUTCHours",
   "getMinutes", "getUTCMinutes", "getSeconds", "getUTCSeconds", "getMilliseconds",
   "getUTCMilliseconds", "getTimezoneOffset",
@@ -10988,4 +11949,53 @@ ScrDyn *scr_dyn_native_date_from_ms(double ms) {
   ScrDyn *result = scr_dyn_new_handle(date, SCR_DYNH_DATE);
   scr_native_date_release(date);
   return result;
+}
+
+/* crypto.getRandomValues(typedArray) (WebCrypto, also node:crypto's
+ * export): integer typed arrays only (Node's TypeMismatchError DOMException
+ * for float arrays, DataViews and every other value), at most 65536 bytes
+ * (QuotaExceededError), filled in place and returned. Nothing on an
+ * existing path calls these. They stay at the end of the unit: clang emits
+ * a static helper (scr_random_write) where its first emitted caller
+ * appears, and an earlier caller would move it in every binary that links
+ * the random fills. */
+ScrBytes *scr_crypto_get_random_values(ScrBytes *view) {
+  static const char mismatch[] = "TypeMismatchError";
+  static const char mismatch_msg[] = "The data argument must be an integer-type TypedArray";
+  static const char quota[] = "QuotaExceededError";
+  static const char quota_msg[] = "The requested length exceeds 65,536 bytes";
+  if (view->is_data_view || view->elem == SCR_BYTES_F32 || view->elem == SCR_BYTES_F64 ||
+      view->elem == SCR_BYTES_F16) {
+    scr_throw_domex(mismatch, mismatch_msg);
+    return NULL;
+  }
+  /* Integer arithmetic: a new floating-point literal would land in the
+   * merged constant pool every binary links. */
+  size_t length = view->len * (size_t)scr_bytes_elem_size(view->elem);
+  if (length > 65536u) {
+    scr_throw_domex(quota, quota_msg);
+    return NULL;
+  }
+  scr_random_write(view, 0, length);
+  return scr_bytes_retain(view);
+}
+
+ScrDyn *scr_crypto_get_random_values_dyn(ScrDyn *value) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(value);
+    if (!materialized) return NULL;
+    ScrDyn *result = scr_crypto_get_random_values_dyn(materialized);
+    scr_dyn_release(materialized);
+    return result ? scr_dyn_retain(value) : NULL;
+  }
+  if (value->kind != SCR_DYN_BYTES) {
+    static const char mismatch[] = "TypeMismatchError";
+    static const char mismatch_msg[] = "The data argument must be an integer-type TypedArray";
+    scr_throw_domex(mismatch, mismatch_msg);
+    return NULL;
+  }
+  ScrBytes *filled = scr_crypto_get_random_values(value->v.bytes);
+  if (!filled) return NULL;
+  scr_bytes_release(filled);
+  return scr_dyn_retain(value);
 }

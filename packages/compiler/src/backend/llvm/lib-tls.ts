@@ -94,10 +94,10 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
     }
     case "tls.connect":
     case "tls.connectCb":
-      if (args[3] !== undefined) host.moveTemp(args[3]);
+      if (args[3] !== undefined) host.toHeap(args[3]);
       return finishRuntimeCall(host, e, "scr_tls_connect_dyn", [...a.slice(0, 3), a[3] ?? ptr()]);
     case "tls.sockOnSecureConnect":
-      host.moveTemp(args[1]!);
+      host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure_connect", a);
     case "tls.sockOnSession": {
       const cb = args[1]!,
@@ -164,13 +164,8 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       ]);
       B.br(done);
       B.startBlock(plain);
-      const insecure = callRuntime(host, "scr_http_request_ex", "ptr", [
-        ...a.slice(1, 8),
-        ...handler,
-        { type: "i32", name: "80" },
-        ptr(),
-        ptr(),
-      ]);
+      // The plain arm is http.request: Node's global agent serves it.
+      const insecure = callRuntime(host, "scr_http_request", "ptr", [...a.slice(1, 8), ...handler]);
       B.br(done);
       B.startBlock(done);
       const result = B.tmp();

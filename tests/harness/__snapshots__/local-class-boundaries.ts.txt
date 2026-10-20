@@ -1,12 +1,12 @@
 local-class-boundaries.ts:1:34 - error SC1090: function-local classes with private brands are not supported yet
 
-  1 | function privateBrand() { return class { #value = 1; read(): number { return this.#value; } }; }
-    |                                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  1 | function privateBrand() { return class { #value = 1; has(other: object): boolean { return #value in other; } }; }
+    |                                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   2 | function selfName() { return class Local { copy() { return new Local(); } }; }
 
 local-class-boundaries.ts:2:64 - error SC1090: named self references inside function-local classes are not supported yet
 
-  1 | function privateBrand() { return class { #value = 1; read(): number { return this.#value; } }; }
+  1 | function privateBrand() { return class { #value = 1; has(other: object): boolean { return #value in other; } }; }
   2 | function selfName() { return class Local { copy() { return new Local(); } }; }
     |                                                                ^~~~~
   3 | class Base {}
@@ -17,10 +17,3 @@ local-class-boundaries.ts:5:29 - error SC1090: function-local classes with stati
   5 | function generic() { return class { read<T>(value: T): T { return value; } }; }
     |                             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   6 | privateBrand();
-
-local-class-boundaries.ts:13:1 - error SC2001: values of type 'typeof Stored' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
-
-  12 | }
-  13 | genericFactory<number>(7);
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~
-  14 | // End of unsupported local-class forms.

@@ -629,7 +629,7 @@ export function emitLocalArrayRead(
     // A slot of a nullable-union array may hold NULL even when present.
     const owned = read.nullableElement ? read.type : read.element;
     const store = (value: string): void => {
-      B.line(`store ptr ${read.borrow ? value : host.retainValue(value, owned)}, ptr ${localSlot}`);
+      B.line(`store ptr ${read.borrow ? value : host.retainFrame(value, owned)}, ptr ${localSlot}`);
     };
     if (inline)
       emitDenseReferenceArrayRead(host, array, index, integerIndex, store, no, slow, join, "ptr");
@@ -676,7 +676,7 @@ export function emitLocalArrayRead(
       B.line(`store i64 ${bits}, ptr ${payload}`);
     } else {
       B.line(
-        `store ptr ${read.borrow ? value : host.retainValue(value, read.element)}, ptr ${payload}`,
+        `store ptr ${read.borrow ? value : host.retainFrame(value, read.element)}, ptr ${payload}`,
       );
     }
     B.line(`store i32 ${read.presentTag}, ptr ${tag}`);

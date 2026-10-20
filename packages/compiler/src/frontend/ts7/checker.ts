@@ -1,5 +1,4 @@
 import { CheckerCache } from "./checker-cache.js";
-import { InternalCompilerError } from "../../errors.js";
 /* The checker facade: 5.9.3-shaped TypeChecker methods over 7.0.2's sync
  * client, built around the survey's feasibility verdict. Naive per-call use
  * of the 7.0.2 client costs 0.1-0.3 ms of IPC per query; the census counted
@@ -120,6 +119,16 @@ export function constituentTypes(type: Type): readonly Type[] {
   return type.getTypes() ?? [];
 }
 
+/** True for the panic typescript-go's API raises serializing a union's
+ * constituents (an empty tuple cloned as an array literal keeps the tuple
+ * flag without tuple data: `s.match(re) || []`). The union itself is
+ * readable; its members are not. */
+export function isUnreadableConstituentsPanic(e: unknown): boolean {
+  return (
+    e instanceof Error && (e as { unreadableConstituents?: true }).unreadableConstituents === true
+  );
+}
+
 /** Function-like declarations whose body is deferred until reachability
  * asks for it. Header prefetch walks their names, type parameters, params,
  * and return types but leaves the body for a later explicit body wave. */
@@ -163,7 +172,7 @@ function isDeferredExecutableRoot(node: Node, walk: PrefetchWalk): boolean {
   return (
     parent.kind === SyntaxKind.PropertyDeclaration &&
     parent.initializer === node &&
-    !parent.modifiers?.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
+    !parent.modifiers?.nodes.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
   );
 }
 
@@ -226,60 +235,6 @@ export class CheckerFacade {
    * and snapshot disposal even when callers retain the facade. */
   dispose(): void {
     this.cache.dispose();
-  }
-
-  /* ── the symbol-declaration surface (phase 3) ─────────────────────────
-   * 7's Symbol carries declarations as NodeHandles (server references),
-   * where 5.9.3 handed out the nodes themselves. The lowering reads
-   * symbol.declarations/valueDeclaration pervasively, so the facade owns
-   * the resolve step (NodeHandle.resolve into the client AST — identity-
-   * stable, probe-verified) and memoizes per symbol. Requires the project
-   * the symbols came from (options.project — Ts7Program supplies it). */
-
-  private requireProject(): Project {
-    const project = this.options.project;
-    if (!project)
-      throw new InternalCompilerError(
-        "CheckerFacade built without a project cannot resolve declarations",
-      );
-    return project;
-  }
-
-  /** 5.9.3's symbol.declarations (never undefined here: 7 answers an empty
-   * array where 5.9.3 answered undefined — callers treat them alike). */
-  declarationsOf(symbol: Ts7Symbol): readonly Node[] {
-    this.ensureActive();
-    let decls = this.cache.declsOf.get(symbol);
-    if (decls === undefined) {
-      const project = this.requireProject();
-      const resolved: Node[] = [];
-      for (const handle of symbol.declarations) {
-        const node = handle.resolve(project);
-        if (node !== undefined) resolved.push(node);
-      }
-      decls = resolved;
-      this.cache.declsOf.set(symbol, decls);
-    }
-    return decls;
-  }
-
-  /** 5.9.3's symbol.valueDeclaration. */
-  valueDeclarationOf(symbol: Ts7Symbol): Node | undefined {
-    this.ensureActive();
-    if (this.cache.valueDeclOf.has(symbol)) return this.cache.valueDeclOf.get(symbol);
-    const decl = symbol.valueDeclaration?.resolve(this.requireProject());
-    this.cache.valueDeclOf.set(symbol, decl);
-    return decl;
-  }
-
-  /** 5.9.3's signature.getDeclaration() (undefined for synthesized
-   * signatures — same contract as sig.declaration there). */
-  signatureDeclaration(signature: Signature): Node | undefined {
-    this.ensureActive();
-    if (this.cache.sigDeclOf.has(signature)) return this.cache.sigDeclOf.get(signature);
-    const decl = signature.declaration?.resolve(this.requireProject());
-    this.cache.sigDeclOf.set(signature, decl);
-    return decl;
   }
 
   /** 5.9.3's type.getCallSignatures(). */

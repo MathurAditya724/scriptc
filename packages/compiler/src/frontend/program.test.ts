@@ -344,8 +344,8 @@ test("repeated cycle edges reuse a file's binding index", () => {
   try {
     const main = load.entry;
     const peer = load.program.getSourceFile(join(directory, "peer.ts"))!;
-    const mainImports = main.statements.filter(ts.isImportDeclaration);
-    const peerImports = peer.statements.filter(ts.isImportDeclaration);
+    const mainImports = main.statements.nodes.filter(ts.isImportDeclaration);
+    const peerImports = peer.statements.nodes.filter(ts.isImportDeclaration);
     const edges = new Map<ts.SourceFile, CycleEdge[]>([
       [main, mainImports.map((stmt) => ({ dep: peer, stmt }))],
       [peer, peerImports.map((stmt) => ({ dep: main, stmt }))],

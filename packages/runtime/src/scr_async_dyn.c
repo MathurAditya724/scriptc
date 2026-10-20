@@ -28,16 +28,6 @@ static void scr_ad_oom(void) {
   abort();
 }
 
-/* Fresh snapshot storage (the layout lives in scr_runtime.h; the RC pair
- * in scr_async.c — spawn/destroy touch it). */
-static ScrAlsCtx *scr_als_ctx_alloc(size_t len) {
-  ScrAlsCtx *c = malloc(sizeof *c + len * sizeof(ScrAlsEntry));
-  if (!c) scr_ad_oom();
-  c->rc = 1;
-  c->len = len;
-  return c;
-}
-
 static SCR_TL double scr_als_counter = 0;
 
 /* Main-slot teardown (atexit, LIFO after scr_init's audit registration —
@@ -68,30 +58,6 @@ ScrDyn *scr_als_get(double id) {
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
-/* Fresh snapshot with (id → value) replaced-or-appended (value borrowed,
- * retained in), installed as the active context; the PREVIOUS snapshot
- * returns (ownership moves out) for scr_als_restore. */
-ScrAlsCtx *scr_als_enter(double id, ScrDyn *value) {
-  ScrAlsCtx *prev = *SCR_ALS_SLOT();
-  size_t n = prev ? prev->len : 0;
-  bool have = false;
-  for (size_t i = 0; i < n; i++) {
-    if (prev->entries[i].id == id) { have = true; break; }
-  }
-  ScrAlsCtx *next = scr_als_ctx_alloc(have ? n : n + 1);
-  size_t w = 0;
-  for (size_t i = 0; i < n; i++) {
-    if (prev->entries[i].id == id) continue;
-    next->entries[w].id = prev->entries[i].id;
-    next->entries[w].value = scr_dyn_retain(prev->entries[i].value);
-    w++;
-  }
-  next->entries[w].id = id;
-  next->entries[w].value = scr_dyn_retain(value);
-  *SCR_ALS_SLOT() = next;
-  return prev; /* ownership moves to the caller */
-}
-
 /* The exit() arm: the id REMOVED from the snapshot. */
 ScrAlsCtx *scr_als_enter_absent(double id) {
   ScrAlsCtx *prev = *SCR_ALS_SLOT();
@@ -112,14 +78,10 @@ ScrAlsCtx *scr_als_enter_absent(double id) {
   return prev;
 }
 
-void scr_als_restore(ScrAlsCtx *prev) {
-  scr_als_ctx_release(*SCR_ALS_SLOT());
-  *SCR_ALS_SLOT() = prev; /* ownership moves back in */
-}
-
 void scr_als_enter_with(double id, ScrDyn *value) {
   ScrAlsCtx *prev = scr_als_enter(id, value);
   scr_als_ctx_release(prev); /* no restore point — Node's enterWith */
+  scr_als_entered_with();
 }
 
 void scr_als_disable(double id) {
@@ -860,10 +822,59 @@ ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code) {
   return w;
 }
 
+#ifdef SCR_WARNING_REPLACE
+/* The program's process.emitWarning replacement, or NULL while the
+ * property holds Node's own function. Compiled only into the
+ * SCR_WARNING_REPLACE variant, which programs assigning process.emitWarning
+ * link: every other executable keeps the plain warning paths. */
+static SCR_TL ScrDyn *scr_emit_warning_override = NULL;
+
+static void scr_emit_warning_override_teardown(void) {
+  scr_dyn_release(scr_emit_warning_override);
+  scr_emit_warning_override = NULL;
+}
+
+void scr_process_set_emit_warning(ScrDyn *fn) {
+  if (scr_emit_warning_override == NULL) scr_atexit(scr_emit_warning_override_teardown);
+  ScrDyn *previous = scr_emit_warning_override;
+  scr_emit_warning_override = scr_dyn_retain(fn);
+  scr_dyn_release(previous);
+  /* Units that report their own warnings without a listener route them
+   * here once a replacement exists. */
+  scr_warning_emit_hook = scr_emit_warning;
+}
+
+/* A runtime-built warning while a replacement is installed: Node's modules
+ * call process.emitWarning(message, type, code), so the replacement sees
+ * those arguments; nothing is reported. A throw stays pending. */
+static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *code) {
+  ScrDyn *args[3];
+  size_t argc = 0;
+  args[argc++] = scr_dyn_new_str(message);
+  ScrStr *fallback = type ? NULL : scr_str_new("Warning", 7);
+  args[argc++] = scr_dyn_new_str(type ? type : fallback);
+  scr_str_release(fallback);
+  if (code) args[argc++] = scr_dyn_new_str(code);
+  ScrDyn *r = scr_dyn_call(scr_emit_warning_override, args, argc, "process.emitWarning");
+  scr_dyn_release(r);
+  for (size_t i = 0; i < argc; i++) scr_dyn_release(args[i]);
+}
+#endif /* SCR_WARNING_REPLACE */
+
 /* A warning built from C parts (the runtime deprecation sites): name
  * defaults to "Warning"; code/detail optional. Reported synchronously.
  * Borrows message. */
 void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+#ifdef SCR_WARNING_REPLACE
+  if (scr_emit_warning_override != NULL) {
+    ScrStr *type_text = scr_str_new(name ? name : "Warning", strlen(name ? name : "Warning"));
+    ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
+    scr_emit_warning_replaced(message, type_text, code_text);
+    scr_str_release(type_text);
+    scr_str_release(code_text);
+    return;
+  }
+#endif
   ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
   ScrDyn *w = scr_warning_new(message, name ? name : "Warning", code_text);
   scr_str_release(code_text);
@@ -894,6 +905,18 @@ static void scr_warning_defer(ScrDyn *w, void (*fire)(ScrClosure *)) {
 }
 
 void scr_warning_emit_deferred(ScrDyn *w) {
+#ifdef SCR_WARNING_REPLACE
+  if (scr_emit_warning_override != NULL) {
+    const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
+    const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
+    ScrStr *name = scr_warning_name(w);
+    ScrStr *message = em && em->kind == SCR_DYN_STR ? scr_str_retain(em->v.str) : scr_str_new("", 0);
+    scr_emit_warning_replaced(message, name, ec && ec->kind == SCR_DYN_STR ? ec->v.str : NULL);
+    scr_str_release(message);
+    scr_str_release(name);
+    return;
+  }
+#endif
   if (scr_warning_is_deprecation(w)) {
     if (scr_process_deprecation_flag_on(0)) return;
     if (scr_process_deprecation_flag_on(1)) {
@@ -902,6 +925,27 @@ void scr_warning_emit_deferred(ScrDyn *w) {
     }
   }
   scr_warning_defer(w, scr_warning_tick);
+}
+
+static SCR_TL bool scr_punycode_loaded = false;
+
+void scr_punycode_warn(bool immediate, bool report) {
+  if (scr_punycode_loaded) return;
+  scr_punycode_loaded = true;
+  if (!report) return;
+  static const char text[] =
+      "The `punycode` module is deprecated. Please use a userland alternative instead.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0040", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  if (immediate) {
+    if (!scr_process_deprecation_flag_on(0)) scr_warning_dispatch(w);
+  } else {
+    scr_warning_emit_deferred(w);
+  }
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
 }
 
 /* The console members' warnings. Node's emitWarning emits on
@@ -959,6 +1003,13 @@ static void scr_warn_bad_arg(const char *arg, const char *want) {
  * ERR_INVALID_ARG_TYPE TypeErrors at the call; non-string details are
  * ignored. The warning itself is emitted on the next tick. */
 void scr_process_emit_warning(ScrDyn *args) {
+#ifdef SCR_WARNING_REPLACE
+  if (scr_emit_warning_override != NULL) {
+    ScrDyn *r = scr_dyn_apply(scr_emit_warning_override, args, "process.emitWarning");
+    scr_dyn_release(r);
+    return;
+  }
+#endif
   size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
   ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
   ScrDyn *warning = argc >= 1 ? items[0] : NULL;
@@ -1015,11 +1066,9 @@ void scr_process_emit_warning(ScrDyn *args) {
   e->name = type ? scr_str_retain((ScrStr *)type) : scr_str_new("Warning", 7);
   e->name_present = true;
   if (code) e->code = scr_str_retain((ScrStr *)code);
+  if (detail) scr_error_set_prop(e, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
   ScrDyn *w = scr_dyn_from_error(e);
   scr_error_release(e);
-  if (detail) {
-    scr_dyn_obj_set(w, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
-  }
   scr_warning_emit_deferred(w);
   scr_dyn_release(w);
 }

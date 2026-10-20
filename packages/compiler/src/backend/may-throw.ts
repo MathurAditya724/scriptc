@@ -297,7 +297,9 @@ export function computeMayThrow(
             rec.method === "replaceAll" ||
             rec.method === "split" ||
             rec.method === "matchAll" ||
-            rec.method === "matchAllInto"
+            rec.method === "matchAllCaptures" ||
+            rec.method === "matchAllInto" ||
+            rec.method === "matchAllCapturesInto"
           ) {
             f.throws = true;
           }
@@ -580,7 +582,7 @@ function breaksTo(
 
 /** Statements no execution reaches: those after a statement that cannot
  * complete normally in the same statement list. */
-function unreachableStatements(body: readonly IrStmt[]): Set<IrStmt> {
+export function unreachableStatements(body: readonly IrStmt[]): Set<IrStmt> {
   const dead = new Set<IrStmt>();
   const { statement } = completion();
   const list = (stmts: readonly IrStmt[]): void => {

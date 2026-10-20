@@ -22,7 +22,7 @@ import {
   type ClassInfo,
 } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
-import { newFnCtx } from "./lowerer.js";
+import { PoisonError, newFnCtx } from "./lowerer.js";
 import { classMethodValue } from "./class-method-values.js";
 
 /** Data added to a top-level class prototype has shared identity and remains
@@ -360,7 +360,7 @@ export function reflectClassPrototype(
   const context = newFnCtx(false, null, null, DYN);
   lowerer.fnStack.push(context);
   try {
-    for (const member of info.decl.members) {
+    for (const member of info.decl.members.nodes) {
       if (
         (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) ||
         !member.body ||
@@ -376,14 +376,37 @@ export function reflectClassPrototype(
       const method = ts.isMethodDeclaration(member)
         ? name
         : `${ts.isGetAccessor(member) ? "get" : "set"}:${name}`;
-      const value = classMethodValue(lowerer, info.decl, info, method, loc);
+      // A member whose value or key has no lowering refuses the reflection
+      // at run time; its own diagnostic must not escape this walk (the
+      // walk runs from emitReachable, after statement fences are placed).
+      let before = lowerer.diags.length;
+      let value: IrExpr | null;
+      try {
+        value = classMethodValue(lowerer, info.decl, info, method, loc);
+      } catch (error) {
+        if (!(error instanceof PoisonError)) throw error;
+        lowerer.diags.splice(before);
+        return refuse(
+          "prototype reflection with a member that has no lowering is not supported yet",
+        );
+      }
       if (!value || !lowerer.dynConvertible(value.type))
         return refuse(
           "prototype reflection with a member that cannot cross a checked value boundary is not supported yet",
         );
-      const key: IrExpr = ts.isComputedPropertyName(member.name)
-        ? lowerer.lowerExpr(member.name.expression)
-        : { kind: "strLit", value: member.name.text, type: STRING, loc };
+      let key: IrExpr;
+      before = lowerer.diags.length;
+      try {
+        key = ts.isComputedPropertyName(member.name)
+          ? lowerer.lowerExpr(member.name.expression)
+          : { kind: "strLit", value: member.name.text, type: STRING, loc };
+      } catch (error) {
+        if (!(error instanceof PoisonError)) throw error;
+        lowerer.diags.splice(before);
+        return refuse(
+          "prototype reflection with a computed member key that has no lowering is not supported yet",
+        );
+      }
       initialization.then.push(
         define(
           key,
@@ -430,12 +453,12 @@ export function lowerClassPrototypeData(
   const parent = expr.parent;
   const descriptorKey =
     ts.isCallExpression(parent) &&
-    parent.arguments[0] === expr &&
+    parent.arguments.nodes[0] === expr &&
     ts.isPropertyAccessExpression(parent.expression) &&
     lowerer.stdlibGlobalMember(parent.expression, "Object") === "defineProperty" &&
-    parent.arguments[1] &&
-    ts.isStringLiteral(parent.arguments[1])
-      ? parent.arguments[1].text
+    parent.arguments.nodes[1] &&
+    ts.isStringLiteral(parent.arguments.nodes[1])
+      ? parent.arguments.nodes[1].text
       : null;
   const name =
     ts.isPropertyAccessExpression(parent) && parent.expression === expr
@@ -481,12 +504,12 @@ export function lowerClassPrototypeAssign(
   lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
-  const target = call.arguments[0];
+  const target = call.arguments.nodes[0];
   if (!target || !ts.isPropertyAccessExpression(target) || target.name.text !== "prototype")
     return null;
   const info = exactClassOfReceiver(lowerer, target.expression);
   if (!info) return null;
-  if (!ts.isExpressionStatement(call.parent) || call.arguments.some(ts.isSpreadElement)) {
+  if (!ts.isExpressionStatement(call.parent) || call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.unsupported("SC1090", call, "class prototype assignment results and spread arguments");
   }
   const loc = locOf(call);
@@ -507,7 +530,9 @@ export function lowerClassPrototypeAssign(
       target,
       "prototype data on generic, mixin, or runtime-provided classes",
     );
-  const sources = call.arguments.slice(1).map((node) => lowerer.lowerExprExpecting(node, DYN));
+  const sources = call.arguments.nodes
+    .slice(1)
+    .map((node) => lowerer.lowerExprExpecting(node, DYN));
   return {
     kind: "libCall",
     fn: "dyn.assignPrototype",
@@ -553,7 +578,16 @@ function prototypeProtectedKeys(
       } else if (name.startsWith("%symbol:")) {
         const entries: [ts.Symbol, string][] = owner.symbolMethods ? [...owner.symbolMethods] : [];
         const entry = entries.find(([, field]) => field === name);
-        const declaration = entry ? lowerer.checker.valueDeclarationOf(entry[0]) : undefined;
+        const declaration = entry ? entry[0].valueDeclaration : undefined;
+        // A CommonJS key-table property holds its key in the table's global.
+        const tableKey =
+          declaration && ts.isPropertyAssignment(declaration)
+            ? lowerer.globalsBySymbol.get(entry![0])
+            : undefined;
+        if (tableKey) {
+          keys.push({ kind: "varRef", localId: tableKey.id, type: tableKey.type, loc });
+          continue;
+        }
         if (
           !declaration ||
           !ts.isVariableDeclaration(declaration) ||
@@ -685,11 +719,11 @@ export function lowerClassPrototypeDescriptors(
   call: ts.CallExpression,
   member: string,
 ): IrExpr | null {
-  const target = call.arguments[0];
+  const target = call.arguments.nodes[0];
   if (
     member !== "defineProperties" ||
-    call.arguments.length !== 2 ||
-    call.arguments.some(ts.isSpreadElement) ||
+    call.arguments.nodes.length !== 2 ||
+    call.arguments.nodes.some(ts.isSpreadElement) ||
     !target ||
     !ts.isPropertyAccessExpression(target) ||
     target.name.text !== "prototype"
@@ -720,7 +754,7 @@ export function lowerClassPrototypeDescriptors(
     fn: "dyn.definePrototypeProps",
     args: [
       prototype,
-      lowerer.lowerExprExpecting(call.arguments[1]!, DYN),
+      lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
       prototypeProtectedKeys(lowerer, info, target, loc),
     ],
     type: DYN,

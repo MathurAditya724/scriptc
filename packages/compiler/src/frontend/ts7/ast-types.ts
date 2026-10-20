@@ -1,4 +1,4 @@
-import type { AstNode } from "./ast-node.js";
+import type { AstNode, AstNodeList } from "./ast-node.js";
 import { SyntaxKind } from "./enums.js";
 import type {
   EndOfFile,
@@ -11,7 +11,9 @@ import type {
 
 export * from "./ast-types.generated.js";
 export type Node = AstNode;
-export type NodeArray<T extends Node> = readonly T[];
+/** A node list. The type is the list class itself, not a structural shape:
+ * native code represents a class and a record type differently. */
+export type NodeArray<T extends Node> = AstNodeList<T>;
 export type Path = string;
 export type __String = string;
 export interface TextRange {

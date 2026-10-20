@@ -23,6 +23,8 @@ typedef enum {
   SCR_MESSAGE_TYPED_REF,
   /* A transferred MessagePort: its channel end (+1), the side in number. */
   SCR_MESSAGE_PORT,
+  /* A native handle cloned through its unit's ScrDynHandleTransfer. */
+  SCR_MESSAGE_HANDLE,
 } ScrMessageKind;
 
 const ScrMessagePortOps *scr_message_port_ops = NULL;
@@ -49,6 +51,9 @@ typedef struct {
   bool data_view;
   ScrDyn *published; /* SCR_MESSAGE_PUBLISHED: immortal root, owns nothing */
   ScrChannel *channel; /* SCR_MESSAGE_PORT */
+  /* SCR_MESSAGE_HANDLE: the owning unit's hooks and its payload (+1). */
+  const ScrDynHandleTransfer *transfer;
+  void *payload;
   /* SCR_MESSAGE_TYPED_REF: the capsule's process-wide adapters and type key
    * (vtables, adapters and type keys are shared by every thread). */
   struct {
@@ -114,7 +119,7 @@ static void *scr_message_alloc(size_t count, size_t size) {
 
 static size_t scr_message_grow(size_t capacity) {
   if (capacity > SIZE_MAX / 2) scr_trap("scriptc: message too large\n");
-  return capacity ? capacity * 2 : 16;
+  return capacity ? capacity * 2 : 4;
 }
 
 static unsigned char *scr_message_copy(const void *data, size_t length) {
@@ -389,7 +394,20 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
       break;
     }
     bool buffer = scr_buffer_storage_is(value);
-    if (value->kind == SCR_DYN_HANDLE && !buffer) goto unsupported;
+    if (value->kind == SCR_DYN_HANDLE && !buffer) {
+      const ScrDynHandleTransfer *transfer = scr_dyn_handle_ops_of(value)->transfer;
+      if (!transfer) goto unsupported;
+      void *payload = transfer->share(value->v.handle.ptr);
+      if (!payload) {
+        if (scr_exc_pending()) return SIZE_MAX;
+        goto unsupported;
+      }
+      node = &encoder->message->nodes[id];
+      node->kind = SCR_MESSAGE_HANDLE;
+      node->transfer = transfer;
+      node->payload = payload;
+      break;
+    }
     const ScrBytes *bytes = buffer ? value->v.handle.ptr : value->v.bytes;
     size_t storage = scr_message_storage(encoder, bytes);
     /* Adding the storage node can reallocate the node array. */
@@ -654,6 +672,15 @@ done:
   free(encoder.identities);
   free(encoder.stack);
   if (scr_exc_pending()) { scr_message_free(message); return NULL; }
+  /* A queued message keeps its nodes until it is received: drop the
+   * growth slack. */
+  if (message->count && message->count < message->capacity) {
+    ScrMessageNode *nodes = realloc(message->nodes, message->count * sizeof(*nodes));
+    if (nodes) {
+      message->nodes = nodes;
+      message->capacity = message->count;
+    }
+  }
   return message;
 }
 
@@ -765,6 +792,7 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
     case SCR_MESSAGE_PORT:
       values[i] = scr_message_port_ops->adopt(node->channel, (int)node->number);
       break;
+    case SCR_MESSAGE_HANDLE: values[i] = node->transfer->adopt(node->payload); break;
     }
     if (!values[i] || scr_exc_pending()) goto done;
   }
@@ -820,6 +848,7 @@ void scr_message_free(ScrMessage *message) {
     free(node->data);
     scr_shared_release(node->shared);
     if (node->kind == SCR_MESSAGE_PORT) scr_message_port_ops->release(node->channel);
+    if (node->kind == SCR_MESSAGE_HANDLE) node->transfer->drop(node->payload);
   }
   free(message->nodes);
   free(message);

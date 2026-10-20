@@ -9,7 +9,9 @@ import { emitTestLibCall } from "./lib-test.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
+import type { IrExpr, IrType } from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
 import {
   ASSERT_VERDICT_LIB_FNS,
@@ -21,6 +23,7 @@ import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
 import { rawBytes } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
+import { regexLiteralCaptures } from "./regex-matchers.js";
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -80,17 +83,24 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     }
     // A signal that is not an AbortSignal throws ERR_INVALID_ARG_TYPE.
     if (mode & 8) host.emitPendingCheck();
+    // readline/promises interfaces are instances of that module's class.
+    if (mode & 32) {
+      host.declare(`declare void @scr_rl_mark_promises(double)`);
+      B.line(`call void @scr_rl_mark_promises(double ${t})`);
+    }
     return { name: t, type: e.type };
   }
-  if (e.fn === "rl.question") {
+  if (e.fn === "rl.question" || e.fn === "rl.questionDyn") {
     // The answer callback MOVES into the interface's registry; throws
-    // Node's use-after-close error (the may-throw seed).
+    // Node's use-after-close error (the may-throw seed), and with a
+    // checked-dynamic query that is not a string, ERR_INVALID_ARG_TYPE.
     host.usesTimers = true;
+    const fn = e.fn === "rl.question" ? "scr_rl_question" : "scr_rl_question_dyn";
     const cbT = e.args[2]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: rl.question callback not a func");
     const args = e.args.map((a) => host.emitExpr(a));
-    host.moveTemp(args[2]!);
+    host.toHeap(args[2]!);
     const adapter =
       cbT.params.length === 0
         ? "scr_rl_answer_thunk0"
@@ -98,29 +108,37 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
           ? "scr_rl_answer_thunk_dyn"
           : "scr_rl_answer_thunk_str";
     host.declare(`declare void @${adapter}(ptr, ptr)`);
-    host.declare(`declare void @scr_rl_question(double, ptr, ptr, ptr)`);
+    host.declare(`declare void @${fn}(double, ptr, ptr, ptr)`);
     B.line(
-      `call void @scr_rl_question(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr @${adapter})`,
+      `call void @${fn}(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr @${adapter})`,
     );
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
-  if (e.fn === "rl.questionAsync" || e.fn === "rl.questionAsyncSignal") {
-    // The promise question never throws: closed interfaces and aborted
-    // signals reject the answered promise (+1).
+  if (
+    e.fn === "rl.questionAsync" ||
+    e.fn === "rl.questionAsyncSignal" ||
+    e.fn === "rl.questionAsyncDyn" ||
+    e.fn === "rl.questionAsyncSignalDyn"
+  ) {
+    // The promise question never throws: closed interfaces, aborted
+    // signals and queries that are not strings reject the answered
+    // promise (+1).
     host.usesTimers = true;
     const args = e.args.map((a) => host.emitExpr(a));
+    const dyn = e.fn === "rl.questionAsyncDyn" || e.fn === "rl.questionAsyncSignalDyn";
+    const fn = dyn ? "scr_rl_question_promise_dyn" : "scr_rl_question_promise";
     let signal = "null";
     let add = "null";
-    if (e.fn === "rl.questionAsyncSignal") {
+    if (e.fn === "rl.questionAsyncSignal" || e.fn === "rl.questionAsyncSignalDyn") {
       signal = args[2]!.name;
       host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
       add = "@scr_events_add_abort_listener";
     }
-    host.declare(`declare ptr @scr_rl_question_promise(double, ptr, ptr, ptr)`);
+    host.declare(`declare ptr @${fn}(double, ptr, ptr, ptr)`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_rl_question_promise(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${signal}, ptr ${add})`,
+      `${t} = call ptr @${fn}(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${signal}, ptr ${add})`,
     );
     return host.own({ name: t, type: e.type });
   }
@@ -163,7 +181,7 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     const ev = host.emitExpr(evArg);
     const cb = host.emitExpr(e.args[2]!);
     const once = host.emitExpr(e.args[3]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     let adapter = "null";
     if (evArg.value === 0 || evArg.value === 4) {
       const param = cbT.params[0];
@@ -285,7 +303,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const cbT = e.args[4]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: randomFill callback not a func");
-    host.moveTemp(args[4]!);
+    host.toHeap(args[4]!);
     const dyn = e.fn === "crypto.randomFillCbDyn";
     const adapter = host.cryptoBytesThunkFor(cbT, false, dyn ? "dyn" : "view");
     const symbol = dyn ? "scr_crypto_random_fill_async_dyn" : "scr_crypto_random_fill_async";
@@ -303,7 +321,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const cbT = e.args[2]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: generateKey callback not a func");
-    host.moveTemp(args[2]!);
+    host.toHeap(args[2]!);
     const adapter = host.cryptoBytesThunkFor(cbT, false, "dyn");
     host.declare(`declare void @scr_crypto_generate_key_async(ptr, ptr, ptr, ptr)`);
     B.line(
@@ -318,7 +336,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const cbT = e.args[3]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: randomInt callback not a func");
-    host.moveTemp(args[3]!);
+    host.toHeap(args[3]!);
     const adapter = host.cryptoIntThunkFor(cbT);
     host.declare(`declare void @scr_crypto_random_int_async(double, double, double, ptr, ptr)`);
     B.line(
@@ -427,7 +445,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const cbT = e.args[cbIndex]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: crypto callback not a func");
-    host.moveTemp(args[cbIndex]!);
+    host.toHeap(args[cbIndex]!);
     const adapter = host.cryptoBytesThunkFor(cbT, e.fn === "crypto.hkdfCb");
     if (e.fn === "crypto.randomBytesCb") {
       host.declare(`declare void @scr_crypto_random_bytes_async(double, ptr, ptr)`);
@@ -484,7 +502,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       const cbT = e.args[cbIdx]!.type;
       if (cbT.kind !== "func")
         throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
-      host.moveTemp(args[cbIdx]!);
+      host.toHeap(args[cbIdx]!);
       cb = args[cbIdx]!.name;
       const sym = cbT.params.length === 0 ? "scr_http_resp_thunk0" : "scr_http_resp_thunk_res";
       host.declare(`declare void @${sym}(ptr, ptr)`);
@@ -524,7 +542,13 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   }
-  const sym = mockTimerSym(host, e) ?? LIB_FN_SYMS[e.fn];
+  // queueMicrotask's checked-dynamic form carries the AsyncLocalStorage
+  // context like the static one (lib-process.ts).
+  const sym =
+    mockTimerSym(host, e) ??
+    (e.fn === "timers.queueMicrotaskDyn" && host.schedulesInContext
+      ? "scr_queue_microtask_dyn_als"
+      : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
     ? emitBorrowedInputs(host, e.args)
@@ -642,8 +666,66 @@ function emitAssertFailing(
  * `a.name.localeCompare(b.name)` reads both fields without retaining). */
 const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set(["str.localeCompare"]);
 
+/** The parameter count of a replace callback the runtime can call through
+ * the closure ABI (scr_regex_replace_fn), or null when it needs the dyn
+ * box. Each declared parameter must receive a value of its declared kind
+ * in every match: the match string at 0; with more than one parameter the
+ * pattern must be a literal whose captures are known, so position i is a
+ * capture that every match sets (a string), the offset (a number) right
+ * after the captures, or the subject (a string) after that. */
+function typedReplacerArity(callback: IrType, pattern: IrExpr): number | null {
+  if (callback.kind !== "func" || callback.rest || callback.argumentsAll) return null;
+  if (callback.ret.kind !== "string") return null;
+  const params = callback.params;
+  if (params.length > 4) return null;
+  if (params.length === 0) return 0;
+  if (params[0]!.kind !== "string") return null;
+  if (params.length === 1) return 1;
+  if (pattern.kind !== "regexLit") return null;
+  const captures = regexLiteralCaptures(pattern.pattern, pattern.flags);
+  if (!captures) return null;
+  for (let i = 1; i < params.length; i++) {
+    const kind = params[i]!.kind;
+    const ok =
+      i < captures.count
+        ? kind === "string" && captures.always[i] === true
+        : i === captures.count
+          ? kind === "f64"
+          : i === captures.count + 1 && kind === "string";
+    if (!ok) return null;
+  }
+  return params.length;
+}
+
+/** `s.replace(re, fn)` / `replaceAll` with a typed callback the runtime can
+ * call directly: the dyn box the IR wraps it in is never observable (the
+ * runtime only calls it, with `this` undefined), so the closure goes to
+ * scr_regex_replace_fn as it is. Null keeps the generic path. */
+function emitTypedRegexReplace(host: LlvmEmitterContext, e: LibCallExpr): LlValue | null {
+  const [subject, pattern, callback, all] = e.args;
+  if (!subject || !pattern || callback?.kind !== "dynFrom" || all?.kind !== "boolLit") return null;
+  const arity = typedReplacerArity(callback.value.type, pattern);
+  if (arity === null) return null;
+  const B = host.B;
+  const s = host.emitExpr(subject);
+  const re = host.emitExpr(pattern);
+  const fn = host.emitExpr(callback.value);
+  host.declare(`declare ptr @scr_regex_replace_fn(ptr, ptr, ptr, i32, i1 zeroext)`);
+  const result = B.tmp();
+  B.line(
+    `${result} = call ptr @scr_regex_replace_fn(ptr ${s.name}, ptr ${re.name}, ptr ${fn.name}, i32 ${arity}, i1 zeroext ${all.value})`,
+  );
+  const output = host.own({ name: result, type: e.type });
+  host.emitPendingCheck();
+  return output;
+}
+
 export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (USES_TIMERS_LIB_FNS.has(e.fn)) host.usesTimers = true;
+  if (e.fn === "regex.replaceCallback") {
+    const typed = emitTypedRegexReplace(host, e);
+    if (typed) return typed;
+  }
   if (e.fn === "process.nextTick") return host.emitAsyncContextLibCall(e);
   if (
     e.fn === "sp.pipeline" ||
@@ -656,7 +738,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     // Literals (`123n`) and constant BigInt("...") texts are immortal
     // statics instead of a parse at every evaluation.
     const sym = host.internBigIntLiteral(e.args[0].value);
-    if (sym) return host.own({ name: host.retainValue(sym, e.type), type: e.type });
+    if (sym) return host.own({ name: host.retainFrame(sym, e.type), type: e.type });
   }
   if (e.fn.startsWith("bigint.")) {
     // Small-value operator trees run in 64-bit registers (bigint-wrap.ts).
@@ -682,6 +764,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "dyn":
     case "global":
       return host.emitDynamicLibCall(e);
+    case "js":
+      return emitJsLibCall(host, e);
     case "fs":
     case "fsp":
     case "fileHandle":
@@ -766,6 +850,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "util":
     case "bigint":
     case "crypto":
+    case "webcrypto":
     case "buffer":
     case "bytes":
     case "tlsca":
@@ -774,6 +859,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "blob":
     case "record":
     case "disposable":
+    case "punycode":
+    case "constants":
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);

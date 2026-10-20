@@ -29,7 +29,7 @@ function messageAdapter(host: LlvmEmitterContext, type: IrType): string {
     const isString = field === "address" || field === "family";
     if (isString) lines.push(`  %${field}.owned = call ptr @scr_str_retain_v(ptr %${field})`);
     lines.push(
-      `  %${field}.slot = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr %record, i64 0, i32 ${index + 1}`,
+      `  %${field}.slot = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr %record, i64 0, i32 ${index + host.nullableUnions.fieldBase(type.shapeId)}`,
       `  store ${isString ? "ptr" : "double"} %${field}${isString ? ".owned" : ""}, ptr %${field}.slot`,
     );
   }
@@ -131,7 +131,7 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
     case "dgram.bindCb":
     case "dgram.connect":
     case "dgram.connectCb":
-      if (args[3] !== undefined) host.moveTemp(args[3]);
+      if (args[3] !== undefined) host.toHeap(args[3]);
       return finishRuntimeCall(
         host,
         e,
@@ -140,7 +140,7 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
       );
     case "dgram.close":
     case "dgram.closeCb":
-      if (args[1] !== undefined) host.moveTemp(args[1]);
+      if (args[1] !== undefined) host.toHeap(args[1]);
       return finishRuntimeCall(host, e, "scr_dgram_close", [a[0]!, a[1] ?? ptr()]);
     case "dgram.address": {
       const type = e.type;
@@ -151,7 +151,7 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
       const record = host.B.tmp();
       host.B.line(`${record} = call ptr @${mangleRecordNew(type.shapeId)}()`);
       const out = host.own({ name: record, type });
-      host.moveTemp(ip);
+      host.toHeap(ip);
       const shape = host.recordsById.get(type.shapeId);
       if (shape === undefined) throw new InternalCompilerError("missing datagram address shape");
       for (const field of ["address", "family", "port"]) {
@@ -169,7 +169,7 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
               );
         const slot = host.B.tmp();
         host.B.line(
-          `${slot} = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr ${record}, i64 0, i32 ${index + 1}`,
+          `${slot} = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr ${record}, i64 0, i32 ${index + host.nullableUnions.fieldBase(type.shapeId)}`,
         );
         host.B.line(`store ${ty} ${value}, ptr ${slot}`);
       }
@@ -185,7 +185,7 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
             ? "scr_dgram_msg_thunk1"
             : messageAdapter(host, type.params[1]!);
       // Program-specific adapters are definitions, so do not redeclare them.
-      host.moveTemp(cb);
+      host.toHeap(cb);
       if (type.params.length < 2)
         host.declare(`declare void @${adapter}(ptr, ptr, ptr, ptr, double, double)`);
       return finishRuntimeCall(host, e, "scr_dgram_on_message", [
@@ -213,7 +213,7 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
     case "dgram.onListening":
     case "dgram.onClose":
     case "dgram.onConnect":
-      host.moveTemp(args[1]!);
+      host.toHeap(args[1]!);
       return finishRuntimeCall(
         host,
         e,
@@ -227,7 +227,7 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
     case "dns.lookup": {
       const cb = args[2]!,
         symbol = lookupAdapter(host, cb);
-      host.moveTemp(cb);
+      host.toHeap(cb);
       if (callbackType(cb).params.length === 0)
         host.declare("declare void @scr_dns_thunk0(ptr, ptr, ptr, double)");
       return finishRuntimeCall(host, e, "scr_dns_lookup", [...a, ptr("@" + symbol)]);

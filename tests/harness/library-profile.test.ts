@@ -481,7 +481,7 @@ describe("library profile fences", () => {
         determinism: {
           remediations: { SC2012: "the explicit map key wins" },
           fences: [
-            { id: "stdlib.number.toPrecision", remediation: "request it as an effect" },
+            { id: "diagnostic.sc2012", remediation: "request it as an effect" },
             { id: "node-builtin.crypto.createSign", remediation: "signatures come from the host" },
           ],
         },
@@ -551,7 +551,11 @@ describe("library profile fences", () => {
       "stdlib.date.getUTCSeconds",
       "stdlib.date.now",
       "stdlib.date.parse",
+      "stdlib.date.toDateString",
       "stdlib.date.toISOString",
+      "stdlib.date.toString",
+      "stdlib.date.toTimeString",
+      "stdlib.date.toUTCString",
       "stdlib.date.valueOf",
     ]);
     expect(r.profile.fences[0]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);

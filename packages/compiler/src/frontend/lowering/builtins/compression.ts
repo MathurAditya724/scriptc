@@ -132,15 +132,13 @@ export function zlibStreamModeOf(
   symbol: ts.Symbol | null | undefined,
 ): number | null {
   if (!symbol) return null;
-  const aliasMode = zlibClassAliasModeOf(lowerer, symbol, 0);
-  if (aliasMode !== undefined) return aliasMode;
+  const alias = lowerer.builtinClassAliasOf(symbol);
+  if (alias !== null) return alias.kind === "zlib" ? alias.mode : null;
   const target =
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
   const mode = ZLIB_STREAM_MODES.get(target.name);
   if (mode === undefined) return null;
-  return lowerer.checker
-    .declarationsOf(target)
-    .some((d) => ts.isClassDeclaration(d) && isZlibFallbackDecl(lowerer, d))
+  return target.declarations.some((d) => ts.isClassDeclaration(d) && isZlibFallbackDecl(lowerer, d))
     ? mode
     : null;
 }
@@ -161,15 +159,13 @@ function isZlibFallbackDecl(lowerer: Lowerer, d: ts.Node): boolean {
 export function isZlibStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(access.name);
   if (!symbol) return false;
-  return lowerer.checker
-    .declarationsOf(symbol)
-    .some(
-      (d) =>
-        d.parent !== undefined &&
-        ts.isClassDeclaration(d.parent) &&
-        d.parent.name?.text === "ZlibBase" &&
-        isZlibFallbackDecl(lowerer, d.parent),
-    );
+  return symbol.declarations.some(
+    (d) =>
+      d.parent !== undefined &&
+      ts.isClassDeclaration(d.parent) &&
+      d.parent.name?.text === "ZlibBase" &&
+      isZlibFallbackDecl(lowerer, d.parent),
+  );
 }
 
 /** `stream.bytesWritten` on a zlib stream. */
@@ -197,7 +193,7 @@ export function lowerZlibStreamMethodCall(
 ): IrExpr {
   const loc = locOf(call);
   const member = access.name.text;
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.some(ts.isSpreadElement)) lowerer.noLowering(`${member} with spread arguments`, call);
   const isFunc = (node: ts.Expression): boolean =>
     lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "func";
@@ -304,25 +300,25 @@ export function lowerPromisifiedZlibCall(
   member: string,
   loc: SrcLoc,
 ): IrExpr {
-  if (expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`the promisified zlib.${member} with spread arguments`, expr);
   }
-  if (expr.arguments.length !== 1 && expr.arguments.length !== 2) {
+  if (expr.arguments.nodes.length !== 1 && expr.arguments.nodes.length !== 2) {
     lowerer.noLowering(
-      `the promisified zlib.${member} with ${expr.arguments.length} arguments`,
+      `the promisified zlib.${member} with ${expr.arguments.nodes.length} arguments`,
       expr,
       `the supported forms are ${member}Async(data) and ${member}Async(data, options)`,
     );
   }
-  const input = zlibInput(lowerer, expr.arguments[0]!, loc);
+  const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
   return {
     kind: "libCall",
     fn: input.dyn ? "zlib.promiseDyn" : "zlib.promise",
     args: [
       numLit(ZLIB_ONE_SHOT_MODES[member]!, loc),
       input.value,
-      expr.arguments[1] !== undefined
-        ? zlibOptionsValue(lowerer, expr.arguments[1], `zlib.${member}`, loc)
+      expr.arguments.nodes[1] !== undefined
+        ? zlibOptionsValue(lowerer, expr.arguments.nodes[1], `zlib.${member}`, loc)
         : dynUndefinedExpr(loc),
     ],
     type: { kind: "promise", inner: BYTES_U8 },
@@ -346,19 +342,26 @@ export function lowerZlibModuleCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr {
-  if (expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`zlib.${bi.member} with spread arguments`, expr);
   }
   const streamMode = ZLIB_STREAM_FACTORIES[bi.member];
   if (streamMode !== undefined) {
-    return lowerZlibStreamNew(lowerer, expr.arguments, streamMode, `zlib.${bi.member}`, expr, loc);
+    return lowerZlibStreamNew(
+      lowerer,
+      expr.arguments.nodes,
+      streamMode,
+      `zlib.${bi.member}`,
+      expr,
+      loc,
+    );
   }
   const syncFn = ZLIB_SYNC_FNS[bi.member];
   if (syncFn !== undefined) {
-    if (expr.arguments.length === 0 || expr.arguments.length > 2) {
-      lowerer.noLowering(`${bi.member} with ${expr.arguments.length} arguments`, expr);
+    if (expr.arguments.nodes.length === 0 || expr.arguments.nodes.length > 2) {
+      lowerer.noLowering(`${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    const input = zlibInput(lowerer, expr.arguments[0]!, loc);
+    const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
     if (input.dyn) {
       return {
         kind: "libCall",
@@ -366,8 +369,8 @@ export function lowerZlibModuleCall(
         args: [
           numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
           input.value,
-          expr.arguments[1] !== undefined
-            ? zlibOptionsValue(lowerer, expr.arguments[1], `zlib.${bi.member}`, loc)
+          expr.arguments.nodes[1] !== undefined
+            ? zlibOptionsValue(lowerer, expr.arguments.nodes[1], `zlib.${bi.member}`, loc)
             : dynUndefinedExpr(loc),
         ],
         type: BYTES_U8,
@@ -375,15 +378,15 @@ export function lowerZlibModuleCall(
       };
     }
     if (
-      expr.arguments.length === 2 &&
+      expr.arguments.nodes.length === 2 &&
       (bi.member === "deflateSync" || bi.member === "deflateRawSync" || bi.member === "gzipSync")
     ) {
-      const options = expr.arguments[1]!;
+      const options = expr.arguments.nodes[1]!;
       // A lone literal level keeps the direct compression entry (build-time
       // compression in the native emitters uses it); other options take the
       // runtime option ladder below.
-      if (ts.isObjectLiteralExpression(options) && options.properties.length === 1) {
-        const prop = options.properties[0]!;
+      if (ts.isObjectLiteralExpression(options) && options.properties.nodes.length === 1) {
+        const prop = options.properties.nodes[0]!;
         if (
           ts.isPropertyAssignment(prop) &&
           (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
@@ -416,14 +419,14 @@ export function lowerZlibModuleCall(
         }
       }
     }
-    if (expr.arguments.length === 2) {
+    if (expr.arguments.nodes.length === 2) {
       return {
         kind: "libCall",
         fn: "zlib.syncOpts",
         args: [
           numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
           input.value,
-          zlibOptionsValue(lowerer, expr.arguments[1]!, `zlib.${bi.member}`, loc),
+          zlibOptionsValue(lowerer, expr.arguments.nodes[1]!, `zlib.${bi.member}`, loc),
         ],
         type: BYTES_U8,
         loc,
@@ -439,19 +442,19 @@ export function lowerZlibModuleCall(
   }
   const callbackFn = ZLIB_CALLBACK_FNS[bi.member];
   if (callbackFn !== undefined) {
-    if (expr.arguments.length !== 2 && expr.arguments.length !== 3) {
+    if (expr.arguments.nodes.length !== 2 && expr.arguments.nodes.length !== 3) {
       lowerer.noLowering(
-        `${bi.member} with ${expr.arguments.length} arguments`,
+        `${bi.member} with ${expr.arguments.nodes.length} arguments`,
         expr,
         `${bi.member}(data, callback) and ${bi.member}(data, options, callback) are supported`,
       );
     }
-    const input = zlibInput(lowerer, expr.arguments[0]!, loc);
+    const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
     const dynData = input.dyn;
-    if (expr.arguments.length === 3 || dynData) {
+    if (expr.arguments.nodes.length === 3 || dynData) {
       // (data, options, callback): Node validates the options before the
       // callback and the input, so the runtime ladder runs first.
-      const withOptions = expr.arguments.length === 3;
+      const withOptions = expr.arguments.nodes.length === 3;
       return {
         kind: "libCall",
         fn: dynData ? "zlib.cbOptsDyn" : "zlib.cbOpts",
@@ -459,9 +462,9 @@ export function lowerZlibModuleCall(
           numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
           input.value,
           withOptions
-            ? zlibOptionsValue(lowerer, expr.arguments[1]!, `zlib.${bi.member}`, loc)
+            ? zlibOptionsValue(lowerer, expr.arguments.nodes[1]!, `zlib.${bi.member}`, loc)
             : dynUndefinedExpr(loc),
-          errorFirstBytesCallback(lowerer, expr.arguments[withOptions ? 2 : 1]!, "zlib"),
+          errorFirstBytesCallback(lowerer, expr.arguments.nodes[withOptions ? 2 : 1]!, "zlib"),
         ],
         type: VOID,
         loc,
@@ -470,15 +473,15 @@ export function lowerZlibModuleCall(
     return {
       kind: "libCall",
       fn: callbackFn,
-      args: [input.value, errorFirstBytesCallback(lowerer, expr.arguments[1]!, "zlib")],
+      args: [input.value, errorFirstBytesCallback(lowerer, expr.arguments.nodes[1]!, "zlib")],
       type: VOID,
       loc,
     };
   }
   if (bi.member === "crc32") {
-    if (expr.arguments.length < 1 || expr.arguments.length > 2) {
+    if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 2) {
       lowerer.noLowering(
-        `zlib.crc32 with ${expr.arguments.length} arguments`,
+        `zlib.crc32 with ${expr.arguments.nodes.length} arguments`,
         expr,
         "crc32(data[, initialValue]) is supported",
       );
@@ -487,9 +490,9 @@ export function lowerZlibModuleCall(
       kind: "libCall",
       fn: "zlib.crc32",
       args: [
-        lowerBuiltinByteInput(lowerer, expr.arguments[0]!, loc, "zlib"),
-        expr.arguments[1]
-          ? lowerer.lowerExprExpecting(expr.arguments[1]!, F64)
+        lowerBuiltinByteInput(lowerer, expr.arguments.nodes[0]!, loc, "zlib"),
+        expr.arguments.nodes[1]
+          ? lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, F64)
           : { kind: "numLit", value: 0, type: F64, loc },
       ],
       type: F64,
@@ -499,78 +502,10 @@ export function lowerZlibModuleCall(
   throw new InternalCompilerError(`unhandled lowered zlib member ${bi.member}`);
 }
 
-/** The zlib stream class an expression names (`zlib.Gzip`, an imported
- * `Gzip`, a `const C = zlib.Gzip` alias), as its node_zlib_mode, or null. */
-export function zlibClassModeOfExpr(lowerer: Lowerer, expr: ts.Expression): number | null {
-  let e = expr;
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  if (ts.isIdentifier(e)) return zlibStreamModeOf(lowerer, lowerer.checker.getSymbolAtLocation(e));
-  if (ts.isPropertyAccessExpression(e) && !e.questionDotToken) {
-    return zlibStreamModeOf(lowerer, lowerer.checker.getSymbolAtLocation(e.name));
-  }
-  return null;
-}
-
 /** The class name of a zlib stream mode (Node's constructor name). */
 export function zlibClassName(mode: number): string {
   for (const [name, m] of ZLIB_STREAM_MODES) if (m === mode) return name;
   return "Zlib";
-}
-
-/** The mode of a `const C = zlib.Gzip` binding (or an alias of such a
- * binding), null when the symbol is a const binding of something else,
- * undefined when it is not a const binding. Resolved from the declaration,
- * so uses lowered before the declaration statement see the same answer. */
-function zlibClassAliasModeOf(
-  lowerer: Lowerer,
-  symbol: ts.Symbol,
-  depth: number,
-): number | null | undefined {
-  const cached = lowerer.zlibClassAliases.get(symbol);
-  if (cached !== undefined) return cached;
-  if ((symbol.flags & ts.SymbolFlags.BlockScopedVariable) === 0) return undefined;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
-  if (decl === undefined || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) {
-    return undefined;
-  }
-  // const only: a var or let binding could be reassigned
-  const list = decl.parent;
-  if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0) {
-    return undefined;
-  }
-  let init = decl.initializer;
-  while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
-  if (init === undefined || depth > 16) return null;
-  let mode: number | null = null;
-  if (ts.isIdentifier(init)) {
-    const next = lowerer.checker.getSymbolAtLocation(init);
-    if (next !== undefined) {
-      const nested = zlibClassAliasModeOf(lowerer, next, depth + 1);
-      mode = nested === undefined ? zlibStreamModeOf(lowerer, next) : nested;
-    }
-  } else if (ts.isPropertyAccessExpression(init) && !init.questionDotToken) {
-    mode = zlibStreamModeOf(lowerer, lowerer.checker.getSymbolAtLocation(init.name));
-  }
-  if (mode !== null) lowerer.zlibClassAliases.set(symbol, mode);
-  return mode;
-}
-
-/** True for `const C = zlib.Gzip` (or an alias of an alias): a
- * compile-time zlib class alias that owns no runtime slot, so the
- * statement lowering skips it. */
-export function registerZlibClassAlias(
-  lowerer: Lowerer,
-  nameNode: ts.Node,
-  init: ts.Expression | undefined,
-): boolean {
-  if (!ts.isIdentifier(nameNode) || init === undefined) return false;
-  const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
-  return symbol !== undefined && zlibClassAliasOf(lowerer, symbol) !== null;
-}
-
-/** The mode of a `const C = zlib.Gzip` alias symbol, or null. */
-export function zlibClassAliasOf(lowerer: Lowerer, symbol: ts.Symbol): number | null {
-  return zlibClassAliasModeOf(lowerer, symbol, 0) ?? null;
 }
 
 /** `value instanceof zlib.Gzip` (any spelling of the class, aliases

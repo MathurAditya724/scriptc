@@ -113,6 +113,7 @@ import { provenanceSources } from "./frontend/provenance-registry.js";
 import { clearResolveCaches } from "./frontend/resolve.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
 import { executableLinkFeatures } from "./backend/executable-features.js";
+import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { FrontendInputTracker, trackedReadFile } from "./frontend/input-tracker.js";
 import {
   libraryFrontendImplementationFingerprint,
@@ -172,11 +173,22 @@ export {
 } from "./diagnostics/render.js";
 export {
   renderCoverage,
+  renderExplainDynamic,
   coverageEnvelope,
   coveragePasses,
   type CoverageInput,
   type CoverageFailOn,
 } from "./coverage/report.js";
+export {
+  TIER_MODES,
+  type DemotedUnit,
+  type DemotionRequest,
+  type DemotionSeed,
+  type DemotionUnit,
+  type DemotionUnitKind,
+  type TierMode,
+  type TierReport,
+} from "./frontend/tier-analysis.js";
 export {
   buildEnvelope,
   DIAGNOSTICS_SCHEMA_VERSION,
@@ -208,6 +220,13 @@ export {
 } from "./compat/fetch-profile.js";
 export { LIB_FN_SIGS } from "./ir/builtin-signatures.js";
 export { validateModule } from "./ir/validate.js";
+export {
+  assignLegacyTiers,
+  dynamicOperationOf,
+  functionTier,
+  type DynamicFunction,
+  type IrTier,
+} from "./ir/tiers.js";
 export {
   deserializeModule,
   deserializeModuleBytes,
@@ -509,12 +528,15 @@ async function compileExecutableNative(
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
+    ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.stdioExtended ? { stdioExtended: true } : {}),
     zlib: features.zlib,
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,
+    ...(features.dynTier ? { dynTier: true } : {}),
     events: features.events,
     emitter: features.emitter,
     symbol: features.symbol,
@@ -530,10 +552,12 @@ async function compileExecutableNative(
     watch: features.watch,
     foreignFfi: features.foreignFfi,
     ...(features.workers ? { workers: true } : {}),
+    ...(features.youngNursery ? { youngNursery: true } : {}),
     nodeTest: features.nodeTest,
     tls: features.tls,
     tlsCa: features.tlsCa,
     cipher: features.cipher,
+    webcrypto: features.webcrypto,
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
     ...(ffi === null
       ? {}
@@ -1028,6 +1052,7 @@ async function compileTracked(
       ...(opts.strip ? { strip: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
+      ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,
       ffiProfile:
         opts.ffiProfilePath === undefined || ffiProfileBytes === null
@@ -1322,6 +1347,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
     dynInvoke: features.dynInvoke,
+    ...(features.dynTier ? { dynTier: true } : {}),
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
   };
 }
@@ -1415,6 +1441,7 @@ async function compileLibraryNative(
     copying: features.copying,
     textDecoderLegacy: features.textDecoderLegacy,
     dynInvoke: features.dynInvoke,
+    ...(features.dynTier === true ? { dynTier: true } : {}),
   };
   if (packTarget !== null) await compilePackedLibrary(archiveOptions, packTarget);
   else await compileExternalCLibrary(archiveOptions);

@@ -1,7 +1,16 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
-import { BOOL, CAUGHT, DYN, F64, type IrExpr, type IrType, STRING } from "../../../ir/ir.js";
+import {
+  BOOL,
+  CAUGHT,
+  DYN,
+  DYN_CLASS_PROPERTIES,
+  F64,
+  type IrExpr,
+  type IrType,
+  STRING,
+} from "../../../ir/ir.js";
 
 const ASSERTION_ERROR_PROPERTIES: ReadonlySet<string> = new Set([
   "actual",
@@ -19,9 +28,9 @@ export function isExecExceptionType(lowerer: Lowerer, t: ts.Type): boolean {
   const sym = t.getSymbol();
   return (
     sym?.name === "ExecException" &&
-    lowerer.checker
-      .declarationsOf(sym)
-      .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()))
+    sym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+    )
   );
 }
 
@@ -126,7 +135,13 @@ export function lowerErrorCodeProperty(
       declared,
     );
   }
-  const systemField = ["errno", "syscall", "path", "dest"].includes(expr.name.text);
+  // A program class under the receiver's class can carry its own `code`
+  // (a declared field or a property added through an untyped reference),
+  // which Node reads instead of the errno code: read through the error's
+  // dynamic view, which answers both.
+  const systemField =
+    ["errno", "syscall", "path", "dest"].includes(expr.name.text) ||
+    (expr.name.text === "code" && programClassMayOwnCode(lowerer, recvT.className));
   if (
     !systemField &&
     expr.name.text !== "code" &&
@@ -162,7 +177,9 @@ export function lowerErrorCodeProperty(
         type: DYN,
         loc,
       },
-      lowerer.withUndefinedArm(expr.name.text === "errno" ? F64 : STRING),
+      expr.name.text === "code"
+        ? lowerer.envValueType()
+        : lowerer.withUndefinedArm(expr.name.text === "errno" ? F64 : STRING),
     );
   }
   return {
@@ -182,6 +199,19 @@ export function lowerErrorCodeProperty(
           : lowerer.envValueType(),
     loc: locOf(expr),
   };
+}
+
+/** Whether a class declared in the program, `className` or one of its
+ * subclasses, has its own `code` field or a dynamic property bag. The
+ * runtime error classes keep `code` in the errno slot. */
+function programClassMayOwnCode(lowerer: Lowerer, className: string): boolean {
+  for (const [name, info] of lowerer.classes) {
+    if (name.startsWith("%")) continue;
+    if (name !== className && !lowerer.isSubclassOf(name, className)) continue;
+    if (info.def.fields.some((f) => f.name === "code" || f.name === DYN_CLASS_PROPERTIES))
+      return true;
+  }
+  return false;
 }
 
 /** Whether values of `type` are errors: class instances whose class is
@@ -209,8 +239,8 @@ export function lowerErrorIsErrorCall(
 ): IrExpr | null {
   if (call.questionDotToken || access.questionDotToken) return null;
   if (lowerer.stdlibGlobalMember(access, "Error") !== "isError") return null;
-  if (call.arguments.length !== 1) return null;
-  const argNode = call.arguments[0]!;
+  if (call.arguments.nodes.length !== 1) return null;
+  const argNode = call.arguments.nodes[0]!;
   const loc = locOf(call);
   const caughtLocal = lowerer.caughtLocalOf(argNode);
   if (caughtLocal) {
