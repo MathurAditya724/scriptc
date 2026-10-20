@@ -50,6 +50,8 @@ export async function warmNativeCaches(
         bigint: false,
         searchParams: false,
         qs: false,
+        dynBuiltinClass: false,
+        dynBuiltinStream: false,
         parseArgs: false,
         stream: false,
         net: false,
@@ -63,6 +65,7 @@ export async function warmNativeCaches(
         tls: false,
         cipher: false,
         webcrypto: false,
+        perfLoop: false,
         tlsCa: false,
       },
     });

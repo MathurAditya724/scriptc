@@ -56,6 +56,7 @@ export interface EarlyExecutableNativeFeatures {
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
+  wasm?: boolean;
   warningReplace?: boolean;
   stdioExtended?: boolean;
   zlib: boolean;
@@ -65,12 +66,16 @@ export interface EarlyExecutableNativeFeatures {
   dc: boolean;
   dynAsync: boolean;
   dynTier?: boolean;
+  streamDyn?: boolean;
+  eventsOnceSignal?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
   bigint: boolean;
   searchParams: boolean;
   qs: boolean;
+  dynBuiltinClass: boolean;
+  dynBuiltinStream: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -83,6 +88,7 @@ export interface EarlyExecutableNativeFeatures {
   nodeTest: boolean;
   tls: boolean;
   cipher: boolean;
+  perfLoop: boolean;
   tlsCa: boolean;
   webcrypto: boolean;
 }
@@ -189,6 +195,8 @@ const BOOLEAN_NATIVE_KEYS = [
   "bigint",
   "searchParams",
   "qs",
+  "dynBuiltinClass",
+  "dynBuiltinStream",
   "parseArgs",
   "stream",
   "net",
@@ -203,6 +211,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "tlsCa",
   "cipher",
   "webcrypto",
+  "perfLoop",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {

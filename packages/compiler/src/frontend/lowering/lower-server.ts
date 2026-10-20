@@ -719,7 +719,7 @@ export function lowerNetModuleCall(
       // ERR_INVALID_ARG_TYPE on 'options' before any server exists. DYN
       // result — the checked-dynamic lane's concise arrows box it, and
       // the throw means it never materializes.
-      if (isJsSourceFile(expr.getSourceFile())) {
+      if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         const t = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
         if (t !== null && (t.kind === "string" || t.kind === "f64" || t.kind === "bool")) {
           const raw = lowerer.lowerExpr(args[0]!);
@@ -770,7 +770,7 @@ export function lowerNetModuleCall(
     // invalid-input probes build theirs with computed keys): the
     // checked-dynamic walk validates Node-order and the compiler-rendered
     // fence is the post-validation tail.
-    if (args.length === 1 && isJsSourceFile(expr.getSourceFile())) {
+    if (args.length === 1 && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
       const t = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
       if (t !== null && (t.kind === "dyn" || t.kind === "record")) {
         const raw = lowerer.lowerExpr(args[0]!);
@@ -885,7 +885,7 @@ function lowerNetConnectOptions(
 ): IrExpr {
   const args = expr.arguments.nodes;
   const optsNode = args[0] as ts.ObjectLiteralExpression;
-  const isJs = isJsSourceFile(expr.getSourceFile());
+  const isJs = isJsSourceFile(ts.getSourceFileOfNode(expr));
   // The checked-dynamic option-bag route (JS sources): a literal with
   // computed keys (the invalid-input probes' spelling) or an objectMode-
   // trio member rides WHOLE to the runtime walk — Node's Socket-ctor
@@ -1524,7 +1524,7 @@ function lowerNetServerMethodCall(
         } else if (
           key === "signal" &&
           ts.isPropertyAssignment(prop) &&
-          isJsSourceFile(call.getSourceFile())
+          isJsSourceFile(ts.getSourceFileOfNode(call))
         ) {
           // A provably-non-AbortSignal signal (the invalid-input probes:
           // strings, numbers, plain records) throws Node's
@@ -2334,7 +2334,7 @@ function lowerNetSocketMethodCall(
         if (
           encT.value === "buffer" &&
           chunkT.kind === "string" &&
-          isJsSourceFile(call.getSourceFile())
+          isJsSourceFile(ts.getSourceFileOfNode(call))
         ) {
           lowerer.lowerExpr(args[0]!); // evaluation order (effect-free in practice)
           return nodeThrowExpr(1, "ERR_UNKNOWN_ENCODING", "Unknown encoding: buffer", VOID, loc);
@@ -4851,7 +4851,7 @@ function tlsLiteralNeedsRuntimeWalk(
   node: ts.ObjectLiteralExpression,
   includeHttpTimeoutOptions = false,
 ): boolean {
-  const jsSource = isJsSourceFile(node.getSourceFile());
+  const jsSource = isJsSourceFile(ts.getSourceFileOfNode(node));
   return node.properties.nodes.some(
     (p) =>
       (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
@@ -5071,7 +5071,7 @@ function lowerTlsModuleCall(
     bi.member === "getCACertificates" &&
     args.length === 1 &&
     !args.some(ts.isSpreadElement) &&
-    isJsSourceFile(expr.getSourceFile())
+    isJsSourceFile(ts.getSourceFileOfNode(expr))
   ) {
     // The type-argument ladder (validateString + the documented name
     // set); the real CA list has no lowering, so a valid name meets the
@@ -5737,7 +5737,7 @@ function lowerHttp2ModuleCall(
         if (ts.isConditionalExpression(inner)) {
           const whenTrue = stripParensAndCasts(inner.whenTrue);
           const whenFalse = stripParensAndCasts(inner.whenFalse);
-          const condText = inner.condition.getText();
+          const condText = ts.getTextOfNode(inner.condition);
           const ok =
             ts.isObjectLiteralExpression(whenTrue) &&
             ts.isObjectLiteralExpression(whenFalse) &&
@@ -5748,7 +5748,7 @@ function lowerHttp2ModuleCall(
               ts.isStringLiteral(whenTrue.properties.nodes[0]!.name)) &&
             (whenTrue.properties.nodes[0]!.name as ts.Identifier | ts.StringLiteral).text ===
               "SNICallback" &&
-            whenTrue.properties.nodes[0]!.initializer.getText() === condText;
+            ts.getTextOfNode(whenTrue.properties.nodes[0]!.initializer) === condText;
           if (!ok) {
             lowerer.noLowering(
               "createSecureServer options with a conditional spread",
@@ -7533,7 +7533,7 @@ function lowerHttpResMethodCall(
   }
   if (name === "writeContinue" || name === "writeProcessing" || name === "writeEarlyHints") {
     requireStatementPosition(lowerer, call, `res.${name}(...)`);
-    if (lowerer.typeOf(access.expression).getSymbol()?.name === "Http2ServerResponse") {
+    if (ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse") {
       lowerer.noLowering(
         `Http2ServerResponse.${name}`,
         call,
@@ -7642,7 +7642,7 @@ function lowerHttpResMethodCall(
   }
   if (name === "addTrailers") {
     requireStatementPosition(lowerer, call, "res.addTrailers(...)");
-    if (lowerer.typeOf(access.expression).getSymbol()?.name === "Http2ServerResponse") {
+    if (ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse") {
       lowerer.noLowering(
         "Http2ServerResponse.addTrailers",
         call,

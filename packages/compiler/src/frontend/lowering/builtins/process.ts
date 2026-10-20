@@ -3,6 +3,7 @@ import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
 import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { timerStyleCallback } from "../lower-timers.js";
 import * as ts from "../../ts7/adapter.js";
+import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
@@ -191,14 +192,14 @@ export function lowerProcStreamMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  if (isJsSourceFile(call.getSourceFile())) {
+  if (isJsSourceFile(ts.getSourceFileOfNode(call))) {
     const receiver = lowerer.lowerExpr(access.expression);
     if (receiver.type.kind === "dyn") {
       return {
         kind: "dynInvoke",
         recv: receiver,
         method: name,
-        calleeName: call.expression.getText(),
+        calleeName: ts.getTextOfNode(call.expression),
         args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
         type: DYN,
         loc,
@@ -213,7 +214,7 @@ export function lowerProcStreamMethodCall(
         kind: "dynInvoke",
         recv: receiver,
         method: name,
-        calleeName: call.expression.getText(),
+        calleeName: ts.getTextOfNode(call.expression),
         args: [],
         type: DYN,
         loc,
@@ -225,6 +226,7 @@ export function lowerProcStreamMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     const data = lowerer.lowerExpr(call.arguments.nodes[0]!);
     if (data.type.kind !== "string") {
+      requestGeneralStreamSurface(lowerer, access.expression);
       lowerer.noLowering(
         `write of '${lowerer.fmt(data.type)}' data on a stream value`,
         call.arguments.nodes[0]!,
@@ -233,6 +235,7 @@ export function lowerProcStreamMethodCall(
     }
     return { kind: "libCall", fn: "procStream.write", args: [receiver, data], type: BOOL, loc };
   }
+  requestGeneralStreamSurface(lowerer, access.expression);
   lowerer.noLowering(
     `WritableStream.${name}`,
     call,
@@ -263,6 +266,58 @@ export function isOptionalProcessStreamProperty(
   return lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "procStream";
 }
 
+/** The process.versions entries @types/node declares as plain strings
+ * that the runtime's versions object (node and openssl only) lacks. */
+const ABSENT_DECLARED_VERSIONS: ReadonlySet<string> = new Set([
+  "http_parser",
+  "v8",
+  "ares",
+  "uv",
+  "zlib",
+  "modules",
+]);
+
+/** A process.versions member read whose declaration promises a string the
+ * runtime does not have. @types/node declares the entries above as plain
+ * strings, so a checked string read would throw on the absent entry and
+ * equality with undefined would fold to false. These reads keep the
+ * undefined arm, like the optional stream properties. The shipped fallback
+ * types declare other entries `string | undefined` and never reach this.
+ * An element read with a computed key qualifies when the checker types it
+ * as a plain string. */
+export function isOptionalProcessVersionsRead(lowerer: Lowerer, node: ts.Node): boolean {
+  let key: string | null;
+  if (ts.isPropertyAccessExpression(node)) key = node.name.text;
+  else if (ts.isElementAccessExpression(node))
+    key = ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text : null;
+  else return false;
+  if (key !== null && !ABSENT_DECLARED_VERSIONS.has(key)) return false;
+  if (!programMentionsVersions(lowerer)) return false;
+  const symbol = lowerer.typeOf(node.expression).getSymbol();
+  return (
+    symbol?.name === "ProcessVersions" &&
+    symbol.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+    ) &&
+    lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "string"
+  );
+}
+
+const mentionsVersions = new WeakMap<Lowerer, boolean>();
+
+/** Whether any implementation source spells `versions`. Programs that
+ * never do skip the per-read checker queries above entirely. */
+function programMentionsVersions(lowerer: Lowerer): boolean {
+  let known = mentionsVersions.get(lowerer);
+  if (known === undefined) {
+    known = lowerer.program
+      .getImplementationSourceFiles()
+      .some((sf) => !sf.isDeclarationFile && sf.text.includes("versions"));
+    mentionsVersions.set(lowerer, known);
+  }
+  return known;
+}
+
 export function lowerProcessStreamProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -273,7 +328,7 @@ export function lowerProcessStreamProperty(
     ? lowerer.stdlibGlobalMember(expr.expression, "process")
     : null;
   if (
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     (direct === "stdin" ||
       direct === "stdout" ||
       direct === "stderr" ||
@@ -581,7 +636,7 @@ export function lowerProcessProperty(
   }
   // A stored process.nextTick in JavaScript (`cond ? setImmediate :
   // process.nextTick`): the interned builtin function value.
-  if (member === "nextTick" && isJsSourceFile(expr.getSourceFile())) {
+  if (member === "nextTick" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
     return builtinFunctionValue("process.nextTick", loc);
   }
   if (member === "getBuiltinModule") {
@@ -664,7 +719,7 @@ export function lowerProcessProperty(
   // OUTER expressions dispatch first.
   if (
     member === "stdin" ||
-    ((member === "stdout" || member === "stderr") && isJsSourceFile(expr.getSourceFile()))
+    ((member === "stdout" || member === "stderr") && isJsSourceFile(ts.getSourceFileOfNode(expr)))
   ) {
     return {
       kind: "libCall",
@@ -694,7 +749,10 @@ export function lowerProcessMethodCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken) return null;
-  if (isJsSourceFile(call.getSourceFile()) && ts.isPropertyAccessExpression(access.expression)) {
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    ts.isPropertyAccessExpression(access.expression)
+  ) {
     const stream = lowerer.stdlibGlobalMember(access.expression, "process");
     if (stream === "stdin" || stream === "stdout" || stream === "stderr") {
       if (call.arguments.nodes.some(ts.isSpreadElement))
@@ -703,7 +761,7 @@ export function lowerProcessMethodCall(
         kind: "dynInvoke",
         recv: lowerer.lowerExpr(access.expression),
         method: access.name.text,
-        calleeName: access.getText(),
+        calleeName: ts.getTextOfNode(access),
         args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
         type: DYN,
         loc: locOf(call),
@@ -880,7 +938,7 @@ export function lowerProcessMethodCall(
             loc,
           },
           receiver,
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args: [
             lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN),
             lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
@@ -1077,7 +1135,7 @@ export function lowerProcessMethodCall(
       // `writeOut: (str) => process.stdout.write(str)` — str untyped):
       // a runtime string writes; anything else throws the dynCheck's
       // honest TypeError at the call.
-      if (data.type.kind === "dyn" && isJsSourceFile(call.getSourceFile())) {
+      if (data.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
         data = { kind: "dynCheck", value: data, type: STRING, loc };
       }
       const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
@@ -1092,7 +1150,7 @@ export function lowerProcessMethodCall(
       let callback: IrExpr | undefined;
       if (callbackNode) {
         callback = lowerer.lowerExpr(callbackNode);
-        if (callback.type.kind === "dyn" && isJsSourceFile(call.getSourceFile())) {
+        if (callback.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
           callback = {
             kind: "dynCheck",
             value: callback,

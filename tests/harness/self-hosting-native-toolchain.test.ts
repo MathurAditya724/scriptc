@@ -30,6 +30,8 @@ const features: NativeLinkFeatures = {
   bigint: false,
   searchParams: false,
   qs: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
   parseArgs: false,
   stream: false,
   net: false,
@@ -44,6 +46,7 @@ const features: NativeLinkFeatures = {
   tlsCa: false,
   cipher: false,
   webcrypto: false,
+  perfLoop: false,
 };
 
 test("native toolchain configuration, staging and helper validation are static", async () => {

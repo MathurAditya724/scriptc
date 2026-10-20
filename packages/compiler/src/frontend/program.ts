@@ -1246,7 +1246,7 @@ export function isEsModuleStamp(expr: ts.Expression): boolean {
 function pureCjsExport7(program: ts.Program, stmt: ts.Statement): boolean {
   const cjs = cjsExportAssignmentOf(stmt);
   if (cjs === null) return false;
-  const sf = stmt.getSourceFile();
+  const sf = ts.getSourceFileOfNode(stmt);
   const plainMember = (left: ts.Expression): boolean => {
     if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return false;
     // A replacement export can have setters or non-writable function
@@ -1301,7 +1301,7 @@ function sourceBinding7(program: ts.Program, ident: ts.Identifier): boolean {
   return (
     symbol !== undefined &&
     symbol.declarations.some(
-      (decl) => !decl.getSourceFile().isDeclarationFile && !ts.isSourceFile(decl),
+      (decl) => !ts.getSourceFileOfNode(decl).isDeclarationFile && !ts.isSourceFile(decl),
     )
   );
 }
@@ -1328,7 +1328,7 @@ function purePrefixStmt7(program: ts.Program, s: ts.Statement): boolean {
   if (ts.isEmptyStatement(s) || ts.isFunctionDeclaration(s)) return true;
   if (ts.isExpressionStatement(s) && ts.isStringLiteral(s.expression)) return true; // directive
   if (isRequireStatement7(s)) return true;
-  if (isCjsJsFile7(s.getSourceFile(), program)) {
+  if (isCjsJsFile7(ts.getSourceFileOfNode(s), program)) {
     if (ts.isExpressionStatement(s) && isEsModuleStamp(s.expression)) {
       const call = s.expression as ts.CallExpression;
       const object = (call.expression as ts.PropertyAccessExpression).expression as ts.Identifier;
@@ -1455,7 +1455,7 @@ function requireEarlyReference7(
   if (cached !== undefined) return cached;
   let found: ts.Identifier | null = null;
   const stmt = decl.parent?.parent;
-  const sf = decl.getSourceFile();
+  const sf = ts.getSourceFileOfNode(decl);
   if (stmt !== undefined && ts.isVariableStatement(stmt) && ts.isSourceFile(stmt.parent)) {
     const stmts = sf.statements.nodes;
     const k = stmts.indexOf(stmt);
@@ -2031,7 +2031,7 @@ function isCreateRequireImport7(program: ts.Program, ident: ts.Identifier): bool
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
     const target = checker.getAliasedSymbol(symbol);
     const targetDecl = target.declarations[0];
-    if (targetDecl !== undefined && targetDecl.getSourceFile().isDeclarationFile) {
+    if (targetDecl !== undefined && ts.getSourceFileOfNode(targetDecl).isDeclarationFile) {
       for (
         let p: ts.Node | undefined = targetDecl.parent;
         p !== undefined && !ts.isSourceFile(p);
@@ -2039,7 +2039,8 @@ function isCreateRequireImport7(program: ts.Program, ident: ts.Identifier): bool
       ) {
         if (ts.isModuleDeclaration(p) && ts.isStringLiteral(p.name)) {
           return (
-            canonicalBuiltinModule(p.name.text) === "module" && target.name === "createRequire"
+            canonicalBuiltinModule(p.name.text) === "module" &&
+            ts.symbolName(target) === "createRequire"
           );
         }
       }
@@ -2123,7 +2124,7 @@ function stableCreateRequireBindingReason7(
       return "its createRequire binding is redeclared";
     if ((ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Export) !== 0)
       return "its createRequire result escapes through an exported binding";
-    const sf = decl.getSourceFile();
+    const sf = ts.getSourceFileOfNode(decl);
     const refs = identifierOccurrences7(sf, decl.name.text);
     checker.prefetchSymbolNodesExact(refs);
     for (const ref of refs) {
@@ -2190,7 +2191,7 @@ function npmStaticModuleImportReason7(
   }
   if (!bindings || !ts.isNamedImports(bindings)) return null;
   const checker = program.getTypeChecker();
-  const sf = stmt.getSourceFile();
+  const sf = ts.getSourceFileOfNode(stmt);
   for (const specifier of bindings.elements.nodes) {
     if ((specifier.propertyName?.text ?? specifier.name.text) !== "createRequire") continue;
     const imported = checker.getSymbolAtLocation(specifier.name);
@@ -2270,7 +2271,7 @@ function requireCallBindingKind7(program: ts.Program, node: ts.Node): RequireCal
   const symbol = checker.getSymbolAtLocation(call.expression);
   if (symbol === undefined) return "ambient";
   const decls = symbol.declarations;
-  if (decls.every((d) => d.getSourceFile().isDeclarationFile)) return "ambient";
+  if (decls.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile)) return "ambient";
   return isCreateRequireBinding7(program, call.expression) ? "createRequire" : "source";
 }
 
@@ -2425,15 +2426,15 @@ function selfImportTdzFences7(
   // are initialized. Hoisted functions have none.
   const tdzEndOf = (aliased: ts.Symbol): number | null => {
     const d = aliased.valueDeclaration ?? aliased.declarations[0];
-    if (d === undefined || d.getSourceFile() !== sf) return null;
+    if (d === undefined || ts.getSourceFileOfNode(d) !== sf) return null;
     if (ts.isFunctionDeclaration(d)) return null;
-    return d.getEnd();
+    return d.end;
   };
   const fence = (ref: ts.Identifier, name: string): void => {
     diags.push(
       unsupportedDiag(
         "SC1030",
-        { file: sf.fileName, start: ref.getStart(sf), end: ref.getEnd() },
+        { file: sf.fileName, start: ts.tokenStartOfNode(ref), end: ref.end },
         `the self-import binding '${name}' read above its declaration (the import aliases this module's OWN binding — Node initializes it when the declaration executes, so this read throws ReferenceError; move the read below the declaration)`,
       ),
     );
@@ -2449,7 +2450,7 @@ function selfImportTdzFences7(
         ts.isIdentifier(node) &&
         node !== bindingName &&
         node.text === bindingName.text &&
-        node.getStart(sf) < end &&
+        ts.tokenStartOfNode(node) < end &&
         !insideFunction(node) &&
         checker.getSymbolAtLocation(node) === sym
       ) {
@@ -2482,7 +2483,7 @@ function selfImportTdzFences7(
         const memberSym = checker.getSymbolAtLocation(node.name);
         if (memberSym !== undefined) {
           const end = tdzEndOf(memberSym);
-          if (end !== null && node.getStart(sf) < end)
+          if (end !== null && ts.tokenStartOfNode(node) < end)
             fence(node.expression, `${nsName.text}.${node.name.text}`);
         }
       }
@@ -2682,7 +2683,7 @@ function topLevelInertness7(program: ts.Program): (stmt: ts.Statement) => ts.Nod
     if (sym === undefined) return false;
     if (sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
     const decls = sym.declarations;
-    return decls.length > 0 && decls.every((d) => d.getSourceFile().isDeclarationFile);
+    return decls.length > 0 && decls.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile);
   };
   const hasDecorator = (n: ts.Node): boolean =>
     ((n as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []).some(
@@ -2956,8 +2957,8 @@ export function makeCycleAdmission(
     }
   };
   const lineOf = (node: ts.Node): string => {
-    const nsf = node.getSourceFile();
-    return `${nsf.fileName}:${ts.getLineAndCharacterOfPosition(nsf, node.getStart(nsf)).line + 1}`;
+    const nsf = ts.getSourceFileOfNode(node);
+    return `${nsf.fileName}:${ts.getLineAndCharacterOfPosition(nsf, ts.tokenStartOfNode(node)).line + 1}`;
   };
   // Cluster verdict memo (keyed by the component array identity): true
   // when every member is an ES module passing the inert-top-level bar.
@@ -3464,7 +3465,7 @@ function exactCycleRefusal7(
   const targetOf = (stmt: ts.ImportDeclaration | ts.ExportDeclaration): ts.SourceFile | null => {
     const spec = stmt.moduleSpecifier;
     if (spec === undefined || !ts.isStringLiteral(spec)) return null;
-    const sf = stmt.getSourceFile();
+    const sf = ts.getSourceFileOfNode(stmt);
     return resolveImport7(program, sf, spec.text) ?? npmStaticDepSf7(program, sf, spec.text);
   };
   for (const m of comp) {
@@ -3698,8 +3699,8 @@ function computeCycleEarlyBindings7(
             module: m,
             exposed,
             rank,
-            start: stmt.getStart(m),
-            end: stmt.getEnd(),
+            start: ts.tokenStartOfNode(stmt),
+            end: stmt.end,
             reference: null,
             folded: null,
           });
@@ -3744,13 +3745,13 @@ function computeCycleEarlyBindings7(
         if (
           c.kind === "class" &&
           sf === c.module &&
-          ref.getStart(sf) >= c.start &&
-          ref.getEnd() <= c.end
+          ts.tokenStartOfNode(ref) >= c.start &&
+          ref.end <= c.end
         )
           continue;
         let early: boolean;
         if (inDeferredPosition7(ref)) early = c.exposed;
-        else if (sf === c.module) early = ref.getStart(sf) < c.start;
+        else if (sf === c.module) early = ts.tokenStartOfNode(ref) < c.start;
         else if (!memberSet.has(sf) || !rankOf.has(sf)) early = false;
         else early = !known || rankOf.get(sf)! < c.rank;
         if (early) c.reference = ref;
@@ -3889,7 +3890,7 @@ function moduleEarlyBindingsOf7(
       store(stmt.name, [stmt]);
     } else if (ts.isClassDeclaration(stmt) && stmt.name !== undefined) {
       store(stmt.name, [stmt]);
-      candidates.push({ name: stmt.name, index, start: stmt.getStart(sf), cls: stmt });
+      candidates.push({ name: stmt.name, index, start: ts.tokenStartOfNode(stmt), cls: stmt });
       candidateNames.add(stmt.name.text);
     } else if (ts.isVariableStatement(stmt)) {
       const lexical = (stmt.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
@@ -3901,7 +3902,7 @@ function moduleEarlyBindingsOf7(
         }
         if (!lexical) continue;
         for (const name of boundNames7(d.name)) {
-          candidates.push({ name, index, start: stmt.getStart(sf) });
+          candidates.push({ name, index, start: ts.tokenStartOfNode(stmt) });
           candidateNames.add(name.text);
         }
       }
@@ -3993,9 +3994,10 @@ function moduleEarlyBindingsOf7(
         c !== undefined &&
         node !== c.name &&
         !reachedRefs.has(symbol) &&
-        !(c.cls !== undefined && node.getStart(sf) >= c.cls.pos && node.end <= c.cls.end)
+        !(c.cls !== undefined && ts.tokenStartOfNode(node) >= c.cls.pos && node.end <= c.cls.end)
       ) {
-        if (inDeferredPosition7(node) || node.getStart(sf) < c.start) reachedRefs.set(symbol, node);
+        if (inDeferredPosition7(node) || ts.tokenStartOfNode(node) < c.start)
+          reachedRefs.set(symbol, node);
       }
       for (const unit of unitsBySymbol.get(symbol) ?? []) {
         if (reachedUnits.has(unit)) continue;
@@ -4014,8 +4016,8 @@ function moduleEarlyBindingsOf7(
   const report = (declaration: ts.Node): void => {
     while (
       next < candidates.length &&
-      candidates[next]!.name.getStart(sf) >= declaration.getStart(sf) &&
-      candidates[next]!.name.getEnd() <= declaration.getEnd()
+      ts.tokenStartOfNode(candidates[next]!.name) >= ts.tokenStartOfNode(declaration) &&
+      candidates[next]!.name.end <= declaration.end
     ) {
       const c = candidates[next++]!;
       const symbol = checker.getSymbolAtLocation(c.name);
@@ -4075,7 +4077,7 @@ function returnsOnlyClosuresOver7(
   const decls = symbol === undefined ? [] : symbol.declarations;
   if (decls.length !== 1) return false;
   const decl = decls[0]!;
-  if (decl.getSourceFile().isDeclarationFile) return false;
+  if (ts.getSourceFileOfNode(decl).isDeclarationFile) return false;
   let fn: ts.Node | undefined;
   if (ts.isFunctionDeclaration(decl)) fn = decl;
   else if (ts.isVariableDeclaration(decl) && decl.initializer !== undefined) {
@@ -4196,12 +4198,13 @@ function laterJobCallee7(checker: ts.TypeChecker, callee: ts.Expression): boolea
   }
   if (symbol === undefined) return false;
   const decls = symbol.declarations;
-  if (decls.length === 0 || !decls.every((d) => d.getSourceFile().isDeclarationFile)) return false;
+  if (decls.length === 0 || !decls.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile))
+    return false;
   if (LATER_JOB_BUILTINS7.has(name.text)) return true;
   // The JavaScript standard library's callbacks mostly run synchronously;
   // package declarations describe user code.
   return decls.every((d) => {
-    const file = d.getSourceFile().fileName;
+    const file = ts.getSourceFileOfNode(d).fileName;
     return isNodeTypesPath(file) || file === fallbackDtsPath();
   });
 }
@@ -4344,8 +4347,8 @@ function resolveNpmImport7(
 }
 
 function locOf7(node: ts.Node): { file: string; start: number; end: number } {
-  const sf = node.getSourceFile();
-  return { file: sf.fileName, start: node.getStart(sf), end: node.getEnd() };
+  const sf = ts.getSourceFileOfNode(node);
+  return { file: sf.fileName, start: ts.tokenStartOfNode(node), end: node.end };
 }
 
 /** The program file holding an opted-in package's resolved runtime JS:
@@ -4877,7 +4880,7 @@ function preflight7(load: LoadResult): {
         }
         if (reDep && !reDep.fileName.endsWith(".json")) {
           deps.push({ dep: reDep, stmt });
-          depPositions.get(sf)!.push({ dep: reDep, pos: stmt.getStart(sf) });
+          depPositions.get(sf)!.push({ dep: reDep, pos: ts.tokenStartOfNode(stmt) });
         }
         continue;
       }
@@ -4925,7 +4928,7 @@ function preflight7(load: LoadResult): {
         refusals.get(sf)!.push({
           crash: { message, className, loc: locOf7(stmt) },
           fallback: unsupportedDiag("SC1010", locOf7(stmt), fallbackFeature),
-          pos: stmt.getStart(sf),
+          pos: ts.tokenStartOfNode(stmt),
         });
       };
       // Project modules win before npm fallback: this is the source graph
@@ -5138,7 +5141,7 @@ function preflight7(load: LoadResult): {
       }
       if (dep && !isJson) {
         deps.push({ dep, stmt });
-        depPositions.get(sf)!.push({ dep, pos: stmt.getStart(sf) });
+        depPositions.get(sf)!.push({ dep, pos: ts.tokenStartOfNode(stmt) });
       }
     }
     {
@@ -5178,7 +5181,11 @@ function preflight7(load: LoadResult): {
       for (let k = 0; k < stmts.length; k++) {
         const stmt = stmts[k]!;
         for (const req of requiresOf7(stmt)) {
-          const loc = { file: sf.fileName, start: req.node.getStart(sf), end: req.node.getEnd() };
+          const loc = {
+            file: sf.fileName,
+            start: ts.tokenStartOfNode(req.node),
+            end: req.node.end,
+          };
           const bindingKind = requireCallBindingKind7(program, req.node);
           // TypeScript source files join this scan only through the
           // canonical createRequire bridge. Their ordinary require-shaped
@@ -5324,7 +5331,7 @@ function preflight7(load: LoadResult): {
         );
       for (const call of nestedBareRequires) {
         const spec = requireSpecOf7(call)!;
-        const loc = { file: sf.fileName, start: call.getStart(sf), end: call.getEnd() };
+        const loc = { file: sf.fileName, start: ts.tokenStartOfNode(call), end: call.end };
         const bindingKind = requireCallBindingKind7(program, call);
         if (!jsRequireFile && bindingKind !== "createRequire") continue;
         if (isNodeEsmFile7(sf, program)) {
@@ -5740,7 +5747,7 @@ function cjsNamedImportLinkCheck(
   // swaps ` as ` for `: ` — reproduced exactly, quirks included
   // (multi-line import statements simply lose the hint).
   const text = bad.sf.text;
-  const pos = bad.nameNode.getStart(bad.sf);
+  const pos = ts.tokenStartOfNode(bad.nameNode);
   const lineStart = text.lastIndexOf("\n", pos - 1) + 1;
   const lineEnd = text.indexOf("\n", pos);
   let line = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
@@ -6054,7 +6061,7 @@ function earlierLinkCrash(
               if (!element.isTypeOnly) {
                 entries.push({
                   local: element.name.text,
-                  start: (element.propertyName ?? element.name).getStart(sf),
+                  start: ts.tokenStartOfNode(element.propertyName ?? element.name),
                   kind: 0,
                 });
               }
@@ -6078,7 +6085,7 @@ function earlierLinkCrash(
         for (const element of exportClause.elements.nodes) {
           if (
             !element.isTypeOnly &&
-            (element.propertyName ?? element.name).getStart(sf) === crash.loc.start
+            ts.tokenStartOfNode(element.propertyName ?? element.name) === crash.loc.start
           ) {
             return [1, reexport];
           }
@@ -6144,7 +6151,11 @@ export function isJsSourceFile(sf: ts.SourceFile): boolean {
 export function isCheckedJsSourceFile(sf: ts.SourceFile, projectCheckJs: boolean): boolean {
   if (!isJsSourceFile(sf) || isNodeModulesPath(sf.fileName)) return false;
   let checked = projectCheckJs;
-  const head = sf.text.slice(0, sf.statements.nodes[0]?.getStart(sf) ?? sf.text.length);
+  const head = sf.text.slice(
+    0,
+    (sf.statements.nodes.length === 0 ? undefined : ts.tokenStartOfNode(sf.statements.nodes[0]!)) ??
+      sf.text.length,
+  );
   for (const line of head.split("\n")) {
     const directive = /^\s*\/\/\s*@ts-(no)?check\b/.exec(line);
     if (directive) checked = directive[1] === undefined;
@@ -6343,8 +6354,8 @@ export function cjsVoidInitPreambleReals(
     tail = tail.right;
   }
   if (!isVoid(tail)) return null;
-  const sf = cjs.expr.getSourceFile();
-  const myPos = cjs.expr.getStart(sf);
+  const sf = ts.getSourceFileOfNode(cjs.expr);
+  const myPos = ts.tokenStartOfNode(cjs.expr);
   const reals = new Map<
     string,
     Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "member" }>
@@ -6357,7 +6368,7 @@ export function cjsVoidInitPreambleReals(
           other?.kind === "member" &&
           ts.isIdentifier(other.name) &&
           other.name.text === name &&
-          other.expr.getStart(sf) > myPos &&
+          ts.tokenStartOfNode(other.expr) > myPos &&
           !isVoid(other.value),
       );
     if (real?.kind !== "member") return null;
@@ -6515,7 +6526,7 @@ export function isCjsExportTableLiteral(obj: ts.ObjectLiteralExpression): boolea
   }
   const decl = obj.parent;
   if (!ts.isVariableDeclaration(decl) || decl.initializer !== obj) return false;
-  const sf = obj.getSourceFile();
+  const sf = ts.getSourceFileOfNode(obj);
   if (!isJsSourceFile(sf)) return false;
   for (const stmt of sf.statements.nodes) {
     const cjs = cjsExportAssignmentOf(stmt);

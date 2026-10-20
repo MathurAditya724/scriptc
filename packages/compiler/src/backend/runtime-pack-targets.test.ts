@@ -107,6 +107,8 @@ const features = {
   bigint: false,
   searchParams: false,
   qs: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
   parseArgs: false,
   stream: false,
   net: false,
@@ -121,6 +123,7 @@ const features = {
   tlsCa: false,
   cipher: false,
   webcrypto: false,
+  perfLoop: false,
 };
 
 test.each([

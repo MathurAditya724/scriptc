@@ -2452,6 +2452,27 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     name: "perf_hooks.performance.clearMeasures",
     fns: ["perf.clearMeasures"],
   },
+  {
+    id: "node-builtin.perf_hooks.performance.eventLoopUtilization",
+    kind: "node-builtin",
+    name: "perf_hooks.performance.eventLoopUtilization",
+    fns: ["perf.loopStart", "perf.idleTime"],
+    note: "active time is the main thread's CPU time since the loop started; the one- and two-argument difference forms are supported",
+  },
+  {
+    id: "node-builtin.perf_hooks.monitorEventLoopDelay",
+    kind: "node-builtin",
+    name: "perf_hooks.monitorEventLoopDelay",
+    fns: [
+      "perf.eldNew",
+      "perf.eldEnable",
+      "perf.eldDisable",
+      "perf.eldReset",
+      "perf.eldPercentile",
+      "perf.eldStat",
+    ],
+    note: "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported",
+  },
   // ── the process global's ambient reads and authority calls
   // (lowerProcessProperty/lowerProcessMethodCall — process is a
   // provenance-checked global here, not an importable module).
@@ -3291,7 +3312,7 @@ export function isChildSurfaceMember(
   const decl = sym ? sym.declarations[0] : undefined;
   const iface = decl?.parent;
   if (!decl || !iface || !ts.isInterfaceDeclaration(iface)) return false;
-  if (lowerer.isStdlibFile(decl.getSourceFile())) return false;
+  if (lowerer.isStdlibFile(ts.getSourceFileOfNode(decl))) return false;
   return lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(iface.name))?.kind === "child";
 }
 
@@ -3301,7 +3322,9 @@ export function isChildSurfaceMember(
  * with lib interfaces, so a member can carry declarations from both. A
  * user's own declaration is in neither, so shadowing never matches. */
 export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined): boolean {
-  return !!symbol && symbol.declarations.some((d) => lowerer.isStdlibFile(d.getSourceFile()));
+  return (
+    !!symbol && symbol.declarations.some((d) => lowerer.isStdlibFile(ts.getSourceFileOfNode(d)))
+  );
 }
 
 /** The canonical stdlib-global name `expr` denotes, or null. Three
@@ -3359,20 +3382,20 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
       if (
         decl !== undefined &&
         (ts.isVariableDeclaration(decl) || ts.isBindingElement(decl)) &&
-        isJsSourceFile(decl.getSourceFile())
+        isJsSourceFile(ts.getSourceFileOfNode(decl))
       ) {
         const imported = lowerer.builtinImportOf(expr);
         if (imported?.module === "buffer" && imported.member === "Buffer") return "Buffer";
       }
       return null;
     }
-    return resolved.name === "global" ? "globalThis" : resolved.name;
+    return ts.symbolName(resolved) === "global" ? "globalThis" : ts.symbolName(resolved);
   }
   if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
     if (stdlibGlobalNameOf(lowerer, expr.expression) !== "globalThis") return null;
     const symbol = lowerer.checker.getSymbolAtLocation(expr.name);
     if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
-    return symbol.name === "global" ? "globalThis" : symbol.name;
+    return ts.symbolName(symbol) === "global" ? "globalThis" : ts.symbolName(symbol);
   }
   return null;
 }
@@ -3506,7 +3529,7 @@ export function nodeTypesOnlySymbol(lowerer: Lowerer, sym: ts.Symbol | null | un
   if (!decls || decls.length === 0) return false;
   let viaNode = false;
   for (const d of decls) {
-    const sf = d.getSourceFile();
+    const sf = ts.getSourceFileOfNode(d);
     if (sf.isDeclarationFile && isNodeTypesPath(sf.fileName)) viaNode = true;
     else if (lowerer.isStdlibFile(sf)) return false;
   }

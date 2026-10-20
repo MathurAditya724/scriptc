@@ -341,8 +341,8 @@
       "apiEntries": 92,
       "static": {
         "supported": 1,
-        "partial": 15,
-        "refused": 1,
+        "partial": 16,
+        "refused": 0,
         "not-implemented": 75,
         "by-design": 0,
         "unreviewed": 0,
@@ -566,9 +566,9 @@
       "apiEntries": 131,
       "static": {
         "supported": 0,
-        "partial": 19,
+        "partial": 25,
         "refused": 0,
-        "not-implemented": 112,
+        "not-implemented": 106,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -52298,6 +52298,18 @@
           "tests/corpus/6295-jose-hs256/main.mjs",
           "tests/corpus/6331-jose-root-entry/main.ts",
           "tests/corpus/text-codec-values/main.ts",
+          "tests/corpus/webassembly-api.mjs",
+          "tests/corpus/webassembly-dylink/main.mjs",
+          "tests/corpus/webassembly-jsapi.mjs",
+          "tests/corpus/webassembly-spec-control/main.mjs",
+          "tests/corpus/webassembly-spec-float/main.mjs",
+          "tests/corpus/webassembly-spec-imports/main.mjs",
+          "tests/corpus/webassembly-spec-int/main.mjs",
+          "tests/corpus/webassembly-spec-memory/main.mjs",
+          "tests/corpus/webassembly-spec-table/main.mjs",
+          "tests/corpus/webassembly-typed.ts",
+          "tests/corpus/webassembly-worker.ts",
+          "tests/corpus/webassembly-wpt-jsapi.mjs",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/fetch-conformance.test.ts",
           "tests/harness/project-config.test.ts"
@@ -53649,8 +53661,22 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:stdlib.webassembly"
+        "status": "partial",
+        "evidence": "surface-manifest:stdlib.webassembly",
+        "tests": [
+          "tests/corpus/webassembly-api.mjs",
+          "tests/corpus/webassembly-typed.ts",
+          "tests/corpus/webassembly-worker.ts",
+          "tests/corpus/webassembly-spec-int/main.mjs",
+          "tests/corpus/webassembly-spec-float/main.mjs",
+          "tests/corpus/webassembly-spec-control/main.mjs",
+          "tests/corpus/webassembly-spec-memory/main.mjs",
+          "tests/corpus/webassembly-spec-table/main.mjs",
+          "tests/corpus/webassembly-spec-imports/main.mjs",
+          "tests/corpus/webassembly-jsapi.mjs",
+          "tests/corpus/webassembly-wpt-jsapi.mjs",
+          "tests/corpus/webassembly-dylink/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75620,7 +75646,9 @@
           "tests/corpus/5212-perf-marks-measures.ts",
           "tests/corpus/5213-perf-timing-errors.ts",
           "tests/corpus/5214-perf-entry-inspect.ts",
-          "tests/corpus/5215-perf-timing-validation.js"
+          "tests/corpus/5215-perf-timing-validation.js",
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -77661,8 +77689,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.histogram.percentile",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77776,8 +77808,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.histogram.reset",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -78259,8 +78295,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.histogram.disable",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -78282,8 +78322,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.histogram.enable",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -78650,8 +78694,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.perf_hooks.monitorEventLoopDelay",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -78800,8 +78848,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.eventLoopUtilization",
+        "tests": [
+          "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/fixtures/node-types/event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "exact"
     },

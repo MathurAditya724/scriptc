@@ -31,6 +31,8 @@ const base: NativeLinkFeatures = {
   bigint: false,
   searchParams: false,
   qs: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
   parseArgs: false,
   stream: false,
   net: false,
@@ -45,6 +47,7 @@ const base: NativeLinkFeatures = {
   tlsCa: false,
   cipher: false,
   webcrypto: false,
+  perfLoop: false,
 };
 
 test("runtime manifest validation and selection are entirely static", async () => {

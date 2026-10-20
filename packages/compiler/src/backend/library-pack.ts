@@ -42,6 +42,8 @@ export async function compilePackedLibrary(
     bigint: options.bigint ?? false,
     searchParams: options.searchParams ?? false,
     qs: false,
+    dynBuiltinClass: false,
+    dynBuiltinStream: false,
     parseArgs: false,
     stream: false,
     net: false,
@@ -55,6 +57,7 @@ export async function compilePackedLibrary(
     tls: false,
     cipher: false,
     webcrypto: false,
+    perfLoop: false,
     tlsCa: false,
   };
   const selection = await loadRuntimePack({

@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, boolLit, helperLoc, numLit, strLit, varRef } from "../../ir/build.js";
+import { builtinClassDynValueOf, builtinClassKindOf } from "./builtins/builtin-class-dyn.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import * as ts from "../ts7/adapter.js";
@@ -492,7 +493,7 @@ function classInspectsThroughView(lowerer: Lowerer, info: ClassInfo | undefined)
   if (info.subclasses.length > 0) return true;
   return (
     info.decl != null &&
-    isJsSourceFile(info.decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(info.decl)) &&
     classDynViewSupported(
       info.def.fields,
       (id) => lowerer.shapes.get(id),
@@ -2609,8 +2610,15 @@ function lowerUtilCallableCall(
   const arity = member === "deprecate" ? 4 : member === "callbackify" ? 1 : 2;
   // Program classes keep static prototypes: there is no function object
   // whose prototype chain the runtime could relink or wrap.
+  // EventEmitter and the stream classes are the exception as superCtor:
+  // the runtime has untyped constructors for them (builtin-class-dyn.ts).
   const classArgs = member === "inherits" ? 2 : member === "deprecate" ? 1 : 0;
-  for (const arg of expr.arguments.nodes.slice(0, classArgs)) {
+  const builtinBase =
+    member === "inherits" && expr.arguments.nodes[1] !== undefined
+      ? builtinClassKindOf(lowerer, expr.arguments.nodes[1])
+      : null;
+  for (const [index, arg] of expr.arguments.nodes.slice(0, classArgs).entries()) {
+    if (index === 1 && builtinBase !== null) continue;
     if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "classval")
       lowerer.noLowering(
         `util.${member} over a class constructor`,
@@ -2629,9 +2637,12 @@ function lowerUtilCallableCall(
   const stmts: IrStmt[] = [];
   const args: IrExpr[] = [];
   for (let i = 0; i < arity; i++) {
-    const input: IrExpr = expr.arguments.nodes[i]
-      ? lowerer.lowerExprExpecting(expr.arguments.nodes[i]!, DYN)
-      : dynUndefinedExpr(loc);
+    const node = expr.arguments.nodes[i];
+    const input: IrExpr = !node
+      ? dynUndefinedExpr(loc)
+      : i === 1 && builtinBase !== null
+        ? (builtinClassDynValueOf(lowerer, node) ?? lowerer.lowerExprExpecting(node, DYN))
+        : lowerer.lowerExprExpecting(node, DYN);
     const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
     stmts.push({ kind: "varDecl", localId: saved.id, init: input, loc });
     args.push(varRef(saved.id, DYN, loc));
@@ -2649,7 +2660,7 @@ function lowerUtilCallableCall(
  * a statically typed callback parameter cannot receive a value its type
  * excludes. Untyped (JavaScript or unknown) slots keep the wrapper dyn. */
 function callbackifyErrorExcludesNull(lowerer: Lowerer, expr: ts.CallExpression): boolean {
-  if (isJsSourceFile(expr.getSourceFile())) return false;
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
   const checker = lowerer.checker;
   const slot = checker.getContextualType(expr) ?? lowerer.typeOf(expr);
   const wrapper = checker.getCallSignatures(slot)[0];
@@ -2755,7 +2766,7 @@ function lowerGetCallSitesCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (expr.arguments.nodes.length !== 0) return null;
-  if (!isJsSourceFile(expr.getSourceFile())) return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const frame = (): IrExpr => {
     const field = (name: string, value: IrExpr): { key: IrExpr; value: IrExpr } => ({
       key: { kind: "strLit", value: name, type: STRING, loc },
@@ -2767,7 +2778,7 @@ function lowerGetCallSitesCall(
         field("functionName", { kind: "strLit", value: "", type: STRING, loc }),
         field("scriptName", {
           kind: "strLit",
-          value: expr.getSourceFile().fileName,
+          value: ts.getSourceFileOfNode(expr).fileName,
           type: STRING,
           loc,
         }),

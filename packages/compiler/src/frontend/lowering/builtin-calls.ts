@@ -1,4 +1,5 @@
 import { lowerReadlineCursorCall } from "./builtins/readline.js";
+import { lowerMonitorEventLoopDelayCall } from "./builtins/performance.js";
 import {
   lowerEnvironmentData,
   lowerReceiveMessageOnPort,
@@ -104,6 +105,9 @@ export function lowerBuiltinCall(
     return lowerAddAbortListener(lowerer, expr, loc);
   }
   if (bi.module === "events" && bi.member === "once") return lowerEventsOnce(lowerer, expr, loc);
+  if (bi.module === "perf_hooks" && bi.member === "monitorEventLoopDelay") {
+    return lowerMonitorEventLoopDelayCall(lowerer, expr);
+  }
   if (bi.module === "events") {
     const helper = lowerEventsEmitterHelper(lowerer, expr, bi.member, loc);
     if (helper) return helper;

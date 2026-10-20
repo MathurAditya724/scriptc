@@ -4113,6 +4113,11 @@ function validateFunction(
       e.fn === "error.cause" ||
       e.fn === "error.hasCause" ||
       e.fn === "error.setCause" ||
+      e.fn === "error.setCode" ||
+      e.fn === "error.setCodeDyn" ||
+      e.fn === "error.assign" ||
+      e.fn === "error.hasKey" ||
+      e.fn === "error.hasCode" ||
       e.fn === "error.defineCause" ||
       e.fn === "error.deleteCause"
     ) {
@@ -4154,7 +4159,7 @@ function validateFunction(
       if (!ok) err(`libCall ${e.fn} must be a promise of its ${cryptoPromise} value`, e.loc);
       return true;
     }
-    if (e.fn === "events.once") {
+    if (e.fn === "events.once" || e.fn === "events.onceSignal") {
       const [recv, , boxer, errorBoxer] = e.args;
       const arrayT = e.type.kind === "promise" ? e.type.inner : null;
       const boxes = (b: IrExpr | undefined) =>
@@ -4165,7 +4170,7 @@ function validateFunction(
         !boxes(boxer) ||
         !boxes(errorBoxer)
       ) {
-        err(`libCall events.once must box its event tuples into the promised array`, e.loc);
+        err(`libCall ${e.fn} must box its event tuples into the promised array`, e.loc);
       }
       return true;
     }
@@ -5228,6 +5233,35 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "stream.dynNative" || e.fn === "stream.dynNativePipe") {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const side = e.args[1];
+      const className =
+        side?.kind === "numLit" ? (side.value === 1 ? "%Readable" : "%Writable") : null;
+      const ok =
+        def &&
+        className !== null &&
+        e.args[0]?.type.kind === "dyn" &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "object" && a.className === className) &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) err(`libCall ${e.fn} must return its side's stream class or null`, e.loc);
+      return true;
+    }
+    if (e.fn === "child.stdioStream") {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const slot = e.args[1];
+      const className =
+        slot?.kind === "numLit" ? (slot.value === 0 ? "%Writable" : "%Readable") : null;
+      const ok =
+        def &&
+        className !== null &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "object" && a.className === className) &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) err(`libCall ${e.fn} must return the stream class of its stdio slot or null`, e.loc);
+      return true;
+    }
     if (e.fn === "child.stdin" || e.fn === "child.stdout" || e.fn === "child.stderr") {
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const handleKind = e.fn === "child.stdin" ? "childWriter" : "childStream";
@@ -5719,9 +5753,9 @@ function validateFunction(
         }
         return true;
       }
-      if (e.fn === "readable.pipe") {
+      if (e.fn === "readable.pipe" || e.fn === "readable.pipeGeneral") {
         if (!isStreamObject(e.args[1]?.type) || !typeEquals(e.type, e.args[1]!.type)) {
-          err(`libCall readable.pipe must return its destination's type`, e.loc);
+          err(`libCall ${e.fn} must return its destination's type`, e.loc);
         }
         return true;
       }

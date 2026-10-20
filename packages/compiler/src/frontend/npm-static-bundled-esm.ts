@@ -40,6 +40,7 @@ import {
   unparen,
   type Edit,
 } from "./npm-static-bundled-chunks.js";
+import { getTextOfNode, tokenStartOfNode } from "./ts7/node-functions.js";
 
 export interface EsmInitHost {
   requireTargetEsModuleStamped(fromFile: string, specifier: string): boolean;
@@ -92,13 +93,13 @@ function esmHelperForm(
     const stmts = body.body.statements.nodes;
     const ret = stmts[0];
     if (stmts.length !== 1 || !ret || !ts.isReturnStatement(ret) || !ret.expression) return null;
-    const text = ret.expression.getText(sf);
+    const text = getTextOfNode(ret.expression);
     const keys = /\[\s*([A-Za-z_$][\w$]*(?:\.keys)?)\s*\(/.exec(text)?.[1];
     if (keys === undefined || (keys !== "Object.keys" && !ownNames(keys))) return null;
     return helperTokens(text) === template(KEYED_RETURN, f, r, keys) ? "keyed" : null;
   }
   if (ts.isArrowFunction(body) && body.parameters.nodes.length === 0 && !ts.isBlock(body.body)) {
-    const actual = helperTokens(body.body.getText(sf));
+    const actual = helperTokens(getTextOfNode(body.body));
     return actual !== null && actual === template(ARROW_BODY, f, r, "") ? "arrow" : null;
   }
   return null;
@@ -117,7 +118,7 @@ function removeDeclarators(sf: ts.SourceFile, dead: ReadonlySet<ts.VariableDecla
     const decls = stmt.declarationList.declarations.nodes;
     const deadAt = decls.map((d) => dead.has(d));
     if (deadAt.every((x) => x)) {
-      edits.push({ start: stmt.getStart(sf), end: stmt.getEnd(), text: "" });
+      edits.push({ start: tokenStartOfNode(stmt), end: stmt.end, text: "" });
       continue;
     }
     const lastLive = deadAt.lastIndexOf(false);
@@ -125,8 +126,8 @@ function removeDeclarators(sf: ts.SourceFile, dead: ReadonlySet<ts.VariableDecla
       if (!deadAt[i]) continue;
       edits.push(
         i < lastLive
-          ? { start: decls[i]!.getStart(sf), end: decls[i + 1]!.getStart(sf), text: "" }
-          : { start: decls[lastLive]!.getEnd(), end: decls[i]!.getEnd(), text: "" },
+          ? { start: tokenStartOfNode(decls[i]!), end: tokenStartOfNode(decls[i + 1]!), text: "" }
+          : { start: decls[lastLive]!.end, end: decls[i]!.end, text: "" },
       );
     }
   }
@@ -297,7 +298,7 @@ export function lowerBundledEsmInits(
     return (
       init !== undefined &&
       stable(name) &&
-      helperTokens(init.getText(sf)) === helperTokens("Object.getOwnPropertyNames")
+      helperTokens(getTextOfNode(init)) === helperTokens("Object.getOwnPropertyNames")
     );
   };
   const forms = new Map<string, "keyed" | "arrow">();
@@ -423,7 +424,7 @@ export function lowerBundledEsmInits(
         }
         const spec = bareRequireSpecOf(rhs);
         if (spec === null) continue;
-        const req = rhs.getText(sf);
+        const req = getTextOfNode(rhs);
         const defaultIsModule =
           interop && (isNodeMode || !host.requireTargetEsModuleStamped(filePath, spec));
         // Every other reference must be a plain member read.
@@ -442,11 +443,11 @@ export function lowerBundledEsmInits(
             break;
           }
           if (defaultIsModule && access.name.text === "default")
-            uses.push({ start: access.getStart(sf), end: access.getEnd(), text: `(${req})` });
-          else uses.push({ start: r.getStart(sf), end: r.getEnd(), text: req });
+            uses.push({ start: tokenStartOfNode(access), end: access.end, text: `(${req})` });
+          else uses.push({ start: tokenStartOfNode(r), end: r.end, text: req });
         }
         if (!ok) continue;
-        edits.push({ start: el.getStart(sf), end: el.getEnd(), text: req }, ...uses);
+        edits.push({ start: tokenStartOfNode(el), end: el.end, text: req }, ...uses);
         deadDeclarators.add(decl);
       }
     }
@@ -500,7 +501,7 @@ export function lowerBundledEsmInits(
     return false;
   };
   const getterText = (value: ts.Expression): string =>
-    applyEdits(source, value.getStart(sf), value.getEnd(), edits);
+    applyEdits(source, tokenStartOfNode(value), value.end, edits);
   /** A call through the namespace (`ns.fn()`, `L().fn()`) passes the object
    * the read came from as `this`; the lowered object differs from Node's
    * module object (`__esModule`, property attributes), so it must stay
@@ -628,23 +629,23 @@ export function lowerBundledEsmInits(
       // call through it (`L().fn()`) loses its receiver.
       if (calledWithReceiver(access as ts.Expression) && !receiverHidden(entries, member))
         return loaderWhy;
-      const init = initCall === null ? "" : `${initCall.getText(sf)}, `;
+      const init = initCall === null ? "" : `${getTextOfNode(initCall)}, `;
       edits.push({
-        start: access.getStart(sf),
-        end: access.getEnd(),
+        start: tokenStartOfNode(access),
+        end: access.end,
         text: `(${init}${getterText(value)})`,
       });
     }
     deadDeclarators.add(d);
     deadDeclarators.add(memoDecl);
-    loaderSpans.push({ start: d.getStart(sf), end: d.getEnd() });
+    loaderSpans.push({ start: tokenStartOfNode(d), end: d.end });
     lowered.add(target);
   }
 
   for (const r of allRefs) {
     const table = tables.get(r.text);
     if (table === undefined) continue;
-    if (loaderSpans.some((span) => r.getStart(sf) >= span.start && r.getEnd() <= span.end))
+    if (loaderSpans.some((span) => tokenStartOfNode(r) >= span.start && r.end <= span.end))
       continue;
     const p = r.parent;
     // The table's own declaration and __export call are handled below.
@@ -709,7 +710,7 @@ export function lowerBundledEsmInits(
       const inner = unparen(ns);
       const init =
         ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.CommaToken
-          ? `${unparen(inner.left).getText(sf)}; `
+          ? `${getTextOfNode(unparen(inner.left))}; `
           : "";
       if (shadowed(holder, table.entries)) return { degrade: `its shipped JS ${why}` };
       const entries = table.entries
@@ -717,8 +718,8 @@ export function lowerBundledEsmInits(
         .map(([n, value]) => `${JSON.stringify(n)}: () => ${getterText(value)}`)
         .join(", ");
       edits.push({
-        start: holder.parent.getStart(sf),
-        end: holder.parent.getEnd(),
+        start: tokenStartOfNode(holder.parent),
+        end: holder.parent.end,
         text: `${init}__export(${mainTarget}, { ${entries} });`,
       });
       lowered.add(r.text);
@@ -771,7 +772,7 @@ export function lowerBundledEsmInits(
           `get ${/^[A-Za-z_$][\w$]*$/.test(n) ? n : JSON.stringify(n)}() { return ${getterText(value)}; }`,
       )
       .join(", ");
-    edits.push({ start: p.getStart(sf), end: p.getEnd(), text: `{ ${getters} }` });
+    edits.push({ start: tokenStartOfNode(p), end: p.end, text: `{ ${getters} }` });
     lowered.add(r.text);
   }
   // A table nothing reads (its module is never required) goes too: its
@@ -781,7 +782,7 @@ export function lowerBundledEsmInits(
     const live = (refsByName.get(target) ?? []).some((x) => {
       const p = x.parent;
       if (p !== undefined && ts.isVariableDeclaration(p) && p.name === x) return false;
-      return !(x.getStart(sf) >= table.stmt.getStart(sf) && x.getEnd() <= table.stmt.getEnd());
+      return !(tokenStartOfNode(x) >= tokenStartOfNode(table.stmt) && x.end <= table.stmt.end);
     });
     if (!live) lowered.add(target);
   }
@@ -797,7 +798,7 @@ export function lowerBundledEsmInits(
       writes.has(target)
     )
       return { degrade: ESM_SHAPE_DEGRADE };
-    edits.push({ start: table.stmt.getStart(sf), end: table.stmt.getEnd(), text: "" });
+    edits.push({ start: tokenStartOfNode(table.stmt), end: table.stmt.end, text: "" });
     deadDeclarators.add(decl);
   }
   // Every removed declarator in one pass: declarators of one statement
@@ -810,13 +811,13 @@ export function lowerBundledEsmInits(
     const { call, body } = init;
     edits.push(
       {
-        start: call.getStart(sf),
-        end: body.getStart(sf) + 1,
+        start: tokenStartOfNode(call),
+        end: tokenStartOfNode(body) + 1,
         text: "(() => { let __scriptc_done = false; function __scriptc_init() {",
       },
       {
-        start: body.getEnd() - 1,
-        end: call.getEnd(),
+        start: body.end - 1,
+        end: call.end,
         text: "} return function () { if (__scriptc_done) return; __scriptc_done = true; __scriptc_init(); }; })()",
       },
     );
