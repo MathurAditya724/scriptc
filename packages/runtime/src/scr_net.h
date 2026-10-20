@@ -237,6 +237,7 @@ bool scr_net_sock_readable(ScrNetSocket *s);
 /* The deferred dial (the http agent's maxSockets queue): the socket
  * registers "connecting" and buffers writes; dial_start runs the dial. */
 ScrNetSocket *scr_net_connect_deferred(double port, ScrStr *host /*borrowed, nullable*/); /* +1 */
+ScrNetSocket *scr_net_connect_lookup_dyn(double port, ScrStr *host /*borrowed*/, const ScrDyn *lookup /*borrowed*/); /* +1, NULL on throw */
 void scr_net_sock_dial_start(ScrNetSocket *s);
 void scr_net_sock_set_timeout(ScrNetSocket *s, double ms);
 void scr_net_sock_on_timeout(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);

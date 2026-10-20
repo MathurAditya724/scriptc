@@ -1368,6 +1368,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * 'error'. A synchronous throw INSIDE the lookup propagates out of the
    * connect call (may-throw seed). */
   "net.connectLookup": { argTypes: [F64, STRING, null], result: NETSOCKET_T },
+  /** connect({ host, port, lookup }) with a lookup of Node's own type, as
+   * a checked-dynamic function: the runtime calls it with { hints, all:
+   * true } and a callback taking an address string or list, then dials
+   * the answers in order. MAY THROW (host validation, a lookup throw). */
+  "net.connectLookupDyn": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
   "net.sockWrite": { argTypes: [NETSOCKET_T, STRING], result: VOID },
   "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
   "net.sockEnd": { argTypes: [NETSOCKET_T], result: VOID },

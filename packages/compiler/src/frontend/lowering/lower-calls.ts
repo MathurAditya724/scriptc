@@ -4252,8 +4252,13 @@ function lowerArrayIsArrayCall(
   if (lowerer.stdlibGlobalMember(access, "Array") !== "isArray") return null;
   if (call.arguments.nodes.length !== 1) return null; // the stdlib chokepoint fences
   const argNode = call.arguments.nodes[0]!;
-  const arg = lowerer.lowerExpr(argNode);
+  let arg = lowerer.lowerExpr(argNode);
   const loc = locOf(call);
+  // A checker-narrowed dyn read arrives as a validated extraction (the
+  // dynCheck bridge). The runtime value may be wider than the flow type
+  // claims (an overload narrower than what arrives), so test the dyn value
+  // itself instead of folding on the extracted type (typeof's rule).
+  if (arg.kind === "dynCheck" && arg.value.type.kind === "dyn") arg = arg.value;
   if (arg.type.kind === "dyn") {
     return { kind: "dynTest", test: "array", value: arg, type: BOOL, loc };
   }

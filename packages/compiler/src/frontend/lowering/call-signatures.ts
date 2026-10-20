@@ -854,6 +854,17 @@ export function lambdaSignature(
       return { shapes, funcType: funcTypeFromParamShapes(shapes, DYN) };
     }
   }
+  // A callback whose arguments arrive as the runtime produced them, wider
+  // than its contextual overload says (dns.lookup's callback when the
+  // options are only known at run time: the address is a string or an
+  // address list): every parameter binds as a checked-dynamic value.
+  if (lowerer.dynParamLambdas.has(node)) {
+    const shapes: ParamShape[] = node.parameters.nodes.map(() => ({
+      type: DYN,
+      mode: "required",
+    }));
+    return { shapes, funcType: funcTypeFromParamShapes(shapes, VOID) };
+  }
   if (node.typeParameters?.nodes && !lowerer.erasingLambdas.has(node)) {
     // Generic function-like forms monomorphize only where a static home
     // exists: top-level generic function declarations, generic methods
