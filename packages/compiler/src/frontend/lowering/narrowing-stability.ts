@@ -55,7 +55,7 @@ export class NarrowingStability {
   private readonly effects = new Map<ts.Node, boolean>();
   private readonly capturedMutable = new Map<ts.Symbol, boolean>();
   private readonly staleBindings = new Map<ts.Symbol, boolean>();
-  private readonly predicateTargets = new Map<ts.SourceFile, Map<string, ts.CallExpression[]>>();
+  private readonly predicateTargets = new Map<ts.SourceFile, Map<string, PredicateTarget[]>>();
   private readonly identifierWrites = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   private readonly widened = new Map<ts.Node, ts.Type | null>();
   private readonly plainContainers = new Map<ts.Node, boolean>();
@@ -154,9 +154,7 @@ export class NarrowingStability {
     } else {
       const symbol = this.bindingOf(node);
       declared =
-        symbol && (this.mayHoldStaleNarrowing(symbol) || this.predicateNarrowed(node))
-          ? checker.getTypeOfSymbol(symbol)
-          : null;
+        symbol && this.mayHoldStaleNarrowing(symbol) ? checker.getTypeOfSymbol(symbol) : null;
     }
     if (declared === null) return null;
     const narrowedTs = checker.getTypeAtLocation(node);
@@ -169,10 +167,11 @@ export class NarrowingStability {
     // subclass by instanceof (whose members dispatch on the instance).
     const classNarrowing = declaredIr.kind === "object" && narrowedIr.kind === "object";
     if (declaredIr.kind !== "union" && !classNarrowing) return null;
+    // A predicate's claim keeps the claimed type, checked where it is read
+    // (predicate-reads.ts and the checked extraction): the declared type
+    // may have no lowering in this position.
+    if (this.predicateNarrowed(node)) return null;
     if (position === "member") {
-      // A predicate's claim reads its members through the claimed arm
-      // (predicate-reads.ts).
-      if (this.predicateNarrowed(node)) return null;
       // A member the declared type itself supports (every arm has it, so
       // no arm is nullish) reads the current value's member, as Node does.
       // Calls dispatch only through a single class.
@@ -408,22 +407,42 @@ export class NarrowingStability {
     let key = referenceKey(node);
     if (key === null) return false;
     const targets = this.predicateTargetsIn(node.getSourceFile());
+    const root = this.referenceRoot(node);
     const start = node.getStart();
     for (;;) {
-      const calls = targets.get(key);
-      if (calls?.some((call) => call.getStart() < start || inSameLoop(call, node))) return true;
+      const found = targets.get(key);
+      if (
+        found?.some(
+          ({ call, root: targetRoot }) =>
+            targetRoot === root && (call.getStart() < start || inSameLoop(call, node)),
+        )
+      )
+        return true;
       const dot = key.lastIndexOf(".");
       if (dot < 0) return false;
       key = key.slice(0, dot);
     }
   }
 
+  /** The binding a reference chain starts from, or the class whose `this`
+   * it reads, so references spelled alike in different scopes stay apart. */
+  private referenceRoot(node: ts.Expression): ts.Node | ts.Symbol | null {
+    let e = skipOuter(node);
+    while (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e))
+      e = skipOuter(e.expression);
+    if (ts.isIdentifier(e)) return this.bindingOf(e);
+    if (e.kind !== ts.SyntaxKind.ThisKeyword) return null;
+    let n: ts.Node | undefined = e.parent;
+    while (n && !ts.isClassLikeDeclaration(n)) n = n.parent;
+    return n ?? null;
+  }
+
   /** The references each hand-written predicate or assertion call in `file`
    * narrows, by reference key. */
-  private predicateTargetsIn(file: ts.SourceFile): Map<string, ts.CallExpression[]> {
+  private predicateTargetsIn(file: ts.SourceFile): Map<string, PredicateTarget[]> {
     let targets = this.predicateTargets.get(file);
     if (targets) return targets;
-    const found = new Map<string, ts.CallExpression[]>();
+    const found = new Map<string, PredicateTarget[]>();
     targets = found;
     this.predicateTargets.set(file, found);
     const program = this.program();
@@ -432,7 +451,7 @@ export class NarrowingStability {
       if (key === null) return;
       let list = found.get(key);
       if (!list) found.set(key, (list = []));
-      list.push(call);
+      list.push({ call, root: this.referenceRoot(target as ts.Expression) });
     };
     ts.walkPreorder(file, (node) => {
       if (!ts.isCallExpression(node)) return undefined;
@@ -883,6 +902,13 @@ export class NarrowingStability {
     if (type.flags & ts.TypeFlags.StringLike) return true;
     return checker.isArrayType(type) || checker.isTupleType(type);
   }
+}
+
+/** A hand-written predicate or assertion call and the root of the
+ * reference it narrows. */
+interface PredicateTarget {
+  call: ts.CallExpression;
+  root: ts.Node | ts.Symbol | null;
 }
 
 interface ProgramFacts {

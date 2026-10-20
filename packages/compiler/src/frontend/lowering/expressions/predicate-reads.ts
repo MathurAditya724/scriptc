@@ -4,16 +4,15 @@
  * still hold another of its declared types. Node then reads the member from
  * the value it holds: a member that type lacks reads undefined, and one it has
  * reads its own value. The read keeps the typed read for the claimed arm and
- * reads every other arm as Node does, so its result admits undefined, like an
- * unchecked element read (the runtime-optional analysis widens the slots it
- * reaches). */
+ * reads any other value through one checked-dynamic read, so its result admits
+ * undefined, like an unchecked element read (the runtime-optional analysis
+ * widens the slots it reaches). */
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import { BOOL, DYN, STRING, UNDEFINED_T, isUnitType, typeEquals } from "../../../ir/ir.js";
 import type { IrExpr, IrType, SrcLoc } from "../../../ir/ir.js";
-import { nodeThrowExpr } from "../../../ir/build.js";
 import { locOf } from "../../program.js";
-import { OTHER_ARM_FAILURE_MESSAGE, checkedNarrowOperand } from "../coercions/unions.js";
+import { checkedNarrowOperand } from "../coercions/unions.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { armLacksMember, v8CalleeText } from "./narrowing.js";
 
@@ -64,14 +63,16 @@ export function isPredicateNarrowedRead(
   )
     return false;
   if (ts.isPropertyAccessExpression(parent) && parent.questionDotToken) return false;
+  if (inOptionalChain(expr.expression)) return false;
   return lowerer.narrowing.predicateClaim(peel(expr.expression));
 }
 
 /** A receiver the claim narrowed: the test that it holds the claimed type,
- * and every other value it can hold, with the test that selects each. */
+ * the receiver's whole value, and the types of the other values it can hold. */
 interface Claim {
   claimed: IrExpr;
-  others: { arm: IrType; value: IrExpr; test: IrExpr }[];
+  value: IrExpr;
+  others: IrType[];
 }
 
 /** The claim on `receiver`, or null when the receiver does not lower to a
@@ -86,7 +87,7 @@ function claimOf(lowerer: Lowerer, claimed: IrExpr): Claim | null {
   ) {
     const value = claimed.cond.value;
     if (!isSafeToRepeat(value)) return null;
-    return { claimed: claimed.cond, others: [{ arm: value.type, value, test: claimed.cond }] };
+    return { claimed: claimed.cond, value, others: [value.type] };
   }
   const operand = checkedNarrowOperand(lowerer, claimed);
   if (operand === null || operand.type.kind !== "union" || !isSafeToRepeat(operand)) return null;
@@ -94,52 +95,33 @@ function claimOf(lowerer: Lowerer, claimed: IrExpr): Claim | null {
   const tag = lowerer.armTag(unionId, claimed.type);
   const arms = lowerer.unions.get(unionId)?.arms;
   if (tag < 0 || !arms) return null;
-  const loc = operand.loc;
-  const isTag = (t: number): IrExpr => ({
-    kind: "unionIsTag",
-    unionId,
-    tag: t,
-    negated: false,
-    value: operand,
-    type: BOOL,
-    loc,
-  });
   return {
-    claimed: isTag(tag),
-    others: arms.flatMap((arm, t) =>
-      t === tag
-        ? []
-        : [
-            {
-              arm,
-              value: { kind: "unionNarrow", unionId, tag: t, value: operand, type: arm, loc },
-              test: isTag(t),
-            },
-          ],
-    ),
+    claimed: {
+      kind: "unionIsTag",
+      unionId,
+      tag,
+      negated: false,
+      value: operand,
+      type: BOOL,
+      loc: operand.loc,
+    },
+    value: operand,
+    others: arms.filter((_, t) => t !== tag),
   };
 }
 
-/** `typed` when the receiver holds the claimed type, otherwise `other`'s
- * answer for the value it holds, as one expression of type `type`. */
-function byArm(
+/** `typed` when the receiver holds the claimed type, otherwise `other`, the
+ * checked-dynamic answer for whatever value it holds; null when either does
+ * not have the type `type`. */
+function byClaim(
   claim: Claim,
   typed: IrExpr,
-  other: (arm: IrType, value: IrExpr) => IrExpr,
+  other: IrExpr,
   type: IrType,
   loc: SrcLoc,
-): IrExpr {
-  let result: IrExpr | null = null;
-  for (let i = claim.others.length - 1; i >= 0; i--) {
-    const { arm, value, test } = claim.others[i]!;
-    const answer = other(arm, value);
-    result =
-      result === null
-        ? answer
-        : { kind: "ternary", cond: test, then: answer, else_: result, type, loc };
-  }
-  if (result === null) return typed;
-  return { kind: "ternary", cond: claim.claimed, then: typed, else_: result, type, loc };
+): IrExpr | null {
+  if (!typeEquals(typed.type, type) || !typeEquals(other.type, type)) return null;
+  return { kind: "ternary", cond: claim.claimed, then: typed, else_: other, type, loc };
 }
 
 /** The read of `expr` through a predicate-narrowed receiver, or null when the
@@ -161,21 +143,19 @@ export function lowerPredicateNarrowedRead(
     // A claimed catch binding is a checked-dynamic value (caughtRead).
     if (value.type.kind === "dyn") {
       const type = readType(lowerer, lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? DYN);
-      return type && otherArmRead(lowerer, receiver, value, DYN, name, type, loc);
+      return type && dynRead(lowerer, value, name, type, loc);
     }
     const claim = claimOf(lowerer, value);
     if (claim === null) return null;
     const typed = lowerTyped();
     // Reads of null or undefined throw, so only another present value can
     // make the read answer something its type does not admit.
-    const type = claim.others.every(({ arm }) => isUnitType(arm))
-      ? typed.type
-      : readType(lowerer, typed.type);
+    const type = claim.others.every(isUnitType) ? typed.type : readType(lowerer, typed.type);
     if (type === null) return null;
-    return byArm(
+    return byClaim(
       claim,
       lowerer.coerceToExpected(typed, type),
-      (arm, value) => otherArmRead(lowerer, receiver, value, arm, name, type, loc),
+      dynRead(lowerer, claim.value, name, type, loc),
       type,
       loc,
     );
@@ -185,11 +165,12 @@ export function lowerPredicateNarrowedRead(
 }
 
 /** The call `call` of a method on a predicate-narrowed receiver, or null.
- * Other arms invoke the method as Node does: a value without it throws
- * `v.m is not a function` after the arguments evaluate, and one with it
+ * Other values invoke the method as Node does: a value without it throws
+ * `v.m is not a function` after the arguments evaluate, and an object with it
  * answers that method's result. Arguments with nested functions or classes
- * keep the checked receiver extraction, since the call lowers them for each
- * arm. */
+ * keep the checked receiver extraction, since the call lowers them twice, and
+ * so does a primitive that has the method, which has no checked-dynamic
+ * invocation. */
 export function lowerPredicateNarrowedCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -204,7 +185,7 @@ export function lowerPredicateNarrowedCall(
   )
     return null;
   const receiver = peel(callee.expression);
-  if (!lowerer.narrowing.predicateClaim(receiver)) return null;
+  if (inOptionalChain(receiver) || !lowerer.narrowing.predicateClaim(receiver)) return null;
   const args = call.arguments?.nodes ?? [];
   if (args.some((arg) => ts.isSpreadElement(arg) || definesCode(arg))) return null;
   active.add(call);
@@ -215,7 +196,7 @@ export function lowerPredicateNarrowedCall(
       lowerer.coerceToExpected(
         {
           kind: "dynInvoke",
-          recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
+          recv: asDyn(value, loc),
           method: name,
           calleeName: v8CalleeText(callee),
           args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
@@ -232,21 +213,12 @@ export function lowerPredicateNarrowedCall(
     }
     const claim = claimOf(lowerer, value);
     if (claim === null) return null;
+    if (
+      claim.others.some((arm) => isPrimitive(arm) && !armLacksMember(lowerer, receiver, arm, name))
+    )
+      return null;
     const typed = lowerTyped();
-    const type = typed.type;
-    return byArm(
-      claim,
-      typed,
-      (arm, other) => {
-        if (isUnitType(arm)) return unitReadError(arm, name, type, loc);
-        // A primitive's own methods have no checked-dynamic invocation.
-        if (isPrimitive(arm) && !armLacksMember(lowerer, receiver, arm, name))
-          return nodeThrowExpr(1, "", OTHER_ARM_FAILURE_MESSAGE, type, loc);
-        return invoke(other, type);
-      },
-      type,
-      loc,
-    );
+    return byClaim(claim, typed, invoke(claim.value, typed.type), typed.type, loc);
   } finally {
     active.delete(call);
   }
@@ -263,30 +235,14 @@ function readType(lowerer: Lowerer, type: IrType): IrType | null {
     : null;
 }
 
-/** Node's read of `name` from `value`, another value the receiver holds. */
-function otherArmRead(
-  lowerer: Lowerer,
-  receiver: ts.Expression,
-  value: IrExpr,
-  arm: IrType,
-  name: string,
-  type: IrType,
-  loc: SrcLoc,
-): IrExpr {
-  if (isUnitType(arm)) return unitReadError(arm, name, type, loc);
-  // A primitive lacking the member reads undefined; objects can be of any
-  // subclass, so they read the member themselves.
-  if (isPrimitive(arm) && armLacksMember(lowerer, receiver, arm, name)) {
-    return lowerer.coerceToExpected(
-      { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
-      type,
-    );
-  }
+/** Node's read of `name` from `value` as a checked-dynamic value: null and
+ * undefined throw Node's TypeError, a missing member reads undefined. */
+function dynRead(lowerer: Lowerer, value: IrExpr, name: string, type: IrType, loc: SrcLoc): IrExpr {
   return lowerer.coerceToExpected(
     {
       kind: "dynKeyGet",
       key: { kind: "strLit", value: name, type: STRING, loc },
-      value: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
+      value: asDyn(value, loc),
       type: DYN,
       loc,
     },
@@ -294,10 +250,8 @@ function otherArmRead(
   );
 }
 
-/** Node's TypeError for reading `name` from null or undefined. */
-function unitReadError(arm: IrType, name: string, type: IrType, loc: SrcLoc): IrExpr {
-  const unit = arm.kind === "nullT" ? "null" : "undefined";
-  return nodeThrowExpr(1, "", `Cannot read properties of ${unit} (reading '${name}')`, type, loc);
+function asDyn(value: IrExpr, loc: SrcLoc): IrExpr {
+  return value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
 }
 
 /** `node` contains a function or class, whose lowering defines code. */
@@ -317,6 +271,22 @@ function isPrimitive(type: IrType): boolean {
   return (
     type.kind === "f64" || type.kind === "bool" || type.kind === "string" || type.kind === "bigint"
   );
+}
+
+/** `node` is a link of an optional chain (`a?.b.c`), which lowers only as
+ * part of the whole chain. */
+function inOptionalChain(node: ts.Expression): boolean {
+  for (let e = peel(node); ;) {
+    if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      if (e.questionDotToken) return true;
+      e = peel(e.expression);
+    } else if (ts.isCallExpression(e)) {
+      if (e.questionDotToken) return true;
+      e = peel(e.expression);
+    } else if (ts.isNonNullExpression(e)) {
+      e = peel(e.expression);
+    } else return false;
+  }
 }
 
 function peel(node: ts.Expression): ts.Expression {
