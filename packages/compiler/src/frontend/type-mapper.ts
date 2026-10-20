@@ -126,6 +126,14 @@ export function jsOpenObjectType(
     : type;
 }
 
+/** The modules whose RequestOptions interface maps to the checked dynamic. */
+const HTTP_REQUEST_OPTION_MODULES: ReadonlySet<string> = new Set([
+  "http",
+  "node:http",
+  "https",
+  "node:https",
+]);
+
 /** The WebCrypto interfaces whose values are checked-dynamic: the crypto
  * global, SubtleCrypto, CryptoKey handles and the algorithm dictionaries
  * (scr_webcrypto.c). */
@@ -2503,6 +2511,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // http.RequestOptions / https.RequestOptions as a declared type: an
+  // option record whose members include functions, agents and signals.
+  // Values ride checked-dynamic storage, like SpawnOptions.
+  if (
+    psym?.name === "RequestOptions" &&
+    psym.declarations.some((d) => {
+      if (!ts.isInterfaceDeclaration(d) || !ctx.isStdlibFile(d.getSourceFile())) return false;
+      for (let p: ts.Node | undefined = d.parent; p !== undefined; p = p.parent) {
+        if (ts.isModuleDeclaration(p) && ts.isStringLiteral(p.name))
+          return HTTP_REQUEST_OPTION_MODULES.has(p.name.text);
+      }
+      return false;
+    })
+  )
+    return DYN;
 
   // exactly like npm-declared types. Static fetch has one deliberately
   // narrower native representation: Response is an opaque checked-
