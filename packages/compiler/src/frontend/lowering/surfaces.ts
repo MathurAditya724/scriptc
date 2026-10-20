@@ -2458,6 +2458,27 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     name: "perf_hooks.performance.clearMeasures",
     fns: ["perf.clearMeasures"],
   },
+  {
+    id: "node-builtin.perf_hooks.performance.eventLoopUtilization",
+    kind: "node-builtin",
+    name: "perf_hooks.performance.eventLoopUtilization",
+    fns: ["perf.loopStart", "perf.idleTime"],
+    note: "active time is the main thread's CPU time since the loop started; the one- and two-argument difference forms are supported",
+  },
+  {
+    id: "node-builtin.perf_hooks.monitorEventLoopDelay",
+    kind: "node-builtin",
+    name: "perf_hooks.monitorEventLoopDelay",
+    fns: [
+      "perf.eldNew",
+      "perf.eldEnable",
+      "perf.eldDisable",
+      "perf.eldReset",
+      "perf.eldPercentile",
+      "perf.eldStat",
+    ],
+    note: "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported",
+  },
   // ── the process global's ambient reads and authority calls
   // (lowerProcessProperty/lowerProcessMethodCall — process is a
   // provenance-checked global here, not an importable module).

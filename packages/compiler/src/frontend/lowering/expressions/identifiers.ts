@@ -1,6 +1,8 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
+import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
 import * as ts from "../../ts7/adapter.js";
+import { InternalCompilerError } from "../../../errors.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
@@ -21,6 +23,7 @@ import {
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import { captureContextArguments } from "../function-context.js";
+import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
 import {
   isCjsExportTableLiteral,
   isCjsJsFile,
@@ -96,7 +99,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // type and lowerLambda declared the local.
   if (expr.text === "arguments") {
     const binding = captureContextArguments(lowerer.fnStack);
-    if (binding) return { kind: "varRef", localId: binding.id, type: DYN, loc };
+    if (binding && lowerer.ctx.pureTuples.has(binding.id)) {
+      throw new InternalCompilerError("lowerer bug: forwarded-only 'arguments' read as a value");
+    }
+    if (binding) return { kind: "varRef", localId: binding.id, type: binding.type, loc };
+    const owner = argumentsOwner(expr);
+    if (owner && typedArgumentsCandidate(owner)) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "'arguments' in a function expression whose value is not asserted to one fixed-arity signature (assert it, as in `function () { … } as F`, and the function lowers against that signature)",
+      );
+    }
   }
   // A compiler-projected adapter as a VALUE: the adapter has no
   // runtime function object (its calls rewrite directly) — call it
@@ -539,6 +553,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // the same identity-token story as stdlib globals above (the
       // harness adds worker_threads.Worker to its identity Set).
       if (isJsSourceFile(expr.getSourceFile())) {
+        // EventEmitter and the stream classes are the runtime's untyped
+        // constructors, so constructor functions can inherit from them.
+        const classKind = builtinMemberClassKind(bi.module, bi.member);
+        if (classKind !== null) return builtinClassValue(classKind, loc);
         // A function member is a function value that fences when called.
         if (builtinModuleFnOf(lowerer, bi.module, bi.member))
           return builtinFunctionFenceValue(lowerer, bi, expr, loc);

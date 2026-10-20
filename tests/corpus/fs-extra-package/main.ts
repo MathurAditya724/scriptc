@@ -139,6 +139,25 @@ async function main(): Promise<void> {
   fs.copySync(linkSrc, relinkDest);
   console.log(shown(root, fs.readlinkSync(path.join(relinkDest, "entry"))));
 
+  // A destination directory symlink back into the source tree: each entry
+  // is checked against its destination, so the copy stops there instead
+  // of replacing the source's own file.
+  const loopSrc = path.join(root, "loop-src");
+  fs.mkdirSync(path.join(loopSrc, "sub"), { recursive: true });
+  fs.writeFileSync(path.join(loopSrc, "sub", "keep.txt"), "source");
+  const loopDest = path.join(root, "loop-dest");
+  fs.mkdirSync(loopDest);
+  fs.symlinkSync(path.join(loopSrc, "sub"), path.join(loopDest, "sub"));
+  for (const sync of [true, false]) {
+    try {
+      if (sync) fs.copySync(loopSrc, loopDest);
+      else await fs.copy(loopSrc, loopDest);
+    } catch (err) {
+      console.log(shown(root, (err as Error).message));
+    }
+    console.log(fs.readFileSync(path.join(loopSrc, "sub", "keep.txt"), "utf8"));
+  }
+
   console.log(await readStream(file));
   console.log((await fs.promises.readFile(file, "utf8")).length);
   console.log(fs.readFileSync(file, "utf8").length);

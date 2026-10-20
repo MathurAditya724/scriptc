@@ -925,6 +925,14 @@ export function moduleArtifacts(
             valueInstanceOfRoots.add(root.def.name);
           }
           break;
+        case "libCall":
+          // The general stream representation's child stdio read bridges
+          // through the runtime install that boxes both stream classes.
+          if (node.fn === "child.stdioStream") {
+            visitClass("%Readable");
+            visitClass("%Writable");
+          }
+          break;
         case "dynFrom":
           if (boxedChild(node.value.type)) {
             // A generic child can expose native stdio without importing stream.

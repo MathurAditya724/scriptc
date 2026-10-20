@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, boolLit, helperLoc, numLit, strLit, varRef } from "../../ir/build.js";
+import { builtinClassDynValueOf, builtinClassKindOf } from "./builtins/builtin-class-dyn.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import * as ts from "../ts7/adapter.js";
@@ -35,7 +36,6 @@ import type { ClassInfo } from "./lower-classes.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { symbolFieldDisplayName } from "./symbol-fields.js";
 import { eventTargetRootOf } from "./lower-event-target.js";
-import { builtinClassRefOf } from "./builtins/class-values.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
 import { isPerfEntryType, perfEntryJson } from "./builtins/performance.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
@@ -2610,21 +2610,15 @@ function lowerUtilCallableCall(
   const arity = member === "deprecate" ? 4 : member === "callbackify" ? 1 : 2;
   // Program classes keep static prototypes: there is no function object
   // whose prototype chain the runtime could relink or wrap.
+  // EventEmitter and the stream classes are the exception as superCtor:
+  // the runtime has untyped constructors for them (builtin-class-dyn.ts).
   const classArgs = member === "inherits" ? 2 : member === "deprecate" ? 1 : 0;
-  // A runtime-provided parent (`util.inherits(Ctor, stream.Readable)`, the
-  // from2 and multistream shape) has no prototype object the runtime could
-  // link a constructor function's prototype to.
-  const parent = member === "inherits" ? expr.arguments.nodes[1] : undefined;
-  if (parent !== undefined && !ts.isSpreadElement(parent)) {
-    const ref = builtinClassRefOf(lowerer, parent);
-    if (ref !== null)
-      lowerer.noLowering(
-        `util.inherits onto the runtime-provided class '${ref.name}'`,
-        parent,
-        "declare the subclass with extends",
-      );
-  }
-  for (const arg of expr.arguments.nodes.slice(0, classArgs)) {
+  const builtinBase =
+    member === "inherits" && expr.arguments.nodes[1] !== undefined
+      ? builtinClassKindOf(lowerer, expr.arguments.nodes[1])
+      : null;
+  for (const [index, arg] of expr.arguments.nodes.slice(0, classArgs).entries()) {
+    if (index === 1 && builtinBase !== null) continue;
     if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "classval")
       lowerer.noLowering(
         `util.${member} over a class constructor`,
@@ -2643,9 +2637,12 @@ function lowerUtilCallableCall(
   const stmts: IrStmt[] = [];
   const args: IrExpr[] = [];
   for (let i = 0; i < arity; i++) {
-    const input: IrExpr = expr.arguments.nodes[i]
-      ? lowerer.lowerExprExpecting(expr.arguments.nodes[i]!, DYN)
-      : dynUndefinedExpr(loc);
+    const node = expr.arguments.nodes[i];
+    const input: IrExpr = !node
+      ? dynUndefinedExpr(loc)
+      : i === 1 && builtinBase !== null
+        ? (builtinClassDynValueOf(lowerer, node) ?? lowerer.lowerExprExpecting(node, DYN))
+        : lowerer.lowerExprExpecting(node, DYN);
     const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
     stmts.push({ kind: "varDecl", localId: saved.id, init: input, loc });
     args.push(varRef(saved.id, DYN, loc));
