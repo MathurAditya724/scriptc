@@ -7,6 +7,7 @@
 #include "scr_runtime.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 static ScrBox *up_box(ScrDyn *value /* moves in */) {
   ScrBox *box = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
@@ -66,12 +67,75 @@ static ScrDyn *up_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   return result;
 }
 
+/* Node's promisify also copies the original's prototype and own property
+ * descriptors onto the wrapper, consults util.promisify.custom, and marks
+ * the wrapper with it. The plain case is a function whose only own
+ * properties are name, length and prototype: the wrapper takes the name
+ * and length descriptors. Other own properties (util.promisify.custom
+ * among them) refuse with SC2020 rather than answering differently. The
+ * wrapper's prototype is Function.prototype even when the original's was
+ * replaced. */
+static bool up_plain_original(ScrDyn *original) {
+  ScrDyn *keys = scr_dyn_own_keys(original);
+  if (!keys) return false;
+  bool plain = true;
+  double count = scr_dyn_arr_len(keys);
+  for (double i = 0; i < count && plain; i++) {
+    ScrDyn *key = scr_dyn_index_get(keys, i);
+    if (!key) {
+      plain = false;
+      break;
+    }
+    plain = key->kind == SCR_DYN_STR &&
+            ((key->v.str->len == 4 && memcmp(key->v.str->data, "name", 4) == 0) ||
+             (key->v.str->len == 6 && memcmp(key->v.str->data, "length", 6) == 0) ||
+             (key->v.str->len == 9 && memcmp(key->v.str->data, "prototype", 9) == 0));
+    scr_dyn_release(key);
+  }
+  scr_dyn_release(keys);
+  return plain;
+}
+
+/* wrapper[key] = original[key] as a non-writable, non-enumerable,
+ * configurable data property, as getOwnPropertyDescriptors copies the
+ * name and length of an ordinary function. */
+static bool up_copy_descriptor(ScrDyn *wrapper, ScrDyn *original, const char *key) {
+  ScrStr *name = scr_str_new(key, strlen(key));
+  ScrDyn *property = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *value = scr_dyn_fn_get(original, key, strlen(key));
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "value", 5, value ? value : scr_dyn_retain(scr_dyn_undefined()));
+  scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+  ScrDyn *defined = scr_dyn_define_property(wrapper, property, descriptor);
+  scr_dyn_release(descriptor);
+  scr_dyn_release(property);
+  if (!defined) return false;
+  scr_dyn_release(defined);
+  return true;
+}
+
 ScrDyn *scr_util_promisify(ScrDyn *original) {
   if (!scr_dyn_is_callable(original)) {
     scr_dyn_arg_type_fail("original", "of type function", original);
     return NULL;
   }
+  if (!up_plain_original(original)) {
+    if (scr_exc_pending()) return NULL;
+    static const char message[] =
+        "util.promisify over an untyped function with own properties (such as util.promisify.custom) "
+        "is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
   ScrClosure *closure = scr_closure_new(NULL, 1);
   closure->caps[0] = up_box(scr_dyn_retain(original));
-  return scr_dyn_new_func(closure, up_call, 0, "native:util.promisify", "");
+  ScrDyn *wrapper = scr_dyn_new_func(closure, up_call, 0, "native:util.promisify", "");
+  if (!up_copy_descriptor(wrapper, original, "name") || !up_copy_descriptor(wrapper, original, "length")) {
+    scr_dyn_release(wrapper);
+    return NULL;
+  }
+  return wrapper;
 }
