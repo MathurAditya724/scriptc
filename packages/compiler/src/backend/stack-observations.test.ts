@@ -133,6 +133,48 @@ test('a computed key that cannot be "stack" reads no stack', () => {
   expect(observesStacks(stack)).toBe(true);
 });
 
+test("a key forwarded through functions with several call sites is searched once", () => {
+  // f0 calls f1 twice, f1 calls f2 twice, and so on, each passing its
+  // parameter on: 2^40 call paths reach the read in f40.
+  const depth = 40;
+  const value: IrExpr = { loc, kind: "varRef", localId: "d", type: DYN };
+  const key: IrExpr = { loc, kind: "varRef", localId: "key", type: STRING };
+  const forward = (callee: string): IrStmt => ({
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "call", callee, args: [key], type: VOID },
+  });
+  const chain = (root: IrExpr): IrModule => {
+    const functions: IrFunction[] = [];
+    for (let i = 0; i <= depth; i++) {
+      const body: IrStmt[] =
+        i < depth
+          ? [forward(`f${i + 1}`), forward(`f${i + 1}`)]
+          : [{ loc, kind: "exprStmt", expr: { loc, kind: "dynKeyGet", value, key, type: DYN } }];
+      functions.push({
+        ...fn(`f${i}`, body),
+        params: [{ localId: "key", name: "key", type: STRING }],
+        locals: [{ id: "key", name: "key", type: STRING, mutable: false }],
+      });
+    }
+    const spelled: IrStmt = {
+      loc,
+      kind: "exprStmt",
+      expr: { loc, kind: "strLit", value: "stack", type: STRING },
+    };
+    const start: IrStmt = {
+      loc,
+      kind: "exprStmt",
+      expr: { loc, kind: "call", callee: "f0", args: [root], type: VOID },
+    };
+    return mod([fn("%main", [start, spelled]), ...functions]);
+  };
+  expect(observesStacks(chain({ loc, kind: "strLit", value: "message", type: STRING }))).toBe(
+    false,
+  );
+  expect(observesStacks(chain({ loc, kind: "strLit", value: "stack", type: STRING }))).toBe(true);
+});
+
 test("programs without stack reads are not", () => {
   expect(observesStacks(mod([fn("%main", [call("helper")]), fn("helper", [ret])]))).toBe(false);
 });

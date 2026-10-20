@@ -33,7 +33,9 @@ class StackKeys {
   private readonly calls = new Map<string, { caller: IrFunction; args: IrExpr[] }[]>();
   private readonly named: Set<string>;
   private readonly inits = new Map<IrFunction, Map<string, IrExpr | null>>();
-  private readonly visiting = new Set<string>();
+  /** Settled answers by function and local: true where a search reached a
+   * key that can be "stack", false where a search that found none passed. */
+  private readonly answers = new Map<string, boolean>();
 
   constructor(mod: IrModule) {
     this.spelled = spellsStack(mod);
@@ -59,6 +61,15 @@ class StackKeys {
   }
 
   mayBeStack(fn: IrFunction, key: IrExpr): boolean {
+    const visited = new Set<string>();
+    const answer = this.keyMayBeStack(fn, key, visited);
+    // A search that found no way to "stack" explored everything it visited
+    // to the end, so none of it can be "stack" either.
+    if (!answer) for (const visit of visited) this.answers.set(visit, false);
+    return answer;
+  }
+
+  private keyMayBeStack(fn: IrFunction, key: IrExpr, visited: Set<string>): boolean {
     if (key.kind === "strLit") return key.value === "stack";
     if (!this.spelled) return false;
     if (NON_STACK_KEY_TYPES.has(key.type.kind)) return false;
@@ -66,17 +77,18 @@ class StackKeys {
     if (key.kind === "dynFrom" && NON_STACK_KEY_TYPES.has(key.value.type.kind)) return false;
     if (key.kind !== "varRef") return true;
     const visit = `${fn.name}\0${key.localId}`;
-    // A cycle adds no value of its own: the answer comes from its entries.
-    if (this.visiting.has(visit)) return false;
-    this.visiting.add(visit);
-    try {
-      return this.localMayBeStack(fn, key.localId);
-    } finally {
-      this.visiting.delete(visit);
-    }
+    const known = this.answers.get(visit);
+    if (known !== undefined) return known;
+    // Each local is searched once per question: a cycle, or a second path
+    // to a local already searched, adds no value of its own.
+    if (visited.has(visit)) return false;
+    visited.add(visit);
+    const answer = this.localMayBeStack(fn, key.localId, visited);
+    if (answer) this.answers.set(visit, true);
+    return answer;
   }
 
-  private localMayBeStack(fn: IrFunction, localId: string): boolean {
+  private localMayBeStack(fn: IrFunction, localId: string, visited: Set<string>): boolean {
     const local = fn.locals.find((candidate) => candidate.id === localId);
     if (local === undefined || local.mutable) return true;
     const index = fn.params.findIndex((param) => param.localId === localId);
@@ -85,11 +97,12 @@ class StackKeys {
       if (this.named.has(fn.name) || sites === undefined) return true;
       return sites.some(
         (site) =>
-          site.args.length !== fn.params.length || this.mayBeStack(site.caller, site.args[index]!),
+          site.args.length !== fn.params.length ||
+          this.keyMayBeStack(site.caller, site.args[index]!, visited),
       );
     }
     const init = this.initializerOf(fn, localId);
-    return init === null || this.mayBeStack(fn, init);
+    return init === null || this.keyMayBeStack(fn, init, visited);
   }
 
   /** The one initializer of an immutable local, or null when it has none
