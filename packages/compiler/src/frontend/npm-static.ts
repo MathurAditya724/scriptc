@@ -448,7 +448,11 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           } else if (esm !== null) {
             original = esm;
           }
-          const respelled = split !== null || esm !== null;
+          // A module exporting one of its functions reaches its members
+          // through that function.
+          const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
+          if (fnExports !== null) original = fnExports;
+          const respelled = split !== null || esm !== null || fnExports !== null;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;

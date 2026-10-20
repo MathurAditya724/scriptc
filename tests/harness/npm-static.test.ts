@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2582)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2584)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
     ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
@@ -1513,6 +1513,32 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
+
+  // 2583: a module whose export object is one of its functions (semver
+  // 5/6's `exports = module.exports = Version`), under both values of the
+  // environment variable the module reads.
+  test("function export objects 2583-cjs-function-exports compile statically and byte-match Node", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2583-cjs-function-exports/main.ts");
+    await expectNodeParity(entry, ["gtfnexports", "gtfnmembers"]);
+    const binary = await buildStatic(entry, ["gtfnexports", "gtfnmembers"]);
+    const env = { ...process.env, GT_LABEL: "x" };
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry], env),
+      runBinary(binary, [], env),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.stdout.toString("utf8")).toContain("[x]");
+  }, 180_000);
+
+  // 2584: an export object replaced inside an environment-dependent branch
+  // (readable-stream 2.x) is named precisely.
+  test("an environment-dependent export object is refused by name", () => {
+    const entry = join(fixturesRoot, "npm/cases/2584-cjs-conditional-exports/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcondexports"] });
+    expect(JSON.stringify(coverage)).toContain(
+      "replacing module.exports outside a top-level statement (a conditional or environment-dependent export object)",
+    );
+  }, 120_000);
 
   // 2567: an export that reads `this`, called through its namespace, sees
   // Node's module object; the lowered namespace would differ, so the
