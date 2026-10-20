@@ -127,7 +127,7 @@ test.each([
     `var init_a = __esm({ "a.ts"() { console.log(this); } });\ninit_a();`,
   ],
   [
-    "stores the namespace of a bundled ES module ('a_exports') in a variable",
+    "memoized lazy loader 'load' returns the namespace of a bundled ES module as a value",
     `var a_exports = {};\n__export(a_exports, { v: () => v });\nvar v, init_a = __esm({ "a.ts"() { v = 1; } });\nvar ns, load = () => ns ??= __toESM((init_a(), __toCommonJS(a_exports)));\nload();`,
   ],
   [
