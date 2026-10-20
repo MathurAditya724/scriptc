@@ -239,6 +239,16 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.dynBuiltinClass && u.opts.inspect && u.opts.dynInvoke && u.opts.symbol,
     "scr_dyn_builtin_class.c",
   ),
+  unit(
+    (u) =>
+      u.opts.dynBuiltinStream &&
+      u.opts.dynBuiltinClass &&
+      u.opts.stream &&
+      u.opts.inspect &&
+      u.opts.dynInvoke &&
+      u.opts.symbol,
+    "scr_dyn_builtin_stream.c",
+  ),
   unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
   // The zlib stream classes reference both the zlib engine and the
   // stream unit.

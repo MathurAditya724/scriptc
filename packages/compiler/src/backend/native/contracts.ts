@@ -155,6 +155,10 @@ export interface CcOptions {
    * scr_dyn_builtin_class.c, which also references the inspection,
    * dyn-invoke and symbol units. */
   dynBuiltinClass?: boolean;
+  /** The program uses a stream class as an untyped constructor value:
+   * compiles scr_dyn_builtin_stream.c, the constructors' stream half, which
+   * also references the stream unit. */
+  dynBuiltinStream?: boolean;
   /** The program uses native util parsing, comparison, or styling. Optional
    * utility units also require their symbol, inspection, and warning features. */
   parseArgs?: boolean;

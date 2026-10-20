@@ -559,6 +559,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
+  // a destination that is not a stream throws the not-supported Error
+  "dyn.builtinStreamPipe",
   "dyn.getOwnPropertyNames",
   "dyn.ownKeys",
   "dyn.getOwnPropertySymbols",

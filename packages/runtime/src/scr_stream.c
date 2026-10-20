@@ -2254,6 +2254,8 @@ void scr_stream_set_flush(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamPlain
 
 void scr_stream_set_flush_on_prefinish(ScrStream *s) { s->st->flush_on_prefinish = true; }
 
+void scr_stream_set_destroyed(ScrStream *s, bool destroyed) { s->st->destroyed = destroyed; }
+
 void scr_stream_set_native(ScrStream *s, void *state /*moves*/, void (*release)(void *)) {
   ScrStreamState *st = s->st;
   if (st->native) st->native_release(st->native);

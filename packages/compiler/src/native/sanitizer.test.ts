@@ -96,6 +96,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
               searchParams: false,
               qs: false,
               dynBuiltinClass: false,
+              dynBuiltinStream: false,
               parseArgs: false,
               stream: false,
               net: false,

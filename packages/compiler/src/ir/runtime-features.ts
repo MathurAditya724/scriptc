@@ -224,6 +224,8 @@ const CHILD_PROCESS_LIB_PREFIXES: readonly string[] = ["child.", "cp.", "spawnRe
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // EventEmitter's kShapeMode and kCapture properties
   "dyn.builtinClass",
+  "dyn.builtinStreamClass",
+  "dyn.builtinStreamPipe",
   "dyn.usingDispose",
   "dyn.usingMethod",
   "util.isDeepStrictEqual",
@@ -497,11 +499,27 @@ const RUNTIME_FEATURE_RULES = {
    * unit, render unhandled 'error' payloads through the inspect unit and
    * create EventEmitter's private symbols through the symbol unit. */
   dynBuiltinClass: rule({
-    fns: ["dyn.builtinClass", "dyn.builtinInstanceOf", "dyn.functionInstanceOf"],
+    fns: [
+      "dyn.builtinClass",
+      "dyn.builtinStreamClass",
+      "dyn.builtinStreamPipe",
+      "dyn.builtinInstanceOf",
+      "dyn.functionInstanceOf",
+    ],
   }),
+  /** The stream classes as untyped constructor values with their stream
+   * half (scr_dyn_builtin_stream.c): native stream state for constructor
+   * functions, over the stream unit. */
+  dynBuiltinStream: rule({ fns: ["dyn.builtinStreamClass", "dyn.builtinStreamPipe"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
-    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS, "dyn.builtinClass"],
+    fns: [
+      ...DYN_INVOKE_LIB_FNS,
+      ...UTIL_CALLABLE_LIB_FNS,
+      "dyn.builtinClass",
+      "dyn.builtinStreamClass",
+      "dyn.builtinStreamPipe",
+    ],
     expr: (node, _tables) => node.kind === "dynInvoke",
   }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
@@ -512,7 +530,7 @@ const RUNTIME_FEATURE_RULES = {
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
-    fns: [...STREAM_LIB_FNS],
+    fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass", "dyn.builtinStreamPipe"],
     prefixes: ["emitter.", ...STREAM_LIB_PREFIXES],
   }),
   /** Subclasses of the runtime EventTarget/Event bases tear down and box
@@ -548,6 +566,8 @@ const RUNTIME_FEATURE_RULES = {
       "util.styleText",
       "crypto.cipherNew",
       "dyn.builtinClass",
+      "dyn.builtinStreamClass",
+      "dyn.builtinStreamPipe",
       ...UTIL_CALLABLE_LIB_FNS,
     ],
     prefixes: ["insp.", "console.", "test."],
@@ -611,7 +631,7 @@ const RUNTIME_FEATURE_RULES = {
   }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
-    fns: [...STREAM_LIB_FNS],
+    fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass", "dyn.builtinStreamPipe"],
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
@@ -653,6 +673,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dgram: false,
     dynAsync: false,
     dynBuiltinClass: false,
+    dynBuiltinStream: false,
     dynInvoke: false,
     dynTier: false,
     emitter: false,
@@ -813,6 +834,14 @@ export function moduleUsesEmitter(mod: IrModule): boolean {
  * programs pay zero bytes and keep their exact link line. */
 export function moduleUsesStream(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "stream").stream;
+}
+
+/** True when the program links scr_dyn_builtin_stream.c (stream classes
+ * as untyped constructor values): its runtime streams box through that
+ * unit's view and checked casts to the stream classes accept constructor-
+ * function streams. Programs without it keep their exact code. */
+export function moduleUsesDynBuiltinStream(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "dynBuiltinStream").dynBuiltinStream;
 }
 
 export const NPM_COMPRESS_MIN = 1024;

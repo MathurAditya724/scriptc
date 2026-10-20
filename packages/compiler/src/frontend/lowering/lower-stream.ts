@@ -3276,6 +3276,54 @@ function pipeEndOption(lowerer: Lowerer, options: ts.Expression | undefined, loc
   return end;
 }
 
+/** `readable.pipe(untyped)`: the destination is a constructor-function
+ * stream or a boxed runtime stream at run time (dyn.builtinStreamPipe;
+ * other values throw the not-supported Error there), and pipe() answers
+ * the destination value itself. */
+function pipeIntoUntyped(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  target: IrExpr,
+  options: ts.Expression | undefined,
+  loc: SrcLoc,
+): IrExpr {
+  const receiverValue = lowerer.lowerExpr(access.expression);
+  const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
+  const destination = lowerer.declareHiddenLocal("%pipeDestination", target.type);
+  const end = pipeEndOption(lowerer, options, loc);
+  const destinationRef: IrExpr = {
+    kind: "varRef",
+    localId: destination.id,
+    type: target.type,
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: source.id, init: receiverValue, loc },
+      { kind: "varDecl", localId: destination.id, init: target, loc },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.builtinStreamPipe",
+          args: [
+            { kind: "varRef", localId: source.id, type: receiverValue.type, loc },
+            destinationRef,
+            end,
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: destinationRef,
+    type: target.type,
+    loc,
+  };
+}
+
 export function lowerStreamMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -3526,6 +3574,7 @@ export function lowerStreamMethodCall(
       };
     }
     const dst = lowerer.lowerExpr(args[0]!);
+    if (dst.type.kind === "dyn") return pipeIntoUntyped(lowerer, access, dst, args[1], loc);
     const dstInfo =
       dst.type.kind === "object" ? lowerer.classes.get(dst.type.className) : undefined;
     const dstSides = streamSidesOf(lowerer, dstInfo);
