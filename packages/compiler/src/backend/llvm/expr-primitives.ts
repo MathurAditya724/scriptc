@@ -1,7 +1,7 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
+import { F64, isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -116,7 +116,7 @@ export function emitLiteralExpr(
         return host.own({ name: host.adoptHeap(v, e.type), type: e.type });
       }
       const t = B.tmp();
-      B.line(`${t} = load ${host.llType(b.type)}, ptr ${b.slot}`);
+      B.line(`${t} = load ${host.llType(b.type)}, ptr ${b.slot}${host.slotAlias(e.localId)}`);
       const integerView = host.integerViews.get(e.localId);
       if (integerView !== undefined) {
         // Snapshot both representations before later operands can write
@@ -379,7 +379,29 @@ export function emitOperatorExpr(
         const fn = libm[e.op];
         if (fn === undefined) throw new LlvmUnsupportedError(`bin:${e.op}`, e.loc);
         host.declare(`declare double @${fn}(double, double)`);
-        B.line(`${t} = call double @${fn}(double ${l.name}, double ${r.name})`);
+        // libm's pow answers 1 for pow(±1, ±Infinity) and pow(1, NaN), where
+        // `**` answers NaN (and LLVM folds pow(1.0, x) to 1.0): an inline
+        // guard selects NaN for a base of ±1 with a non-finite exponent and
+        // keeps the direct pow call. A finite literal exponent, or a literal
+        // base other than ±1, cannot meet those cases and needs no guard.
+        if (fn === "pow" && !libmPowAgrees(e.left, e.right)) {
+          host.declare(`declare double @llvm.fabs.f64(double)`);
+          const power = B.tmp();
+          B.line(`${power} = call double @pow(double ${l.name}, double ${r.name})`);
+          const base = B.tmp();
+          const unit = B.tmp();
+          const magnitude = B.tmp();
+          const finite = B.tmp();
+          const reject = B.tmp();
+          B.line(`${base} = call double @llvm.fabs.f64(double ${l.name})`);
+          B.line(`${unit} = fcmp oeq double ${base}, 1.0`);
+          B.line(`${magnitude} = call double @llvm.fabs.f64(double ${r.name})`);
+          B.line(`${finite} = fcmp olt double ${magnitude}, 0x7FF0000000000000`);
+          B.line(`${reject} = select i1 ${finite}, i1 false, i1 ${unit}`);
+          B.line(`${t} = select i1 ${reject}, double 0x7FF8000000000000, double ${power}`);
+        } else {
+          B.line(`${t} = call double @${fn}(double ${l.name}, double ${r.name})`);
+        }
       }
       return { name: t, type: e.type };
     }
@@ -536,6 +558,28 @@ export function regexLiteralTemplate(
   return `@${re.sym}`;
 }
 
+/** A string equality between `s.charAt(i)` and a literal of exactly one
+ * UTF-16 code unit: the charAt call and the unit. */
+function charAtUnitTest(
+  e: ExprOf<"strEq">,
+): { charAt: ExprOf<"strIntrinsic">; code: number } | null {
+  let text: string;
+  let other: IrExpr;
+  if (e.right.kind === "strLit") {
+    text = e.right.value;
+    other = e.left;
+  } else if (e.left.kind === "strLit") {
+    text = e.left.value;
+    other = e.right;
+  } else {
+    return null;
+  }
+  if (text.length !== 1) return null;
+  if (other.kind !== "strIntrinsic" || other.method !== "charAt" || other.args.length !== 1)
+    return null;
+  return { charAt: other, code: text.charCodeAt(0) };
+}
+
 export function emitStringExpr(
   host: LlvmEmitterContext,
   e: ExprOf<
@@ -578,6 +622,26 @@ export function emitStringExpr(
       return host.own({ name: t, type: e.type });
     }
     case "strEq": {
+      // `s.charAt(i) === "c"` (and `s[i]`, which lowers to charAt) for a
+      // one-unit literal compares the code unit: charCodeAt converts the
+      // index the same way, and an index out of range answers NaN, which
+      // equals no unit, as "" equals no one-unit literal.
+      const unit = charAtUnitTest(e);
+      if (unit !== null) {
+        const code = host.emitExpr({
+          kind: "strIntrinsic",
+          method: "charCodeAt",
+          receiver: unit.charAt.receiver,
+          args: unit.charAt.args,
+          type: F64,
+          loc: unit.charAt.loc,
+        });
+        const t = B.tmp();
+        B.line(
+          `${t} = fcmp ${e.negated ? "une" : "oeq"} double ${code.name}, ${f64Lit(unit.code)}`,
+        );
+        return { name: t, type: e.type };
+      }
       const [l, r] = emitStringInputs(host, [e.left, e.right]);
       const eq = B.tmp();
       // A literal side compares its length and bytes inline.
@@ -602,7 +666,7 @@ export function emitStringExpr(
     }
     case "strCmp": {
       const [l, r] = emitStringInputs(host, [e.left, e.right]);
-      const fn = e.utf16 === true ? "scr_str_cmp_u16" : "scr_str_cmp";
+      const fn = "scr_str_cmp_u16";
       host.declare(`declare i32 @${fn}(ptr, ptr)`);
       const c = B.tmp();
       const t = B.tmp();
@@ -1105,4 +1169,20 @@ export function emitRecordLitFields(
     const { ptr, type, inline } = host.recordFieldPtr(rec, shapeId, f.name);
     host.initField(ptr, type, inline, v);
   }
+}
+
+/** Whether libm pow matches `**` for these operands: every case except a
+ * base of ±1 with a NaN or infinite exponent agrees. */
+function libmPowAgrees(base: IrExpr, exponent: IrExpr): boolean {
+  const power = numericLiteral(exponent);
+  if (power !== null && Number.isFinite(power)) return true;
+  const value = numericLiteral(base);
+  return value !== null && !Number.isNaN(value) && Math.abs(value) !== 1;
+}
+
+function numericLiteral(expr: IrExpr): number | null {
+  if (expr.kind === "numLit") return expr.value;
+  if (expr.kind === "unary" && expr.op === "-" && expr.operand.kind === "numLit")
+    return -expr.operand.value;
+  return null;
 }

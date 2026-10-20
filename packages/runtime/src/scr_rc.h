@@ -352,6 +352,10 @@ void scr_sa_thread_starting(void);
  * pointer, or a process-wide cache keeps an immortal object. Its memory
  * then stays when it exits (scr_alloc.c). */
 void scr_sa_thread_shares(void);
+/* The event loop of the calling thread is about to wait with nothing ready
+ * (true), or is done waiting (false); worker threads are ignored. The
+ * memory of parked workers goes back while the loop waits (scr_alloc.c). */
+void scr_sa_loop_waiting(bool waiting);
 #define SCR_SA_FREE_FOREIGN(p) scr_sa_free_foreign(p)
 #else
 #define SCR_SA_FREE_FOREIGN(p) free(p)

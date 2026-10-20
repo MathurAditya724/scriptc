@@ -762,7 +762,9 @@ export class LlDyn {
       B.terminate(`ret i1 true`);
       B.startBlock(lNext);
     }
-    if (t.kind !== "dyn") {
+    // A union matches a capsule of another type through its arms below: a
+    // class capsule in a `C | undefined` field matches the `C` arm.
+    if (t.kind !== "dyn" && t.kind !== "union") {
       const view = this.viewFn(wrapped);
       this.host.declare(`declare void @scr_dyn_release_v(ptr)`);
       const kind = this.kindOf(B, "%d");
@@ -3263,8 +3265,9 @@ export class LlDyn {
       }
       B.startBlock(labels.get(DYN_KIND.BYTES)!);
       {
-        // Buffer-flavored values coerce utf8; plain Uint8Array joins
-        // its elements.
+        // Buffer-flavored values coerce utf8; typed arrays join their
+        // elements and a DataView answers "[object DataView]" (the
+        // runtime's conversion).
         const bufp = B.tmp();
         const bufRaw = B.tmp();
         const isBuf = B.tmp();
@@ -3286,10 +3289,9 @@ export class LlDyn {
         B.line(`call void @scr_str_release(ptr ${txt})`);
         B.br(done);
         B.startBlock(lJoin);
-        const bts = this.payloadOf(B, "%d", "ptr");
-        host.declare(`declare ptr @scr_bytes_join(ptr, ptr)`);
+        host.declare(`declare ptr @scr_dyn_to_string(ptr, ptr)`);
         const joined = B.tmp();
-        B.line(`${joined} = call ptr @scr_bytes_join(ptr ${bts}, ptr ${host.internLiteral(",")})`);
+        B.line(`${joined} = call ptr @scr_dyn_to_string(ptr %d, ptr null)`);
         this.putScrStr(B, "%b", joined);
         B.line(`call void @scr_str_release(ptr ${joined})`);
         B.br(done);

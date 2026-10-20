@@ -12,6 +12,70 @@ import { rewriteBundledFunctionImports } from "./npm-static-bundled-cjs.js";
 export interface CjsRewriteHost {
   requireTargetEsModuleStamped(fromFile: string, specifier: string): boolean;
   starTargetNames(fromFile: string, specifier: string): Set<string>;
+  /** Told when the rewritten file's tail export table stands for a live
+   * getter table the original installed before it could run another
+   * module's code (liveExportTableFirst): a module of a require cycle that
+   * captured the export object early observes exactly that table. */
+  liveExportTable?: ((filePath: string) => void) | undefined;
+  /** True for a module only ever loaded through require() (a bundle's
+   * CommonJS chunk split into its own module): no ES-module importer
+   * exists, so Node's lexer-visible name set bounds nothing and every
+   * name the export plumbing defines is part of its surface. */
+  requireOnly?: ((filePath: string) => boolean) | undefined;
+}
+
+/** True when esbuild's export object (`module.exports = __toCommonJS(T)`
+ * over a getter table `__export(T, {...})`) is installed before anything
+ * that can run another module's code, and nothing else writes the export
+ * object. Every statement before the installation is then a declaration,
+ * a directive, or the getter-table call (whose getters run only when
+ * read), and variable initializers evaluate no calls outside function
+ * bodies. The getters read live bindings, so the object a cycle partner
+ * captures early answers every later read exactly like the final table. */
+function liveExportTableFirst(
+  sf: ts.SourceFile,
+  installAt: number,
+  target: string,
+  exportTables: readonly { target: string }[],
+): boolean {
+  if (!exportTables.some((t) => t.target === target)) return false;
+  let callsOutsideFunctions = false;
+  const noCalls = (root: ts.Node): boolean => {
+    callsOutsideFunctions = false;
+    ts.walkPreorder(root, (n) => {
+      if (callsOutsideFunctions) return "stop";
+      if (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n))
+        return "skip";
+      if (ts.isCallExpression(n) || ts.isNewExpression(n) || ts.isTaggedTemplateExpression(n))
+        callsOutsideFunctions = true;
+      return undefined;
+    });
+    return !callsOutsideFunctions;
+  };
+  let sawTable = false;
+  for (const stmt of sf.statements.nodes) {
+    if (stmt.getStart(sf) >= installAt) return sawTable;
+    if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) continue;
+    if (ts.isExpressionStatement(stmt) && ts.isStringLiteral(stmt.expression)) continue;
+    if (ts.isVariableStatement(stmt)) {
+      if (
+        stmt.declarationList.declarations.nodes.every(
+          (d) => ts.isIdentifier(d.name) && (d.initializer === undefined || noCalls(d.initializer)),
+        )
+      )
+        continue;
+      return false;
+    }
+    if (ts.isExpressionStatement(stmt) && ts.isCallExpression(stmt.expression)) {
+      const table = exportCallOf(stmt.expression);
+      if (table !== null && table.target === target) {
+        sawTable = true;
+        continue;
+      }
+    }
+    return false;
+  }
+  return false;
 }
 
 export function isBundlerCjsCandidate(source: string): boolean {
@@ -24,14 +88,29 @@ export function isBundlerCjsCandidate(source: string): boolean {
   );
 }
 
+/** The helper a bundler-emitted name spells. esbuild suffixes a helper
+ * that a bundled module declares again with a counter (a bundled esbuild
+ * dist inside another bundle carries `__export2`, `__toCommonJS2`, …); the
+ * recognizers below verify each call's shape, so the counter carries no
+ * meaning beyond the name collision it avoided. */
+export function bundlerHelperBase(name: string): string {
+  return /^__[A-Za-z]+\d+$/.test(name) ? name.replace(/\d+$/, "") : name;
+}
+
 /** The last NAME of a callee: bare identifier or any member chain's final
- * name (`tslib_1.__exportStar` → "__exportStar"). */
+ * name (`tslib_1.__exportStar` → "__exportStar"), helper counters dropped. */
 function calleeNameOf(call: ts.CallExpression): string | null {
   const callee = call.expression;
-  if (ts.isIdentifier(callee)) return callee.text;
+  if (ts.isIdentifier(callee)) return bundlerHelperBase(callee.text);
   if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name))
-    return callee.name.text;
+    return bundlerHelperBase(callee.name.text);
   return null;
+}
+
+/** True for an identifier spelling the named helper (counter-suffixed
+ * spellings included). */
+function isHelperIdent(node: ts.Node, base: string): node is ts.Identifier {
+  return ts.isIdentifier(node) && bundlerHelperBase(node.text) === base;
 }
 
 /** An entry the canonical table can carry. */
@@ -194,13 +273,8 @@ interface ToEsmPlan {
  * __copyProps(…, mod) call copying onto a conditional that tests
  * isNodeMode/__esModule and defines "default" with value mod. Comments and
  * formatting are free; the SHAPE is the contract. */
-function recognizedToEsmDecl(stmt: ts.Statement): boolean {
-  if (!ts.isVariableStatement(stmt)) return false;
-  const decls = stmt.declarationList.declarations.nodes;
-  if (decls.length !== 1) return false;
-  const d = decls[0]!;
-  if (!ts.isIdentifier(d.name) || d.name.text !== "__toESM" || d.initializer === undefined)
-    return false;
+function recognizedToEsmDecl(d: ts.VariableDeclaration): boolean {
+  if (!isHelperIdent(d.name, "__toESM") || d.initializer === undefined) return false;
   let init: ts.Expression = d.initializer;
   while (ts.isParenthesizedExpression(init)) init = init.expression;
   if (!ts.isArrowFunction(init)) return false;
@@ -218,12 +292,7 @@ function recognizedToEsmDecl(stmt: ts.Statement): boolean {
     expr = expr.right;
   }
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
-  if (
-    !ts.isCallExpression(expr) ||
-    !ts.isIdentifier(expr.expression) ||
-    expr.expression.text !== "__copyProps"
-  )
-    return false;
+  if (!ts.isCallExpression(expr) || !isHelperIdent(expr.expression, "__copyProps")) return false;
   if (expr.arguments.nodes.length < 2) return false;
   const from = expr.arguments.nodes[1]!;
   if (!ts.isIdentifier(from) || from.text !== mod) return false;
@@ -234,12 +303,7 @@ function recognizedToEsmDecl(stmt: ts.Statement): boolean {
   if (!condText.includes(isNodeMode) || !condText.includes("__esModule")) return false;
   let stamp: ts.Expression = to.whenTrue;
   while (ts.isParenthesizedExpression(stamp)) stamp = stamp.expression;
-  if (
-    !ts.isCallExpression(stamp) ||
-    !ts.isIdentifier(stamp.expression) ||
-    stamp.expression.text !== "__defProp"
-  )
-    return false;
+  if (!ts.isCallExpression(stamp) || !isHelperIdent(stamp.expression, "__defProp")) return false;
   if (stamp.arguments.nodes.length !== 3) return false;
   const nameArg = stamp.arguments.nodes[1]!;
   if (!ts.isStringLiteral(nameArg) || nameArg.text !== "default") return false;
@@ -278,19 +342,23 @@ function planToEsmInterop(sf: ts.SourceFile, filePath: string, host: CjsRewriteH
     degrade: reason,
   });
 
-  const declStmts = sf.statements.nodes.filter(
-    (s) =>
-      ts.isVariableStatement(s) &&
-      s.declarationList.declarations.nodes.some(
-        (d) => ts.isIdentifier(d.name) && d.name.text === "__toESM",
-      ),
-  );
+  // Top-level declarators of the helper, any statement shape (minified
+  // dists share one `var` among several helpers), by spelling.
+  const decls = new Map<string, ts.VariableDeclaration[]>();
+  for (const s of sf.statements.nodes) {
+    if (!ts.isVariableStatement(s)) continue;
+    for (const d of s.declarationList.declarations.nodes) {
+      if (!isHelperIdent(d.name, "__toESM")) continue;
+      const list = decls.get(d.name.text);
+      if (list === undefined) decls.set(d.name.text, [d]);
+      else list.push(d);
+    }
+  }
   const refs: ts.Identifier[] = [];
   const calls: ts.CallExpression[] = [];
   const collect = (n: ts.Node): void => {
-    if (ts.isIdentifier(n) && n.text === "__toESM") refs.push(n);
-    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "__toESM")
-      calls.push(n);
+    if (isHelperIdent(n, "__toESM")) refs.push(n);
+    if (ts.isCallExpression(n) && isHelperIdent(n.expression, "__toESM")) calls.push(n);
   };
   ts.walkPreorder(sf, collect);
   if (calls.length === 0 && refs.length === 0) return plan;
@@ -298,15 +366,16 @@ function planToEsmInterop(sf: ts.SourceFile, filePath: string, host: CjsRewriteH
   // a helper that escapes as a VALUE is outside the recognized shape.
   const callees = new Set<ts.Node>(calls.map((c) => c.expression));
   const declNames = new Set<ts.Node>();
-  for (const s of declStmts) {
-    for (const d of (s as ts.VariableStatement).declarationList.declarations.nodes) {
-      if (ts.isIdentifier(d.name) && d.name.text === "__toESM") declNames.add(d.name);
-    }
-  }
+  for (const list of decls.values()) for (const d of list) declNames.add(d.name);
   if (refs.some((r) => !callees.has(r) && !declNames.has(r))) return fail(TO_ESM_ESCAPE_DEGRADE);
   if (calls.length === 0) return plan; // declared but never called — dead helper
-  if (declStmts.length !== 1 || !recognizedToEsmDecl(declStmts[0]!))
-    return fail(TO_ESM_SHAPE_DEGRADE);
+  // Every spelling a call uses must be declared exactly once, in the
+  // recognized shape.
+  for (const call of calls) {
+    const list = decls.get((call.expression as ts.Identifier).text);
+    if (list === undefined || list.length !== 1 || !recognizedToEsmDecl(list[0]!))
+      return fail(TO_ESM_SHAPE_DEGRADE);
+  }
 
   /** Module-scope interop bindings: name → whether `.default` IS the
    * module (pad the access) rather than a member read of its `default`. */
@@ -467,16 +536,20 @@ export function rewriteBundlerCjsSyntax(
 
   // ESM bundles can contain closed CommonJS function factories. Recognize
   // those before refusing interop that needs a dynamic module namespace.
-  if (ts.isExternalModule(sf)) {
+  // TypeScript forces every `.cjs` file to be an external module
+  // (isFileForcedToBeModuleByFormat), yet Node always loads one as
+  // CommonJS: the extension, not that flag, decides the format there.
+  if (!filePath.endsWith(".cjs") && ts.isExternalModule(sf)) {
     const bundled = rewriteBundledFunctionImports(source, sf);
     if (bundled !== null) return bundled;
-    return source.includes("__toESM(")
-      ? {
-          degrade:
-            "its ES-module dist routes an external dependency through the __toESM " +
-            "bundler-interop helper, which cannot compile natively in ESM output",
-        }
-      : null;
+    if (!source.includes("__toESM(")) return null;
+    return {
+      degrade: source.includes("__commonJS")
+        ? "its ES-module bundle reaches bundled CommonJS modules through the __commonJS and " +
+          "__toESM bundler-interop helpers, which cannot compile natively in ESM output"
+        : "its ES-module dist routes an external dependency through the __toESM " +
+          "bundler-interop helper, which cannot compile natively in ESM output",
+    };
   }
 
   // The __toESM interop pass (see the section header): wrapper call sites
@@ -644,6 +717,11 @@ export function rewriteBundlerCjsSyntax(
   }
 
   const lexed = cjsLexedExportsOfFile(sf);
+  if (host.requireOnly?.(filePath) === true) {
+    for (const t of exportTables) for (const [name] of t.entries) lexed.exports.add(name);
+    for (const d of definePropEntries) lexed.exports.add(d.name);
+    for (const m of memberStmts) for (const name of m.names) lexed.exports.add(name);
+  }
   let emitTable = sawBundleShape && (lexed.exports.size > 0 || lexed.reexports.length > 0);
 
   const starSpecs: string[] = [];
@@ -814,21 +892,35 @@ export function rewriteBundlerCjsSyntax(
       "__reExport",
       "__toESM",
       "__toCommonJS",
+      "__commonJS",
       "__exportStar",
       "__createBinding",
       "__setModuleDefault",
       "__importStar",
       "__importDefault",
     ]);
+    /* Helper declarators by name. A minified dist shares one `var` among
+     * several helpers (`var __getProtoOf=…,__hasOwnProp=…;`): each
+     * declarator is its own candidate, and the statement pads whole only
+     * once every declarator in it is dead. */
     const helperDecls = new Map<string, { start: number; end: number }>();
+    const helperStmts: ts.VariableStatement[] = [];
     for (const stmt of sf.statements.nodes) {
       if (!ts.isVariableStatement(stmt)) continue;
       const decls = stmt.declarationList.declarations.nodes;
-      if (decls.length !== 1) continue;
-      const d = decls[0]!;
-      if (ts.isIdentifier(d.name) && HELPER_NAMES.has(d.name.text)) {
-        helperDecls.set(d.name.text, { start: stmt.getStart(sf), end: stmt.getEnd() });
+      let anyHelper = false;
+      for (const d of decls) {
+        if (!ts.isIdentifier(d.name) || !HELPER_NAMES.has(bundlerHelperBase(d.name.text))) continue;
+        if (helperDecls.has(d.name.text)) continue; // redeclared: keep the first, never sweep twice
+        anyHelper = true;
+        helperDecls.set(
+          d.name.text,
+          decls.length === 1
+            ? { start: stmt.getStart(sf), end: stmt.getEnd() }
+            : { start: d.getStart(sf), end: d.getEnd() },
+        );
       }
+      if (anyHelper && decls.length > 1) helperStmts.push(stmt);
     }
     // every identifier occurrence of a helper name outside its own
     // declarator name node, position-recorded for the span test
@@ -862,8 +954,39 @@ export function rewriteBundlerCjsSyntax(
         }
       }
     }
+    // A swept declarator of a shared statement pads with its separating
+    // comma, and the statement pads whole once every declarator is dead:
+    // padding the bare declarator span would leave a dangling comma.
+    const declaratorSpans = new Set<{ start: number; end: number }>();
+    const declaratorPads: { start: number; end: number }[] = [];
+    for (const stmt of helperStmts) {
+      const decls = stmt.declarationList.declarations.nodes;
+      const deadAt = decls.map((d) => {
+        if (!ts.isIdentifier(d.name) || !removed.has(d.name.text)) return false;
+        const span = helperDecls.get(d.name.text)!;
+        if (span.start !== d.getStart(sf)) return false;
+        declaratorSpans.add(span);
+        return true;
+      });
+      if (deadAt.every((x) => x)) {
+        declaratorPads.push({ start: stmt.getStart(sf), end: stmt.getEnd() });
+        continue;
+      }
+      // Dead declarators before the last live one take their trailing
+      // comma; the dead tail after it pads from that declarator's end.
+      const lastLive = deadAt.lastIndexOf(false);
+      for (let i = 0; i < decls.length; i++) {
+        if (!deadAt[i]) continue;
+        const d = decls[i]!;
+        declaratorPads.push(
+          i < lastLive
+            ? { start: d.getStart(sf), end: decls[i + 1]!.getStart(sf) }
+            : { start: decls[lastLive]!.getEnd(), end: d.getEnd() },
+        );
+      }
+    }
     neutralize.length = 0;
-    neutralize.push(...dead);
+    neutralize.push(...dead.filter((span) => !declaratorSpans.has(span)), ...declaratorPads);
   }
 
   /* ── emission ─────────────────────────────────────────────────────── */
@@ -874,6 +997,15 @@ export function rewriteBundlerCjsSyntax(
   }
 
   if (!emitTable) return text; // interop pads only — nothing appends
+
+  if (
+    esbuildMainTarget !== null &&
+    tablePos !== null &&
+    memberStmts.length === 0 &&
+    definePropEntries.length === 0 &&
+    liveExportTableFirst(sf, tablePos, esbuildMainTarget, exportTables)
+  )
+    host.liveExportTable?.(filePath);
 
   const lines: string[] = [""];
   const hasAnyFallback = [...entries.values()].some((s) => s.kind === "any");

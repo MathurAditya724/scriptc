@@ -177,15 +177,13 @@ function requestInitConstBacked(
   if (!symbol || seen.has(symbol)) return false;
   if (requestInitPropMutatedSymbols(lowerer).has(symbol)) return false;
   seen.add(symbol);
-  const declarations = lowerer.checker
-    .declarationsOf(symbol)
-    .filter(
-      (declaration): declaration is ts.VariableDeclaration =>
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer !== undefined &&
-        ts.isVariableDeclarationList(declaration.parent) &&
-        (declaration.parent.flags & ts.NodeFlags.Const) !== 0,
-    );
+  const declarations = symbol.declarations.filter(
+    (declaration): declaration is ts.VariableDeclaration =>
+      ts.isVariableDeclaration(declaration) &&
+      declaration.initializer !== undefined &&
+      ts.isVariableDeclarationList(declaration.parent) &&
+      (declaration.parent.flags & ts.NodeFlags.Const) !== 0,
+  );
   return (
     declarations.length > 0 &&
     declarations.every((declaration) =>
@@ -300,7 +298,7 @@ function visitRequestInitConstSelectedValues(
   seen.add(symbol);
   let sawDeclaration = false;
   let defines = true;
-  for (const declaration of lowerer.checker.declarationsOf(symbol)) {
+  for (const declaration of symbol.declarations) {
     if (
       ts.isVariableDeclaration(declaration) &&
       declaration.initializer !== undefined &&
@@ -413,7 +411,7 @@ function fenceRequestInitProperty(
     : lowerer.checker.getPropertyOfType(lowerer.typeOf(access.expression), key);
   if (!symbol || seen.has(symbol)) return;
   seen.add(symbol);
-  for (const declaration of lowerer.checker.declarationsOf(symbol)) {
+  for (const declaration of symbol.declarations) {
     if (ts.isPropertyAssignment(declaration)) {
       fenceRequestInitValueInner(lowerer, declaration.initializer, seen);
     } else if (ts.isShorthandPropertyAssignment(declaration) && ts.isIdentifier(declaration.name)) {
@@ -533,7 +531,7 @@ function fenceRequestInitValueInner(
   if (!symbol || seen.has(symbol)) return;
   if (requestInitPropMutatedSymbols(lowerer).has(symbol)) return;
   seen.add(symbol);
-  for (const declaration of lowerer.checker.declarationsOf(symbol)) {
+  for (const declaration of symbol.declarations) {
     if (ts.isBindingElement(declaration)) {
       const source = requestInitConstBindingSource(lowerer, declaration);
       if (source !== null) {
@@ -1618,9 +1616,9 @@ export function lowerStaticAbortControllerCall(
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
     symbol?.name !== "AbortController" ||
-    !lowerer.checker
-      .declarationsOf(symbol)
-      .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()))
+    !symbol.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return null;
   }
@@ -1672,9 +1670,9 @@ export function lowerStaticReadableStreamControllerCall(
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
     symbol?.name !== "ReadableStreamDefaultController" ||
-    !lowerer.checker
-      .declarationsOf(symbol)
-      .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()))
+    !symbol.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return null;
   }
@@ -1780,9 +1778,9 @@ export function lowerStaticAbortSignalListenerCall(
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
     (symbol?.name !== "AbortSignal" && symbol?.name !== "EventTarget") ||
-    !lowerer.checker
-      .declarationsOf(symbol)
-      .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()))
+    !symbol.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return null;
   }
@@ -2127,9 +2125,9 @@ export function lowerStaticReadableStreamReaderCall(
   const symbol = receiverTs.getSymbol();
   if (
     symbol?.name !== "ReadableStreamDefaultReader" ||
-    !lowerer.checker
-      .declarationsOf(symbol)
-      .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()))
+    !symbol.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return null;
   }
@@ -2183,7 +2181,7 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
 /** The checker-resolved program source behind one literal import(). */
 function programImportTarget(lowerer: Lowerer, arg: ts.StringLiteralLike): ts.SourceFile | null {
   const modSym = lowerer.checker.getSymbolAtLocation(arg);
-  for (const d of modSym ? lowerer.checker.declarationsOf(modSym) : []) {
+  for (const d of modSym ? modSym.declarations : []) {
     if (ts.isSourceFile(d) && !d.isDeclarationFile) return d;
   }
   return null;
@@ -2543,7 +2541,7 @@ export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpres
  * npmPackageOf, also asked directly for import-alias bindings (whose
  * aliased symbol is the package's export). */
 export function npmPackageOfSymbol(lowerer: Lowerer, sym: ts.Symbol | undefined): string | null {
-  const decls = sym ? lowerer.checker.declarationsOf(sym) : undefined;
+  const decls = sym ? sym.declarations : undefined;
   if (!decls || decls.length === 0) return null;
   if (!decls.every((d) => lowerer.isNpmFile(d.getSourceFile()))) return null;
   return npmPackageNameOf(decls[0]!.getSourceFile().fileName);

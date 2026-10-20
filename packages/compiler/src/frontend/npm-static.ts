@@ -13,7 +13,13 @@ import {
   registerWorkspacePackage,
   workspacePackageOfPath,
 } from "./workspace-registry.js";
-import { trackedExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import {
+  clearVirtualSources,
+  setVirtualSource,
+  trackedExists,
+  trackedReadFile,
+  trackedRealpath,
+} from "./input-tracker.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -28,12 +34,24 @@ const offenders = new Map<string, string>();
  * the host probes the same file many times, and the rewrite parses. */
 const rewriteCache = new Map<string, string | null>();
 
+/** Rewritten files whose tail export table stands for a live getter table
+ * installed before the file could run another module's code (the rewrite
+ * certifies it; require-cycle admission consults it). */
+const liveExportFiles = new Set<string>();
+
+export function npmStaticLiveExportTable(path: string): boolean {
+  return liveExportFiles.has(path.split("\\").join("/"));
+}
+
 export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): void {
   activePackages = new Set(packages);
   declarationOverloads = new Map();
   declarationProperties = new Map();
   offenders.clear();
+  fileDegrades.clear();
   rewriteCache.clear();
+  liveExportFiles.clear();
+  clearVirtualSources();
   untypedPkgCache.clear();
   realpathProbed.clear();
 }
@@ -79,6 +97,21 @@ export function reportNpmStaticOffender(pkg: string, reason: string): void {
 
 export function npmStaticOffenders(): ReadonlyMap<string, string> {
   return offenders;
+}
+
+/** Files whose bundler interop the rewrite could not finish this attempt,
+ * with their package and reason. A file refuses its package only when
+ * the compiled program can load it (npmStaticLoadableFiles): a package is
+ * judged by what its imported subpaths reach, not by every file it ships. */
+const fileDegrades = new Map<string, { pkg: string; reason: string }>();
+
+export function npmStaticFileDegrades(): ReadonlyMap<string, { pkg: string; reason: string }> {
+  return fileDegrades;
+}
+
+function reportFileDegrade(path: string, pkg: string, reason: string): void {
+  const key = path.split("\\").join("/");
+  if (!fileDegrades.has(key)) fileDegrades.set(key, { pkg, reason });
 }
 
 /** The DefinitelyTyped name mangling ("@scope/pkg" → "scope__pkg") — the
@@ -362,7 +395,18 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
         if (hit !== undefined) return hit ?? undefined;
         let rewritten: string | null = null;
         try {
-          const original = trackedReadFile(path);
+          let original = trackedReadFile(path);
+          // A bundle's CommonJS chunks move to their own modules first, so
+          // every later pass (and this shadow, for each chunk) sees plain
+          // CommonJS module text.
+          const split = original === null ? null : services.splitCjsChunks(original, path);
+          if (split !== null && "degrade" in split) {
+            reportFileDegrade(path, target.pkg, split.degrade);
+            original = null;
+          } else if (split !== null) {
+            for (const chunk of split.chunks) setVirtualSource(chunk.path, chunk.source);
+            original = split.text;
+          }
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;
@@ -385,9 +429,10 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 classFields?.text ??
                 source,
               path,
+              (live) => liveExportFiles.add(live.split("\\").join("/")),
             );
             if (answer !== null && typeof answer === "object") {
-              reportNpmStaticOffender(target.pkg, answer.degrade);
+              reportFileDegrade(path, target.pkg, answer.degrade);
             } else {
               rewritten =
                 answer ??
@@ -395,7 +440,8 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 propertyProjected?.text ??
                 findWidened?.text ??
                 classFields?.text ??
-                namepaths;
+                namepaths ??
+                (split !== null ? original : null);
             }
           }
         } catch {
@@ -434,6 +480,14 @@ function looksUnminified(source: string): boolean {
   return source.length / lines.length <= 200;
 }
 
+/** A whitespace/syntax-minified bundler dist whose interop helpers keep
+ * their names (`var __toESM=…,__toCommonJS=mod=>…`): the recognizers
+ * verify those shapes and refuse the package precisely when they cannot,
+ * so the minification heuristic need not refuse it up front. */
+function namedBundlerHelpers(source: string): boolean {
+  return /\b__(?:toCommonJS|commonJS|toESM)\d*\s*=\s*(?:\(|[A-Za-z_$][\w$]*\s*=>)/.test(source);
+}
+
 function hasTransformMarkers(source: string): boolean {
   return TRANSFORM_MARKERS.some((m) => source.includes(m));
 }
@@ -456,7 +510,8 @@ export function npmStaticIneligibleReason(
   if (jsEntry === null) return "no runtime JS entry resolves";
   const source = trackedReadFile(jsEntry);
   if (source === null) return `its runtime entry ${jsEntry} cannot be read`;
-  if (!looksUnminified(source)) return "its shipped JS looks minified";
+  if (!looksUnminified(source) && !namedBundlerHelpers(source))
+    return "its shipped JS looks minified";
   if (hasTransformMarkers(source)) {
     return "its shipped JS carries build-transform markers (bundled/transpiled dist)";
   }
