@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2568)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2571)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
     ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
@@ -1539,6 +1539,53 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       "replacing module.exports outside a top-level statement (a conditional or environment-dependent export object)",
     );
   }, 120_000);
+
+  /* 2569-2571: polyfill packages whose module IS a Node builtin on Node 24
+   * compile as the builtins (builtin-package-aliases.ts), installed
+   * (2569, 2570) and bundled as versioned __commonJS chunks (2571).
+   * readable-stream compiles as its own READABLE_STREAM=disable behavior,
+   * so the Node side runs with that variable; util-deprecate's warning
+   * reaches stderr on both sides (Node's carries its pid). */
+  async function expectAliasParity(
+    entry: string,
+    packages: string[],
+    env: NodeJS.ProcessEnv,
+  ): Promise<void> {
+    const { coverage } = analyze(entry, { npmStatic: packages });
+    expect(coverage.npmStatic).toEqual(packages.map((pkg) => ({ package: pkg, status: "static" })));
+    expect(coverage.diagnostics).toHaveLength(0);
+    const binary = await buildStatic(entry, packages);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry], env),
+      runBinary(binary, [], env),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    const warnings = (stderr: Buffer) =>
+      comparableStderr(stderr)
+        .toString("utf8")
+        .split("\n")
+        .filter((line) => line.includes("DeprecationWarning"))
+        .map((line) => line.replace(/^\(node:\d+\) /, ""));
+    expect(warnings(nativeRes.stderr)).toEqual(warnings(nodeRes.stderr));
+    expect(nativeRes.exitCode).toBe(0);
+    expect(nodeRes.exitCode).toBe(0);
+  }
+  const disabled = { ...process.env, READABLE_STREAM: "disable" };
+
+  test("installed polyfill packages 2569-builtin-polyfill-aliases compile as the Node builtins", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2569-builtin-polyfill-aliases/main.ts");
+    await expectAliasParity(entry, ["gtpolyfills"], process.env);
+  }, 180_000);
+
+  test("readable-stream 2.x and 4.x 2570-readable-stream-builtin compile as node:stream", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2570-readable-stream-builtin/main.ts");
+    await expectAliasParity(entry, ["gtrs2", "gtrs4"], disabled);
+  }, 180_000);
+
+  test("bundled polyfill chunks 2571-bundled-polyfill-aliases compile as the Node builtins", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2571-bundled-polyfill-aliases/main.ts");
+    await expectAliasParity(entry, ["gtpolybundle"], disabled);
+  }, 180_000);
 
   // 2562: a file with unverifiable interop that no compiled code can load
   // (the program imports a leaf data module and only a type from the

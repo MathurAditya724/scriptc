@@ -13,3 +13,7 @@ Statuses are evidence-aware: `supported` and `partial` require test evidence; `r
 Run `pnpm node-compat:backlog` from the repository root for a summary. The filters `--tier`, `--action`, `--priority`, `--chapter`, and `--status` compose; use `--format=json` or `--format=tsv` for tooling.
 
 Run `pnpm node-compat` from the repository root after changing the Node pin or the support manifest. `pnpm node-compat:check` is the offline drift/evidence gate; `pnpm --filter @internal/compatibility check:upstream` additionally verifies the pinned upstream inputs over the network.
+
+## npm packages that compile as builtins
+
+The ledger counts Node APIs, so npm packages that compile as a Node builtin have no rows. `packages/compiler/src/frontend/builtin-package-aliases.ts` lists them, each with the checked major versions and the reason its module is that builtin on Node 24. One entry is a documented divergence rather than an identity: `readable-stream` 2.x and 4.x compile as `node:stream`, which is the package's `READABLE_STREAM=disable` behavior. Without that variable Node runs the package's own JavaScript streams. The `tests/corpus/readable-stream-disable` program pins the disabled behavior. 3.x is not aliased, because its disable mode throws on Node 24.

@@ -448,11 +448,15 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           } else if (esm !== null) {
             original = esm;
           }
+          // Polyfill packages that ARE a Node builtin compile as the builtin.
+          const aliased =
+            original === null ? null : services.builtinAliasRequires(original, path);
+          if (aliased !== null) original = aliased;
           // A module exporting one of its functions reaches its members
           // through that function.
           const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
           if (fnExports !== null) original = fnExports;
-          const respelled = split !== null || esm !== null || fnExports !== null;
+          const respelled = split !== null || esm !== null || aliased !== null || fnExports !== null;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;
@@ -506,6 +510,36 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
       return isDeclarationFileName(path) || isUnloadableInstalledTsSource(path);
     },
   };
+}
+
+const programAliasCache = new Map<string, string | null>();
+
+/** The always-on program-file half of the builtin aliases: a CommonJS
+ * program file's `require("<polyfill package>")` compiles as the builtin
+ * the package is on Node 24 (npm-static-builtin-aliases.ts), as in an
+ * opted-in package's files. Undefined for every other path, so TypeScript
+ * programs and JavaScript without such a require read the file as is. */
+export function programBuiltinAliasSource(
+  services: FrontendServices,
+  path: string,
+): string | undefined {
+  if (!/\.c?js$/.test(path) || isNodeModulesPathNorm(path)) return undefined;
+  const hit = programAliasCache.get(path);
+  if (hit !== undefined) return hit ?? undefined;
+  let rewritten: string | null = null;
+  try {
+    const source = trackedReadFile(path);
+    if (source !== null) rewritten = services.builtinAliasRequires(source, path);
+  } catch {
+    rewritten = null;
+  }
+  programAliasCache.set(path, rewritten);
+  return rewritten ?? undefined;
+}
+
+/** Resets the program-file alias cache (once per program load). */
+export function clearProgramBuiltinAliasCache(): void {
+  programAliasCache.clear();
 }
 
 /* Only a bundler RUNTIME disqualifies now: webpack's module registry has

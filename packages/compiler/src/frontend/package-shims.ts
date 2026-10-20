@@ -26,6 +26,12 @@
  *   `try { require("encoding") } catch {}` takes its absent branch, and the
  *   package never joins the program.
  *
+ * - builtin alias: a polyfill package whose module IS a Node builtin on
+ *   Node 24 at its installed major version (builtin-package-aliases.ts).
+ *   A require of it compiles as the builtin expression at the require's
+ *   position (npm-static-builtin-aliases.ts), so the package never joins
+ *   the program.
+ *
  * A configured stand-in (for example a no-op tracer for dd-trace) is an
  * implementation entry whose module the project supplies. Today a tsconfig
  * `paths` mapping already does that: resolveProjectImport honors project
@@ -37,6 +43,11 @@ import { dirname, join, resolve } from "node:path";
 import { packageShimRoot, tsgoPath } from "./dts-paths.js";
 import { trackedDirectoryExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
+import {
+  BUILTIN_ALIAS_PACKAGES,
+  builtinAliasOf,
+  type BuiltinAlias,
+} from "./builtin-package-aliases.js";
 
 interface ImplementationShim {
   /** npm package name. */
@@ -162,6 +173,27 @@ export function packageShimFor(fromFile: string, specifier: string): string | nu
   if (!IMPLEMENTATION_SHIMS.has(specifier)) return null;
   const dir = installedPackageDir(fromFile, specifier);
   return dir === null ? null : shimEntryForPackageDir(dir, specifier);
+}
+
+/** The builtin a bare specifier's module is on Node 24, as installed where
+ * Node's resolution from `fromFile` finds it, or null. */
+export function builtinPackageAliasFor(fromFile: string, specifier: string): BuiltinAlias | null {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("#"))
+    return null;
+  const name = packageNameOfSpecifier(specifier);
+  if (!BUILTIN_ALIAS_PACKAGES.has(name)) return null;
+  const dir = installedPackageDir(fromFile, name);
+  if (dir === null) return null;
+  const text = trackedReadFile(join(dir, "package.json"));
+  if (text === null) return null;
+  let pkg: { name?: unknown; version?: unknown };
+  try {
+    pkg = JSON.parse(text) as { name?: unknown; version?: unknown };
+  } catch {
+    return null;
+  }
+  if (pkg.name !== name || typeof pkg.version !== "string") return null;
+  return builtinAliasOf(name, pkg.version, specifier.slice(name.length).replace(/^\//, ""));
 }
 
 /** True when a bare specifier is served by a shim or marked unloaded: it is

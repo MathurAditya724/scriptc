@@ -12,6 +12,7 @@ node_modules/
 !tests/fixtures/npm-static/nested/inner/node_modules/
 !tests/fixtures/npm-static/node_modules/*/node_modules/
 !tests/fixtures/npm/store/*/node_modules/
+!tests/fixtures/npm/node_modules/*/node_modules/
 !tests/fixtures/npm/cases/*/node_modules/
 !tests/library-mode/*/node_modules/
 !tests/fixtures/provenance/node_modules/

@@ -200,3 +200,75 @@ console.log(typeof require_stream().PassThrough, require_user().same);
   expect(answer.chunks.map((c) => basename(c.path))).toEqual(["index.js.require_user.cjs"]);
   expect(answer.text).toContain('typeof require("stream").PassThrough');
 });
+
+test("chunks of polyfill packages that are Node builtins become the builtins", () => {
+  const key = (name: string, version: string, file: string) =>
+    `node_modules/.pnpm/${name}@${version}/node_modules/${name}/${file}`;
+  const answer = expectSameBehavior(`${keyedHelper}var require_isarray = __commonJS({
+  "${key("isarray", "1.0.0", "index.js")}"(exports2, module2) {
+    var toString = {}.toString;
+    module2.exports = Array.isArray || function(arr) {
+      return toString.call(arr) == "[object Array]";
+    };
+  }
+});
+var require_inherits = __commonJS({
+  "${key("inherits", "2.0.4", "inherits.js")}"(exports2, module2) {
+    module2.exports = require("util").inherits;
+  }
+});
+var require_old = __commonJS({
+  "${key("isarray", "3.0.0", "index.js")}"(exports2, module2) {
+    module2.exports = function isArray() { return "own"; };
+  }
+});
+var require_user = __commonJS({
+  "lib/user.js"(exports2) {
+    var isArray = require_isarray();
+    var inherits = require_inherits();
+    exports2.same = isArray === Array.isArray && inherits === require("util").inherits;
+  }
+});
+console.log(require_user().same, require_isarray()([1]), require_old()());
+`);
+  expect(answer.chunks.map((c) => basename(c.path))).toEqual([
+    "index.js.require_old.cjs",
+    "index.js.require_user.cjs",
+  ]);
+  expect(answer.text).toContain("Array.isArray([1])");
+  const user = answer.chunks.find((c) => c.path.endsWith("require_user.cjs"))!;
+  expect(user.source).toContain("var isArray = Array.isArray;");
+  expect(user.source).toContain('var inherits = require("util").inherits;');
+});
+
+test("a readable-stream 2.x entry chunk follows its uses", () => {
+  const key = (file: string) =>
+    `node_modules/.pnpm/readable-stream@2.3.8/node_modules/readable-stream/${file}`;
+  const chunk = (name: string, file: string, body: string) =>
+    `var ${name} = __commonJS({\n  "${key(file)}"(exports2, module2) {\n    ${body}\n  }\n});\n`;
+  const result = split(`${keyedHelper}${chunk("require_readable", "readable.js", 'module2.exports = require("stream").Readable;')}${chunk("require_transform", "transform.js", "module2.exports = require_readable().Transform;")}
+var members = require_readable();
+console.log(members.Readable, members.Writable);
+var value = require_readable();
+console.log(value.from);
+var { Duplex } = require_readable();
+console.log(require_transform());
+`);
+  const answer = result as BundledChunkSplit;
+  expect(answer.chunks).toEqual([]);
+  expect(answer.text).toContain('var members = require("stream");');
+  expect(answer.text).toContain('var value = require("stream").Readable;');
+  expect(answer.text).toContain('var { Duplex } = require("stream");');
+  expect(answer.text).toContain('console.log(require("stream").Transform);');
+  // A use the alias cannot answer keeps the package's own module for
+  // every call site of that chunk.
+  const mixed = split(`${keyedHelper}${chunk("require_readable", "readable.js", 'module2.exports = require("stream").Readable;')}
+var members = require_readable();
+console.log(members.Readable);
+var mixed = require_readable();
+console.log(mixed.Readable, mixed.from);
+`) as BundledChunkSplit;
+  expect(mixed.chunks.map((c) => basename(c.path))).toEqual(["index.js.require_readable.cjs"]);
+  expect(mixed.text).toContain('var members = require("./index.js.require_readable.cjs");');
+  expect(mixed.text).toContain('var mixed = require("./index.js.require_readable.cjs");');
+});
