@@ -59,9 +59,11 @@ export interface CycleInitFlag {
 /** Registers the initialization flags after global collection. Bindings
  * whose early access has no exact representation are refused: a `var`
  * (Node reads `undefined` there, but module storage only starts when the
- * declaring module's body starts), a class (its references are static), a
- * binding without module storage, or one with a use the lowering resolves
- * from the binding's type (a property key, a `typeof` operand). */
+ * declaring module's body starts), a binding without module storage, a
+ * class that another module's `extends` clause can reach early (the
+ * subclass is static), or one with a use the lowering resolves from the
+ * binding's type (a property key, a `typeof` operand). Other classes get a
+ * flag like their module's early-reached classes. */
 export function markCycleEarlyBindings(lowerer: Lowerer): void {
   const early = cycleEarlyBindings(
     lowerer.program,
@@ -80,7 +82,14 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
       continue;
     }
     if (binding.kind === "class") {
-      refuse(binding.reference, `the class ${where}`);
+      // The class's references from code that can run before its
+      // statement check its initialization flag: Node's ReferenceError
+      // only when the class is actually reached early.
+      const info = lowerer.classBySymbol.get(binding.symbol);
+      const heritage = earlyHeritageReference(lowerer, binding);
+      if (info !== undefined && !info.generic && heritage === null)
+        registerClassInitFlag(lowerer, binding, info, true);
+      else refuse(heritage ?? binding.reference, `the class ${where}`);
       continue;
     }
     const global = lowerer.globalsBySymbol.get(binding.symbol);
@@ -103,7 +112,7 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
   for (const binding of moduleEarlyBindings(lowerer.program, lowerer.moduleOrder)) {
     if (binding.kind === "class") {
       const info = lowerer.classBySymbol.get(binding.symbol);
-      if (info !== undefined) registerClassInitFlag(lowerer, binding, info);
+      if (info !== undefined) registerClassInitFlag(lowerer, binding, info, false);
       continue;
     }
     const global = lowerer.globalsBySymbol.get(binding.symbol);
@@ -146,6 +155,7 @@ function registerClassInitFlag(
   lowerer: Lowerer,
   binding: CycleEarlyBinding,
   info: ClassInfo,
+  cycle: boolean,
 ): void {
   const className = info.def.name;
   if (lowerer.classInitFlags.has(className)) return;
@@ -158,28 +168,71 @@ function registerClassInitFlag(
     name: binding.name.text,
     module: binding.module,
     settled: binding.settled,
-    cycle: false,
+    cycle,
     className,
     staticGlobals: new Set(info.staticFields.map((f) => f.globalId)),
-    references: classReferences(lowerer, binding.symbol, binding.name),
+    references: classReferences(lowerer, binding.symbol, binding.name, cycle),
   });
 }
 
+/** A reference to a cycle class in another class's `extends` clause, in a
+ * module that can run before the class statement: Node evaluates the clause
+ * when that module's class statement runs, but the compiled subclass is
+ * static and has no access to check. Null when there is none. */
+function earlyHeritageReference(lowerer: Lowerer, binding: CycleEarlyBinding): ts.Node | null {
+  const declaration = binding.name.parent;
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (
+      sf.isDeclarationFile ||
+      sf === binding.module ||
+      binding.settled.has(sf) ||
+      !sf.text.includes(binding.name.text)
+    )
+      continue;
+    let found: ts.Node | null = null;
+    ts.walkPreorder(sf, (node) => {
+      if (found !== null || node === declaration) return "skip";
+      if (ts.isHeritageClause(node)) {
+        for (const type of node.types.nodes) {
+          let referenced = ts.isIdentifier(type.expression)
+            ? lowerer.checker.getSymbolAtLocation(type.expression)
+            : undefined;
+          if (referenced !== undefined && referenced.flags & ts.SymbolFlags.Alias)
+            referenced = lowerer.checker.getAliasedSymbol(referenced);
+          if (referenced === binding.symbol) found = type.expression;
+        }
+      }
+      return undefined;
+    });
+    if (found !== null) return found;
+  }
+  return null;
+}
+
 /** The source spans of the identifiers naming the class outside its own
- * declaration, in every program file. */
-function classReferences(lowerer: Lowerer, symbol: ts.Symbol, name: ts.Identifier): SrcLoc[] {
+ * declaration, in every program file. For a class of an import cycle that
+ * includes other modules' import bindings; another module's references to a
+ * class flagged only for its own module's early calls always run after the
+ * class statement. */
+function classReferences(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+  name: ts.Identifier,
+  cycle: boolean,
+): SrcLoc[] {
   const declaration = name.parent;
   const out: SrcLoc[] = [];
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile || !sf.text.includes(name.text)) continue;
     ts.walkPreorder(sf, (node) => {
       if (node === declaration) return "skip";
-      if (
-        ts.isIdentifier(node) &&
-        node.text === name.text &&
-        lowerer.checker.getSymbolAtLocation(node) === symbol
-      )
-        out.push(locOf(node));
+      if (ts.isIdentifier(node) && node.text === name.text) {
+        // Another module names the class through its import binding.
+        let referenced = lowerer.checker.getSymbolAtLocation(node);
+        if (cycle && referenced !== undefined && referenced.flags & ts.SymbolFlags.Alias)
+          referenced = lowerer.checker.getAliasedSymbol(referenced);
+        if (referenced === symbol) out.push(locOf(node));
+      }
       return undefined;
     });
   }
