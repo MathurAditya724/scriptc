@@ -2212,11 +2212,7 @@ export function collectClassShapeInner(
     }
     if (lowerer.collectingExprClasses.has(decl)) {
       for (let parent = base; parent; parent = parent.base) {
-        if (
-          parent.builtinEmitter ||
-          parent.builtinStream !== undefined ||
-          parent.builtinEventTarget !== undefined
-        ) {
+        if (parent.builtinEventTarget !== undefined) {
           lowerer.unsupported(
             "SC1090",
             decl,
@@ -5132,16 +5128,11 @@ export function classValueRef(lowerer: Lowerer, info: ClassInfo, blame: ts.Node)
       loc: locOf(blame),
     };
   }
-  if (
-    lowerer.inheritsBuiltinEmitterCtor(info) ||
-    inheritsBuiltinStreamCtor(lowerer, info) ||
-    eventTargetRootOf(info) !== null ||
-    (() => {
-      for (let c = info.base; c; c = c.base)
-        if (c.builtinEmitter || c.builtinStream !== undefined) return true;
-      return false;
-    })()
-  ) {
+  // Classes extending EventEmitter or a stream class construct through
+  // their own (or synthesized) `%C.constructor`, whose super call runs the
+  // runtime initializer, so the class object's construct thunk serves them
+  // like any program class. EventTarget subclasses keep the refusal.
+  if (eventTargetRootOf(info) !== null) {
     lowerer.unsupported(
       "SC1090",
       blame,
