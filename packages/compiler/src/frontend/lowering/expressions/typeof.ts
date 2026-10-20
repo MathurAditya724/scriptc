@@ -33,6 +33,8 @@ import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { varRef } from "../../../ir/build.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { InternalCompilerError } from "../../../errors.js";
+import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
+import { isTemporalGlobalRoot } from "../lower-namespaces.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
   const webAssembly = lowerWebAssemblyTypeof(lowerer, expr.expression);
@@ -69,7 +71,7 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
       (operand.text === "__dirname" || operand.text === "__filename") &&
       lowerer.isStdlibGlobal(operand, operand.text)
     ) {
-      const sf = operand.getSourceFile();
+      const sf = ts.getSourceFileOfNode(operand);
       if (isNodeEsmFile(sf, lowerer.program) && !/\.tsx?$/.test(sf.fileName))
         return { kind: "strLit", value: "undefined", type: STRING, loc };
     }
@@ -158,6 +160,15 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   // declarations type some (AbortSignal) without a construct signature,
   // so neither the operand nor the type can answer; the read has no
   // effects.
+  // `typeof globalThis.<temporal>`: the global object has no such
+  // property in Node 24.
+  if (
+    ts.isPropertyAccessExpression(tested) &&
+    tested.name.text === TEMPORAL_GLOBAL &&
+    stdlibGlobalNameOf(lowerer, tested.expression) === "globalThis"
+  ) {
+    return { kind: "strLit", value: "undefined", type: STRING, loc };
+  }
   if (constructorGlobalTypeof(lowerer, tested) !== null)
     return { kind: "strLit", value: "function", type: STRING, loc };
   // `typeof globalThis.AbortSignal.any` (ky's feature probe): a static
@@ -182,13 +193,18 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     if (!sym) {
       return { kind: "strLit", value: "undefined", type: STRING, loc };
     }
+    // Node 24 defines no temporal global: typeof answers "undefined"
+    // without reading it, like any undeclared name.
+    if (isTemporalGlobalRoot(lowerer, tested, sym)) {
+      return { kind: "strLit", value: "undefined", type: STRING, loc };
+    }
     // `const { inspect } = require("util")` / `import { inspect } from
     // "node:util"`: a binding of a builtin module's exported function,
     // class or object. JavaScript sources represent such a value without
     // its own lowering as an identity token (a string), so the operand's
     // representation cannot answer. Node's answer follows the export's
     // kind, and the binding read has no effects.
-    const imported = isJsSourceFile(tested.getSourceFile())
+    const imported = isJsSourceFile(ts.getSourceFileOfNode(tested))
       ? lowerer.builtinImportOf(tested)
       : null;
     if (imported && builtinModuleConstOf(lowerer, imported.module, imported.member) === undefined) {

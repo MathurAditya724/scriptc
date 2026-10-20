@@ -1,3 +1,4 @@
+import { ts7Diagnostic, type Ts7Diagnostic } from "./diagnostic.js";
 import type { SourceFile } from "./ast-types.js";
 import { AstFile, AstNode } from "./ast-node.js";
 import { Ts7RpcClient } from "./rpc-client.js";
@@ -332,31 +333,35 @@ export class Ts7SessionProgram {
   isSourceFileDefaultLibrary(file: AstNode): boolean {
     return this.getSourceFileMetadataByPath(file.path)?.isDefaultLibrary ?? false;
   }
-  private diagnostics(method: string, file?: SemanticDocument): Ts7DiagnosticData[] {
-    return this.session.request<Ts7DiagnosticData[] | null>(method, this.query(file)) ?? [];
+  private diagnostics(method: string, file?: SemanticDocument): Ts7Diagnostic[] {
+    const result: Ts7Diagnostic[] = [];
+    for (const data of this.session.request<Ts7DiagnosticData[] | null>(method, this.query(file)) ??
+      [])
+      result.push(ts7Diagnostic(data));
+    return result;
   }
-  getSyntacticDiagnostics(file?: SemanticDocument): Ts7DiagnosticData[] {
+  getSyntacticDiagnostics(file?: SemanticDocument): Ts7Diagnostic[] {
     return this.diagnostics("getSyntacticDiagnostics", file);
   }
-  getBindDiagnostics(file?: SemanticDocument): Ts7DiagnosticData[] {
+  getBindDiagnostics(file?: SemanticDocument): Ts7Diagnostic[] {
     return this.diagnostics("getBindDiagnostics", file);
   }
-  getSemanticDiagnostics(file?: SemanticDocument): Ts7DiagnosticData[] {
+  getSemanticDiagnostics(file?: SemanticDocument): Ts7Diagnostic[] {
     return this.diagnostics("getSemanticDiagnostics", file);
   }
-  getSuggestionDiagnostics(file?: SemanticDocument): Ts7DiagnosticData[] {
+  getSuggestionDiagnostics(file?: SemanticDocument): Ts7Diagnostic[] {
     return this.diagnostics("getSuggestionDiagnostics", file);
   }
-  getDeclarationDiagnostics(file?: SemanticDocument): Ts7DiagnosticData[] {
+  getDeclarationDiagnostics(file?: SemanticDocument): Ts7Diagnostic[] {
     return this.diagnostics("getDeclarationDiagnostics", file);
   }
-  getProgramDiagnostics(): Ts7DiagnosticData[] {
+  getProgramDiagnostics(): Ts7Diagnostic[] {
     return this.diagnostics("getProgramDiagnostics");
   }
-  getGlobalDiagnostics(): Ts7DiagnosticData[] {
+  getGlobalDiagnostics(): Ts7Diagnostic[] {
     return this.diagnostics("getGlobalDiagnostics");
   }
-  getConfigFileParsingDiagnostics(): Ts7DiagnosticData[] {
+  getConfigFileParsingDiagnostics(): Ts7Diagnostic[] {
     return this.diagnostics("getConfigFileParsingDiagnostics");
   }
   dispose(): void {

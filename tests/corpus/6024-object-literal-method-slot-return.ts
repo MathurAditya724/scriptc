@@ -112,3 +112,19 @@ for (const source of [{ kind: "num", value: 1 }, ref("x")] satisfies Expr[]) {
   const head = step.first(source);
   console.log(head.kind, "name" in head ? head.name : "", JSON.stringify(head));
 }
+
+// A literal under `satisfies` keeps its own type, so its methods keep their
+// inferred returns: callers read the fields the constraint does not name.
+interface Point {
+  x: number;
+}
+const located = {
+  point() {
+    return { x: 1, y: 2 };
+  },
+  rows() {
+    return [{ x: 3, label: "three" }];
+  },
+} satisfies { point(): Point; rows(): Point[] };
+const point = located.point();
+console.log(point.x, point.y, located.rows()[0].label);

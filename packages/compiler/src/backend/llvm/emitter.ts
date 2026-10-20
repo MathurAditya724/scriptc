@@ -1,3 +1,4 @@
+import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
@@ -52,7 +53,11 @@ import {
   VOID,
   classJsName,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
+import {
+  moduleRuntimeFeatures,
+  moduleUsesDynBuiltinStream,
+  moduleUsesMockTimers,
+} from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { type DenseArrayLoop } from "./dense-array-loops.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
@@ -181,6 +186,7 @@ import {
   genResultThunkFor,
   childExitThunkFor,
   childExitSignalThunkFor,
+  childDataDynThunkFor,
   childDataThunkFor,
   execFileThunkFor,
   ipcMessageThunkFor,
@@ -413,6 +419,9 @@ export interface LlvmTargetOptions {
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
   detachedExit?: boolean;
+  /** Translated WebAssembly memories check bounds explicitly instead of
+   * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
+  wasmBoundsChecks?: boolean;
 }
 
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
@@ -682,6 +691,7 @@ export class LlEmitter {
   readonly emitLibraryIdentity: boolean;
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
+  readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
   readonly literals = new Map<string, { sym: string; len: number }>();
@@ -896,6 +906,11 @@ export class LlEmitter {
   /** Identity-preserving static→dyn capsules for program classes and Web
    * APIs whose values remain directly observable. */
   readonly liveDynRefAdapters = new Map<string, LlStreamTypedRefAdapter>();
+  private dynBuiltinStreamUse: boolean | undefined;
+  /** See moduleUsesDynBuiltinStream. */
+  get usesDynBuiltinStream(): boolean {
+    return (this.dynBuiltinStreamUse ??= moduleUsesDynBuiltinStream(this.mod));
+  }
   /** Runtime-arm dispatchers for live union values. */
   readonly liveDynUnionRefAdapters = new Map<string, string>();
   readonly dynPromiseAdapters = new Map<string, string>();
@@ -1175,6 +1190,13 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
+    this.wasmBoundsChecks =
+      options.wasmBoundsChecks === true ||
+      wasmBoundsChecks({
+        sanitize: false,
+        pointerBits: options.pointerBits ?? 64,
+        targetTriple: options.targetTriple ?? "",
+      });
     this.rcHelpers = options.inlineRc !== undefined ? new Set() : null;
     this.rcMode = options.inlineRc;
     this.rcHelpersNoinline = options.rcHelpersNoinline === true;
@@ -1392,6 +1414,7 @@ export class LlEmitter {
       fieldAbsentTestIn: (B, value, unionId) => this.fieldAbsentTestIn(B, value, unionId),
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
+      usesDynBuiltinStream: () => this.usesDynBuiltinStream,
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
@@ -4201,6 +4224,20 @@ export class LlEmitter {
 
   /** Moves need plain slots that nothing else reads behind the binding's
    * back: no debugger view, no coroutine frame, no borrowed (+0) return. */
+  /** Whether the program reads event-loop utilization (perf.loopStart /
+   * perf.idleTime): main then marks the loop's start before running it. */
+  private loopMetricsRead: boolean | undefined;
+  readsLoopMetrics(): boolean {
+    if (this.loopMetricsRead !== undefined) return this.loopMetricsRead;
+    const visitor = {
+      expr: (e: IrExpr): boolean =>
+        !(e.kind === "libCall" && (e.fn === "perf.loopStart" || e.fn === "perf.idleTime")),
+      stmt: (): boolean => true,
+    };
+    this.loopMetricsRead = !this.mod.functions.every((fn) => everyStmtList(fn.body, visitor));
+    return this.loopMetricsRead;
+  }
+
   private lastUseMovesAllowed(): boolean {
     return (
       this.debug === null &&
@@ -5564,12 +5601,19 @@ export class LlEmitter {
     return childDataThunkFor(this, param);
   }
 
+  childDataDynThunkFor(chunk: "bytes" | "str"): string {
+    return childDataDynThunkFor(this, chunk);
+  }
+
   emitterFixedAdapter(cbT: IrType & { kind: "func" }): { fn: string; shim: string } {
     return emitterFixedAdapter(this, cbT);
   }
 
-  emitterOnceAdapter(boxerT: IrType & { kind: "func" }): { fn: string; shim: string } {
-    return emitterOnceAdapter(this, boxerT);
+  emitterOnceAdapter(
+    boxerT: IrType & { kind: "func" },
+    fire?: string,
+  ): { fn: string; shim: string } {
+    return emitterOnceAdapter(this, boxerT, fire);
   }
 
   wrapEmitterListener(target: string, adapterFn: string): string {

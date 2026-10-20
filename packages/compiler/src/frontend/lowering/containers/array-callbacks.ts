@@ -44,6 +44,7 @@ import {
   lowerArrayCallback,
   requireProducedArrayElement,
   callbackArrayElement,
+  truthyFilterCallback,
 } from "./callback-arguments.js";
 import {
   reverseArrayLoop,
@@ -85,7 +86,9 @@ export function lowerArrayHofCall(
   const valueT = callbackValueType(lowerer, elem, present);
   if (booleanFilter) {
     if (valueT.kind === "union") lowerer.requireTruthyUnion(valueT.unionId, argNode);
-    if (valueT.kind === "dyn" || valueT.kind === "void" || isUnitType(valueT)) {
+    // Checked-dynamic elements (`anyText.split("\n").map(...).filter(Boolean)`)
+    // keep their runtime kind, so their truthiness is the runtime's.
+    if (valueT.kind === "void" || isUnitType(valueT)) {
       lowerer.badType(argNode, lowerer.typeOf(argNode));
     }
   }
@@ -231,33 +234,6 @@ function filterResultElem(
   return outElem;
 }
 
-/** A native closure for the ambient Boolean callback. Reifying the
- * JavaScript constructor itself is unnecessary; Array#filter only observes
- * its one-argument ToBoolean result. */
-function truthyFilterCallback(
-  lowerer: Lowerer,
-  valueT: IrType,
-  loc: SrcLoc,
-): IrExpr & { type: IrType & { kind: "func" } } {
-  const fnT: IrType & { kind: "func" } = { kind: "func", params: [valueT], ret: BOOL };
-  const key = `filterBoolean:${typeKey(valueT)}`;
-  let name = lowerer.arrHofHelpers.get(key);
-  if (!name) {
-    name = `%arr.filterBoolean.${lowerer.arrHofHelpers.size}`;
-    lowerer.arrHofHelpers.set(key, name);
-    const value = varRef("v.0", valueT, loc);
-    lowerer.liftedFns.push({
-      name,
-      params: [{ localId: "v.0", name: "v", type: valueT }],
-      returnType: BOOL,
-      locals: [{ id: "v.0", name: "v", type: valueT, mutable: false }],
-      body: [{ kind: "return", value: { kind: "toBool", operand: value, type: BOOL, loc }, loc }],
-      loc,
-    });
-  }
-  return { kind: "closure", fnName: name, captures: [], type: fnT, loc };
-}
-
 function filterPredicateOk(lowerer: Lowerer, ret: IrType): boolean {
   if (ret.kind === "bool") return true;
   // VOID is a TYPE erasure, not a runtime value: TS lets a value-returning
@@ -328,7 +304,7 @@ function lowerFastCallback(
     fastLoweringDepth > 0 ||
     slow.arity <= elemIndex ||
     !ts.isArrowFunction(argNode) ||
-    isJsSourceFile(argNode.getSourceFile()) ||
+    isJsSourceFile(ts.getSourceFileOfNode(argNode)) ||
     valueT?.kind !== "union" ||
     typeEquals(valueT, elem) ||
     elem.kind === "union" ||
@@ -1513,7 +1489,7 @@ export function lowerArrayFlatMapCall(
       kind: "dynInvoke",
       recv: { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc },
       method: "flatMap",
-      calleeName: access.getText(),
+      calleeName: ts.getTextOfNode(access),
       args: [{ kind: "dynFrom", value: fnArg, type: DYN, loc }],
       type: DYN,
       loc,
@@ -2109,7 +2085,7 @@ export function lowerArraySortCall(
     // Arithmetic on inferred JS values retains a checked result because
     // it can produce BigInt. The sort callback still requires a number.
     const result =
-      fnArg.type.ret.kind === "dyn" && isJsSourceFile(argNode.getSourceFile())
+      fnArg.type.ret.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(argNode))
         ? F64
         : fnArg.type.ret;
     const expected = funcOf(
@@ -2247,7 +2223,7 @@ export function lowerDynArrayFilterCall(
       recv,
       fnArg,
       { kind: "strLit", value: access.name.text, type: STRING, loc },
-      { kind: "strLit", value: access.getText(), type: STRING, loc },
+      { kind: "strLit", value: ts.getTextOfNode(access), type: STRING, loc },
     ],
     type: arrayOf(elemT),
     loc,
@@ -2288,7 +2264,7 @@ export function lowerDynArrayFlatMapCall(
         kind: "dynInvoke",
         recv,
         method: "flatMap",
-        calleeName: access.getText(),
+        calleeName: ts.getTextOfNode(access),
         args: [boxed],
         type: DYN,
         loc,
@@ -2310,7 +2286,7 @@ export function lowerDynArrayFlatMapCall(
       recv,
       fnArg,
       { kind: "strLit", value: access.name.text, type: STRING, loc },
-      { kind: "strLit", value: access.getText(), type: STRING, loc },
+      { kind: "strLit", value: ts.getTextOfNode(access), type: STRING, loc },
     ],
     type: arrayOf(ret.elem),
     loc,
