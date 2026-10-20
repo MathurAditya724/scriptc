@@ -290,7 +290,8 @@ function generalChildStdioType(
   const className = name === "stdin" ? "%Writable" : "%Readable";
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
   if (!mapped) return null;
-  const arms = mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
+  const arms =
+    mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
   return arms.some((arm) => arm.kind === "object" && arm.className === className)
     ? { kind: "object", className }
     : null;

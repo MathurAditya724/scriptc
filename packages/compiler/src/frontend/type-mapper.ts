@@ -991,6 +991,31 @@ export function isDeclaredInAmbientNamespace(d: ts.Declaration, name: string): b
   return false;
 }
 
+/** Whether `type` is one of the stream spellings the general stream
+ * representation (TypeMapperCtx.generalNodeStreams) maps differently:
+ * NodeJS.ReadableStream / NodeJS.WritableStream, @types/node's
+ * stream.Readable / stream.Writable, or the fallback declarations'
+ * ChildStdin. */
+export function isGeneralNodeStreamInterface(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile">,
+): boolean {
+  const psym = type.getSymbol() ?? type.getAliasSymbol();
+  if (psym === undefined) return false;
+  return psym.declarations.some((d) => {
+    if (!(ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d))) return false;
+    if (!ctx.isStdlibFile(d.getSourceFile())) return false;
+    if (psym.name === "ReadableStream" || psym.name === "WritableStream")
+      return ts.isInterfaceDeclaration(d) && isDeclaredInAmbientNamespace(d, "NodeJS");
+    if (psym.name === "ChildStdin") return isDeclaredInAmbientModule(d, "child_process");
+    return (
+      (psym.name === "Readable" || psym.name === "Writable") &&
+      isNodeTypesPath(d.getSourceFile().fileName) &&
+      isDeclaredInAmbientModule(d, "stream")
+    );
+  });
+}
+
 /** A type declared in the shipped WebAssembly namespace (scriptc.d.ts):
  * its modules, instances, memories, tables, globals, error classes and the
  * Exports/Imports records. */
@@ -3038,6 +3063,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // of the broad @types class fence where they are constructed.
   if (
     (psym?.name === "ChildStdin" &&
+      ctx.generalNodeStreams !== true &&
       psym.declarations.some(
         (d) =>
           ts.isInterfaceDeclaration(d) &&
@@ -3055,6 +3081,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ))
   ) {
     return { kind: "childWriter" };
+  }
+  // Under the general stream representation the fallback declarations'
+  // ChildStdin is the runtime Writable too (child.stdioStream bridges it).
+  if (
+    ctx.generalNodeStreams === true &&
+    psym?.name === "ChildStdin" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "child_process"),
+    )
+  ) {
+    return { kind: "object", className: "%Writable" };
   }
   // The static node:stream classes (the shipped fallback declarations —
   // NOT @types/node, whose stream.Readable also types child stdio; under

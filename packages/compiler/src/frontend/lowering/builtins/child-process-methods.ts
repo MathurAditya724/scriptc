@@ -1,5 +1,6 @@
 import { boolLit, strLit } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isChildSurfaceMember } from "../surfaces.js";
@@ -335,6 +336,7 @@ export function lowerChildStreamMethodCall(
     const evT = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     if (event !== "data" && event !== "end") {
+      requestGeneralStreamSurface(lowerer, access.expression);
       lowerer.noLowering(
         `stream.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
         call.arguments.nodes[0]!,
@@ -342,6 +344,7 @@ export function lowerChildStreamMethodCall(
       );
     }
     if (!ts.isExpressionStatement(call.parent)) {
+      requestGeneralStreamSurface(lowerer, access.expression);
       lowerer.unsupported(
         "SC1090",
         call,
@@ -393,6 +396,7 @@ export function lowerChildStreamMethodCall(
       loc,
     };
   }
+  requestGeneralStreamSurface(lowerer, access.expression);
   lowerer.noLowering(
     `ReadableStream.${name}`,
     call,
@@ -418,6 +422,7 @@ export function lowerChildWriterMethodCall(
 
   if (name === "write") {
     if (call.arguments.nodes.length !== 1 || call.arguments.nodes.some(ts.isSpreadElement)) {
+      requestGeneralStreamSurface(lowerer, access.expression);
       lowerer.noLowering(
         `child stdin write with ${call.arguments.nodes.length} arguments`,
         call,
@@ -461,6 +466,7 @@ export function lowerChildWriterMethodCall(
     const eventType = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = eventType.isStringLiteralType() ? eventType.value : null;
     if (event !== "drain" && event !== "finish" && event !== "error") {
+      requestGeneralStreamSurface(lowerer, access.expression);
       lowerer.noLowering(
         `child stdin ${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
         call.arguments.nodes[0]!,
@@ -507,6 +513,7 @@ export function lowerChildWriterMethodCall(
     return { kind: "libCall", fn, args: [receiver, cb, once], type: VOID, loc };
   }
 
+  requestGeneralStreamSurface(lowerer, access.expression);
   lowerer.noLowering(
     `Writable.${name}`,
     call,

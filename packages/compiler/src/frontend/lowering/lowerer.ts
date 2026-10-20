@@ -1140,25 +1140,34 @@ export function lowerToIr(
     };
   else if (contracts.count > 0) result = { ...result, contracts };
   if (options.coverage !== true) return result;
-  const remainder = new Lowerer(program, entry, moduleOrder, {
-    frontendServices: options.frontendServices,
-    projectCheckJs: options.projectCheckJs ?? false,
-    ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
-    reachable,
-    remainder: true,
-    alreadyFlushed: resultLowerer.flushedSymbols,
-    inlineRequireCycleCalls: options.inlineRequireCycleCalls,
-    targetPlatform,
-    ffiImports,
-    libraryCallbacks,
-    forkTargets,
-    workerTargets,
-    ffiBindingSymbols: ffiValidation.symbolsByName,
-    externalTypes,
-    externalTypeSpecifiersByFile,
-    tierMode,
-  });
-  const rem = remainder.run();
+  const remainderPass = (general: boolean): Lowerer =>
+    new Lowerer(program, entry, moduleOrder, {
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      ...(general ? { generalNodeStreams: true } : {}),
+      reachable,
+      remainder: true,
+      alreadyFlushed: resultLowerer.flushedSymbols,
+      inlineRequireCycleCalls: options.inlineRequireCycleCalls,
+      targetPlatform,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+    });
+  let remainder = remainderPass(generalNodeStreams);
+  let rem = remainder.run();
+  // Unreached code reports what it would compile to once reached: a
+  // stream flow there that needs the general representation lowers the
+  // remainder again with it, as reachable emit would.
+  if (!generalNodeStreams && remainder.requiresGeneralNodeStreams) {
+    remainder = remainderPass(true);
+    rem = remainder.run();
+  }
   timing("coverage-remainder");
   // Tiers (tier-analysis.ts): reached statements in dynamic-tier functions,
   // and with tierReport the report-only demotion analysis.

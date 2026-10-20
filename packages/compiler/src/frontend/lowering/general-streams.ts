@@ -16,6 +16,8 @@
  * never take the second pass, so their IR is unchanged. */
 import type { IrExpr, IrType } from "../../ir/ir.js";
 import { everyTypeChild } from "../../ir/traverse.js";
+import * as ts from "../ts7/adapter.js";
+import { isGeneralNodeStreamInterface } from "../type-mapper.js";
 import type { Lowerer } from "./lowerer.js";
 import { streamSidesOf } from "./lower-stream.js";
 
@@ -59,8 +61,7 @@ function isGeneralStream(lowerer: Lowerer, part: IrType): boolean {
 
 /** A mismatched flow (requireExactShape's input) that the general stream
  * representation resolves: a general stream into a stdio-represented
- * slot, a stdio handle into an 'unknown' slot, or an 'unknown' value
- * checked into a stdio-represented slot. */
+ * slot, or a child pipe handle into an 'unknown' slot. */
 export function needsGeneralNodeStreams(
   lowerer: Lowerer,
   actual: IrType,
@@ -69,9 +70,8 @@ export function needsGeneralNodeStreams(
   const stdio = (part: IrType): boolean => STDIO_STREAM_KINDS.has(part.kind);
   const pipeHandle = (part: IrType): boolean =>
     part.kind === "childStream" || part.kind === "childWriter";
-  if (containsPart(lowerer, expected, stdio)) {
-    return actual.kind === "dyn" || containsPart(lowerer, actual, (p) => isGeneralStream(lowerer, p));
-  }
+  if (containsPart(lowerer, expected, stdio))
+    return containsPart(lowerer, actual, (p) => isGeneralStream(lowerer, p));
   return expected.kind === "dyn" && containsPart(lowerer, actual, pipeHandle);
 }
 
@@ -90,5 +90,23 @@ export function stdioIntoGeneralStream(
     (expected.kind === "object" && expected.className === "%Writable") ||
     (expected.kind === "union" && lowerer.armTag(expected.unionId, writable) >= 0);
   if (!accepts) return null;
-  return { kind: "libCall", fn: "stream.stdioWritable", args: [expr], type: writable, loc: expr.loc };
+  return {
+    kind: "libCall",
+    fn: "stream.stdioWritable",
+    args: [expr],
+    type: writable,
+    loc: expr.loc,
+  };
+}
+
+/** A stdio-handle receiver whose member has no lowering on the handle
+ * (`out.on("error", ...)`, `child.stdout.pipe(...)`, `output.end()`): when
+ * its declared type is one the general representation maps to a runtime
+ * stream class, the program lowers again with it, where the full stream
+ * surface applies. The caller still reports its fence for this pass. */
+export function requestGeneralStreamSurface(lowerer: Lowerer, receiver: ts.Expression): void {
+  if (lowerer.generalNodeStreams) return;
+  const type = lowerer.checker.getNonNullableType(lowerer.typeOf(receiver));
+  if (isGeneralNodeStreamInterface(type, lowerer.typeCtx))
+    lowerer.requiresGeneralNodeStreams = true;
 }

@@ -49,6 +49,7 @@ import { sideEffectFreeOptionValue } from "./surfaces.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { genResultRecord } from "../type-mapper.js";
+import { requestGeneralStreamSurface } from "./general-streams.js";
 import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import {
   BOOL,
@@ -3608,6 +3609,7 @@ export function lowerStreamMethodCall(
       dst.type.kind === "object" ? lowerer.classes.get(dst.type.className) : undefined;
     const dstSides = streamSidesOf(lowerer, dstInfo);
     if (dstSides !== "w" && dstSides !== "rw") {
+      requestGeneralStreamSurface(lowerer, args[0]!);
       lowerer.noLowering(
         `pipe into a '${lowerer.fmt(dst.type)}'`,
         args[0]!,

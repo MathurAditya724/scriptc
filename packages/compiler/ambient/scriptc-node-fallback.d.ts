@@ -123,9 +123,9 @@ declare namespace NodeJS {
       encoding: BufferEncoding,
       callback?: (error?: Error | null) => void,
     ): boolean;
-    end(callback?: () => void): this;
-    end(data: string | Uint8Array, callback?: () => void): this;
-    end(data: string | Uint8Array, encoding: BufferEncoding, callback?: () => void): this;
+    end(callback?: () => void): void;
+    end(data: string | Uint8Array, callback?: () => void): void;
+    end(data: string | Uint8Array, encoding: BufferEncoding, callback?: () => void): void;
     on(event: "drain" | "finish" | "close", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     once(event: "drain" | "finish" | "close", listener: () => void): void;
@@ -3092,9 +3092,9 @@ declare module "child_process" {
     write(chunk: string | Uint8Array): boolean;
     end(): void;
     destroy(): void;
-    on(event: "drain" | "finish", listener: () => void): void;
+    on(event: "drain" | "finish" | "close", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
-    once(event: "drain" | "finish", listener: () => void): void;
+    once(event: "drain" | "finish" | "close", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
   }
 
