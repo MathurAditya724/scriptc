@@ -1,7 +1,7 @@
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
-import { sloppyArgumentsRefusal } from "./sloppy-arguments.js";
+import { sloppyArgumentsRefusal, type SloppyArgumentsRefusal } from "./sloppy-arguments.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   DYN,
@@ -769,20 +769,33 @@ function appendArgumentsParameter(
     !bodyReadsArguments(node)
   )
     return;
-  if (node.parameters.nodes.length > 0 || ts.isMethodDeclaration(node)) {
-    const classMethod =
-      ts.isMethodDeclaration(node) &&
-      (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent));
-    if (
-      !classMethod &&
-      !isNodeEsmFile(node.getSourceFile(), lowerer.program) &&
-      !unmappedArguments(node)
-    ) {
-      const refusal = sloppyArgumentsRefusal(lowerer, node);
-      if (refusal !== null) lowerer.unsupported("SC1090", refusal.node, refusal.reason);
-    }
-  }
+  const refusal = argumentsSlotRefusal(lowerer, node);
+  if (refusal !== null) lowerer.unsupported("SC1090", refusal.node, refusal.reason);
   shapes.push({ type: DYN, mode });
+}
+
+/** Why a JavaScript function that reads `arguments` cannot take the hidden
+ * arguments array, or null when it can. Class methods, ES modules, strict
+ * code and non-simple parameter lists get Node's unmapped object, which the
+ * array matches; other parameterized functions qualify only where
+ * sloppy-mode aliasing cannot be observed (sloppy-arguments.ts). A
+ * function's definition and the type of the function as a value both
+ * follow this rule, so the two agree on the parameter slot. */
+export function argumentsSlotRefusal(
+  lowerer: Lowerer,
+  node: ts.SignatureDeclaration,
+): SloppyArgumentsRefusal | null {
+  if (node.parameters.nodes.length === 0 && !ts.isMethodDeclaration(node)) return null;
+  const classMethod =
+    ts.isMethodDeclaration(node) &&
+    (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent));
+  if (
+    classMethod ||
+    isNodeEsmFile(node.getSourceFile(), lowerer.program) ||
+    unmappedArguments(node)
+  )
+    return null;
+  return sloppyArgumentsRefusal(lowerer, node);
 }
 
 /** Whether `arguments` inside `node` is Node's unmapped object: strict code

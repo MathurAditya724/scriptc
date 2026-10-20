@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/arguments-unmapped-values/lib.cjs",
+  "<repo>/tests/corpus/arguments-unmapped-values/main.cjs"
+ ],
+ "diags": []
+}
