@@ -1,3 +1,4 @@
+import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
 import {
   lifetimeRegionType,
@@ -6781,6 +6782,10 @@ export class Lowerer {
     }
     this.collectProgram(parts);
     this.speculativeTypeQueries(() => {
+      extendAssertedRecordMembers(
+        this,
+        parts.map((fp) => fp.sf),
+      );
       this.analyzeRuntimeOptionalArrayReads(parts);
       this.analyzeDateJsonResults(parts);
       this.analyzeGuardedRecordReadGlobals(parts);
@@ -7188,6 +7193,10 @@ export class Lowerer {
     };
     this.collectProgram(parts);
     this.speculativeTypeQueries(() => {
+      extendAssertedRecordMembers(
+        this,
+        parts.map((fp) => fp.sf),
+      );
       this.analyzeRuntimeOptionalArrayReads(parts);
       this.analyzeDateJsonResults(parts);
       this.analyzeGuardedRecordReadGlobals(parts);

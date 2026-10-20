@@ -1,3 +1,4 @@
+import { hostsAll } from "./expressions/hosted-narrowing.js";
 import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
@@ -5480,6 +5481,23 @@ export function lowerVarDecl(
     ) {
       settledType = init.type;
     }
+  }
+  // `const view = route as Route & { order: number }`: the asserted type
+  // refines the record arms the value is stored in (the assertion keeps
+  // that value, see hosted-narrowing.ts). The binding keeps the stored
+  // type, so writes through it reach the asserted object. An annotation
+  // the stored type hosts (`const view: Route & { order: number } = ...`)
+  // keeps it too: coercing into the annotated layout would copy the
+  // value and read members the writes have not created yet.
+  if (
+    !isLet &&
+    decl.initializer &&
+    isAssertionInitializer(decl.initializer) &&
+    (settledType.kind === "union" || settledType.kind === "record") &&
+    (init.type.kind === "union" || init.type.kind === "record") &&
+    hostsAll(lowerer, init.type, settledType)
+  ) {
+    settledType = init.type;
   }
   // An exact class behind a generic interface keeps its native
   // representation so generic calls can specialize against its body.
@@ -11211,4 +11229,10 @@ export function stdlibBufferVarAlias(lowerer: Lowerer, decl: ts.VariableDeclarat
     bindingNeverReassigned(lowerer, symbol, decl) &&
     requireEarlyReference(lowerer.program, decl) === null
   );
+}
+
+function isAssertionInitializer(node: ts.Expression): boolean {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return ts.isAsExpression(e) || ts.isTypeAssertion(e);
 }
