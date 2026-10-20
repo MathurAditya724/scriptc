@@ -4,9 +4,9 @@ import type { IrExpr, IrType, SrcLoc } from "../../../ir/ir.js";
 import type { Lowerer } from "../lowerer.js";
 
 /** Whether the elements a spread inserts are reachable only through it: an
- * array literal (`...(cond ? [{ ... }] : [])`), or a const initialized by
- * one that this spread is the only reference to, and that the spread reads
- * at most once per evaluation of the initializer. Converting such elements
+ * array literal (`...(cond ? [{ ... }] : [])`), or an unexported const
+ * initialized by one that this spread is the only reference to, and that
+ * the spread reads at most once per evaluation of the initializer. Converting such elements
  * into the destination's element layout copies them, which nothing can
  * observe. */
 export function freshSpreadSource(lowerer: Lowerer, node: ts.Expression): boolean {
@@ -24,13 +24,25 @@ export function freshSpreadSource(lowerer: Lowerer, node: ts.Expression): boolea
   if (!symbol || !decl || !ts.isVariableDeclaration(decl) || !decl.initializer) return false;
   const list = decl.parent;
   if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0) return false;
+  // Other modules can import an exported binding and reach its elements.
+  const statement = list.parent;
+  if (
+    ts.isVariableStatement(statement) &&
+    statement.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+  )
+    return false;
   if (!freshSpreadSource(lowerer, decl.initializer)) return false;
-  // The binding's only use is this spread.
+  // The binding's only use is this spread; an export specifier naming it
+  // (`export { name }`) is another.
   let scope: ts.Node = list;
   while (scope.parent && !ts.isBlock(scope) && !ts.isSourceFile(scope)) scope = scope.parent;
   let uses = 0;
   const visit = (n: ts.Node): void => {
     if (uses > 1) return;
+    if (ts.isExportSpecifier(n) && (n.propertyName ?? n.name).text === e.text) {
+      uses = 2;
+      return;
+    }
     if (ts.isIdentifier(n) && n !== decl.name && n.text === e.text) {
       if (lowerer.resolveValueSymbol(n) === symbol) uses++;
     }
