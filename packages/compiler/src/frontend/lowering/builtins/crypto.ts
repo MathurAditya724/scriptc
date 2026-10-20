@@ -879,7 +879,7 @@ export function isCipherType(lowerer: Lowerer, type: ts.Type): boolean {
   return (
     !!symbol &&
     CIPHER_TYPE_NAMES.has(symbol.name) &&
-    lowerer.checker.declarationsOf(symbol).some((d) => lowerer.isStdlibFile(d.getSourceFile()))
+    symbol.declarations.some((d) => lowerer.isStdlibFile(d.getSourceFile()))
   );
 }
 

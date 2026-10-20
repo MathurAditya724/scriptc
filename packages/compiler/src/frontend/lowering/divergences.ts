@@ -180,7 +180,7 @@ export function scanDivergences(
     if (!candidates.some((fn) => identityUsesOf(fn).some((u) => u !== null))) continue;
     const signature = safely(() => checker.getResolvedSignature(call));
     if (signature === undefined) continue;
-    const decl = safely(() => checker.signatureDeclaration(signature));
+    const decl = safely(() => signature.declaration);
     if (decl === undefined || !candidates.includes(decl as ts.FunctionLikeDeclaration)) continue;
     const fn = decl as ts.FunctionLikeDeclaration;
     const uses = identityUsesOf(fn);
@@ -235,11 +235,9 @@ export function scanDivergences(
     const left = assignment.left as ts.Identifier;
     const symbol = safely(() => checker.getSymbolAtLocation(left));
     if (symbol === undefined) continue;
-    const decl = checker
-      .declarationsOf(symbol)
-      .find(
-        (d): d is ts.VariableDeclaration => ts.isVariableDeclaration(d) && d.type !== undefined,
-      );
+    const decl = symbol.declarations.find(
+      (d): d is ts.VariableDeclaration => ts.isVariableDeclaration(d) && d.type !== undefined,
+    );
     if (decl === undefined) continue;
     const scope = enclosingScope(decl);
     if (scope === undefined) continue;
@@ -290,7 +288,7 @@ export function scanDivergences(
       if (ts.isObjectLiteralExpression(inner)) lit = inner;
       else if (ts.isIdentifier(inner)) {
         const symbol = safely(() => checker.getSymbolAtLocation(inner));
-        const decl = symbol === undefined ? undefined : checker.valueDeclarationOf(symbol);
+        const decl = symbol === undefined ? undefined : symbol.valueDeclaration;
         if (
           decl !== undefined &&
           ts.isVariableDeclaration(decl) &&
@@ -376,8 +374,7 @@ export function scanDivergences(
       const name = calleeName(call);
       if (name === null || !fnsByName.has(name)) continue;
       const signature = safely(() => checker.getResolvedSignature(call));
-      const decl =
-        signature === undefined ? undefined : safely(() => checker.signatureDeclaration(signature));
+      const decl = signature === undefined ? undefined : safely(() => signature.declaration);
       const sites = decl === undefined ? undefined : downcasts.get(decl);
       if (sites === undefined) continue;
       for (const site of sites) {
@@ -426,7 +423,7 @@ function dateStringLiterals(checker: ts.TypeChecker, arg: ts.Expression): ts.Exp
   if (stringLiteralText(arg) !== null) return [arg];
   if (!ts.isIdentifier(arg)) return [];
   const symbol = safely(() => checker.getSymbolAtLocation(arg));
-  const decl = symbol === undefined ? undefined : checker.valueDeclarationOf(symbol);
+  const decl = symbol === undefined ? undefined : symbol.valueDeclaration;
   const list = decl?.parent;
   const loop = list?.parent;
   if (
@@ -441,7 +438,7 @@ function dateStringLiterals(checker: ts.TypeChecker, arg: ts.Expression): ts.Exp
   let iterated: ts.Expression = loop.expression;
   if (ts.isIdentifier(iterated)) {
     const source = safely(() => checker.getSymbolAtLocation(iterated));
-    const init = source === undefined ? undefined : checker.valueDeclarationOf(source);
+    const init = source === undefined ? undefined : source.valueDeclaration;
     if (init === undefined || !ts.isVariableDeclaration(init) || init.initializer === undefined)
       return [];
     if (init.parent === undefined || (init.parent.flags & ts.NodeFlags.Const) === 0) return [];
@@ -746,7 +743,7 @@ function isProgramClassType(checker: ts.TypeChecker, type: ts.Type): boolean {
   return (
     symbol !== undefined &&
     (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
-    checker.declarationsOf(symbol).some((d) => !d.getSourceFile().isDeclarationFile)
+    symbol.declarations.some((d) => !d.getSourceFile().isDeclarationFile)
   );
 }
 
@@ -759,7 +756,7 @@ function isPlainRecordType(checker: ts.TypeChecker, type: ts.Type): boolean {
   const symbol = type.getSymbol();
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Class) !== 0) return false;
   // Library-declared object types (Map, Date, Promise, ...) are not records.
-  const decls = symbol === undefined ? [] : checker.declarationsOf(symbol);
+  const decls = symbol === undefined ? [] : symbol.declarations;
   if (decls.some((d) => d.getSourceFile().isDeclarationFile)) return false;
   return true;
 }
@@ -772,7 +769,7 @@ function namedObjectDeclaration(checker: ts.TypeChecker, type: ts.Type): ts.Node
   const symbol = alias ?? type.getSymbol();
   if (symbol === undefined) return null;
   if ((symbol.flags & ts.SymbolFlags.Class) !== 0) return null;
-  const decl = checker.declarationsOf(symbol)[0];
+  const decl = symbol.declarations[0];
   if (decl === undefined || decl.getSourceFile().isDeclarationFile) return null;
   return decl;
 }
@@ -826,9 +823,7 @@ function classDeclarationOfTypeNode(
   if (!ts.isTypeReferenceNode(node) || !ts.isIdentifier(node.typeName)) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(node.typeName);
   if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Class) === 0) return null;
-  const decl = lowerer.checker
-    .declarationsOf(symbol)
-    .find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
+  const decl = symbol.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
   if (decl === undefined || decl.getSourceFile().isDeclarationFile) return null;
   return decl as ts.ClassLikeDeclaration;
 }
@@ -839,9 +834,7 @@ function classDeclarationOfType(
 ): ts.ClassLikeDeclaration | null {
   const symbol = type.getSymbol();
   if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Class) === 0) return null;
-  const decl = checker
-    .declarationsOf(symbol)
-    .find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
+  const decl = symbol.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
   if (decl === undefined || decl.getSourceFile().isDeclarationFile) return null;
   return decl as ts.ClassLikeDeclaration;
 }
@@ -866,9 +859,9 @@ function classExtends(
       (symbol.flags & ts.SymbolFlags.Alias) !== 0
         ? lowerer.checker.getAliasedSymbol(symbol)
         : symbol;
-    const decl = lowerer.checker
-      .declarationsOf(resolved)
-      .find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
+    const decl = resolved.declarations.find(
+      (d) => ts.isClassDeclaration(d) || ts.isClassExpression(d),
+    );
     cur = decl === undefined ? null : (decl as ts.ClassLikeDeclaration);
   }
   return false;

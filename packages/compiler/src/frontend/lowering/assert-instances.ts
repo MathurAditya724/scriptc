@@ -176,7 +176,7 @@ export function assertInstanceOf(
 ): AssertInstanceOptions | null {
   if (!ts.isIdentifier(expr)) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(expr);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isVariableDeclaration(decl)) return null;
   return staticAssertInstanceDecl(lowerer, decl.name, decl.initializer);
 }

@@ -1160,7 +1160,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         lowerer.noteEdge(sig.name);
         const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
         const symbol = lowerer.resolveValueSymbol(expr.expression);
-        const declaration = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+        const declaration = symbol ? symbol.valueDeclaration : undefined;
         // A bare call supplies undefined as this, even inside a callback
         // currently carrying a receiver. The value-call ABI saves and
         // restores that ambient receiver around the function invocation.
@@ -3538,9 +3538,9 @@ function lowerDynReceiverMethodCall(
       // Those are not stored members of a checked-dynamic object, so
       // dynKeyGet cannot stand in for JavaScript's prototype lookup. Only
       // an authored declaration can justify the own-member path.
-      const authored = lowerer.checker
-        .declarationsOf(prop)
-        .some((decl) => !lowerer.isStdlibFile(decl.getSourceFile()));
+      const authored = prop.declarations.some(
+        (decl) => !lowerer.isStdlibFile(decl.getSourceFile()),
+      );
       return (
         authored &&
         lowerer.checker.getCallSignatures(lowerer.checker.getTypeOfSymbol(prop)).length > 0
@@ -3641,9 +3641,9 @@ function lowerDynReceiverMethodCall(
       return true;
     return (
       prop !== undefined &&
-      lowerer.checker
-        .declarationsOf(prop)
-        .some((decl) => ts.isPropertyDeclaration(decl) || ts.isPropertySignature(decl))
+      prop.declarations.some(
+        (decl) => ts.isPropertyDeclaration(decl) || ts.isPropertySignature(decl),
+      )
     );
   })();
   // Protocol methods keep their static signature: instances of the
@@ -4298,9 +4298,7 @@ function lowerCaughtPredicateCall(
   const callee = call.expression;
   if (!ts.isIdentifier(callee)) return null;
   const symbol = lowerer.resolveValueSymbol(callee);
-  const decl = symbol
-    ? lowerer.checker.declarationsOf(symbol).find(ts.isFunctionDeclaration)
-    : undefined;
+  const decl = symbol ? symbol.declarations.find(ts.isFunctionDeclaration) : undefined;
   if (!symbol || !decl || !decl.body) return null;
   if (!decl.type || !ts.isTypePredicateNode(decl.type)) return null;
   if (decl.parameters.nodes.length !== 1) return null;
@@ -4869,7 +4867,7 @@ function implicitReceiverOverloadReturn(
   if (!member) return null;
   const signatures = lowerer.checker.getCallSignatures(lowerer.checker.getTypeOfSymbol(member));
   const matches = signatures.filter((signature) => {
-    const decl = lowerer.checker.signatureDeclaration(signature);
+    const decl = signature.declaration;
     if (!decl || !(ts.isFunctionDeclaration(decl) || ts.isMethodDeclaration(decl)) || decl.body) {
       return false;
     }
@@ -4921,7 +4919,7 @@ function reconcileOverloadReturn(
   call: IrExpr,
 ): IrExpr {
   const rsig = lowerer.checker.getResolvedSignature(expr);
-  const rdecl = rsig ? lowerer.checker.signatureDeclaration(rsig) : undefined;
+  const rdecl = rsig ? rsig.declaration : undefined;
   // Nominal covariant overrides share the base's return ABI, but retain
   // their declared subclass result at the call site. Unannotated fluent
   // JS overrides use the same bridge for their proven receiver result.
@@ -7863,7 +7861,7 @@ function lowerObjectStaticCall(
       ? lowerer.checker.getSymbolAtLocation(argNode)
       : undefined;
     const namespace = symbol
-      ? lowerer.checker.declarationsOf(symbol).some((decl) => ts.isNamespaceImport(decl))
+      ? symbol.declarations.some((decl) => ts.isNamespaceImport(decl))
       : false;
     const names = namespace ? [...UTIL_TYPES_KEYS, "default"].sort() : UTIL_TYPES_KEYS;
     const loc = locOf(call);
@@ -8507,7 +8505,7 @@ function isOverloadedMemberAccess(lowerer: Lowerer, access: ts.PropertyAccessExp
 function resolvedOverloadResultType(lowerer: Lowerer, call: ts.CallExpression): IrType {
   const { checker } = lowerer;
   const signature = checker.getResolvedSignature(call);
-  const decl = signature ? checker.signatureDeclaration(signature) : undefined;
+  const decl = signature ? signature.declaration : undefined;
   const declared = decl ? checker.getSignatureFromDeclaration(decl) : undefined;
   const source = declared && declared.getTypeParameters().length === 0 ? declared : signature;
   const result = source ? lowerer.mapTypeOf(checker.getReturnTypeOfSignature(source)) : null;
@@ -8699,7 +8697,7 @@ const SP_BRAND_METHODS = new Set([
 function arrowSignatureOf(lowerer: Lowerer, node: ts.Expression): ts.Signature | null {
   const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(node));
   if (signatures.length !== 1) return null;
-  const declaration = lowerer.checker.signatureDeclaration(signatures[0]!);
+  const declaration = signatures[0]!.declaration;
   return declaration !== undefined && ts.isArrowFunction(declaration) ? signatures[0]! : null;
 }
 
@@ -8952,7 +8950,7 @@ function lowerObjLitGenericMethodCall(
   const recvT = lowerer.typeOf(access.expression);
   const propSym = lowerer.checker.getPropertyOfType(recvT, name);
   if (!propSym) return null;
-  const propertyDecl = lowerer.checker.valueDeclarationOf(propSym);
+  const propertyDecl = propSym.valueDeclaration;
   if (
     propertyDecl &&
     ts.isShorthandPropertyAssignment(propertyDecl) &&
@@ -8976,13 +8974,11 @@ function lowerObjLitGenericMethodCall(
   // claimed compilable ones; a class that failed collection keeps its
   // own diagnostics and the generic method-call fence downstream).
   if (
-    lowerer.checker
-      .declarationsOf(propSym)
-      .some(
-        (d) =>
-          d.parent !== undefined &&
-          (ts.isClassDeclaration(d.parent) || ts.isClassExpression(d.parent)),
-      )
+    propSym.declarations.some(
+      (d) =>
+        d.parent !== undefined &&
+        (ts.isClassDeclaration(d.parent) || ts.isClassExpression(d.parent)),
+    )
   ) {
     return null;
   }
@@ -9049,9 +9045,9 @@ function lowerObjLitGenericMethodCall(
     // receiver's runtime class must be provable — name that discipline
     // instead of the object-literal wording when the method lives on an
     // interface.
-    const onInterface = lowerer.checker
-      .declarationsOf(propSym)
-      .some((d) => d.parent !== undefined && ts.isInterfaceDeclaration(d.parent));
+    const onInterface = propSym.declarations.some(
+      (d) => d.parent !== undefined && ts.isInterfaceDeclaration(d.parent),
+    );
     // A receiver held as a checked-dynamic value (a class-backed interface)
     // dispatches by name to the runtime object's member, which a generic
     // method answers with its erased instance; the result converts to this

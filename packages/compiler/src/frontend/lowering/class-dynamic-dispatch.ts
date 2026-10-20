@@ -2883,7 +2883,7 @@ export class ClassDynamicDispatch {
           if (info.symbolMethods)
             for (const [symbol, name] of info.symbolMethods) symbolEntries.push([symbol, name]);
           for (const [symbol, name] of symbolEntries) {
-            const declaration = lowerer.checker.valueDeclarationOf(symbol);
+            const declaration = symbol.valueDeclaration;
             if (
               declaration &&
               ts.isVariableDeclaration(declaration) &&
