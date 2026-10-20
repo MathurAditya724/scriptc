@@ -457,6 +457,7 @@ export function arrayWidthHelper(
         loc,
       }),
       loc,
+      true,
     ),
   );
   return name;

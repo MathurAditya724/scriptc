@@ -12,6 +12,10 @@ export interface ElementStateHost {
    * separate), `null` when its element ABI is not known yet (a generic
    * element type). */
   arrayKeys(node: ts.Expression): readonly string[] | null;
+  /** Element keys of the array a value stored at `node` is converted into:
+   * its contextual array type's, when they differ from the value's own
+   * (a width conversion copies it), else `[]`. */
+  convertedArrayKeys(node: ts.Expression): readonly string[];
   /** The element type behind this key admits `undefined` itself. */
   elementAdmitsUndefined(key: string): boolean;
   /** The value stored by `node` can be `undefined` at runtime. */
@@ -96,6 +100,35 @@ export class ArrayElementStates {
   /** Scans one syntax node; true when a fact was added. */
   scan(node: ts.Node): boolean {
     this.site = node;
+    const converted = this.scanConversions(node);
+    return this.scanNode(node) || converted;
+  }
+
+  /** Values stored where the contextual array type has another element ABI
+   * are copied into an array of that ABI (a width conversion), which keeps
+   * the source's holes and undefined values. */
+  private scanConversions(node: ts.Node): boolean {
+    let changed = false;
+    const convert = (value: ts.Expression | undefined): void => {
+      if (!value || ts.isSpreadElement(value)) return;
+      const keys = this.host.convertedArrayKeys(value);
+      if (keys.length === 0) return;
+      const contents = this.contents(value);
+      if ((contents === null || contents.undefined) && this.addUndefined(keys)) changed = true;
+      if ((contents === null || contents.holes) && this.addHoles(keys)) changed = true;
+    };
+    if (ts.isVariableDeclaration(node) || ts.isPropertyAssignment(node)) convert(node.initializer);
+    else if (ts.isShorthandPropertyAssignment(node) && ts.isIdentifier(node.name))
+      convert(node.name);
+    else if (ts.isReturnStatement(node)) convert(node.expression);
+    else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+      convert(node.right);
+    else if (ts.isCallExpression(node) || ts.isNewExpression(node))
+      for (const arg of node.arguments?.nodes ?? []) convert(arg);
+    return changed;
+  }
+
+  private scanNode(node: ts.Node): boolean {
     if (ts.isBinaryExpression(node)) return this.scanAssignment(node);
     if (
       (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&

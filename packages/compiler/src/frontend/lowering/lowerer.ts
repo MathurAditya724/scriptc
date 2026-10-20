@@ -5740,6 +5740,16 @@ export class Lowerer {
       ownerOf: (node) => ownership.ownerOf(node),
       allocationOwner: (node) => ownership.allocationOwner(node),
       arrayKeys: arrayKeysOf,
+      convertedArrayKeys: (node) =>
+        panicSafe((): readonly string[] => {
+          const own = arrayKeysOf(node);
+          if (own === null || own.length === 0) return [];
+          const contextual = this.checker.getContextualType(node);
+          const target = contextual ? this.mapTypeOf(contextual) : null;
+          if (target?.kind !== "array") return [];
+          const key = typeKey(target.elem);
+          return own.includes(key) ? [] : [key];
+        }, []),
       mayBeUndefined: (node) => {
         if (explicitlyNonNull(node)) return false;
         if (mayBeOptional(node)) return true;
@@ -5831,7 +5841,10 @@ export class Lowerer {
           ts.isForOfStatement(node) ||
           ts.isArrayBindingPattern(node) ||
           ts.isPrefixUnaryExpression(node) ||
-          ts.isPostfixUnaryExpression(node)
+          ts.isPostfixUnaryExpression(node) ||
+          ts.isPropertyAssignment(node) ||
+          ts.isShorthandPropertyAssignment(node) ||
+          ts.isReturnStatement(node)
         )
           nodes.push(node);
       });

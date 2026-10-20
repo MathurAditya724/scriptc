@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5687-holey-arrays-into-union-elements.ts"
+ ],
+ "diags": []
+}
