@@ -1,6 +1,8 @@
 // Event-loop monitoring under @types/node: monitorEventLoopDelay's histogram,
 // eventLoopUtilization deltas, and an unref'd interval typed NodeJS.Timeout.
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
+import * as perfHooks from "node:perf_hooks";
+import { monitorEventLoopDelay as eld } from "node:perf_hooks";
 
 const histogram = monitorEventLoopDelay({ resolution: 10 });
 console.log("enable", histogram.enable(), histogram.enable());
@@ -47,3 +49,22 @@ const interval = setInterval(() => {
 }, 50);
 interval.unref();
 console.log("hasRef", interval.hasRef());
+
+// Other import spellings, and Node's resolution validation.
+const aliased = eld();
+const namespaced = perfHooks.monitorEventLoopDelay({ resolution: 20 });
+console.log("spellings", aliased.enable(), namespaced.enable(), aliased.disable(), namespaced.disable());
+for (const resolution of [0, -0, -1, 1.5, NaN, Infinity, 1e16, 1]) {
+  try {
+    eld({ resolution });
+    console.log("created", resolution);
+  } catch (e) {
+    console.log((e as Error).name, (e as { code?: string }).code, (e as Error).message);
+  }
+}
+// An undefined resolution takes Node's default.
+function withResolution(resolution?: number): boolean {
+  const h = monitorEventLoopDelay({ resolution });
+  return h.enable() && h.disable();
+}
+console.log("defaults", withResolution(), withResolution(20), eld({ resolution: undefined }).enable());

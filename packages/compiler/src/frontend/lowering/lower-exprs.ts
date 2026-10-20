@@ -13801,6 +13801,24 @@ const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
  * idiom over multiple shapes), index-signature keys, class instances,
  * and dyn/unknown stay fenced. Keys are literal strings — a computed key
  * over a shape would need the runtime key table. */
+/** Keys built-in errors carry outside their class fields: Node's system
+ * error properties, and AggregateError's, SuppressedError's and
+ * AssertionError's own members. */
+const BUILTIN_ERROR_SLOT_KEYS: ReadonlySet<string> = new Set([
+  "errno",
+  "syscall",
+  "path",
+  "dest",
+  "info",
+  "errors",
+  "error",
+  "suppressed",
+  "actual",
+  "expected",
+  "operator",
+  "generatedMessage",
+]);
+
 function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
   if (
     lowerer.isStdlibGlobal(expr.right, "process") &&
@@ -14036,15 +14054,29 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
       ) {
         return { kind: "boolLit", value: true, type: BOOL, loc };
       }
+      // Every Error has its own `stack`, and Error.prototype's `toString`
+      // and `constructor` are among Object.prototype's keys.
+      if (
+        (key === "stack" || OBJECT_PROTOTYPE_KEYS.has(key)) &&
+        (recv.kind === "varRef" || recv.kind === "caughtNarrow")
+      ) {
+        return { kind: "boolLit", value: true, type: BOOL, loc };
+      }
       // Any other key: a member a program class declares. The receiver's
       // runtime class is its static class or a descendant; the key is
-      // present exactly when that class (or an ancestor) declares it.
-      if (recv.kind === "varRef" || recv.kind === "caughtNarrow") {
-        const declares = (c: ClassInfo): boolean =>
-          c.fields.has(key) ||
-          lowerer.findMethodOn(c, key) !== null ||
-          lowerer.findMethodOn(c, `get:${key}`) !== null ||
-          lowerer.findMethodOn(c, `set:${key}`) !== null;
+      // present exactly when that class (or an ancestor) declares it. Keys
+      // built-in errors keep outside their class fields depend on the
+      // runtime error and stay fenced, as do keys no program class declares.
+      const declares = (c: ClassInfo): boolean =>
+        c.fields.has(key) ||
+        lowerer.findMethodOn(c, key) !== null ||
+        lowerer.findMethodOn(c, `get:${key}`) !== null ||
+        lowerer.findMethodOn(c, `set:${key}`) !== null;
+      if (
+        (recv.kind === "varRef" || recv.kind === "caughtNarrow") &&
+        !BUILTIN_ERROR_SLOT_KEYS.has(key) &&
+        [...lowerer.classes.values()].some((c) => c.builtinError !== true && declares(c))
+      ) {
         const staticName = recv.type.className;
         const staticInfo = lowerer.classes.get(staticName);
         if (staticInfo && declares(staticInfo))
