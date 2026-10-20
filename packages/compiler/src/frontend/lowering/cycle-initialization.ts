@@ -37,6 +37,8 @@ export interface CycleInitFlag {
   /** The declaring module. */
   module: ts.SourceFile;
   settled: ReadonlySet<ts.SourceFile>;
+  /** Local names other files import the binding under, by file name. */
+  localNames?: ReadonlyMap<string, string>;
   /** True for a binding of an import cycle. A binding flagged only for its
    * own module's early calls is checked opportunistically: whatever cannot
    * be checked keeps the unchecked behavior instead of refusing. */
@@ -49,11 +51,19 @@ export interface CycleInitFlag {
    * static field storage (`global` is the flag itself). */
   className?: string;
   staticGlobals?: ReadonlySet<string>;
-  /** The source references to the class outside its own body. Only IR
-   * built for one of them is checked: compiler-generated dispatch (error
-   * property helpers, prototype data, reflection) also names the class
-   * and must keep working before the class statement ran. */
-  references?: readonly SrcLoc[];
+  /** The source references to the class outside its own body, with the
+   * local name each one spells (an import can rename the class; Node's
+   * ReferenceError names that binding). Only IR built for one of them is
+   * checked: compiler-generated dispatch (error property helpers,
+   * prototype data, reflection) also names the class and must keep
+   * working before the class statement ran. */
+  references?: readonly ClassReference[];
+}
+
+/** A source reference to a flagged class and the local name it spells. */
+interface ClassReference {
+  loc: SrcLoc;
+  name: string;
 }
 
 /** Registers the initialization flags after global collection. Bindings
@@ -182,31 +192,73 @@ function registerClassInitFlag(
 function earlyHeritageReference(lowerer: Lowerer, binding: CycleEarlyBinding): ts.Node | null {
   const declaration = binding.name.parent;
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (
-      sf.isDeclarationFile ||
-      sf === binding.module ||
-      binding.settled.has(sf) ||
-      !sf.text.includes(binding.name.text)
-    )
-      continue;
+    if (sf.isDeclarationFile || sf === binding.module || binding.settled.has(sf)) continue;
+    const names = classLocalNames(lowerer, sf, binding.symbol, binding.name.text, true);
+    if (names.size === 0) continue;
     let found: ts.Node | null = null;
     ts.walkPreorder(sf, (node) => {
       if (found !== null || node === declaration) return "skip";
-      if (ts.isHeritageClause(node)) {
-        for (const type of node.types.nodes) {
-          let referenced = ts.isIdentifier(type.expression)
-            ? lowerer.checker.getSymbolAtLocation(type.expression)
-            : undefined;
-          if (referenced !== undefined && referenced.flags & ts.SymbolFlags.Alias)
-            referenced = lowerer.checker.getAliasedSymbol(referenced);
-          if (referenced === binding.symbol) found = type.expression;
-        }
-      }
-      return undefined;
+      if (!ts.isHeritageClause(node)) return undefined;
+      // Node evaluates the whole clause when the class statement runs:
+      // any reference inside it (parenthesized, a factory argument)
+      // reaches the class.
+      ts.walkPreorder(node, (inner) => {
+        if (found !== null) return "skip";
+        if (
+          ts.isIdentifier(inner) &&
+          names.has(inner.text) &&
+          resolvesTo(lowerer, inner, binding.symbol, true)
+        )
+          found = inner;
+        return undefined;
+      });
+      return "skip";
     });
     if (found !== null) return found;
   }
   return null;
+}
+
+/** Whether `node` names `symbol`, through import aliases when `aliases`. */
+function resolvesTo(
+  lowerer: Lowerer,
+  node: ts.Identifier,
+  symbol: ts.Symbol,
+  aliases: boolean,
+): boolean {
+  let referenced = lowerer.checker.getSymbolAtLocation(node);
+  if (aliases && referenced !== undefined && referenced.flags & ts.SymbolFlags.Alias)
+    referenced = lowerer.checker.getAliasedSymbol(referenced);
+  return referenced === symbol;
+}
+
+/** The local names under which `sf` can spell the class: its declared name
+ * (when the file's text contains it) and, with `aliases`, the local names
+ * of the file's imports that resolve to it (`import { Sink as Alias }`, a
+ * default import, a re-exported name). */
+function classLocalNames(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  symbol: ts.Symbol,
+  declared: string,
+  aliases: boolean,
+): Set<string> {
+  const names = new Set<string>();
+  if (sf.text.includes(declared)) names.add(declared);
+  if (!aliases) return names;
+  for (const statement of sf.statements.nodes) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const clause = statement.importClause;
+    if (clause === undefined) continue;
+    const locals: ts.Identifier[] = [];
+    if (clause.name !== undefined) locals.push(clause.name);
+    const bindings = clause.namedBindings;
+    if (bindings !== undefined && ts.isNamedImports(bindings))
+      for (const element of bindings.elements.nodes) locals.push(element.name);
+    for (const local of locals)
+      if (!names.has(local.text) && resolvesTo(lowerer, local, symbol, true)) names.add(local.text);
+  }
+  return names;
 }
 
 /** The source spans of the identifiers naming the class outside its own
@@ -219,31 +271,36 @@ function classReferences(
   symbol: ts.Symbol,
   name: ts.Identifier,
   cycle: boolean,
-): SrcLoc[] {
+): ClassReference[] {
   const declaration = name.parent;
-  const out: SrcLoc[] = [];
+  const out: ClassReference[] = [];
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (sf.isDeclarationFile || !sf.text.includes(name.text)) continue;
+    if (sf.isDeclarationFile) continue;
+    // Another module names the class through its import bindings, under
+    // the class's name or a local one.
+    const names = classLocalNames(lowerer, sf, symbol, name.text, cycle);
+    if (names.size === 0) continue;
     ts.walkPreorder(sf, (node) => {
       if (node === declaration) return "skip";
-      if (ts.isIdentifier(node) && node.text === name.text) {
-        // Another module names the class through its import binding.
-        let referenced = lowerer.checker.getSymbolAtLocation(node);
-        if (cycle && referenced !== undefined && referenced.flags & ts.SymbolFlags.Alias)
-          referenced = lowerer.checker.getAliasedSymbol(referenced);
-        if (referenced === symbol) out.push(locOf(node));
-      }
+      if (ts.isIdentifier(node) && names.has(node.text) && resolvesTo(lowerer, node, symbol, cycle))
+        out.push({ loc: locOf(node), name: node.text });
       return undefined;
     });
   }
   return out;
 }
 
+/** The source reference to the flagged class that `loc`'s IR was built
+ * for, or undefined. */
+function coveredReference(flag: CycleInitFlag, loc: SrcLoc): ClassReference | undefined {
+  return (flag.references ?? []).find(
+    (r) => r.loc.file === loc.file && loc.start <= r.loc.start && r.loc.end <= loc.end,
+  );
+}
+
 /** Whether `loc` is the IR of a source reference to the flagged class. */
 function coversReference(flag: CycleInitFlag, loc: SrcLoc): boolean {
-  return (flag.references ?? []).some(
-    (r) => r.file === loc.file && loc.start <= r.start && r.end <= loc.end,
-  );
+  return coveredReference(flag, loc) !== undefined;
 }
 
 /** The class statement's static initialization, followed by the store of
@@ -271,6 +328,7 @@ function registerInitFlag(
     name: binding.name.text,
     module: binding.module,
     settled: binding.settled,
+    ...(binding.localNames ? { localNames: binding.localNames } : {}),
     cycle,
   };
   lowerer.cycleInitFlags.set(global.id, flag);
@@ -444,18 +502,30 @@ function rewriteFunction(
             return flag;
         }
         return undefined;
+      case "closure":
+        // A static method read as a value (`const f = K.m`) reads K.
+        for (const [className, flag] of classes) {
+          if (e.fnName.startsWith(`%${className}.static:`) && coversReference(flag, e.loc))
+            return flag;
+        }
+        return undefined;
       default:
         return undefined;
     }
   };
   let temps = 0;
   const check = (flag: CycleInitFlag, loc: SrcLoc): IrStmt => {
+    // Node's ReferenceError names the binding the reference spells.
+    const name =
+      flag.className !== undefined
+        ? (coveredReference(flag, loc)?.name ?? flag.name)
+        : (flag.localNames?.get(loc.file) ?? flag.name);
     const expr: IrExpr = {
       kind: "intrinsic",
       name: "module.tdzCheck",
       args: [
         { kind: "varRef", localId: flag.flagId, type: BOOL, loc },
-        { kind: "strLit", value: flag.name, type: STRING, loc },
+        { kind: "strLit", value: name, type: STRING, loc },
       ],
       type: VOID,
       loc,
