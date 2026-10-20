@@ -602,7 +602,7 @@ export function emitStringExpr(
     }
     case "strCmp": {
       const [l, r] = emitStringInputs(host, [e.left, e.right]);
-      const fn = e.utf16 === true ? "scr_str_cmp_u16" : "scr_str_cmp";
+      const fn = "scr_str_cmp_u16";
       host.declare(`declare i32 @${fn}(ptr, ptr)`);
       const c = B.tmp();
       const t = B.tmp();
