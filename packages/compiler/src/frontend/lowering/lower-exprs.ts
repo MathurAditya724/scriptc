@@ -134,6 +134,7 @@ export {
   lowerIncDecTarget,
   lowerPrefixUnary,
 } from "./expressions/updates.js";
+import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
 
 /** An assignable `obj.field` target — a class field, a record field, or a
@@ -636,6 +637,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // and answers itself. Thenable adoption stays unmodeled
       // (SEMANTICS.md).
       if (value.type.kind === "dyn") {
+        // A program that can define thenables adopts them (thenables.ts).
+        if (programMayDefineThenables(lowerer)) return awaitDynThenable(lowerer, value, loc);
         return { kind: "libCall", fn: "async.awaitDyn", args: [value], type: DYN, loc };
       }
 
