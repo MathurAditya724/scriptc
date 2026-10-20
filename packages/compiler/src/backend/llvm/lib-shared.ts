@@ -994,6 +994,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // family have non-generic shapes (adapter/variadic) — special-cased in
   // emitLibCall.
   "emitter.new": "scr_emitter_new",
+  "emitter.className": "scr_emitter_class_name",
   "emitter.ctor": "scr_emitter_init",
   "emitter.off": "scr_emitter_off",
   "emitter.offDyn": "scr_emitter_off_dyn",

@@ -6350,15 +6350,19 @@ void scr_stream_install(void) {
 static void scr_stream_child_read(ScrClosure *cb, ScrStream *s, double size) {
   (void)cb; (void)s; (void)size;
 }
-static ScrStream *scr_stream_child_readable(void) {
-  return scr_stream_new_readable(-1, true, true,
+static ScrStream *scr_stream_child_readable(const char *cls) {
+  ScrStream *s = scr_stream_new_readable(-1, true, true,
       scr_closure_new((void *)scr_stream_child_read, 0), scr_stream_child_read,
       NULL, NULL);
+  s->cls = cls;
+  return s;
 }
-static ScrStream *scr_stream_child_writable(ScrClosure *write, ScrStreamChunkInv write_inv,
-    ScrClosure *final_cb, ScrStreamPlainInv final_inv) {
-  return scr_stream_new_writable(-1, true, true, write, write_inv,
+static ScrStream *scr_stream_child_writable(const char *cls, ScrClosure *write,
+    ScrStreamChunkInv write_inv, ScrClosure *final_cb, ScrStreamPlainInv final_inv) {
+  ScrStream *s = scr_stream_new_writable(-1, true, true, write, write_inv,
       final_cb, final_inv, NULL, NULL);
+  s->cls = cls;
+  return s;
 }
 const ScrChildStreamOps scr_stream_child_ops = {
   scr_stream_child_readable, scr_stream_child_writable,
@@ -6578,6 +6582,7 @@ ScrStream *scr_crypto_hash_stream(ScrCryptoHash *hash) {
                                scr_hash_stream_step(box), scr_hash_stream_transform,
                                scr_hash_stream_step(box), scr_hash_stream_flush,
                                scr_hash_stream_step(box), scr_hash_stream_destroy);
+  s->cls = scr_crypto_hash_is_hmac(hash) ? "Hmac" : "Hash";
   /* The steps keep the box alive as long as the stream. */
   scr_crypto_hash_stream_set(hash, scr_stream_retain(s), scr_stream_release_v, box);
   scr_box_release(box);

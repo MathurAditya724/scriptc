@@ -76,6 +76,11 @@ import { lifetimeRegionMemberOf } from "../../experimental-import.js";
 import { lowerInternTableProperty } from "../intern-tables.js";
 import { lowerThreadSlotsProperty } from "../thread-slots.js";
 import { builtinClassRefOf, runtimeClassValueOfType } from "../builtins/class-values.js";
+import {
+  lowerRuntimeConstructor,
+  lowerRuntimeConstructorName,
+  runtimeConstructorReceiver,
+} from "../builtins/runtime-constructor.js";
 import { findGenericMethodOn, lowerStaticFieldRead } from "../lower-classes.js";
 import { lowerClassPrototypeData } from "../class-prototypes.js";
 import { lowerEnumAccess } from "../lower-enums.js";
@@ -289,6 +294,16 @@ export function lowerPropertyAccessExpr(
   if (expr.name.text === "name" && !expr.questionDotToken) {
     const ref = builtinClassRefOf(lowerer, expr.expression);
     if (ref !== null) return { kind: "strLit", value: ref.name, type: STRING, loc };
+  }
+  // `x.constructor.name` and `x.constructor` on an instance of
+  // EventEmitter or a stream class (builtins/runtime-constructor.ts).
+  if (expr.name.text === "name" && !expr.questionDotToken) {
+    const ctor = runtimeConstructorReceiver(lowerer, expr.expression);
+    if (ctor) return lowerRuntimeConstructorName(lowerer, ctor.receiver, loc);
+  }
+  {
+    const ctor = runtimeConstructorReceiver(lowerer, expr);
+    if (ctor) return lowerRuntimeConstructor(lowerer, expr, ctor.info);
   }
   // `C.name` through a runtime-provided class VALUE (a `typeof Readable`
   // parameter): the class object's stored name.

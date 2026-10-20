@@ -253,9 +253,13 @@ void scr_child_dyn_install(void);
 void scr_child_on_dyn(ScrChild *child, ScrStr *event, ScrDyn *listener); /* borrowed */
 /* Optional native-stream bridge. The table avoids a stream dependency
  * in programs that only use the child-process surface. */
+/* readable/writable take the stream's class name (the constructor name
+ * Node reports: Socket for child stdio, ReadableWorkerStdio and
+ * WritableWorkerStdio for worker stdio). */
 typedef struct ScrChildStreamOps {
-  ScrStream *(*readable)(void);
-  ScrStream *(*writable)(ScrClosure *, ScrStreamChunkInv, ScrClosure *, ScrStreamPlainInv);
+  ScrStream *(*readable)(const char *cls);
+  ScrStream *(*writable)(const char *cls, ScrClosure *, ScrStreamChunkInv, ScrClosure *,
+      ScrStreamPlainInv);
   void *(*retain)(void *);
   void (*release)(void *);
   ScrTraceFn trace;
