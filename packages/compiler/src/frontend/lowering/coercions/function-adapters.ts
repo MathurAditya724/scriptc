@@ -130,12 +130,84 @@ export function cleanFuncAdaptable(
 /** Adapt a function value to a destination signature, forwarding and
  * converting its arguments and result. Unsupported parameter/result pairs
  * produce checked traps when called; rest signatures remain refused. */
+/** Whether a typed-rest function (`(...m: T[]) => R`) can serve a slot
+ * with fixed parameters (`(m: T) => void`): the slot's parameters convert
+ * to the function's fixed parameters, then to the rest element type. */
+export function restPackingAdapterFits(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+): boolean {
+  if (fromT.rest !== true || fromT.restAbi !== "typed" || toT.rest === true) return false;
+  const fixed = fromT.params.length - 1;
+  const restT = fromT.params[fixed];
+  if (restT?.kind !== "array" || toT.params.length < fixed) return false;
+  for (let i = 0; i < toT.params.length; i++) {
+    if (!lowerer.coercibleValue(toT.params[i]!, i < fixed ? fromT.params[i]! : restT.elem))
+      return false;
+  }
+  return toT.ret.kind === "void" || lowerer.coercibleValue(fromT.ret, toT.ret);
+}
+
+/** The adapter for restPackingAdapterFits: forwards the fixed arguments and
+ * packs the remaining ones into the rest array, as a JavaScript call of the
+ * function with those arguments does. */
+function restPackingAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string {
+  const key = `fnrestadapt:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = `%fn.adapt.${lowerer.coercions.retags.size}`;
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const fixed = fromT.params.length - 1;
+  const restT = fromT.params[fixed] as IrType & { kind: "array" };
+  const params: IrParam[] = toT.params.map((t, i) => ({
+    localId: `a.${i}`,
+    name: `a${i}`,
+    type: t,
+  }));
+  const arg = (i: number, want: IrType): IrExpr =>
+    lowerer.coerceToExpected(
+      { kind: "varRef", localId: `a.${i}`, type: toT.params[i]!, loc },
+      want,
+    );
+  const args: IrExpr[] = [];
+  for (let i = 0; i < fixed; i++) args.push(arg(i, fromT.params[i]!));
+  const packed: IrExpr[] = [];
+  for (let i = fixed; i < toT.params.length; i++) packed.push(arg(i, restT.elem));
+  args.push({ kind: "arrayLit", elems: packed, type: restT, loc });
+  const call: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args,
+    type: fromT.ret,
+    loc,
+  };
+  const body: IrStmt[] =
+    toT.ret.kind === "void"
+      ? [
+          { kind: "exprStmt", expr: call, loc },
+          { kind: "return", value: null, loc },
+        ]
+      : [{ kind: "return", value: lowerer.coerceToExpected(call, toT.ret), loc }];
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  return name;
+}
+
 export function funcCoerceAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
   toT: IrType & { kind: "func" },
   loc: SrcLoc,
 ): string | null {
+  if (restPackingAdapterFits(lowerer, fromT, toT))
+    return restPackingAdapter(lowerer, fromT, toT, loc);
   if (fromT.rest === true || toT.rest === true) return null;
   if (fromT.params.length > toT.params.length) return null;
   // Piece dispositions beyond coercibleValue, all CHECKER-APPROVED
