@@ -37,7 +37,7 @@ export function isCjsExportsIdentifier(lowerer: Lowerer, node: ts.Expression): b
   if (!ts.isIdentifier(node) || node.text !== "exports") return false;
   if (!isCjsJsFile(node.getSourceFile(), lowerer.program)) return false;
   const symbol = lowerer.checker.getSymbolAtLocation(node);
-  const decls = symbol ? lowerer.checker.declarationsOf(symbol) : [];
+  const decls = symbol ? symbol.declarations : [];
   return !decls.some(
     (d) =>
       !d.getSourceFile().isDeclarationFile &&
@@ -349,7 +349,7 @@ function functionUsesThis(fn: ts.FunctionLikeDeclaration): boolean {
 /** A function declaration, or a variable initialized with a function or
  * arrow expression, that never reads `this`. */
 function symbolIsThisFreeFunction(lowerer: Lowerer, sym: ts.Symbol | undefined): boolean {
-  const decls = sym ? lowerer.checker.declarationsOf(sym) : [];
+  const decls = sym ? sym.declarations : [];
   const fn = decls.find(ts.isFunctionDeclaration);
   if (fn !== undefined) return !functionUsesThis(fn);
   const v = decls.find(ts.isVariableDeclaration);

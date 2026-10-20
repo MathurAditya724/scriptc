@@ -17,6 +17,12 @@ export interface RuntimeFeatures {
   fetch: boolean;
   eventTarget: boolean;
   processEvents: boolean;
+  /** process.emitWarning is assigned (process.setEmitWarning). Declared
+   * in the literal's order: JSON.stringify of the features record must
+   * match between the Node-run and self-hosted compilers. */
+  warningReplace: boolean;
+  /** stdin setEncoding / string data listeners / stdio 'resize' events. */
+  stdioExtended: boolean;
   emitter: boolean;
   stream: boolean;
   zlib: boolean;
@@ -49,6 +55,8 @@ export interface RuntimeFeatures {
   tls: boolean;
   tlsCa: boolean;
   cipher: boolean;
+  /** crypto.subtle importKey/sign/verify/digest: scr_webcrypto.c. */
+  webcrypto: boolean;
 }
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -75,6 +83,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.emitWarningText",
   "process.deprecationFlag",
   "process.setDeprecationFlag",
+  "process.setEmitWarning",
   // The performance timeline (scr_perf.c, linked with this unit for its
   // MaxPerformanceEntryBufferExceededWarning).
   "perf.mark",
@@ -350,17 +359,40 @@ function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean
     }
     case "object": {
       // A boxed class instance exposes its fields as dyn values (Object.keys,
-      // spread, inspection), boxing a promise any field holds.
+      // spread, inspection), boxing a promise any field holds. It
+      // materializes inherited fields too, and the instance can be any
+      // subclass.
       const key = `class:${t.className}`;
       if (seen.has(key)) return false;
       seen.add(key);
-      const def = tables.classes.get(t.className);
-      return def?.fields.some((f) => boxesPromise(f.type, tables, seen)) ?? false;
+      const related = (def: IrClassDef): boolean => {
+        for (
+          let c: IrClassDef | undefined = def;
+          c;
+          c = c.base ? tables.classes.get(c.base) : undefined
+        )
+          if (c.name === t.className) return true;
+        return false;
+      };
+      for (const def of tables.classes.values()) {
+        if (!related(def)) continue;
+        for (
+          let c: IrClassDef | undefined = def;
+          c;
+          c = c.base ? tables.classes.get(c.base) : undefined
+        )
+          if (c.fields.some((f) => boxesPromise(f.type, tables, seen))) return true;
+      }
+      return false;
     }
     default:
       return false;
   }
 }
+
+/** Names that reach the extended process-stream surface (the
+ * SCR_STDIO_EXTENDED events unit): stdin.setEncoding and 'resize'. */
+const STDIO_EXTENDED_NAMES: ReadonlySet<string> = new Set(["setEncoding", "resize"]);
 
 function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): RuntimeFeatures {
   const features: RuntimeFeatures = {
@@ -375,6 +407,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
     ),
     processEvents: false,
+    warningReplace: false,
+    stdioExtended: false,
     emitter:
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
     stream: (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
@@ -407,6 +441,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     tls: false,
     tlsCa: false,
     cipher: false,
+    webcrypto: false,
   };
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   let tables: TypeTables | undefined;
@@ -422,6 +457,14 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       if (REGEX_LIB_FNS.has(fn)) features.regex = true;
       if (LEGACY_TEXT_DECODER_LIB_FNS.has(fn)) features.legacyTextDecoder = true;
       if (fn.startsWith("fetch.")) features.fetch = true;
+      if (fn === "process.setEmitWarning") features.warningReplace = true;
+      // A typed string 'data' listener takes setEncoding-decoded chunks.
+      if (
+        fn === "stdin.onData" &&
+        node.args[0]?.type.kind === "func" &&
+        node.args[0].type.params[0]?.kind === "string"
+      )
+        features.stdioExtended = true;
       if (fn.startsWith("event.") || fn === "events.addAbortListener") features.eventTarget = true;
       if (ABORT_SIGNAL_LIB_FNS.has(fn)) features.eventTarget = true;
       if (PROCESS_EVENT_LIB_FNS.has(fn)) features.processEvents = true;
@@ -502,6 +545,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       }
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
       if (fn.startsWith("tlsca.")) features.tlsCa = true;
+      // Locale case mapping runs the default conversion of the regex unit.
+      if (fn === "str.localeCase") features.regex = true;
       // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
       // process-warning unit, and unknown output encodings render through
       // the inspect unit.
@@ -510,6 +555,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.dynAsync = true;
         features.inspect = true;
       }
+      // crypto.subtle and CryptoKey: scr_webcrypto.c.
+      if (fn.startsWith("webcrypto.")) features.webcrypto = true;
     } else {
       switch (node.kind) {
         case "regexLit":
@@ -527,6 +574,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
           break;
         case "dynInvoke":
           features.dynInvoke = true;
+          if (STDIO_EXTENDED_NAMES.has(node.method)) features.stdioExtended = true;
+          break;
+        // The process stream object's setEncoding and 'resize' members are
+        // reached by name (dynamic member calls and event-name strings).
+        case "strLit":
+          if (STDIO_EXTENDED_NAMES.has(node.value)) features.stdioExtended = true;
           break;
         case "awaitExpr":
           if (node.type.kind === "dyn") features.dynAsync = true;

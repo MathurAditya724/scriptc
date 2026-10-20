@@ -3671,13 +3671,30 @@ export class LlEmitter {
       }
       defs.push(...helper.define(this.sizeType, FN_ATTRS, scanInline), ``);
     }
-    // Ordering also decides inline when the first bytes differ: byte order
-    // is the plain comparison's order, and the UTF-16 order whenever both
-    // bytes are ASCII. Callers only test the sign of the result.
-    for (const fn of ["scr_str_cmp", "scr_str_cmp_u16"]) {
-      if (!this.decls.has(`declare i32 @${fn}(ptr, ptr)`)) continue;
+    // Ordering decides inline from the first differing bytes. The bytes
+    // before them are equal, so both strings are at the same position of a
+    // character: either both bytes continue characters with the same lead
+    // byte, or both start a character. Byte order is the UTF-16 order for
+    // two continuation bytes, and for two lead bytes when one starts a
+    // character below U+D000, whose UTF-16 unit is below every unit of a
+    // character with a lead byte of at least 0xED. Between lead bytes of at
+    // least 0xED, a supplementary character (0xF0..0xF4, a high surrogate
+    // unit) orders below U+E000..U+FFFF (0xEE, 0xEF), and a lead byte of
+    // 0xED (U+D000..U+D7FF or a lone surrogate) takes the runtime.
+    // Differing words without a byte of at least 0xED decide in byte
+    // order; other differing words decide by their first differing byte,
+    // and strings shorter than a word by their first byte. Otherwise a
+    // proven-ASCII string on either side orders by bytes (scr_str_cmp), and
+    // other pairs call scr_str_cmp_u16_bytes, which only reads the two
+    // strings, so LLVM can merge repeated comparisons of one pair. Callers
+    // only test the sign of the result.
+    if (this.decls.has(`declare i32 @scr_str_cmp_u16(ptr, ptr)`)) {
+      const fn = "scr_str_cmp_u16";
       this.declare("declare i64 @llvm.bswap.i64(i64)");
-      const utf16 = fn === "scr_str_cmp_u16";
+      this.declare("declare i64 @llvm.cttz.i64(i64, i1 immarg)");
+      this.declare("declare i8 @llvm.umin.i8(i8, i8)");
+      this.declare("declare i32 @scr_str_cmp(ptr, ptr)");
+      this.declare("declare i32 @scr_str_cmp_u16_bytes(ptr, ptr)");
       defs.push(
         `define internal i32 @${fn.replace(/^scr_/, "sc_")}(ptr %a, ptr %b) ${FN_ATTRS} {`,
         `entry:`,
@@ -3692,8 +3709,7 @@ export class LlEmitter {
         `  %bempty = icmp eq ${this.sizeType} %blen, 0`,
         `  %empty = or i1 %aempty, %bempty`,
         `  br i1 %empty, label %order, label %words`,
-        // Both at least 8 bytes: the first differing byte of one word pair.
-        // Byte-swapped little-endian words compare in byte order.
+        // Both at least 8 bytes: the first word of each.
         `words:`,
         `  %along = icmp uge ${this.sizeType} %alen, 8`,
         `  %blong = icmp uge ${this.sizeType} %blen, 8`,
@@ -3705,22 +3721,7 @@ export class LlEmitter {
         `  %aw = load i64, ptr %awp, align 1`,
         `  %bw = load i64, ptr %bwp, align 1`,
         `  %wdiffer = icmp ne i64 %aw, %bw`,
-        `  br i1 %wdiffer, label %wdiff, label %wsame`,
-        `wdiff:`,
-        ...(utf16
-          ? [
-              `  %wbits = or i64 %aw, %bw`,
-              `  %whigh = and i64 %wbits, -9187201950435737472`,
-              `  %wascii = icmp eq i64 %whigh, 0`,
-              `  br i1 %wascii, label %wordorder, label %order`,
-            ]
-          : [`  br label %wordorder`]),
-        `wordorder:`,
-        `  %asw = call i64 @llvm.bswap.i64(i64 %aw)`,
-        `  %bsw = call i64 @llvm.bswap.i64(i64 %bw)`,
-        `  %wbelow = icmp ult i64 %asw, %bsw`,
-        `  %wsign = select i1 %wbelow, i32 -1, i32 1`,
-        `  ret i32 %wsign`,
+        `  br i1 %wdiffer, label %differ, label %wsame`,
         // Equal first words and one length of at most 16 bytes: the word
         // ending at that length covers the rest, and any difference lies
         // past the equal first word.
@@ -3736,42 +3737,89 @@ export class LlEmitter {
         `  %at = load i64, ptr %atp, align 1`,
         `  %bt = load i64, ptr %btp, align 1`,
         `  %tdiffer = icmp ne i64 %at, %bt`,
-        `  br i1 %tdiffer, label %tdiff, label %equal`,
-        `tdiff:`,
-        ...(utf16
-          ? [
-              `  %tbits = or i64 %at, %bt`,
-              `  %thigh = and i64 %tbits, -9187201950435737472`,
-              `  %tascii = icmp eq i64 %thigh, 0`,
-              `  br i1 %tascii, label %tailorder, label %order`,
-            ]
-          : [`  br label %tailorder`]),
-        `tailorder:`,
-        `  %ats = call i64 @llvm.bswap.i64(i64 %at)`,
-        `  %bts = call i64 @llvm.bswap.i64(i64 %bt)`,
-        `  %tbelow = icmp ult i64 %ats, %bts`,
-        `  %tsign = select i1 %tbelow, i32 -1, i32 1`,
-        `  ret i32 %tsign`,
+        `  br i1 %tdiffer, label %differ, label %equal`,
         `first:`,
         `  %adata = getelementptr inbounds %ScrStr, ptr %a, i32 1`,
         `  %bdata = getelementptr inbounds %ScrStr, ptr %b, i32 1`,
         `  %x = load i8, ptr %adata`,
         `  %y = load i8, ptr %bdata`,
-        `  %differ = icmp ne i8 %x, %y`,
-        ...(utf16
-          ? [
-              `  %bits = or i8 %x, %y`,
-              `  %ascii = icmp sge i8 %bits, 0`,
-              `  %decide = and i1 %differ, %ascii`,
-            ]
-          : [`  %decide = and i1 %differ, true`]),
-        `  br i1 %decide, label %byte, label %order`,
+        `  %fdiffer = icmp ne i8 %x, %y`,
+        `  br i1 %fdiffer, label %bytes, label %order`,
+        // Two differing words. When neither has a byte of at least 0xED
+        // (a byte b is when its high bit and bit 7 of (b & 0x7f) + 0x13 are
+        // set), byte-swapped little-endian words compare in byte order.
+        // Otherwise the lowest set byte of their xor is the first differing
+        // byte.
+        `differ:`,
+        `  %dx = phi i64 [ %aw, %word ], [ %at, %tail ]`,
+        `  %dy = phi i64 [ %bw, %word ], [ %bt, %tail ]`,
+        `  %xl = and i64 %dx, 9187201950435737471`,
+        `  %yl = and i64 %dy, 9187201950435737471`,
+        `  %xa = add i64 %xl, 1374463283923456787`,
+        `  %ya = add i64 %yl, 1374463283923456787`,
+        `  %xh = and i64 %dx, %xa`,
+        `  %yh = and i64 %dy, %ya`,
+        `  %hh = or i64 %xh, %yh`,
+        `  %whigh = and i64 %hh, -9187201950435737472`,
+        `  %dlow = icmp eq i64 %whigh, 0`,
+        `  br i1 %dlow, label %wordorder, label %locate`,
+        `wordorder:`,
+        `  %xsw = call i64 @llvm.bswap.i64(i64 %dx)`,
+        `  %ysw = call i64 @llvm.bswap.i64(i64 %dy)`,
+        `  %wbelow = icmp ult i64 %xsw, %ysw`,
+        `  %wsign = select i1 %wbelow, i32 -1, i32 1`,
+        `  ret i32 %wsign`,
+        `locate:`,
+        `  %dxor = xor i64 %dx, %dy`,
+        `  %dtz = call i64 @llvm.cttz.i64(i64 %dxor, i1 true)`,
+        `  %dshift = and i64 %dtz, 56`,
+        `  %dxs = lshr i64 %dx, %dshift`,
+        `  %dys = lshr i64 %dy, %dshift`,
+        `  %dxb = trunc i64 %dxs to i8`,
+        `  %dyb = trunc i64 %dys to i8`,
+        `  br label %bytes`,
+        // The first differing bytes.
+        `bytes:`,
+        `  %bx = phi i8 [ %x, %first ], [ %dxb, %locate ]`,
+        `  %by = phi i8 [ %y, %first ], [ %dyb, %locate ]`,
+        `  %bmin = call i8 @llvm.umin.i8(i8 %bx, i8 %by)`,
+        `  %blow = icmp ult i8 %bmin, -19`,
+        `  br i1 %blow, label %byte, label %high`,
+        // Both at least 0xED. A lone surrogate (0xED) takes the runtime;
+        // supplementary lead bytes (0xF0..0xF4) order below 0xEE and 0xEF
+        // once 0x10 is subtracted from them.
+        `high:`,
+        `  %xed = icmp eq i8 %bx, -19`,
+        `  %yed = icmp eq i8 %by, -19`,
+        `  %ed = or i1 %xed, %yed`,
+        `  br i1 %ed, label %order, label %planes`,
+        `planes:`,
+        `  %xsupp = icmp uge i8 %bx, -16`,
+        `  %ysupp = icmp uge i8 %by, -16`,
+        `  %xlow = add i8 %bx, -16`,
+        `  %ylow = add i8 %by, -16`,
+        `  %xk = select i1 %xsupp, i8 %xlow, i8 %bx`,
+        `  %yk = select i1 %ysupp, i8 %ylow, i8 %by`,
+        `  %kbelow = icmp ult i8 %xk, %yk`,
+        `  %ksign = select i1 %kbelow, i32 -1, i32 1`,
+        `  ret i32 %ksign`,
         `byte:`,
-        `  %below = icmp ult i8 %x, %y`,
+        `  %below = icmp ult i8 %bx, %by`,
         `  %sign = select i1 %below, i32 -1, i32 1`,
         `  ret i32 %sign`,
         `order:`,
-        `  %c = call i32 @${fn}(ptr %a, ptr %b)`,
+        `  %acw.p = getelementptr inbounds %ScrStr, ptr %a, i32 0, i32 2`,
+        `  %bcw.p = getelementptr inbounds %ScrStr, ptr %b, i32 0, i32 2`,
+        `  %acw = load i32, ptr %acw.p`,
+        `  %bcw = load i32, ptr %bcw.p`,
+        `  %cws = or i32 %acw, %bcw`,
+        `  %anyascii = icmp slt i32 %cws, 0`,
+        `  br i1 %anyascii, label %memorder, label %units`,
+        `memorder:`,
+        `  %m = call i32 @scr_str_cmp(ptr %a, ptr %b)`,
+        `  ret i32 %m`,
+        `units:`,
+        `  %c = call i32 @scr_str_cmp_u16_bytes(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)`,
         `  ret i32 %c`,
         `equal:`,
         `  ret i32 0`,
@@ -5881,6 +5929,8 @@ export class LlEmitter {
       // Process streams use a numeric descriptor internally, including zero
       // for stdin. They remain JavaScript objects in boolean contexts.
       case "procStream":
+      // A module namespace object is always present.
+      case "moduleNs":
         return "true";
       case "array":
       case "record":

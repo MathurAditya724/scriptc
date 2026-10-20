@@ -155,7 +155,7 @@ function isTimerHandleTyped(
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getAliasSymbol() ?? t.getSymbol();
   if (sym?.name !== name) return false;
-  return lowerer.checker.declarationsOf(sym).some(
+  return sym.declarations.some(
     (d) =>
       // An interface in the fallback and @types/node 22+, a class in
       // @types/node 20 and older.

@@ -37,6 +37,12 @@ int scr_decimal_scan(const char *p, size_t n, double *out);
  * the length. */
 size_t scr_f64_to_fixed(double x, int f, char *buf);
 
+/* toPrecision / toExponential(fractionDigits) digits for POSITIVE finite
+ * a and 1 <= p <= 101: the spec's p-digit n (ties to the larger n on the
+ * exact binary value) into digits (NUL-terminated, >= p + 1 bytes) and its
+ * decimal exponent e (value ~ d.ddd x 10^e) into *e_out. Returns p. */
+int scr_f64_precision_digits(double a, int p, char *digits, int *e_out);
+
 /* ToString for template literals / string coercion. Returns +1. */
 ScrStr *scr_f64_to_scrstr(double x);
 ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
@@ -73,6 +79,11 @@ bool scr_num_is_safe_integer(double x);
 ScrStr *scr_num_to_exponential(double x);
 ScrStr *scr_num_to_fixed0(double x);
 ScrStr *scr_num_to_fixed(double x, double fraction_digits);
+/* Number.prototype.toPrecision(precision) and toExponential(fractionDigits)
+ * with the argument already coerced (has_precision false = undefined).
+ * Invalid digit counts throw V8's RangeError (NULL). Result +1. */
+ScrStr *scr_num_to_precision(double x, double precision, bool has_precision);
+ScrStr *scr_num_to_exponential_digits(double x, double fraction_digits);
 ScrStr *scr_num_to_string_radix_f64(double value, double radix);
 
 /* Object.is over two numbers — the spec's SameValue on doubles: NaN
