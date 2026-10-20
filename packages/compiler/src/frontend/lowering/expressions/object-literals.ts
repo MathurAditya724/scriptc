@@ -1700,7 +1700,11 @@ export function lowerObjectLiteral(
           }
           shapeMismatch(prop);
         }
-        const absent = lowerer.absentFieldValue(fieldType, locOf(prop));
+        // An 'unknown' slot holds the checked-dynamic undefined for the
+        // empty arm, the absent-property read the width copy uses too.
+        const absent =
+          lowerer.absentFieldValue(fieldType, locOf(prop)) ??
+          (fieldType.kind === "dyn" ? dynUndefinedExpr(locOf(prop)) : null);
         if (!absent) {
           lowerer.unsupported(
             "SC1090",
@@ -2628,6 +2632,14 @@ export function andSpreadOf(
   while (ts.isParenthesizedExpression(right)) right = right.expression;
   if (!ts.isObjectLiteralExpression(right)) return null;
   const spreadType = lowerer.mapTypeOf(lowerer.typeOf(e));
+  // Every falsy value is a primitive, which spreads nothing, so `c && {
+  // ... }` contributes the literal's members exactly when c is truthy,
+  // whatever c's type. The checker's union of the two decides the
+  // representation where it maps; where it does not (a member typed by a
+  // checked-dynamic value such as an AbortSignal), the syntax decides.
+  if (spreadType === null || spreadType.kind === "dyn") {
+    return syntacticAndSpread(right, e.left);
+  }
   if (spreadType?.kind !== "union") return null;
   const arms = lowerer.unions.get(spreadType.unionId)?.arms ?? [];
   if (
@@ -2657,6 +2669,26 @@ export function andSpreadOf(
     }
   }
   return { cond: e.left, props, whenTrue: true };
+}
+
+function syntacticAndSpread(
+  right: ts.ObjectLiteralExpression,
+  cond: ts.Expression,
+): { cond: ts.Expression; props: CondSpreadProp[]; whenTrue: boolean } | "unsupported" {
+  if (right.properties.nodes.length === 0) return "unsupported";
+  const props: CondSpreadProp[] = [];
+  for (const p of right.properties.nodes) {
+    if (
+      (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+      p.name &&
+      (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
+    ) {
+      props.push(p as CondSpreadProp);
+    } else {
+      return "unsupported";
+    }
+  }
+  return { cond, props, whenTrue: true };
 }
 
 /** A conditional spread's carrier property: `name: value` or shorthand,

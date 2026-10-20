@@ -5861,6 +5861,7 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
       return DYN;
     const merged = dictSpreadLiteralShape(widened, inner, ctx);
+    if (merged === "dyn") return DYN;
     if (merged !== null) return { kind: "record", shapeId: merged };
     const refined = refinedConstituentShape(widened, inner, ctx);
     if (refined !== null) return { kind: "record", shapeId: refined };
@@ -5889,7 +5890,7 @@ function dictSpreadLiteralShape(
   widened: ts.Type,
   parts: RecordShapeParts,
   ctx: TypeMapperCtx,
-): string | null {
+): string | "dyn" | null {
   if (parts.indexValue) return null;
   const symbol = widened.getSymbol();
   if (!symbol || (symbol.flags & ts.SymbolFlags.ObjectLiteral) === 0) return null;
@@ -5908,16 +5909,29 @@ function dictSpreadLiteralShape(
   // mapping.
   const contextualRaw = checker.getContextualType(literal);
   const contextual = contextualRaw ? checker.getNonNullableType(contextualRaw) : undefined;
-  // An unknown-valued slot (`Record<string, unknown>`) is the checked-dynamic
-  // value, which has no typed merge of its own: the literal still needs its
-  // own record.
+  // A literal written into a declared slot lowers into that slot (a typed
+  // index-signature record merges into it, a declared record converts),
+  // and its own type keeps its mapping. Only a literal with no declared
+  // destination (an unannotated binding, a type parameter, `any` or
+  // `unknown`, an unknown-valued record) is built by its own type.
+  // A generic argument's context is the instantiated parameter: the
+  // literal's own type when the type argument was inferred from it.
+  const ownContext =
+    contextual !== undefined &&
+    (contextual === widened || contextual.getSymbol()?.declarations.includes(literal) === true);
   if (
     contextual &&
-    checker
-      .getIndexInfosOfType(contextual)
-      .some((info) => (info.valueType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0)
-  )
-    return null;
+    !ownContext &&
+    !(contextual.flags & (ts.TypeFlags.TypeParameter | ts.TypeFlags.Any | ts.TypeFlags.Unknown))
+  ) {
+    const infos = checker.getIndexInfosOfType(contextual);
+    const unknownValued =
+      infos.length > 0 &&
+      infos.every(
+        (info) => (info.valueType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+      );
+    if (!unknownValued) return null;
+  }
   const kinds = props.map((p) =>
     ts.isSpreadAssignment(p) ? spreadSourceKindTs(checker, p.expression) : "member",
   );
@@ -5934,6 +5948,7 @@ function dictSpreadLiteralShape(
     // pure index-signature record.
     if (t === widened) return null;
     const mapped = mapType(t, ctx);
+    if (mapped?.kind === "dyn") return DYN;
     const shape = mapped?.kind === "record" ? shapes.get(mapped.shapeId) : undefined;
     return shape?.indexValue && shape.fields.length === 0 && !shape.tuple ? shape.indexValue : null;
   };
@@ -5947,6 +5962,11 @@ function dictSpreadLiteralShape(
     return true;
   };
   const before: string[] = [];
+  // An unknown-valued spread (`Record<string, unknown>`, or another such
+  // literal) makes the object the checked-dynamic value: it is built like
+  // a JavaScript object literal (copy each spread's own keys in order), and
+  // member reads check their declared types.
+  let unknownValued = false;
   for (const [i, p] of props.entries()) {
     // A fixed-shape or conditional spread contributes its own members,
     // which the checker already types exactly (they are in `parts`).
@@ -5958,11 +5978,32 @@ function dictSpreadLiteralShape(
     }
     if (ts.isSpreadAssignment(p)) {
       const slot = dictSlotOf(p.expression);
-      if (!slot || !addArms(slot)) return null;
-      // A member written before this spread may be overwritten by it.
+      if (slot?.kind === "dyn") {
+        unknownValued = true;
+        continue;
+      }
+      if (!slot) return null;
+      if (!addArms(slot)) {
+        // A slot outside the scalar join still has the checked-dynamic
+        // representation when it converts to it.
+        if (
+          !canConvertToDyn(
+            slot,
+            (id) => shapes.get(id),
+            (id) => unions.get(id),
+          )
+        )
+          return null;
+        unknownValued = true;
+      }
+      // A member written before this spread may be overwritten by it: the
+      // typed join keeps member types only where the slot is that type;
+      // otherwise the checked-dynamic object (whose member reads check
+      // their types) holds whatever the spread wrote.
       for (const name of before) {
         const field = parts.fields.find((f) => f.name === name);
-        if (!field || !typeEquals(field.type, slot)) return null;
+        if (!field) return null;
+        if (!typeEquals(field.type, slot)) unknownValued = true;
       }
       continue;
     }
@@ -5972,6 +6013,18 @@ function dictSpreadLiteralShape(
     before.push(name.text);
   }
   if (parts.fields.some((f) => f.name.startsWith("%"))) return null;
+  // Members outside the scalar join (an array of labels beside the tags)
+  // make the object the checked-dynamic value too.
+  if (!unknownValued && !parts.fields.every((f) => addArms(f.type))) unknownValued = true;
+  if (unknownValued) {
+    const getRecord = (id: string) => shapes.get(id);
+    const getUnion = (id: string) => unions.get(id);
+    return parts.fields.every(
+      (f) => f.type.kind === "dyn" || canConvertToDyn(f.type, getRecord, getUnion),
+    )
+      ? "dyn"
+      : null;
+  }
   for (const field of parts.fields) if (!addArms(field.type)) return null;
   if (![...arms.values()].some((arm) => !isUnitType(arm))) return null;
   const sorted = [...arms.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
