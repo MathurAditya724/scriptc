@@ -1,5 +1,5 @@
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
-import { declaredMemberOf } from "./expressions/property-access.js";
+import { declaredMemberOf, isPromisePrototypeRead } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream } from "./dyn-streams.js";
@@ -1219,6 +1219,12 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
     isJsSourceFile(ts.getSourceFileOfNode(nameNode)) &&
     ts.isVariableDeclaration(nameNode.parent) &&
     isNativeBuiltinValueInitializer(lowerer, nameNode.parent.initializer)
+  )
+    return DYN;
+  if (
+    ts.isVariableDeclaration(nameNode.parent) &&
+    !nameNode.parent.type &&
+    isPromisePrototypeRead(lowerer, nameNode.parent.initializer)
   )
     return DYN;
   let type = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
@@ -5260,6 +5266,9 @@ export function lowerVarDecl(
     init.type.kind === "func"
   )
     type = init.type;
+  // Promise.prototype is an ordinary object the checker types Promise<any>.
+  if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
+    type = DYN;
   // A typed-arguments function expression (typed-arguments.ts): the
   // checker types the binding variadic, but its value has the fixed
   // signature every use asserts.

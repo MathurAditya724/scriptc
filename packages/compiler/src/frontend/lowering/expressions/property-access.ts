@@ -4071,6 +4071,25 @@ export function declaredMemberOf(lowerer: Lowerer, receiver: ts.Expression, name
   return !!symbol && symbol.declarations.length > 0;
 }
 
+/** Whether `expr` reads Promise.prototype, directly or as
+ * `promise.constructor.prototype`. The checker types it Promise<any>, but
+ * the value is an ordinary object, so a binding inferred from it stays
+ * checked-dynamic (as in Node, promise methods called on it throw). */
+export function isPromisePrototypeRead(lowerer: Lowerer, expr: ts.Expression | undefined): boolean {
+  if (!expr) return false;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return false;
+  if (expr.name.text !== "prototype") return false;
+  if (lowerer.stdlibGlobalMember(expr, "Promise") === "prototype") return true;
+  const inner = expr.expression;
+  return (
+    ts.isPropertyAccessExpression(inner) &&
+    !inner.questionDotToken &&
+    inner.name.text === "constructor" &&
+    lowerer.mapTypeOf(lowerer.typeOf(inner.expression))?.kind === "promise"
+  );
+}
+
 /** A promise's `constructor` (the Promise constructor value), and
  * Promise.prototype read as `promise.constructor.prototype` or
  * `Promise.prototype` (execa's `(async () => {})().constructor.prototype`):

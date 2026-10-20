@@ -15,3 +15,13 @@ const custom: unknown = {
 console.log(await custom);
 const plain: unknown = 42;
 console.log(await plain);
+
+// Inferred bindings of Promise.prototype hold the ordinary object too.
+const proto = Promise.prototype;
+console.log(typeof proto, typeof proto.then, proto.constructor === Promise);
+function prototypeBindings(): void {
+  const viaInstance = (async () => {})().constructor.prototype;
+  let local = Promise.prototype;
+  console.log(typeof viaInstance, typeof local, Reflect.getOwnPropertyDescriptor(local, 'then')?.enumerable);
+}
+prototypeBindings();
