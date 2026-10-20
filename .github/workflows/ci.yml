@@ -172,7 +172,9 @@ jobs:
       SCRIPTC_SAN: ${{ matrix.flavor == 'san' && '1' || '' }}
       # Match macOS, where Apple ASan has no LeakSanitizer: the RC audit owns
       # leak detection, including intentional abandonment. Plain shards also
-      # build some sanitized probes, so this applies to both flavors.
+      # build some sanitized probes, so this applies to both flavors. The
+      # san shards' case-sharded corpus turns LeakSanitizer on
+      # (scripts/ci-test-plan.mjs, tests/harness/lsan.supp).
       ASAN_OPTIONS: detect_leaks=0
       # Within-file partition for the large case-driven harnesses
       # (differential, llvm-differential, npm, server, Test262, coverage, and

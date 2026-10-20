@@ -66,6 +66,10 @@ import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
 import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
 import { builtinClassRefOf, sameBuiltinClass } from "../builtins/class-values.js";
+import {
+  lowerRuntimeConstructorIs,
+  runtimeConstructorReceiver,
+} from "../builtins/runtime-constructor.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "../strict-equality.js";
 import { withUnitArm } from "../../type-mapper.js";
@@ -1321,6 +1325,24 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       lowerDynTypeofTest(lowerer, expr, loc) ??
       lowerUnionTypeofTest(lowerer, expr, loc);
     if (test) return test;
+  }
+  // `x.constructor === Readable` for an instance of EventEmitter or a
+  // stream class: the instance's own class, compared without a class value.
+  if (
+    op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    op === ts.SyntaxKind.ExclamationEqualsEqualsToken
+  ) {
+    for (const [side, other] of [
+      [expr.left, expr.right],
+      [expr.right, expr.left],
+    ] as const) {
+      const ctor = runtimeConstructorReceiver(lowerer, side);
+      const target = ctor ? builtinClassRefOf(lowerer, other) : null;
+      if (ctor && (target?.kind === "emitter" || target?.kind === "stream")) {
+        const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+        return lowerRuntimeConstructorIs(lowerer, ctor.receiver, target.info, negated, loc);
+      }
+    }
   }
   // `C === EventEmitter` between two builtin class references: the
   // classes are compile-time values, so the answer folds.

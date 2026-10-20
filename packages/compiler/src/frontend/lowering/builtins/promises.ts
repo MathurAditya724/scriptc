@@ -65,6 +65,9 @@ export function lowerPromiseStaticCall(
     const compatible = (inner: IrType): boolean => {
       if (typeEquals(inner, resultT.inner)) return true;
       if (!resultArms) return false;
+      // A Promise<void> entry fulfills with undefined, which the result
+      // holds when the checker folded `void` into its undefined arm.
+      if (inner.kind === "void") return resultArms.some((a) => a.kind === "undefinedT");
       if (inner.kind === "union") {
         const arms = lowerer.unions.get(inner.unionId)?.arms ?? [];
         return arms.every((a) => resultArms.some((b) => typeEquals(a, b)));

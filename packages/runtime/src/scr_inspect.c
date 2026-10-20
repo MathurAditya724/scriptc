@@ -823,6 +823,41 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
   return out;
 }
 
+/* DataView: formatValue's `DataView { [byteLength], [byteOffset],
+ * [buffer] }`, the buffer rendered one level deeper. `[DataView]` beyond
+ * depth. */
+static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double depth) {
+  if (recurse > depth) return scr_str_new("[DataView]", 10);
+  const ScrBytes *owner = b->backing ? b->backing : b;
+  char line[64];
+  scr_insp_begin(recurse + 1);
+  int n = snprintf(line, sizeof line, "[byteLength]: %.0f", scr_bytes_byte_len(b));
+  ScrStr *entry = scr_str_new(line, (size_t)n);
+  scr_insp_entry(entry, false);
+  scr_str_release(entry);
+  n = snprintf(line, sizeof line, "[byteOffset]: %.0f", scr_bytes_byte_offset(b));
+  entry = scr_str_new(line, (size_t)n);
+  scr_insp_entry(entry, false);
+  scr_str_release(entry);
+  ScrStr *buffer = scr_insp_array_buffer(owner, owner->shared ? "SharedArrayBuffer" : "ArrayBuffer",
+                                         recurse + 1, depth);
+  InspBuf eb = {0};
+  ib_cstr(&eb, "[buffer]: ");
+  ib_bytes(&eb, buffer->data, buffer->len);
+  scr_str_release(buffer);
+  entry = ib_take(&eb);
+  scr_insp_entry(entry, false);
+  scr_str_release(entry);
+  ScrStr *base = scr_str_new("", 0);
+  ScrStr *b0 = scr_str_new("DataView {", 10);
+  ScrStr *b1 = scr_str_new("}", 1);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);
+  scr_str_release(base);
+  scr_str_release(b0);
+  scr_str_release(b1);
+  return out;
+}
+
 static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth);
 
 /* A runtime error through its node: the cached one, or one built from its
@@ -1542,6 +1577,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     }
     case SCR_DYN_BYTES: {
       ScrBytes *b = d->v.bytes;
+      if (b->is_data_view) return scr_insp_data_view(b, recurse, depth);
       if (d->buffer) {
         /* Buffer-flavored (a stream chunk): Node's <Buffer ..> form. */
         return scr_insp_buffer(b);

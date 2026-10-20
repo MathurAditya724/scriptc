@@ -71,6 +71,7 @@ void scr_crypto_hash_stream_set(ScrCryptoHash *hash, void *stream, void (*releas
 void scr_crypto_hash_stream_detach(void *hash);
 void scr_crypto_hash_stream_close(ScrCryptoHash *hash);
 bool scr_crypto_hash_stream_usable(const ScrCryptoHash *hash);
+bool scr_crypto_hash_is_hmac(const ScrCryptoHash *hash);
 void scr_crypto_hash_stream_hold(ScrCryptoHash *hash);
 void scr_crypto_hash_stream_unhold(ScrCryptoHash *hash);
 ScrStream *scr_crypto_hash_stream_piped(ScrCryptoHash *hash);
