@@ -124,3 +124,24 @@ function makeSubclass(): any {
   return dyn(new PlainSubclass("deep"));
 }
 console.log("subclass frames", (makeSubclass().stack as string).includes("at makeSubclass"));
+
+const formatted = dyn(new Error("formatted"));
+console.log("formatted before clone", firstLine(formatted.stack));
+console.log("clone keeps a formatted stack", firstLine(dyn(structuredClone(formatted)).stack));
+
+class GrumpyError extends Error {
+  override get name(): string {
+    throw new Error("no name today");
+  }
+}
+try {
+  console.log("throwing name getter", firstLine(dyn(new GrumpyError("grumpy")).stack));
+} catch (error) {
+  console.log("throwing name getter threw", (error as Error).message);
+}
+
+function readKey(target: any, key: string): unknown {
+  return target[key];
+}
+const computed = readKey(inner(), ["sta", "ck"].join("")) as string;
+console.log("computed key", firstLine(computed), computed.includes("at inner"));

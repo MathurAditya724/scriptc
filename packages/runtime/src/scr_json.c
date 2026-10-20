@@ -6754,6 +6754,8 @@ static ScrDyn *scr_error_stack_get_call(ScrClosure *closure, ScrDyn *const *args
   if (!error) return scr_dyn_retain(scr_dyn_undefined());
   ScrStr *stack = scr_error_stack(error);
   scr_error_release(error);
+  /* A name or message getter that throws leaves its exception pending. */
+  if (!stack) return NULL;
   ScrDyn *out = scr_dyn_new_str(stack);
   scr_str_release(stack);
   return out;
@@ -10954,7 +10956,17 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
     ScrDyn *out = scr_dyn_new_obj();
     for (size_t i = 0; i < v->v.obj.len; i++) {
       const ScrDynEntry *e = &v->v.obj.entries[i];
-      if (scr_dyn_entry_is_error_stack(e)) continue;
+      if (scr_dyn_entry_is_error_stack(e)) {
+        /* A stack that was already formatted copies as a non-enumerable
+         * data property; an unformatted one has nothing to copy. */
+        ScrError *error = scr_errdyn_err_of(v);
+        if (error && error->stack) {
+          scr_dyn_obj_set(out, "stack", 5, scr_dyn_new_str(error->stack));
+          out->v.obj.entries[out->v.obj.len - 1].enumerable = false;
+        }
+        scr_error_release(error);
+        continue;
+      }
       ScrDyn *c = scr_sc_clone(e->value, &self, region);
       if (c == NULL) {
         scr_dyn_release(out);

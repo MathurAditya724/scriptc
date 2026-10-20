@@ -67,6 +67,23 @@ test("a stack read on a checked-dynamic value is observed", () => {
   expect(observesStacks(mod([fn("%main", [read("message")])]))).toBe(false);
 });
 
+test("a computed key reads the stack when the program spells it", () => {
+  const value: IrExpr = { loc, kind: "varRef", localId: "d", type: DYN };
+  const key: IrExpr = { loc, kind: "varRef", localId: "k", type: STRING };
+  const computed: IrStmt = {
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "dynKeyGet", value, key, type: DYN },
+  };
+  const spelled: IrStmt = {
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "strLit", value: "stack", type: STRING },
+  };
+  expect(observesStacks(mod([fn("%main", [computed, spelled])]))).toBe(true);
+  expect(observesStacks(mod([fn("%main", [computed])]))).toBe(false);
+});
+
 test("programs without stack reads are not", () => {
   expect(observesStacks(mod([fn("%main", [call("helper")]), fn("helper", [ret])]))).toBe(false);
 });
