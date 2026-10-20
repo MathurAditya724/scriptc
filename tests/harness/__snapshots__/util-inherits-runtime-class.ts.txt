@@ -1,0 +1,8 @@
+util-inherits-runtime-class.ts:9:18 - error SC2020: 'util.inherits onto the runtime-provided class 'Readable'' is part of the standard library types but has no scriptc lowering yet
+
+   8 | function Source(): void {}
+   9 | inherits(Source, Readable);
+     |                  ^~~~~~~~
+  10 | console.log(typeof Source);
+
+  hint: declare the subclass with extends

@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2587)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2588)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
     ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
@@ -1600,6 +1600,14 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test("bundled polyfill chunks 2587-bundled-polyfill-aliases compile as the Node builtins", async () => {
     const entry = join(fixturesRoot, "npm/cases/2587-bundled-polyfill-aliases/main.ts");
     await expectAliasParity(entry, ["gtpolybundle"], disabled);
+  }, 180_000);
+
+  // 2588: classes a bundled ES module defines inside its lazy initializer,
+  // over stream.Readable and over each other, compile as declarations.
+  test("bundled ES module classes 2588-bundled-esm-classes compile statically and byte-match Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2588-bundled-esm-classes/main.ts"), [
+      "gtesmclass",
+    ]);
   }, 180_000);
 
   // 2562: a file with unverifiable interop that no compiled code can load

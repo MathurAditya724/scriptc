@@ -34,6 +34,7 @@ import type { ClassInfo } from "./lower-classes.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { symbolFieldDisplayName } from "./symbol-fields.js";
 import { eventTargetRootOf } from "./lower-event-target.js";
+import { builtinClassRefOf } from "./builtins/class-values.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
 import { isPerfEntryType, perfEntryJson } from "./builtins/performance.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
@@ -2545,6 +2546,19 @@ function lowerUtilCallableCall(
   // Program classes keep static prototypes: there is no function object
   // whose prototype chain the runtime could relink or wrap.
   const classArgs = member === "inherits" ? 2 : member === "deprecate" ? 1 : 0;
+  // A runtime-provided parent (`util.inherits(Ctor, stream.Readable)`, the
+  // from2 and multistream shape) has no prototype object the runtime could
+  // link a constructor function's prototype to.
+  const parent = member === "inherits" ? expr.arguments.nodes[1] : undefined;
+  if (parent !== undefined && !ts.isSpreadElement(parent)) {
+    const ref = builtinClassRefOf(lowerer, parent);
+    if (ref !== null)
+      lowerer.noLowering(
+        `util.inherits onto the runtime-provided class '${ref.name}'`,
+        parent,
+        "declare the subclass with extends",
+      );
+  }
   for (const arg of expr.arguments.nodes.slice(0, classArgs)) {
     if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "classval")
       lowerer.noLowering(
