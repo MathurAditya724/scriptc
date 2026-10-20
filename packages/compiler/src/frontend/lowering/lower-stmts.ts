@@ -10569,16 +10569,19 @@ function lowerForOfDyn(
       then: [
         {
           kind: "exprStmt",
+          // return()'s (awaited) result must be an object, as for next().
           expr: asyncLoop
-            ? awaitDyn({
-                kind: "dynCall",
-                callee: varRef(returned.id, DYN, loc),
-                receiver: varRef(iterator.id, DYN, loc),
-                calleeName: "iterator method",
-                args: [],
-                type: DYN,
-                loc,
-              })
+            ? check(
+                awaitDyn({
+                  kind: "dynCall",
+                  callee: varRef(returned.id, DYN, loc),
+                  receiver: varRef(iterator.id, DYN, loc),
+                  calleeName: "iterator method",
+                  args: [],
+                  type: DYN,
+                  loc,
+                }),
+              )
             : call(varRef(returned.id, DYN, loc)),
           loc,
         },

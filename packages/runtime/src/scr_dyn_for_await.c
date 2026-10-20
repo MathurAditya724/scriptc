@@ -23,7 +23,7 @@ ScrDyn *scr_dyn_async_iterator_open(ScrDyn *value, ScrStr *spell) {
     }
   }
   int kind = 0;
-  ScrDyn *iterator = scr_dyn_from_iterator(value, &kind);
+  ScrDyn *iterator = scr_dyn_open_iterator(value, &kind, true);
   if (kind < 0) return NULL;
   if (!iterator) {
     if (spell->len > 0) {

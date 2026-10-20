@@ -288,23 +288,26 @@ export function lowerAsyncDelegation(
     type: DYN,
     loc,
   });
-  const invoke = (callee: IrExpr): IrExpr =>
-    awaitDyn({
-      kind: "dynCall",
-      callee,
-      receiver: iterator.ref,
-      calleeName: "iterator method",
-      args: [],
-      type: DYN,
-      loc,
-    });
-  const stepNext: IrExpr = {
+  // Each step's awaited result, which must be an object (TypeError
+  // otherwise), for next() and return() alike.
+  const invoke = (callee: IrExpr): IrExpr => ({
     kind: "libCall",
     fn: "dyn.iteratorResult",
-    args: [invoke(next.ref)],
+    args: [
+      awaitDyn({
+        kind: "dynCall",
+        callee,
+        receiver: iterator.ref,
+        calleeName: "iterator method",
+        args: [],
+        type: DYN,
+        loc,
+      }),
+    ],
     type: DYN,
     loc,
-  };
+  });
+  const stepNext = invoke(next.ref);
   const setClose = (value: boolean): IrStmt => ({
     kind: "assign",
     localId: needsClose.local.id,
@@ -327,14 +330,16 @@ export function lowerAsyncDelegation(
       loc,
     },
   ];
-  const yielded: IrExpr = {
+  // A synchronous delegate's values are awaited, its final value too.
+  const stepValue = (): IrExpr => ({
     kind: "ternary",
     cond: sync.ref,
     then: awaitDyn(get(step.ref, "value")),
     else_: get(step.ref, "value"),
     type: DYN,
     loc,
-  };
+  });
+  const yielded = stepValue();
   const stmts: IrStmt[] = [
     {
       kind: "varDecl",
@@ -434,8 +439,8 @@ export function lowerAsyncDelegation(
   const expected = lowerer.mapTypeOf(lowerer.typeOf(expr));
   const result =
     expected && expected.kind !== "void"
-      ? lowerer.coerceToExpected(get(step.ref, "value"), expected)
-      : get(step.ref, "value");
+      ? lowerer.coerceToExpected(stepValue(), expected)
+      : stepValue();
   return { kind: "seqExpr", stmts, result, generatorDelegate: true, type: result.type, loc };
 }
 

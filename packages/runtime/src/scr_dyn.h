@@ -735,6 +735,10 @@ int scr_dyn_iterable_kind(const ScrDyn *value);
  * with *kind -1 and the error pending (also for a compiled generator,
  * which only typed code can step). */
 ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind);
+/* scr_dyn_from_iterator, also answering a compiled generator the method
+ * returns when `generators` is set (for await steps it through its
+ * checked-dynamic next/return members). */
+ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators);
 /* One field of an iterator result object (value, done), read the way the
  * for-of protocol reads it. +1, or NULL with the error pending. */
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
