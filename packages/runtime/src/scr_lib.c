@@ -7263,45 +7263,112 @@ static ScrStr *scr_digest_encode(const unsigned char *d, size_t n, int enc) {
 
 /* ── MD5 (RFC 1321) ───────────────────────────────────────────────── */
 
-static const uint32_t scr_md5_k[64] = {
-    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a,
-    0xa8304613, 0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
-    0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340,
-    0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8,
-    0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
-    0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
-    0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92,
-    0xffeff47d, 0x85845dd1, 0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
-    0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391};
-static const unsigned char scr_md5_r[64] = {
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-    5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20,
-    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
+/* The 64 steps are unrolled with their message word, constant and
+ * rotation inlined. a + m + K does not depend on the previous step, so
+ * each step's critical path is the round function of b, an add, the
+ * rotate and the add of b. G is written as (b & d) + (c & ~d) (the two
+ * terms share no bits) so that its c & ~d half joins that early sum. The
+ * empty asm statement keeps the compiler from moving the constant's add
+ * after the round function, which puts it back on the critical path. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__wasm__)
+#define SCR_MD5_PIN(v) __asm__("" : "+r"(v))
+#else
+#define SCR_MD5_PIN(v) ((void)0)
+#endif
+#define SCR_MD5_F(b, c, d) ((d) ^ ((b) & ((c) ^ (d))))
+#define SCR_MD5_H(b, c, d) ((b) ^ (c) ^ (d))
+#define SCR_MD5_I(b, c, d) ((c) ^ ((b) | ~(d)))
+#define SCR_MD5_STEP(f, a, b, c, d, xk, s)        \
+  do {                                            \
+    (a) += (xk);                                  \
+    SCR_MD5_PIN(a);                               \
+    (a) += f((b), (c), (d));                      \
+    (a) = ((a) << (s) | (a) >> (32 - (s))) + (b); \
+  } while (0)
+#define SCR_MD5_GSTEP(a, b, c, d, xk, s)          \
+  do {                                            \
+    (a) += ((c) & ~(d)) + (xk);                   \
+    SCR_MD5_PIN(a);                               \
+    (a) += (b) & (d);                             \
+    (a) = ((a) << (s) | (a) >> (32 - (s))) + (b); \
+  } while (0)
 
-SCR_DIGEST_ALIGNED static void scr_md5_block(uint32_t h[4], const unsigned char *p) {
-  uint32_t m[16];
-  for (int i = 0; i < 16; i++) {
-    m[i] = (uint32_t)p[i * 4] | ((uint32_t)p[i * 4 + 1] << 8) |
-           ((uint32_t)p[i * 4 + 2] << 16) | ((uint32_t)p[i * 4 + 3] << 24);
-  }
+SCR_DIGEST_ALIGNED static void scr_md5_blocks(uint32_t h[4], const unsigned char *p, size_t blocks) {
   uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
-  for (int i = 0; i < 64; i++) {
-    uint32_t f, g;
-    if (i < 16) { f = (b & c) | (~b & d); g = (uint32_t)i; }
-    else if (i < 32) { f = (d & b) | (~d & c); g = (5u * i + 1) & 15; }
-    else if (i < 48) { f = b ^ c ^ d; g = (3u * i + 5) & 15; }
-    else { f = c ^ (b | ~d); g = (7u * i) & 15; }
-    uint32_t t = d;
-    d = c;
-    c = b;
-    uint32_t x = a + f + scr_md5_k[i] + m[g];
-    b = b + ((x << scr_md5_r[i]) | (x >> (32 - scr_md5_r[i])));
-    a = t;
+  for (; blocks != 0; blocks--, p += 64) {
+    uint32_t m[16];
+    for (int i = 0; i < 16; i++) {
+      m[i] = (uint32_t)p[i * 4] | ((uint32_t)p[i * 4 + 1] << 8) |
+             ((uint32_t)p[i * 4 + 2] << 16) | ((uint32_t)p[i * 4 + 3] << 24);
+    }
+    uint32_t a0 = a, b0 = b, c0 = c, d0 = d;
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[0] + 0xd76aa478u, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[1] + 0xe8c7b756u, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[2] + 0x242070dbu, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[3] + 0xc1bdceeeu, 22);
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[4] + 0xf57c0fafu, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[5] + 0x4787c62au, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[6] + 0xa8304613u, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[7] + 0xfd469501u, 22);
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[8] + 0x698098d8u, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[9] + 0x8b44f7afu, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[10] + 0xffff5bb1u, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[11] + 0x895cd7beu, 22);
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[12] + 0x6b901122u, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[13] + 0xfd987193u, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[14] + 0xa679438eu, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[15] + 0x49b40821u, 22);
+    SCR_MD5_GSTEP(a, b, c, d, m[1] + 0xf61e2562u, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[6] + 0xc040b340u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[11] + 0x265e5a51u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[0] + 0xe9b6c7aau, 20);
+    SCR_MD5_GSTEP(a, b, c, d, m[5] + 0xd62f105du, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[10] + 0x02441453u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[15] + 0xd8a1e681u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[4] + 0xe7d3fbc8u, 20);
+    SCR_MD5_GSTEP(a, b, c, d, m[9] + 0x21e1cde6u, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[14] + 0xc33707d6u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[3] + 0xf4d50d87u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[8] + 0x455a14edu, 20);
+    SCR_MD5_GSTEP(a, b, c, d, m[13] + 0xa9e3e905u, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[2] + 0xfcefa3f8u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[7] + 0x676f02d9u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[12] + 0x8d2a4c8au, 20);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[5] + 0xfffa3942u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[8] + 0x8771f681u, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[11] + 0x6d9d6122u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[14] + 0xfde5380cu, 23);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[1] + 0xa4beea44u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[4] + 0x4bdecfa9u, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[7] + 0xf6bb4b60u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[10] + 0xbebfbc70u, 23);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[13] + 0x289b7ec6u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[0] + 0xeaa127fau, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[3] + 0xd4ef3085u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[6] + 0x04881d05u, 23);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[9] + 0xd9d4d039u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[12] + 0xe6db99e5u, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[15] + 0x1fa27cf8u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[2] + 0xc4ac5665u, 23);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[0] + 0xf4292244u, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[7] + 0x432aff97u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[14] + 0xab9423a7u, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[5] + 0xfc93a039u, 21);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[12] + 0x655b59c3u, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[3] + 0x8f0ccc92u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[10] + 0xffeff47du, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[1] + 0x85845dd1u, 21);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[8] + 0x6fa87e4fu, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[15] + 0xfe2ce6e0u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[6] + 0xa3014314u, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[13] + 0x4e0811a1u, 21);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[4] + 0xf7537e82u, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[11] + 0xbd3af235u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[2] + 0x2ad7d2bbu, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[9] + 0xeb86d391u, 21);
+    a += a0; b += b0; c += c0; d += d0;
   }
-  h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+  h[0] = a; h[1] = b; h[2] = c; h[3] = d;
 }
 
 typedef struct ScrMd5Ctx {
@@ -7329,14 +7396,15 @@ static void scr_md5_update(ScrMd5Ctx *ctx, const unsigned char *data, size_t len
     data += take;
     len -= take;
     if (ctx->tail_len == 64) {
-      scr_md5_block(ctx->h, ctx->tail);
+      scr_md5_blocks(ctx->h, ctx->tail, 1);
       ctx->tail_len = 0;
     }
   }
-  while (len >= 64) {
-    scr_md5_block(ctx->h, data);
-    data += 64;
-    len -= 64;
+  if (len >= 64) {
+    size_t blocks = len / 64;
+    scr_md5_blocks(ctx->h, data, blocks);
+    data += blocks * 64;
+    len -= blocks * 64;
   }
   if (len != 0) {
     memcpy(ctx->tail, data, len);
@@ -7354,8 +7422,7 @@ static size_t scr_md5_final(const ScrMd5Ctx *source, unsigned char out[32]) {
   memset(tail + rem + 1, 0, pad - rem - 1 - 8);
   uint64_t bits = ctx.bytes * 8;
   for (int b = 0; b < 8; b++) tail[pad - 8 + b] = (unsigned char)(bits >> (8 * b));
-  scr_md5_block(ctx.h, tail);
-  if (pad == 128) scr_md5_block(ctx.h, tail + 64);
+  scr_md5_blocks(ctx.h, tail, pad / 64);
   for (int j = 0; j < 4; j++) {
     for (int b = 0; b < 4; b++) out[j * 4 + b] = (unsigned char)(ctx.h[j] >> (8 * b));
   }
@@ -8472,6 +8539,8 @@ void scr_crypto_hash_stream_close(ScrCryptoHash *hash) {
   hash->stream_closed = true;
   if (stream) stream_release(stream);
 }
+
+bool scr_crypto_hash_is_hmac(const ScrCryptoHash *hash) { return hash->hmac; }
 
 bool scr_crypto_hash_stream_usable(const ScrCryptoHash *hash) {
   if (!hash->stream_closed) return true;
@@ -10333,7 +10402,9 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem) {
  * keep other surrogates lone, WTF-8 encode. */
 static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), void *src) {
   if (n == 1) return scr_str_from_char_code_one((double)unit(src, 0));
-  char *out = malloc(n * 3 + 1); /* worst case: 3 bytes per UTF-16 unit */
+  /* Up to 64 units encode on the stack (3 bytes per UTF-16 unit at most). */
+  char small[64 * 3 + 1];
+  char *out = n <= 64 ? small : malloc(n * 3 + 1);
   if (!out) {
     scr_trap("scriptc: out of memory\n");
   }
@@ -10350,8 +10421,17 @@ static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), vo
     o += scr_wtf8_put(out + o, cp);
   }
   ScrStr *s = scr_str_new(out, o);
-  free(out);
+  if (out != small) free(out);
   return s;
+}
+
+static uint32_t scr_fcc_units_unit(void *src, size_t i) {
+  return scr_to_uint32(((const double *)src)[i]) & 0xFFFFu;
+}
+
+/* String.fromCharCode(c0, ..., cn-1) with the codes in a caller's array. */
+ScrStr *scr_str_from_char_codes(const double *codes, size_t n) {
+  return scr_str_from_units(n, scr_fcc_units_unit, (void *)codes);
 }
 
 static uint32_t scr_fcc_arr_unit(void *src, size_t i) {
@@ -11408,6 +11488,137 @@ ScrStr *scr_num_to_fixed(double x, double fraction_digits) {
   return scr_str_new(out, len);
 }
 
+/* String.prototype.substr (Annex B.2.2.1) over substring's UTF-16
+ * clamp: -Infinity and other starts below -size clamp to 0, an Infinity
+ * length to the end. Comparisons only (no floating-point literal other
+ * than zero, which would join the constant pool every binary links).
+ * Nothing on an existing path calls this. */
+ScrStr *scr_str_substr(ScrStr *s, double start, double length, bool has_length) {
+  double size = scr_str_utf16_len(s);
+  double first = isnan(start) ? 0 : trunc(start);
+  if (first < 0) {
+    first = size + first;
+    if (first < 0) first = 0;
+  } else if (first > size) {
+    first = size;
+  }
+  double count = has_length ? (isnan(length) ? 0 : trunc(length)) : size;
+  if (count < 0) count = 0;
+  double end = first + count;
+  if (end > size) end = size;
+  return scr_str_substring(s, first, end);
+}
+
+/* The exponent suffix of toPrecision/toExponential: "e+5", "e-7". */
+static size_t scr_num_exp_suffix(char *o, int e) {
+  size_t n = 0;
+  o[n++] = 'e';
+  o[n++] = e < 0 ? '-' : '+';
+  int a = e < 0 ? -e : e;
+  char rev[8];
+  int k = 0;
+  do {
+    rev[k++] = (char)('0' + a % 10);
+    a /= 10;
+  } while (a != 0);
+  while (k > 0) o[n++] = rev[--k];
+  return n;
+}
+
+/* Number.prototype.toPrecision(precision) (ECMA-262 §21.1.3.5): undefined
+ * precision is ToString(x); ToIntegerOrInfinity runs (in the caller's
+ * coercion) before the non-finite arm, which precedes the 1..100 range
+ * check. Digits are the exact-value, ties-up n of
+ * scr_f64_precision_digits; exponential form when e < -6 or e >= p.
+ * Nothing on an existing path calls this. */
+ScrStr *scr_num_to_precision(double x, double precision, bool has_precision) {
+  if (!has_precision || !isfinite(x)) return scr_f64_to_scrstr(x);
+  double p = isnan(precision) ? 0 : trunc(precision);
+  if (!(p >= 1 && p <= 100)) {
+    static const char msg[] = "toPrecision() argument must be between 1 and 100";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  int digits_count = (int)p;
+  char out[160];
+  size_t o = 0;
+  double a = x;
+  if (x < 0) {
+    out[o++] = '-';
+    a = -x;
+  }
+  char d[104];
+  int e = 0;
+  if (a == 0) {
+    memset(d, '0', (size_t)digits_count);
+    d[digits_count] = '\0';
+  } else {
+    scr_f64_precision_digits(a, digits_count, d, &e);
+  }
+  if (e < -6 || e >= digits_count) {
+    out[o++] = d[0];
+    if (digits_count != 1) {
+      out[o++] = '.';
+      memcpy(out + o, d + 1, (size_t)(digits_count - 1));
+      o += (size_t)(digits_count - 1);
+    }
+    o += scr_num_exp_suffix(out + o, e);
+  } else if (e >= 0) {
+    memcpy(out + o, d, (size_t)(e + 1));
+    o += (size_t)(e + 1);
+    if (e + 1 < digits_count) {
+      out[o++] = '.';
+      memcpy(out + o, d + e + 1, (size_t)(digits_count - e - 1));
+      o += (size_t)(digits_count - e - 1);
+    }
+  } else {
+    out[o++] = '0';
+    out[o++] = '.';
+    for (int i = 0; i < -(e + 1); i++) out[o++] = '0';
+    memcpy(out + o, d, (size_t)digits_count);
+    o += (size_t)digits_count;
+  }
+  return scr_str_new(out, o);
+}
+
+/* Number.prototype.toExponential(fractionDigits) with a DEFINED argument
+ * (the undefined form is scr_num_to_exponential's shortest mantissa):
+ * f + 1 exact-value, ties-up digits, "d.ddde±X". Nothing on an existing
+ * path calls this. */
+ScrStr *scr_num_to_exponential_digits(double x, double fraction_digits) {
+  if (!isfinite(x)) return scr_f64_to_scrstr(x);
+  double f = isnan(fraction_digits) ? 0 : trunc(fraction_digits);
+  if (!(f >= 0 && f <= 100)) {
+    static const char msg[] = "toExponential() argument must be between 0 and 100";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  int count = (int)f + 1;
+  char out[160];
+  size_t o = 0;
+  double a = x;
+  if (x < 0) {
+    out[o++] = '-';
+    a = -x;
+  }
+  char d[104];
+  int e = 0;
+  if (a == 0) {
+    memset(d, '0', (size_t)count);
+    d[count] = '\0';
+  } else {
+    scr_f64_precision_digits(a, count, d, &e);
+  }
+  out[o++] = d[0];
+  if (count != 1) {
+    out[o++] = '.';
+    memcpy(out + o, d + 1, (size_t)(count - 1));
+    o += (size_t)(count - 1);
+  }
+  o += scr_num_exp_suffix(out + o, e);
+  return scr_str_new(out, o);
+}
+
 /* Increment a decimal digit string in place. Returns true on overflow —
  * the value becomes 1 followed by len zeros (the caller folds the zeros
  * into its scale); an EMPTY string increments to "1" the same way (the
@@ -11738,4 +11949,53 @@ ScrDyn *scr_dyn_native_date_from_ms(double ms) {
   ScrDyn *result = scr_dyn_new_handle(date, SCR_DYNH_DATE);
   scr_native_date_release(date);
   return result;
+}
+
+/* crypto.getRandomValues(typedArray) (WebCrypto, also node:crypto's
+ * export): integer typed arrays only (Node's TypeMismatchError DOMException
+ * for float arrays, DataViews and every other value), at most 65536 bytes
+ * (QuotaExceededError), filled in place and returned. Nothing on an
+ * existing path calls these. They stay at the end of the unit: clang emits
+ * a static helper (scr_random_write) where its first emitted caller
+ * appears, and an earlier caller would move it in every binary that links
+ * the random fills. */
+ScrBytes *scr_crypto_get_random_values(ScrBytes *view) {
+  static const char mismatch[] = "TypeMismatchError";
+  static const char mismatch_msg[] = "The data argument must be an integer-type TypedArray";
+  static const char quota[] = "QuotaExceededError";
+  static const char quota_msg[] = "The requested length exceeds 65,536 bytes";
+  if (view->is_data_view || view->elem == SCR_BYTES_F32 || view->elem == SCR_BYTES_F64 ||
+      view->elem == SCR_BYTES_F16) {
+    scr_throw_domex(mismatch, mismatch_msg);
+    return NULL;
+  }
+  /* Integer arithmetic: a new floating-point literal would land in the
+   * merged constant pool every binary links. */
+  size_t length = view->len * (size_t)scr_bytes_elem_size(view->elem);
+  if (length > 65536u) {
+    scr_throw_domex(quota, quota_msg);
+    return NULL;
+  }
+  scr_random_write(view, 0, length);
+  return scr_bytes_retain(view);
+}
+
+ScrDyn *scr_crypto_get_random_values_dyn(ScrDyn *value) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(value);
+    if (!materialized) return NULL;
+    ScrDyn *result = scr_crypto_get_random_values_dyn(materialized);
+    scr_dyn_release(materialized);
+    return result ? scr_dyn_retain(value) : NULL;
+  }
+  if (value->kind != SCR_DYN_BYTES) {
+    static const char mismatch[] = "TypeMismatchError";
+    static const char mismatch_msg[] = "The data argument must be an integer-type TypedArray";
+    scr_throw_domex(mismatch, mismatch_msg);
+    return NULL;
+  }
+  ScrBytes *filled = scr_crypto_get_random_values(value->v.bytes);
+  if (!filled) return NULL;
+  scr_bytes_release(filled);
+  return scr_dyn_retain(value);
 }

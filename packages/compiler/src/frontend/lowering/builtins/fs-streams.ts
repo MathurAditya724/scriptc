@@ -34,15 +34,13 @@ function isFsFallbackDecl(lowerer: Lowerer, d: ts.Node): boolean {
 export function isFsStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(access.name);
   if (!symbol) return false;
-  return lowerer.checker
-    .declarationsOf(symbol)
-    .some(
-      (d) =>
-        d.parent !== undefined &&
-        ts.isClassDeclaration(d.parent) &&
-        (d.parent.name?.text === "ReadStream" || d.parent.name?.text === "WriteStream") &&
-        isFsFallbackDecl(lowerer, d.parent),
-    );
+  return symbol.declarations.some(
+    (d) =>
+      d.parent !== undefined &&
+      ts.isClassDeclaration(d.parent) &&
+      (d.parent.name?.text === "ReadStream" || d.parent.name?.text === "WriteStream") &&
+      isFsFallbackDecl(lowerer, d.parent),
+  );
 }
 
 /** bytesRead / bytesWritten / pending / path reads. Null for other
@@ -156,9 +154,9 @@ export function fsStreamClassOf(
   symbol: ts.Symbol | null | undefined,
 ): "ReadStream" | "WriteStream" | null {
   if (!symbol || (symbol.name !== "ReadStream" && symbol.name !== "WriteStream")) return null;
-  const declared = lowerer.checker
-    .declarationsOf(symbol)
-    .some((d) => ts.isClassDeclaration(d) && isFsFallbackDecl(lowerer, d));
+  const declared = symbol.declarations.some(
+    (d) => ts.isClassDeclaration(d) && isFsFallbackDecl(lowerer, d),
+  );
   return declared ? symbol.name : null;
 }
 

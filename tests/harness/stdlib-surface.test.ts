@@ -119,7 +119,7 @@ function calleeSymbol(decl: ts.VariableDeclaration): ts.Symbol | undefined {
 
 function isStdlibDeclared(symbol: ts.Symbol | undefined): boolean {
   if (!symbol) return false;
-  return checker.declarationsOf(symbol).some((d) => {
+  return symbol.declarations.some((d) => {
     const file = d.getSourceFile();
     return (
       file.fileName === ambient ||

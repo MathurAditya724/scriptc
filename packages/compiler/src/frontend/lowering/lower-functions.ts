@@ -60,7 +60,7 @@ function declareCallReceiver(
 export function isTopLevelFnSymbol(lowerer: Lowerer, ident: ts.Identifier): boolean {
   const symbol = lowerer.resolveValueSymbol(ident);
   if (symbol && lowerer.staticCallables.get(symbol)?.kind === "declared-function") return true;
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   return (
     !!decl &&
     ts.isFunctionDeclaration(decl) &&

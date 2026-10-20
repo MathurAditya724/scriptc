@@ -52,12 +52,15 @@ export type ParamMode = "required" | "omittable" | "rest" | "dynRest" | "argumen
  * otherwise. `bodyType` is present exactly for DEFAULTED program params:
  * the plain T the body sees after the prologue applies the default (see
  * declareParams). `callDefault` is the compile-time default value for a
- * table-backed builtin's omittable slot. */
+ * table-backed builtin's omittable slot. `entryNarrow` marks a dyn ABI slot
+ * inherited from a JavaScript base method whose TypeScript override declares
+ * a typed parameter: the prologue narrows the checked value to that type. */
 export interface ParamShape {
   type: IrType;
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
+  entryNarrow?: IrType;
   /** One flattened position of a fixed-tuple rest parameter
    * (restTupleShapes): the declaration's last parameter owns every shape
    * from its index on, and the body binds the tuple (declareParams). */
@@ -461,7 +464,15 @@ export function paramShapes(
       return { type: mapped, mode: "rest" };
     }
     if (declParam.initializer) return defaultParameterShape(lowerer, declParam, mapped);
-    if (declParam.questionToken && !lowerer.bareUndefinedArmedUnion(mapped)) {
+    // A checked-value slot holds undefined directly, so an omitted
+    // argument needs no union arm (paramShape's declared-signature rule;
+    // an erased type parameter and a class-implemented interface view
+    // both map here).
+    if (
+      declParam.questionToken &&
+      !lowerer.bareUndefinedArmedUnion(mapped) &&
+      mapped.kind !== "dyn"
+    ) {
       lowerer.unsupported(
         "SC1090",
         declParam,
@@ -810,7 +821,11 @@ function appendArgumentsParameter(
     const classMethod =
       ts.isMethodDeclaration(node) &&
       (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent));
-    if (!classMethod && !isNodeEsmFile(node.getSourceFile(), lowerer.program)) {
+    if (
+      !classMethod &&
+      !isNodeEsmFile(node.getSourceFile(), lowerer.program) &&
+      !unmappedArguments(node)
+    ) {
       lowerer.unsupported(
         "SC1090",
         node,
@@ -819,6 +834,35 @@ function appendArgumentsParameter(
     }
   }
   shapes.push({ type: DYN, mode });
+}
+
+/** Whether `arguments` inside `node` is Node's unmapped object: strict code
+ * (a 'use strict' prologue on the file or an enclosing function, or a class
+ * body) or a non-simple parameter list (defaults, rest, destructuring). Its
+ * elements then never alias the parameters, which is the ES module case. */
+function unmappedArguments(node: ts.SignatureDeclaration): boolean {
+  if (
+    node.parameters.nodes.some(
+      (p) =>
+        p.initializer !== undefined || p.dotDotDotToken !== undefined || !ts.isIdentifier(p.name),
+    )
+  )
+    return true;
+  const useStrict = (statements: readonly ts.Statement[]): boolean => {
+    for (const statement of statements) {
+      if (!ts.isExpressionStatement(statement) || !ts.isStringLiteral(statement.expression))
+        return false;
+      if (statement.expression.text === "use strict") return true;
+    }
+    return false;
+  };
+  for (let n: ts.Node | undefined = node; n; n = n.parent) {
+    if (ts.isClassDeclaration(n) || ts.isClassExpression(n)) return true;
+    if (ts.isFunctionLike(n) && n.body && ts.isBlock(n.body) && useStrict(n.body.statements.nodes))
+      return true;
+    if (ts.isSourceFile(n)) return useStrict(n.statements.nodes);
+  }
+  return false;
 }
 
 /** Signature checks + param shapes + IR func type for any lambda-like
@@ -966,8 +1010,7 @@ export function lambdaSignature(
     const ctxSigs = ctxType
       ? lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType))
       : [];
-    const ctxDecl =
-      ctxSigs.length === 1 ? lowerer.checker.signatureDeclaration(ctxSigs[0]!) : undefined;
+    const ctxDecl = ctxSigs.length === 1 ? ctxSigs[0]!.declaration : undefined;
     const ctxRetRaw =
       ctxDecl && !ctxDecl.getSourceFile().isDeclarationFile
         ? lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!))

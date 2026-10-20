@@ -420,7 +420,7 @@ function isErrorMonitorRef(lowerer: Lowerer, arg: ts.Expression): boolean {
   // binding's type in JavaScript; its source property still names it.
   if (!ts.isIdentifier(arg)) return false;
   const symbol = lowerer.resolveValueSymbol(arg);
-  const declaration = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+  const declaration = symbol ? symbol.valueDeclaration : undefined;
   if (!declaration || !ts.isBindingElement(declaration)) return false;
   const pattern = declaration.parent;
   const variable = pattern?.parent;
@@ -475,7 +475,7 @@ function staticStringPrefixOf(
     const symbol = lowerer.resolveValueSymbol(expression);
     if (!symbol || seen.has(symbol)) return null;
     seen.add(symbol);
-    const declaration = lowerer.checker.valueDeclarationOf(symbol);
+    const declaration = symbol.valueDeclaration;
     if (
       declaration &&
       ts.isVariableDeclaration(declaration) &&
@@ -509,7 +509,7 @@ function staticStringSuffixOf(
     const symbol = lowerer.resolveValueSymbol(expression);
     if (!symbol || seen.has(symbol)) return null;
     seen.add(symbol);
-    const declaration = lowerer.checker.valueDeclarationOf(symbol);
+    const declaration = symbol.valueDeclaration;
     if (
       declaration &&
       ts.isVariableDeclaration(declaration) &&
