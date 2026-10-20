@@ -12,6 +12,7 @@ import {
   type IrExpr,
   type IrFunction,
   type IrStmt,
+  type IrStrIntrinsicMethod,
   type IrType,
   RUNTIME_ERROR_CLASSES,
   STRING,
@@ -110,11 +111,190 @@ function inspectKey(name: string): string {
 function errorRenderable(info: ClassInfo): boolean {
   // The builtin classes' name/message/code live in runtime slots (the
   // ScrError prefix insp.error reads), not IR fields; only USER-declared
-  // fields are own properties the runtime rendering would miss. #private
-  // fields are NOT own properties — Node never prints them — so they
-  // don't disqualify.
-  if (!info.builtinError && info.def.fields.some((f) => !f.name.startsWith("#"))) return false;
+  // fields are own properties the runtime rendering would miss. A user
+  // class's layout repeats its builtin base's prefix fields, which are
+  // those same slots. #private fields are NOT own properties — Node never
+  // prints them — so they don't disqualify.
+  if (!info.builtinError) {
+    const inherited = new Set<string>();
+    for (let c = info.base; c; c = c.base) {
+      if (c.builtinError || c.def.runtime) for (const f of c.def.fields) inherited.add(f.name);
+    }
+    if (info.def.fields.some((f) => !f.name.startsWith("#") && !inherited.has(f.name)))
+      return false;
+  }
   return info.subclasses.every((s) => errorRenderable(s));
+}
+
+/** The program-declared classes among `info` and its descendants, most
+ * derived first (an instance tests against its own class before an
+ * ancestor's). Runtime-provided error classes are not among them. */
+function userErrorClasses(info: ClassInfo): ClassInfo[] {
+  const out: ClassInfo[] = [];
+  const visit = (c: ClassInfo): void => {
+    for (const s of c.subclasses) visit(s);
+    if (!c.builtinError && !c.def.runtime) out.push(c);
+  };
+  visit(info);
+  return out;
+}
+
+/** An error value whose runtime class may be a program-declared subclass:
+ * the runtime renders the stackless base from the instance's `name`
+ * (`[Error: m]`), and Node's improveStack then names the constructor too
+ * (`[Plain [Error]: m]`). Each program class is an instanceof arm (the
+ * static class itself unconditionally) applying that header rule; other
+ * values keep the runtime rendering. */
+function userErrorInspectHelper(
+  lowerer: Lowerer,
+  t: IrType & { kind: "object" },
+  info: ClassInfo,
+  loc: SrcLoc,
+): string {
+  const key = `insp.userError:${typeKey(t)}`;
+  const existing = lowerer.inspectHelpers.get(key);
+  if (existing) return existing;
+  const name = `%util.insp.${lowerer.inspectHelpers.size}`;
+  lowerer.inspectHelpers.set(key, name);
+  const v = (): IrExpr => varRef("v.0", t, loc);
+  const base = (): IrExpr => ({
+    kind: "libCall",
+    fn: "insp.error",
+    args: [v(), varRef("r.0", F64, loc), varRef("d.0", F64, loc)],
+    type: STRING,
+    loc,
+  });
+  const body: IrStmt[] = [];
+  for (const c of userErrorClasses(info)) {
+    const display = c.def.jsName ?? c.decl?.name?.text ?? c.def.name.replace(/^%/, "");
+    const ret: IrStmt = {
+      kind: "return",
+      value: improvedErrorBase(lowerer, v(), base(), display, loc),
+      loc,
+    };
+    if (c === info) {
+      body.push(ret);
+      break;
+    }
+    body.push({
+      kind: "if",
+      cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
+      then: [ret],
+      else_: null,
+      loc,
+    });
+  }
+  if (body.at(-1)?.kind !== "return") body.push({ kind: "return", value: base(), loc });
+  lowerer.liftedFns.push({
+    name,
+    params: [
+      { localId: "v.0", name: "v", type: t },
+      { localId: "r.0", name: "r", type: F64 },
+      { localId: "d.0", name: "d", type: F64 },
+    ],
+    returnType: STRING,
+    locals: [
+      { id: "v.0", name: "v", type: t, mutable: false },
+      { id: "r.0", name: "r", type: F64, mutable: false },
+      { id: "d.0", name: "d", type: F64, mutable: false },
+      { id: "name.0", name: "name", type: STRING, mutable: true },
+      { id: "raw.0", name: "raw", type: STRING, mutable: true },
+    ],
+    body,
+    loc,
+  });
+  return name;
+}
+
+/** Node's improveStack over the stackless base (`[Error: m]`): when the
+ * instance's constructor name differs from its `name` and the name ends in
+ * "Error", the header names both — `[Plain [Error]: m]`, or
+ * `[FetchError: m]` when the constructor name already contains it. */
+function improvedErrorBase(
+  lowerer: Lowerer,
+  value: IrExpr,
+  base: IrExpr,
+  display: string,
+  loc: SrcLoc,
+): IrExpr {
+  const str = (
+    method: IrStrIntrinsicMethod,
+    receiver: IrExpr,
+    args: IrExpr[],
+    type: IrType,
+  ): IrExpr => ({ kind: "strIntrinsic", method, receiver, args, type, loc });
+  const and = (left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "logical",
+    op: "&&",
+    left,
+    right,
+    type: BOOL,
+    loc,
+  });
+  const eq = (left: IrExpr, right: IrExpr, negated = false): IrExpr => ({
+    kind: "strEq",
+    negated,
+    left,
+    right,
+    type: BOOL,
+    loc,
+  });
+  const nameRef = (): IrExpr => varRef("name.0", STRING, loc);
+  const baseRef = (): IrExpr => varRef("raw.0", STRING, loc);
+  const after = (): IrExpr => ({
+    kind: "bin",
+    op: "+",
+    left: str("length", nameRef(), [], F64),
+    right: numLit(1, loc),
+    type: F64,
+    loc,
+  });
+  const next = (): IrExpr => str("charAt", baseRef(), [after()], STRING);
+  const cond = and(
+    and(
+      eq(nameRef(), strLit(display, loc), true),
+      str("endsWith", nameRef(), [strLit("Error", loc)], BOOL),
+    ),
+    and(str("startsWith", baseRef(), [concatAll([strLit("[", loc), nameRef()], loc)], BOOL), {
+      kind: "logical",
+      op: "||",
+      left: eq(next(), strLit(":", loc)),
+      right: eq(next(), strLit("]", loc)),
+      type: BOOL,
+      loc,
+    }),
+  );
+  const rest = (): IrExpr => str("slice", baseRef(), [after()], STRING);
+  const improved: IrExpr = {
+    kind: "ternary",
+    cond: str("includes", strLit(display, loc), [nameRef()], BOOL),
+    then: concatAll([strLit(`[${display}`, loc), rest()], loc),
+    else_: concatAll([strLit(`[${display} [`, loc), nameRef(), strLit("]", loc), rest()], loc),
+    type: STRING,
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: "name.0",
+        init: {
+          kind: "fieldGet",
+          obj: lowerer.upcastTo(value, "%Error"),
+          className: "%Error",
+          field: "name",
+          type: STRING,
+          loc,
+        },
+        loc,
+      },
+      { kind: "varDecl", localId: "raw.0", init: base, loc },
+    ],
+    result: { kind: "ternary", cond, then: improved, else_: baseRef(), type: STRING, loc },
+    type: STRING,
+    loc,
+  };
 }
 
 function isErrorClass(lowerer: Lowerer, className: string): boolean {
@@ -372,6 +552,16 @@ export function inspectExpr(
         };
       }
       if (isErrorClass(lowerer, t.className)) {
+        const info = lowerer.classes.get(t.className);
+        if (info && userErrorClasses(info).length > 0) {
+          return {
+            kind: "call",
+            callee: userErrorInspectHelper(lowerer, t, info, loc),
+            args: [value, recurse, depth],
+            type: STRING,
+            loc,
+          };
+        }
         return {
           kind: "libCall",
           fn: "insp.error",
