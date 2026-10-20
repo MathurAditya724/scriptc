@@ -150,12 +150,29 @@ export function objectIterOverIndexShape(
   }
   // The overflow value must surface as the element type (identity, an
   // arm of a union element, or a dyn element over a dyn signature).
+  // A cast that narrows the signature's union (`Object.entries(headers as
+  // Record<string, string | string[] | undefined>)` over a signature that
+  // also holds numbers): each overflow value checks into the element type,
+  // so a value of a dropped arm throws instead of mistyping.
+  let ivNarrows = false;
   if (valueT) {
     const ivSurfaces =
       typeEquals(iv, valueT) ||
       (valueT.kind === "union" && lowerer.armTag(valueT.unionId, iv) >= 0) ||
       (valueT.kind === "dyn" && iv.kind === "dyn");
-    if (!ivSurfaces) {
+    if (
+      !ivSurfaces &&
+      iv.kind === "union" &&
+      lowerer.dynConvertible(iv) &&
+      lowerer.dynConvertible(valueT)
+    ) {
+      const ivUnion = iv;
+      const narrowArms =
+        valueT.kind === "union" ? (lowerer.unions.get(valueT.unionId)?.arms ?? []) : [valueT];
+      ivNarrows =
+        narrowArms.length > 0 && narrowArms.every((a) => lowerer.armTag(ivUnion.unionId, a) >= 0);
+    }
+    if (!ivSurfaces && !ivNarrows) {
       lowerer.unsupported(
         "SC1090",
         node,
@@ -269,6 +286,21 @@ export function objectIterOverIndexShape(
             }
           }
         }
+        // A cast that narrows the field's type (the element type keeps
+        // some of its arms): the value checks into the element type, so a
+        // dropped arm throws instead of mistyping.
+        if (lowerer.dynConvertible(f.type) && lowerer.dynConvertible(valueT)) {
+          const armsOf = (t: IrType): IrType[] =>
+            t.kind === "union" ? (lowerer.unions.get(t.unionId)?.arms ?? []) : [t];
+          const target = armsOf(valueT);
+          if (armsOf(f.type).some((a) => target.some((b) => typeEquals(a, b))))
+            return {
+              kind: "dynCheck",
+              value: { kind: "dynFrom", value: raw, type: DYN, loc },
+              type: valueT,
+              loc,
+            };
+        }
         return null;
       };
       const pushedOf = (element: IrExpr): IrExpr =>
@@ -339,17 +371,37 @@ export function objectIterOverIndexShape(
     const ksT = arrayOf(STRING);
     const ksRef = varRef("ks.0", ksT, loc);
     const kRef = varRef("k.0", STRING, loc);
-    const readValue: IrExpr | null = valueT
-      ? {
-          kind: "recordKeyGet",
-          obj: rRef,
-          shapeId: argIr.shapeId,
-          key: kRef,
-          overflowOnly: true,
-          type: valueT,
-          loc,
-        }
-      : null;
+    const readValue: IrExpr | null = !valueT
+      ? null
+      : ivNarrows
+        ? {
+            kind: "dynCheck",
+            value: {
+              kind: "dynFrom",
+              value: {
+                kind: "recordKeyGet",
+                obj: rRef,
+                shapeId: argIr.shapeId,
+                key: kRef,
+                overflowOnly: true,
+                type: iv,
+                loc,
+              },
+              type: DYN,
+              loc,
+            },
+            type: valueT,
+            loc,
+          }
+        : {
+            kind: "recordKeyGet",
+            obj: rRef,
+            shapeId: argIr.shapeId,
+            key: kRef,
+            overflowOnly: true,
+            type: valueT,
+            loc,
+          };
     const loopPushed: IrExpr =
       member === "keys"
         ? kRef

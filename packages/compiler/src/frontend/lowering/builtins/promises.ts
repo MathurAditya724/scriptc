@@ -74,6 +74,17 @@ export function lowerPromiseStaticCall(
       }
       return resultArms.some((a) => typeEquals(a, inner));
     };
+    // A Promise<never> entry (the deadline idiom: `new Promise<never>((_,
+    // reject) => setTimeout(reject, ms))`) can only reject, so it races
+    // under any result type; its inner type maps to void.
+    const neverEntry = (el: ts.Expression): boolean => {
+      const t = lowerer.typeOf(el);
+      const arg =
+        t.getSymbol()?.name === "Promise"
+          ? lowerer.checker.getTypeArguments(t as ts.TypeReference)[0]
+          : undefined;
+      return arg !== undefined && (arg.flags & ts.TypeFlags.Never) !== 0;
+    };
     const entries = argNode.elements.nodes.map((el) => {
       const entry = lowerer.lowerExpr(el);
       if (entry.type.kind !== "promise") {
@@ -83,7 +94,7 @@ export function lowerPromiseStaticCall(
           "JS would resolve plain values — wrap them: new Promise((r) => r(v))",
         );
       }
-      if (!compatible(entry.type.inner)) {
+      if (!compatible(entry.type.inner) && !(entry.type.inner.kind === "void" && neverEntry(el))) {
         lowerer.unsupported(
           "SC1090",
           el,

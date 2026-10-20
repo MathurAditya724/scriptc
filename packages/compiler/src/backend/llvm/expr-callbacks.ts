@@ -55,6 +55,23 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
   if (sym) return sym;
   sym = `sc_race_${host.resolveThunks.size}`;
   host.resolveThunks.set(key, sym);
+  const toArms = to.kind === "union" ? (host.unionsById.get(to.unionId)?.arms ?? []) : [];
+  if (from.kind === "void" && !toArms.some((a) => a.kind === "undefinedT")) {
+    // A Promise<never> entry (the frontend admits void entries without an
+    // undefined result arm only for those): it can only reject, so its
+    // fulfillment adapter never runs.
+    host.declare(`declare void @scr_trap(ptr)`);
+    const msg = host.cstr("scriptc: a Promise<never> race entry fulfilled\n");
+    host.resolveThunkDefs.push(
+      `define internal void @${sym}(ptr %dst, ptr %src) ${FN_ATTRS} { ; race ${key}`,
+      `entry:`,
+      `  call void @scr_trap(ptr ${msg})`,
+      `  unreachable`,
+      `}`,
+      ``,
+    );
+    return sym;
+  }
   if (to.kind !== "union")
     throw new InternalCompilerError("llvm emitter bug: race adapter to a non-union");
   const toDef = host.unionsById.get(to.unionId);
