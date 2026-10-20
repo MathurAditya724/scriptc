@@ -543,7 +543,9 @@ export function lowerChildWriterMethodCall(
 /** A receiver spelled as a plain access path (`child.stdout`, `out`): its
  * root symbol and member names, or null for other forms. A `const` alias
  * of an access path (`const out = child.stdout`) resolves to that path,
- * so every spelling of one stream gets the same key. */
+ * and so does a method call declared to return `this`
+ * (`child.stdout.setEncoding("utf8")`), so every spelling of one stream
+ * gets the same key. */
 function accessPathOf(
   lowerer: Lowerer,
   expr: ts.Expression,
@@ -564,7 +566,82 @@ function accessPathOf(
     const base = accessPathOf(lowerer, expr.expression, depth + 1);
     return base === null ? null : { root: base.root, path: `${base.path}.${expr.name.text}` };
   }
+  if (returnsReceiver(lowerer, expr)) {
+    return accessPathOf(
+      lowerer,
+      (expr.expression as ts.PropertyAccessExpression).expression,
+      depth + 1,
+    );
+  }
   return null;
+}
+
+/** A method call (`recv.m(...)`, not optional) whose declaration returns
+ * `this`, so its value is the receiver itself. */
+function returnsReceiver(lowerer: Lowerer, expr: ts.Expression): expr is ts.CallExpression {
+  if (
+    !ts.isCallExpression(expr) ||
+    expr.questionDotToken ||
+    !ts.isPropertyAccessExpression(expr.expression) ||
+    expr.expression.questionDotToken
+  )
+    return false;
+  const declaration = lowerer.checker.getResolvedSignature(expr)?.declaration;
+  return declaration?.type?.kind === ts.SyntaxKind.ThisType;
+}
+
+/** A call of a child_process factory (spawn, fork, exec, execFile), each
+ * of which returns a new ChildProcess. */
+function createsChildProcess(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
+  if (
+    declaration === undefined ||
+    !ts.isFunctionDeclaration(declaration) ||
+    declaration.name === undefined ||
+    !["spawn", "fork", "exec", "execFile"].includes(declaration.name.text)
+  )
+    return false;
+  for (let node: ts.Node | undefined = declaration.parent; node; node = node.parent) {
+    if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
+      return node.name.text === "child_process" || node.name.text === "node:child_process";
+    }
+  }
+  return false;
+}
+
+/** The statement that always evaluates `call` when it runs: the call is
+ * the statement's expression, a variable's initializer, or the receiver of
+ * a method chain that is one of those. Null for calls under a condition,
+ * an operator, an argument list or any other construct. */
+function unconditionalStatementOf(call: ts.CallExpression): ts.Statement | null {
+  let node: ts.Node = call;
+  for (;;) {
+    const parent: ts.Node | undefined = node.parent;
+    if (parent === undefined) return null;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      (ts.isPropertyAccessExpression(parent) &&
+        parent.expression === node &&
+        !parent.questionDotToken) ||
+      (ts.isCallExpression(parent) && parent.expression === node && !parent.questionDotToken)
+    ) {
+      node = parent;
+      continue;
+    }
+    if (ts.isExpressionStatement(parent)) return parent;
+    if (ts.isVariableDeclaration(parent) && parent.initializer === node) {
+      const list = parent.parent;
+      const statement = list?.parent;
+      return list !== undefined &&
+        ts.isVariableDeclarationList(list) &&
+        statement !== undefined &&
+        ts.isVariableStatement(statement)
+        ? statement
+        : null;
+    }
+    return null;
+  }
 }
 
 /** The initializer of a symbol declared once as a `const` variable, else null. */
@@ -583,18 +660,22 @@ function constInitializerOf(symbol: ts.Symbol): ts.Expression | null {
 }
 
 /** Whether two resolved access paths name different objects: the same root
- * with different members, or two `const` roots each initialized by a call
- * or `new` (such as two `spawn()` results). */
+ * with different members, or two `const` roots each initialized by `new`
+ * or a child_process factory (such as two `spawn()` results). Any other
+ * call may return an object another binding already holds. */
 function distinctPaths(
+  lowerer: Lowerer,
   a: { root: ts.Symbol; path: string },
   b: { root: ts.Symbol; path: string },
 ): boolean {
   if (a.root === b.root) return a.path !== b.path;
   const fresh = (root: ts.Symbol): boolean => {
     let init = constInitializerOf(root);
-    while (init !== null && (ts.isParenthesizedExpression(init) || ts.isAwaitExpression(init)))
-      init = init.expression;
-    return init !== null && (ts.isCallExpression(init) || ts.isNewExpression(init));
+    while (init !== null && ts.isParenthesizedExpression(init)) init = init.expression;
+    if (init === null) return false;
+    return (
+      ts.isNewExpression(init) || (ts.isCallExpression(init) && createsChildProcess(lowerer, init))
+    );
   };
   return fresh(a.root) && fresh(b.root);
 }
@@ -646,10 +727,11 @@ function childStreamEncodedAt(
       const target = node.expression.expression;
       const path = accessPathOf(lowerer, target);
       if (path !== null && path.root === key.root && path.path === key.path) {
-        if (ts.isExpressionStatement(node.parent) && preceding.has(node.parent)) before = true;
+        const statement = unconditionalStatementOf(node);
+        if (statement !== null && preceding.has(statement)) before = true;
         else elsewhere = true;
       } else if (
-        (path === null || !distinctPaths(path, key)) &&
+        (path === null || !distinctPaths(lowerer, path, key)) &&
         lowerer.checker.isTypeAssignableTo(receiverType, lowerer.typeOf(target))
       ) {
         // Another spelling that can hold this stream (a parameter, a `let`

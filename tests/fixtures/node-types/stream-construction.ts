@@ -81,6 +81,26 @@ function run(script: string): Promise<string> {
   });
 }
 
+// setEncoding returns its stream: a listener on the returned value, or on
+// the stream after `const out = stream.setEncoding(...)`, receives strings.
+function readEncoded(script: string): Promise<string> {
+  return new Promise((resolve) => {
+    const child = spawn("/bin/sh", ["-c", script], { stdio: "pipe" });
+    let outText = "";
+    let errText = "";
+    const out = child.stdout.setEncoding("utf8");
+    out.on("data", (c: unknown) => {
+      outText += typeof c + ":" + String(c) + ";";
+    });
+    const err = child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (c: unknown) => {
+      errText += typeof c + ":" + String(c) + ";";
+    });
+    void err;
+    child.on("close", () => resolve(outText + " err " + errText));
+  });
+}
+
 async function main(): Promise<void> {
   console.log("gunzip", await gunzipThrough(gzipSync(Buffer.from("payload"))));
   const file = path.join(os.tmpdir(), `scriptc-stream-construction-${process.pid}.txt`);
@@ -88,6 +108,7 @@ async function main(): Promise<void> {
   console.log("file", JSON.stringify(await readFileStream(file)));
   fs.unlinkSync(file);
   console.log("run", JSON.stringify(await run("echo hi; echo warn >&2")));
+  console.log("encoded", JSON.stringify(await readEncoded("printf hi; printf warn >&2")));
   for (const script of ["echo bad >&2; exit 3", "kill -TERM $$"]) {
     try {
       await run(script);
