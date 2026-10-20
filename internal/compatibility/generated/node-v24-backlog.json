@@ -55940,7 +55940,9 @@
           "confidence": "high",
           "source": "compiler-feature:process.'disconnect'",
           "tests": [
-            "tests/corpus/2946-child-fork-ipc/main.ts"
+            "tests/corpus/2946-child-fork-ipc/main.ts",
+            "tests/corpus/6420-process-send-presence.ts",
+            "tests/corpus/6421-process-send-presence-fork/main.ts"
           ]
         }
       }
@@ -55982,7 +55984,9 @@
           "confidence": "high",
           "source": "compiler-feature:process.'message'",
           "tests": [
-            "tests/corpus/2946-child-fork-ipc/main.ts"
+            "tests/corpus/2946-child-fork-ipc/main.ts",
+            "tests/corpus/6420-process-send-presence.ts",
+            "tests/corpus/6421-process-send-presence-fork/main.ts"
           ]
         }
       }
@@ -56365,7 +56369,9 @@
           "confidence": "high",
           "source": "compiler-feature:process.process.disconnect",
           "tests": [
-            "tests/corpus/2946-child-fork-ipc/main.ts"
+            "tests/corpus/2946-child-fork-ipc/main.ts",
+            "tests/corpus/6420-process-send-presence.ts",
+            "tests/corpus/6421-process-send-presence-fork/main.ts"
           ]
         }
       }
@@ -57013,7 +57019,9 @@
           "confidence": "high",
           "source": "compiler-feature:process.process.send",
           "tests": [
-            "tests/corpus/2946-child-fork-ipc/main.ts"
+            "tests/corpus/2946-child-fork-ipc/main.ts",
+            "tests/corpus/6420-process-send-presence.ts",
+            "tests/corpus/6421-process-send-presence-fork/main.ts"
           ]
         }
       }
@@ -57467,7 +57475,9 @@
           "confidence": "high",
           "source": "compiler-feature:process.connected",
           "tests": [
-            "tests/corpus/2946-child-fork-ipc/main.ts"
+            "tests/corpus/2946-child-fork-ipc/main.ts",
+            "tests/corpus/6420-process-send-presence.ts",
+            "tests/corpus/6421-process-send-presence-fork/main.ts"
           ]
         }
       }
@@ -57582,7 +57592,10 @@
             "tests/corpus/2941-process-exit-code.ts",
             "tests/corpus/2942-process-exit-code-override.ts",
             "tests/corpus/2943-process-exit-code-invalid.ts",
-            "tests/corpus/2944-process-exit-code-wrap.ts"
+            "tests/corpus/2944-process-exit-code-wrap.ts",
+            "tests/corpus/6422-process-exitcode-read.ts",
+            "tests/corpus/6423-process-exitcode-default.ts",
+            "tests/corpus/6424-process-exit-keeps-exitcode.ts"
           ]
         }
       }
@@ -66531,6 +66544,7 @@
           "source": "compiler-feature:test.mock.fn",
           "tests": [
             "tests/fixtures/node-test/cases/mock-fn.ts",
+            "tests/fixtures/node-test/cases/mock-fn-default.ts",
             "tests/harness/node-test.test.ts"
           ]
         }
@@ -76203,6 +76217,8 @@
             "tests/fixtures/node-types/promisify-crypto.ts",
             "tests/corpus/5632-promisify-dns.ts",
             "tests/fixtures/node-types/promisify-dns.ts",
+            "tests/corpus/6428-promisify-callback-functions.ts",
+            "tests/fixtures/node-types/promisify-callback-functions.ts",
             "tests/harness/project-config.test.ts"
           ]
         }

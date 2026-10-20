@@ -1,6 +1,11 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
-import { type LlEmitter, type LlScopeEntry, adoptingAwaitOf } from "./emitter.js";
-import { CAUGHT, type IrExpr, type IrStmt, STRING, isRefCounted } from "../../ir/ir.js";
+import {
+  type LlEmitter,
+  type LlScopeEntry,
+  adoptingAwaitOf,
+  MAX_BYTES_LOOP_VERSION_DEPTH,
+} from "./emitter.js";
+import { CAUGHT, F64, type IrExpr, type IrStmt, STRING, isRefCounted } from "../../ir/ir.js";
 import { emitStringSliceSnapshot } from "./string-slices.js";
 import {
   canDeferSplitPiece,
@@ -40,7 +45,8 @@ import {
 } from "../../ir/integer-loops.js";
 import { emitByteWindowGuard, matchByteWindow } from "./byte-windows.js";
 import { countedDenseShape, emitDenseLoopGuard, matchDenseArrayLoop } from "./dense-array-loops.js";
-import { emitCountedLoopLimit } from "./counted-loops.js";
+import { emitCountedLoopLimit, emitCountedLoopSafety } from "./counted-loops.js";
+import { emitBytesLoopVersionGuard } from "./bytes-loop-versions.js";
 import { mangleLocal } from "../mangle.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlValue } from "./expr-context.js";
@@ -937,48 +943,43 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.startBlock(done);
         break;
       }
+      const version =
+        emitter.bytesLoopVersionsEnabled &&
+        emitter.bytesLoopVersioning.size < MAX_BYTES_LOOP_VERSION_DEPTH &&
+        !emitter.bytesLoopVersioning.has(s)
+          ? emitter.matchBytesLoopVersion(s, countedLoop)
+          : null;
+      if (version) {
+        const fast = B.newLabel("bytes.version.fast"),
+          slow = B.newLabel("bytes.version.slow"),
+          done = B.newLabel("bytes.version.done");
+        emitBytesLoopVersionGuard(emitter, version, fast, slow);
+        const originalBounds = emitter.bytesBounds,
+          originalRanges = emitter.integerRanges;
+        emitter.bytesLoopVersioning.add(s);
+        try {
+          B.startBlock(slow);
+          emitter.emitStmt(s);
+          B.br(done);
+          B.startBlock(fast);
+          emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
+          if (version.ranges.size > 0)
+            emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
+          if (version.counted?.guarded) emitter.provenCountedGuards.add(s);
+          emitter.emitStmt(s);
+          B.br(done);
+        } finally {
+          emitter.bytesBounds = originalBounds;
+          emitter.integerRanges = originalRanges;
+          emitter.provenCountedGuards.delete(s);
+          emitter.bytesLoopVersioning.delete(s);
+        }
+        B.startBlock(done);
+        break;
+      }
       let countedJoin: string | null = null;
-      if (countedLoop?.guarded) {
-        let safe = "true";
-        if (countedLoop.limitGuarded) {
-          const bound = emitter.emitExpr(countedLoop.limit);
-          safe = B.tmp();
-          B.line(
-            `${safe} = fcmp ${countedLoop.step > 0 ? "ole" : "oge"} double ${bound.name}, ${f64Lit(countedLoop.guardLimit)}`,
-          );
-        }
-        if (countedLoop.startGuarded) {
-          // An exact integer of at most 2^53 - 1 in magnitude, and not -0
-          // (the bit patterns of the value and its round trip agree).
-          // NaN and infinities fail the ordered range tests.
-          const start = emitter.emitExpr(countedLoop.start);
-          const low = B.tmp(),
-            high = B.tmp(),
-            raw = B.tmp(),
-            wide = B.tmp(),
-            back = B.tmp(),
-            bits = B.tmp(),
-            backBits = B.tmp(),
-            exact = B.tmp(),
-            inRange = B.tmp(),
-            ok = B.tmp();
-          B.line(`${low} = fcmp oge double ${start.name}, ${f64Lit(-Number.MAX_SAFE_INTEGER)}`);
-          B.line(`${high} = fcmp ole double ${start.name}, ${f64Lit(Number.MAX_SAFE_INTEGER)}`);
-          B.line(`${inRange} = and i1 ${low}, ${high}`);
-          B.line(`${raw} = fptosi double ${start.name} to i64`);
-          B.line(`${wide} = freeze i64 ${raw}`);
-          B.line(`${back} = sitofp i64 ${wide} to double`);
-          B.line(`${bits} = bitcast double ${start.name} to i64`);
-          B.line(`${backBits} = bitcast double ${back} to i64`);
-          B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
-          B.line(`${ok} = and i1 ${inRange}, ${exact}`);
-          if (safe === "true") safe = ok;
-          else {
-            const both = B.tmp();
-            B.line(`${both} = and i1 ${safe}, ${ok}`);
-            safe = both;
-          }
-        }
+      if (countedLoop?.guarded && !emitter.provenCountedGuards.has(s)) {
+        const safe = emitCountedLoopSafety(emitter, countedLoop);
         const fast = B.newLabel("counted.fast");
         const slow = B.newLabel("counted.slow");
         countedJoin = B.newLabel("counted.done");
@@ -1103,6 +1104,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
             }
             B.line(`${inBounds} = icmp ult i32 ${narrow}, ${len}`);
           } else {
+            emitter.markMemoryPointer(lenPtr, "bytes:header");
             B.line(
               `${len} = load ${emitter.sizeType}, ptr ${lenPtr}${emitter.fieldAliasAttachment(lenPtr)}`,
             );
@@ -1666,6 +1668,8 @@ export function emitTryCatch(emitter: LlEmitter, s: IrStmt & { kind: "tryCatch" 
  * case, refcounted/boxed case-body locals are NULL-reset up front and
  * the scope-exit releases rely on NULL tolerance. */
 export function emitSwitch(emitter: LlEmitter, s: IrStmt & { kind: "switch" }): void {
+  const unitSwitch = charAtUnitSwitch(s);
+  if (unitSwitch !== null) return emitSwitch(emitter, unitSwitch);
   const B = emitter.B;
   const discKind = s.disc.type.kind;
   if (discKind !== "f64" && discKind !== "string" && discKind !== "bool") {
@@ -1689,7 +1693,31 @@ export function emitSwitch(emitter: LlEmitter, s: IrStmt & { kind: "switch" }): 
   const caseLabels = s.cases.map(() => B.newLabel("sw.c"));
   const defaultIdx = s.cases.findIndex((c) => c.test === null);
   const fallback = defaultIdx >= 0 ? caseLabels[defaultIdx]! : end;
-  if (!emitLiteralSwitch(emitter, disc, s.disc, s.cases, caseLabels, fallback)) {
+  const nullableString = nullableStringSwitch(emitter, s);
+  if (nullableString !== null) {
+    // `undefined` matches no string literal; any other value is the
+    // string itself and dispatches as a string switch.
+    const value = emitter.emitExpr(nullableString.value);
+    const present = B.tmp();
+    const dispatch = B.newLabel("sw.string");
+    B.line(`${present} = icmp ne ptr ${value.name}, null`);
+    B.condBr(present, dispatch, fallback);
+    B.startBlock(dispatch);
+    const text: LlValue = { name: value.name, type: STRING };
+    if (!emitLiteralSwitch(emitter, text, undefined, nullableString.cases, caseLabels, fallback)) {
+      nullableString.cases.forEach((c, i) => {
+        if (c.test?.kind !== "strLit") return;
+        const hit = B.tmp();
+        B.line(
+          `${hit} = call zeroext i1 ${emitter.literalEquals(c.test.value)}(ptr ${value.name})`,
+        );
+        const next = B.newLabel("sw.t");
+        B.condBr(hit, caseLabels[i]!, next);
+        B.startBlock(next);
+      });
+      B.br(fallback);
+    }
+  } else if (!emitLiteralSwitch(emitter, disc, s.disc, s.cases, caseLabels, fallback)) {
     s.cases.forEach((c, i) => {
       if (c.test === null) return;
       // Lazy source-order test evaluation (a test after the match never
@@ -1991,4 +2019,75 @@ export function emitStringSelfConcatAssign(
     else B.line(`store ptr ${result.name}, ptr ${b.slot}`);
   }
   return result;
+}
+
+/** `switch (x)` on a `string | undefined` value whose case tests are all
+ * string literals: the frontend's `switch (true)` over `x === "lit"` union
+ * equalities against one switch local. The local and the cases with plain
+ * string literal tests. */
+function nullableStringSwitch(
+  emitter: LlEmitter,
+  s: IrStmt & { kind: "switch" },
+): { value: IrExpr; cases: (IrStmt & { kind: "switch" })["cases"] } | null {
+  if (s.disc.kind !== "boolLit" || !s.disc.value) return null;
+  let value: (IrExpr & { kind: "varRef" }) | null = null;
+  const cases: (IrStmt & { kind: "switch" })["cases"] = [];
+  for (const c of s.cases) {
+    const test = c.test;
+    if (test === null) {
+      cases.push(c);
+      continue;
+    }
+    if (
+      test.kind !== "unionEq" ||
+      test.negated ||
+      test.sameValue ||
+      test.left.kind !== "varRef" ||
+      test.right.kind !== "unionWrap" ||
+      test.right.value.kind !== "strLit"
+    )
+      return null;
+    const nullable = emitter.nullableUnions.get(test.unionId);
+    if (
+      nullable === null ||
+      nullable.repr !== "single" ||
+      nullable.nullTag !== -1 ||
+      nullable.arm.kind !== "string" ||
+      test.right.tag !== nullable.refTag
+    )
+      return null;
+    if (value !== null && value.localId !== test.left.localId) return null;
+    value = test.left;
+    cases.push({ ...c, test: test.right.value });
+  }
+  return value === null ? null : { value, cases };
+}
+
+/** `switch (s.charAt(i))` (or `switch (s[i])`) whose case tests are all
+ * one-unit string literals, as a switch on `s.charCodeAt(i)` with the units
+ * as cases: no character string is built. An index out of range answers
+ * NaN, which matches no case, as "" matches no one-unit literal. */
+function charAtUnitSwitch(s: IrStmt & { kind: "switch" }): (IrStmt & { kind: "switch" }) | null {
+  const disc = s.disc;
+  if (disc.kind !== "strIntrinsic" || disc.method !== "charAt" || disc.args.length !== 1)
+    return null;
+  if (!s.cases.some((c) => c.test !== null)) return null;
+  if (
+    !s.cases.every(
+      (c) => c.test === null || (c.test.kind === "strLit" && c.test.value.length === 1),
+    )
+  )
+    return null;
+  return {
+    ...s,
+    disc: { ...disc, method: "charCodeAt", type: F64 },
+    cases: s.cases.map((c) =>
+      c.test?.kind === "strLit"
+        ? {
+            ...c,
+            test: { kind: "numLit", value: c.test.value.charCodeAt(0), type: F64, loc: c.test.loc },
+          }
+        : c,
+    ),
+  };
 }

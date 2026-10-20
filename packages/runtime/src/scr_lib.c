@@ -2037,6 +2037,19 @@ double scr_process_exit_code_or_zero(void) {
   return (double)scr_exit_code_hint_get();
 }
 
+static SCR_TL bool scr_exit_code_assigned = false;
+
+void scr_process_set_exit_code_tracked(double code) {
+  int converted;
+  if (!scr_process_exit_code_of(code, &converted)) return;
+  scr_exit_code_note(converted);
+  scr_exit_code_assigned = true;
+}
+
+bool scr_process_has_exit_code(void) {
+  return scr_exit_code_assigned || scr_exit_code_hint_get() != 0;
+}
+
 #if defined(__linux__)
 #include <sched.h>
 #include <signal.h>
@@ -10402,7 +10415,9 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem) {
  * keep other surrogates lone, WTF-8 encode. */
 static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), void *src) {
   if (n == 1) return scr_str_from_char_code_one((double)unit(src, 0));
-  char *out = malloc(n * 3 + 1); /* worst case: 3 bytes per UTF-16 unit */
+  /* Up to 64 units encode on the stack (3 bytes per UTF-16 unit at most). */
+  char small[64 * 3 + 1];
+  char *out = n <= 64 ? small : malloc(n * 3 + 1);
   if (!out) {
     scr_trap("scriptc: out of memory\n");
   }
@@ -10419,8 +10434,17 @@ static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), vo
     o += scr_wtf8_put(out + o, cp);
   }
   ScrStr *s = scr_str_new(out, o);
-  free(out);
+  if (out != small) free(out);
   return s;
+}
+
+static uint32_t scr_fcc_units_unit(void *src, size_t i) {
+  return scr_to_uint32(((const double *)src)[i]) & 0xFFFFu;
+}
+
+/* String.fromCharCode(c0, ..., cn-1) with the codes in a caller's array. */
+ScrStr *scr_str_from_char_codes(const double *codes, size_t n) {
+  return scr_str_from_units(n, scr_fcc_units_unit, (void *)codes);
 }
 
 static uint32_t scr_fcc_arr_unit(void *src, size_t i) {

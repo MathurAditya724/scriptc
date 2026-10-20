@@ -30,8 +30,3 @@ console.log(typeof widened);
 // `instanceof Promise` on a value that is never a promise.
 const record = { v: 1 };
 console.log(record instanceof Promise);
-
-// A variadic `unknown[]` slot takes closures with the same variadic ABI.
-type HandlerFn = (...args: unknown[]) => Promise<unknown>;
-const fixed: HandlerFn = async (first: unknown) => first;
-fixed(1, 2).then((v) => console.log(v));

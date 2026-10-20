@@ -56,6 +56,9 @@ import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-fe
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { type DenseArrayLoop } from "./dense-array-loops.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
+import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
+import { globalSlotAlias } from "./bytes-alias.js";
+import type { IntegerCountedForLoop } from "../../ir/integer-loops.js";
 import {
   materializeSplitPiece,
   type SplitSpan,
@@ -522,6 +525,9 @@ export function boxSlotCount(fn: IrFunction): number {
 
 /** Whether any node of `e` names the local (reads, writes, declarations,
  * captures). */
+/** Typed-array loop versions nest at most this deep (each doubles a body). */
+export const MAX_BYTES_LOOP_VERSION_DEPTH = 3;
+
 function mentionsLocal(e: IrExpr, localId: string): boolean {
   const exprNames = (node: IrExpr): boolean => {
     if (node.kind === "varRef" || node.kind === "incDec" || node.kind === "assignExpr")
@@ -1022,6 +1028,17 @@ export class LlEmitter {
   wrappingSums = new Set<IrExpr>();
   byteWindowsEnabled = true;
   byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
+  /** Typed-array loop versioning (bytes-loop-versions.ts) for the current
+   * function: off in debug and suspending functions and inside a copy. */
+  bytesLoopVersionsEnabled = false;
+  /** Loops being versioned around the statement being emitted: a loop is
+   * never versioned inside its own copies, and versions nest boundedly. */
+  readonly bytesLoopVersioning = new Set<IrStmt>();
+  bytesLoopEntries: ReturnType<typeof findInitializedByteLoopBindings> | null = null;
+  bytesLoopFunction: IrFunction | null = null;
+  /** Counted loops whose integer-form safety test an enclosing version
+   * guard already passed. */
+  readonly provenCountedGuards = new Set<IrStmt>();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
   integerViews = new Map<string, string>();
   /** Module globals the current function owns outright (initializer
@@ -3340,6 +3357,34 @@ export class LlEmitter {
 
   /** A binding's storage: a module global, a plain local slot, or a boxed
    * local (the slot holds the capture BOX; access goes through it). */
+  matchBytesLoopVersion(
+    s: IrStmt & { kind: "for" },
+    counted: IntegerCountedForLoop | null,
+  ): ReturnType<typeof matchBytesLoopVersion> {
+    const fn = this.bytesLoopFunction;
+    if (!fn) return null;
+    this.bytesLoopEntries ??= findInitializedByteLoopBindings(fn);
+    const initialized = this.bytesLoopEntries.get(s);
+    if (!initialized) return null;
+    const invariantGlobals = new Set(this.stableGlobals);
+    for (const global of this.initializerBindings.get(fn.name) ?? [])
+      invariantGlobals.add(global.id);
+    return matchBytesLoopVersion(s, counted, {
+      locals: this.currentLocals,
+      invariantGlobals,
+      captured: this.captureIds,
+      ranges: this.integerRanges,
+      initialized,
+      proven: this.bytesBounds,
+    });
+  }
+
+  /** The alias tag of a whole-slot load of a binding (module globals only). */
+  slotAlias(id: string): string {
+    const binding = this.binding(id);
+    return binding.kind === "global" ? globalSlotAlias(this, id, binding.type.kind) : "";
+  }
+
   binding(id: string): {
     kind: "global" | "local" | "boxed";
     slot: string;
