@@ -54,6 +54,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #if !defined(_WIN32)
 #define SCR_WASM_SIGNALS 1
 #include <pthread.h>
@@ -403,8 +413,16 @@ static __attribute__((noinline)) int scr_wasm_enter(ScrWasmThunk fn, void *inst,
   }
   scr_wasm_running = was_running;
   scr_wasm_top = entry.prev;
-  if (!entry.prev && scr_wasm_kept_count) scr_wasm_release_kept();
   return code;
+}
+
+/* Called by each caller of scr_wasm_enter once it has converted the
+ * call's results: after the outermost call, the references kept for it
+ * (import results, and references a table or global replaced while the
+ * guest could still hold them) are released. The results' externrefs are
+ * borrowed from that list until then. */
+static void scr_wasm_leave(void) {
+  if (!scr_wasm_top && scr_wasm_kept_count) scr_wasm_release_kept();
 }
 
 static void scr_wasm_init_thunk(void *inst, const uint64_t *args, uint64_t *results) {
@@ -625,6 +643,44 @@ static void scr_wasm_thread_init(void) {
 }
 #endif
 
+/* Checked memories (explicit bounds checks, no guard pages) keep one base
+ * address for their whole life: the ArrayBuffer of `memory.buffer` and
+ * every view of it alias the storage, so growing must not move it. The
+ * address space for the memory's largest size is reserved once and pages
+ * are committed as the memory grows. Hosts without address-space
+ * reservation (WASI) move the storage only while no buffer has been
+ * handed out; after that, growth that would move it fails (-1, a
+ * RangeError for Memory.prototype.grow). */
+#if defined(_WIN32)
+#define SCR_WASM_STABLE_RESERVE 1
+static uint8_t *scr_wasm_reserve(uint64_t bytes) {
+  return VirtualAlloc(NULL, (SIZE_T)bytes, MEM_RESERVE, PAGE_NOACCESS);
+}
+static bool scr_wasm_commit(uint8_t *base, uint64_t from, uint64_t to) {
+  return to == from || VirtualAlloc(base + from, (SIZE_T)(to - from), MEM_COMMIT, PAGE_READWRITE) != NULL;
+}
+static void scr_wasm_unreserve(ScrWasmMemory *m) {
+  if (m->base) VirtualFree(m->base, 0, MEM_RELEASE);
+}
+#elif !defined(__wasi__)
+#define SCR_WASM_STABLE_RESERVE 1
+static uint8_t *scr_wasm_reserve(uint64_t bytes) {
+#if !defined(MAP_NORESERVE)
+#define MAP_NORESERVE 0
+#endif
+  void *base = mmap(NULL, bytes, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+  return base == MAP_FAILED ? NULL : base;
+}
+static bool scr_wasm_commit(uint8_t *base, uint64_t from, uint64_t to) {
+  return to == from || mprotect(base + from, to - from, PROT_READ | PROT_WRITE) == 0;
+}
+static void scr_wasm_unreserve(ScrWasmMemory *m) {
+  if (m->base) munmap(m->base, m->reserved);
+}
+#else
+static void scr_wasm_unreserve(ScrWasmMemory *m) { free(m->base); }
+#endif
+
 static ScrWasmMemory *scr_wasm_memory_retain(ScrWasmMemory *m) {
   m->rc++;
   return m;
@@ -639,7 +695,7 @@ static void scr_wasm_memory_release(ScrWasmMemory *m) {
     munmap(m->base, m->reserved);
   } else
 #endif
-    free(m->base);
+    scr_wasm_unreserve(m);
   free(m);
 }
 
@@ -676,15 +732,29 @@ static ScrWasmMemory *scr_wasm_memory_new(uint64_t min, uint64_t max, bool guard
 #else
   (void)guarded;
 #endif
+#if SCR_WASM_STABLE_RESERVE
+  uint64_t reserve = max * SCR_WASM_PAGE;
+  m->base = reserve ? scr_wasm_reserve(reserve) : NULL;
+  if (reserve && (!m->base || !scr_wasm_commit(m->base, 0, m->size))) {
+    if (m->base) {
+      m->reserved = reserve;
+      scr_wasm_unreserve(m);
+    }
+#else
   m->base = m->size ? calloc(1, m->size) : NULL;
   if (m->size && !m->base) {
+#endif
     free(m);
     char msg[200];
     snprintf(msg, sizeof msg, "%s: Out of memory: Cannot allocate Wasm memory for new instance", what);
     scr_wasm_range_error(msg);
     return NULL;
   }
+#if SCR_WASM_STABLE_RESERVE
+  m->reserved = reserve;
+#else
   m->reserved = m->size;
+#endif
   return m;
 }
 
@@ -701,12 +771,21 @@ static int64_t scr_wasm_memory_grow_by(ScrWasmMemory *m, uint64_t delta) {
     return (int64_t)old;
   }
 #endif
+#if SCR_WASM_STABLE_RESERVE
+  /* Committed pages read as zero; the base never moves. */
+  if (size > m->reserved || !scr_wasm_commit(m->base, m->size, size)) return -1;
+  m->size = size;
+#else
+  /* A buffer handed out aliases the storage: moving it would leave the
+   * buffer's views reading freed memory. */
+  if (m->buffer_exposed) return -1;
   uint8_t *grown = realloc(m->base, size);
   if (!grown) return -1;
   memset(grown + m->size, 0, size - m->size);
   m->base = grown;
   m->reserved = size;
   m->size = size;
+#endif
   return (int64_t)old;
 }
 
@@ -796,10 +875,19 @@ static void *scr_wasm_ref_retain(char elem, void *v) {
   return v;
 }
 
+/* The reference a table or global slot drops: while a call runs, the guest
+ * may still hold it in a local or on its operand stack (it read the slot
+ * before the store), so it stays alive until the outermost call returns. */
+static void scr_wasm_drop_ref(ScrDyn *old) {
+  if (!old) return;
+  if (scr_wasm_top) scr_wasm_keep(old);
+  scr_dyn_release(old);
+}
+
 static void scr_wasm_table_store(ScrWasmTable *t, uint32_t i, void *v) {
   void *old = t->elems[i];
   t->elems[i] = scr_wasm_ref_retain(t->elem, v);
-  if (t->elem == 'x') scr_dyn_release(old);
+  if (t->elem == 'x') scr_wasm_drop_ref(old);
 }
 
 static ScrWasmTable *scr_wasm_inst_table(void *inst, int32_t t) { return ((ScrWasmTable **)inst)[4 + t]; }
@@ -895,7 +983,7 @@ void scr_wasm_global_set_ref(void *cell, void *value) {
   ScrDyn *old = (ScrDyn *)(uintptr_t)g->value;
   if (value) scr_dyn_retain(value);
   g->value = (uint64_t)(uintptr_t)value;
-  scr_dyn_release(old);
+  scr_wasm_drop_ref(old);
 }
 
 /* ── handles ─────────────────────────────────────────────────────────── */
@@ -1116,6 +1204,7 @@ static ScrDyn *scr_wasm_export_call(ScrClosure *clo, ScrDyn *const *args, size_t
       result = scr_dyn_new_arr();
       for (size_t i = 0; i < nr; i++) scr_dyn_arr_push(result, scr_wasm_to_js(res[i], r[i]));
     }
+    scr_wasm_leave();
   }
   if (a != stack_args) free(a);
   if (r != stack_res) free(r);
@@ -1221,6 +1310,7 @@ static ScrDyn *scr_wasm_memory_buffer(ScrWasmMemory *m) {
     m->buffer = NULL;
   }
   if (!m->buffer) {
+    m->buffer_exposed = true;
     m->buffer_size = m->size;
     ScrBytes *bytes = scr_bytes_from_external(m->base, (size_t)m->size);
     m->buffer = scr_array_buffer_from_bytes(bytes);
@@ -1699,6 +1789,7 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
   bool was = scr_wasm_instantiating;
   scr_wasm_instantiating = true;
   int trap = scr_wasm_enter(scr_wasm_init_thunk, inst, NULL, NULL);
+  scr_wasm_leave();
   scr_wasm_instantiating = was;
   if (trap) {
     if (trap == SCR_WASM_TRAP_DATA_SEGMENT) {
@@ -1716,6 +1807,7 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
   }
   if (desc->start) {
     trap = scr_wasm_enter(scr_wasm_start_thunk, inst, NULL, NULL);
+    scr_wasm_leave();
     if (trap) {
       scr_wasm_throw_trap(trap);
       return NULL;

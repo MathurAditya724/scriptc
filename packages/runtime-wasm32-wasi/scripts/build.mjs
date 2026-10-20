@@ -16,6 +16,7 @@ process.env.SCRIPTC_RUNTIME_PACK_CONFIG = JSON.stringify({
     "scr_http.c",
     "scr_http2.c",
     "scr_dgram.c",
+    "scr_dns_promises.c",
     "scr_watch.c",
     "scr_tls_ca.c",
     "scr_tls.c",

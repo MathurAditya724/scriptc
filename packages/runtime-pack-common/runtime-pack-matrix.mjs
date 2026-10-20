@@ -104,6 +104,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_http.c", "httpEffective"],
   ["scr_http2.c", "http2"],
   ["scr_dgram.c", "dgram"],
+  // The dns promise forms run over the dgram unit's callback forms.
+  ["scr_dns_promises.c", all("dgram", "dnsPromises")],
   ["scr_watch.c", "watch"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],

@@ -25,8 +25,10 @@
  * With guard pages (no SCR_WASM_DESC_BOUNDS_CHECKS) memory_base never
  * changes: the memory is reserved once at its largest size plus a guard
  * region, and grow only commits pages. With explicit bounds checks the
- * translated code reloads memory_base and the byte length after every
- * call. */
+ * memory is reserved at its largest size without a guard region, so
+ * memory_base does not change either where the host can reserve address
+ * space; the translated code still reloads memory_base and the byte
+ * length after every call. */
 #ifndef SCR_WASM_ABI_H
 #define SCR_WASM_ABI_H
 #include <stdbool.h>
@@ -163,6 +165,7 @@ typedef struct ScrWasmMemory {
   bool guarded;
   struct ScrDyn *buffer; /* the cached ArrayBuffer */
   uint64_t buffer_size;  /* the size it was created at */
+  bool buffer_exposed;   /* a buffer over the storage was handed out */
 } ScrWasmMemory;
 
 typedef struct ScrWasmFuncRef {

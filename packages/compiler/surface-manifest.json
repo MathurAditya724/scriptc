@@ -20,7 +20,7 @@
       "name": "package imports",
       "status": "unsupported",
       "code": "SC1010",
-      "note": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+      "note": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
     },
     {
       "id": "diagnostic.sc1012",
@@ -820,6 +820,13 @@
       "id": "node-builtin.dns",
       "kind": "node-builtin",
       "name": "dns",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.dns.promises",
+      "kind": "node-builtin",
+      "name": "dns/promises",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
@@ -2276,6 +2283,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.stream.web",
+      "kind": "node-builtin",
+      "name": "stream/web",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
       "id": "node-builtin.string_decoder",
       "kind": "node-builtin",
       "name": "string_decoder",
@@ -2803,6 +2817,19 @@
       "id": "node-builtin.util.types.isWeakSet",
       "kind": "node-builtin",
       "name": "util/types.isWeakSet",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.v8",
+      "kind": "node-builtin",
+      "name": "v8",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.v8.getHeapStatistics",
+      "kind": "node-builtin",
+      "name": "v8.getHeapStatistics",
       "status": "static"
     },
     {
@@ -4097,7 +4124,7 @@
       "kind": "stdlib",
       "name": "Date constructor",
       "status": "static",
-      "note": "zero arguments, or one milliseconds/date-string argument; values are the read-only TimeClip scalar slice"
+      "note": "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice"
     },
     {
       "id": "stdlib.date.getDate",
@@ -4220,7 +4247,7 @@
       "kind": "stdlib",
       "name": "Date.parse",
       "status": "static",
-      "note": "one date string, using the bounded parser shared with new Date(dateString).getTime()"
+      "note": "one date string, using V8's date parser shared with new Date(dateString)"
     },
     {
       "id": "stdlib.date.toDateString",
