@@ -222,6 +222,8 @@ const CHILD_PROCESS_LIB_PREFIXES: readonly string[] = ["child.", "cp.", "spawnRe
 
 /** Entry points that link the symbol unit, besides the sym. and disposable. families. */
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // EventEmitter's kShapeMode and kCapture properties
+  "dyn.builtinClass",
   "dyn.usingDispose",
   "dyn.usingMethod",
   "util.isDeepStrictEqual",
@@ -490,9 +492,16 @@ const RUNTIME_FEATURE_RULES = {
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
   }),
+  /** EventEmitter and the stream classes as untyped constructor values
+   * (scr_dyn_builtin_class.c), which call listeners through the dyn-invoke
+   * unit, render unhandled 'error' payloads through the inspect unit and
+   * create EventEmitter's private symbols through the symbol unit. */
+  dynBuiltinClass: rule({
+    fns: ["dyn.builtinClass", "dyn.builtinInstanceOf", "dyn.functionInstanceOf"],
+  }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
-    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS],
+    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS, "dyn.builtinClass"],
     expr: (node, _tables) => node.kind === "dynInvoke",
   }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
@@ -534,7 +543,13 @@ const RUNTIME_FEATURE_RULES = {
    * terminal unit prints completion errors through it when there is a
    * completer. */
   inspect: rule({
-    fns: ["global.native", "util.styleText", "crypto.cipherNew", ...UTIL_CALLABLE_LIB_FNS],
+    fns: [
+      "global.native",
+      "util.styleText",
+      "crypto.cipherNew",
+      "dyn.builtinClass",
+      ...UTIL_CALLABLE_LIB_FNS,
+    ],
     prefixes: ["insp.", "console.", "test."],
     libCall: (node) => node.fn === "rl.terminal" && !isDynUndefined(node.args[3]!),
   }),
@@ -637,6 +652,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dc: false,
     dgram: false,
     dynAsync: false,
+    dynBuiltinClass: false,
     dynInvoke: false,
     dynTier: false,
     emitter: false,

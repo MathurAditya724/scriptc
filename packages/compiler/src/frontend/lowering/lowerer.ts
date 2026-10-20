@@ -1,4 +1,5 @@
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
+import { builtinClassValue, builtinMemberClassKind } from "./builtins/builtin-class-dyn.js";
 import {
   lifetimeRegionType,
   lowerLifetimeRegionCall,
@@ -12535,6 +12536,12 @@ export class Lowerer {
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
+    // `stream.Readable` as a JavaScript value: the runtime's untyped
+    // constructor, the base a constructor function inherits.
+    if (isJsSourceFile(expr.getSourceFile())) {
+      const classKind = builtinMemberClassKind(bi.module, bi.member);
+      if (classKind !== null) return builtinClassValue(classKind, loc);
+    }
     if (builtinModuleFnOf(this, bi.module, bi.member)) {
       this.unsupported(
         "SC1090",

@@ -1,5 +1,6 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
+import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
@@ -524,6 +525,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // the same identity-token story as stdlib globals above (the
       // harness adds worker_threads.Worker to its identity Set).
       if (isJsSourceFile(expr.getSourceFile())) {
+        // EventEmitter and the stream classes are the runtime's untyped
+        // constructors, so constructor functions can inherit from them.
+        const classKind = builtinMemberClassKind(bi.module, bi.member);
+        if (classKind !== null) return builtinClassValue(classKind, loc);
         // A function member is a function value that fences when called.
         if (builtinModuleFnOf(lowerer, bi.module, bi.member))
           return builtinFunctionFenceValue(lowerer, bi, expr, loc);

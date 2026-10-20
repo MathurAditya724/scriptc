@@ -1116,6 +1116,12 @@ ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *pr
  * must be static literals (the box never frees them; name may be NULL). */
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name);
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
+/* EventEmitter and the stream constructors as untyped constructor values,
+ * and instanceof over untyped constructor functions
+ * (scr_dyn_builtin_class.c, linked with the dynBuiltinClass feature). */
+ScrDyn *scr_dyn_builtin_class(double kind);
+bool scr_dyn_builtin_instanceof(ScrDyn *value, double kind);
+bool scr_dyn_function_instanceof(ScrDyn *value, ScrDyn *callee);
 bool scr_dyn_class_is_key(const ScrDyn *value, const ScrStr *type_key);
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key);
 /* Calls a dyn value: a non-function kind throws the catchable TypeError

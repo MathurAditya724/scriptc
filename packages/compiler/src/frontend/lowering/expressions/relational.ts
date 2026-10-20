@@ -1,5 +1,6 @@
 /* instanceof and in, including private-name and runtime-key in. */
 import * as ts from "../../ts7/adapter.js";
+import { builtinClassInstanceOf, builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import {
   checkedPrivateIn,
   localPrivateBrandClass,
@@ -471,6 +472,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
       return checkedClassInstanceOf(lowerer, value, constructor, loc);
     }
+    // `this instanceof Glob` in a JavaScript constructor function: the
+    // function's prototype against the value's prototype chain.
+    if (
+      constructor?.type.kind === "func" &&
+      isJsSourceFile(expr.getSourceFile()) &&
+      lowerer.dynConvertible(constructor.type)
+    ) {
+      const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+      return {
+        kind: "libCall",
+        fn: "dyn.functionInstanceOf",
+        args: [value, { kind: "dynFrom", value: constructor, type: DYN, loc }],
+        type: BOOL,
+        loc,
+      };
+    }
     lowerer.unsupported(
       "SC1090",
       expr.right,
@@ -578,6 +595,14 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       type: BOOL,
       loc,
     };
+  }
+  // `u instanceof EventEmitter` (or a stream class): an untyped object
+  // built by a constructor function inherits the untyped constructor's
+  // prototype (builtin-class-dyn.ts). Compiled emitters and streams have
+  // no untyped form, so the prototype chain answers for every value.
+  const builtinKind = builtinClassKind(target.def.name);
+  if (left.type.kind === "dyn" && builtinKind !== null) {
+    return builtinClassInstanceOf(left, builtinKind, loc);
   }
   if (left.type.kind === "dyn") {
     lowerer.unsupported(

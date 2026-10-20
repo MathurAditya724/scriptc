@@ -3409,6 +3409,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
   "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
   "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },
+  /** EventEmitter (0), Stream (1), Readable (2), Writable (3), Duplex (4),
+   * Transform (5) and PassThrough (6) as untyped constructor values, one
+   * per thread (scr_dyn_builtin_class.c). */
+  "dyn.builtinClass": { argTypes: [F64], result: DYN },
+  /** `value instanceof C` for those constructors, over the value's
+   * prototype chain. */
+  "dyn.builtinInstanceOf": { argTypes: [DYN, F64], result: BOOL },
+  /** `value instanceof f` for an untyped constructor function: the
+   * prototype chain against f.prototype. */
+  "dyn.functionInstanceOf": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.classSuper": { argTypes: [DYN, DYN, DYN], result: VOID },
   "dyn.assignPrototype": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.definePrototypeProps": { argTypes: [DYN, DYN, DYN], result: DYN },

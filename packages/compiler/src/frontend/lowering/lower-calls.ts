@@ -1,4 +1,5 @@
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
+import { lowerBuiltinClassCall } from "./builtins/builtin-class-dyn.js";
 import { refuseModuleMemberThis } from "./module-member-this.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
@@ -262,6 +263,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const object = lowerObjectConstructor(lowerer, expr.arguments.nodes, loc);
     if (object) return object;
   }
+
+  // `EventEmitter.call(this)` in a constructor function: the untyped
+  // EventEmitter constructor initializes the receiver.
+  const builtinClassCall = lowerBuiltinClassCall(lowerer, expr);
+  if (builtinClassCall) return builtinClassCall;
 
   // require() of a JSON document: the shared parsed object.
   const json = lowerJsonRequireCall(lowerer, expr);

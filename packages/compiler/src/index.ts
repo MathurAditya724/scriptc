@@ -543,6 +543,7 @@ async function compileExecutableNative(
     bigint: features.bigint,
     searchParams: features.searchParams,
     qs: features.qs,
+    dynBuiltinClass: features.dynBuiltinClass,
     parseArgs: features.parseArgs,
     stream: features.stream,
     net: features.net,

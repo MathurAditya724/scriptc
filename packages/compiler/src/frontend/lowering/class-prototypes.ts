@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { builtinClassKind, builtinClassValue } from "./builtins/builtin-class-dyn.js";
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
@@ -450,6 +451,19 @@ export function lowerClassPrototypeData(
     exactClassOfReceiver(lowerer, expr.expression) ??
     (stored?.kind === "classval" ? lowerer.classes.get(stored.className) : undefined);
   if (!info) return null;
+  // EventEmitter.prototype and the stream prototypes: the untyped
+  // constructor's prototype object (builtin-class-dyn.ts).
+  const builtinKind = builtinClassKind(info.def.name);
+  if (builtinKind !== null) {
+    const loc = locOf(expr);
+    return {
+      kind: "dynKeyGet",
+      value: builtinClassValue(builtinKind, loc),
+      key: { kind: "strLit", value: "prototype", type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+  }
   const parent = expr.parent;
   const descriptorKey =
     ts.isCallExpression(parent) &&

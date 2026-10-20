@@ -150,6 +150,11 @@ export interface CcOptions {
    * line (escape-only programs ride the always-linked component encoder
    * and never flip this). */
   qs?: boolean;
+  /** The program uses EventEmitter or a stream class as an untyped
+   * constructor value (a constructor function's base): compiles
+   * scr_dyn_builtin_class.c, which also references the inspection,
+   * dyn-invoke and symbol units. */
+  dynBuiltinClass?: boolean;
   /** The program uses native util parsing, comparison, or styling. Optional
    * utility units also require their symbol, inspection, and warning features. */
   parseArgs?: boolean;
