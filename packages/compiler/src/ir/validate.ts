@@ -4113,6 +4113,11 @@ function validateFunction(
       e.fn === "error.cause" ||
       e.fn === "error.hasCause" ||
       e.fn === "error.setCause" ||
+      e.fn === "error.setCode" ||
+      e.fn === "error.setCodeDyn" ||
+      e.fn === "error.assign" ||
+      e.fn === "error.hasKey" ||
+      e.fn === "error.hasCode" ||
       e.fn === "error.defineCause" ||
       e.fn === "error.deleteCause"
     ) {
@@ -4427,7 +4432,9 @@ function validateFunction(
       e.fn === "http.clientOnResponse" ||
       e.fn === "http.requestAgentCb" ||
       e.fn === "https.requestAgentCb" ||
-      e.fn === "https.requestUrlCb"
+      e.fn === "https.requestUrlCb" ||
+      e.fn === "http.requestDynCb" ||
+      e.fn === "https.requestDynCb"
     ) {
       // The response listener: void, no params or exactly (res: httpReq).
       const cbT =
@@ -4438,11 +4445,13 @@ function validateFunction(
               ? 9
               : e.fn === "http.requestUrlCb" || e.fn === "https.requestUrlCb"
                 ? 3
-                : e.fn === "http.requestAgentCb"
-                  ? 8
-                  : e.fn === "https.requestAgentCb"
-                    ? 10
-                    : 1
+                : e.fn === "http.requestDynCb" || e.fn === "https.requestDynCb"
+                  ? 2
+                  : e.fn === "http.requestAgentCb"
+                    ? 8
+                    : e.fn === "https.requestAgentCb"
+                      ? 10
+                      : 1
         ]?.type;
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 1;
       if (ok && cbT?.kind === "func" && cbT.params.length === 1) {
@@ -5744,9 +5753,9 @@ function validateFunction(
         }
         return true;
       }
-      if (e.fn === "readable.pipe") {
+      if (e.fn === "readable.pipe" || e.fn === "readable.pipeGeneral") {
         if (!isStreamObject(e.args[1]?.type) || !typeEquals(e.type, e.args[1]!.type)) {
-          err(`libCall readable.pipe must return its destination's type`, e.loc);
+          err(`libCall ${e.fn} must return its destination's type`, e.loc);
         }
         return true;
       }

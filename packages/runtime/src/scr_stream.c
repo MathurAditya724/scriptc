@@ -6451,8 +6451,10 @@ static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t 
         end = option->kind == SCR_DYN_UNDEF || scr_dyn_truthy(option);
         scr_dyn_release(option);
       }
+      /* scr_stream_pipe_general: a JavaScript caller can pipe into the
+       * converted process.stdout / process.stderr, which a pipe never ends. */
       ScrStream *returned = !strcmp(method, "pipe")
-          ? scr_stream_pipe(stream, destination, end) : scr_stream_unpipe(stream, destination);
+          ? scr_stream_pipe_general(stream, destination, end) : scr_stream_unpipe(stream, destination);
       scr_stream_release(returned);
       if (!strcmp(method, "pipe") && !scr_exc_pending()) result = scr_dyn_retain(first);
     }
@@ -6665,18 +6667,43 @@ ScrStream *scr_stream_child_stdio(void *child, const char *key, size_t key_len) 
  * stream.stdioWritable libCall): a Writable whose _write hands each chunk
  * to the descriptor through process.stdout.write's synchronous path and
  * completes at once, so ordering against console output and direct writes
- * is unchanged. The closure keeps the fd as given (1 or 2). */
+ * is unchanged. The closure keeps the fd as given (1 or 2). Each thread
+ * keeps one per descriptor, so every conversion of process.stdout answers
+ * the same stream, as Node's process.stdout is one object: listeners,
+ * writable state and identity are shared. The cache is released at exit. */
+static SCR_TL ScrStream *scr_stream_stdio_writables[2];
 static void scr_stream_stdio_write(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
   int fd = (int)scr_box_get_f64(cb->caps[0]);
   (void)scr_stdio_write(fd == 2 ? 2 : 1, chunk->data, chunk->len * scr_bytes_elem_size(chunk->elem));
   scr_stream_write_done(s, NULL);
 }
+static void scr_stream_stdio_writables_free(void) {
+  for (int i = 0; i < 2; i++) {
+    ScrStream *s = scr_stream_stdio_writables[i];
+    scr_stream_stdio_writables[i] = NULL;
+    if (s) scr_stream_release(s);
+  }
+}
 ScrStream *scr_stream_stdio_writable(double fd) {
-  ScrClosure *write = scr_closure_new((void *)scr_stream_stdio_write, 1);
-  write->caps[0] = scr_box_new(SCR_BOX_F64);
-  scr_box_set_f64(write->caps[0], fd);
-  return scr_stream_new_writable(-1, true, true, write, scr_stream_stdio_write,
-      NULL, NULL, NULL, NULL);
+  int i = fd == 2 ? 1 : 0;
+  if (scr_stream_stdio_writables[i] == NULL) {
+    if (scr_stream_stdio_writables[1 - i] == NULL) scr_atexit(scr_stream_stdio_writables_free);
+    ScrClosure *write = scr_closure_new((void *)scr_stream_stdio_write, 1);
+    write->caps[0] = scr_box_new(SCR_BOX_F64);
+    scr_box_set_f64(write->caps[0], i ? 2 : 1);
+    scr_stream_stdio_writables[i] = scr_stream_new_writable(-1, true, true, write,
+        scr_stream_stdio_write, NULL, NULL, NULL, NULL);
+  }
+  return scr_stream_retain(scr_stream_stdio_writables[i]);
+}
+
+/* readable.pipe() into a Writable slot under the general representation
+ * (the readable.pipeGeneral libCall), and pipe() called from JavaScript on
+ * a native stream: Node never ends process.stdout or process.stderr from a
+ * pipe, so their converted Writable keeps `end` off. */
+ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end) {
+  if (dst == scr_stream_stdio_writables[0] || dst == scr_stream_stdio_writables[1]) end = false;
+  return scr_stream_pipe(src, dst, end);
 }
 
 /* A pipeline() stage that arrives as a checked-dynamic value (the

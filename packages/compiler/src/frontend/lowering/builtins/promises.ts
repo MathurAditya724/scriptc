@@ -1,7 +1,8 @@
-import { checkedPromiseAll } from "../checked-promise-all.js";
+import { checkedPromiseAll, thenReader } from "../checked-promise-all.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
-import { type Lowerer } from "../lowerer.js";
+import { newFnCtx, type Lowerer } from "../lowerer.js";
+import { varRef } from "../../../ir/build.js";
 import { maybePromiseResolve, maybePromiseUnionOf } from "../maybe-promise.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
@@ -10,12 +11,175 @@ import {
   type IrFunction,
   type IrStmt,
   type IrType,
+  UNDEFINED_T,
   VOID,
   arrayOf,
   isUnitType,
   typeEquals,
   typeKey,
 } from "../../../ir/ir.js";
+
+/** `Promise.all([p, q, r])` over DIFFERENT promise types — the checker's
+ * tuple overload, `Promise<[A, B, C]>`. One interned async helper per
+ * entry/result signature takes the entries as arguments, awaits the
+ * runtime combinator over the same promises (each widened to
+ * Promise<void>, a type-only view), so settlement is Node's exactly: the
+ * first rejection in settlement order wins and every later one counts as
+ * handled; then it reads each (now fulfilled) entry and returns the
+ * tuple. Entries keep their identity — no value converts through the
+ * checked-dynamic tree. Non-promise entries (numbers, strings, booleans,
+ * unit values — never thenable) pass straight into their slot; a
+ * checked-dynamic entry (a JavaScript function's result) joins through
+ * PromiseResolve: the promise it holds, a promise that adopts a thenable,
+ * or a promise fulfilled with its plain value. The tuple
+ * fulfills one microtask turn after the combinator does. Null when the
+ * result type or an entry has no typed home here. */
+function lowerTuplePromiseAll(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  elems: IrExpr[],
+): IrExpr | null {
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (resultT?.kind !== "promise" || resultT.inner.kind !== "record") return null;
+  const shape = lowerer.shapes.get(resultT.inner.shapeId);
+  if (!shape?.tuple || shape.fields.length !== elems.length) return null;
+  const plainValue = (t: IrType): boolean =>
+    t.kind === "f64" || t.kind === "string" || t.kind === "bool" || isUnitType(t);
+  // A checked-dynamic entry (a JavaScript function's result) may hold a
+  // promise or a plain value at run time; it joins through its promise view.
+  const settles = (t: IrType): boolean => t.kind === "promise" || t.kind === "dyn";
+  if (!elems.some((e) => settles(e.type))) return null;
+  if (!elems.every((e) => settles(e.type) || plainValue(e.type))) return null;
+  const loc = locOf(call);
+  const key = `${elems.map((e) => typeKey(e.type)).join(",")}->${typeKey(resultT.inner)}`;
+  let name = lowerer.arrHofHelpers.get(`promise.allTuple:${key}`);
+  if (name === undefined) {
+    name = `%promise.allTuple.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(`promise.allTuple:${key}`, name);
+    const ctx = newFnCtx(false, null, null, resultT.inner);
+    ctx.isAsync = true;
+    lowerer.fnStack.push(ctx);
+    try {
+      const params = elems.map((e, i) => ({
+        localId: `entry.${i}`,
+        name: `entry${i}`,
+        type: e.type,
+      }));
+      const ref = (i: number): IrExpr => varRef(`entry.${i}`, elems[i]!.type, loc);
+      const dynPromise: IrType = { kind: "promise", inner: DYN };
+      const body: IrStmt[] = [];
+      // Each dyn entry's promise view, in entry order: the promise it
+      // holds, a promise that adopts a thenable's settlement, or a promise
+      // fulfilled with the plain value (PromiseResolve's rule).
+      const views = new Map<number, IrExpr>();
+      elems.forEach((e, i) => {
+        if (e.type.kind !== "dyn") return;
+        const view = lowerer.declareHiddenLocal("%allEntry", dynPromise);
+        body.push({
+          kind: "varDecl",
+          localId: view.id,
+          init: {
+            kind: "libCall",
+            fn: "dyn.promiseResolve",
+            args: [ref(i), thenReader(lowerer, loc)],
+            type: dynPromise,
+            loc,
+          },
+          loc,
+        });
+        views.set(i, varRef(view.id, dynPromise, loc));
+      });
+      const widened: IrExpr[] = [];
+      elems.forEach((e, i) => {
+        const view = views.get(i);
+        if (view !== undefined) {
+          widened.push({
+            kind: "promiseVoidWiden",
+            value: view,
+            type: { kind: "promise", inner: VOID },
+            loc,
+          });
+          return;
+        }
+        if (e.type.kind !== "promise") return;
+        widened.push(
+          e.type.inner.kind === "void"
+            ? ref(i)
+            : {
+                kind: "promiseVoidWiden",
+                value: ref(i),
+                type: { kind: "promise", inner: VOID },
+                loc,
+              },
+        );
+      });
+      const settled: IrExpr = {
+        kind: "awaitExpr",
+        value: {
+          kind: "intrinsic",
+          name: "promise.all",
+          args: [
+            {
+              kind: "arrayLit",
+              elems: widened,
+              type: arrayOf({ kind: "promise", inner: VOID }),
+              loc,
+            },
+          ],
+          type: { kind: "promise", inner: VOID },
+          loc,
+        },
+        type: VOID,
+        loc,
+      };
+      // Shape fields are sorted by name ("10" before "2"); a tuple field's
+      // name is its position.
+      const fields = shape.fields.map((field) => {
+        const i = Number(field.name);
+        const entry = elems[i]!;
+        let value: IrExpr;
+        const view = views.get(i);
+        if (view !== undefined) {
+          value = { kind: "awaitExpr", value: view, type: DYN, loc };
+        } else if (entry.type.kind === "promise") {
+          value =
+            entry.type.inner.kind === "void"
+              ? { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc }
+              : { kind: "awaitExpr", value: ref(i), type: entry.type.inner, loc };
+        } else {
+          value = ref(i);
+        }
+        return { name: field.name, value: lowerer.coerceToExpected(value, field.type) };
+      });
+      body.push(
+        { kind: "exprStmt", expr: settled, loc },
+        {
+          kind: "return",
+          value: { kind: "recordLit", fields, type: resultT.inner, loc },
+          loc,
+        },
+      );
+      lowerer.liftedFns.push({
+        name,
+        params,
+        returnType: resultT.inner,
+        locals: [
+          ...params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+          ...lowerer.ctx.locals,
+        ],
+        body,
+        async: true,
+        loc,
+      });
+    } catch (e) {
+      lowerer.arrHofHelpers.delete(`promise.allTuple:${key}`);
+      throw e;
+    } finally {
+      lowerer.fnStack.pop();
+    }
+  }
+  return { kind: "call", callee: name, args: elems, type: resultT, loc };
+}
 
 /** `Promise.race([...])` on THE Promise global: the entries lower
  * individually (the array never materializes — promise-element arrays
@@ -184,6 +348,10 @@ export function lowerPromiseStaticCall(
         return { kind: "intrinsic", name: "promise.all", args: [entriesArr], type: resultT, loc };
       }
 
+      if (!isJsSourceFile(call.getSourceFile())) {
+        const tuple = lowerTuplePromiseAll(lowerer, call, elems);
+        if (tuple) return tuple;
+      }
       if (
         isJsSourceFile(call.getSourceFile()) &&
         elems.every((entry) => lowerer.dynConvertible(entry.type))

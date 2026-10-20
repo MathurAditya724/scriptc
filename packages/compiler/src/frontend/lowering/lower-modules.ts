@@ -145,7 +145,7 @@ import { forkTargetPaths } from "../fork-target.js";
 import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { handleEventReaderPrelude } from "./lower-event-target.js";
-import { jsHoldsDynObject } from "./lower-exprs.js";
+import { cjsAccessorSnapshotStores, jsHoldsDynObject } from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
@@ -2859,6 +2859,14 @@ export function lowerFileInit(
             });
           } else {
             header.push({ kind: "exprStmt", expr: call, loc });
+            // An ES-module importer links a CommonJS dependency: Node
+            // copies its lexer-visible exports here.
+            if (
+              (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) &&
+              !isCjsJsFile(sf, lowerer.program) &&
+              isCjsJsFile(dep, lowerer.program)
+            )
+              header.push(...cjsAccessorSnapshotStores(lowerer, dep, loc));
           }
         }
       }

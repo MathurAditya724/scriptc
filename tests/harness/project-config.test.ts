@@ -52,6 +52,32 @@ test("node-types: filesystem capacity supports typed number and BigInt results u
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+for (const [name, title] of [
+  [
+    "event-loop-metrics",
+    "eventLoopUtilization and monitorEventLoopDelay follow @types/node's types",
+  ],
+  ["timeout-type", "NodeJS.Timeout fields, ref/unref/hasRef and clearInterval under @types/node"],
+] as const) {
+  test(`node-types: ${title}`, async () => {
+    const outDir = outDirFor(name);
+    const entry = join(nodeTypesDir, `${name}.ts`);
+    const result = await compile(entry, {
+      outPath: join(outDir, process.platform === "win32" ? `${name}.exe` : name),
+      outDir,
+      sanitize,
+    });
+    expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+    if (!result.ok) return;
+    const [native, node] = await Promise.all([
+      execFileAsync(result.binaryPath),
+      execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+    ]);
+    expect(native.stdout).toBe(node.stdout);
+    expect(comparableStderr(native.stderr)).toBe(node.stderr);
+  });
+}
+
 test("node-types: http header arrays and server.address() follow @types/node's types", async () => {
   const outDir = outDirFor("http-headers-address");
   const entry = join(nodeTypesDir, "http-headers-address.ts");
@@ -461,6 +487,63 @@ test("node-types: util.promisify over typed callback-last functions settles like
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: lookup-option unions and narrowed header-record entries under @types/node", async () => {
+  const outDir = outDirFor("lookup-and-header-entries");
+  const entry = join(nodeTypesDir, "lookup-and-header-entries.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "lookup-and-header-entries"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const native = await execFileAsync(result.binaryPath);
+  const node = await execFileAsync(process.execPath, [
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    entry,
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: http.request over a Unix socket with RequestOptions read at run time", async () => {
+  const outDir = outDirFor("http-socket-path");
+  const entry = join(nodeTypesDir, "http-socket-path.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "http-socket-path"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const native = await execFileAsync(result.binaryPath);
+  const node = await execFileAsync(process.execPath, [
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    entry,
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: RequestInit-derived options carry BodyInit and HeadersInit into fetch", async () => {
+  const outDir = outDirFor("fetch-init-members");
+  const entry = join(nodeTypesDir, "fetch-init-members.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "fetch-init-members"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const native = await execFileAsync(result.binaryPath);
+  const node = await execFileAsync(process.execPath, [
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    entry,
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: stream subclasses extend the @types/node stream classes", async () => {
   const outDir = outDirFor("stream-subclass-hooks");
   const entry = join(nodeTypesDir, "stream-subclass-hooks.ts");
@@ -484,6 +567,24 @@ test("node-types: NodeJS stream interfaces and stream.Readable/Writable take eve
   const entry = join(nodeTypesDir, "node-stream-interfaces.ts");
   const result = await compile(entry, {
     outPath: join(outDir, "node-stream-interfaces"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: streams construct and child listeners take @types/node's parameter types", async () => {
+  const outDir = outDirFor("stream-construction");
+  const entry = join(nodeTypesDir, "stream-construction.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "stream-construction"),
     outDir,
     sanitize,
   });

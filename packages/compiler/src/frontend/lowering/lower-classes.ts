@@ -16,6 +16,8 @@ import { InternalCompilerError } from "../../errors.js";
  * accessor access, upcasts, `new` expressions, and the builtin Error
  * hierarchy registration. */
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
+import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
+import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
 import { everyStmtList } from "../../ir/traverse.js";
@@ -28,6 +30,7 @@ import type { FnCtx, Lowerer } from "./lowerer.js";
 import { inlineNamespaceRequireOf, lowerWithInlineRequireInit } from "./cjs-inline-require.js";
 import {
   BOOL,
+  canDynCheckTo,
   DATE_T,
   DYN,
   F64,
@@ -70,6 +73,7 @@ import {
 } from "./instantiation-path.js";
 import { appendImplicitUndefinedReturn, hasExplicitJsDocReturn } from "./function-returns.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
+import { errorNameAfterField, errorViewFields } from "./error-name-order.js";
 import {
   checkedJsDocumentedParameter,
   documentedParameter,
@@ -145,6 +149,7 @@ import {
   ambientUndefReadType,
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
+  contextualUndefReadType,
   fenceEarlyAliasUse,
   fenceEarlyNsMemberRef,
   nsMemberIdentOf,
@@ -496,6 +501,12 @@ export interface ClassInfo {
   /** Own JS overrides whose signature cannot use the inherited ABI. The slot
    * retains that ABI, but its implementation throws before executing. */
   methodEntryFences?: Map<string, ScrDiagnostic>;
+  /** Own TypeScript overrides whose declared result differs from the
+   * inherited ABI's but converts into it (`Promise<void>` over `any`, a
+   * union narrowed to its inherited arm): the slot function `%C.m` keeps the
+   * inherited ABI and converts the result of the body, which lowers as
+   * `%C.m$own` with the declared result (async when declared so). */
+  returnAdapters?: Map<string, { params: ParamShape[]; ret: IrType; async: boolean }>;
   /** OWN GENERIC instance methods (own type parameters — `m<T>(x: T)`),
    * monomorphized per call site like top-level generic functions: instance
    * `n` is the module function `%C.m%n` taking `this` as param 0. They
@@ -2214,11 +2225,7 @@ export function collectClassShapeInner(
     }
     if (lowerer.collectingExprClasses.has(decl)) {
       for (let parent = base; parent; parent = parent.base) {
-        if (
-          parent.builtinEmitter ||
-          parent.builtinStream !== undefined ||
-          parent.builtinEventTarget !== undefined
-        ) {
+        if (parent.builtinEventTarget !== undefined) {
           lowerer.unsupported(
             "SC1090",
             decl,
@@ -2250,6 +2257,7 @@ export function collectClassShapeInner(
       }
     >();
     const methodEntryFences = new Map<string, ScrDiagnostic>();
+    const returnAdapters = new Map<string, { params: ParamShape[]; ret: IrType; async: boolean }>();
     // Own accessor declarations ("get:x"/"set:x" → node), for the
     // partial-override analysis below (diagnostics need the node).
     const accessorNodes = new Map<string, ts.AccessorDeclaration>();
@@ -3453,7 +3461,67 @@ export function collectClassShapeInner(
             overridden.declarer.decl !== null &&
             isJsSourceFile(overridden.declarer.decl.getSourceFile()) &&
             overridden.sig.gen === undefined;
-          if (fencedJsOverride) {
+          // A TypeScript override that only changes the result, into a
+          // type that converts into the inherited one (`Promise<void>` over
+          // an `any` base, `string | undefined` over `string`): the slot
+          // keeps the inherited ABI and converts the body's result at the
+          // boundary (lowerClassMethodMemberInner).
+          const ownAsync =
+            member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+          if (
+            !fencedJsOverride &&
+            !functionLocalClass(decl) &&
+            overridden.sig.gen === undefined &&
+            // An async base's slot answers its promise: a Promise type, or
+            // the checked-dynamic value of an untyped async method.
+            (overridden.sig.async !== true ||
+              overridden.sig.ret.kind === "promise" ||
+              overridden.sig.ret.kind === "dyn") &&
+            !overridden.sig.abstract &&
+            overridden.sig.params.length === shapes.length &&
+            overridden.sig.params.every(
+              (p, i) =>
+                p.mode === shapes[i]!.mode &&
+                (p.mode === "required" || p.mode === "omittable") &&
+                // Each inherited argument converts into the override's
+                // parameter: equal, a checked extraction from an `any`
+                // slot, or a widening (a contravariant parameter).
+                (typeEquals(p.type, shapes[i]!.type) ||
+                  (p.type.kind === "dyn" &&
+                    canDynCheckTo(
+                      shapes[i]!.type,
+                      (id) => lowerer.shapes.get(id),
+                      (id) => lowerer.unions.get(id),
+                    )) ||
+                  lowerer.coercibleValue(p.type, shapes[i]!.type)),
+            ) &&
+            (ownAsync ? ft.ret.kind === "promise" : true) &&
+            (typeEquals(ft.ret, overridden.sig.ret) ||
+              (overridden.sig.ret.kind === "dyn"
+                ? ft.ret.kind !== "void" && lowerer.dynConvertible(ft.ret)
+                : lowerer.coercibleValue(ft.ret, overridden.sig.ret) ||
+                  // A promise whose payload widens into the inherited one
+                  // (`Promise<void>` over an untyped async `Promise<any>`).
+                  (ft.ret.kind === "promise" &&
+                    overridden.sig.ret.kind === "promise" &&
+                    lowerer.promisePayloadWidens(ft.ret, overridden.sig.ret)) ||
+                  // A JavaScript override's inferred `any` result checks
+                  // into the inherited type (`toString() { return
+                  // this.message }` over Error's).
+                  (ft.ret.kind === "dyn" &&
+                    isJsSourceFile(member.getSourceFile()) &&
+                    overridden.sig.ret.kind !== "void" &&
+                    canDynCheckTo(
+                      overridden.sig.ret,
+                      (id) => lowerer.shapes.get(id),
+                      (id) => lowerer.unions.get(id),
+                    ))))
+          ) {
+            returnAdapters.set(mName, { params: [...shapes], ret: ft.ret, async: ownAsync });
+            shapes.splice(0, shapes.length, ...overridden.sig.params);
+            ft.ret = overridden.sig.ret;
+            if (overridden.sig.async === true) thunkAsyncSlot(overridden, mName);
+          } else if (fencedJsOverride) {
             // A dormant JS method must not poison the whole class. Keep
             // the inherited call/dispatch ABI and refuse at method entry;
             // lowering this body with the base signature would change JS.
@@ -3508,7 +3576,34 @@ export function collectClassShapeInner(
         // fiber spawn wrapper; vtable slots hold raw implementations) —
         // an override chain touching an async method on either end would
         // put a spawn wrapper behind a virtual slot, so it fences.
-        if (overridden && (asyncMember || overridden.sig.async === true)) {
+        // An override chain touching async methods dispatches through
+        // plain slot functions that return the body's promise: the async
+        // bodies lower as `%C.m$own` behind them (thunkAsyncSlot).
+        if (
+          overridden &&
+          !returnAdapters.has(mName) &&
+          (asyncMember || overridden.sig.async === true) &&
+          !isJsSourceFile(member.getSourceFile()) &&
+          !functionLocalClass(decl) &&
+          member.asteriskToken === undefined &&
+          overridden.sig.gen === undefined &&
+          !overridden.sig.abstract &&
+          ft.ret.kind === "promise" &&
+          typeEquals(ft.ret, overridden.sig.ret) &&
+          overridden.sig.params.length === shapes.length &&
+          overridden.sig.params.every(
+            (p, i) => typeEquals(p.type, shapes[i]!.type) && p.mode === shapes[i]!.mode,
+          )
+        ) {
+          if (overridden.sig.async === true) thunkAsyncSlot(overridden, mName);
+          if (asyncMember)
+            returnAdapters.set(mName, { params: [...shapes], ret: ft.ret, async: true });
+        }
+        if (
+          overridden &&
+          !returnAdapters.has(mName) &&
+          (asyncMember || overridden.sig.async === true)
+        ) {
           const message = `overriding ${overridden.sig.async === true ? "the async method" : "a method with an async method"} '${mName}' (async methods dispatch statically — the vtable slot machinery has no fiber-spawn story)`;
           if (isJsSourceFile(member.getSourceFile()))
             methodEntryFences.set(mName, unsupportedDiag("SC1090", locOf(member.name), message));
@@ -3539,7 +3634,7 @@ export function collectClassShapeInner(
         } else {
           methods.set(
             mName,
-            asyncMember
+            asyncMember && !returnAdapters.has(mName)
               ? { params: shapes, ret: ft.ret, async: true as const }
               : { params: shapes, ret: ft.ret },
           );
@@ -4257,6 +4352,7 @@ export function collectClassShapeInner(
       fieldOrder,
       methods,
       ...(methodEntryFences.size > 0 ? { methodEntryFences } : {}),
+      ...(returnAdapters.size > 0 ? { returnAdapters } : {}),
       decl,
       ...(emitOverride !== undefined ? { emitOverride } : {}),
       ctor,
@@ -4279,6 +4375,12 @@ export function collectClassShapeInner(
       ...(deferredInitFields.size > 0 ? { deferredInitFields } : {}),
       ...(escape.escapes ? { constructionEscapes: true as const } : {}),
     };
+    let root: ClassInfo | null = info;
+    while (root?.base) root = root.base;
+    if (root !== info && root?.def.name === "%Error") {
+      const after = errorNameAfterField(info, errorViewFields(info.def.fields));
+      if (after !== undefined) info.def.errorNameAfter = after;
+    }
     // GENERIC members get their declaring-class backlink now that the
     // info exists (instance lowering reads it for `this` typing and the
     // generic-class binding merge).
@@ -5202,16 +5304,11 @@ export function classValueRef(lowerer: Lowerer, info: ClassInfo, blame: ts.Node)
       loc: locOf(blame),
     };
   }
-  if (
-    lowerer.inheritsBuiltinEmitterCtor(info) ||
-    inheritsBuiltinStreamCtor(lowerer, info) ||
-    eventTargetRootOf(info) !== null ||
-    (() => {
-      for (let c = info.base; c; c = c.base)
-        if (c.builtinEmitter || c.builtinStream !== undefined) return true;
-      return false;
-    })()
-  ) {
+  // Classes extending EventEmitter or a stream class construct through
+  // their own (or synthesized) `%C.constructor`, whose super call runs the
+  // runtime initializer, so the class object's construct thunk serves them
+  // like any program class. EventTarget subclasses keep the refusal.
+  if (eventTargetRootOf(info) !== null) {
     lowerer.unsupported(
       "SC1090",
       blame,
@@ -6634,6 +6731,28 @@ function abstractMemberSignature(
 /** A nominal return subtype uses the same owned pointer as the inherited
  * return slot. The current class is still being collected, so consult its
  * already collected base chain before the complete class graph is available. */
+/** An inherited ASYNC method that an override now dispatches against: its
+ * slot becomes a plain function returning the body's promise, and the
+ * async body lowers behind it as `%C.m$own` (the adapter path with an
+ * identity conversion), so a virtual call never enters an async body
+ * without its spawn wrapper. */
+function thunkAsyncSlot(
+  overridden: { declarer: ClassInfo; sig: ClassMethodSignature },
+  mName: string,
+): void {
+  if (overridden.sig.async !== true) return;
+  const declarer = overridden.declarer;
+  declarer.returnAdapters ??= new Map();
+  if (!declarer.returnAdapters.has(mName)) {
+    declarer.returnAdapters.set(mName, {
+      params: [...overridden.sig.params],
+      ret: overridden.sig.ret,
+      async: true,
+    });
+  }
+  delete overridden.sig.async;
+}
+
 function overrideReturnAbi(
   lowerer: Lowerer,
   declared: IrType,
@@ -7856,6 +7975,82 @@ function lowerClassMethodMemberInner(
       allowDiagSink: true,
     });
   }
+  // An override converting its declared result into the inherited ABI:
+  // the body lowers as `%C.m$own` under its declared result, and the slot
+  // function forwards to it and converts what it returns.
+  const adapter = info.returnAdapters?.get(mName);
+  if (adapter) {
+    const ownSig: ClassMethodSignature = { ...sig, params: adapter.params, ret: adapter.ret };
+    if (adapter.async) ownSig.async = true;
+    const own = lowerClassMethodBody(lowerer, info, fnLike, `%${className}.${mName}$own`, ownSig);
+    if (!own) return null;
+    lowerer.liftedFns.push(own);
+    const loc = locOf(fnLike);
+    const params: IrParam[] = [
+      { localId: "this.0", name: "this", type: thisType },
+      ...sig.params.map((p, i) => ({ localId: `p.${i}`, name: `p${i}`, type: p.type })),
+    ];
+    const fnCtx = newFnCtx(false, null, null, sig.ret);
+    lowerer.fnStack.push(fnCtx);
+    try {
+      const call: IrExpr = {
+        kind: "call",
+        callee: own.name,
+        args: params.map((p, i): IrExpr => {
+          const ref: IrExpr = { kind: "varRef", localId: p.localId, type: p.type, loc };
+          // `this` passes through; each inherited argument converts into
+          // the override's declared parameter (checked where it narrows).
+          return i === 0 ? ref : lowerer.coerceInto(fnLike.name, ref, adapter.params[i - 1]!.type);
+        }),
+        type: adapter.ret,
+        loc,
+      };
+      // A void slot discards the override's result after running it. A
+      // toString slot hands on what every ToString consumer of the result
+      // makes of it (`String(err)`, templates): undefined reads
+      // "undefined", as in Node. Other slots check the result into the
+      // inherited type.
+      const result = (): IrExpr =>
+        mName === "toString" && sig.ret.kind === "string"
+          ? call.type.kind === "dyn"
+            ? { kind: "libCall", fn: "dyn.stringConstructor", args: [call], type: STRING, loc }
+            : lowerer.ensureString(call, fnLike.name)
+          : lowerer.coerceInto(fnLike.name, call, sig.ret);
+      const body: IrStmt[] =
+        sig.ret.kind === "void"
+          ? [
+              { kind: "exprStmt", expr: call, loc },
+              { kind: "return", value: null, loc },
+            ]
+          : [{ kind: "return", value: result(), loc }];
+      return {
+        name: `%${className}.${mName}`,
+        params,
+        returnType: sig.ret,
+        locals: [
+          ...params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+          ...lowerer.ctx.locals,
+        ],
+        body,
+        loc,
+      };
+    } finally {
+      lowerer.fnStack.pop();
+    }
+  }
+  return lowerClassMethodBody(lowerer, info, fnLike, `%${className}.${mName}`, sig);
+}
+
+function lowerClassMethodBody(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  fnLike: ts.MethodDeclaration | ts.AccessorDeclaration,
+  fnName: string,
+  sig: ClassMethodSignature,
+): IrFunction | null {
+  const className = info.def.name;
+  const thisType: IrType = { kind: "object", className };
+  if (!fnLike.body) return null;
   const prevClass = lowerer.currentClass;
   lowerer.currentClass = info;
   // ASYNC methods: the module function is an async IrFunction — its
@@ -7897,7 +8092,7 @@ function lowerClassMethodMemberInner(
     const body = [...declared.prologue, ...lowerer.lowerStmts(fnLike.body.statements.nodes)];
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(fnLike));
     const fn: IrFunction = {
-      name: `%${className}.${mName}`,
+      name: fnName,
       params,
       returnType: bodyReturn,
       locals: lowerer.ctx.locals,
@@ -8756,6 +8951,60 @@ function inheritsBuiltinStreamCtor(lowerer: Lowerer, info: ClassInfo): boolean {
   return false;
 }
 
+/** The run-time form of refuseInheritedBuiltinCtorArgs, for construction
+ * from checked-dynamic code (`new F(options)` with F an untyped value
+ * holding C), whose argument count is known only to the caller: a
+ * runtimeFence located at C, or null when C's constructor takes its
+ * arguments. */
+export function inheritedBuiltinCtorFence(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  loc: SrcLoc,
+): IrStmt | null {
+  let feature: string | null = null;
+  if (inheritsBuiltinStreamCtor(lowerer, info))
+    feature = `new ${info.def.name.replace(/^%/, "")} with arguments through an inherited stream constructor (declare a constructor that passes an inline options object to super(...))`;
+  else if (lowerer.inheritsBuiltinEmitterCtor(info))
+    feature = "EventEmitter constructor options ('captureRejections')";
+  if (feature === null) return null;
+  // Located at the class, whose constructor takes no arguments.
+  const at = info.decl !== null ? locOf(info.decl) : loc;
+  const diag = unsupportedDiag("SC1090", at, feature);
+  lowerer.runtimeFences.push(diag);
+  const line =
+    info.decl !== null
+      ? ts.getLineAndCharacterOfPosition(info.decl.getSourceFile(), at.start).line + 1
+      : null;
+  const where = line !== null ? ` [${diag.code} at ${at.file}:${line}]` : "";
+  return { kind: "runtimeFence", code: diag.code, message: `${diag.message}${where}`, loc };
+}
+
+/** `new C(args)` where C's constructor is the inherited runtime stream or
+ * EventEmitter constructor (a ctor-less chain into the base): that
+ * constructor takes zero arguments here (the options bag fences, like the
+ * super() form), so arguments report at the first one. Applies to direct
+ * construction and to construction through a class value of C. Stream
+ * subclasses come first: their chain roots at the emitter too, but the
+ * message should name the stream story. */
+function refuseInheritedBuiltinCtorArgs(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  expr: ts.NewExpression,
+): void {
+  const first = expr.arguments?.nodes[0];
+  if (first === undefined) return;
+  if (inheritsBuiltinStreamCtor(lowerer, info)) {
+    lowerer.noLowering(
+      `new ${info.def.name.replace(/^%/, "")} with arguments through an inherited stream constructor`,
+      first,
+      "declare a constructor that passes an inline options object to super(...)",
+    );
+  }
+  if (lowerer.inheritsBuiltinEmitterCtor(info)) {
+    lowerer.unsupported("SC1090", first, "EventEmitter constructor options ('captureRejections')");
+  }
+}
+
 /** Preserve argument evaluation order and option presence through builtin
  * and inherited Error constructors. Checked-dynamic conversion retains
  * Error identity and distinguishes a missing cause from undefined. */
@@ -8880,24 +9129,7 @@ function lowerProgramClassNew(
       "construction through a function-local class's internal name",
     );
   lowerer.noteEdge(`%${info.def.name}.constructor`);
-  // A ctor-less chain into an EventEmitter base inherits `new C()` —
-  // zero arguments (the options bag fences, like the super() form).
-  // Stream subclasses come first: their chain roots at the emitter
-  // too, but the message should name the stream story.
-  if (inheritsBuiltinStreamCtor(lowerer, info) && (expr.arguments?.nodes ?? []).length > 0) {
-    lowerer.noLowering(
-      `new ${info.def.name.replace(/^%/, "")} with arguments through an inherited stream constructor`,
-      expr.arguments!.nodes[0]!,
-      "declare a constructor that passes an inline options object to super(...)",
-    );
-  }
-  if (lowerer.inheritsBuiltinEmitterCtor(info) && (expr.arguments?.nodes ?? []).length > 0) {
-    lowerer.unsupported(
-      "SC1090",
-      expr.arguments!.nodes[0]!,
-      "EventEmitter constructor options ('captureRejections')",
-    );
-  }
+  refuseInheritedBuiltinCtorArgs(lowerer, info, expr);
   // A ctor-less chain into a builtin error base inherits both arguments;
   // each synthesized constructor forwards the same pair to its base.
   const args = lowerer.inheritsBuiltinErrorCtor(info)
@@ -8944,6 +9176,20 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // new Function(...): Node's EvalError under
+  // --disallow-code-generation-from-strings (code-generation.ts).
+  if (codeGenerationCalleeOf(lowerer, expr.expression) === "Function")
+    return lowerCodeGenerationCall(lowerer, expr, "Function");
+  // `new <temporal>.X(...)`: Node 24 has no such global, so the callee's
+  // root read throws the ReferenceError before any argument evaluates.
+  {
+    const root = ambientUndefVarRootOf(lowerer, expr.expression);
+    if (root !== null && root.text === TEMPORAL_GLOBAL) {
+      const t =
+        ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
+      return nsUndefRead(lowerer, root.text, expr, t);
+    }
+  }
   // `new (require("./x").C)()`: the module's %init at the require's
   // position, then construction through the member as for a binding.
   if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
@@ -9488,18 +9734,57 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // fenced, so copying the scalar cannot create an observable lie.
     if (symbol && symbol.name === "Date" && lowerer.isStdlibSymbol(symbol)) {
       const args = expr.arguments?.nodes ?? [];
-      if (args.some(ts.isSpreadElement) || args.length > 1) {
+      if (args.some(ts.isSpreadElement)) {
         lowerer.noLowering(
-          `new Date with ${args.length} arguments`,
+          `new Date with spread arguments`,
           expr,
-          "new Date(), new Date(milliseconds), and new Date(dateString) are supported; the local-time year/month field constructor has no lowering",
+          "new Date(), new Date(milliseconds), new Date(dateString), and new Date(year, monthIndex, ...) with listed arguments are supported",
           symbol,
         );
+      }
+      // new Date(year, monthIndex[, date[, hours[, minutes[, seconds[, ms]]]]]):
+      // local-time fields, converted to UTC in the host zone at run time.
+      // JavaScript callers pass their arguments to the runtime's ToNumber
+      // (in order, exactly the constructor's coercions); typed callers
+      // pass numbers, completed with the spec's defaults (date 1, time
+      // parts 0) for the seven-f64 ABI.
+      if (args.length > 1) {
+        if (isJsSourceFile(expr.getSourceFile())) {
+          return {
+            kind: "libCall",
+            fn: "date.nativeNewFields",
+            args: [
+              {
+                kind: "dynArrLit",
+                elems: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+                type: DYN,
+                loc,
+              },
+            ],
+            type: DYN,
+            loc,
+          };
+        }
+        if (args.length > 7) {
+          lowerer.noLowering(`new Date with ${args.length} arguments`, expr, undefined, symbol);
+        }
+        const defaults = [0, 0, 1, 0, 0, 0, 0];
+        const fields: IrExpr[] = [];
+        for (let i = 0; i < 7; i++) {
+          const arg = args[i];
+          fields.push(
+            arg !== undefined
+              ? lowerer.lowerExprExpecting(arg, F64)
+              : { kind: "numLit", value: defaults[i]!, type: F64, loc },
+          );
+        }
+        return { kind: "libCall", fn: "date.newLocal", args: fields, type: DATE_T, loc };
       }
       if (isJsSourceFile(expr.getSourceFile())) {
         return {
           kind: "libCall",
-          fn: "date.nativeNew",
+          // One argument: a string parses with the full date parser.
+          fn: args.length === 1 ? "date.nativeNewValue" : "date.nativeNew",
           args: [
             {
               kind: "dynArrLit",
@@ -10145,6 +10430,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           `EventEmitter and stream class values constructed with options (construct with 'new ${info.def.name.slice(1)}({ ... })' directly)`,
         );
       }
+      // A program class whose constructor is the inherited runtime one
+      // takes no arguments through its class value either.
+      refuseInheritedBuiltinCtorArgs(lowerer, info, expr);
       defineClassValueConstruct(lowerer, info);
       const args = lowerer.completeArgs(
         expr.arguments?.nodes ?? [],

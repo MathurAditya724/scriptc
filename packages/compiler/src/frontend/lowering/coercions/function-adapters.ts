@@ -4,6 +4,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrParam, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import {
   canAdaptDynFuncTo,
+  canDynCheckTo,
   DYN,
   F64,
   isUnitType,
@@ -200,11 +201,65 @@ function restPackingAdapter(
   return name;
 }
 
+/** Adapt a fixed-parameter function to a checked-dynamic rest signature
+ * without fixed parameters (`() => {}` into mock.fn()'s `(...args: any[])
+ * => undefined`): the adapter receives the hidden argument array and
+ * passes its element i as parameter i, undefined when the caller passed
+ * fewer arguments, as JS does. Null unless every parameter is
+ * checked-dynamic, which holds a missing argument as undefined, and the
+ * result is discarded or converts. */
+function funcIntoDynRestAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string | null {
+  if (fromT.rest === true || fromT.params.some((p) => p.kind !== "dyn")) return null;
+  if (toT.ret.kind !== "void" && !lowerer.coercibleValue(fromT.ret, toT.ret)) return null;
+  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = `%fn.adapt.${lowerer.coercions.retags.size}`;
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const params: IrParam[] = [{ localId: "rest.0", name: "args", type: DYN }];
+  const call: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args: fromT.params.map((_, i): IrExpr => ({
+      kind: "dynKeyGet",
+      value: { kind: "varRef", localId: "rest.0", type: DYN, loc },
+      key: { kind: "strLit", value: String(i), type: STRING, loc },
+      type: DYN,
+      loc,
+    })),
+    type: fromT.ret,
+    loc,
+  };
+  let body: IrStmt[];
+  if (toT.ret.kind === "void") {
+    body = [
+      { kind: "exprStmt", expr: call, loc },
+      { kind: "return", value: null, loc },
+    ];
+  } else {
+    const result = lowerer.coerceToExpected(call, toT.ret);
+    if (!typeEquals(result.type, toT.ret))
+      throw new InternalCompilerError("lowerer bug: probed fn-adapter return stopped coercing");
+    body = [{ kind: "return", value: result, loc }];
+  }
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  return name;
+}
+
 /** Adapt a function value to a destination signature, forwarding and
  * converting its arguments and result. Unsupported parameter/result pairs
  * produce checked traps when called. Rest signatures are refused, except a
  * typed-rest source in a slot with fixed parameters, which the rest
- * packing adapter serves. */
+ * packing adapter serves, and a fixed-parameter function into a
+ * checked-dynamic rest signature without fixed parameters
+ * (funcIntoDynRestAdapter). */
 export function funcCoerceAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
@@ -213,6 +268,8 @@ export function funcCoerceAdapter(
 ): string | null {
   if (restPackingAdapterFits(lowerer, fromT, toT))
     return restPackingAdapter(lowerer, fromT, toT, loc);
+  if (toT.rest === true && toT.restAbi === undefined && toT.params.length === 0)
+    return funcIntoDynRestAdapter(lowerer, fromT, toT, loc);
   if (fromT.rest === true || toT.rest === true) return null;
   if (fromT.params.length > toT.params.length) return null;
   // Piece dispositions beyond coercibleValue, all CHECKER-APPROVED
@@ -285,6 +342,19 @@ export function funcCoerceAdapter(
       voidRet = toT.ret.kind === "dyn" ? "dyn" : "strand";
     }
   }
+  // An untyped result (a generic wrapper's `any` handed back `as F`) takes
+  // the checked-dynamic extraction to the slot's result: a record checks
+  // its shape, a Promise keeps its identity and checks its payload when it
+  // settles.
+  const checkedRet =
+    strandRet &&
+    fromT.ret.kind === "dyn" &&
+    canDynCheckTo(
+      toT.ret,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    );
+  if (checkedRet) strandRet = false;
   const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
@@ -383,6 +453,10 @@ export function funcCoerceAdapter(
         strandThrow(
           `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the result cannot convert to '${lowerer.fmt(toT.ret)}' — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
         ),
+      ];
+    } else if (checkedRet) {
+      body = [
+        { kind: "return", value: { kind: "dynCheck", value: call, type: toT.ret, loc }, loc },
       ];
     } else {
       const result = lowerer.coerceToExpected(call, toT.ret);

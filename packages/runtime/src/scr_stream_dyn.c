@@ -257,6 +257,10 @@ static ScrDyn *scr_dyn_pipe_thunk(ScrClosure *clo, ScrDyn *const *args, size_t a
     ScrDyn *info = argc > 1 ? args[1] : NULL;
     if (p->src_box && scr_dyn_strict_eq(first, p->src_box) && info && info->kind == SCR_DYN_OBJ) {
       ScrDyn *has = scr_dyn_obj_read(info, "hasUnpiped", 10);
+      if (!has || scr_exc_pending()) { /* a throwing getter */
+        if (has) scr_dyn_release(has);
+        break;
+      }
       bool unpiped = has->kind == SCR_DYN_BOOL && !scr_dyn_truthy(has);
       scr_dyn_release(has);
       if (unpiped) {
@@ -320,7 +324,13 @@ void scr_stream_pipe_dyn(ScrStream *src, ScrDyn *src_box, ScrDyn *dest, bool end
   scr_dyn_pipe_src_on(p, "data", SCR_DYN_PIPE_DATA, false);
   if (scr_exc_pending()) goto out;
   {
+    /* A throwing getter's exception propagates out of pipe(), as Node's
+     * prependListener helper reads the member the same way. */
     ScrDyn *prepend = scr_dyn_obj_read(dest, "prependListener", 15);
+    if (!prepend || scr_exc_pending()) {
+      if (prepend) scr_dyn_release(prepend);
+      goto out;
+    }
     bool has_prepend = prepend->kind == SCR_DYN_FUNC;
     scr_dyn_release(prepend);
     if (!scr_dyn_pipe_listen(p, has_prepend ? "prependListener" : "on", "error", SCR_DYN_PIPE_ERROR))
@@ -338,6 +348,10 @@ void scr_stream_pipe_dyn(ScrStream *src, ScrDyn *src_box, ScrDyn *dest, bool end
   }
   {
     ScrDyn *need = scr_dyn_obj_read(dest, "writableNeedDrain", 17);
+    if (!need || scr_exc_pending()) {
+      if (need) scr_dyn_release(need);
+      goto out;
+    }
     bool pause = need->kind == SCR_DYN_BOOL && scr_dyn_truthy(need);
     scr_dyn_release(need);
     if (pause) scr_dyn_pipe_pause(p);
@@ -346,4 +360,30 @@ void scr_stream_pipe_dyn(ScrStream *src, ScrDyn *src_box, ScrDyn *dest, bool end
   }
 out:
   scr_dyn_pipe_release_v(p);
+}
+
+/* readable.unpipe(destination) for a destination that is not a native
+ * stream: the pipe scr_stream_pipe_dyn registered from src into it
+ * unpipes, as Node's unpipe does for a piped destination; nothing happens
+ * when there is none. An undefined destination (unpipe() without one)
+ * unpipes every JavaScript destination of src, oldest pipe first.
+ * Borrowed. */
+void scr_stream_unpipe_dyn(ScrStream *src, ScrDyn *dest) {
+  bool all = dest == NULL || dest->kind == SCR_DYN_UNDEF;
+  for (;;) {
+    /* The live list is newest first; the oldest matching pipe goes next.
+     * Unpiping runs JavaScript ('unpipe' listeners), so each round walks
+     * the list again. */
+    ScrDynPipe *match = NULL;
+    for (ScrDynPipe *p = scr_dyn_pipe_live; p; p = p->live_next) {
+      if (p->src != src || p->unpiped || p->cleaned || !p->dest) continue;
+      if (!all && !scr_dyn_strict_eq(p->dest, dest)) continue;
+      match = p;
+    }
+    if (!match) return;
+    ScrDynPipe *held = scr_dyn_pipe_retain_v(match);
+    scr_dyn_pipe_unpipe(held);
+    scr_dyn_pipe_release_v(held);
+    if (!all || scr_exc_pending()) return;
+  }
 }

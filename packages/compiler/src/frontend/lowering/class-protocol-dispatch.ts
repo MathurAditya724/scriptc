@@ -188,7 +188,8 @@ function protocolSignature(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): ProtocolSignature | null {
-  const recvTs = lowerer.typeOf(access.expression);
+  // A guarded optional step's receiver still carries its nullish arms.
+  const recvTs = lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression));
   const property = lowerer.checker.getPropertyOfType(recvTs, access.name.text);
   if (!property) return null;
   const declarations = property.declarations;
@@ -240,10 +241,11 @@ export function lowerProtocolMethodCall(
   access: ts.PropertyAccessExpression,
   recv: IrExpr,
 ): IrExpr | null {
+  // An optional chain that already guarded this step (`s?.m(x)`, the chain
+  // re-dispatching with the narrowed receiver) calls like a plain one.
   if (
     recv.type.kind !== "dyn" ||
-    call.questionDotToken ||
-    access.questionDotToken ||
+    lowerer.chainBlocked(call, access) ||
     call.arguments.nodes.some(ts.isSpreadElement)
   )
     return null;
