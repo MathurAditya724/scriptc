@@ -32,6 +32,7 @@ import {
 import {
   cjsExportMemberWriteGlobalOf,
   isCjsExportsIdentifier,
+  isCjsModuleExports,
   isFreshExportsReset,
 } from "./cjs-exports-object.js";
 import { isDeadTscHelperDecl, tscInteropBindingOfDecl } from "./cjs-tsc-interop.js";
@@ -6909,6 +6910,25 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       "SC1090",
       expr,
       "require() outside the module's top level (move it to the top of the file)",
+    );
+  }
+  // Replacing the export object (or rebinding `exports`) anywhere but a
+  // top-level statement makes the module's exports depend on which path
+  // ran (`cond ? module.exports = a : module.exports = b`, an
+  // environment-dependent branch); the static export table has one shape.
+  if (
+    !topLevelJs &&
+    isJsSourceFile(expr.getSourceFile()) &&
+    ts.isBinaryExpression(expr) &&
+    expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    (isCjsModuleExports(lowerer, expr.left) || isCjsExportsIdentifier(lowerer, expr.left))
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      expr.left,
+      isCjsModuleExports(lowerer, expr.left)
+        ? "replacing module.exports outside a top-level statement (a conditional or environment-dependent export object)"
+        : "rebinding 'exports' outside a top-level statement (a conditional or environment-dependent export object)",
     );
   }
   if (topLevelJs && ts.isExpressionStatement(stmtNode)) {
