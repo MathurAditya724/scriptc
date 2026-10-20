@@ -4,6 +4,7 @@ Some builtins can be stored and passed as functions:
 - Supported zero-argument `node:os` functions and `querystring.escape`/`unescape`.
 - `util.isDeepStrictEqual`, `styleText`, `stripVTControlCharacters`, `toUSVString`, `inherits`, `deprecate`, `callbackify`, `debuglog`, and `debug`.
 - `fs.existsSync`, `unlinkSync`, `chmodSync`, `chownSync`, `renameSync`, and `closeSync`, and `fs/promises.unlink`, `chmod`, and `rename`.
+- `fs.realpathSync`, called with a string path and options that keep the UTF-8 encoding (none, `"utf8"`, or an object without another `encoding`, such as fs.realpath's cache object). Other paths or encodings throw `SC1090` where the call runs.
 
 In JavaScript, `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask`, and `process.nextTick` are function values wherever they are stored, including conditional and logical expressions and assignments: `typeof` answers `"function"`, identity holds across spellings, and calls schedule as the direct calls do, returning the same numeric timer handles.
 Calls through these values bypass `node:test` mock timers.

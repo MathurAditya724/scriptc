@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2593)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2594)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
     ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
@@ -1647,6 +1647,13 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test("a bundled token table 2593-bundled-semver-tokens byte-matches Node", async () => {
     await expectNodeParity(join(fixturesRoot, "npm/cases/2593-bundled-semver-tokens/main.ts"), [
       "gtsemverbundle",
+    ]);
+  }, 180_000);
+
+  // 2594: fs.realpath keeps fs.realpathSync and fs.realpath as values.
+  test("fs.realpath 2594-fs-realpath-values byte-matches Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2594-fs-realpath-values/main.ts"), [
+      "fs.realpath",
     ]);
   }, 180_000);
 

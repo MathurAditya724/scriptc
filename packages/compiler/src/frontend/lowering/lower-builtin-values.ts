@@ -11,7 +11,9 @@ import {
   type IrLibFn,
   type IrStmt,
   type SrcLoc,
+  funcOf,
 } from "../../ir/ir.js";
+import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { strLit, varRef } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -709,4 +711,124 @@ export function builtinConstantsObject(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     loc,
   };
   return { kind: "libCall", fn: "constants.object", args: [box(table)], type: DYN, loc };
+}
+
+/** `fs.realpathSync` as a function value (fs.realpath's
+ * `var origRealpathSync = fs.realpathSync`). Node's second argument is an
+ * options object or encoding name; the native call answers the UTF-8
+ * string, so the adapter takes the call whenever the options leave that
+ * encoding in place (absent, `"utf8"`, or an object whose `encoding` is
+ * absent or UTF-8) and the path is a string. Any other argument shape
+ * throws a located fence instead of a different result. */
+export function lowerFsRealpathSyncValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const name = "%builtin.value.fs.realpathSync";
+  if (!lowerer.builtinCallableValueFns.has(name)) {
+    lowerer.builtinCallableValueFns.set(name, name);
+    const path = varRef("path", DYN, loc);
+    const options = varRef("options", DYN, loc);
+    const fence = (what: string): IrStmt => {
+      const diag = unsupportedDiag(
+        "SC1090",
+        loc,
+        `fs.realpathSync as a value called with ${what}`,
+      );
+      lowerer.runtimeFences.push(diag);
+      return {
+        kind: "runtimeFence",
+        code: diag.code,
+        message: `${diag.message} [${diag.code}]`,
+        loc,
+      };
+    };
+    const utf8 = (value: IrExpr): IrExpr => ({
+      kind: "logical",
+      op: "||",
+      left: { kind: "dynScalarEq", left: value, right: strLit("utf8", loc), type: BOOL, loc },
+      right: { kind: "dynScalarEq", left: value, right: strLit("utf-8", loc), type: BOOL, loc },
+      type: BOOL,
+      loc,
+    });
+    const encoding: IrExpr = { kind: "dynKeyGet", key: strLit("encoding", loc), value: options, type: DYN, loc };
+    const defaultEncoding: IrExpr = {
+      kind: "logical",
+      op: "||",
+      left: { kind: "dynTest", test: "nullish", value: options, type: BOOL, loc },
+      right: {
+        kind: "logical",
+        op: "||",
+        left: utf8(options),
+        right: {
+          kind: "logical",
+          op: "&&",
+          left: { kind: "dynTest", test: "object", value: options, type: BOOL, loc },
+          right: {
+            kind: "logical",
+            op: "||",
+            left: { kind: "dynTest", test: "nullish", value: encoding, type: BOOL, loc },
+            right: utf8(encoding),
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+    lowerer.liftedFns.push({
+      name,
+      params: [
+        { localId: "path", name: "path", type: DYN },
+        { localId: "options", name: "options", type: DYN },
+      ],
+      returnType: DYN,
+      locals: [
+        { id: "path", name: "path", type: DYN, mutable: false },
+        { id: "options", name: "options", type: DYN, mutable: false },
+      ],
+      loc,
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "string", negated: true, value: path, type: BOOL, loc },
+          then: [fence("a path that is not a string")],
+          else_: [],
+          loc,
+        },
+        {
+          kind: "if",
+          cond: { kind: "unary", op: "!", operand: defaultEncoding, type: BOOL, loc },
+          then: [fence("an encoding other than UTF-8")],
+          else_: [],
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "dynFrom",
+            value: {
+              kind: "libCall",
+              fn: "fs.realpathSync",
+              args: [{ kind: "dynCheck", value: path, type: STRING, loc }],
+              type: STRING,
+              loc,
+            },
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: { kind: "closure", fnName: name, captures: [], type: funcOf([DYN, DYN], DYN), loc },
+    fnName: "realpathSync",
+    type: DYN,
+    loc,
+  };
 }
