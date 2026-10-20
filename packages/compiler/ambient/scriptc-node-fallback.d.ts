@@ -6569,7 +6569,7 @@ declare module "events" {
     export { internal as EventEmitter };
     // The event's arguments, as checked-dynamic values.
     export function once(
-      emitter: EventEmitter,
+      emitter: EventEmitter | NodeJS.ReadableStream | NodeJS.WritableStream,
       eventName: string,
       options?: { signal?: AbortSignal },
     ): Promise<unknown[]>;

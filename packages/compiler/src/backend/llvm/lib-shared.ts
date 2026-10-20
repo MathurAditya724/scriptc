@@ -444,6 +444,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.poolFromBytes": "scr_buffer_from_bytes",
   "buffer.poolFromArray": "scr_buffer_from_arr",
   "buffer.poolFromDyn": "scr_buffer_from_dyn_pooled",
+  "buffer.poolFromDynRef": "scr_buffer_from_dyn_ref_pooled",
   "buffer.poolSize": "scr_buffer_pool_size",
   "buffer.setPoolSize": "scr_buffer_set_pool_size",
   "buffer.byteLenDyn": "scr_buffer_byte_length_dyn",
@@ -643,6 +644,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  // Checked-cast fallback reads (scr_json.c); take answers +1.
+  "checkedCast.fallbackTaken": "scr_dyn_check_fallback_taken",
+  "checkedCast.fallbackTake": "scr_dyn_check_fallback_take",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).
@@ -742,6 +746,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "procStream.write": "scr_proc_stream_write",
   "stream.stdioWritable": "scr_stream_stdio_writable",
   "stream.unboxDyn": "scr_stream_unbox_dyn",
+  "stream.pipeDyn": "scr_stream_pipe_dyn",
+  "stream.unpipeDyn": "scr_stream_unpipe_dyn",
   "process.kill": "scr_process_kill_named",
   "process.killNum": "scr_process_kill",
   // fs.promises (scr_bytes_io.c / scr_lib.c): the promise forms settle
@@ -1459,6 +1465,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",
   "dyn.classInherit": "scr_dyn_class_inherit",
   "dyn.builtinClass": "scr_dyn_builtin_class",
+  "dyn.builtinStreamClass": "scr_dyn_builtin_stream_class",
   "dyn.builtinInstanceOf": "scr_dyn_builtin_instanceof",
   "dyn.functionInstanceOf": "scr_dyn_function_instanceof",
   "dyn.classSuper": "scr_dyn_class_super",
@@ -1537,6 +1544,8 @@ export function mockTimerSym(
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "process.emitWarning",
+  // Constructor-function streams defer their events on the stream ticks.
+  "dyn.builtinStreamClass",
   // Decipheriv.setAuthTag reports DEP0182 on the next tick.
   "crypto.cipherNew",
   // WebCrypto results settle through the deferred crypto queue.

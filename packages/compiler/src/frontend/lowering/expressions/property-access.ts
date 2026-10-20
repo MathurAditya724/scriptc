@@ -206,7 +206,7 @@ function isParseArgsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpress
   const sym = lowerer.checker.getSymbolAtLocation(expr.name);
   if (!sym) return false;
   return sym.declarations.some((d) => {
-    if (!lowerer.isStdlibFile(d.getSourceFile())) return false;
+    if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(d))) return false;
     let inParseArgsType = false;
     for (let node: ts.Node | undefined = d.parent; node; node = node.parent) {
       if (
@@ -234,7 +234,7 @@ function isStatFsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression
   return (
     !!symbol &&
     symbol.declarations.some((declaration) => {
-      if (!lowerer.isStdlibFile(declaration.getSourceFile())) return false;
+      if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
       const parent = declaration.parent;
       if (!ts.isInterfaceDeclaration(parent)) return false;
       if (
@@ -540,7 +540,7 @@ export function lowerPropertyAccessExpr(
     if (
       represented &&
       isMatchSliceType(lowerer, represented.type) &&
-      (lowerer.isStdlibMember(expr) || isJsSourceFile(expr.getSourceFile()))
+      (lowerer.isStdlibMember(expr) || isJsSourceFile(ts.getSourceFileOfNode(expr)))
     ) {
       const recv = represented;
       const key: IrExpr = { kind: "strLit", value: expr.name.text, type: STRING, loc };
@@ -573,7 +573,7 @@ export function lowerPropertyAccessExpr(
     ts.isIdentifier(expr.expression) &&
     expr.expression.text === "arguments" &&
     !lowerer.ctx.argumentsLocal &&
-    lowerer.typeOf(expr.expression).getSymbol()?.name === "IArguments" &&
+    ts.symbolNameOf(lowerer.typeOf(expr.expression).getSymbol()) === "IArguments" &&
     lowerer.isStdlibSymbol(lowerer.typeOf(expr.expression).getSymbol())
   ) {
     let fn: ts.Node | undefined = expr.parent;
@@ -644,9 +644,9 @@ export function lowerPropertyAccessExpr(
   if (
     !expr.questionDotToken &&
     isModuleExportsAccess(expr) &&
-    isCjsJsFile(expr.getSourceFile(), lowerer.program)
+    isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)
   ) {
-    const whole = cjsClassExprWholeExportOf(expr.getSourceFile());
+    const whole = cjsClassExprWholeExportOf(ts.getSourceFileOfNode(expr));
     if (whole) {
       let inBody = false;
       for (
@@ -659,7 +659,7 @@ export function lowerPropertyAccessExpr(
           break;
         }
       }
-      if (inBody || expr.getStart() > whole.stmt.getEnd()) {
+      if (inBody || ts.tokenStartOfNode(expr) > whole.stmt.end) {
         return lowerer.classValueRef(lowerer.lowerClassExpressionInfo(whole.classExpr), expr);
       }
     }
@@ -806,7 +806,7 @@ export function lowerPropertyAccessExpr(
   if (
     !expr.questionDotToken &&
     stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis" &&
-    isJsSourceFile(expr.getSourceFile())
+    isJsSourceFile(ts.getSourceFileOfNode(expr))
   ) {
     const canonical = stdlibGlobalNameOf(lowerer, expr);
     if (canonical !== null) {
@@ -854,7 +854,7 @@ export function lowerPropertyAccessExpr(
   // them, and calls dispatch through the dyn method machinery
   // instead.
   if (
-    (isJsSourceFile(expr.getSourceFile()) &&
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       (lowerer.mapTypeOf(lowerer.typeOf(expr.expression)) === null ||
         (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Never) !== 0 ||
         // A never-tainted receiver type maps (never rides as f64) but
@@ -873,7 +873,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",
@@ -895,7 +895,7 @@ export function lowerPropertyAccessExpr(
         : { kind: "strIntrinsic", method: "length", receiver: recv, args: [], type: F64, loc };
     }
   }
-  if (isJsSourceFile(expr.getSourceFile()) && expr.name.text === "constructor") {
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && expr.name.text === "constructor") {
     const receiver = tryLowerExpression(lowerer, expr.expression);
     if (
       receiver?.type.kind === "dyn" ||
@@ -959,7 +959,7 @@ export function lowerPropertyAccessExpr(
   // storage can expose its own name and length in both source languages.
   if (
     !["apply", "bind", "call", "toString", "caller", "arguments"].includes(expr.name.text) &&
-    (isJsSourceFile(expr.getSourceFile()) ||
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
       expr.name.text === "name" ||
       expr.name.text === "length" ||
       expr.name.text === "constructor")
@@ -972,7 +972,9 @@ export function lowerPropertyAccessExpr(
     const receiverSymbol = receiverType.getSymbol();
     const checkedFunction =
       lowerer.checker.getCallSignatures(receiverType).length > 0 ||
-      (receiverSymbol?.name === "Function" && lowerer.isStdlibSymbol(receiverSymbol));
+      (receiverSymbol !== undefined &&
+        ts.symbolName(receiverSymbol) === "Function" &&
+        lowerer.isStdlibSymbol(receiverSymbol));
     if (probed?.type.kind === "dyn" && checkedFunction) {
       const key: IrExpr = {
         kind: "strLit",
@@ -980,7 +982,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",
@@ -994,7 +996,7 @@ export function lowerPropertyAccessExpr(
       );
     }
     if (
-      (isJsSourceFile(expr.getSourceFile()) || expr.name.text === "constructor") &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || expr.name.text === "constructor") &&
       probed?.type.kind === "func" &&
       canBoxFuncIntoDyn(
         probed.type,
@@ -1028,17 +1030,17 @@ export function lowerPropertyAccessExpr(
   if (expr.name.text === "done" || expr.name.text === "value") {
     const receiverType = lowerer.typeOf(expr.expression);
     const recvSym =
-      receiverType.getAliasSymbol()?.name === "IteratorResult"
+      ts.symbolNameOf(receiverType.getAliasSymbol()) === "IteratorResult"
         ? receiverType.getAliasSymbol()
         : receiverType.getSymbol();
     if (
-      (recvSym?.name === "IteratorResult" ||
-        recvSym?.name === "IteratorYieldResult" ||
-        recvSym?.name === "IteratorReturnResult") &&
+      ((recvSym !== undefined && ts.symbolName(recvSym) === "IteratorResult") ||
+        (recvSym !== undefined && ts.symbolName(recvSym) === "IteratorYieldResult") ||
+        (recvSym !== undefined && ts.symbolName(recvSym) === "IteratorReturnResult")) &&
       recvSym.declarations.some(
         (d) =>
           (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) &&
-          lowerer.isStdlibFile(d.getSourceFile()),
+          lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
       )
     ) {
       const recv = lowerer.lowerExpr(expr.expression);
@@ -1089,7 +1091,8 @@ export function lowerPropertyAccessExpr(
   // members owned by these implemented families bypass the stdlib fence.
   const segmentDataSymbol = lowerer.typeOf(expr.expression).getSymbol();
   const segmentDataProperty =
-    segmentDataSymbol?.name === "SegmentData" &&
+    segmentDataSymbol !== undefined &&
+    ts.symbolName(segmentDataSymbol) === "SegmentData" &&
     lowerer.isStdlibSymbol(segmentDataSymbol) &&
     ["segment", "index", "input", "isWordLike"].includes(expr.name.text);
   // os.constants members vary by platform (the declared groups list
@@ -1111,7 +1114,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       const read: IrExpr = {
         kind: "dynKeyGet",
         key,
@@ -1196,7 +1199,7 @@ export function lowerPropertyAccessExpr(
   // validated dynCheck as usual.
   if (
     recvLowered.type.kind === "dyn" ||
-    (isJsSourceFile(expr.getSourceFile()) &&
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       (["f64", "bool", "bigint", "string", "symbol"].includes(recvLowered.type.kind) ||
         (recvLowered.type.kind === "union" && lowerer.dynConvertible(recvLowered.type))))
   ) {
@@ -1206,7 +1209,7 @@ export function lowerPropertyAccessExpr(
       type: STRING,
       loc: locOf(expr.name),
     };
-    const opt = hasOptionalChainGuard(expr.expression);
+    const opt = hasOptionalChainGuard(expr.expression, lowerer);
     return lowerer.maybeNarrow(
       {
         kind: "dynKeyGet",
@@ -1264,8 +1267,8 @@ export function lowerPropertyAccessExpr(
       recvShape &&
       !recvShape.tuple &&
       lowerer.implicitParamTypes !== null &&
-      isJsSourceFile(expr.getSourceFile()) &&
-      npmStaticPackageOfPath(expr.getSourceFile().fileName) !== null
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      npmStaticPackageOfPath(ts.getSourceFileOfNode(expr).fileName) !== null
     ) {
       return {
         kind: "seqExpr",
@@ -1356,11 +1359,39 @@ export function lowerPropertyAccessExpr(
   }
   const asserted = assertedMemberRead(lowerer, expr, recvLowered, loc);
   if (asserted) return asserted;
+  // A checker-`any` receiver whose value is a FRESH typed result of an
+  // earlier step in the chain (`out.split(" ").length`, where split
+  // extracted the string and answered a native string[]): the member read
+  // goes through the boxed checked-dynamic value, as the method-call twin
+  // does. The box copies; a call result has no other holder to observe it.
+  if (
+    (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0 &&
+    isFreshCallResult(expr.expression) &&
+    lowerer.dynConvertible(recvLowered.type)
+  ) {
+    return lowerer.maybeNarrow(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      expr,
+    );
+  }
   lowerer.unsupported(
     "SC1090",
     expr,
     `reading '${expr.name.text}' from a value of type '${lowerer.checker.typeToString(lowerer.typeOf(expr.expression))}'`,
   );
+}
+
+/** A call expression, through parentheses: its value has no other holder. */
+function isFreshCallResult(node: ts.Expression): boolean {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return ts.isCallExpression(e);
 }
 
 /** `(source as { repoName: string }).repoName` where the assertion names a
@@ -1484,7 +1515,12 @@ export function lowerIntrinsicProperty(
     | "BigInt"
   )[]) {
     if (!lowerer.chainBlocked(expr) && lowerer.isStdlibGlobal(expr, name)) {
-      return primitiveCtorClosure(lowerer, name, locOf(expr), isJsSourceFile(expr.getSourceFile()));
+      return primitiveCtorClosure(
+        lowerer,
+        name,
+        locOf(expr),
+        isJsSourceFile(ts.getSourceFileOfNode(expr)),
+      );
     }
   }
   if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys") {
@@ -1662,7 +1698,7 @@ export function lowerIntrinsicProperty(
   )
     return null;
   const name = expr.name.text;
-  if (kind === "array" && name === "constructor" && isJsSourceFile(expr.getSourceFile())) {
+  if (kind === "array" && name === "constructor" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
     const receiver = lowerer.lowerExpr(expr.expression);
     if (receiver.type.kind === "dyn")
       return {
@@ -1690,7 +1726,7 @@ export function lowerIntrinsicProperty(
   const strictReceiver = (expected: IrType): IrExpr => {
     const value = lowerer.lowerExpr(expr.expression);
     if (value.type.kind === "dyn") {
-      if (isJsSourceFile(expr.getSourceFile()) && name === "length") return value;
+      if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && name === "length") return value;
       return lowerer.coerceInto(expr.expression, value, expected);
     }
     return lowerer.runtimeOptionalPropertyReceiver(expr.expression, value, expected, name) ?? value;
@@ -2210,7 +2246,7 @@ function lowerReplacedExportsRead(
   if (expr.questionDotToken) return null;
   const recv = expr.expression;
   if (!ts.isIdentifier(recv) || recv.text !== "exports") return null;
-  const sf = expr.getSourceFile();
+  const sf = ts.getSourceFileOfNode(expr);
   if (!isJsSourceFile(sf) || isNodeEsmFile(sf, lowerer.program)) return null;
   if (lowerer.peekLocal(recv) || lowerer.globalOf(recv)) return null; // a user binding shadows
   // Write position is the export-assignment machinery's territory.
@@ -2247,7 +2283,7 @@ function lowerCjsExportTableThisMember(
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.expression.kind !== ts.SyntaxKind.ThisKeyword || expr.questionDotToken) return null;
-  if (!isJsSourceFile(expr.getSourceFile())) return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   // The enclosing accessor, crossing only arrow boundaries (arrows
   // inherit `this`; any other function form rebinds it).
   let n: ts.Node | undefined = expr.parent;
@@ -2447,7 +2483,8 @@ function lowerMatchGroupsRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressio
   const groups = matchResultNamedGroupsOf(lowerer, expr.expression);
   // An untraced regex: TypeScript reaches the member fence; JavaScript
   // would otherwise read the slice's absent expando as undefined.
-  if (groups === null && isJsSourceFile(expr.getSourceFile())) lowerer.stdlibMemberFence(expr);
+  if (groups === null && isJsSourceFile(ts.getSourceFileOfNode(expr)))
+    lowerer.stdlibMemberFence(expr);
   if (groups === null) return null;
   if (groups.length === 0) {
     // Node: a match result of a group-less regex answers undefined —
@@ -2464,7 +2501,7 @@ function lowerMatchGroupsRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressio
   }
   const recv = lowerer.lowerExpr(expr.expression);
   // A JavaScript callback parameter holds the row as a dynamic array.
-  const dynRow = recv.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile());
+  const dynRow = recv.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr));
   if (!dynRow && !isMatchSliceType(lowerer, recv.type)) return null;
   return lowerGroupsProjection(lowerer, recv, groups, loc);
 }
@@ -2690,7 +2727,7 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
           kind: "dynKeyGet",
           value,
           key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
-          ...(expr.questionDotToken || hasOptionalChainGuard(expr.expression)
+          ...(expr.questionDotToken || hasOptionalChainGuard(expr.expression, lowerer)
             ? { optional: true as const }
             : {}),
           type: DYN,
@@ -3041,12 +3078,12 @@ export function lowerUnionProperty(
   // instance argument (e.g. Matrix4.makeTranslation). Preserve primitive
   // missing-property semantics and dispatch class data through its native
   // capsule instead of demanding a field shared by every union arm.
-  if (isJsSourceFile(expr.getSourceFile()) && lowerer.dynConvertible(value.type)) {
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && lowerer.dynConvertible(value.type)) {
     return {
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(value, DYN),
       key,
-      ...(hasOptionalChainGuard(expr.expression) ? { optional: true as const } : {}),
+      ...(hasOptionalChainGuard(expr.expression, lowerer) ? { optional: true as const } : {}),
       type: DYN,
       loc: locOf(expr),
     };
@@ -3193,7 +3230,7 @@ export function classFieldTarget(
   const represented = saved ?? lowerer.lowerExpr(receiverNode);
   if (
     represented.type.kind === "dyn" &&
-    isJsSourceFile(receiverNode.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(receiverNode)) &&
     !fieldName.startsWith("#")
   ) {
     return { container: "dynamic", obj: represented, field: fieldName, fieldType: DYN };
@@ -3240,7 +3277,7 @@ export function classFieldTarget(
   if (fieldType) {
     const obj = lowerObjectReceiver();
     if (
-      isJsSourceFile(receiverNode.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(receiverNode)) &&
       !fieldName.startsWith("#") &&
       [...lowerer.classes.values()].some(
         (candidate) =>
@@ -3278,7 +3315,7 @@ export function classFieldTarget(
       fieldType: getF ? getF.sig.ret : setF!.sig.params[0]!.type,
     };
   }
-  if (info.decl && isJsSourceFile(info.decl.getSourceFile())) {
+  if (info.decl && isJsSourceFile(ts.getSourceFileOfNode(info.decl))) {
     const property = lowerer.checker.getPropertyOfType(
       lowerer.checker.getTypeAtLocation(receiverNode),
       fieldName,
@@ -3497,7 +3534,7 @@ export function fieldTarget(
             : [declared];
         return declaredArms.every((a) => ivArms.some((b) => typeEquals(a, b)));
       };
-      if (!nameSym || nameSym.name === ts.InternalSymbolName.Index || canonicalized()) {
+      if (!nameSym || ts.symbolName(nameSym) === ts.InternalSymbolName.Index || canonicalized()) {
         let obj = lowerer.lowerExpr(access.expression);
         if (obj.type.kind === "union" && lowerer.armTag(obj.type.unionId, UNDEFINED_T) >= 0) {
           const present = lowerer.stripUndefinedArm(obj.type);
@@ -3609,7 +3646,7 @@ export function fieldGetExpr(
     }
     if (
       !target.field.startsWith("#") &&
-      isJsSourceFile(blame.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(blame)) &&
       lowerer.dynConvertible(getF.sig.ret)
     ) {
       const value: IrExpr = {
@@ -3891,7 +3928,9 @@ export function builtinGlobalValueAt(
         ));
     if (reflects) {
       const name =
-        owner !== null ? `${owner}.${callee.name.text}` : callee.getText().replace(/\s+/g, "");
+        owner !== null
+          ? `${owner}.${callee.name.text}`
+          : ts.getTextOfNode(callee).replace(/\s+/g, "");
       lowerer.noLowering(
         `${name}(${canonical}, ...)`,
         expr,
@@ -3934,8 +3973,8 @@ function fenceBuiltinConstructorStaticRead(
   const symbol = lowerer.typeOf(access.expression).getSymbol();
   if (
     symbol !== undefined &&
-    symbol.name.endsWith("Constructor") &&
-    GLOBAL_CONSTRUCTOR_VALUES.has(symbol.name.slice(0, -"Constructor".length)) &&
+    ts.symbolName(symbol).endsWith("Constructor") &&
+    GLOBAL_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
     lowerer.isStdlibSymbol(symbol)
   )
     lowerer.stdlibMemberFence(access);
@@ -4012,7 +4051,7 @@ function jsFunctionExpandoMember(lowerer: Lowerer, access: ts.PropertyAccessExpr
   return (
     decls.length > 0 &&
     decls.every((d) => {
-      if (!isJsSourceFile(d.getSourceFile())) return false;
+      if (!isJsSourceFile(ts.getSourceFileOfNode(d))) return false;
       const assign = ts.isBinaryExpression(d) ? d : d.parent;
       return (
         assign !== undefined &&

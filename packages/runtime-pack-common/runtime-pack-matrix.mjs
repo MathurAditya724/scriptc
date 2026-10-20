@@ -61,6 +61,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch")],
+  // Fixed-width Buffer methods called on checked-dynamic values.
+  ["scr_bytes_dyn.c", all("dynBufferNum", "dynInvoke")],
   ["scr_dc.c", "dc"],
   // The dynamic tier's jsval values (two-tier design I3): linked only into
   // programs whose IR has dynamic-tier operations.
@@ -78,6 +80,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
   ["scr_events_emitter.c", "emitter"],
+  // events.once with options registers through the emitter and event-target units.
+  ["scr_events_once_signal.c", "eventsOnceSignal"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   ["scr_symbol.c", "symbol"],
   ["scr_bigint_assert.c", all("assert", "bigint")],
@@ -94,11 +98,26 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // through the dyn-invoke unit, inspect unhandled 'error' payloads and
   // create EventEmitter's private symbols.
   ["scr_dyn_builtin_class.c", all("dynBuiltinClass", "inspect", "dynInvoke", "symbol", "emitter")],
+  // Their stream half also references the stream unit.
+  [
+    "scr_dyn_builtin_stream.c",
+    all(
+      "dynBuiltinStream",
+      "dynBuiltinClass",
+      "stream",
+      "inspect",
+      "dynInvoke",
+      "symbol",
+      "emitter",
+    ),
+  ],
   ["scr_stream.c", "stream"],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
   ["scr_stream_ops.c", all("stream", "dynAsync")],
+  // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
+  ["scr_stream_dyn.c", "streamDyn"],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],
   // FileHandle streams reference both the stream unit and FileHandle.

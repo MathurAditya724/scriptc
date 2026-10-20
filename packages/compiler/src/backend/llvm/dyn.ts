@@ -39,6 +39,7 @@ import {
   isDirentShape,
   isDynTypedRefType,
   isRefCounted,
+  isUnitType,
   typeKey,
 } from "../../ir/ir.js";
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
@@ -130,6 +131,8 @@ export interface DynHost extends WalkerHost {
   /** The shared adapter record: live array capsules read its `arrayOps`, so a
    * narrower return type would hand the native compiler a copy without it. */
   liveDynRefAdapter(t: IrType): LlStreamTypedRefAdapter;
+  /** See moduleUsesDynBuiltinStream. */
+  usesDynBuiltinStream?(): boolean;
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
@@ -139,6 +142,19 @@ export interface DynHost extends WalkerHost {
 }
 
 const FN_ATTRS = "#0";
+
+/** scr_dyn_builtin_stream_check's kind for a runtime stream class (the
+ * numbering of scr_dyn_builtin_class.c), or null. */
+function builtinStreamKind(className: string): number | null {
+  const kinds: Record<string, number> = {
+    "%Readable": 2,
+    "%Writable": 3,
+    "%Duplex": 4,
+    "%Transform": 5,
+    "%PassThrough": 6,
+  };
+  return kinds[className] ?? null;
+}
 
 export class LlDyn {
   private readonly dynMatchers = new Map<string, string>();
@@ -682,6 +698,46 @@ export class LlDyn {
 
   /** Emit the standard in-helper pending check: on a pending exception
    * run `cleanup` and return `dummy`. */
+  /** The failure block of a union dynCheck whose value matched no arm. A
+   * value of the one container kind exactly one arm can take (an object
+   * for the union's only record arm, an array for its only array arm,
+   * beside unit and scalar arms) runs that arm's builder, which throws the
+   * deepest failing path and the reason there (`expected string at
+   * $.order.owner.id, got undefined`) instead of the union's own outer
+   * path. Other values, and an arm builder that unexpectedly succeeds,
+   * fall through to the union's message. Only the failure path changes. */
+  private unionArmFailure(B: BlockBuilder, def: IrUnionDef, kind: string): void {
+    const scalar = (arm: IrType): boolean =>
+      isUnitType(arm) ||
+      arm.kind === "f64" ||
+      arm.kind === "bool" ||
+      arm.kind === "string" ||
+      arm.kind === "bigint";
+    const containers = def.arms.filter((arm) => !scalar(arm));
+    const arm = containers.length === 1 ? containers[0]! : null;
+    const container =
+      arm?.kind === "array"
+        ? DYN_KIND.ARR
+        : arm?.kind === "record" && !this.host.recordsById.get(arm.shapeId)?.tuple
+          ? DYN_KIND.OBJ
+          : null;
+    if (!arm || container === null) return;
+    const host = this.host;
+    const deep = B.newLabel("dcu.deep");
+    const outer = B.newLabel("dcu.outer");
+    const same = B.tmp();
+    B.line(`${same} = icmp eq i32 ${kind}, ${container}`);
+    B.condBr(same, deep, outer);
+    B.startBlock(deep);
+    const built = B.tmp();
+    B.line(`${built} = call ptr @${this.dynCheckHelper(arm)}(ptr %d, ptr %path)`);
+    this.pendingBail(B, "dcu.deep", () => {}, "ptr null");
+    const rc = vAdapters(host, arm);
+    B.line(`call void ${rc.release}(ptr ${built})`);
+    B.br(outer);
+    B.startBlock(outer);
+  }
+
   private pendingBail(B: BlockBuilder, hint: string, cleanup: () => void, dummy: string): void {
     const p = B.tmp();
     for (const line of this.host.pendingTestLines(p)) B.line(line.trimStart());
@@ -1392,22 +1448,29 @@ export class LlDyn {
    * differently), runs the checked-dynamic route — scr_json_parse plus the
    * dynCheck builder — which reports the exact error. Returns +1, or null
    * with the pending flag set. */
-  jsonParseHelper(t: IrType): string | null {
+  jsonParseHelper(t: IrType, fallback = false): string | null {
     if (t.kind !== "record" && t.kind !== "array") return null;
     const key = typeKey(t);
-    const existing = this.jsonParsers.get(key);
+    const cacheKey = fallback ? `fallback:${key}` : key;
+    const existing = this.jsonParsers.get(cacheKey);
     if (existing) return existing;
     if (!this.jsonSchemaSupported(t, new Set())) return null;
     const host = this.host;
     const name = `sc_jp_${this.jsonParsers.size}`;
-    this.jsonParsers.set(key, name);
+    this.jsonParsers.set(cacheKey, name);
     const schema = this.jsonSchema(t);
     const check = this.dynCheckHelper(t);
     host.declare(`declare ptr @scr_json_parse_schema(ptr, ptr)`);
     host.declare(`declare ptr @scr_json_parse(ptr)`);
     host.declare(`declare void @scr_dyn_release(ptr)`);
+    // A fallback site (dynCheck.fallback): a value that fails validation
+    // parks as the checked value (scr_dyn_check_recover) and the helper
+    // returns the dummy with no exception pending. Syntax errors still
+    // throw.
+    if (fallback) host.declare(`declare zeroext i1 @scr_dyn_check_recover(ptr)`);
+    const recover = fallback ? [`  call zeroext i1 @scr_dyn_check_recover(ptr %d)`] : [];
     this.defs.push(
-      `define internal ptr @${name}(ptr %text) ${FN_ATTRS} { ; JSON.parse as ${llvmCommentText(key)}`,
+      `define internal ptr @${name}(ptr %text) ${FN_ATTRS} { ; JSON.parse as ${llvmCommentText(key)}${fallback ? " (fallback)" : ""}`,
       `entry:`,
       `  %fast = call ptr @scr_json_parse_schema(ptr %text, ptr @${schema})`,
       `  %hit = icmp ne ptr %fast, null`,
@@ -1422,6 +1485,7 @@ export class LlDyn {
       `  ret ptr null`,
       `check:`,
       `  %v = call ptr @${check}(ptr %d, ptr null)`,
+      ...recover,
       `  call void @scr_dyn_release(ptr %d)`,
       `  ret ptr %v`,
       `}`,
@@ -1491,6 +1555,24 @@ export class LlDyn {
       B.line(`${ref} = call ptr @scr_dyn_typed_ref_unbox(ptr %d)`);
       B.terminate(`ret ptr ${ref}`);
       B.startBlock(lNext);
+      // A constructor-function stream (scr_dyn_builtin_stream.c) carries
+      // its runtime stream.
+      const streamKind = t.kind === "object" ? builtinStreamKind(t.className) : null;
+      if (streamKind !== null && this.host.usesDynBuiltinStream?.() === true) {
+        host.declare(`declare ptr @scr_dyn_builtin_stream_check(ptr, double)`);
+        const own = B.tmp(),
+          hit = B.tmp();
+        B.line(
+          `${own} = call ptr @scr_dyn_builtin_stream_check(ptr %d, double ${f64Lit(streamKind)})`,
+        );
+        B.line(`${hit} = icmp ne ptr ${own}, null`);
+        const lOwn = B.newLabel("dc.ctor"),
+          lNotOwn = B.newLabel("dc.notctor");
+        B.condBr(hit, lOwn, lNotOwn);
+        B.startBlock(lOwn);
+        B.terminate(`ret ptr ${own}`);
+        B.startBlock(lNotOwn);
+      }
       if (t.kind !== "union" && preserveRefs) {
         const kind = this.kindOf(B, "%d");
         const capsule = B.tmp();
@@ -2258,6 +2340,7 @@ export class LlDyn {
           B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
           B.terminate(`ret ptr ${checked}`);
           B.startBlock(lFail);
+          this.unionArmFailure(B, def, kind);
           B.line(`call void @scr_dyn_check_fail(ptr %path, ptr ${want}, ptr %d)`);
           B.terminate(`ret ptr null`);
           break;
@@ -2326,6 +2409,7 @@ export class LlDyn {
         );
         B.terminate(`ret ptr ${checked}`);
         B.startBlock(lFail);
+        this.unionArmFailure(B, def, kind);
         B.line(`call void @scr_dyn_check_fail(ptr %path, ptr ${want}, ptr %d)`);
         B.terminate(`ret ptr null`);
         break;

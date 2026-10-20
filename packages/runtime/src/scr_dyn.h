@@ -1134,6 +1134,10 @@ bool scr_dyn_strict_eq(const ScrDyn *a, const ScrDyn *b);
  * result owned (+1). MAY THROW (NULL with the exception pending). */
 ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method);
 ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* scr_dyn_invoke_prepared for the fixed-width Buffer read/write method names
+ * (scr_bytes_dyn.c): a Buffer receiver runs the method, any other takes the
+ * ordinary dispatch. */
+ScrDyn *scr_dyn_invoke_buffer_num(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
 /* Keyed read on a FUNC node: the own-property table first (defineProperties
  * writes land there), then "name" (the box's best-effort static name; ""
@@ -1159,6 +1163,43 @@ ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
 ScrDyn *scr_dyn_builtin_class(double kind);
 bool scr_dyn_builtin_instanceof(ScrDyn *value, double kind);
 bool scr_dyn_function_instanceof(ScrDyn *value, ScrDyn *callee);
+/* The stream half of those constructors (scr_dyn_builtin_stream.c, linked
+ * with the dynBuiltinStream feature), registered with
+ * scr_dyn_builtin_class_streams before the first stream class value is
+ * read: construct runs `Readable.call(this, opts)` and the other stream
+ * kinds (+1 or NULL with an exception pending), prototype installs a stream
+ * kind's methods, and event answers EventEmitter.prototype's methods for a
+ * receiver with stream state (true when it handled the call; *result +1 or
+ * NULL with an exception pending). */
+enum {
+  SCR_EE_M_ON, SCR_EE_M_PREPEND, SCR_EE_M_ONCE, SCR_EE_M_PREPEND_ONCE, SCR_EE_M_OFF,
+  SCR_EE_M_REMOVE_ALL, SCR_EE_M_EMIT, SCR_EE_M_LISTENERS, SCR_EE_M_RAW_LISTENERS,
+  SCR_EE_M_LISTENER_COUNT, SCR_EE_M_EVENT_NAMES, SCR_EE_M_SET_MAX, SCR_EE_M_GET_MAX,
+};
+typedef struct ScrDynStreamOps {
+  ScrDyn *(*construct)(int kind, ScrDyn *self, ScrDyn *const *args, size_t argc);
+  void (*prototype)(int kind, ScrDyn *prototype);
+  bool (*event)(int method, ScrDyn *self, ScrDyn *const *args, size_t argc, ScrDyn **result);
+} ScrDynStreamOps;
+void scr_dyn_builtin_class_streams(const ScrDynStreamOps *ops);
+/* A stream class value with its stream half (scr_dyn_builtin_stream.c),
+ * +1; the stream a JavaScript value stands for (a constructor-function
+ * stream or a boxed runtime stream), +1 or NULL; and the constructor-
+ * function object of a runtime stream, +1 or NULL. */
+ScrDyn *scr_dyn_builtin_stream_class(double kind);
+struct ScrStream *scr_dyn_builtin_stream_of(const ScrDyn *value);
+ScrDyn *scr_dyn_builtin_stream_object(struct ScrStream *s);
+/* The untyped view of a runtime stream in programs that link that unit
+ * (+1), a checked cast to a runtime stream class kind (+1 or NULL), and
+ * the stream.unboxDyn libCall in those programs (scr_stream_unbox_dyn's
+ * contract, also taking constructor-function streams). */
+ScrDyn *scr_dyn_builtin_stream_view(struct ScrStream *s);
+struct ScrStream *scr_dyn_builtin_stream_check(const ScrDyn *value, double kind);
+struct ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr *message);
+/* stream.dynNative in those programs: scr_stream_dyn_native's contract,
+ * also taking constructor-function streams that keep the runtime's write
+ * and end (+1 or NULL). */
+struct ScrStream *scr_dyn_builtin_stream_dyn_native(const ScrDyn *value, double side);
 bool scr_dyn_class_is_key(const ScrDyn *value, const ScrStr *type_key);
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key);
 /* Calls a dyn value: a non-function kind throws the catchable TypeError
@@ -1203,6 +1244,16 @@ ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, cons
  * prints as "Uncaught TypeError: ..." and exits 1). This is
  * scriptc-specific behavior — JS `as` never checks (SEMANTICS.md). */
 void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *got);
+
+/* Checked-cast fallback (a `JSON.parse(text) as T` whose value fails
+ * validation keeps its dynamic value instead of throwing). Right after a
+ * fallback site's check, scr_dyn_check_recover takes back the exception the
+ * check raised (Node runs nothing at a cast, so nothing it raises is
+ * observable) and parks the checked value, which the lowered code reads
+ * with scr_dyn_check_fallback_taken and takes (+1) with _take. */
+bool scr_dyn_check_recover(ScrDyn *d);
+bool scr_dyn_check_fallback_taken(void);
+ScrDyn *scr_dyn_check_fallback_take(void);
 
 /* Matchers and builders of recursive shapes (records and arrays whose type
  * reaches itself) track the dyn values they visit, so cyclic values match

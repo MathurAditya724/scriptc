@@ -113,6 +113,15 @@ export interface CcOptions {
    * the IR): compiles the scr_js_* units (two-tier design I3). Programs
    * without them link no scr_js_ symbol. */
   dynTier?: boolean;
+  /** Checked-dynamic stream slots (stream.dynNative / stream.pipeDyn):
+   * compiles scr_stream_dyn.c. */
+  streamDyn?: boolean;
+  /** events.once with options (events.onceSignal): compiles
+   * scr_events_once_signal.c. */
+  eventsOnceSignal?: boolean;
+  /** Fixed-width Buffer methods called on checked-dynamic values:
+   * compiles scr_bytes_dyn.c. */
+  dynBufferNum?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
@@ -157,6 +166,10 @@ export interface CcOptions {
    * scr_dyn_builtin_class.c, which also references the inspection,
    * dyn-invoke and symbol units. */
   dynBuiltinClass?: boolean;
+  /** The program uses a stream class as an untyped constructor value:
+   * compiles scr_dyn_builtin_stream.c, the constructors' stream half, which
+   * also references the stream unit. */
+  dynBuiltinStream?: boolean;
   /** The program uses native util parsing, comparison, or styling. Optional
    * utility units also require their symbol, inspection, and warning features. */
   parseArgs?: boolean;

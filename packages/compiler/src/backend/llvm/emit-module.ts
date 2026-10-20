@@ -1333,14 +1333,17 @@ export function helperDefs(emitter: LlEmitter): string[] {
   // of the capacity word (SCR_STR_ASCII_BIT, the low half's sign bit on
   // little-endian targets) makes UTF-16 units bytes. Unproven strings and
   // anything but an in-range index take the runtime's UTF-16 mapping.
-  // A scan's receiver reads inline too where runtime state is ordinary
-  // global storage (ScrStrScan; SCR_TL makes it thread-local otherwise).
-  const scanInline = emitter.mod.workers !== true && emitter.mod.lib?.threadInstances !== true;
+  // A scan's receiver reads inline too (ScrStrScan): from ordinary global
+  // storage, or, in worker executables, from the thread's static TLS block,
+  // one thread-pointer-relative load (see executableTls).
+  const scanInline =
+    emitter.executableTls ||
+    (emitter.mod.workers !== true && emitter.mod.lib?.threadInstances !== true);
   let scanDeclared = false;
   for (const helper of STRING_READ_HELPERS) {
     if (!emitter.decls.has(helper.decl)) continue;
     if (scanInline && !scanDeclared) {
-      defs.push(stringScanDecl(emitter.sizeType), ``);
+      defs.push(stringScanDecl(emitter.sizeType, emitter.executableTls), ``);
       scanDeclared = true;
     }
     defs.push(...helper.define(emitter.sizeType, FN_ATTRS, scanInline), ``);
