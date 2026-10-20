@@ -230,11 +230,19 @@ export function emitMapIterSlot(
   access: "f64" | "bool" | "ref",
   type: IrType,
   runtime: { decl: string; symbol: string },
+  /** An i1 that must also hold for the inline read; otherwise a live entry
+   * reads through `runtime` too. */
+  inline?: string,
 ): string {
   const B = host.B;
   const entry = emitMapIterEntry(host, map, index);
-  const found = B.tmp();
+  let found = B.tmp();
   B.line(`${found} = icmp ne ptr ${entry}, null`);
+  if (inline !== undefined) {
+    const both = B.tmp();
+    B.line(`${both} = and i1 ${found}, ${inline}`);
+    found = both;
+  }
   const hit = B.newLabel("mapit.hit"),
     miss = B.newLabel("mapit.miss"),
     join = B.newLabel("mapit.join");

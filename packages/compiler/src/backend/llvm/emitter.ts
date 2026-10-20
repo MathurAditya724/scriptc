@@ -325,6 +325,7 @@ import {
   wrapNullable,
   emitMapNew,
   mapSet,
+  mapOwnValuesSlot,
   emitMapLikeIntrinsic,
   emitSetNew,
 } from "./expr-containers.js";
@@ -6385,6 +6386,13 @@ export class LlEmitter {
 
   /** A binding's storage: a module global, a plain local slot, or a boxed
    * local (the slot holds the capture BOX; access goes through it). */
+  /** A new value of a map<K, dyn> local: its loops test the view flag
+   * again (mapOwnValuesSlot). */
+  private resetMapOwnValues(localId: string): void {
+    const slot = mapOwnValuesSlot(this, localId);
+    if (slot !== null) this.B.line(`store i1 false, ptr ${slot}`);
+  }
+
   binding(id: string): {
     kind: "global" | "local" | "boxed";
     slot: string;
@@ -8157,6 +8165,7 @@ export class LlEmitter {
     this.frames.push([]);
     switch (s.kind) {
       case "varDecl": {
+        this.resetMapOwnValues(s.localId);
         if (s.init && this.int32Locals.has(s.localId)) {
           this.storeInt32Local(s.localId, this.emitExpr(s.init), s.init);
           break;
@@ -8350,6 +8359,7 @@ export class LlEmitter {
         break;
       }
       case "assign": {
+        this.resetMapOwnValues(s.localId);
         if (this.int32Locals.has(s.localId)) {
           this.storeInt32Local(s.localId, this.emitExpr(s.value), s.value);
           break;

@@ -768,6 +768,10 @@ export class ClassDynamicDispatch {
         if (isDynTypedRefType(type)) this.boxed.add(type.className);
       } else if (type.kind === "classval") this.boxedConstructors.add(type.className);
       else if (type.kind === "array") discover(type.elem);
+      else if (type.kind === "map") {
+        discover(type.key);
+        discover(type.value);
+      } else if (type.kind === "set") discover(type.elem);
       else if (type.kind === "record") {
         const shape = lowerer.shapes.get(type.shapeId);
         shape?.fields.forEach((field) => discover(field.type));

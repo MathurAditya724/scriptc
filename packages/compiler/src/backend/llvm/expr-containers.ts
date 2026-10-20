@@ -10,6 +10,7 @@ import {
   FN_ATTRS,
   mapKeyAccess,
   type MapKeyAccess,
+  mapFlagsOffset,
   mapKeyKindNum,
   mapKeyParamType,
   mapValKindNum,
@@ -1075,6 +1076,50 @@ export function emitMapNew(host: LlvmEmitterContext, e: IrExpr & { kind: "mapNew
   return out;
 }
 
+/** Whether map<K, dyn> storage holds other values behind a checked view
+ * (SCR_MAP_VALUE_VIEW, scr_map.h): its values convert through the storage's
+ * dyn_ops. With `own`, the opposite: whether its values are dyn boxes. */
+export function emitMapValueView(host: LlvmEmitterContext, map: string, own = false): string {
+  const B = host.B;
+  const p = B.tmp();
+  const flags = B.tmp();
+  const bit = B.tmp();
+  const view = B.tmp();
+  B.line(`${p} = getelementptr inbounds i8, ptr ${map}, i64 ${mapFlagsOffset(host.sizeType)}`);
+  B.line(`${flags} = load i8, ptr ${p}`);
+  B.line(`${bit} = and i8 ${flags}, 2`);
+  B.line(`${view} = icmp ${own ? "eq" : "ne"} i8 ${bit}, 0`);
+  return view;
+}
+
+/** The entry slot telling whether a map<K, dyn> local's values are dyn
+ * boxes, so a loop tests the view flag once rather than at each value
+ * read. Every definition of the local stores false (the converting read,
+ * correct for any storage) and iterEnter stores the storage's answer,
+ * which stays fixed for as long as the local holds that Map. Null for
+ * locals a slot cannot follow. */
+export function mapOwnValuesSlot(host: LlvmEmitterContext, localId: string): string | null {
+  const binding = host.binding(localId);
+  const local = binding.local;
+  if (binding.kind !== "local" || !local || local.mutable || local.tdz) return null;
+  const t = local.type;
+  if (t.kind !== "map" || t.key.kind === "dyn" || t.value.kind !== "dyn") return null;
+  const B = host.B;
+  let slot = B.mapOwnValuesSlots.get(localId);
+  if (slot === undefined) {
+    slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i1`, `store i1 false, ptr ${slot}`);
+    B.mapOwnValuesSlots.set(localId, slot);
+  }
+  return slot;
+}
+
+function loadMapOwnValues(host: LlvmEmitterContext, slot: string): string {
+  const view = host.B.tmp();
+  host.B.line(`${view} = load i1, ptr ${slot}`);
+  return view;
+}
+
 export function mapSet(
   host: LlvmEmitterContext,
   m: string,
@@ -1218,13 +1263,14 @@ export function emitMapLikeIntrinsic(
       const kAcc = k.access;
       const kTy = k.types;
       if (value.kind === "dyn") {
-        host.declare(`declare ptr @scr_map_get_${kAcc}_ref(ptr, ${kTy})`);
+        // The _dyn getters also read views of other storage (emitMapValueView).
+        host.declare(`declare ptr @scr_map_get_${kAcc}_dyn(ptr, ${kTy})`);
         host.declare(`declare ptr @scr_dyn_undefined()`);
         const raw = B.tmp();
         const absent = B.tmp();
         const isnull = B.tmp();
         const result = B.tmp();
-        B.line(`${raw} = call ptr @scr_map_get_${kAcc}_ref(ptr ${r.name}, ${k.args})`);
+        B.line(`${raw} = call ptr @scr_map_get_${kAcc}_dyn(ptr ${r.name}, ${k.args})`);
         B.line(`${absent} = call ptr @scr_dyn_undefined()`);
         B.line(`${isnull} = icmp eq ptr ${raw}, null`);
         B.line(`${result} = select i1 ${isnull}, ptr ${absent}, ptr ${raw}`);
@@ -1372,7 +1418,26 @@ export function emitMapLikeIntrinsic(
       const vAcc = elemAccess(receiverType.value);
       if (vAcc === "ref") host.toHeap(v);
       const ordinary = (): void => host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
-      if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
+      if (receiverType.value.kind === "dyn") {
+        // A view of other storage converts the value through its dyn_ops,
+        // which throws for a value the storage cannot hold.
+        const view = emitMapValueView(host, r.name);
+        const lv = B.newLabel("mapv.view");
+        const lo = B.newLabel("mapv.own");
+        const lj = B.newLabel("mapv.join");
+        B.condBr(view, lv, lo);
+        B.startBlock(lv);
+        host.declare(`declare void @scr_map_view_set_${kAcc}(ptr, ${kTy}, ptr)`);
+        B.line(
+          `call void @scr_map_view_set_${kAcc}(ptr ${r.name}, ${kTy} ${k.name}, ptr ${v.name})`,
+        );
+        host.emitPendingCheck();
+        B.br(lj);
+        B.startBlock(lo);
+        ordinary();
+        B.br(lj);
+        B.startBlock(lj);
+      } else if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
         const bits = B.tmp();
         B.line(
           vAcc === "f64"
@@ -1459,18 +1524,41 @@ export function emitMapLikeIntrinsic(
       if (receiverType.kind !== "map") throw new InternalCompilerError("unreachable");
       const vAcc = elemAccess(receiverType.value);
       const i = host.emitExpr(e.args[0]!);
+      const ownSlot =
+        receiverType.value.kind === "dyn" && e.receiver.kind === "varRef"
+          ? (B.mapOwnValuesSlots.get(e.receiver.localId) ?? null)
+          : null;
       const retTy = vAcc === "f64" ? "double" : vAcc === "bool" ? "i1" : "ptr";
       const symbol = `scr_map_iter_val_${vAcc}`;
+      if (receiverType.value.kind === "dyn") {
+        // Views of other storage read through scr_map_dyn_value.
+        const t = emitMapIterSlot(
+          host,
+          r.name,
+          i.name,
+          1,
+          vAcc,
+          receiverType.value,
+          { decl: `declare ptr @scr_map_dyn_value(ptr, double)`, symbol: "scr_map_dyn_value" },
+          ownSlot !== null ? loadMapOwnValues(host, ownSlot) : emitMapValueView(host, r.name, true),
+        );
+        return host.own({ name: t, type: e.type });
+      }
       const t = emitMapIterSlot(host, r.name, i.name, 1, vAcc, receiverType.value, {
         decl: `declare ${vAcc === "bool" ? "zeroext i1" : retTy} @${symbol}(ptr, double)`,
         symbol,
       });
       return host.own({ name: t, type: e.type });
     }
-    case "iterEnter":
+    case "iterEnter": {
       host.declare(`declare void @scr_map_iter_enter(ptr)`);
       B.line(`call void @scr_map_iter_enter(ptr ${r.name})`);
+      const ownSlot =
+        e.receiver.kind === "varRef" ? mapOwnValuesSlot(host, e.receiver.localId) : null;
+      if (ownSlot !== null)
+        B.line(`store i1 ${emitMapValueView(host, r.name, true)}, ptr ${ownSlot}`);
       return { name: "", type: e.type };
+    }
     case "iterExit":
       host.declare(`declare void @scr_map_iter_exit(ptr)`);
       B.line(`call void @scr_map_iter_exit(ptr ${r.name})`);

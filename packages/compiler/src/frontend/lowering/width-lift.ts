@@ -19,5 +19,6 @@ export type WidthLift =
   | { how: "clsWidth" }
   | { how: "narrow" }
   | { how: "dynIn" }
+  | { how: "mapView" }
   | { how: "upcast" }
   | { how: "funcAdapt" };

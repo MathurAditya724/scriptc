@@ -1146,6 +1146,11 @@ ScrMap *scr_dyn_native_set_check(const ScrDyn *value, const ScrDynPath *path);
 ScrMap *scr_dyn_native_map_check(const ScrDyn *value, const ScrDynPath *path);
 bool scr_dyn_native_collection_is(const ScrDyn *value, int map, const char *type);
 ScrMap *scr_dyn_native_collection_check(const ScrDyn *value, int map, const char *type, const ScrDynPath *path);
+/* map<K, dyn> views (`type` is "map<K,dyn>"): any Map with K's key
+ * representation. The check marks storage with other values
+ * SCR_MAP_VALUE_VIEW and returns it +1. */
+bool scr_dyn_native_map_view_is(const ScrDyn *value, const char *type);
+ScrMap *scr_dyn_native_map_view_check(const ScrDyn *value, const char *type, const ScrDynPath *path);
 ScrStr *scr_url_checked_to_path(const ScrDyn *value);
 ScrStr *scr_url_checked_to_path_options(const ScrDyn *value, const ScrDyn *options);
 ScrBytes *scr_url_checked_to_path_buffer(const ScrDyn *value, const ScrDyn *options);

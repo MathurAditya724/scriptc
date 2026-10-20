@@ -1280,6 +1280,64 @@ void *scr_map_get_bool_ref(const ScrMap *m, bool key) {
   return m->ops->val_retain(scr_map_slot_to_ptr(m->entries[entry].val));
 }
 
+/* ── map<K, dyn> reads and writes ────────────────────────────────────── */
+
+/* The +1 checked value of entry `e`, or NULL for SCR_MAP_EMPTY. Values of
+ * map<K, dyn> storage are checked-value boxes; a view of other storage
+ * boxes them through that storage's dyn_ops. */
+static inline ScrDyn *scr_map_entry_dyn(const ScrMap *m, size_t e) {
+  if (e == SCR_MAP_EMPTY) return NULL;
+  uint64_t val = m->entries[e].val;
+  if (__builtin_expect((m->flags & SCR_MAP_VALUE_VIEW) != 0, 0)) return m->dyn_ops->val_box(val);
+  return scr_dyn_retain(scr_map_slot_to_ptr(val));
+}
+
+ScrDyn *scr_map_get_f64_dyn(const ScrMap *m, double key) {
+  return scr_map_entry_dyn(m, scr_map_find_f64(m, key));
+}
+
+ScrDyn *scr_map_get_str_dyn(const ScrMap *m, const ScrStr *key) {
+  return scr_map_entry_dyn(m, scr_map_find_str(m, key));
+}
+
+ScrDyn *scr_map_get_bool_dyn(const ScrMap *m, bool key) {
+  return scr_map_entry_dyn(m, scr_map_find_bool(m, key));
+}
+
+ScrDyn *scr_map_get_ref_dyn(const ScrMap *m, const void *key) {
+  return scr_map_entry_dyn(m, scr_map_find_ref(m, key));
+}
+
+/* The storage slot for a value written through a view (+1), or false with
+ * a TypeError pending when the storage cannot hold it. Consumes `value`. */
+static bool scr_map_view_slot(const ScrMap *m, ScrDyn *value, uint64_t *slot) {
+  *slot = m->dyn_ops->val_unbox(value);
+  scr_dyn_release(value);
+  return !scr_exc_pending();
+}
+
+void scr_map_view_set_f64(ScrMap *m, double key, ScrDyn *value) {
+  uint64_t slot;
+  if (scr_map_view_slot(m, value, &slot)) scr_map_set_f64_key(m, key, slot);
+}
+
+void scr_map_view_set_str(ScrMap *m, ScrStr *key, ScrDyn *value) {
+  uint64_t slot;
+  if (scr_map_view_slot(m, value, &slot)) scr_map_set_str_key(m, key, slot);
+}
+
+void scr_map_view_set_bool(ScrMap *m, bool key, ScrDyn *value) {
+  uint64_t slot;
+  if (scr_map_view_slot(m, value, &slot)) scr_map_set(m, scr_map_hash_word(key ? 1 : 0), key ? 1 : 0, slot);
+}
+
+void scr_map_view_set_ref(ScrMap *m, void *key, ScrDyn *value) {
+  uint64_t slot;
+  if (!scr_map_view_slot(m, value, &slot)) return;
+  uint64_t k = scr_map_slot_from_ptr(key);
+  scr_map_set(m, scr_map_hash_key(m, k), k, slot);
+}
+
 /* ── iteration primitives (the forEach desugar) ────────────────────────── */
 
 double scr_map_iter_count(const ScrMap *m) { return (double)m->nentries; }
@@ -1338,7 +1396,7 @@ bool scr_map_iter_val_bool(const ScrMap *m, double i) {
 }
 
 void scr_map_dyn_attach(ScrMap *map, const ScrMapDynOps *ops) {
-  map->dyn_ops = ops;
+  if (!map->dyn_ops) map->dyn_ops = ops;
 }
 
 ScrDyn *scr_map_dyn_key(const ScrMap *map, double index) {
@@ -1388,6 +1446,10 @@ ScrMap *scr_map_clone(const ScrMap *source, bool keys_only, const ScrMapOps *ops
   ScrMap *out = scr_map_new((ScrMapKeyKind)source->key_kind,
                             keys_only ? SCR_MAP_VAL_F64 : (ScrMapValKind)source->val_kind,
                             ops ? ops : source->ops);
+  if (!keys_only && !ops && (source->flags & SCR_MAP_VALUE_VIEW)) {
+    out->dyn_ops = source->dyn_ops;
+    out->flags |= SCR_MAP_VALUE_VIEW;
+  }
   size_t count = source->nlive;
   if (!count) return out;
   if (count > SIZE_MAX / sizeof(ScrMapEntry) || count > SIZE_MAX / 2 / sizeof(size_t)) scr_map_oom();

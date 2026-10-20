@@ -52,6 +52,10 @@ export function widthCoerce(lowerer: Lowerer, expr: IrExpr, expected: IrType): I
   if (expected.kind === "record" && expr.type.kind === "classval" && expr.kind === "classRef") {
     return lowerer.classStaticsProjection(expr.type.className, expected.shapeId, expr.loc);
   }
+  if (expected.kind === "map" && expr.type.kind === "map") {
+    const lift = lowerer.widthLiftPlan(expr.type, expected);
+    return lift?.how === "mapView" ? lowerer.applyWidthLift(lift, expr, expected, expr.loc) : null;
+  }
   if (expected.kind === "array" && expr.type.kind === "array") {
     const helper = lowerer.arrayWidthHelper(expr.type, expected, expr.loc);
     if (helper)
@@ -205,6 +209,16 @@ export function applyWidthLift(
       if (dst.kind !== "dyn")
         throw new InternalCompilerError("lowerer bug: dynIn lift against a non-dyn slot");
       return { kind: "dynFrom", value, type: DYN, loc };
+    }
+    case "mapView": {
+      if (dst.kind !== "map" || value.type.kind !== "map")
+        throw new InternalCompilerError("lowerer bug: mapView lift shape");
+      return {
+        kind: "dynCheck",
+        value: { kind: "dynFrom", value, type: DYN, loc },
+        type: dst,
+        loc,
+      };
     }
     case "upcast": {
       if (dst.kind !== "object" || value.type.kind !== "object")

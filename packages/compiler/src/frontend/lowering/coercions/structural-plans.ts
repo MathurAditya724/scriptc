@@ -51,6 +51,7 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
           lowerer.shapes.get(src.shapeId)?.tuple === true &&
           arm.kind === "array") ||
         (src.kind === "object" && arm.kind === "record") ||
+        (src.kind === "map" && arm.kind === "map") ||
         (src.kind === "record" && arm.kind === "object");
       if (sameFamily && lowerer.widthLiftPlan(src, arm) !== null) candidates.push({ tag: i, arm });
     });
@@ -134,6 +135,20 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
   }
   if (dst.kind === "record" && src.kind === "record") {
     return lowerer.recordWidthPlan(src.shapeId, dst.shapeId) !== null ? { how: "width" } : null;
+  }
+  // A Map into a map<K, unknown> slot with the same key type (`Map<string,
+  // Item>` into `ReadonlyMap<string, View>`): the checked view of the same
+  // storage, so the Map keeps its identity.
+  if (
+    dst.kind === "map" &&
+    src.kind === "map" &&
+    dst.key.kind !== "dyn" &&
+    dst.value.kind === "dyn" &&
+    src.value.kind !== "dyn" &&
+    typeEquals(src.key, dst.key) &&
+    lowerer.dynConvertible(src)
+  ) {
+    return { how: "mapView" };
   }
   if (dst.kind === "record" && src.kind === "union") {
     // A union of records can share a structural destination without

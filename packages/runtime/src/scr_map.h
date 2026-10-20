@@ -95,13 +95,19 @@ typedef struct ScrMapOps {
  * whose object has a null prototype (Object.groupBy results). Compiled
  * code sets and tests the byte; the runtime never copies it. */
 #define SCR_MAP_NULL_PROTO 1u
+/* ScrMap.flags: SCR_MAP_VALUE_VIEW marks storage whose values are not
+ * checked-value boxes but which a map<K, dyn> view has checked
+ * (scr_dyn_native_map_view_check). Compiled map<K, dyn> code tests it and
+ * reads and writes such values through the storage's dyn_ops. The runtime
+ * sets it and keeps it on clones. */
+#define SCR_MAP_VALUE_VIEW 2u
 
 typedef struct ScrMap {
   size_t rc; /* SIZE_MAX = immortal (unused for maps; kept per convention) */
   uint8_t key_kind; /* ScrMapKeyKind */
   uint8_t val_kind; /* ScrMapValKind */
   uint8_t traced;   /* SCR_MAP_TRACED_KEY | SCR_MAP_TRACED_VAL, from ops */
-  uint8_t flags;    /* SCR_MAP_NULL_PROTO */
+  uint8_t flags;    /* SCR_MAP_NULL_PROTO | SCR_MAP_VALUE_VIEW */
   uint32_t iter_depth; /* > 0: an iteration is active — no compaction */
   const ScrMapOps *ops; /* never NULL */
   const ScrMapDynOps *dyn_ops;
@@ -185,19 +191,36 @@ void *scr_map_get_span_ref(const ScrMap *m, const char *bytes, size_t length);
 /* Fresh shallow copies with compact storage and independent mutation.
  * keys_only selects a Set; checked views materialize their boxed values.
  * A typed key-only copy takes `ops` for the Set (the source's key
- * adapters); NULL keeps the source's descriptor. */
+ * adapters); NULL keeps the source's descriptor, and a copy of a
+ * SCR_MAP_VALUE_VIEW storage keeps its dyn_ops and the flag. */
 ScrMap *scr_map_clone(const ScrMap *source, bool keys_only, const ScrMapOps *ops);
 ScrMap *scr_map_clone_dyn(const ScrMap *source, bool keys_only);
 /* The descriptor of a Set of checked values (SCR_MAP_KEY_DYN keys). */
 extern const ScrMapOps scr_map_dyn_set_ops;
 void scr_map_values_into(ScrMap *set, const ScrMap *source, bool checked);
 
+/* The first attached adapters describe the storage's own slots and stay:
+ * a view of the storage boxed again under another static type must not
+ * replace them. */
 void scr_map_dyn_attach(ScrMap *map, const ScrMapDynOps *ops);
 struct ScrDyn *scr_map_dyn_key(const ScrMap *map, double index);
 struct ScrDyn *scr_map_dyn_value(const ScrMap *map, double index);
 struct ScrDyn *scr_map_dyn_get(ScrMap *map, const struct ScrDyn *key);
 bool scr_map_dyn_has(ScrMap *map, const struct ScrDyn *key, bool remove);
 void scr_map_dyn_set(ScrMap *map, const struct ScrDyn *key, const struct ScrDyn *value, bool set);
+/* map<K, dyn> reads and writes with typed keys. Reads return a +1 value or
+ * NULL when the key is absent; writes MOVE the value in. Storage marked
+ * SCR_MAP_VALUE_VIEW converts values through its dyn_ops, and a write of a
+ * value the storage cannot hold throws a TypeError (pending; the map is
+ * unchanged). */
+struct ScrDyn *scr_map_get_f64_dyn(const ScrMap *m, double key);
+struct ScrDyn *scr_map_get_str_dyn(const ScrMap *m, const ScrStr *key);
+struct ScrDyn *scr_map_get_bool_dyn(const ScrMap *m, bool key);
+struct ScrDyn *scr_map_get_ref_dyn(const ScrMap *m, const void *key);
+void scr_map_view_set_f64(ScrMap *m, double key, struct ScrDyn *value);
+void scr_map_view_set_str(ScrMap *m, ScrStr *key, struct ScrDyn *value);
+void scr_map_view_set_bool(ScrMap *m, bool key, struct ScrDyn *value);
+void scr_map_view_set_ref(ScrMap *m, void *key, struct ScrDyn *value);
 
 /* `ops` describes the key and value adapters (ScrMapOps above); NULL means
  * none, for scalar keys and values. Reference values require retain and

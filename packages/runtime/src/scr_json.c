@@ -13922,6 +13922,35 @@ ScrMap *scr_dyn_native_collection_check(const ScrDyn *value, int map, const char
   return scr_map_retain(value->v.handle.ptr);
 }
 
+/* A map<K, dyn> view (`type` is "map<K,dyn>"): a Map whose storage has K's
+ * key representation, whatever its value type. The view shares the
+ * storage, so the Map keeps its identity. 0: no match, 1: the storage is
+ * map<K, dyn> itself, 2: other values, which compiled map<K, dyn> code
+ * converts through the storage's dyn_ops (SCR_MAP_VALUE_VIEW). */
+static int scr_dyn_map_view_match(const ScrDyn *value, const char *type) {
+  if (!scr_dyn_native_map_is(value)) return 0;
+  const ScrMap *storage = value->v.handle.ptr;
+  const char *have = storage->dyn_ops ? storage->dyn_ops->type : NULL;
+  if (!have) return 0;
+  if (strcmp(have, type) == 0) return 1;
+  return strncmp(have, type, strlen(type) - (sizeof "dyn>" - 1)) == 0 ? 2 : 0;
+}
+
+bool scr_dyn_native_map_view_is(const ScrDyn *value, const char *type) {
+  return scr_dyn_map_view_match(value, type) != 0;
+}
+
+ScrMap *scr_dyn_native_map_view_check(const ScrDyn *value, const char *type, const ScrDynPath *path) {
+  int match = scr_dyn_map_view_match(value, type);
+  if (!match) {
+    scr_dyn_check_fail(path, type, value);
+    return NULL;
+  }
+  ScrMap *storage = value->v.handle.ptr;
+  if (match == 2) storage->flags |= SCR_MAP_VALUE_VIEW;
+  return scr_map_retain(storage);
+}
+
 ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrStr *what) {
   /* Object.create receivers must run their inherited formatter before the
    * default object tag; Effect shard keys use it to produce distinct hashes. */

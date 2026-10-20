@@ -816,6 +816,15 @@ export class LlDyn {
       }
       case "map":
       case "set": {
+        if (isMapValueView(t)) {
+          this.host.declare(`declare zeroext i1 @scr_dyn_native_map_view_is(ptr, ptr)`);
+          const r = B.tmp();
+          B.line(
+            `${r} = call zeroext i1 @scr_dyn_native_map_view_is(ptr %d, ptr ${this.host.cstr(typeKey(t))})`,
+          );
+          B.terminate(`ret i1 ${r}`);
+          break;
+        }
         this.host.declare(`declare zeroext i1 @scr_dyn_native_collection_is(ptr, i32, ptr)`);
         const r = B.tmp();
         const typed =
@@ -1683,6 +1692,15 @@ export class LlDyn {
       }
       case "map":
       case "set": {
+        if (isMapValueView(t)) {
+          host.declare(`declare ptr @scr_dyn_native_map_view_check(ptr, ptr, ptr)`);
+          const r = B.tmp();
+          B.line(
+            `${r} = call ptr @scr_dyn_native_map_view_check(ptr %d, ptr ${host.cstr(typeKey(t))}, ptr %path)`,
+          );
+          B.terminate(`ret ptr ${r}`);
+          break;
+        }
         host.declare(`declare ptr @scr_dyn_native_collection_check(ptr, i32, ptr, ptr)`);
         const r = B.tmp();
         const typed =
@@ -4536,4 +4554,11 @@ export class LlDyn {
     );
     return name;
   }
+}
+
+/** A map<K, dyn> with a typed key: its checked extraction accepts any Map
+ * with K's key representation as a view of the same storage
+ * (scr_dyn_native_map_view_check). */
+function isMapValueView(t: IrType & { kind: "map" | "set" }): boolean {
+  return t.kind === "map" && t.key.kind !== "dyn" && t.value.kind === "dyn";
 }

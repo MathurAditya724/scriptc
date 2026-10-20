@@ -34,6 +34,8 @@ export class BlockBuilder {
   /** Entry slots whose loads and stores render volatile, so no LLVM pass
    * promotes them to SSA values (see volatileSlotAccess). */
   volatileSlots: ReadonlySet<string> | null = null;
+  /** Per-local answers of map<K, dyn> loops (mapOwnValuesSlot). */
+  readonly mapOwnValuesSlots = new Map<string, string>();
 
   constructor() {
     this.cur = { label: "entry", lines: [], term: null };
