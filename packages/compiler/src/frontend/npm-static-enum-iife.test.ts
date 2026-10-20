@@ -73,6 +73,27 @@ var Level;
   );
 });
 
+test("an ES module's exported enum keeps its export", () => {
+  const source = `export var Kind;
+(function (Kind) {
+    Kind["Identifier"] = "Identifier";
+    Kind[Kind["Zero"] = 0] = "Zero";
+})(Kind || (Kind = {}));
+`;
+  const out = rewrite(source);
+  expect(out).toContain(`export var Kind = { 0: "Zero", "Identifier": "Identifier", "Zero": 0 };`);
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-enum-iife-"));
+  dirs.push(dir);
+  writeFileSync(join(dir, "original.mjs"), source);
+  writeFileSync(join(dir, "rewritten.mjs"), out!);
+  const reader = (file: string) =>
+    `import { Kind } from "./${file}"; console.log(JSON.stringify(Kind), Object.keys(Kind).join(","));`;
+  writeFileSync(join(dir, "read-original.mjs"), reader("original.mjs"));
+  writeFileSync(join(dir, "read-rewritten.mjs"), reader("rewritten.mjs"));
+  expect(run(join(dir, "read-rewritten.mjs"))).toBe(run(join(dir, "read-original.mjs")));
+  expect(out!.split("\n").length).toBe(source.split("\n").length);
+});
+
 test("an enum the module does not export becomes a local object", () => {
   const out = expectSameExports(`"use strict";
 var Mode;
