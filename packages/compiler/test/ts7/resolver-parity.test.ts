@@ -22,6 +22,7 @@ import {
   resolveTypeDirective,
   setProjectPathMappings,
 } from "../../src/frontend/resolve.js";
+import { packageShimFor } from "../../src/frontend/package-shims.js";
 import { isRelativeSpecifier } from "../../src/frontend/workspace-registry.js";
 import { options5 } from "./harness.js";
 
@@ -143,8 +144,18 @@ test("relative and bare specifiers across the whole test tree resolve identicall
       // for bare specifiers are exactly the package.json-mediated
       // resolutions inside the project — resolveProjectImport must agree.
       const oursProj = resolveProjectImport(file, spec);
-      const theirsProj =
-        reference && !reference.isExternalLibraryImport ? reference.resolvedFileName : null;
+      // The deliberate package-shim delta: a package scriptc implements
+      // itself (package-shims.ts) answers its shim module here, where
+      // 5.9.3 answers the installed package as an external import; the
+      // installed package's answer is still compared below.
+      const shimmed = packageShimFor(file, spec) !== null;
+      const theirsProj = shimmed
+        ? reference && reference.isExternalLibraryImport
+          ? packageShimFor(file, spec)
+          : null
+        : reference && !reference.isExternalLibraryImport
+          ? reference.resolvedFileName
+          : null;
       if (oursProj !== theirsProj) {
         failures.push(`${file} '${spec}' (project): ours=${oursProj} ts5=${theirsProj}`);
       }
