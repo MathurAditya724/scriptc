@@ -306,9 +306,50 @@ static void scr_wasm_throw_trap(int code) {
 
 /* AddressSanitizer intercepts siglongjmp and warns when it cannot tell the
  * extent of the running stack, as on the runtime's async fibers. Sanitized
- * builds therefore jump with the compiler's builtin pair, which no runtime
- * intercepts, and unpoison the abandoned frames themselves. */
-#ifdef SCR_WASM_ASAN
+ * builds therefore jump with a pair no runtime intercepts and unpoison the
+ * abandoned frames themselves: the compiler's builtin pair, or on AArch64,
+ * where the compiler has no builtin setjmp lowering, the pair below. */
+#if defined(SCR_WASM_ASAN) && defined(__aarch64__)
+void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
+/* x19-x28, the frame and link registers, sp and d8-d15: the registers the
+ * AArch64 procedure call standard has a callee preserve. */
+typedef uint64_t ScrWasmJmp[21];
+__attribute__((naked, noinline, returns_twice)) static int scr_wasm_setjmp(ScrWasmJmp buf) {
+  __asm__ volatile("stp x19, x20, [x0, #0]\n"
+                   "stp x21, x22, [x0, #16]\n"
+                   "stp x23, x24, [x0, #32]\n"
+                   "stp x25, x26, [x0, #48]\n"
+                   "stp x27, x28, [x0, #64]\n"
+                   "stp x29, x30, [x0, #80]\n"
+                   "mov x16, sp\n"
+                   "str x16, [x0, #96]\n"
+                   "stp d8, d9, [x0, #104]\n"
+                   "stp d10, d11, [x0, #120]\n"
+                   "stp d12, d13, [x0, #136]\n"
+                   "stp d14, d15, [x0, #152]\n"
+                   "mov w0, #0\n"
+                   "ret\n");
+}
+/* Returns 1 from the scr_wasm_setjmp call that filled buf. */
+__attribute__((naked, noinline, noreturn)) static void scr_wasm_longjmp(ScrWasmJmp buf) {
+  __asm__ volatile("ldp x19, x20, [x0, #0]\n"
+                   "ldp x21, x22, [x0, #16]\n"
+                   "ldp x23, x24, [x0, #32]\n"
+                   "ldp x25, x26, [x0, #48]\n"
+                   "ldp x27, x28, [x0, #64]\n"
+                   "ldp x29, x30, [x0, #80]\n"
+                   "ldr x16, [x0, #96]\n"
+                   "mov sp, x16\n"
+                   "ldp d8, d9, [x0, #104]\n"
+                   "ldp d10, d11, [x0, #120]\n"
+                   "ldp d12, d13, [x0, #136]\n"
+                   "ldp d14, d15, [x0, #152]\n"
+                   "mov w0, #1\n"
+                   "ret\n");
+}
+#define SCR_WASM_SETJMP(buf) scr_wasm_setjmp(buf)
+#define SCR_WASM_LONGJMP(buf) scr_wasm_longjmp(buf)
+#elif defined(SCR_WASM_ASAN)
 void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 typedef void *ScrWasmJmp[5];
 #define SCR_WASM_SETJMP(buf) __builtin_setjmp(buf)

@@ -446,6 +446,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.poolFromBytes": "scr_buffer_from_bytes",
   "buffer.poolFromArray": "scr_buffer_from_arr",
   "buffer.poolFromDyn": "scr_buffer_from_dyn_pooled",
+  "buffer.poolFromDynRef": "scr_buffer_from_dyn_ref_pooled",
   "buffer.poolSize": "scr_buffer_pool_size",
   "buffer.setPoolSize": "scr_buffer_set_pool_size",
   "buffer.byteLenDyn": "scr_buffer_byte_length_dyn",

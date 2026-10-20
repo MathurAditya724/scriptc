@@ -9,6 +9,27 @@ import {
 } from "./ir.js";
 import { everyModuleNode } from "./traverse.js";
 
+/** The fixed-width Buffer read/write method names (both "UInt" and "Uint"
+ * spellings) a checked-dynamic method call routes to scr_bytes_dyn.c. */
+export const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
+  ["read", "write"].flatMap((rw) => [
+    ...["UInt", "Uint"].flatMap((u) =>
+      ["8", "16LE", "16BE", "32LE", "32BE"].map((w) => `${rw}${u}${w}`),
+    ),
+    ...[
+      "Int8",
+      "Int16LE",
+      "Int16BE",
+      "Int32LE",
+      "Int32BE",
+      "FloatLE",
+      "FloatBE",
+      "DoubleLE",
+      "DoubleBE",
+    ].map((n) => `${rw}${n}`),
+  ]),
+);
+
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // DEP0040 rides the dyn-async unit's warning machinery.
   "punycode.warn",
@@ -170,6 +191,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.errored",
   "stream.prop",
   "stream.dynNative",
+  "stream.dynNativePipe",
   "stream.pipeDyn",
   "stream.unpipeDyn",
   "stream.stdioWritable",
@@ -209,6 +231,7 @@ const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "rea
 /** Entry points that link the dyn-invoke unit. */
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynNative",
+  "stream.dynNativePipe",
   "stream.pipeDyn",
   "stream.unpipeDyn",
   "dyn.arrayProtoCall",
@@ -568,7 +591,14 @@ const RUNTIME_FEATURE_RULES = {
   dynTier: rule({ prefixes: ["js."] }),
   /** Checked-dynamic stream slots test values and pipe into JavaScript
    * stream objects (scr_stream_dyn.c). */
-  streamDyn: rule({ fns: ["stream.dynNative", "stream.pipeDyn", "stream.unpipeDyn"] }),
+  streamDyn: rule({
+    fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
+  }),
+  /** Fixed-width Buffer read/write methods called on checked-dynamic
+   * values (scr_bytes_dyn.c). */
+  dynBufferNum: rule({
+    expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_NUM_METHODS.has(node.method),
+  }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({ fns: ["buffer.byteLenValue", "buffer.allocValue", "fs.realpathValue"] }),
   /** The stream unit emits through the emitter unit, also when the
@@ -754,6 +784,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdioExtended: false,
     stream: false,
     streamDyn: false,
+    dynBufferNum: false,
     builtinValues: false,
     symbol: false,
     tls: false,

@@ -1673,6 +1673,31 @@ ScrStream *scr_dyn_builtin_stream_check(const ScrDyn *value, double kind) {
   return ok ? scr_stream_retain(s) : NULL;
 }
 
+/* stream.dynNative (checked-dynamic stream slots, scr_stream_dyn.c) in
+ * programs that link this unit: a constructor-function stream with the
+ * requested side (1 readable, 2 writable) answers its runtime stream (+1),
+ * so a pipe into it, and an unpipe of it, are the runtime's own, unless it
+ * overrides write() or end(), which the runtime's pipe would bypass: that
+ * one is NULL and pipes through its JavaScript members. Other values take
+ * scr_stream_dyn_native. Never throws. */
+ScrStream *scr_dyn_builtin_stream_dyn_native(const ScrDyn *value, double side) {
+  ScrStream *s = value->kind == SCR_DYN_OBJ ? bcs_of(value) : NULL;
+  if (s) {
+    const ScrVt *vt = s->vt;
+    bool readable = vt->pre >= scr_readable_vt.pre && vt->pre <= scr_readable_vt.post;
+    bool writable = vt->pre >= scr_writable_vt.pre && vt->pre <= scr_writable_vt.post;
+    bool duplex = vt->pre >= scr_duplex_vt.pre && vt->pre <= scr_duplex_vt.post;
+    if (!(duplex || (side == 1 ? readable : writable))) return NULL;
+    ScrDyn *object = (ScrDyn *)value;
+    if (side == 2 && (bcs_overrides(object, "write") || bcs_overrides(object, "end"))) {
+      if (scr_exc_pending()) scr_exc_clear();
+      return NULL;
+    }
+    return scr_stream_retain(s);
+  }
+  return scr_stream_dyn_native(value, side);
+}
+
 /* stream.unboxDyn (an untyped pipe destination or pipeline stage) in
  * programs that link this unit: a constructor-function stream answers its
  * runtime stream (+1), unless it overrides write() or end(), which the

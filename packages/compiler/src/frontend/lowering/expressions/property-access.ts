@@ -2268,75 +2268,9 @@ export function lowerIntrinsicProperty(
   return null;
 }
 
-/** The fill step of Buffer.alloc's value form: a number, or a string with
- * no encoding (utf8), fills the fresh buffer statically; any other fill
- * takes the checked-dynamic `fill` dispatch. */
-function bufferAllocFill(loc: SrcLoc): IrStmt {
-  const buf = varRef("buf", BYTES_U8, loc);
-  const fill = varRef("fill", DYN, loc);
-  const encoding = varRef("encoding", DYN, loc);
-  const test = (kind: "number" | "string" | "undefined", value: IrExpr): IrExpr => ({
-    kind: "dynTest",
-    test: kind,
-    value,
-    type: BOOL,
-    loc,
-  });
-  const fillStr: IrExpr = {
-    kind: "bytesIntrinsic",
-    method: "fillStr",
-    receiver: buf,
-    args: [
-      { kind: "dynCheck", value: fill, type: STRING, loc },
-      { kind: "strLit", value: "utf8", type: STRING, loc },
-    ],
-    type: BYTES_U8,
-    loc,
-  };
-  const fillNum: IrExpr = {
-    kind: "bytesIntrinsic",
-    method: "fillNum",
-    receiver: buf,
-    args: [{ kind: "dynCheck", value: fill, type: F64, loc }],
-    type: BYTES_U8,
-    loc,
-  };
-  const other: IrExpr = {
-    kind: "dynInvoke",
-    recv: { kind: "dynFrom", value: buf, type: DYN, loc },
-    method: "fill",
-    calleeName: "buf.fill",
-    args: [fill, encoding],
-    type: DYN,
-    loc,
-  };
-  return {
-    kind: "if",
-    cond: test("number", fill),
-    then: [{ kind: "exprStmt", expr: fillNum, loc }],
-    else_: [
-      {
-        kind: "if",
-        cond: {
-          kind: "logical",
-          op: "&&",
-          left: test("string", fill),
-          right: test("undefined", encoding),
-          type: BOOL,
-          loc,
-        },
-        then: [{ kind: "exprStmt", expr: fillStr, loc }],
-        else_: [{ kind: "exprStmt", expr: other, loc }],
-        loc,
-      },
-    ],
-    loc,
-  };
-}
-
 /** Buffer.alloc as a function value (`var alloc = Buffer.alloc` in
- * tar-stream): the checked allocation, then `fill(fill, encoding)` on the
- * fresh buffer when a fill is given, which is how Node's alloc fills. */
+ * tar-stream): the runtime checks the size, allocates and fills with
+ * `fill` and `encoding` as Node's alloc does. */
 function bufferAllocValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const name = "%builtin.Buffer.alloc";
   if (!lowerer.builtinCallableValueFns.has(name)) {
@@ -2346,39 +2280,20 @@ function bufferAllocValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
       name,
       params,
       returnType: BYTES_U8,
-      locals: [
-        ...params.map((p) => ({ id: p.localId, name: p.name, type: DYN, mutable: false })),
-        { id: "buf", name: "buf", type: BYTES_U8, mutable: false },
-      ],
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: DYN, mutable: false })),
       loc,
       body: [
         {
-          kind: "varDecl",
-          localId: "buf",
-          init: {
+          kind: "return",
+          value: {
             kind: "libCall",
             fn: "buffer.allocValue",
-            args: [varRef("size", DYN, loc)],
+            args: params.map((p) => varRef(p.localId, DYN, loc)),
             type: BYTES_U8,
             loc,
           },
           loc,
         },
-        {
-          kind: "if",
-          cond: {
-            kind: "dynTest",
-            test: "undefined",
-            negated: true,
-            value: varRef("fill", DYN, loc),
-            type: BOOL,
-            loc,
-          },
-          then: [bufferAllocFill(loc)],
-          else_: null,
-          loc,
-        },
-        { kind: "return", value: varRef("buf", BYTES_U8, loc), loc },
       ],
     });
   }

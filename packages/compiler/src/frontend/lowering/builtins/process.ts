@@ -266,6 +266,58 @@ export function isOptionalProcessStreamProperty(
   return lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "procStream";
 }
 
+/** The process.versions entries @types/node declares as plain strings
+ * that the runtime's versions object (node and openssl only) lacks. */
+const ABSENT_DECLARED_VERSIONS: ReadonlySet<string> = new Set([
+  "http_parser",
+  "v8",
+  "ares",
+  "uv",
+  "zlib",
+  "modules",
+]);
+
+/** A process.versions member read whose declaration promises a string the
+ * runtime does not have. @types/node declares the entries above as plain
+ * strings, so a checked string read would throw on the absent entry and
+ * equality with undefined would fold to false. These reads keep the
+ * undefined arm, like the optional stream properties. The shipped fallback
+ * types declare other entries `string | undefined` and never reach this.
+ * An element read with a computed key qualifies when the checker types it
+ * as a plain string. */
+export function isOptionalProcessVersionsRead(lowerer: Lowerer, node: ts.Node): boolean {
+  let key: string | null;
+  if (ts.isPropertyAccessExpression(node)) key = node.name.text;
+  else if (ts.isElementAccessExpression(node))
+    key = ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text : null;
+  else return false;
+  if (key !== null && !ABSENT_DECLARED_VERSIONS.has(key)) return false;
+  if (!programMentionsVersions(lowerer)) return false;
+  const symbol = lowerer.typeOf(node.expression).getSymbol();
+  return (
+    symbol !== undefined && ts.symbolName(symbol) === "ProcessVersions" &&
+    symbol.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+    ) &&
+    lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "string"
+  );
+}
+
+const mentionsVersions = new WeakMap<Lowerer, boolean>();
+
+/** Whether any implementation source spells `versions`. Programs that
+ * never do skip the per-read checker queries above entirely. */
+function programMentionsVersions(lowerer: Lowerer): boolean {
+  let known = mentionsVersions.get(lowerer);
+  if (known === undefined) {
+    known = lowerer.program
+      .getImplementationSourceFiles()
+      .some((sf) => !sf.isDeclarationFile && sf.text.includes("versions"));
+    mentionsVersions.set(lowerer, known);
+  }
+  return known;
+}
+
 export function lowerProcessStreamProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,

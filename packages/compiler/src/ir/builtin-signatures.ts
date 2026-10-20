@@ -2693,6 +2693,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * (1) or writable (2) side — or null for any other value. Never throws;
    * the result union is `%Readable | null` or `%Writable | null`. */
   "stream.dynNative": { argTypes: [DYN, F64], result: VOID },
+  /** stream.dynNative for a pipe or unpipe destination: also a
+   * constructor-function stream's runtime stream, in programs that link
+   * that unit, unless it overrides write() or end(). */
+  "stream.dynNativePipe": { argTypes: [DYN, F64], result: VOID },
   /** readable.pipe(destination, end) into a checked-dynamic destination
    * that is not a native stream: [source, the source boxed, destination,
    * end]. Node's pipe listener protocol over the destination's members
@@ -2872,8 +2876,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * allocUnsafeSlow never pool. The size forms validate like Node
    * (ERR_OUT_OF_RANGE). poolSize reads and writes Buffer.poolSize. */
   "buffer.alloc": { argTypes: [F64], result: BYTES_U8 },
-  /** Buffer.alloc as a function value: the size arrives unchecked. */
-  "buffer.allocValue": { argTypes: [DYN], result: BYTES_U8 },
+  /** Buffer.alloc as a function value: the size, fill and encoding arrive
+   * unchecked, and the runtime fills as Node's alloc does. */
+  "buffer.allocValue": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
   "buffer.allocUnsafe": { argTypes: [F64], result: BYTES_U8 },
   "buffer.allocUnsafeSlow": { argTypes: [F64], result: BYTES_U8 },
   "buffer.poolFromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
@@ -2881,6 +2886,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "buffer.poolFromBytes": { argTypes: [BYTES_U8], result: BYTES_U8 },
   "buffer.poolFromArray": { argTypes: [arrayOf(F64)], result: BYTES_U8 },
   "buffer.poolFromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
+  /** poolFromDyn that also copies an array crossing by reference. */
+  "buffer.poolFromDynRef": { argTypes: [DYN, STRING], result: BYTES_U8 },
   "buffer.poolSize": { argTypes: [], result: F64 },
   "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like

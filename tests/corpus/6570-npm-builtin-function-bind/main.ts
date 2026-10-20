@@ -8,7 +8,7 @@
 import truncate from 'truncate-utf8-bytes';
 import { report, badLength } from 'bound-builtins';
 import realpath from 'fs.realpath';
-import { report as valueForms } from 'value-forms';
+import { report as valueForms, more as moreValueForms } from 'value-forms';
 
 console.log(truncate('hello world', 5), truncate('héllo', 2), truncate('héllo', 3));
 console.log(JSON.stringify(truncate('a😀b', 3)), JSON.stringify(truncate('a😀b', 5)), truncate('short', 99));
@@ -23,3 +23,4 @@ console.log(badLength());
 console.log(realpath.realpathSync('/'), realpath.sync('/'));
 realpath('/', (error, resolved) => console.log('async', error, resolved));
 for (const value of valueForms()) console.log(value);
+for (const value of moreValueForms()) console.log(value);
