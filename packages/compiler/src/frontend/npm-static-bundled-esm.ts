@@ -664,7 +664,8 @@ export function lowerBundledEsmInits(
         text: `(${init}${getterText(value)})`,
       });
     }
-    deadDeclarators.add(d).add(memoDecl);
+    deadDeclarators.add(d);
+    deadDeclarators.add(memoDecl);
     loaderSpans.push({ start: d.getStart(sf), end: d.getEnd() });
     lowered.add(target);
   }
