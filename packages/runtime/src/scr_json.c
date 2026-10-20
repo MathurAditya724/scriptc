@@ -3456,10 +3456,19 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
 /* Shared view metadata and indexed reads for both compiler backends. */
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
   ScrBytes *bytes = value->v.bytes;
-  if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return scr_dyn_new_num(scr_bytes_len(bytes));
   if (key->len == 10 && memcmp(key->data, "byteLength", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_len(bytes));
   if (key->len == 10 && memcmp(key->data, "byteOffset", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_offset(bytes));
   if (key->len == 6 && memcmp(key->data, "buffer", 6) == 0) return scr_array_buffer_from_bytes(bytes);
+  if (bytes->is_data_view) {
+    /* A DataView has no length or indexed elements. */
+    if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
+      static const char message[] = "DataView's constructor through unknown is not supported yet";
+      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+      return NULL;
+    }
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return scr_dyn_new_num(scr_bytes_len(bytes));
   if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
     if (!value->buffer) return scr_bytes_constructor_for(bytes->elem);
     /* Buffer retains its separate builtin identity. */
@@ -6364,7 +6373,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
     ScrJsonBuf b;
     scr_jb_init(&b);
     scr_jb_puts(&b, "[object ");
-    scr_jb_puts(&b, scr_bytes_elem_name(d->v.bytes->elem));
+    scr_jb_puts(&b, d->v.bytes->is_data_view ? "DataView" : scr_bytes_elem_name(d->v.bytes->elem));
     scr_jb_putc(&b, ']');
     return scr_jb_finish(&b);
   }
@@ -7059,6 +7068,8 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     return d->v.symbol.render(d->v.symbol.value);
   case SCR_DYN_BYTES:
     if (d->buffer) return scr_bytes_to_str(d->v.bytes, enc);
+    /* DataView has no toString of its own: Object.prototype.toString. */
+    if (d->v.bytes->is_data_view) return scr_str_new("[object DataView]", 17);
     {
       ScrStr *separator = scr_str_new(",", 1);
       ScrStr *out = scr_bytes_join(d->v.bytes, separator);
@@ -8211,7 +8222,7 @@ static const char *scr_dyn_kind_name(const ScrDyn *d) {
   case SCR_DYN_ARR: return "array";
   case SCR_DYN_OBJ: return "object";
   case SCR_DYN_UNDEF: return "undefined";
-  case SCR_DYN_BYTES: return scr_bytes_elem_name(d->v.bytes->elem);
+  case SCR_DYN_BYTES: return d->v.bytes->is_data_view ? "DataView" : scr_bytes_elem_name(d->v.bytes->elem);
   case SCR_DYN_FUNC: return "function";
   case SCR_DYN_HANDLE: return scr_dyn_handle_cls(d); /* "got IncomingMessage" */
   case SCR_DYN_PROMISE: return "Promise"; /* "got Promise" */
