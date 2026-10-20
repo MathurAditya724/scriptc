@@ -1239,11 +1239,108 @@ export function lowerPropertyAccessExpr(
     const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
     return mapped && mapped.kind !== "void" ? lowerer.coerceInto(expr, read, mapped) : read;
   }
+  const asserted = assertedMemberRead(lowerer, expr, recvLowered, loc);
+  if (asserted) return asserted;
   lowerer.unsupported(
     "SC1090",
     expr,
     `reading '${expr.name.text}' from a value of type '${lowerer.checker.typeToString(lowerer.typeOf(expr.expression))}'`,
   );
+}
+
+/** `(source as { repoName: string }).repoName` where the assertion names a
+ * member some arms of the stored union of records do not declare: Node
+ * reads the property off whichever object it is, so arms that declare it
+ * answer their slot, and the others answer undefined (native records are
+ * closed, so they cannot hold it). The result keeps that undefined arm
+ * whatever the assertion claims; a consumer that needs the asserted type
+ * checks it like any other narrowing. The arms that declare the member
+ * must agree on its type. Null when the receiver is not such an
+ * assertion over records, or no arm declares the member. */
+function assertedMemberRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  recv: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  let receiverNode: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(receiverNode)) receiverNode = receiverNode.expression;
+  if (!ts.isAsExpression(receiverNode) && !ts.isTypeAssertion(receiverNode)) return null;
+  if (recv.type.kind !== "union") return null;
+  const unionId = recv.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  const name = expr.name.text;
+  let resultType: IrType | null = null;
+  let records = 0;
+  const declaring: { tag: number; shapeId: string; type: IrType }[] = [];
+  const units: number[] = [];
+  for (let tag = 0; tag < arms.length; tag++) {
+    const arm = arms[tag]!;
+    if (isUnitType(arm)) {
+      units.push(tag);
+      continue;
+    }
+    if (arm.kind !== "record") return null;
+    records++;
+    const shape = lowerer.shapes.get(arm.shapeId);
+    if (!shape || shape.tuple || shape.indexValue) return null;
+    const field = shape.fields.find((f) => f.name === name);
+    if (!field) continue;
+    // The declaring arms agree up to an undefined arm (`string` beside
+    // `string | undefined`).
+    const armResult = lowerer.withUndefinedArmOf(field.type);
+    if (!armResult || (resultType && !typeEquals(resultType, armResult))) return null;
+    resultType = armResult;
+    declaring.push({ tag, shapeId: arm.shapeId, type: field.type });
+  }
+  if (!resultType || declaring.length === records) return null;
+  const stable = lowerer.declareHiddenLocal("%assertedRecv", recv.type);
+  const ref = (): IrExpr => ({ kind: "varRef", localId: stable.id, type: recv.type, loc });
+  let result: IrExpr | null = lowerer.wrappedUndefined(resultType, loc);
+  if (!result) return null;
+  // A unit arm the checker narrowed away reads like Node would read it.
+  for (const tag of units) {
+    const unit = arms[tag]!.kind === "nullT" ? "null" : "undefined";
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value: ref(), type: BOOL, loc },
+      then: nodeThrowExpr(
+        1,
+        "",
+        `Cannot read properties of ${unit} (reading '${name}')`,
+        resultType,
+        loc,
+      ),
+      else_: result,
+      type: resultType,
+      loc,
+    };
+  }
+  for (const { tag, shapeId, type: fieldType } of declaring) {
+    const read: IrExpr = {
+      kind: "recordGet",
+      obj: { kind: "unionNarrow", unionId, tag, value: ref(), type: arms[tag]!, loc },
+      shapeId,
+      field: name,
+      type: fieldType,
+      loc,
+    };
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value: ref(), type: BOOL, loc },
+      then: lowerer.coerceToExpected(read, resultType),
+      else_: result,
+      type: resultType,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stable.id, init: recv, loc }],
+    result,
+    type: resultType,
+    loc,
+  };
 }
 
 function importMetaProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
@@ -2568,6 +2665,27 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
             loc: locOf(expr),
           };
       }
+      // A member the checker declares on the receiver, stored in a pure
+      // index-signature record (an object literal that spread one, see
+      // dictSpreadLiteralShape): the key is always present, so the keyed
+      // read answers the member through the slot type.
+      if (
+        actual?.type.kind === "record" &&
+        shape.fields.length === 0 &&
+        declaredMemberOf(lowerer, expr.expression, expr.name.text)
+      ) {
+        return lowerer.maybeNarrow(
+          {
+            kind: "recordKeyGet",
+            obj: actual,
+            shapeId: actual.type.shapeId,
+            key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+            type: shape.indexValue,
+            loc: locOf(expr),
+          },
+          expr,
+        );
+      }
       lowerer.unsupported(
         "SC1090",
         expr,
@@ -3548,4 +3666,11 @@ function jsFunctionExpandoMember(lowerer: Lowerer, access: ts.PropertyAccessExpr
       );
     })
   );
+}
+
+/** Whether the checker declares `name` as a property of `receiver`'s type
+ * (as opposed to reading it through an index signature). */
+export function declaredMemberOf(lowerer: Lowerer, receiver: ts.Expression, name: string): boolean {
+  const symbol = lowerer.checker.getPropertyOfType(lowerer.typeOf(receiver), name);
+  return !!symbol && symbol.declarations.length > 0;
 }

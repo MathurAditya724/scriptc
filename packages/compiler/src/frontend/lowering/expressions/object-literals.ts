@@ -640,6 +640,74 @@ function literalUnionArmOf(
 /** Object spread treats nullish sources as empty. Preserve evaluation once,
  * then turn `Record<K, V> | undefined` into either that record or a fresh
  * empty record of the same represented shape. */
+/** `{ ...unknownValue }` into a pure index-signature record (headers
+ * forwarded from an untyped parameter): Node copies the source's own
+ * enumerable keys in order, and spreads nothing for null, undefined,
+ * numbers and booleans. An object source converts through the checked
+ * extraction into the target's own shape, which keeps its keys and order
+ * and checks each value against the slot type (a value outside it throws
+ * the catchable TypeError of every unknown-to-typed conversion). A string
+ * source takes the same extraction, which rejects it, rather than
+ * silently dropping the characters Node would spread. Null for other
+ * sources and targets. */
+function dynIndexSpreadSource(
+  lowerer: Lowerer,
+  source: IrExpr,
+  target: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (source.type.kind !== "dyn" || target.kind !== "record") return null;
+  const shape = lowerer.shapes.get(target.shapeId);
+  if (!shape?.indexValue || shape.fields.length > 0 || shape.tuple) return null;
+  if (
+    !canDynCheckTo(
+      target,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return null;
+  const local = lowerer.declareHiddenLocal("%dynSpread", DYN);
+  const ref = varRef(local.id, DYN, loc);
+  const test = (kind: "object" | "string" | "nullish"): IrExpr => ({
+    kind: "dynTest",
+    test: kind,
+    value: ref,
+    type: BOOL,
+    loc,
+  });
+  const extract: IrExpr = { kind: "dynCheck", value: ref, type: target, loc };
+  const empty: IrExpr = { kind: "recordLit", fields: [], type: target, loc };
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: source, loc }],
+    result: {
+      kind: "ternary",
+      cond: test("nullish"),
+      then: empty,
+      else_: {
+        kind: "ternary",
+        cond: {
+          kind: "logical",
+          op: "||",
+          left: test("object"),
+          right: test("string"),
+          type: BOOL,
+          loc,
+        },
+        then: extract,
+        else_: empty,
+        type: target,
+        loc,
+      },
+      type: target,
+      loc,
+    },
+    type: target,
+    loc,
+  };
+}
+
 function lowerOptionalIndexSpreadSource(
   lowerer: Lowerer,
   source: IrExpr,
@@ -1372,7 +1440,7 @@ export function lowerObjectLiteral(
             vNode,
           );
           contributors.push({
-            kind: "field",
+            kind: "condField",
             name: csProp.name.text,
             value: {
               kind: "ternary",
@@ -1387,6 +1455,7 @@ export function lowerObjectLiteral(
         }
         let src = lowerer.lowerExpr(prop.expression);
         src = lowerOptionalIndexSpreadSource(lowerer, src, locOf(prop)) ?? src;
+        src = dynIndexSpreadSource(lowerer, src, type, locOf(prop)) ?? src;
         if (src.type.kind !== "record") {
           lowerer.unsupported(
             "SC1090",

@@ -2573,6 +2573,24 @@ export function symbolFieldTarget(
   };
 }
 
+/** `return Promise.reject(reason)` in an async function: the checker's
+ * context is the awaited return type (or its union with PromiseLike), not
+ * a promise, but the async function adopts the returned promise, so the
+ * promise of its own result type is the honest type. Null elsewhere. */
+function asyncReturnPromise(lowerer: Lowerer, call: ts.CallExpression): IrType | null {
+  if (lowerer.ctx.isAsync !== true || lowerer.ctx.generator) return null;
+  let node: ts.Node = call;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  const returned =
+    (ts.isReturnStatement(parent) && parent.expression === node) ||
+    (ts.isArrowFunction(parent) && parent.body === node);
+  if (!returned) return null;
+  const ret = lowerer.ctx.returnType;
+  if (ret.kind === "void" || ret.kind === "promise") return null;
+  return { kind: "promise", inner: ret };
+}
+
 /** `Promise.reject(reason)` on THE Promise global: a pre-rejected
  * promise. The reason is pinned to the Error hierarchy (the executor
  * reject parameter's contract — rejection payloads share the
@@ -2604,7 +2622,9 @@ export function lowerPromiseRejectCall(
   // A maybe-promise context (`return Promise.reject(e)` from a function
   // returning `T | Promise<T>`) names its one promise arm.
   const maybePromise = contextual ? maybePromiseUnionOf(lowerer, contextual) : null;
-  const type = maybePromise ? maybePromise.promise : contextual;
+  const type = maybePromise
+    ? maybePromise.promise
+    : (asyncReturnPromise(lowerer, call) ?? contextual);
   const reasonNode = call.arguments.nodes[0]!;
   // A CHECKED-DYNAMIC reason (`Promise.reject(value)` where value rode
   // an untyped binding — the tracingChannel suite's shape): the checked-dynamic tree

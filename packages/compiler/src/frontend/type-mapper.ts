@@ -5860,6 +5860,8 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (inner.indexValue === undefined || inner.indexValue.kind === "dyn")
     )
       return DYN;
+    const merged = dictSpreadLiteralShape(widened, inner, ctx);
+    if (merged !== null) return { kind: "record", shapeId: merged };
     const refined = refinedConstituentShape(widened, inner, ctx);
     if (refined !== null) return { kind: "record", shapeId: refined };
     return {
@@ -5869,6 +5871,178 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   } finally {
     shapes.inProgress.delete(widened);
   }
+}
+
+/** The type of an object literal that spreads an index-signature record
+ * (`{ ...tags, bucket: b, status }`, the metric-tags idiom). The checker
+ * drops the signature and types the literal by its explicit members only,
+ * but at run time the object holds every key the spread copied, in one
+ * insertion order. Such a literal maps to the pure index-signature record
+ * whose slot joins the spread slots and the member types, so the merge,
+ * every enumeration and keyed writes see the same keys Node does. A
+ * member read still answers its member type: members written after the
+ * spreads always win, and a member written before a spread must have that
+ * spread's slot type, so an override cannot change its type. The join
+ * covers scalar and unit types only; other literals keep their shape and
+ * the spread fence. */
+function dictSpreadLiteralShape(
+  widened: ts.Type,
+  parts: RecordShapeParts,
+  ctx: TypeMapperCtx,
+): string | null {
+  if (parts.indexValue) return null;
+  const symbol = widened.getSymbol();
+  if (!symbol || (symbol.flags & ts.SymbolFlags.ObjectLiteral) === 0) return null;
+  const literal = symbol.declarations.find((d): d is ts.ObjectLiteralExpression =>
+    ts.isObjectLiteralExpression(d),
+  );
+  if (!literal) return null;
+  const { checker, shapes, unions } = ctx;
+  const props = literal.properties.nodes;
+  if (!props.some((p) => ts.isSpreadAssignment(p))) return null;
+  // Decide on checker types alone before mapping anything: object literals
+  // with ordinary spreads are everywhere, and mapping their sources here
+  // would intern types out of their usual order.
+  // A literal written into a typed index-signature slot already lowers into
+  // it (the merge into the contextual record); its own type keeps its
+  // mapping.
+  const contextualRaw = checker.getContextualType(literal);
+  const contextual = contextualRaw ? checker.getNonNullableType(contextualRaw) : undefined;
+  // An unknown-valued slot (`Record<string, unknown>`) is the checked-dynamic
+  // value, which has no typed merge of its own: the literal still needs its
+  // own record.
+  if (
+    contextual &&
+    checker
+      .getIndexInfosOfType(contextual)
+      .some((info) => (info.valueType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0)
+  )
+    return null;
+  const kinds = props.map((p) =>
+    ts.isSpreadAssignment(p) ? spreadSourceKindTs(checker, p.expression) : "member",
+  );
+  if (kinds.some((k) => k === null) || !kinds.includes("dict")) return null;
+  const dictSlotOf = (e: ts.Expression): IrType | null => {
+    const t = checker.getNonNullableType(checker.getTypeAtLocation(e));
+    if (checker.getPropertiesOfType(t).length === 0) {
+      const infos = checker.getIndexInfosOfType(t);
+      if (infos.length !== 1 || !(infos[0]!.keyType.flags & ts.TypeFlags.String)) return null;
+      return mapType(infos[0]!.valueType, ctx);
+    }
+    // Another such literal's type (`{ ...tags, repo }` over a binding
+    // initialized by `{ ...base, plan }`) is stored as the same kind of
+    // pure index-signature record.
+    if (t === widened) return null;
+    const mapped = mapType(t, ctx);
+    const shape = mapped?.kind === "record" ? shapes.get(mapped.shapeId) : undefined;
+    return shape?.indexValue && shape.fields.length === 0 && !shape.tuple ? shape.indexValue : null;
+  };
+  const arms = new Map<string, IrType>();
+  const addArms = (t: IrType): boolean => {
+    const list = t.kind === "union" ? (unions.get(t.unionId)?.arms ?? []) : [t];
+    for (const arm of list) {
+      if (!OVERLOAD_JOIN_SCALARS.has(arm.kind)) return false;
+      arms.set(typeKey(arm), arm);
+    }
+    return true;
+  };
+  const before: string[] = [];
+  for (const [i, p] of props.entries()) {
+    // A fixed-shape or conditional spread contributes its own members,
+    // which the checker already types exactly (they are in `parts`).
+    if (kinds[i] === "record") {
+      // Its members may be overwritten by a later dict spread, like members
+      // written before one.
+      before.push(...spreadMemberNamesTs(checker, (p as ts.SpreadAssignment).expression));
+      continue;
+    }
+    if (ts.isSpreadAssignment(p)) {
+      const slot = dictSlotOf(p.expression);
+      if (!slot || !addArms(slot)) return null;
+      // A member written before this spread may be overwritten by it.
+      for (const name of before) {
+        const field = parts.fields.find((f) => f.name === name);
+        if (!field || !typeEquals(field.type, slot)) return null;
+      }
+      continue;
+    }
+    if (!(ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p))) return null;
+    const name = p.name;
+    if (!(ts.isIdentifier(name) || ts.isStringLiteral(name))) return null;
+    before.push(name.text);
+  }
+  if (parts.fields.some((f) => f.name.startsWith("%"))) return null;
+  for (const field of parts.fields) if (!addArms(field.type)) return null;
+  if (![...arms.values()].some((arm) => !isUnitType(arm))) return null;
+  const sorted = [...arms.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const slot: IrType =
+    sorted.length === 1 ? sorted[0]! : { kind: "union", unionId: unions.intern(sorted) };
+  return shapes.intern([], false, slot, []);
+}
+
+/** How a spread source contributes to dictSpreadLiteralShape, judged on
+ * checker types only: "dict" for a pure string index signature or another
+ * literal that spreads one, "record" for a fixed object shape or a
+ * conditional spread (`...(c && { k: v })`), null otherwise. */
+function spreadSourceKindTs(checker: ts.TypeChecker, e: ts.Expression): "dict" | "record" | null {
+  if (dictSpreadSourceTs(checker, e, 0)) return "dict";
+  let inner = e;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (
+    (ts.isBinaryExpression(inner) &&
+      inner.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) ||
+    ts.isConditionalExpression(inner)
+  )
+    return "record";
+  const t = checker.getNonNullableType(checker.getTypeAtLocation(e));
+  if ((t.flags & ts.TypeFlags.Object) === 0 || t.isUnionType()) return null;
+  if (checker.getIndexInfosOfType(t).length > 0) return null;
+  if (checker.getCallSignatures(t).length > 0 || checker.getConstructSignatures(t).length > 0)
+    return null;
+  const symbol = t.getSymbol();
+  if (symbol && (symbol.flags & ts.SymbolFlags.Class) !== 0) return null;
+  return "record";
+}
+
+/** The member names a fixed-shape or conditional spread contributes. */
+function spreadMemberNamesTs(checker: ts.TypeChecker, e: ts.Expression): string[] {
+  let inner = e;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  const literals: ts.Expression[] = [];
+  if (ts.isBinaryExpression(inner)) literals.push(inner.right);
+  else if (ts.isConditionalExpression(inner)) literals.push(inner.whenTrue, inner.whenFalse);
+  else literals.push(inner);
+  const names: string[] = [];
+  for (const l of literals) {
+    const t = checker.getNonNullableType(checker.getTypeAtLocation(l));
+    for (const property of checker.getPropertiesOfType(t)) names.push(property.name);
+  }
+  return names;
+}
+
+/** A spread source the checker types as a pure string index signature,
+ * or as another object literal that spreads one (dictSpreadLiteralShape),
+ * judged on checker types only. */
+function dictSpreadSourceTs(checker: ts.TypeChecker, e: ts.Expression, depth: number): boolean {
+  const t = checker.getNonNullableType(checker.getTypeAtLocation(e));
+  if (checker.getPropertiesOfType(t).length === 0) {
+    const infos = checker.getIndexInfosOfType(t);
+    return infos.length === 1 && (infos[0]!.keyType.flags & ts.TypeFlags.String) !== 0;
+  }
+  if (depth > 4) return false;
+  const symbol = t.getSymbol();
+  if (!symbol || (symbol.flags & ts.SymbolFlags.ObjectLiteral) === 0) return false;
+  const literal = symbol.declarations.find((d): d is ts.ObjectLiteralExpression =>
+    ts.isObjectLiteralExpression(d),
+  );
+  if (!literal) return false;
+  const spreads = literal.properties.nodes.filter((p) => ts.isSpreadAssignment(p));
+  return (
+    spreads.length > 0 &&
+    spreads.every((p) =>
+      dictSpreadSourceTs(checker, (p as ts.SpreadAssignment).expression, depth + 1),
+    )
+  );
 }
 
 /** A refinement intersection (`Expr & { kind: "mul" }`, which the checker
