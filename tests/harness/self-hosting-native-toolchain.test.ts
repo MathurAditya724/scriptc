@@ -122,6 +122,7 @@ for (const backend of ["llvm"] as const) {
         compiler_version: manifest.version,
         target: target.name,
         ts7: "ts7",
+        tsc_ts: "tsc-ts",
         llvm_package: "llvm",
         runtime_pack: "pack",
         linker: "ld",

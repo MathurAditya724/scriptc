@@ -208,3 +208,30 @@ test("JSDoc callable types cannot replace method body views", () => {
     expect(member.body?.parent).toBe(member);
   }
 });
+
+test("a parser starts a new server once it has parsed its source budget, and earlier results stay usable", () => {
+  const directory = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-source-parser-"),
+  );
+  directories.push(directory);
+  const servers: Ts7Api[] = [];
+  const parser = new Ts7SourceParser(
+    (options) => {
+      const api = new Ts7Api(options);
+      servers.push(api);
+      return api;
+    },
+    directory,
+    64,
+  );
+  parsers.push(parser);
+  const first = parser.parse("a.ts", `export const a = ${"1 + ".repeat(20)}1;`, "ts");
+  expect(servers).toHaveLength(1);
+  const second = parser.parse("b.ts", "export const b = 2;", "ts");
+  expect(servers).toHaveLength(2);
+  const third = parser.parse("b.ts", "export const b = 3;", "ts");
+  expect(servers).toHaveLength(2);
+  expect(first.statements.nodes[0]!.getText()).toBe(`export const a = ${"1 + ".repeat(20)}1;`);
+  expect(second.statements.nodes[0]!.getText()).toBe("export const b = 2;");
+  expect(third.statements.nodes[0]!.getText()).toBe("export const b = 3;");
+});

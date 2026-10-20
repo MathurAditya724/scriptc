@@ -38,7 +38,14 @@ import {
   typeEquals,
   typeKey,
 } from "../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../program.js";
+import {
+  cjsExportAssignmentOf,
+  cjsExportDiscardReason,
+  cjsExportTargetLiteral,
+  isJsSourceFile,
+  locOf,
+} from "../program.js";
+import { npmStaticLexerVisibleNames } from "../npm-static.js";
 import {
   type CompoundOp,
   NARROW_FIRST,
@@ -84,6 +91,8 @@ import { lowerElementCompoundParts } from "./expressions/element-access.js";
 export {
   DEFERRED_READ_MESSAGE,
   abstractPropertyDeclOf,
+  builtinFunctionValue,
+  builtinGlobalValue,
   fieldGetExpr,
   fieldTarget,
   isMatchSliceType,
@@ -92,6 +101,7 @@ export {
   lowerIntrinsicProperty,
   lowerUnionProperty,
   matchResultNamedGroupsOf,
+  primitiveConstructorOr,
 } from "./expressions/property-access.js";
 export {
   lowerAsExpression,
@@ -2057,6 +2067,102 @@ function aliasTypeofArmOf(
   return null;
 }
 
+/** The names Node's ES-module loader copies off a CommonJS module that a
+ * bundler rewrite spells as accessors (npmStaticLexerVisibleNames), with
+ * their getters in that order; empty for every other module. */
+function lexerVisibleAccessors(dep: ts.SourceFile): ts.GetAccessorDeclaration[] {
+  const names = npmStaticLexerVisibleNames(dep.fileName);
+  if (names.length === 0) return [];
+  let table: ts.ObjectLiteralExpression | null = null;
+  for (const stmt of dep.statements.nodes) {
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs?.kind === "table" && cjsExportDiscardReason(stmt) === null) {
+      table = cjsExportTargetLiteral(cjs.expr.right, dep);
+    }
+  }
+  if (table === null) return [];
+  const getters = new Map<string, ts.GetAccessorDeclaration>();
+  for (const p of table.properties.nodes) {
+    if (ts.isGetAccessorDeclaration(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)))
+      getters.set(p.name.text, p);
+  }
+  return names.flatMap((n) => {
+    const g = getters.get(n);
+    return g === undefined ? [] : [g];
+  });
+}
+
+/** The module global holding the value an accessor export had when an
+ * ES-module importer first linked its CommonJS module. */
+export function cjsAccessorSnapshotOf(
+  lowerer: Lowerer,
+  getter: ts.GetAccessorDeclaration,
+): { id: string; type: IrType } | null {
+  const hit = lowerer.cjsAccessorSnapshots.get(getter);
+  if (hit !== undefined) return hit;
+  if (!lexerVisibleAccessors(getter.getSourceFile()).includes(getter)) return null;
+  const call = cjsAccessorCall(lowerer, getter, locOf(getter));
+  if (call === null) return null;
+  const snapshot = { id: `%g.cjsSnapshot.${lowerer.cjsAccessorSnapshots.size}`, type: call.type };
+  lowerer.globalsList.push({
+    id: snapshot.id,
+    name: "%cjsSnapshot",
+    type: call.type,
+    mutable: true,
+  });
+  lowerer.cjsAccessorSnapshots.set(getter, snapshot);
+  return snapshot;
+}
+
+/** Node's ES-module loader reads every lexer-visible export of a CommonJS
+ * module once, when an importer first links it, and the import bindings
+ * keep those values. For the accessors a bundler rewrite introduced, the
+ * importer's link point runs each getter once, in the lexer's order, and
+ * stores the values its bindings read. Empty when the module has none. */
+export function cjsAccessorSnapshotStores(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  loc: SrcLoc,
+): IrStmt[] {
+  const getters = lexerVisibleAccessors(dep);
+  if (getters.length === 0) return [];
+  let readyId = lowerer.cjsSnapshotReady.get(dep);
+  if (readyId === undefined) {
+    readyId = `%g.cjsSnapshotReady.${lowerer.cjsSnapshotReady.size}`;
+    lowerer.globalsList.push({ id: readyId, name: "%cjsSnapshotReady", type: BOOL, mutable: true });
+    lowerer.cjsSnapshotReady.set(dep, readyId);
+  }
+  const stores: IrStmt[] = [
+    {
+      kind: "assign",
+      localId: readyId,
+      value: { kind: "boolLit", value: true, type: BOOL, loc },
+      loc,
+    },
+  ];
+  for (const getter of getters) {
+    const snapshot = cjsAccessorSnapshotOf(lowerer, getter);
+    const call = cjsAccessorCall(lowerer, getter, loc);
+    if (snapshot === null || call === null) return [];
+    stores.push({ kind: "assign", localId: snapshot.id, value: call, loc });
+  }
+  return [
+    {
+      kind: "if",
+      cond: {
+        kind: "unary",
+        op: "!",
+        operand: { kind: "varRef", localId: readyId, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      },
+      then: stores,
+      else_: null,
+      loc,
+    },
+  ];
+}
+
 /** The interned lifted-getter call both accessor-read paths share. */
 export function cjsAccessorCall(
   lowerer: Lowerer,
@@ -2601,6 +2707,24 @@ export function symbolFieldTarget(
   };
 }
 
+/** `return Promise.reject(reason)` in an async function: the checker's
+ * context is the awaited return type (or its union with PromiseLike), not
+ * a promise, but the async function adopts the returned promise, so the
+ * promise of its own result type is the honest type. Null elsewhere. */
+function asyncReturnPromise(lowerer: Lowerer, call: ts.CallExpression): IrType | null {
+  if (lowerer.ctx.isAsync !== true || lowerer.ctx.generator) return null;
+  let node: ts.Node = call;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  const returned =
+    (ts.isReturnStatement(parent) && parent.expression === node) ||
+    (ts.isArrowFunction(parent) && parent.body === node);
+  if (!returned) return null;
+  const ret = lowerer.ctx.returnType;
+  if (ret.kind === "void" || ret.kind === "promise") return null;
+  return { kind: "promise", inner: ret };
+}
+
 /** `Promise.reject(reason)` on THE Promise global: a pre-rejected
  * promise. The reason is pinned to the Error hierarchy (the executor
  * reject parameter's contract — rejection payloads share the
@@ -2632,7 +2756,9 @@ export function lowerPromiseRejectCall(
   // A maybe-promise context (`return Promise.reject(e)` from a function
   // returning `T | Promise<T>`) names its one promise arm.
   const maybePromise = contextual ? maybePromiseUnionOf(lowerer, contextual) : null;
-  const type = maybePromise ? maybePromise.promise : contextual;
+  const type = maybePromise
+    ? maybePromise.promise
+    : (asyncReturnPromise(lowerer, call) ?? contextual);
   const reasonNode = call.arguments.nodes[0]!;
   // A CHECKED-DYNAMIC reason (`Promise.reject(value)` where value rode
   // an untyped binding — the tracingChannel suite's shape): the checked-dynamic tree
