@@ -225,7 +225,7 @@ test("classes whose definition or binding is observable stay assignments", () =>
 var init_m = __esm({
   "src/m.ts"() {
     A = class { static made = console.log("static field runs at definition") };
-    B = class extends Array {};
+    B = class extends globalThis.Array {};
     console.log(typeof D);
     D = class {};
     C = class {};
@@ -255,4 +255,31 @@ init_m();
 console.log(typeof make().on);
 `);
   expect(lowered).toContain('new (require("events")).EventEmitter()');
+});
+
+test("a hoisted class may extend a global constructor, past esbuild's export annotation", () => {
+  const lowered = expectSameBehavior(`${helpers}var AppError;
+var init_errors = __esm({
+  "src/errors.ts"() {
+    AppError = class extends Error {
+      code;
+      constructor(message, code) {
+        super(message);
+        this.code = code;
+      }
+    };
+  }
+});
+function fail() {
+  init_errors();
+  throw new AppError("failed", "E1");
+}
+try {
+  fail();
+} catch (err) {
+  console.log(err instanceof AppError, err instanceof Error, err.code, err.message);
+}
+0 && (module.exports = { AppError });
+`);
+  expect(lowered).toContain("class AppError extends Error");
 });
