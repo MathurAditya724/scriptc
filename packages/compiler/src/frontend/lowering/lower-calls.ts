@@ -678,7 +678,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           const isStorage =
             parts.length > 0 &&
             parts.every((part) => {
-              const name = part.getSymbol()?.name;
+              const name = ts.symbolNameOf(part.getSymbol());
               return name === "ArrayBuffer" || name === "SharedArrayBuffer";
             });
           if (isStorage) {
@@ -852,7 +852,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       (source.type.kind === "dyn" ||
         source.type.kind === "func" ||
         (source.type.kind === "union" &&
-          isJsSourceFile(expr.getSourceFile()) &&
+          isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
           lowerer.dynConvertible(source.type)) ||
         ((source.type.kind === "map" || source.type.kind === "set") &&
           lowerer.dynConvertible(source.type)) ||
@@ -868,7 +868,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         lowerer.lowerExprExpecting(ts.isSpreadElement(arg) ? arg.expression : arg, DYN),
       );
       const spreads = expr.arguments.nodes.flatMap((arg, index) =>
-        ts.isSpreadElement(arg) ? [{ arg: index, what: arg.expression.getText() }] : [],
+        ts.isSpreadElement(arg) ? [{ arg: index, what: ts.getTextOfNode(arg.expression) }] : [],
       );
       return {
         kind: "seqExpr",
@@ -879,7 +879,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           kind: "dynCall",
           callee,
           receiver,
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args,
           ...(spreads.length > 0 ? { spreads } : {}),
           type: DYN,
@@ -1184,7 +1184,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // argument list. Typed .ts spreads keep completeArgs' rest packing.
     const jsSpreadArgs =
       expr.arguments.nodes.some((a) => ts.isSpreadElement(a)) &&
-      isJsSourceFile(expr.getSourceFile());
+      isJsSourceFile(ts.getSourceFileOfNode(expr));
     if (lowerer.isTopLevelFnSymbol(expr.expression) && !lowerer.peekLocal(expr.expression)) {
       // `import g = N.f; g()` — the alias's own source-order guards
       // (a no-op for every non-import= binding).
@@ -1394,12 +1394,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (
       g &&
       (g.type.kind === "func" || g.type.kind === "dyn") &&
-      !cjsExportCallIgnoresThis(lowerer, expr.getSourceFile(), expr.expression.name.text)
+      !cjsExportCallIgnoresThis(lowerer, ts.getSourceFileOfNode(expr), expr.expression.name.text)
     ) {
       lowerer.unsupported(
         "SC1090",
         expr,
-        `calling '${expr.expression.getText()}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`,
+        `calling '${ts.getTextOfNode(expr.expression)}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`,
       );
     }
     if (g && (g.type.kind === "func" || g.type.kind === "dyn")) {
@@ -1594,7 +1594,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // monomorphized against the defining literal's declaration.
       lowerObjLitGenericMethodCall(lowerer, expr, expr.expression);
     if (intrinsic) return intrinsic;
-    if (isJsSourceFile(expr.getSourceFile())) {
+    {
+      const boxed = lowerDynReceiverMethodCall(lowerer, expr, expr.expression, true);
+      if (boxed) return boxed;
+    }
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
       const staticField = lowerStaticFieldRead(lowerer, expr.expression);
       if (staticField?.type.kind === "dyn" && !expr.arguments.nodes.some(ts.isSpreadElement)) {
         return {
@@ -1662,7 +1666,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         lowerer.unsupported(
           "SC1090",
           expr,
-          `calls through function-with-properties values ('${expr.expression.expression.getText()}' is callable AND carries members — the chalk shape; no hybrid representation exists yet: export the base and the property as separate functions)`,
+          `calls through function-with-properties values ('${ts.getTextOfNode(expr.expression.expression)}' is callable AND carries members — the chalk shape; no hybrid representation exists yet: export the base and the property as separate functions)`,
         );
       }
     }
@@ -1687,7 +1691,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         );
       }
     }
-    lowerer.unsupported("SC1090", expr, `method calls like '${expr.expression.getText()}'`);
+    lowerer.unsupported("SC1090", expr, `method calls like '${ts.getTextOfNode(expr.expression)}'`);
   }
 
   // `s[Symbol.iterator]()` on a string: the string iterator as a value.
@@ -1726,7 +1730,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   ) {
     const access = expr.expression;
     const value = tryLowerExpression(lowerer, access.expression);
-    if (value?.type.kind === "array" && !isJsSourceFile(expr.getSourceFile())) {
+    if (value?.type.kind === "array" && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
       const callback = lowerArrayCallbackCall(lowerer, expr, access, value);
       if (callback) return callback;
     }
@@ -1761,7 +1765,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
               kind: "dynCall",
               callee,
               receiver,
-              calleeName: access.getText(),
+              calleeName: ts.getTextOfNode(access),
               args: expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
               type: DYN,
               loc,
@@ -1880,7 +1884,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const calleeName =
       ts.isPropertyAccessExpression(expr.expression) ||
       ts.isElementAccessExpression(expr.expression)
-        ? expr.expression.getText()
+        ? ts.getTextOfNode(expr.expression)
         : ts.isIdentifier(expr.expression)
           ? expr.expression.text
           : "value";
@@ -1942,7 +1946,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // per use like every any-origin value.
   if (
     (expr.arguments.nodes.length > callee.type.params.length || callee.type.rest === true) &&
-    (isJsSourceFile(expr.getSourceFile()) ||
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
       (callee.type.rest === true && callee.type.restAbi === undefined)) &&
     !expr.arguments.nodes.some((a) => ts.isSpreadElement(a)) &&
     canBoxFuncIntoDyn(
@@ -1974,7 +1978,7 @@ function lowerCheckedCallableValue(
       callee.type.kind !== "func" ||
       !(
         (callee.type.rest === true && callee.type.restAbi === undefined) ||
-        (isJsSourceFile(call.getSourceFile()) &&
+        (isJsSourceFile(ts.getSourceFileOfNode(call)) &&
           call.arguments.nodes.length > callee.type.params.length)
       ) ||
       !lowerer.dynConvertible(callee.type)
@@ -2590,7 +2594,7 @@ function lowerArrayPrototypeBorrowCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (
-    !isJsSourceFile(call.getSourceFile()) ||
+    !isJsSourceFile(ts.getSourceFileOfNode(call)) ||
     call.questionDotToken ||
     access.questionDotToken ||
     access.name.text !== "call" ||
@@ -2802,7 +2806,7 @@ function lowerObjectOwnCall(
       result = guardNullProto(
         receiverRef,
         type.shapeId,
-        `${methodAccess.getText()} is not a function`,
+        `${ts.getTextOfNode(methodAccess)} is not a function`,
         result,
         loc,
       );
@@ -3365,6 +3369,13 @@ const ITERATOR_HELPER_METHODS = new Set([
   "find",
 ]);
 
+/** A call expression, through parentheses: its value has no other holder. */
+function isFreshCallResult(node: ts.Expression): boolean {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return ts.isCallExpression(e);
+}
+
 /** METHOD calls on dyn receivers (`pkg.name.replace(...)`, `rawName.split`,
  * `ws.packages.filter(...)` — JSON.parse-derived values): validate the
  * receiver's dyn kind, extract, and ride the STATIC method machinery — the
@@ -3382,6 +3393,7 @@ function lowerDynReceiverMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
+  boxTypedTemporary = false,
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
   if (stdlibGlobalNameOf(lowerer, access.expression) !== null) {
@@ -3416,7 +3428,7 @@ function lowerDynReceiverMethodCall(
   const recvSymbol = recvTs.getSymbol();
   if (
     recvSymbol &&
-    CHECKED_ITERATOR_TYPES.has(recvSymbol.name) &&
+    CHECKED_ITERATOR_TYPES.has(ts.symbolName(recvSymbol)) &&
     lowerer.isStdlibSymbol(recvSymbol) &&
     ITERATOR_HELPER_METHODS.has(access.name.text) &&
     lowerer.isStdlibMember(access)
@@ -3484,7 +3496,7 @@ function lowerDynReceiverMethodCall(
           kind: "dynCall",
           callee: member,
           receiver,
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -3506,7 +3518,7 @@ function lowerDynReceiverMethodCall(
       return null;
     if (
       probed?.type.kind === "union" &&
-      isJsSourceFile(call.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       lowerer.unions
         .get(probed.type.unionId)
         ?.arms.every(
@@ -3556,7 +3568,7 @@ function lowerDynReceiverMethodCall(
   if (
     checkerUntyped &&
     recv.type.kind === "union" &&
-    isJsSourceFile(call.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
     isStringMethodName(access.name.text) &&
     lowerer.unions
       .get(recv.type.unionId)
@@ -3569,6 +3581,22 @@ function lowerDynReceiverMethodCall(
   // dispatches through the handle, as the same value held in an
   // 'unknown' slot does.
   if (checkerUntyped && DYN_HANDLE_KINDS.has(recv.type.kind))
+    recv = lowerer.coerceToExpected(recv, DYN);
+  // The last-resort retry (boxTypedTemporary — every other lowering
+  // already declined): a checker-`any` receiver whose value is a FRESH
+  // typed result of an earlier step in the chain (`out.split("\n")`
+  // extracted the string and answered a native string[]) has no typed
+  // home under its `any` spelling, so it boxes into the checked-dynamic
+  // tree and the call dispatches on the runtime kind — `.map`, `.pop`,
+  // `.filter` on that array run JS-exact. Only call results qualify:
+  // the box copies, and a temporary has no other holder to observe it.
+  if (
+    boxTypedTemporary &&
+    checkerUntyped &&
+    recv.type.kind !== "dyn" &&
+    isFreshCallResult(access.expression) &&
+    lowerer.dynConvertible(recv.type)
+  )
     recv = lowerer.coerceToExpected(recv, DYN);
   if (recv.type.kind !== "dyn") return null;
   if (
@@ -3626,7 +3654,7 @@ function lowerDynReceiverMethodCall(
               kind: "dynInvoke",
               recv: value,
               method: "normalize",
-              calleeName: access.getText(),
+              calleeName: ts.getTextOfNode(access),
               args: hasArgument ? [argument] : [],
               type: DYN,
               loc,
@@ -3662,7 +3690,7 @@ function lowerDynReceiverMethodCall(
       // dynKeyGet cannot stand in for JavaScript's prototype lookup. Only
       // an authored declaration can justify the own-member path.
       const authored = prop.declarations.some(
-        (decl) => !lowerer.isStdlibFile(decl.getSourceFile()),
+        (decl) => !lowerer.isStdlibFile(ts.getSourceFileOfNode(decl)),
       );
       return (
         authored &&
@@ -3704,7 +3732,7 @@ function lowerDynReceiverMethodCall(
       lowerer,
       call,
       access.name.text,
-      access.getText(),
+      ts.getTextOfNode(access),
       recv,
     );
     if (primitive) return primitive;
@@ -3719,7 +3747,7 @@ function lowerDynReceiverMethodCall(
       args: [
         recv,
         argument ? lowerer.lowerExprExpecting(argument, DYN) : dynUndefinedExpr(locOf(call)),
-        { kind: "strLit", value: access.getText(), type: STRING, loc: locOf(call) },
+        { kind: "strLit", value: ts.getTextOfNode(access), type: STRING, loc: locOf(call) },
       ],
       type: STRING,
       loc: locOf(call),
@@ -3734,7 +3762,10 @@ function lowerDynReceiverMethodCall(
     return {
       kind: "libCall",
       fn: "dyn.valueOf",
-      args: [recv, { kind: "strLit", value: access.getText(), type: STRING, loc: locOf(call) }],
+      args: [
+        recv,
+        { kind: "strLit", value: ts.getTextOfNode(access), type: STRING, loc: locOf(call) },
+      ],
       type: DYN,
       loc: locOf(call),
     };
@@ -3822,15 +3853,15 @@ function lowerDynReceiverMethodCall(
   // statement cannot leave the expression).
   const stringRefusal = (read: IrExpr): IrExpr => {
     if (!stringOnlyName) return read;
-    const sf = call.getSourceFile();
-    const line = ts.getLineAndCharacterOfPosition(sf, call.getStart(sf)).line + 1;
+    const sf = ts.getSourceFileOfNode(call);
+    const line = ts.getLineAndCharacterOfPosition(sf, ts.tokenStartOfNode(call)).line + 1;
     return {
       kind: "ternary",
       cond: { kind: "dynTest", test: "string", value: receiver, type: BOOL, loc },
       then: nodeThrowExpr(
         0,
         "SC1090",
-        `method calls like '${access.getText()}' on a string are not supported yet [SC1090 at ${sf.fileName}:${line}]`,
+        `method calls like '${ts.getTextOfNode(access)}' on a string are not supported yet [SC1090 at ${sf.fileName}:${line}]`,
         DYN,
         loc,
       ),
@@ -3866,7 +3897,7 @@ function lowerDynReceiverMethodCall(
       kind: "dynCall",
       callee,
       receiver,
-      calleeName: access.getText(),
+      calleeName: ts.getTextOfNode(access),
       args,
       type: DYN,
       loc,
@@ -4156,7 +4187,7 @@ export function lowerDynDispatchMethodCall(
 ): IrExpr | null {
   const method = access.name.text;
   if (
-    (!DYN_DISPATCH_METHODS.has(method) && !isJsSourceFile(call.getSourceFile())) ||
+    (!DYN_DISPATCH_METHODS.has(method) && !isJsSourceFile(ts.getSourceFileOfNode(call))) ||
     lowerer.chainBlocked(call, access)
   )
     return null;
@@ -4265,7 +4296,7 @@ export function lowerDynDispatchMethodCall(
             kind: "dynInvoke",
             recv: { kind: "varRef", localId: saved.id, type: DYN, loc: locOf(access.expression) },
             method,
-            calleeName: access.getText(),
+            calleeName: ts.getTextOfNode(access),
             args: [dynUndefinedExpr(locOf(call.arguments.nodes[0]!))],
             type: DYN,
             loc: locOf(call),
@@ -4287,7 +4318,7 @@ export function lowerDynDispatchMethodCall(
     kind: "dynInvoke",
     recv,
     method,
-    calleeName: access.getText(),
+    calleeName: ts.getTextOfNode(access),
     args,
     type: DYN,
     loc: locOf(call),
@@ -4507,7 +4538,7 @@ function lowerNumberToStringCall(
         call.arguments.nodes[0]
           ? lowerer.lowerExprExpecting(call.arguments.nodes[0], DYN)
           : dynUndefinedExpr(locOf(call)),
-        { kind: "strLit", value: access.getText(), type: STRING, loc: locOf(call) },
+        { kind: "strLit", value: ts.getTextOfNode(access), type: STRING, loc: locOf(call) },
       ],
       type: STRING,
       loc: locOf(call),
@@ -4630,7 +4661,7 @@ function lowerDefaultToStringCall(
   // A null-prototype record (Object.groupBy) has no toString: Node
   // throws "<callee> is not a function".
   const nullProtoT = nullProtoRecordShape(lowerer, recvT);
-  const missing = nullProtoT ? `${access.getText()} is not a function` : null;
+  const missing = nullProtoT ? `${ts.getTextOfNode(access)} is not a function` : null;
   if (!missing && pureObjectToStringReceiver(access.expression)) return constant;
   const recv = lowerer.lowerExpr(access.expression);
   const key = `objToStr:${typeKey(recv.type)}${missing ? `:${missing}` : ""}`;
@@ -4781,7 +4812,7 @@ function lowerPrimitiveProtoCall(
     (name === "toFixed" || name === "toExponential") &&
     call.arguments.nodes.length <= 1 &&
     !call.arguments.nodes.some(ts.isSpreadElement) &&
-    isJsSourceFile(call.getSourceFile())
+    isJsSourceFile(ts.getSourceFileOfNode(call))
   ) {
     const operand = lowerer.lowerExpr(recv);
     if (
@@ -4794,7 +4825,7 @@ function lowerPrimitiveProtoCall(
         lowerer,
         call,
         name,
-        `${recv.getText()}.${name}`,
+        `${ts.getTextOfNode(recv)}.${name}`,
         lowerer.coerceToExpected(operand, DYN),
       );
       if (dispatched) return dispatched;
@@ -4807,7 +4838,7 @@ function lowerPrimitiveProtoCall(
         kind: "dynInvoke",
         recv: lowerer.coerceToExpected(operand, DYN),
         method: name,
-        calleeName: `${recv.getText()}.${name}`,
+        calleeName: `${ts.getTextOfNode(recv)}.${name}`,
         args: call.arguments.nodes.map((argument) => lowerer.lowerExprExpecting(argument, DYN)),
         type: DYN,
         loc: locOf(call),
@@ -4817,7 +4848,7 @@ function lowerPrimitiveProtoCall(
     name === "toPrecision" &&
     call.arguments.nodes.length <= 1 &&
     !call.arguments.nodes.some(ts.isSpreadElement) &&
-    isJsSourceFile(call.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
     recvKind === "union"
   ) {
     const operand = lowerer.lowerExpr(recv);
@@ -4826,7 +4857,7 @@ function lowerPrimitiveProtoCall(
         lowerer,
         call,
         name,
-        `${recv.getText()}.${name}`,
+        `${ts.getTextOfNode(recv)}.${name}`,
         lowerer.coerceToExpected(operand, DYN),
       );
       if (dispatched) return dispatched;
@@ -5046,9 +5077,10 @@ function isSoleAbstractMethod(decl: ts.FunctionDeclaration | ts.MethodDeclaratio
   if (!ts.getModifiers(decl)?.some((m) => m.kind === ts.SyntaxKind.AbstractKeyword)) return false;
   const owner = decl.parent;
   if (!ts.isClassDeclaration(owner) && !ts.isClassExpression(owner)) return false;
-  const name = decl.name.getText();
+  const name = ts.getTextOfNode(decl.name);
   return !owner.members.nodes.some(
-    (member) => member !== decl && ts.isMethodDeclaration(member) && member.name.getText() === name,
+    (member) =>
+      member !== decl && ts.isMethodDeclaration(member) && ts.getTextOfNode(member.name) === name,
   );
 }
 
@@ -5066,7 +5098,7 @@ function reconcileOverloadReturn(
     call.type.kind === "object" &&
     rdecl &&
     ts.isMethodDeclaration(rdecl) &&
-    (!isJsSourceFile(rdecl.getSourceFile()) || returnsOnlyThis(rdecl))
+    (!isJsSourceFile(ts.getSourceFileOfNode(rdecl)) || returnsOnlyThis(rdecl))
   ) {
     call = lowerer.maybeNarrow(call, expr);
   }
@@ -5228,7 +5260,7 @@ export function lowerTaggedTemplate(lowerer: Lowerer, expr: ts.TaggedTemplateExp
   let callee = lowerer.lowerExpr(expr.tag);
   if (
     callee.type.kind === "func" &&
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     lowerer.dynConvertible(callee.type)
   ) {
     callee = { kind: "dynFrom", value: callee, type: DYN, loc };
@@ -5246,7 +5278,7 @@ export function lowerTaggedTemplate(lowerer: Lowerer, expr: ts.TaggedTemplateExp
     ];
     const calleeName =
       ts.isPropertyAccessExpression(expr.tag) || ts.isElementAccessExpression(expr.tag)
-        ? expr.tag.getText()
+        ? ts.getTextOfNode(expr.tag)
         : ts.isIdentifier(expr.tag)
           ? expr.tag.text
           : "value";
@@ -5316,7 +5348,7 @@ function loweredTemplateStrings(
         loc,
       })
     : null;
-  const key = `templateStringsGlobal:${loc.file}:${expr.template.getStart()}:${raw ? "checked" : "typed"}`;
+  const key = `templateStringsGlobal:${loc.file}:${ts.tokenStartOfNode(expr.template)}:${raw ? "checked" : "typed"}`;
   let getter = lowerer.valueHelpers.get(key);
   if (!getter) {
     const site = lowerer.globalsList.length;
@@ -6033,7 +6065,7 @@ export function lowerPromiseMethodCall(
         kind: "dynInvoke",
         recv: lowerer.coerceToExpected(receiver, DYN),
         method: "finally",
-        calleeName: access.getText(),
+        calleeName: ts.getTextOfNode(access),
         args: [lowerer.coerceToExpected(cb, DYN)],
         type: DYN,
         loc,
@@ -6134,7 +6166,7 @@ export function lowerPromiseMethodCall(
   if (
     member === "catch" &&
     (inner.kind === "dyn" ||
-      (isJsSourceFile(call.getSourceFile()) &&
+      (isJsSourceFile(ts.getSourceFileOfNode(call)) &&
         (inner.kind === "void" || lowerer.dynConvertible(inner))))
   ) {
     let cb = lowerer.lowerExpr(call.arguments.nodes[0]!);
@@ -7528,7 +7560,7 @@ function lowerObjectStaticCall(
     const prototype = lowerClassPrototypeAssign(lowerer, call);
     if (prototype) return prototype;
     if (
-      isJsSourceFile(call.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       call.arguments.nodes.length > 0 &&
       !call.arguments.nodes.some(ts.isSpreadElement)
     ) {
@@ -7800,7 +7832,12 @@ function lowerObjectStaticCall(
                       args: [
                         pRef(),
                         src,
-                        { kind: "strLit", value: srcNode.getText(), type: STRING, loc: argLoc },
+                        {
+                          kind: "strLit",
+                          value: ts.getTextOfNode(srcNode),
+                          type: STRING,
+                          loc: argLoc,
+                        },
                       ],
                       type: VOID,
                       loc: argLoc,
@@ -7857,7 +7894,9 @@ function lowerObjectStaticCall(
       (exactClassOfReceiver(lowerer, targetNode.expression) !== null ||
         storedClassValueType(lowerer, targetNode.expression)?.kind === "classval");
     const declaredTarget =
-      target?.type.kind === "dyn" && !prototypeTarget && !isJsSourceFile(targetNode.getSourceFile())
+      target?.type.kind === "dyn" &&
+      !prototypeTarget &&
+      !isJsSourceFile(ts.getSourceFileOfNode(targetNode))
         ? lowerer.mapTypeOf(lowerer.typeOf(targetNode))
         : null;
     if (target && declaredTarget && isDynTypedRefType(declaredTarget))
@@ -8056,7 +8095,7 @@ function lowerObjectStaticCall(
     while (ts.isParenthesizedExpression(inner) || ts.isAsExpression(inner))
       inner = inner.expression;
     const value =
-      isJsSourceFile(call.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner))
         ? lowerer.lowerExprExpecting(argNode, DYN)
         : lowerer.lowerExpr(argNode);
@@ -8277,7 +8316,7 @@ function lowerObjectStaticCall(
         probed.type.kind === "bool");
     const isJsUnion =
       probed?.type.kind === "union" &&
-      isJsSourceFile(call.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       lowerer.dynConvertible(probed.type);
     if (
       isDyn ||
@@ -8299,7 +8338,7 @@ function lowerObjectStaticCall(
       // write to the arrays well typed. JavaScript may store anything into
       // them, so it keeps the checked-dynamic arrays.
       const resultT =
-        member !== "values" && !isJsSourceFile(call.getSourceFile())
+        member !== "values" && !isJsSourceFile(ts.getSourceFileOfNode(call))
           ? lowerer.mapTypeOf(lowerer.typeOf(call))
           : null;
       if (member === "keys" && resultT?.kind === "array" && resultT.elem.kind === "string")
@@ -8322,7 +8361,11 @@ function lowerObjectStaticCall(
       // program only iterates or indexes the result, or passes it to a
       // read-only array method, a native vector of the checked values skips
       // building that array and, for for-of, the iterator protocol.
-      if (member === "values" && !isJsSourceFile(call.getSourceFile()) && consumesValueList(call))
+      if (
+        member === "values" &&
+        !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+        consumesValueList(call)
+      )
         return {
           kind: "libCall",
           fn: "dyn.objValueList",
@@ -8360,7 +8403,7 @@ function lowerObjectStaticCall(
   if (
     (member === "values" || member === "entries") &&
     (enumerationType?.kind === "dyn" ||
-      (enumerationType === null && isJsSourceFile(call.getSourceFile())))
+      (enumerationType === null && isJsSourceFile(ts.getSourceFileOfNode(call))))
   ) {
     let receiver = lowerer.coerceToExpected(lowerer.lowerExpr(argNode), DYN);
     if (receiver.type.kind !== "dyn") lowerer.badType(argNode, lowerer.typeOf(argNode));
@@ -8891,7 +8934,7 @@ export function lowerRecordFieldCall(
   const target = lowerer.fieldTarget(access);
   const loc = locOf(call);
   const receiverLocal =
-    target && isJsSourceFile(call.getSourceFile())
+    target && isJsSourceFile(ts.getSourceFileOfNode(call))
       ? lowerer.declareHiddenLocal("%callReceiver", target.obj.type)
       : null;
   const init: IrStmt | null =
@@ -8911,7 +8954,7 @@ export function lowerRecordFieldCall(
   // values (util.DebugLogger).
   if (
     callee.type.kind === "dyn" &&
-    (isJsSourceFile(call.getSourceFile()) ||
+    (isJsSourceFile(ts.getSourceFileOfNode(call)) ||
       lowerer.checker.getCallSignatures(lowerer.typeOf(access)).length > 0)
   ) {
     const receiver =
@@ -8929,7 +8972,7 @@ export function lowerRecordFieldCall(
           kind: "dynCall",
           callee,
           ...(receiver ? { receiver } : {}),
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -9000,7 +9043,7 @@ function lowerUrlStaticCall(
   if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined) return null;
   if (!ts.isIdentifier(callee.expression)) return null;
   const sym = lowerer.resolveValueSymbol(callee.expression);
-  if (!sym || !lowerer.isStdlibSymbol(sym) || sym.name !== "URL") return null;
+  if (!sym || !lowerer.isStdlibSymbol(sym) || ts.symbolName(sym) !== "URL") return null;
   if (callee.name.text === "canParse" || callee.name.text === "parse") {
     return lowerUrlFactory(lowerer, call, callee.name.text);
   }
@@ -9358,7 +9401,7 @@ function lowerObjLitGenericMethodCall(
           kind: "dynInvoke",
           recv: { kind: "dynFrom", value, type: DYN, loc },
           method: name,
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -9367,7 +9410,7 @@ function lowerObjLitGenericMethodCall(
       lowerer.unsupported(
         "SC1090",
         call,
-        `Function.prototype.${name} on a function whose signature cannot cross the checked-value boundary (call '${access.expression.getText()}(...)' directly)`,
+        `Function.prototype.${name} on a function whose signature cannot cross the checked-value boundary (call '${ts.getTextOfNode(access.expression)}(...)' directly)`,
       );
     }
     // STANDARD-LIBRARY generic members (Promise.then, Object.
@@ -9395,7 +9438,7 @@ function lowerObjLitGenericMethodCall(
           kind: "dynInvoke",
           recv: receiver,
           method: name,
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -9456,7 +9499,7 @@ export function lowerObjectMethodCall(
     (lowerer.implicitParamTypes !== null ||
       lowerer.classImplementedProtocol(lowerer.typeOf(access.expression)) ||
       ts.isNewExpression(access.expression) ||
-      isJsSourceFile(call.getSourceFile()))
+      isJsSourceFile(ts.getSourceFileOfNode(call)))
       ? ts.isNewExpression(access.expression)
         ? lowerer.lowerExpr(access.expression)
         : tryLowerExpression(lowerer, access.expression)
@@ -9475,7 +9518,7 @@ export function lowerObjectMethodCall(
     if (dispatched) return dispatched;
     const arms = lowerer.unions.get(mappedReceiver.unionId)?.arms;
     if (
-      isJsSourceFile(call.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       arms?.every(
         (arm) => arm.kind === "object" && !lowerer.classes.get(arm.className)?.def.runtime,
       ) &&
@@ -9629,7 +9672,7 @@ export function lowerObjectMethodCall(
           callee,
           lowerer.armTag(callee.type.unionId, callableType),
           callableType,
-          () => `${access.getText()} is not a function`,
+          () => `${ts.getTextOfNode(access)} is not a function`,
         );
         const helper = inPlace
           ? null
@@ -9643,7 +9686,7 @@ export function lowerObjectMethodCall(
         if (
           ((callee.type.rest === true && callee.type.restAbi === undefined) ||
             call.arguments.nodes.length > callee.type.params.length) &&
-          isJsSourceFile(call.getSourceFile()) &&
+          isJsSourceFile(ts.getSourceFileOfNode(call)) &&
           lowerer.dynConvertible(callee.type)
         ) {
           const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
@@ -9654,7 +9697,7 @@ export function lowerObjectMethodCall(
             kind: "dynCall",
             callee: boxed,
             ...receiver,
-            calleeName: access.getText(),
+            calleeName: ts.getTextOfNode(access),
             args,
             type: DYN,
             loc,
@@ -9672,7 +9715,7 @@ export function lowerObjectMethodCall(
           kind: "dynCall",
           callee,
           ...receiver,
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args,
           type: DYN,
           loc,
@@ -9681,7 +9724,7 @@ export function lowerObjectMethodCall(
     }
     if (
       !fieldType &&
-      isJsSourceFile(call.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       !info.def.runtime &&
       !info.builtinError &&
       !info.builtinEmitter &&
@@ -9711,7 +9754,7 @@ export function lowerObjectMethodCall(
               kind: "dynCall",
               callee,
               receiver,
-              calleeName: access.getText(),
+              calleeName: ts.getTextOfNode(access),
               args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
               type: DYN,
               loc,
@@ -9760,7 +9803,7 @@ export function lowerObjectMethodCall(
       call.arguments.nodes,
       fallback,
       loc,
-      access.getText(),
+      ts.getTextOfNode(access),
     );
     return {
       kind: "seqExpr",
@@ -9796,7 +9839,7 @@ export function lowerObjectMethodCall(
   const declarerDecl = found.declarer.decl;
   if (
     adapted &&
-    !(declarerDecl && isJsSourceFile(declarerDecl.getSourceFile())) &&
+    !(declarerDecl && isJsSourceFile(ts.getSourceFileOfNode(declarerDecl))) &&
     !lowerer.overrideBelow(info, method)
   ) {
     lowerer.noteEdge(`%${found.declarer.def.name}.${method}`);
@@ -9886,7 +9929,7 @@ function lowerUnionObjectMethodCall(
             kind: "dynCall",
             callee,
             receiver,
-            calleeName: access.getText(),
+            calleeName: ts.getTextOfNode(access),
             args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
             type: DYN,
             loc,
@@ -10048,7 +10091,7 @@ function lowerUnionObjectDynFieldCall(
       kind: "dynCall",
       callee,
       receiver: lowerer.coerceToExpected(receiverRef, DYN),
-      calleeName: access.getText(),
+      calleeName: ts.getTextOfNode(access),
       args,
       type: DYN,
       loc,
@@ -10430,7 +10473,7 @@ function maybePromiseHandlerResult(
 function lowerObjectAssignOntoError(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   const argNodes = call.arguments.nodes;
   if (
-    isJsSourceFile(call.getSourceFile()) ||
+    isJsSourceFile(ts.getSourceFileOfNode(call)) ||
     argNodes.length < 2 ||
     argNodes.some((a) => ts.isSpreadElement(a))
   )

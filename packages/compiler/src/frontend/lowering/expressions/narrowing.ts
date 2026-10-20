@@ -92,7 +92,7 @@ export function lowerTernary(
           ) {
             falseArmNarrows.push(n);
           }
-          n.forEachChild(collect);
+          ts.forEachChild(n, collect);
         };
         collect(expr.whenFalse);
       }
@@ -333,7 +333,7 @@ export function lowerTernary(
     // call ABI. A checker join can erase a rest/arguments pack even though
     // a later call supplies additional observable arguments.
     const callableJoin =
-      isJsSourceFile(expr.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       thenRaw.type.kind === "func" &&
       elseRaw.type.kind === "func" &&
       !typeEquals(thenRaw.type, elseRaw.type) &&
@@ -343,7 +343,7 @@ export function lowerTernary(
     // a conditional's type even after that field acquired other values.
     // A checked arm must retain its actual representation at the join.
     const checkedJsJoin =
-      isJsSourceFile(expr.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       (thenRaw.type.kind === "dyn" || elseRaw.type.kind === "dyn") &&
       lowerer.dynConvertible(thenRaw.type) &&
       lowerer.dynConvertible(elseRaw.type);
@@ -385,7 +385,7 @@ export function lowerTernary(
 export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrExpr {
   if (
     (expr.type.kind === "union" || expr.type.kind === "dyn") &&
-    isJsSourceFile(node.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
     ts.isPropertyAccessExpression(node)
   ) {
     const symbol = lowerer.checker.getSymbolAtLocation(node.name);
@@ -396,7 +396,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
           ts.isPropertyDeclaration(decl) &&
           !decl.initializer &&
           !decl.type &&
-          isJsSourceFile(decl.getSourceFile()),
+          isJsSourceFile(ts.getSourceFileOfNode(decl)),
       )
     ) {
       // Inference describes later writes, not the initial undefined.
@@ -416,7 +416,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // An inferred JS member's storage may be deliberately wider than its
     // declaration (prototype-selected buffers, null-initialized scratch
     // objects). Extract at the consuming operation, not at the read.
-    if (isJsSourceFile(node.getSourceFile()) && ts.isPropertyAccessExpression(node)) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(node)) && ts.isPropertyAccessExpression(node)) {
       const receiver = lowerer.mapTypeOf(lowerer.typeOf(node.expression));
       if (receiver?.kind === "object") {
         const info = lowerer.classes.get(receiver.className);
@@ -432,7 +432,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       }
     }
     if (
-      isJsSourceFile(node.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
     ) {
       let receiver = node.expression;
@@ -461,7 +461,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         if (bound && lowerer.mapTypeOf(bound)?.kind === "dyn") return expr;
       }
     }
-    if (isJsSourceFile(node.getSourceFile()) && ts.isIdentifier(node)) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(node)) && ts.isIdentifier(node)) {
       const symbol = lowerer.resolveValueSymbol(node);
       if (
         symbol &&
@@ -495,7 +495,9 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
             decl.initializer &&
             !decl.type &&
             !/@(?:param|type)\b/.test(
-              decl.getSourceFile().text.slice(decl.parent?.pos ?? decl.pos, decl.getStart()),
+              ts
+                .getSourceFileOfNode(decl)
+                .text.slice(decl.parent?.pos ?? decl.pos, ts.tokenStartOfNode(decl)),
             ),
         )
       )
@@ -522,7 +524,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // has no such property. Preserve the checked read for JS capability
     // probes instead of treating a declaration as a runtime type guard.
     if (
-      isJsSourceFile(node.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       ts.isPropertyAccessExpression(node) &&
       ["isTTY", "columns", "rows"].includes(node.name.text) &&
       lowerer.isStdlibMember(node)
@@ -532,7 +534,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // checker flow calls its non-null branch never. The live checked
     // value remains authoritative; never is not a numeric guard.
     if (
-      isJsSourceFile(node.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       (lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0
     )
       return expr;
@@ -839,11 +841,11 @@ export function v8CalleeText(node: ts.Node): string {
     const object = v8CalleeText(node.expression);
     return ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)
       ? `${object}.${key.text}`
-      : `${object}[${key.getText()}]`;
+      : `${object}[${ts.getTextOfNode(key)}]`;
   }
   if (ts.isPropertyAccessExpression(node) && !node.questionDotToken)
     return `${v8CalleeText(node.expression)}.${node.name.text}`;
-  return node.getText();
+  return ts.getTextOfNode(node);
 }
 
 /** Node's TypeError for the operation consuming `node` when it holds a

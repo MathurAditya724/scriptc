@@ -353,7 +353,7 @@ export function lowerArrayMethodCall(
       // machinery answered string[]): same rule, any-typed spelling.
       ((lowerer.typeOf(access.expression).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
         0 &&
-        isJsSourceFile(access.getSourceFile())))
+        isJsSourceFile(ts.getSourceFileOfNode(access))))
   ) {
     const probe = lowerer.lowerExpr(access.expression);
     if (probe.type.kind === "array") {
@@ -1039,7 +1039,7 @@ export function lowerArrayMethodCall(
           kind: "dynInvoke",
           recv: receiver,
           method: "join",
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args,
           type: DYN,
           loc,
@@ -2096,7 +2096,7 @@ export function lowerTupleReadMethodCall(
       kind: "dynInvoke",
       recv: { kind: "dynFrom", value: receiver, type: DYN, loc },
       method: "flatMap",
-      calleeName: access.getText(),
+      calleeName: ts.getTextOfNode(access),
       args: [{ kind: "dynFrom", value: fnArg, type: DYN, loc }],
       type: DYN,
       loc,

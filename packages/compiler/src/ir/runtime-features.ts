@@ -130,6 +130,7 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "events.onceSignal",
   "http.clientSignal",
   "http.requestDyn",
   "http.requestDynCb",
@@ -254,6 +255,8 @@ const CHILD_PROCESS_LIB_PREFIXES: readonly string[] = ["child.", "cp.", "spawnRe
  * emitter unit, so each of them links all five. */
 const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
   "dyn.builtinClass",
+  // the stream classes, through scr_dyn_builtin_stream.c
+  "dyn.builtinStreamClass",
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
 ];
@@ -545,6 +548,10 @@ const RUNTIME_FEATURE_RULES = {
   dynBuiltinClass: rule({
     fns: [...BUILTIN_CLASS_LIB_FNS],
   }),
+  /** The stream classes as untyped constructor values with their stream
+   * half (scr_dyn_builtin_stream.c): native stream state for constructor
+   * functions, over the stream unit. */
+  dynBuiltinStream: rule({ fns: ["dyn.builtinStreamClass"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
@@ -580,6 +587,8 @@ const RUNTIME_FEATURE_RULES = {
     fns: ["events.addAbortListener", ...ABORT_SIGNAL_LIB_FNS],
     prefixes: ["event."],
   }),
+  /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
+  eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
@@ -672,7 +681,7 @@ const RUNTIME_FEATURE_RULES = {
   }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
-    fns: [...STREAM_LIB_FNS],
+    fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
@@ -717,10 +726,12 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dnsPromises: false,
     dynAsync: false,
     dynBuiltinClass: false,
+    dynBuiltinStream: false,
     dynInvoke: false,
     dynTier: false,
     emitter: false,
     eventTarget: false,
+    eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
     fsWatch: false,
@@ -881,6 +892,14 @@ export function moduleUsesEmitter(mod: IrModule): boolean {
  * programs pay zero bytes and keep their exact link line. */
 export function moduleUsesStream(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "stream").stream;
+}
+
+/** True when the program links scr_dyn_builtin_stream.c (stream classes
+ * as untyped constructor values): its runtime streams box through that
+ * unit's view and checked casts to the stream classes accept constructor-
+ * function streams. Programs without it keep their exact code. */
+export function moduleUsesDynBuiltinStream(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "dynBuiltinStream").dynBuiltinStream;
 }
 
 export const NPM_COMPRESS_MIN = 1024;

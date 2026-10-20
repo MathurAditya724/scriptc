@@ -53,7 +53,11 @@ import {
   VOID,
   classJsName,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures, moduleUsesMockTimers } from "../../ir/runtime-features.js";
+import {
+  moduleRuntimeFeatures,
+  moduleUsesDynBuiltinStream,
+  moduleUsesMockTimers,
+} from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { type DenseArrayLoop } from "./dense-array-loops.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
@@ -902,6 +906,11 @@ export class LlEmitter {
   /** Identity-preserving static→dyn capsules for program classes and Web
    * APIs whose values remain directly observable. */
   readonly liveDynRefAdapters = new Map<string, LlStreamTypedRefAdapter>();
+  private dynBuiltinStreamUse: boolean | undefined;
+  /** See moduleUsesDynBuiltinStream. */
+  get usesDynBuiltinStream(): boolean {
+    return (this.dynBuiltinStreamUse ??= moduleUsesDynBuiltinStream(this.mod));
+  }
   /** Runtime-arm dispatchers for live union values. */
   readonly liveDynUnionRefAdapters = new Map<string, string>();
   readonly dynPromiseAdapters = new Map<string, string>();
@@ -1405,6 +1414,7 @@ export class LlEmitter {
       fieldAbsentTestIn: (B, value, unionId) => this.fieldAbsentTestIn(B, value, unionId),
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
+      usesDynBuiltinStream: () => this.usesDynBuiltinStream,
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
@@ -5599,8 +5609,11 @@ export class LlEmitter {
     return emitterFixedAdapter(this, cbT);
   }
 
-  emitterOnceAdapter(boxerT: IrType & { kind: "func" }): { fn: string; shim: string } {
-    return emitterOnceAdapter(this, boxerT);
+  emitterOnceAdapter(
+    boxerT: IrType & { kind: "func" },
+    fire?: string,
+  ): { fn: string; shim: string } {
+    return emitterOnceAdapter(this, boxerT, fire);
   }
 
   wrapEmitterListener(target: string, adapterFn: string): string {

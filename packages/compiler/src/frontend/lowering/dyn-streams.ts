@@ -34,14 +34,18 @@ export function nodeStreamInterfaceSide(lowerer: Lowerer, type: ts.Type): "r" | 
     (t.flags & ts.TypeFlags.Intersection) !== 0 ? ts.constituentTypes(t).flatMap(parts) : [t];
   for (const part of parts(lowerer.checker.getNonNullableType(type))) {
     const psym = part.getSymbol() ?? part.getAliasSymbol();
-    if (psym?.name !== "ReadableStream" && psym?.name !== "WritableStream") continue;
+    if (
+      (psym === undefined || ts.symbolName(psym) !== "ReadableStream") &&
+      (psym === undefined || ts.symbolName(psym) !== "WritableStream")
+    )
+      continue;
     const declared = psym.declarations.some(
       (d) =>
         ts.isInterfaceDeclaration(d) &&
-        lowerer.isStdlibFile(d.getSourceFile()) &&
+        lowerer.isStdlibFile(ts.getSourceFileOfNode(d)) &&
         isDeclaredInAmbientNamespace(d, "NodeJS"),
     );
-    if (declared) return psym.name === "ReadableStream" ? "r" : "w";
+    if (declared) return ts.symbolName(psym) === "ReadableStream" ? "r" : "w";
   }
   return null;
 }
@@ -161,7 +165,7 @@ export function lowerDynStreamMemberCall(
     kind: "dynInvoke",
     recv: receiverRef,
     method: access.name.text,
-    calleeName: access.getText(),
+    calleeName: ts.getTextOfNode(access),
     args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc,

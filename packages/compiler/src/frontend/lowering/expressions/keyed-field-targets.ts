@@ -44,7 +44,7 @@ export function literalFieldKeys(lowerer: Lowerer, keyNode: ts.Expression): stri
 export function isKeyedFieldAccess(lowerer: Lowerer, access: ts.ElementAccessExpression): boolean {
   if (
     access.questionDotToken ||
-    isJsSourceFile(access.getSourceFile()) ||
+    isJsSourceFile(ts.getSourceFileOfNode(access)) ||
     lowerer.isProcessEnv(access.expression)
   )
     return false;

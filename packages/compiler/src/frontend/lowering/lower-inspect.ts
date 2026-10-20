@@ -1106,7 +1106,7 @@ function classInspectsThroughView(lowerer: Lowerer, info: ClassInfo | undefined)
   if (info.subclasses.length > 0) return true;
   return (
     info.decl != null &&
-    isJsSourceFile(info.decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(info.decl)) &&
     classDynViewSupported(
       info.def.fields,
       (id) => lowerer.shapes.get(id),
@@ -3273,7 +3273,7 @@ function lowerUtilCallableCall(
  * a statically typed callback parameter cannot receive a value its type
  * excludes. Untyped (JavaScript or unknown) slots keep the wrapper dyn. */
 function callbackifyErrorExcludesNull(lowerer: Lowerer, expr: ts.CallExpression): boolean {
-  if (isJsSourceFile(expr.getSourceFile())) return false;
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
   const checker = lowerer.checker;
   const slot = checker.getContextualType(expr) ?? lowerer.typeOf(expr);
   const wrapper = checker.getCallSignatures(slot)[0];
@@ -3379,7 +3379,7 @@ function lowerGetCallSitesCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (expr.arguments.nodes.length !== 0) return null;
-  if (!isJsSourceFile(expr.getSourceFile())) return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const frame = (): IrExpr => {
     const field = (name: string, value: IrExpr): { key: IrExpr; value: IrExpr } => ({
       key: { kind: "strLit", value: name, type: STRING, loc },
@@ -3391,7 +3391,7 @@ function lowerGetCallSitesCall(
         field("functionName", { kind: "strLit", value: "", type: STRING, loc }),
         field("scriptName", {
           kind: "strLit",
-          value: expr.getSourceFile().fileName,
+          value: ts.getSourceFileOfNode(expr).fileName,
           type: STRING,
           loc,
         }),

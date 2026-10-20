@@ -60,7 +60,7 @@ export function lowerMapMethodCall(
   if (!MAP_METHODS.has(name)) return null;
   let receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   let probedUntyped = false;
-  if (receiverIr?.kind !== "map" && isJsSourceFile(access.getSourceFile())) {
+  if (receiverIr?.kind !== "map" && isJsSourceFile(ts.getSourceFileOfNode(access))) {
     const probed = tryLowerExpression(lowerer, access.expression);
     if (probed?.type.kind === "map") {
       receiverIr = probed.type;
@@ -427,7 +427,7 @@ export function lowerCollectionSpread(
         loc,
       },
       then: entries,
-      else_: nodeThrowExpr(1, "", `${node.getText()} is not iterable`, entries.type, loc),
+      else_: nodeThrowExpr(1, "", `${ts.getTextOfNode(node)} is not iterable`, entries.type, loc),
       type: entries.type,
       loc,
     },
@@ -544,7 +544,7 @@ export function lowerSetMethodCall(
   // Set<union-of-signatures>, but the VALUE lowered as a real Set of
   // identity tokens (the new-Set probe) — the lowered receiver's type
   // is the honest dispatch key.
-  if (receiverIr?.kind !== "set" && isJsSourceFile(access.getSourceFile())) {
+  if (receiverIr?.kind !== "set" && isJsSourceFile(ts.getSourceFileOfNode(access))) {
     const probed = tryLowerExpression(lowerer, access.expression);
     if (probed?.type.kind === "set") {
       receiverIr = probed.type;
@@ -973,7 +973,7 @@ export function lowerSetSeedNew(
         {
           kind: "libCall",
           fn: "dyn.iterPack",
-          args: [source, strLit(node.getText(), loc)],
+          args: [source, strLit(ts.getTextOfNode(node), loc)],
           type: DYN,
           loc,
         },
@@ -1165,7 +1165,7 @@ export function lowerMapSeedNew(
   }
   if (ts.isArrayLiteralExpression(argNode)) {
     if (
-      isJsSourceFile(argNode.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(argNode)) &&
       argNode.elements.nodes.some((entry) => !ts.isArrayLiteralExpression(entry))
     ) {
       return mapFromSeedValue(lowerer, lowerer.lowerExprExpecting(argNode, DYN), mapT);
