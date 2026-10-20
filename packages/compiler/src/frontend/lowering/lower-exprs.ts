@@ -1554,7 +1554,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
         // Builtin constructors have real function values in both source
         // languages (TypeScript reads them as dynamic values).
-        const builtinValue = builtinGlobalValue(
+        const builtinValue = builtinGlobalValueAt(
+          lowerer,
+          expr,
           canonical,
           loc,
           isJsSourceFile(expr.getSourceFile()),
@@ -2440,6 +2442,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       lowerStreamObjectProperty(lowerer, expr) ??
       lowerEventObjectProperty(lowerer, expr) ??
       lowerer.lowerUnionProperty(expr) ??
+      // A builtin constructor reached through another binding (`const D =
+      // Date; D.prototype`) holds its interned function value, which
+      // models only name, length and constructor: a static member or the
+      // prototype that no lowering above claimed keeps the SC2020 fence
+      // rather than reading undefined through the field and dynamic reads.
+      fenceBuiltinConstructorStaticRead(lowerer, expr) ??
       lowerer.lowerFieldRead(expr);
     // A union-typed field read narrows like an identifier when the
     // checker has narrowed this use to one arm.
@@ -2487,7 +2495,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             loc,
           };
         return (
-          builtinGlobalValue(canonical, loc, true) ?? {
+          builtinGlobalValueAt(lowerer, expr, canonical, loc, true) ?? {
             kind: "strLit",
             value: `[builtin ${canonical}]`,
             type: STRING,
@@ -17087,6 +17095,108 @@ export function builtinGlobalValue(canonical: string, loc: SrcLoc, js = false): 
       loc,
     };
   }
+  return null;
+}
+
+/** The members the interned builtin function values model (the runtime
+ * answers each one as Node does); any other member read through them would
+ * answer undefined, so it keeps its static lowering or its fence. */
+const BUILTIN_VALUE_MEMBERS: ReadonlySet<string> = new Set(["name", "length", "constructor"]);
+
+/** The Object statics whose answers for an interned builtin function value
+ * match Node's (identity, and the empty enumerable own-key lists). */
+const BUILTIN_VALUE_REFLECTION: ReadonlySet<string> = new Set(["is", "keys", "values", "entries"]);
+
+/** The value `builtinGlobalValue` gives the stdlib global `expr` read at its
+ * use site: null when the use reads the global's members (they keep their
+ * lowerings and fences), and SC2020 when it is the target of reflection or
+ * redefinition (`Object.hasOwn(Object, "hasOwn")`,
+ * `Object.defineProperty(Promise, ...)`, `hasOwnProperty.call(Map, ...)`),
+ * which would observe or change members the interned value does not
+ * model. */
+function builtinGlobalValueAt(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  canonical: string,
+  loc: SrcLoc,
+  js: boolean,
+): IrExpr | null {
+  if (readsBuiltinGlobalMembers(expr)) return null;
+  const value = builtinGlobalValue(canonical, loc, js);
+  if (value === null) return null;
+  let node: ts.Node = expr;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const call = node.parent;
+  if (
+    call !== undefined &&
+    ts.isCallExpression(call) &&
+    call.expression !== node &&
+    ts.isPropertyAccessExpression(call.expression)
+  ) {
+    const callee = call.expression;
+    const owner = stdlibGlobalNameOf(lowerer, callee.expression);
+    const reflects =
+      owner === "Reflect" ||
+      (owner === "Object" && !BUILTIN_VALUE_REFLECTION.has(callee.name.text)) ||
+      ((callee.name.text === "call" || callee.name.text === "apply") &&
+        call.arguments.nodes[0] === node &&
+        lowerer.isStdlibSymbol(
+          lowerer.checker.getSymbolAtLocation(
+            ts.isPropertyAccessExpression(callee.expression)
+              ? callee.expression.name
+              : callee.expression,
+          ),
+        ));
+    if (reflects) {
+      const name =
+        owner !== null ? `${owner}.${callee.name.text}` : callee.getText().replace(/\s+/g, "");
+      lowerer.noLowering(
+        `${name}(${canonical}, ...)`,
+        expr,
+        "builtin constructor and function values model only name, length and constructor, so reflecting on or redefining their members has no lowering",
+      );
+    }
+  }
+  return value;
+}
+
+/** Whether the stdlib global `expr` is read for its members (`Map.prototype`,
+ * `Date["UTC"]`, `"prototype" in Map`) rather than as a value. Those reads
+ * keep the global's member lowerings and fences: its interned function value
+ * models only BUILTIN_VALUE_MEMBERS. */
+function readsBuiltinGlobalMembers(expr: ts.Expression): boolean {
+  let node: ts.Node = expr;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (parent === undefined) return false;
+  if (ts.isPropertyAccessExpression(parent) && parent.expression === node)
+    return !BUILTIN_VALUE_MEMBERS.has(parent.name.text);
+  if (ts.isElementAccessExpression(parent) && parent.expression === node) return true;
+  return (
+    ts.isBinaryExpression(parent) &&
+    parent.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+    parent.right === node
+  );
+}
+
+/** Reports SC2020 when `access` reads a stdlib static member or the
+ * prototype of a builtin constructor with an interned function value through
+ * a receiver the checker types as the constructor's static side
+ * (`MapConstructor`); null otherwise. Calls that lower statically never
+ * reach the member read. */
+function fenceBuiltinConstructorStaticRead(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): null {
+  if (BUILTIN_VALUE_MEMBERS.has(access.name.text)) return null;
+  const symbol = lowerer.typeOf(access.expression).getSymbol();
+  if (
+    symbol !== undefined &&
+    symbol.name.endsWith("Constructor") &&
+    GLOBAL_CONSTRUCTOR_VALUES.has(symbol.name.slice(0, -"Constructor".length)) &&
+    lowerer.isStdlibSymbol(symbol)
+  )
+    lowerer.stdlibMemberFence(access);
   return null;
 }
 

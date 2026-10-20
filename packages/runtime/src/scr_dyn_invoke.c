@@ -1846,8 +1846,11 @@ static ScrDyn *dyn_global_ctor(const char *name) {
       scr_atexit(dyn_global_ctors_cleanup);
     }
     if (!dyn_global_ctors[i]) {
+      /* Each constructor's own length: Object 1, Date 7, RegExp 2, Promise 1,
+       * the collections 0. */
+      uint32_t length = i == 0 || i == 5 ? 1 : i == 1 ? 7 : i == 2 ? 2 : 0;
       dyn_global_ctors[i] = scr_dyn_new_func(scr_closure_new((void *)dyn_global_ctor_names[i], 0),
-                                             dyn_global_ctor_call, i == 0 ? 1 : 0, dyn_s6,
+                                             dyn_global_ctor_call, length, dyn_s6,
                                              dyn_global_ctor_names[i]);
     }
     return scr_dyn_retain(dyn_global_ctors[i]);
