@@ -192,7 +192,7 @@ int main(void) {
           sha512_of(data, n, chunks[c], sha384, a);
           select512(0);
           sha512_of(data, n, chunks[c], sha384, b);
-          check(memcmp(a, b, 64) == 0, kernel512_names[k], n, chunks[c]);
+          check(memcmp(a, b, sha384 ? 48 : 64) == 0, kernel512_names[k], n, chunks[c]);
         }
       }
     }
