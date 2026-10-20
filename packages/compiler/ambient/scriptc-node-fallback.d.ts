@@ -6736,12 +6736,12 @@ declare module "stream" {
     readonly closed: boolean;
     readonly destroyed: boolean;
     readonly errored: Error | null;
-    on(event: "drain" | "finish" | "close", listener: () => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
+    on(event: "drain" | "finish" | "close", listener: () => void): this;
+    on(event: "error", listener: (err: Error) => void): this;
     on(event: "pipe" | "unpipe", listener: (src: Readable) => void): this;
     on(event: string, listener: (...args: any[]) => void): this;
-    once(event: "drain" | "finish" | "close", listener: () => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
+    once(event: "drain" | "finish" | "close", listener: () => void): this;
+    once(event: "error", listener: (err: Error) => void): this;
     once(event: "pipe" | "unpipe", listener: (src: Readable) => void): this;
     once(event: string, listener: (...args: any[]) => void): this;
     addListener(event: "drain" | "finish" | "close", listener: () => void): this;

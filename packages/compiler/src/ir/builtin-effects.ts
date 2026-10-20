@@ -326,6 +326,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.onDyn",
   "readable.resume",
   "readable.pipe",
+  "readable.pipeGeneral",
   "readable.unpipe",
   "writable.write",
   "writable.writeStr",

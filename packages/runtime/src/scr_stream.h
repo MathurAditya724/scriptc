@@ -130,6 +130,9 @@ ScrStream *scr_stream_new_writable_dyn(struct ScrDyn *opts);
  * Writable (fd 1 or 2). */
 ScrStream *scr_stream_child_stdio(void *child, const char *key, size_t key_len);
 ScrStream *scr_stream_stdio_writable(double fd);
+/* readable.pipe() under the general representation: a converted
+ * process.stdout / process.stderr destination is never ended (dst +1). */
+ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end);
 /* A boxed native stream out of a checked-dynamic pipeline stage (+1), or
  * NULL with `message` thrown as the not-supported Error. */
 ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *message);

@@ -3371,6 +3371,16 @@ function pipeIntoStdio(
   };
 }
 
+/** The pipe() libCall for a destination of type `dst`. Under the general
+ * stream representation a Writable slot can hold the converted
+ * process.stdout / process.stderr, which a pipe never ends (as in Node), so
+ * the pipe takes readable.pipeGeneral, which checks for them. */
+function generalPipe(lowerer: Lowerer, dst: IrType): "readable.pipe" | "readable.pipeGeneral" {
+  return lowerer.generalNodeStreams && dst.kind === "object" && dst.className === "%Writable"
+    ? "readable.pipeGeneral"
+    : "readable.pipe";
+}
+
 /** `readable.pipe(untyped)`: a checked-dynamic destination unwraps a boxed
  * native stream at run time (stream.unboxDyn; other values throw the
  * not-supported Error), and pipe() answers the destination value itself. */
@@ -3394,7 +3404,7 @@ function pipeIntoDyn(
     kind: "exprStmt",
     expr: {
       kind: "libCall",
-      fn: "readable.pipe",
+      fn: lowerer.generalNodeStreams ? "readable.pipeGeneral" : "readable.pipe",
       args: [
         { kind: "varRef", localId: source.id, type: receiverValue.type, loc },
         {
@@ -3691,7 +3701,7 @@ export function lowerStreamMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     return {
       kind: "libCall",
-      fn: "readable.pipe",
+      fn: generalPipe(lowerer, dst.type),
       args: [receiver, dst, end],
       type: dst.type,
       loc,
