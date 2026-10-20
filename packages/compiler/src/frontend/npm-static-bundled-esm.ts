@@ -47,6 +47,19 @@ export interface EsmInitHost {
   requireTargetEsModuleStamped(fromFile: string, specifier: string): boolean;
 }
 
+/** A top-level binding of the bundle: its statement and declaration. */
+interface Top {
+  stmt: ts.Statement;
+  node: ts.VariableDeclaration | ts.FunctionDeclaration;
+}
+
+/** A lazy initializer: its declaration's `__esm(...)` call and body. */
+interface InitBody {
+  name: string;
+  call: ts.CallExpression;
+  body: ts.Block;
+}
+
 const ESM_SHAPE_DEGRADE =
   "its shipped JS initializes bundled ES modules through the __esm helper in a shape the " +
   "recognizer cannot verify";
@@ -236,10 +249,6 @@ export function lowerBundledEsmInits(
   if (!source.includes("__esm")) return null;
   if (!filePath.endsWith(".cjs") && ts.isExternalModule(sf)) return null;
 
-  interface Top {
-    stmt: ts.Statement;
-    node: ts.VariableDeclaration | ts.FunctionDeclaration;
-  }
   const top = new Map<string, Top>();
   const duplicate = new Set<string>();
   for (const stmt of sf.statements.nodes) {
@@ -283,12 +292,7 @@ export function lowerBundledEsmInits(
   }
 
   // The initializers: `NAME = HELPER(factory)` declarators.
-  interface Init {
-    name: string;
-    call: ts.CallExpression;
-    body: ts.Block;
-  }
-  const inits = new Map<string, Init>();
+  const inits = new Map<string, InitBody>();
   for (const [name, t] of top) {
     if (!ts.isVariableDeclaration(t.node) || t.node.initializer === undefined) continue;
     const call = unparen(t.node.initializer);
@@ -796,11 +800,6 @@ export function lowerBundledEsmInits(
 const RUN_ONCE_TAIL =
   "return function () { if (__scriptc_done) return; __scriptc_done = true; __scriptc_init(); }; })()";
 
-interface InitBody {
-  name: string;
-  call: ts.CallExpression;
-  body: ts.Block;
-}
 
 /* Classes an initializer defines into a module binding,
  *
@@ -827,7 +826,7 @@ interface InitBody {
 function hoistInitClasses(
   sf: ts.SourceFile,
   inits: ReadonlyMap<string, InitBody>,
-  top: ReadonlyMap<string, { node: ts.Node }>,
+  top: ReadonlyMap<string, Top>,
   duplicate: ReadonlySet<string>,
   writes: ReadonlyMap<string, number>,
   refsByName: ReadonlyMap<string, ts.Identifier[]>,
