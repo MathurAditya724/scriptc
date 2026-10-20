@@ -42,6 +42,7 @@ export function earlyReadVarSymbols(
     const bindings = new Map<ts.Symbol, Binding>();
     const names = new Set<string>();
     ts.walkPreorder(sf, (node) => {
+      if (ts.isFunctionDeclaration(node) && node.name !== undefined) names.add(node.name.text);
       if (!ts.isVariableDeclarationList(node)) return undefined;
       if ((node.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const | ts.NodeFlags.Using)) !== 0)
         return undefined;
@@ -66,7 +67,7 @@ export function earlyReadVarSymbols(
     });
     if (bindings.size === 0) continue;
     const refs = referencesByName(lowerer, sf, names);
-    const analysis = new ScopeAnalysis(lowerer, sf);
+    const analysis = new ScopeAnalysis(lowerer, sf, refs);
     for (const [symbol, binding] of bindings) {
       const settle = analysis.settleIndex(binding.scope, symbol);
       const early = (refs.get(symbol) ?? []).some(
@@ -177,6 +178,7 @@ class ScopeAnalysis {
   constructor(
     private readonly lowerer: Lowerer,
     private readonly sf: ts.SourceFile,
+    private readonly references: ReadonlyMap<ts.Symbol, readonly ts.Identifier[]>,
   ) {
     this.js = isJsSourceFile(sf);
   }
@@ -261,11 +263,7 @@ class ScopeAnalysis {
     const name = fn.name!;
     const symbol = this.lowerer.checker.getSymbolAtLocation(name);
     const refs =
-      symbol === undefined
-        ? []
-        : (referencesByName(this.lowerer, this.sf, new Set([name.text])).get(symbol) ?? []).filter(
-            (ref) => ref !== name,
-          );
+      symbol === undefined ? [] : (this.references.get(symbol) ?? []).filter((ref) => ref !== name);
     this.functionRefs.set(fn, refs);
     return refs;
   }
