@@ -68,7 +68,11 @@ import { isClassCallback } from "./class-callbacks.js";
 import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
-import { emitterRooted } from "./lower-event-emitter.js";
+import {
+  emitterRooted,
+  lowerDynamicEmitterEmit,
+  lowerDynamicEmitterOn,
+} from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
 import { STREAM_OPERATORS } from "./lower-stream.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
@@ -97,6 +101,24 @@ const EMITTER_METHODS = new Set([
   "off",
   "removeListener",
 ]);
+/** The rest of EventEmitter.prototype, answered through an untyped value
+ * on emitters that are not streams (streams keep their own surface). */
+const EMITTER_INTROSPECTION_METHODS = new Set([
+  "listenerCount",
+  "eventNames",
+  "removeAllListeners",
+  "listeners",
+  "rawListeners",
+  "setMaxListeners",
+  "getMaxListeners",
+]);
+/** True when the class is or extends one of the runtime stream classes. */
+function streamRooted(info: ClassInfo): boolean {
+  for (let c: ClassInfo | null = info; c; c = c.base) {
+    if (c.builtinStream !== undefined) return true;
+  }
+  return false;
+}
 const STREAM_BOOL_PROPERTIES = new Set([
   "readable",
   "readableEnded",
@@ -1223,6 +1245,13 @@ export class ClassDynamicDispatch {
       const matching = this.propertyReceivers(lowerer, true).flatMap(({ info }) => {
         if (!info || info.fields.has(method) || info.builtinError) return [];
         if (emitterRooted(lowerer, info) && EMITTER_METHODS.has(method)) return [info];
+        if (
+          emitterRooted(lowerer, info) &&
+          !streamRooted(info) &&
+          EMITTER_INTROSPECTION_METHODS.has(method) &&
+          !findMethodOn(lowerer, info, method)
+        )
+          return [info];
         if (info.builtinStream) {
           return STREAM_METHODS.has(method) ||
             (STREAM_OPERATORS.has(method) && info.builtinStream !== "w")
@@ -5055,6 +5084,66 @@ export class ClassDynamicDispatch {
     return [store, { kind: "return", value: null, loc }];
   }
 
+  /** EventEmitter.prototype's introspection and bookkeeping members on an
+   * emitter seen through an untyped value: Node's results over the native
+   * listener registry. */
+  private emitterIntrospection(lowerer: Lowerer, dispatch: Dispatch, receiver: IrExpr): IrStmt[] {
+    const { method, loc } = dispatch.source;
+    const incoming = dispatch.source.args.map((_, i) => varRef(`p.${i + 1}`, DYN, loc));
+    const ret = (value: IrExpr): IrStmt[] => [
+      { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
+    ];
+    const call = (fn: IrLibFn, args: IrExpr[], type: IrType): IrExpr => ({
+      kind: "libCall",
+      fn,
+      args: [receiver, ...args],
+      type,
+      loc,
+    });
+    // Node indexes _events with the argument itself: an omitted name is
+    // the key "undefined".
+    const eventName = (): IrExpr =>
+      incoming.length
+        ? lowerer.coerceToExpected(incoming[0]!, STRING)
+        : { kind: "strLit", value: "undefined", type: STRING, loc };
+    switch (method) {
+      case "listenerCount":
+        return ret(
+          incoming.length >= 2
+            ? call("emitter.countDyn", [eventName(), incoming[1]!], F64)
+            : call("emitter.count", [eventName()], F64),
+        );
+      case "eventNames":
+        return ret(call("emitter.names", [], { kind: "array", elem: STRING }));
+      case "removeAllListeners":
+        return ret(
+          incoming.length
+            ? call(
+                "emitter.removeAll",
+                [eventName(), { kind: "boolLit", value: false, type: BOOL, loc }],
+                receiver.type,
+              )
+            : call(
+                "emitter.removeAll",
+                [
+                  { kind: "strLit", value: "", type: STRING, loc },
+                  { kind: "boolLit", value: true, type: BOOL, loc },
+                ],
+                receiver.type,
+              ),
+        );
+      case "listeners":
+      case "rawListeners":
+        return ret(call("emitter.listenersDyn", [eventName()], DYN));
+      case "setMaxListeners":
+        return ret(
+          call("emitter.setMaxChk", [incoming[0] ?? dynUndefinedExpr(loc)], receiver.type),
+        );
+      default:
+        return ret(call("emitter.getMax", [], F64));
+    }
+  }
+
   private methodBody(
     lowerer: Lowerer,
     dispatch: Dispatch,
@@ -5070,6 +5159,14 @@ export class ClassDynamicDispatch {
         loc,
       },
     ];
+    if (
+      emitterRooted(lowerer, info) &&
+      !streamRooted(info) &&
+      EMITTER_INTROSPECTION_METHODS.has(method) &&
+      !findMethodOn(lowerer, info, method)
+    ) {
+      return this.emitterIntrospection(lowerer, dispatch, receiver);
+    }
     if (
       info.builtinStream ||
       (emitterRooted(lowerer, info) &&
@@ -5090,18 +5187,37 @@ export class ClassDynamicDispatch {
       ];
       if (method === "emit") {
         if (!incoming.length) return fence();
-        return ret({
-          kind: "libCall",
-          fn: "emitter.emitFlex",
-          args: [receiver, lowerer.coerceToExpected(incoming[0]!, STRING), ...incoming.slice(1)],
-          type: BOOL,
-          loc,
-        });
+        const event = lowerer.coerceToExpected(incoming[0]!, STRING);
+        const bridged = streamRooted(info)
+          ? null
+          : lowerDynamicEmitterEmit(lowerer, receiver, event, incoming.slice(1), loc);
+        return ret(
+          bridged ?? {
+            kind: "libCall",
+            fn: "emitter.emitAny",
+            args: [receiver, event, ...incoming.slice(1)],
+            type: BOOL,
+            loc,
+          },
+        );
       }
       if (registering || removing) {
         if (incoming.length < 2) return fence();
         const event = lowerer.coerceToExpected(incoming[0]!, STRING);
         const cb = incoming[1]!;
+        const bridged =
+          registering && !streamRooted(info)
+            ? lowerDynamicEmitterOn(
+                lowerer,
+                receiver,
+                event,
+                cb,
+                method === "once" || method === "prependOnceListener",
+                method.startsWith("prepend"),
+                loc,
+              )
+            : null;
+        if (bridged) return ret(bridged);
         return [
           {
             kind: "exprStmt",
@@ -5113,7 +5229,7 @@ export class ClassDynamicDispatch {
             fn: registering
               ? info.builtinStream
                 ? "stream.onDyn"
-                : "emitter.onFlex"
+                : "emitter.onAny"
               : "emitter.offDyn",
             args: [
               receiver,

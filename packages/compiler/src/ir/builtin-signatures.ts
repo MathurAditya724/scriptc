@@ -3716,16 +3716,31 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "emitter.checkListener": { argTypes: [DYN], result: VOID },
   "emitter.onDyn": { argTypes: [null, STRING, DYN, null, BOOL, BOOL], result: VOID },
   "emitter.onFlex": { argTypes: [null, STRING, DYN, BOOL, BOOL], result: VOID },
+  /** on/once/prepend* and emit through an untyped value (the class
+   * dispatch of compiled emitters): onFlex/emitFlex plus runtime typed
+   * adapters under 'error' and the meta events, and Node's unhandled-'error'
+   * contract. emitAny is VARIADIC like emitFlex. */
+  "emitter.onAny": { argTypes: [null, STRING, DYN, BOOL, BOOL], result: VOID },
   "emitter.offDyn": { argTypes: [null, STRING, DYN], result: VOID },
   "emitter.removeAll": { argTypes: [null, STRING, BOOL], result: VOID },
   "emitter.emit": { argTypes: [null, STRING], result: BOOL },
   "emitter.emitFlex": { argTypes: [null, STRING], result: BOOL },
+  "emitter.emitAny": { argTypes: [null, STRING], result: BOOL },
+  /** An untyped emit of an event with a fixed tuple: (recv, name, k, then
+   * k checked-dynamic arguments as given, then the event's converted
+   * tuple) — VARIADIC like emitter.emit. hasTyped answers whether a
+   * listener of the name needs the converted tuple. */
+  "emitter.emitMixed": { argTypes: [null, STRING, F64], result: BOOL },
+  "emitter.hasTyped": { argTypes: [null, STRING], result: BOOL },
   "emitter.emitError": { argTypes: [null, STRING, null], result: BOOL },
   "emitter.count": { argTypes: [null, STRING], result: F64 },
   "emitter.countFn": { argTypes: [null, STRING, null], result: F64 },
   "emitter.countDyn": { argTypes: [null, STRING, DYN], result: F64 },
   "emitter.names": { argTypes: [null], result: VOID },
   "emitter.listeners": { argTypes: [null, STRING], result: VOID },
+  /** listeners()/rawListeners() through an untyped value: a checked-
+   * dynamic array (throws when a listener has typed parameters). */
+  "emitter.listenersDyn": { argTypes: [null, STRING], result: DYN },
   /** Stream-'data' registration twins of emitter.on/onDyn (same args):
    * chosen at registration sites whose receiver is stream-rooted, so the
    * backend emits DATA thunks — the runtime's 'data' emission carries
