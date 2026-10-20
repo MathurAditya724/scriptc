@@ -5556,8 +5556,18 @@ export function lowerStaticFieldRead(
   }
   // `C.name` — the JS-observable class name, a compile-time constant on
   // the direct spelling (tsc rejects user statics named `name`, so the
-  // chain above can never shadow it in TypeScript sources).
+  // chain above can never shadow it in TypeScript sources). A class of an
+  // import cycle reads it from its class object instead, whose reference
+  // checks the class's initialization (checkCycleBindingAccesses).
   if (expr.name.text === "name" && info.def.jsName !== undefined) {
+    if (lowerer.classInitFlags.get(info.def.name)?.cycle === true)
+      return {
+        kind: "libCall",
+        fn: "class.name",
+        args: [classValueRef(lowerer, info, expr.expression)],
+        type: STRING,
+        loc,
+      };
     return { kind: "strLit", value: info.def.jsName, type: STRING, loc };
   }
   if (info.callableBase)

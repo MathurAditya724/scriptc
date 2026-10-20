@@ -3557,6 +3557,9 @@ export interface CycleEarlyBinding {
   /** Modules whose TOP-LEVEL code runs only after the declaration ran:
    * modules outside the cycle and cycle members evaluated later. */
   settled: ReadonlySet<ts.SourceFile>;
+  /** The local name each importing file gives the binding when it differs
+   * from the declared one, by file name: Node's ReferenceError names it. */
+  localNames?: ReadonlyMap<string, string>;
 }
 
 /** Every binding of the program's exactly-initialized cycles that can be
@@ -3677,6 +3680,7 @@ function computeCycleEarlyBindings7(
       end: number;
       reference: ts.Identifier | null;
       folded: ts.Identifier | null;
+      localNames: Map<string, string>;
     }
     const candidates = new Map<ts.Symbol, Candidate>();
     const names = new Set<string>();
@@ -3716,6 +3720,7 @@ function computeCycleEarlyBindings7(
             end: stmt.end,
             reference: null,
             folded: null,
+            localNames: new Map(),
           });
           names.add(name.text);
         }
@@ -3724,13 +3729,33 @@ function computeCycleEarlyBindings7(
     });
     if (candidates.size === 0) continue;
     const rankOf = new Map(evaluation.map((m, i) => [m, i] as const));
-    // References: every identifier spelled like a candidate, resolved
-    // through import aliases to the declaration's symbol.
+    // References: every identifier spelled like a candidate or like a
+    // local name the file imports one under (`import { x as y }`, a
+    // default import), resolved through import aliases to the
+    // declaration's symbol.
     for (const sf of order) {
+      const local = new Set<string>();
+      for (const stmt of sf.statements.nodes) {
+        if (!ts.isImportDeclaration(stmt) || stmt.importClause === undefined) continue;
+        const clause = stmt.importClause;
+        const bound: ts.Identifier[] = clause.name !== undefined ? [clause.name] : [];
+        if (clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings))
+          for (const element of clause.namedBindings.elements.nodes) bound.push(element.name);
+        for (const name of bound) {
+          if (names.has(name.text)) continue;
+          const imported = checker.getSymbolAtLocation(name);
+          const candidate =
+            imported === undefined ? undefined : candidates.get(checker.getAliasedSymbol(imported));
+          if (candidate === undefined) continue;
+          local.add(name.text);
+          candidate.localNames.set(sf.fileName, name.text);
+        }
+      }
       const refs: ts.Identifier[] = [];
       ts.walkPreorder(sf, (node) => {
         if (ts.isImportDeclaration(node)) return "skip";
-        if (ts.isIdentifier(node) && names.has(node.text)) refs.push(node);
+        if (ts.isIdentifier(node) && (names.has(node.text) || local.has(node.text)))
+          refs.push(node);
         return undefined;
       });
       if (refs.length === 0) continue;
@@ -3782,6 +3807,7 @@ function computeCycleEarlyBindings7(
         reference: c.reference,
         ...(c.folded !== null ? { folded: c.folded } : {}),
         settled,
+        ...(c.localNames.size > 0 ? { localNames: c.localNames } : {}),
       });
     }
   }
