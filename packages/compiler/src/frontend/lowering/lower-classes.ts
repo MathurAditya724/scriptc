@@ -6724,9 +6724,10 @@ function thunkAsyncSlot(
   if (overridden.sig.async !== true) return;
   const declarer = overridden.declarer;
   // The slot answers the body's promise: an untyped async method's `dyn`
-  // result is the promise's payload, so the slot's ABI is that promise.
+  // result is the promise's payload, so the slot's ABI is that promise. An
+  // async generator method's slot keeps its generator object.
   const ret: IrType =
-    overridden.sig.ret.kind === "promise"
+    overridden.sig.gen || overridden.sig.ret.kind === "promise"
       ? overridden.sig.ret
       : { kind: "promise", inner: overridden.sig.ret };
   declarer.returnAdapters ??= new Map();
