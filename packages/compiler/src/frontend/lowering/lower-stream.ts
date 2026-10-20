@@ -3296,6 +3296,62 @@ function pipeEndOption(lowerer: Lowerer, options: ts.Expression | undefined, loc
   return end;
 }
 
+/** `readable.pipe(process.stdout)`: the process stream joins the pipe as
+ * an fd-backed Writable (stream.stdioWritable), and — like Node, which
+ * never ends process.stdout or process.stderr from a pipe — the source's
+ * end does not end it. pipe() answers the process stream itself. */
+function pipeIntoStdio(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  target: IrExpr,
+): IrExpr {
+  const loc = locOf(call);
+  // JS order: the receiver, then the destination, then the options.
+  const receiverValue = lowerer.lowerExpr(access.expression);
+  const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
+  const stdio = lowerer.declareHiddenLocal("%pipeStdio", target.type);
+  const options = call.arguments.nodes[1];
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: source.id, init: receiverValue, loc },
+    { kind: "varDecl", localId: stdio.id, init: target, loc },
+  ];
+  // The options literal still evaluates; its end flag has no effect here.
+  if (options !== undefined) {
+    stmts.push({ kind: "exprStmt", expr: pipeEndOption(lowerer, options, loc), loc });
+  }
+  const receiver: IrExpr = { kind: "varRef", localId: source.id, type: receiverValue.type, loc };
+  const writable: IrType = { kind: "object", className: "%Writable" };
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "readable.pipe",
+      args: [
+        receiver,
+        {
+          kind: "libCall",
+          fn: "stream.stdioWritable",
+          args: [{ kind: "varRef", localId: stdio.id, type: target.type, loc }],
+          type: writable,
+          loc,
+        },
+        boolLit(false, loc),
+      ],
+      type: writable,
+      loc,
+    },
+    loc,
+  });
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: { kind: "varRef", localId: stdio.id, type: target.type, loc },
+    type: target.type,
+    loc,
+  };
+}
+
 export function lowerStreamMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -3545,7 +3601,9 @@ export function lowerStreamMethodCall(
         loc,
       };
     }
-    const dst = lowerer.lowerExpr(args[0]!);
+    const target = lowerer.lowerExpr(args[0]!);
+    if (target.type.kind === "procStream") return pipeIntoStdio(lowerer, call, access, target);
+    const dst = target;
     const dstInfo =
       dst.type.kind === "object" ? lowerer.classes.get(dst.type.className) : undefined;
     const dstSides = streamSidesOf(lowerer, dstInfo);
@@ -3553,7 +3611,7 @@ export function lowerStreamMethodCall(
       lowerer.noLowering(
         `pipe into a '${lowerer.fmt(dst.type)}'`,
         args[0]!,
-        "the destination must be a stream Writable/Duplex (process streams and sockets are not pipe destinations yet)",
+        "the destination must be a stream Writable/Duplex, process.stdout or process.stderr (sockets are not pipe destinations yet)",
       );
     }
     const end = pipeEndOption(lowerer, args[1], loc);

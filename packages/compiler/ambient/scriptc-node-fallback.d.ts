@@ -80,21 +80,56 @@ declare namespace NodeJS {
     path?: string | undefined;
     syscall?: string | undefined;
   }
-  /* The piped child-output stream (child.stdout / child.stderr under
-   * stdio ["ignore", "pipe", "pipe"]): 'data' fires one Buffer chunk per
-   * read (≤64KB, consumer-driven — no listener, no read), 'end' fires
-   * once at EOF and always BEFORE the child's 'exit'. A flowing stream
-   * keeps the loop alive. */
+  /* The readable-stream interface every Node stream implements. The
+   * piped child-output stream (child.stdout / child.stderr under stdio
+   * ["ignore", "pipe", "pipe"]) is declared with it: 'data' fires one
+   * Buffer chunk per read (≤64KB, consumer-driven — no listener, no
+   * read), 'end' fires once at EOF and always BEFORE the child's 'exit'. A
+   * flowing stream keeps the loop alive. A program that also passes
+   * other streams (fs, zlib, node:stream) where this interface is
+   * expected compiles it as the node:stream Readable, with child output
+   * bridged into one. */
   interface ReadableStream {
     on(event: "data", listener: (chunk: Buffer) => void): void;
     on(event: "data", listener: (chunk: string) => void): void;
     on(event: "end", listener: () => void): void;
+    on(event: "close", listener: () => void): void;
+    on(event: "error", listener: (err: Error) => void): void;
     once(event: "data", listener: (chunk: Buffer) => void): void;
     once(event: "data", listener: (chunk: string) => void): void;
     once(event: "end", listener: () => void): void;
+    once(event: "close", listener: () => void): void;
+    once(event: "error", listener: (err: Error) => void): void;
     /* setEncoding('utf8') makes subsequent data chunks strings, including
      * multibyte sequences split across native pipe reads. */
     setEncoding(encoding: string): this;
+    readonly readable: boolean;
+    pause(): this;
+    resume(): this;
+    isPaused(): boolean;
+    pipe<T extends WritableStream>(destination: T, options?: { end?: boolean }): T;
+    unpipe(destination?: WritableStream): this;
+  }
+  /* The writable-stream interface every Node stream implements:
+   * process.stdout/process.stderr, fs.WriteStream and the node:stream
+   * Writable family. Written only to the process streams, it compiles as
+   * their descriptor; with other streams flowing into it, as the
+   * node:stream Writable (the process streams convert into one). */
+  interface WritableStream {
+    readonly writable: boolean;
+    write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
+    write(
+      data: string | Uint8Array,
+      encoding: BufferEncoding,
+      callback?: (error?: Error | null) => void,
+    ): boolean;
+    end(callback?: () => void): this;
+    end(data: string | Uint8Array, callback?: () => void): this;
+    end(data: string | Uint8Array, encoding: BufferEncoding, callback?: () => void): this;
+    on(event: "drain" | "finish" | "close", listener: () => void): void;
+    on(event: "error", listener: (err: Error) => void): void;
+    once(event: "drain" | "finish" | "close", listener: () => void): void;
+    once(event: "error", listener: (err: Error) => void): void;
   }
 }
 
@@ -6317,7 +6352,7 @@ declare module "node:cluster" {
 /* node:tty — the fd probe (the same isatty(3) behind process.*.isTTY)
  * and the supported structural view of a process output stream. */
 declare module "tty" {
-  export interface WriteStream {
+  export interface WriteStream extends NodeJS.WritableStream {
     write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
     write(
       data: string | Uint8Array,
@@ -6567,8 +6602,8 @@ declare module "stream" {
     resume(): this;
     isPaused(): boolean;
     setEncoding(encoding: string): this;
-    pipe<T extends Writable>(destination: T, options?: { end?: boolean }): T;
-    unpipe(destination?: Writable): this;
+    pipe<T extends NodeJS.WritableStream>(destination: T, options?: { end?: boolean }): T;
+    unpipe(destination?: NodeJS.WritableStream): this;
     destroy(error?: Error): this;
     readonly readable: boolean;
     readonly readableEnded: boolean;
@@ -6701,12 +6736,12 @@ declare module "stream" {
     readonly closed: boolean;
     readonly destroyed: boolean;
     readonly errored: Error | null;
-    on(event: "drain" | "finish" | "close", listener: () => void): this;
-    on(event: "error", listener: (err: Error) => void): this;
+    on(event: "drain" | "finish" | "close", listener: () => void): void;
+    on(event: "error", listener: (err: Error) => void): void;
     on(event: "pipe" | "unpipe", listener: (src: Readable) => void): this;
     on(event: string, listener: (...args: any[]) => void): this;
-    once(event: "drain" | "finish" | "close", listener: () => void): this;
-    once(event: "error", listener: (err: Error) => void): this;
+    once(event: "drain" | "finish" | "close", listener: () => void): void;
+    once(event: "error", listener: (err: Error) => void): void;
     once(event: "pipe" | "unpipe", listener: (src: Readable) => void): this;
     once(event: string, listener: (...args: any[]) => void): this;
     addListener(event: "drain" | "finish" | "close", listener: () => void): this;

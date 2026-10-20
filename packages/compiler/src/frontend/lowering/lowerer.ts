@@ -1,3 +1,4 @@
+import { needsGeneralNodeStreams, stdioIntoGeneralStream } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
 import {
@@ -877,6 +878,10 @@ export interface LowererMode {
   /** Statically resolved child_process.fork program roots, in stable target-id order. */
   forkTargets?: readonly ts.SourceFile[];
   frontendServices?: FrontendServices | undefined;
+  /** The program's general stream representation (TypeMapperCtx.
+   * generalNodeStreams). lowerToIr turns it on only after a pass without
+   * it saw a stream flow that needs it (requiresGeneralNodeStreams). */
+  generalNodeStreams?: boolean;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LowerOptions.libraryCallbacks (see there). */
@@ -1033,10 +1038,40 @@ export function lowerToIr(
   for (const d of extraModuleCycleDiags) reachableEmit.pushDiag(d);
   for (const d of ffiValidation.diagnostics) reachableEmit.pushDiag(d);
   const emitted = reachableEmit.emitReachable(options.libRoots);
-  const { reachable } = emitted;
+  let { reachable } = emitted;
   let result = emitted.result;
   let resultLowerer = reachableEmit;
   timing("reachable-emit", { reachable: reachable.size });
+  // The general stream representation (TypeMapperCtx.generalNodeStreams)
+  // is a per-program decision: only a program whose reachable code moved
+  // a general stream into a stdio-represented stream slot lowers again
+  // with it. Every other program keeps the single pass above unchanged.
+  const generalNodeStreams = reachableEmit.requiresGeneralNodeStreams;
+  if (generalNodeStreams) {
+    const general = new Lowerer(program, entry, moduleOrder, {
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      targetPlatform,
+      startupCrash,
+      inlineRequireCycleCalls: options.inlineRequireCycleCalls,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      generalNodeStreams: true,
+    });
+    for (const d of extraModuleCycleDiags) general.pushDiag(d);
+    for (const d of ffiValidation.diagnostics) general.pushDiag(d);
+    const generalEmitted = general.emitReachable(options.libRoots);
+    reachable = generalEmitted.reachable;
+    result = generalEmitted.result;
+    resultLowerer = general;
+    timing("general-streams-relower", { reachable: reachable.size });
+  }
   // A generic class-rest support decision can depend on record metadata
   // whose historical owner is discovered only while retained bodies lower.
   // If the settled answer is a fence, rerun the ordinary reachable emit so
@@ -1044,10 +1079,11 @@ export function lowerToIr(
   // declarators stay unvisited, bindings block, cascades and stats match the
   // historical compiler. This is a rare compatibility fallback; programs
   // without such a settled fence retain checker-backed IR exactly once.
-  if (reachableEmit.requiresHistoricalOrderRelower) {
+  if (resultLowerer.requiresHistoricalOrderRelower) {
     const emit = new Lowerer(program, entry, moduleOrder, {
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
       reachable,
       targetPlatform,
       startupCrash,
@@ -1107,6 +1143,7 @@ export function lowerToIr(
   const remainder = new Lowerer(program, entry, moduleOrder, {
     frontendServices: options.frontendServices,
     projectCheckJs: options.projectCheckJs ?? false,
+    ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
     reachable,
     remainder: true,
     alreadyFlushed: resultLowerer.flushedSymbols,
@@ -2496,6 +2533,12 @@ export class Lowerer {
   /** Settled generic class-rest metadata requires the historical emit
    * fallback so its fence can poison the original statement atomically. */
   requiresHistoricalOrderRelower = false;
+  /** A general stream value (a runtime stream class instance) reached a
+   * slot the child/process stdio handles represent — NodeJS.ReadableStream,
+   * NodeJS.WritableStream, or @types/node's stream.Readable/Writable — or
+   * a stdio handle reached an 'unknown' slot. lowerToIr then lowers the
+   * program again under the general stream representation. */
+  requiresGeneralNodeStreams = false;
   /** Helpers that snapshot shape declaration order into their bodies.
    * Reachability lowers inits before the declarations they discover, so
    * these rebuild after the worklist restores historical shape metadata. */
@@ -2943,6 +2986,7 @@ export class Lowerer {
    * refuse and fence exactly as before. Stage S6 demotes the units of
    * committed refusals in "auto" and keeps them refusals in "static-only". */
   readonly tierMode: TierMode;
+  readonly generalNodeStreams: boolean;
   /** Functions finishModule placed in the dynamic tier (ir/tiers.ts). */
   dynamicFunctions: DynamicFunction[] = [];
   /** Their IR, for coverage's dynamic statement count. */
@@ -3071,6 +3115,7 @@ export class Lowerer {
     this.startupCrash = mode.startupCrash ?? null;
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.tierMode = mode.tierMode ?? "auto";
+    this.generalNodeStreams = mode.generalNodeStreams ?? false;
     this.workerTargets = mode.workerTargets ?? [];
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
@@ -3167,6 +3212,7 @@ export class Lowerer {
       isExternalTypeFile: (sf) =>
         this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))),
       typeMemo: this.typeMemo,
+      ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       canMemoizeType: () =>
         this.typeParamBindings === null &&
         this.typeParamTsBindings === null &&
@@ -8451,6 +8497,8 @@ export class Lowerer {
    * validator ICEs on them as the usual backstop. */
   requireExactShape(node: ts.Node, actual: IrType, expected: IrType): void {
     if (typeEquals(actual, expected)) return;
+    if (!this.generalNodeStreams && needsGeneralNodeStreams(this, actual, expected))
+      this.requiresGeneralNodeStreams = true;
     // dyn mismatches first. A dyn ('unknown') value flowing into a typed
     // slot needs a CHECKED cast — the hint points at `as <type>`; tsc
     // usually rejects this before we do, so the fence is mostly defensive.
@@ -8657,6 +8705,9 @@ export class Lowerer {
     }
     if (expr.type.kind === "void" && expected.kind !== "void" && this.neverValued.has(expr))
       return this.divergentValue(expr, expected);
+    // process.stdout/stderr into a general Writable slot (general-streams.ts).
+    const stdioStream = stdioIntoGeneralStream(this, expr, expected);
+    if (stdioStream) return this.coerceToExpected(stdioStream, expected);
     // Iterator-typed slots: native iterators and differently typed
     // generators step through an adapter generator.
     if (expected.kind === "generator" && !typeEquals(expr.type, expected)) {

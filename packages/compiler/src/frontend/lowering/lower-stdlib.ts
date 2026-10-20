@@ -4,6 +4,7 @@ import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerToNumberArgument } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
+import { isDeclaredInAmbientNamespace } from "../type-mapper.js";
 import {
   arrayOf,
   BOOL,
@@ -1021,7 +1022,15 @@ export function fenceStaticAbortControllerMemberRead(
 function isStdlibFetchInterface(lowerer: Lowerer, node: ts.Node, owner: string): ts.Symbol | null {
   const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node));
   for (const symbol of [type.getSymbol(), type.getAliasSymbol()]) {
-    if (symbol?.name === owner && lowerer.isStdlibSymbol(symbol)) return symbol;
+    // NodeJS.ReadableStream shares the WHATWG interface's name.
+    if (
+      symbol?.name === owner &&
+      lowerer.isStdlibSymbol(symbol) &&
+      !symbol.declarations.some(
+        (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientNamespace(d, "NodeJS"),
+      )
+    )
+      return symbol;
   }
   return null;
 }

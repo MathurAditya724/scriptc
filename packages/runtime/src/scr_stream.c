@@ -6619,3 +6619,42 @@ ScrStream *scr_crypto_hash_stream_piped(ScrCryptoHash *hash) {
   if (s) scr_crypto_hash_stream_hold(hash);
   return s;
 }
+
+/* ── the compiler's general stream representation ─────────────────────
+ * NodeJS.ReadableStream / NodeJS.WritableStream slots that also hold other
+ * streams compile as this unit's classes; the stdio handles convert into
+ * them where they are read or flow. Both entry points sit last in the unit
+ * and reference only global symbols and no new constant data, so programs
+ * that never convert link the same bytes as before. */
+
+/* A child stdio read (the child.stdioStream libCall): the bridged stream
+ * the checked-dynamic ChildProcess view answers for the same key ("stdin",
+ * "stdout" or "stderr", passed by the compiled program), so both views
+ * share one stream per slot. +1, or NULL for an unpiped slot or a throw. */
+ScrStream *scr_stream_child_stdio(void *child, const char *key, size_t key_len) {
+  ScrDyn *handle = scr_dyn_new_handle(child, SCR_DYNH_CHILD);
+  ScrDyn *box = scr_dyn_handle_ops_of(handle)->get(child, key, key_len);
+  scr_dyn_release(handle);
+  if (box == NULL) return NULL;
+  ScrStream *stream = box->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_unbox(box) : NULL;
+  scr_dyn_release(box);
+  return stream;
+}
+
+/* process.stdout / process.stderr flowing into a Writable slot (the
+ * stream.stdioWritable libCall): a Writable whose _write hands each chunk
+ * to the descriptor through process.stdout.write's synchronous path and
+ * completes at once, so ordering against console output and direct writes
+ * is unchanged. The closure keeps the fd as given (1 or 2). */
+static void scr_stream_stdio_write(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
+  int fd = (int)scr_box_get_f64(cb->caps[0]);
+  (void)scr_stdio_write(fd == 2 ? 2 : 1, chunk->data, chunk->len * scr_bytes_elem_size(chunk->elem));
+  scr_stream_write_done(s, NULL);
+}
+ScrStream *scr_stream_stdio_writable(double fd) {
+  ScrClosure *write = scr_closure_new((void *)scr_stream_stdio_write, 1);
+  write->caps[0] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(write->caps[0], fd);
+  return scr_stream_new_writable(-1, true, true, write, scr_stream_stdio_write,
+      NULL, NULL, NULL, NULL);
+}

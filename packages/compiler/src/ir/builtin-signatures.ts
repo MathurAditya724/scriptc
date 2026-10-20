@@ -2534,6 +2534,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * queue, end/destroy settle it, writable is a pure state read, and
    * listener callbacks move into the writer registry. */
   "child.stdin": { argTypes: [CHILD_T], result: VOID },
+  /** Under the general stream representation (general-streams.ts), a
+   * stdio read (slot 0, 1 or 2) answers the child's bridged runtime stream
+   * — `Writable | null` for stdin, `Readable | null` otherwise; the bridge
+   * throws when the program lacks the stream unit's boxing helpers. */
+  "child.stdioStream": { argTypes: [CHILD_T, F64], result: VOID },
   // Listener registrations: callback func shapes are program-dependent
   // (zero-param / Buffer / Buffer-armed union) — the slots pin arity,
   // the stream receiver, and the once-flag.
@@ -2555,6 +2560,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * stderrWrite paths so buffering and ordering stay identical. Data
    * borrowed; the bool is Node's always-true backpressure signal. */
   "procStream.write": { argTypes: [PROCSTREAM_T, STRING], result: BOOL },
+  /** process.stdout/stderr flowing into a runtime Writable slot under the
+   * general stream representation: an fd-backed Writable (+1) whose
+   * writes take process.stdout.write's synchronous path. */
+  "stream.stdioWritable": {
+    argTypes: [PROCSTREAM_T],
+    result: { kind: "object", className: "%Writable" },
+  },
   "child.killed": { argTypes: [CHILD_T], result: BOOL },
   "child.kill": { argTypes: [CHILD_T, STRING], result: BOOL },
   "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },

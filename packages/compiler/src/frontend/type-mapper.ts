@@ -980,7 +980,7 @@ function isDeclaredInAmbientModule(d: ts.Declaration, name: string): boolean {
 /** True when the declaration's nearest enclosing namespace is `name`
  * (`declare global { namespace NodeJS { ... } }` — the NodeJS-global
  * interfaces @types/node declares outside any ambient module). */
-function isDeclaredInAmbientNamespace(d: ts.Declaration, name: string): boolean {
+export function isDeclaredInAmbientNamespace(d: ts.Declaration, name: string): boolean {
   let node: ts.Node | undefined = d.parent;
   while (node) {
     if (ts.isModuleDeclaration(node) && ts.isIdentifier(node.name)) {
@@ -1146,6 +1146,13 @@ export interface TypeMapperCtx {
    * type descriptions for project-owned values, but their imported runtime
    * bindings are fenced separately by the Lowerer. */
   isExternalTypeFile: (sf: ts.SourceFile) => boolean;
+  /** The program's general stream representation (lowerToIr decides it
+   * per program): NodeJS.ReadableStream / NodeJS.WritableStream and
+   * @types/node's stream.Readable / stream.Writable map to the runtime
+   * stream classes instead of the child/process stdio handles, so values
+   * from every stream producer share their slots. Off (the default), the
+   * stdio handles keep those spellings. */
+  generalNodeStreams?: boolean;
   /** Successful context-free mappings, keyed by the
    * TypeScript server's stable type id. A generated facade can reference the
    * same large record/function type thousands of times; remapping its full
@@ -2998,6 +3005,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // global-namespace interface real code writes in its own signatures —
   // prefixStream's `output` param). The representation is the raw fd
   // scalar; the lowered surface is write(string).
+  // Under the program's general stream representation (generalNodeStreams)
+  // NodeJS.WritableStream is the runtime Writable instead: the process
+  // streams convert into it where they flow (process.stdioWritable).
+  const nodeWritableInterface =
+    psym?.name === "WritableStream" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientNamespace(d, "NodeJS"),
+    );
+  if (nodeWritableInterface && ctx.generalNodeStreams === true) {
+    return { kind: "object", className: "%Writable" };
+  }
   if (
     (psym?.name === "WriteStream" &&
       psym.declarations.some(
@@ -3007,13 +3028,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           (isDeclaredInAmbientModule(d, "tty") ||
             (isDeclaredInAmbientModule(d, "process") && isDeclaredInAmbientNamespace(d, "NodeJS"))),
       )) ||
-    (psym?.name === "WritableStream" &&
-      psym.declarations.some(
-        (d) =>
-          ts.isInterfaceDeclaration(d) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientNamespace(d, "NodeJS"),
-      ))
+    nodeWritableInterface
   ) {
     return PROCSTREAM_T;
   }
@@ -3030,6 +3045,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           isDeclaredInAmbientModule(d, "child_process"),
       )) ||
     (psym?.name === "Writable" &&
+      ctx.generalNodeStreams !== true &&
       psym.declarations.some(
         (d) =>
           (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
@@ -3047,6 +3063,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // branch: the fallback's Readable must map to the runtime class, and
   // under the fallback child.stdout is NodeJS.ReadableStream (its own
   // branch below), so the two never collide.
+  // @types/node's Duplex/Transform/PassThrough classes have no child-stdio
+  // reading, so they map to the runtime classes too; its Readable and
+  // Writable join them under the general representation.
   for (const [irName, rec] of RUNTIME_STREAM_CLASSES) {
     if (
       psym?.name === rec.lib &&
@@ -3054,15 +3073,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (d) =>
           ts.isClassDeclaration(d) &&
           ctx.isStdlibFile(d.getSourceFile()) &&
-          !isNodeTypesPath(d.getSourceFile().fileName) &&
+          (!isNodeTypesPath(d.getSourceFile().fileName) ||
+            ctx.generalNodeStreams === true ||
+            (rec.lib !== "Readable" && rec.lib !== "Writable")) &&
           isDeclaredInAmbientModule(d, "stream"),
       )
     ) {
       return { kind: "object", className: irName };
     }
   }
-  // node:zlib's stream classes (the shipped fallback declarations): their
-  // instances are runtime Transform streams.
+  // node:zlib's stream classes (the shipped fallback declarations and
+  // @types/node's): their instances are runtime Transform streams.
   if (
     psym !== undefined &&
     ZLIB_STREAM_MODES.has(psym.name) &&
@@ -3070,22 +3091,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (d) =>
         ts.isClassDeclaration(d) &&
         ctx.isStdlibFile(d.getSourceFile()) &&
-        !isNodeTypesPath(d.getSourceFile().fileName) &&
         isDeclaredInAmbientModule(d, "zlib"),
     )
   ) {
     return { kind: "object", className: "%Transform" };
   }
-  // fs.ReadStream / fs.WriteStream (the shipped fallback declarations):
-  // their instances are runtime Readable / Writable streams
-  // (scr_fs_stream.c).
+  // fs.ReadStream / fs.WriteStream (the shipped fallback declarations and
+  // @types/node's): their instances are runtime Readable / Writable
+  // streams (scr_fs_stream.c).
   if (
     (psym?.name === "ReadStream" || psym?.name === "WriteStream") &&
     psym.declarations.some(
       (d) =>
         ts.isClassDeclaration(d) &&
         ctx.isStdlibFile(d.getSourceFile()) &&
-        !isNodeTypesPath(d.getSourceFile().fileName) &&
         isDeclaredInAmbientModule(d, "fs"),
     )
   ) {
@@ -3107,6 +3126,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           isDeclaredInAmbientNamespace(d, "NodeJS"),
       ))
   ) {
+    // The general representation: the runtime Readable, which child
+    // stdio reads produce through the child stream bridge.
+    if (ctx.generalNodeStreams === true) return { kind: "object", className: "%Readable" };
     return { kind: "childStream" };
   }
   // dgram.Socket: the same ambiguous "Socket" name disambiguated by its
@@ -4125,10 +4147,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const mapped = mapType(checker.getTypeOfSymbol(p), ctx);
       if (!mapped) return false;
       const arms = mapped.kind === "union" ? ctx.unions.get(mapped.unionId)?.arms : [mapped];
+      // Under the general stream representation the stdio members are the
+      // runtime stream classes.
+      const isExpected = (arm: IrType): boolean =>
+        arm.kind === expected ||
+        (ctx.generalNodeStreams === true &&
+          arm.kind === "object" &&
+          ((expected === "childStream" && arm.className === "%Readable") ||
+            (expected === "childWriter" && arm.className === "%Writable")));
       return (
         arms !== undefined &&
-        arms.some((arm) => arm.kind === expected) &&
-        arms.every((arm) => arm.kind === expected || arm.kind === unit)
+        arms.some(isExpected) &&
+        arms.every((arm) => isExpected(arm) || arm.kind === unit)
       );
     };
     const childShaped =
