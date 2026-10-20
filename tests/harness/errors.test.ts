@@ -359,6 +359,37 @@ const arr = tuple.map(() => new Date(0));`,
     expect(r).toEqual({ stdout: reference.stdout, stderr: reference.stderr, exitCode: 0 });
   });
 
+  test.each([
+    ["an argument", "make(Upper, { objectMode: true });"],
+    ["a spread argument", "spread(Upper, [{ objectMode: true }]);"],
+  ])(
+    "%s through an untyped factory to an inherited stream constructor is a named deferred fence (JS lane)",
+    async (_, call) => {
+      // The constructor a ctor-less stream subclass inherits takes no
+      // arguments here; typed construction refuses them at compile time,
+      // and construction from untyped code refuses them at run time
+      // instead of constructing without them.
+      const r = await compileAndRun(
+        `inherited-stream-ctor-${call.startsWith("make") ? "args" : "spread"}`,
+        `'use strict';
+const { Transform } = require('node:stream');
+class Upper extends Transform {}
+function make(F, options) { return new F(options); }
+function bare(F) { return new F(); }
+function spread(F, args) { return new F(...args); }
+console.log('bare', bare(Upper) instanceof Upper, spread(Upper, []) instanceof Upper);
+${call}
+`,
+        "cjs",
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("bare true true\n");
+      expect(r.stderr).toMatch(
+        /^Uncaught Error: new Upper with arguments through an inherited stream constructor .* is not supported yet \[SC1090 at .*inherited-stream-ctor-\w+\.cjs:3\]\n$/,
+      );
+    },
+  );
+
   test("extending a property-assigned class ABOVE its assignment is a named deferred fence (JS lane)", async () => {
     // The property-assigned class-expression family (corpus 2032/2033
     // pins what lowers): `exports.O = class extends exports.I {}` with
@@ -1009,7 +1040,7 @@ describe("refused statements in speculatively lowered JavaScript functions", () 
       `(function () {
   var root = this;
   console.log("before");
-  console.log(root === eval("this"));
+  process.on("__proto__", () => root);
   console.log("after");
 }).call(this);
 `,
@@ -1020,7 +1051,7 @@ describe("refused statements in speculatively lowered JavaScript functions", () 
       "speculative-apply",
       `(function () {
   console.log("before");
-  console.log(typeof eval("1"));
+  process.on("__proto__", () => {});
 }).apply(null, []);
 `,
       "before\n",
@@ -1031,7 +1062,7 @@ describe("refused statements in speculatively lowered JavaScript functions", () 
       `class Base {}
 class Derived extends (function () {
   console.log("before");
-  console.log(typeof eval("1"));
+  process.on("__proto__", () => {});
   return Base;
 })() {}
 console.log(typeof Derived);
@@ -1045,7 +1076,7 @@ console.log(typeof Derived);
     expect(r.stdout).toBe(stdout);
     expect(r.stderr).toMatch(
       new RegExp(
-        `^Uncaught Error: values of type '\\(x: string\\) => any' cannot be compiled: .* \\[SC2009 at .*${name}\\.cjs:${line}\\]\\n$`,
+        `^Uncaught Error: 'process\\.on\\("__proto__", \\.\\.\\.\\)' is part of the standard library types but has no scriptc lowering yet \\[SC2020 at .*${name}\\.cjs:${line}\\]\\n$`,
       ),
     );
   });
@@ -1470,6 +1501,70 @@ console.log(count(require("./lib.cjs")));
   });
 });
 
+describe("builtin constructor values (JS lane)", () => {
+  test("members without a lowering stay refused instead of reading undefined", async () => {
+    // Builtin constructors read as interned function values that model only
+    // name, length and constructor. Every other static member or prototype
+    // read (direct, bracketed, `in`, through an alias or globalThis), and
+    // reflection on or redefinition of their members, must stay a located
+    // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
+    // Test262 lost 769 refusals to undefined reads before this was pinned.
+    const reads = [
+      ["Map.prototype", "Map.prototype"],
+      ["Date.prototype", "Date.prototype"],
+      ["RegExp.prototype", "RegExp.prototype"],
+      ["Set.prototype", "Set.prototype"],
+      ["Promise.prototype", "Promise.prototype"],
+      ["WeakMap.prototype", "WeakMap.prototype"],
+      ["WeakSet.prototype", "WeakSet.prototype"],
+      ["Date.prototype.getYear", "Date.prototype.getYear"],
+      ["Map.prototype.constructor", "Map.prototype.constructor"],
+      ["Object.isFrozen", "Object.isFrozen"],
+      [
+        "getOwnPropertyDescriptor(Map.prototype)",
+        'Object.getOwnPropertyDescriptor(Map.prototype, "size")',
+      ],
+      ["isExtensible(Date.prototype)", "Object.isExtensible(Date.prototype)"],
+      ["Map['prototype']", 'Map["prototype"]'],
+      ["'prototype' in Map", '"prototype" in Map'],
+      ["globalThis.Map.prototype", "globalThis.Map.prototype"],
+      ["Map alias prototype", "MapAlias.prototype"],
+      ["Date alias prototype", "DateAlias.prototype"],
+      ["Object alias isFrozen", "ObjectAlias.isFrozen"],
+      ["Object.hasOwn(Object)", 'Object.hasOwn(Object, "hasOwn")'],
+      ["getOwnPropertyNames(Date)", "Object.getOwnPropertyNames(Date)"],
+      ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
+      ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
+    ] as const;
+    const source = `"use strict";
+const MapAlias = Map;
+const DateAlias = Date;
+const { Object: ObjectAlias } = globalThis;
+function report(label, e) {
+  const m = /\\[(SC\\d{4}) at [^\\]]*:(\\d+)\\]$/.exec(e.message);
+  console.log(label, m ? "refused " + m[1] + " line " + m[2] : "threw " + e.message);
+}
+${reads.map(([label, read]) => `try { const value = ${read}; console.log(${JSON.stringify(label)}, "read", typeof value); } catch (e) { report(${JSON.stringify(label)}, e); }`).join("\n")}
+console.log(Date.length, RegExp.length, Promise.length, Object.length, Map.length, Set.length);
+console.log(Date.name, Map.name, Map.constructor === Function, Object.constructor === Function);
+`;
+    const r = await compileAndRun("builtin-constructor-members", source, "cjs");
+    expect(r.stderr).toBe("");
+    expect(r.exitCode).toBe(0);
+    const lines = r.stdout.trimEnd().split("\n");
+    expect(lines.slice(0, reads.length)).toEqual(
+      reads.map(([label], i) =>
+        expect.stringMatching(
+          new RegExp(
+            `^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} refused SC(2020|1090) line ${i + 9}$`,
+          ),
+        ),
+      ),
+    );
+    expect(lines.slice(reads.length)).toEqual(["7 2 1 1 0 0", "Date Map true true"]);
+  });
+});
+
 // WebCrypto's native slice is HMAC importKey('raw'), sign and verify, and
 // the SHA-1/SHA-2 digests. Algorithms Node recognizes outside that slice
 // reject with a coded SC2020 Error instead of a Node-shaped success, and a
@@ -1528,6 +1623,38 @@ await crypto.subtle.importKey("jwk", { kty: "oct", k: "c2VjcmV0" }, { name: "HMA
     expect(r.stdout).toBe("before\n");
     expect(r.stderr).toMatch(
       /^Uncaught Error: 'crypto\.subtle\.importKey with the 'jwk' key format' is part of the standard library types but has no scriptc lowering yet.*\n$/,
+    );
+  });
+});
+
+describe("inspecting error subclasses with properties created at run time (JS lane)", () => {
+  test("an instance whose constructor created a property is a named fence", async () => {
+    // Node prints `[Conditional [Error]: m] { extra: 'x' }`. The property
+    // lives in the instance's property bag, which the error rendering does
+    // not read, so the instance refuses instead of printing a partial
+    // object. One without such a property prints as Node prints it.
+    const r = await compileAndRun(
+      "error-subclass-runtime-properties",
+      `import * as util from "node:util";
+class Conditional extends Error {
+  constructor(message, extra) {
+    super(message);
+    if (extra) this.extra = extra;
+  }
+}
+const plain = new Conditional("plain");
+plain.stack = "";
+console.log(util.inspect(plain));
+const extra = new Conditional("extra", "x");
+extra.stack = "";
+console.log(util.inspect(extra));
+`,
+      "mjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("[Conditional [Error]: plain]\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: inspecting a 'Conditional' error with properties created at run time is not supported yet \[SC2020[^\]]*\]\n$/,
     );
   });
 });

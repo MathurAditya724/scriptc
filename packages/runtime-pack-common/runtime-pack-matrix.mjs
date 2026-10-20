@@ -69,6 +69,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
   ["scr_perf.c", "dynAsync"],
+  // perf_hooks event-loop metrics, only for programs that read them.
+  ["scr_perf_loop.c", "perfLoop"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
@@ -88,11 +90,17 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_util_compare.c", all("parseArgs", "symbol")],
   ["scr_util_style.c", all("parseArgs", "inspect", "dynAsync")],
   ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
+  // Untyped EventEmitter and stream constructor values call listeners
+  // through the dyn-invoke unit, inspect unhandled 'error' payloads and
+  // create EventEmitter's private symbols.
+  ["scr_dyn_builtin_class.c", all("dynBuiltinClass", "inspect", "dynInvoke", "symbol", "emitter")],
   ["scr_stream.c", "stream"],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
   ["scr_stream_ops.c", all("stream", "dynAsync")],
+  // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
+  ["scr_stream_dyn.c", "streamDyn"],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],
   // FileHandle streams reference both the stream unit and FileHandle.
@@ -104,12 +112,15 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_http.c", "httpEffective"],
   ["scr_http2.c", "http2"],
   ["scr_dgram.c", "dgram"],
+  // The dns promise forms run over the dgram unit's callback forms.
+  ["scr_dns_promises.c", all("dgram", "dnsPromises")],
   ["scr_watch.c", "watch"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
+  ["scr_wasm.c", "wasm"],
   ["scr_webcrypto.c", "webcrypto"],
   ["scr_fetch.c", "nativeFetch"],
 ];

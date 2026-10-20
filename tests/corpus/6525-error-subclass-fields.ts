@@ -2,8 +2,9 @@
 // prints the stackless error base, with Node's constructor-name header
 // (`[Bailable [Error]: m]`), followed by the own properties — on one line
 // or broken across lines by the same width rule as any object, and as
-// `[Name]` beyond the depth budget. (The stack is cleared: compiled errors
-// carry none.)
+// `[Name]` beyond the depth budget. A `cause` follows the fields: `cause:`
+// when assigned, `[cause]:` from the constructor's options. (The stack is
+// cleared: compiled errors carry none.)
 import * as util from "node:util";
 class Bailable extends Error {
   bail = false;
@@ -36,3 +37,14 @@ f.status = 404;
 show(f);
 class Plain extends Error {}
 show(clean(new Plain("field-less beside fielded subclasses")));
+class Retried extends Error {
+  retries = 2;
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
+  }
+}
+show(clean(new Retried("with a cause", "from the options")));
+show(clean(new Retried("with an undefined cause")));
+const assigned = clean(new Bailable("assigned"));
+assigned.cause = { code: 1 };
+show(assigned);

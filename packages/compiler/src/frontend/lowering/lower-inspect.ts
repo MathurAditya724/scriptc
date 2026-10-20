@@ -7,6 +7,7 @@ import {
   strLit,
   varRef,
 } from "../../ir/build.js";
+import { builtinClassDynValueOf, builtinClassKindOf } from "./builtins/builtin-class-dyn.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import * as ts from "../ts7/adapter.js";
@@ -134,6 +135,31 @@ function errorRenderable(info: ClassInfo): boolean {
   return info.subclasses.every((s) => errorRenderable(s));
 }
 
+/** The accessors that change what Node reads for an error's header. The
+ * runtime renders the instance's own name and message slots. */
+const ERROR_HEADER_ACCESSORS = [
+  "get:name",
+  "set:name",
+  "get:message",
+  "set:message",
+  "get:stack",
+  "set:stack",
+];
+
+/** Whether Node's header for an instance of `info`'s hierarchy can differ
+ * from the runtime's slots: a program class among its ancestors or
+ * descendants declares a `name`, `message` or `stack` accessor, or the
+ * program writes a prototype's `name` or `message`. */
+function errorHeaderOverridden(lowerer: Lowerer, info: ClassInfo): boolean {
+  if (lowerer.prototypeMethodAccesses.has("name") || lowerer.prototypeMethodAccesses.has("message"))
+    return true;
+  const declares = (c: ClassInfo): boolean =>
+    !c.builtinError && !c.def.runtime && ERROR_HEADER_ACCESSORS.some((m) => c.methods.has(m));
+  for (let c = info.base; c; c = c.base) if (declares(c)) return true;
+  const below = (c: ClassInfo): boolean => declares(c) || c.subclasses.some(below);
+  return below(info);
+}
+
 /** Error keys Node's error inspector folds into the base or hides. */
 const ERROR_SPECIAL_KEYS = new Set(["name", "message", "stack", "cause", "errors"]);
 
@@ -180,6 +206,16 @@ function fieldedErrorReason(
   }
   visiting.add(key);
   try {
+    for (let c: ClassInfo | null = info; c && !c.builtinError && !c.def.runtime; c = c.base) {
+      // Node prints the own properties in creation order, which puts a
+      // declared `cause` among the fields; the cause renders after them.
+      if (c.fieldOrder.some((f) => f.errorCause))
+        return "its field 'cause' is one Node's error inspector treats specially";
+      // A JavaScript class's fields exist once its constructor creates them,
+      // which can be conditional; the layout reads every field.
+      if (c.decl && isJsSourceFile(c.decl.getSourceFile()) && ownErrorFields(c).length > 0)
+        return "its fields are JavaScript properties, which its constructor may not create";
+    }
     for (const f of ownErrorFields(info)) {
       if (ERROR_SPECIAL_KEYS.has(f.name))
         return `its field '${f.name}' is one Node's error inspector treats specially`;
@@ -213,21 +249,23 @@ function errorInstanceReachesItself(lowerer: Lowerer, c: ClassInfo): boolean {
   return walk({ kind: "object", className: c.def.name });
 }
 
-/** An error value whose runtime class may declare fields
- * (`class Bailable extends Error { bail = false }`): Node prints the error
- * base (`[Bailable [Error]: m]`, the stackless form compiled errors use)
- * followed by the own properties, `[Bailable [Error]: m] { bail: true }`,
- * with the usual single-line/multi-line choice counting the base. Each
- * fielded class (most-derived first) is an instanceof arm; other values
- * keep the runtime's error rendering. Beyond the depth budget a fielded
- * instance prints `[Name]`, as Node does for any object with keys. */
-function fieldedErrorInspectHelper(
+/** An error value whose runtime class may be a program-declared subclass,
+ * which may declare fields (`class Bailable extends Error { bail = false }`)
+ * or carry a `cause`: Node prints the error base (`[Bailable [Error]: m]`,
+ * the stackless form compiled errors use) followed by the own properties,
+ * `[Bailable [Error]: m] { bail: true }`, with the usual single-line/
+ * multi-line choice counting the base. Each program class (most-derived
+ * first) is an instanceof arm; other values keep the runtime's error
+ * rendering. Beyond the depth budget an instance with own properties
+ * prints `[Name]`, as Node does for any object with keys; one without
+ * prints its header. */
+function errorInspectHelper(
   lowerer: Lowerer,
   t: IrType & { kind: "object" },
   info: ClassInfo,
   loc: SrcLoc,
 ): string {
-  const key = `insp.fieldedError:${typeKey(t)}`;
+  const key = `insp.userError:${typeKey(t)}`;
   const existing = lowerer.inspectHelpers.get(key);
   if (existing) return existing;
   const name = `%util.insp.${lowerer.inspectHelpers.size}`;
@@ -250,55 +288,34 @@ function fieldedErrorInspectHelper(
     type: STRING,
     loc,
   });
-  const body: IrStmt[] = [];
-  for (const c of userErrorClasses(info)) {
+  const error = (): IrExpr => lowerer.upcastTo(v(), "%Error");
+  const hasCause = (): IrExpr => ({
+    kind: "libCall",
+    fn: "insp.errorHasCause",
+    args: [error()],
+    type: BOOL,
+    loc,
+  });
+  const entry = (text: IrExpr): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "insp.entry",
+      args: [text, boolLit(false, loc)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  /** The own properties of an instance of `c`: its fields, then its
+   * `cause` (an assignment in the constructor or later, or the
+   * constructor's options, which Node lists last as `[cause]`). */
+  const propertiesArm = (
+    c: ClassInfo,
+    display: string,
+    fields: { name: string; type: IrType }[],
+  ): IrStmt[] => {
     const cls: IrType & { kind: "object" } = { kind: "object", className: c.def.name };
-    const display = c.def.jsName ?? c.decl?.name?.text ?? c.def.name.replace(/^%/, "");
-    if (ownErrorFields(c).length === 0) {
-      // A field-less program class: the header rule alone.
-      const header: IrStmt = {
-        kind: "return",
-        value: improvedErrorBase(lowerer, v(), base(), display, loc),
-        loc,
-      };
-      if (c.def.name === t.className) {
-        body.push(header);
-        break;
-      }
-      body.push({
-        kind: "if",
-        cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
-        then: [header],
-        else_: null,
-        loc,
-      });
-      continue;
-    }
-    const why = fieldedErrorReason(lowerer, c);
-    if (why !== null) {
-      // An instance of a subclass whose own properties have no rendering
-      // throws a named refusal instead of printing a partial object.
-      body.push({
-        kind: "if",
-        cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
-        then: [
-          {
-            kind: "return",
-            value: nodeThrowExpr(
-              0,
-              "SC2020",
-              `inspecting a '${display}' error (${why}) is not supported yet`,
-              STRING,
-              loc,
-            ),
-            loc,
-          },
-        ],
-        else_: null,
-        loc,
-      });
-      continue;
-    }
     const instance: IrExpr =
       c.def.name === t.className ? v() : { kind: "downcast", value: v(), type: cls, loc };
     // A class whose fields can hold the instance itself (`next: Chain`)
@@ -373,7 +390,7 @@ function fieldedErrorInspectHelper(
           ] satisfies IrStmt[])
         : []),
     ];
-    for (const f of ownErrorFields(c)) {
+    for (const f of fields) {
       const read: IrExpr = {
         kind: "fieldGet",
         obj: instance,
@@ -382,27 +399,33 @@ function fieldedErrorInspectHelper(
         type: f.type,
         loc,
       };
-      arm.push({
-        kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: "insp.entry",
-          args: [
-            concatAll(
-              [
-                strLit(`${inspectKey(f.name)}: `, loc),
-                inspectExpr(lowerer, f.type, read, rPlus1(), d(), loc),
-              ],
-              loc,
-            ),
-            boolLit(false, loc),
-          ],
-          type: VOID,
-          loc,
-        },
-        loc,
-      });
+      arm.push(
+        entry(
+          concatAll(
+            [
+              strLit(`${inspectKey(f.name)}: `, loc),
+              inspectExpr(lowerer, f.type, read, rPlus1(), d(), loc),
+            ],
+            loc,
+          ),
+        ),
+      );
     }
+    arm.push({
+      kind: "if",
+      cond: hasCause(),
+      then: [
+        entry({
+          kind: "libCall",
+          fn: "insp.errorCause",
+          args: [error(), rPlus1(), d()],
+          type: STRING,
+          loc,
+        }),
+      ],
+      else_: null,
+      loc,
+    });
     const ended: IrExpr = {
       kind: "libCall",
       fn: "insp.end",
@@ -424,22 +447,62 @@ function fieldedErrorInspectHelper(
         : ended,
       loc,
     });
-    body.push(
-      c.def.name === t.className
-        ? { kind: "block", body: arm, loc }
-        : {
-            kind: "if",
-            cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
-            then: arm,
-            else_: null,
+    return arm;
+  };
+  const body: IrStmt[] = [];
+  for (const c of userErrorClasses(info)) {
+    const display = c.def.jsName ?? c.decl?.name?.text ?? c.def.name.replace(/^%/, "");
+    const fields = ownErrorFields(c);
+    const why = fields.length > 0 ? fieldedErrorReason(lowerer, c) : null;
+    let arm: IrStmt[];
+    if (why !== null) {
+      // An instance of a subclass whose own properties have no rendering
+      // throws a named refusal instead of printing a partial object.
+      arm = [
+        {
+          kind: "return",
+          value: nodeThrowExpr(
+            0,
+            "SC2020",
+            `inspecting a '${display}' error (${why}) is not supported yet`,
+            STRING,
             loc,
-          },
-    );
-    if (c.def.name === t.className) break;
+          ),
+          loc,
+        },
+      ];
+    } else if (fields.length === 0) {
+      // A field-less program class: without a `cause` it has no own
+      // properties, and Node prints the header alone at any depth.
+      arm = [
+        {
+          kind: "if",
+          cond: { kind: "unary", op: "!", operand: hasCause(), type: BOOL, loc },
+          then: [
+            { kind: "return", value: improvedErrorBase(lowerer, v(), base(), display, loc), loc },
+          ],
+          else_: null,
+          loc,
+        },
+        ...propertiesArm(c, display, fields),
+      ];
+    } else {
+      arm = propertiesArm(c, display, fields);
+    }
+    if (c.def.name === t.className) {
+      body.push({ kind: "block", body: arm, loc });
+      break;
+    }
+    body.push({
+      kind: "if",
+      cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
+      then: arm,
+      else_: null,
+      loc,
+    });
   }
-  if (body.at(-1)?.kind !== "return" && body.at(-1)?.kind !== "block")
-    body.push({ kind: "return", value: base(), loc });
-  lowerer.liftedFns.push({
+  if (body.at(-1)?.kind !== "block") body.push({ kind: "return", value: base(), loc });
+  const fn: IrFunction = {
     name,
     params: [
       { localId: "v.0", name: "v", type: t },
@@ -458,7 +521,74 @@ function fieldedErrorInspectHelper(
     ],
     body,
     loc,
+  };
+  // Dynamic stores (a JavaScript class's `this.x = ...` outside its
+  // declared fields, or a write through an untyped reference) add a
+  // property bag to a class after this helper was built. The rendering
+  // reads only a `cause` from it, so an instance whose bag holds another
+  // property throws a named refusal instead of printing a partial object.
+  lowerer.shapeOrderHelperFinalizers.push(() => {
+    const bagged = [info, ...userErrorClasses(info)].filter(
+      (c) =>
+        !c.builtinError &&
+        !c.def.runtime &&
+        c.def.fields.some((f) => f.name === DYN_CLASS_PROPERTIES),
+    );
+    if (bagged.length === 0) return;
+    fn.body = [
+      ...bagged.map((c): IrStmt => ({
+        kind: "if",
+        cond: {
+          kind: "logical",
+          op: "&&",
+          left: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
+          right: {
+            kind: "libCall",
+            fn: "insp.errorBagHasProperties",
+            args: [
+              {
+                kind: "fieldGet",
+                obj:
+                  c.def.name === t.className
+                    ? v()
+                    : {
+                        kind: "downcast",
+                        value: v(),
+                        type: { kind: "object", className: c.def.name },
+                        loc,
+                      },
+                className: c.def.name,
+                field: DYN_CLASS_PROPERTIES,
+                type: DYN,
+                loc,
+              },
+            ],
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "return",
+            value: nodeThrowExpr(
+              0,
+              "SC2020",
+              `inspecting a '${c.def.jsName ?? c.def.name.replace(/^%/, "")}' error with properties created at run time is not supported yet`,
+              STRING,
+              loc,
+            ),
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      })),
+      ...body,
+    ];
   });
+  lowerer.liftedFns.push(fn);
   return name;
 }
 
@@ -473,73 +603,6 @@ function userErrorClasses(info: ClassInfo): ClassInfo[] {
   };
   visit(info);
   return out;
-}
-
-/** An error value whose runtime class may be a program-declared subclass:
- * the runtime renders the stackless base from the instance's `name`
- * (`[Error: m]`), and Node's improveStack then names the constructor too
- * (`[Plain [Error]: m]`). Each program class is an instanceof arm (the
- * static class itself unconditionally) applying that header rule; other
- * values keep the runtime rendering. */
-function userErrorInspectHelper(
-  lowerer: Lowerer,
-  t: IrType & { kind: "object" },
-  info: ClassInfo,
-  loc: SrcLoc,
-): string {
-  const key = `insp.userError:${typeKey(t)}`;
-  const existing = lowerer.inspectHelpers.get(key);
-  if (existing) return existing;
-  const name = `%util.insp.${lowerer.inspectHelpers.size}`;
-  lowerer.inspectHelpers.set(key, name);
-  const v = (): IrExpr => varRef("v.0", t, loc);
-  const base = (): IrExpr => ({
-    kind: "libCall",
-    fn: "insp.error",
-    args: [v(), varRef("r.0", F64, loc), varRef("d.0", F64, loc)],
-    type: STRING,
-    loc,
-  });
-  const body: IrStmt[] = [];
-  for (const c of userErrorClasses(info)) {
-    const display = c.def.jsName ?? c.decl?.name?.text ?? c.def.name.replace(/^%/, "");
-    const ret: IrStmt = {
-      kind: "return",
-      value: improvedErrorBase(lowerer, v(), base(), display, loc),
-      loc,
-    };
-    if (c === info) {
-      body.push(ret);
-      break;
-    }
-    body.push({
-      kind: "if",
-      cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
-      then: [ret],
-      else_: null,
-      loc,
-    });
-  }
-  if (body.at(-1)?.kind !== "return") body.push({ kind: "return", value: base(), loc });
-  lowerer.liftedFns.push({
-    name,
-    params: [
-      { localId: "v.0", name: "v", type: t },
-      { localId: "r.0", name: "r", type: F64 },
-      { localId: "d.0", name: "d", type: F64 },
-    ],
-    returnType: STRING,
-    locals: [
-      { id: "v.0", name: "v", type: t, mutable: false },
-      { id: "r.0", name: "r", type: F64, mutable: false },
-      { id: "d.0", name: "d", type: F64, mutable: false },
-      { id: "name.0", name: "name", type: STRING, mutable: true },
-      { id: "raw.0", name: "raw", type: STRING, mutable: true },
-    ],
-    body,
-    loc,
-  });
-  return name;
 }
 
 /** Node's improveStack over the stackless base (`[Error: m]`): when the
@@ -744,11 +807,13 @@ function inspectSupport(
       // for those classes (the runtime's capsule view).
       if (eventTargetRootOf(info) !== null) return null;
       if (isErrorClass(lowerer, t.className)) {
+        if (userErrorClasses(info).length > 0 && errorHeaderOverridden(lowerer, info))
+          return "error subclasses whose name, message or stack is an accessor or a prototype property have no inspect lowering yet";
         if (errorRenderable(info)) return null;
         // Subclasses with declared fields render the error base followed
         // by their own properties. The static class's own fields must
         // render; a subclass whose fields cannot is a runtime refusal on
-        // its own instances only (see fieldedErrorInspectHelper).
+        // its own instances only (see errorInspectHelper).
         const own = fieldedErrorClasses(info).find((c) => c === info);
         const ownWhy = own ? fieldedErrorReason(lowerer, own, visiting, out) : null;
         if (ownWhy !== null)
@@ -903,19 +968,10 @@ export function inspectExpr(
       }
       if (isErrorClass(lowerer, t.className)) {
         const info = lowerer.classes.get(t.className);
-        if (info && !errorRenderable(info)) {
-          return {
-            kind: "call",
-            callee: fieldedErrorInspectHelper(lowerer, t, info, loc),
-            args: [value, recurse, depth],
-            type: STRING,
-            loc,
-          };
-        }
         if (info && userErrorClasses(info).length > 0) {
           return {
             kind: "call",
-            callee: userErrorInspectHelper(lowerer, t, info, loc),
+            callee: errorInspectHelper(lowerer, t, info, loc),
             args: [value, recurse, depth],
             type: STRING,
             loc,
@@ -1023,8 +1079,17 @@ function typeConstituents(lowerer: Lowerer, u: IrType): IrType[] {
       return [u.key, u.value];
     case "union":
       return lowerer.unions.get(u.unionId)?.arms.slice() ?? [];
-    case "object":
-      return lowerer.classes.get(u.className)?.def.fields.map((f) => f.type) ?? [];
+    case "object": {
+      const info = lowerer.classes.get(u.className);
+      if (!info) return [];
+      const types = info.def.fields.map((f) => f.type);
+      // An error value can be an instance of a program-declared subclass,
+      // whose own fields its inspection renders (errorInspectHelper).
+      if (isErrorClass(lowerer, u.className))
+        for (const c of userErrorClasses(info))
+          for (const f of ownErrorFields(c)) types.push(f.type);
+      return types;
+    }
     default:
       return [];
   }
@@ -3158,8 +3223,15 @@ function lowerUtilCallableCall(
   const arity = member === "deprecate" ? 4 : member === "callbackify" ? 1 : 2;
   // Program classes keep static prototypes: there is no function object
   // whose prototype chain the runtime could relink or wrap.
+  // EventEmitter and the stream classes are the exception as superCtor:
+  // the runtime has untyped constructors for them (builtin-class-dyn.ts).
   const classArgs = member === "inherits" ? 2 : member === "deprecate" ? 1 : 0;
-  for (const arg of expr.arguments.nodes.slice(0, classArgs)) {
+  const builtinBase =
+    member === "inherits" && expr.arguments.nodes[1] !== undefined
+      ? builtinClassKindOf(lowerer, expr.arguments.nodes[1])
+      : null;
+  for (const [index, arg] of expr.arguments.nodes.slice(0, classArgs).entries()) {
+    if (index === 1 && builtinBase !== null) continue;
     if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "classval")
       lowerer.noLowering(
         `util.${member} over a class constructor`,
@@ -3178,9 +3250,12 @@ function lowerUtilCallableCall(
   const stmts: IrStmt[] = [];
   const args: IrExpr[] = [];
   for (let i = 0; i < arity; i++) {
-    const input: IrExpr = expr.arguments.nodes[i]
-      ? lowerer.lowerExprExpecting(expr.arguments.nodes[i]!, DYN)
-      : dynUndefinedExpr(loc);
+    const node = expr.arguments.nodes[i];
+    const input: IrExpr = !node
+      ? dynUndefinedExpr(loc)
+      : i === 1 && builtinBase !== null
+        ? (builtinClassDynValueOf(lowerer, node) ?? lowerer.lowerExprExpecting(node, DYN))
+        : lowerer.lowerExprExpecting(node, DYN);
     const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
     stmts.push({ kind: "varDecl", localId: saved.id, init: input, loc });
     args.push(varRef(saved.id, DYN, loc));

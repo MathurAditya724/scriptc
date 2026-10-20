@@ -82,7 +82,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   workers: boolean;
   youngNursery: boolean;
   eventTarget: boolean;
+  wasm: boolean;
   dynTier: boolean;
+  streamDyn: boolean;
   warningReplace: boolean;
   stdioExtended: boolean;
   nativeFetch: boolean;
@@ -272,7 +274,9 @@ export function effectiveRuntimeFeatures(
     workers: features.workers === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
+    wasm: features.wasm === true,
     dynTier: features.dynTier === true,
+    streamDyn: features.streamDyn === true,
     warningReplace: features.warningReplace === true,
     stdioExtended: features.stdioExtended === true,
     nativeFetch,

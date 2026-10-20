@@ -1,8 +1,8 @@
 // Inspecting Error subclasses whose fields hold the same class or one of
 // its bases: a chain renders each link, and a cycle renders as Node's
 // circular reference (`<ref *1>` and `[Circular *1]`), also when the cycle
-// runs through a base-typed field of a subclass. (The stack is cleared:
-// compiled errors carry none.)
+// runs through a base-typed field of a subclass or through an object's
+// Error-typed field. (The stack is cleared: compiled errors carry none.)
 import * as util from "node:util";
 class Chain extends Error {
   next: Chain | undefined = undefined;
@@ -35,3 +35,14 @@ b.next = a;
 show(a);
 show(b);
 show(clean(new Error("plain")));
+
+class Holder {
+  err: Error | undefined = undefined;
+}
+class Held extends Error {
+  holder = new Holder();
+}
+const held = clean(new Held("held"));
+held.holder.err = held;
+console.log(util.inspect(held.holder));
+show(held);

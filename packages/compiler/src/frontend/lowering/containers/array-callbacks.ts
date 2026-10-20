@@ -44,6 +44,7 @@ import {
   lowerArrayCallback,
   requireProducedArrayElement,
   callbackArrayElement,
+  truthyFilterCallback,
 } from "./callback-arguments.js";
 import {
   reverseArrayLoop,
@@ -85,7 +86,9 @@ export function lowerArrayHofCall(
   const valueT = callbackValueType(lowerer, elem, present);
   if (booleanFilter) {
     if (valueT.kind === "union") lowerer.requireTruthyUnion(valueT.unionId, argNode);
-    if (valueT.kind === "dyn" || valueT.kind === "void" || isUnitType(valueT)) {
+    // Checked-dynamic elements (`anyText.split("\n").map(...).filter(Boolean)`)
+    // keep their runtime kind, so their truthiness is the runtime's.
+    if (valueT.kind === "void" || isUnitType(valueT)) {
       lowerer.badType(argNode, lowerer.typeOf(argNode));
     }
   }
@@ -229,33 +232,6 @@ function filterResultElem(
     }
   }
   return outElem;
-}
-
-/** A native closure for the ambient Boolean callback. Reifying the
- * JavaScript constructor itself is unnecessary; Array#filter only observes
- * its one-argument ToBoolean result. */
-function truthyFilterCallback(
-  lowerer: Lowerer,
-  valueT: IrType,
-  loc: SrcLoc,
-): IrExpr & { type: IrType & { kind: "func" } } {
-  const fnT: IrType & { kind: "func" } = { kind: "func", params: [valueT], ret: BOOL };
-  const key = `filterBoolean:${typeKey(valueT)}`;
-  let name = lowerer.arrHofHelpers.get(key);
-  if (!name) {
-    name = `%arr.filterBoolean.${lowerer.arrHofHelpers.size}`;
-    lowerer.arrHofHelpers.set(key, name);
-    const value = varRef("v.0", valueT, loc);
-    lowerer.liftedFns.push({
-      name,
-      params: [{ localId: "v.0", name: "v", type: valueT }],
-      returnType: BOOL,
-      locals: [{ id: "v.0", name: "v", type: valueT, mutable: false }],
-      body: [{ kind: "return", value: { kind: "toBool", operand: value, type: BOOL, loc }, loc }],
-      loc,
-    });
-  }
-  return { kind: "closure", fnName: name, captures: [], type: fnT, loc };
 }
 
 function filterPredicateOk(lowerer: Lowerer, ret: IrType): boolean {
