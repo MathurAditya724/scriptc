@@ -252,10 +252,11 @@ ScrDyn *scr_js_load_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) {
 /* ── stores ───────────────────────────────────────────────────────────── */
 
 /* The generic store keeps a native Error's fields in sync with these keys
- * of its checked view; caches leave them to it. */
+ * of its checked view (scr_json.c's scr_error_sync_slots); caches leave
+ * them to it. */
 static bool scr_js_error_synced_key(const ScrStr *key) {
   switch (key->len) {
-  case 4: return memcmp(key->data, "name", 4) == 0;
+  case 4: return memcmp(key->data, "name", 4) == 0 || memcmp(key->data, "code", 4) == 0;
   case 5: return memcmp(key->data, "cause", 5) == 0 || memcmp(key->data, "stack", 5) == 0;
   case 7: return memcmp(key->data, "message", 7) == 0;
   default: return false;
