@@ -49,6 +49,9 @@ export interface RuntimeFeatures {
   tls: boolean;
   tlsCa: boolean;
   cipher: boolean;
+  /** perf_hooks event-loop metrics (eventLoopUtilization,
+   * monitorEventLoopDelay): scr_perf_loop.c. */
+  perfLoop: boolean;
 }
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -407,6 +410,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     tls: false,
     tlsCa: false,
     cipher: false,
+    perfLoop: false,
   };
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   let tables: TypeTables | undefined;
@@ -502,6 +506,8 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
       }
       if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
       if (fn.startsWith("tlsca.")) features.tlsCa = true;
+      if (fn.startsWith("perf.loop") || fn === "perf.idleTime" || fn.startsWith("perf.eld"))
+        features.perfLoop = true;
       // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
       // process-warning unit, and unknown output encodings render through
       // the inspect unit.

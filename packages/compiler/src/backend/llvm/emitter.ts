@@ -2285,6 +2285,7 @@ export class LlEmitter {
     if (runsLoop) {
       this.declare(`declare zeroext i1 @scr_loop_run(ptr)`);
       if (this.mod.commonJsEntry === true) this.declare(`declare void @scr_loop_commonjs_entry()`);
+      if (this.readsLoopMetrics()) this.declare(`declare void @scr_perf_loop_mark()`);
       this.declare(`declare zeroext i1 @scr_report_unhandled_rejections()`);
       this.declare(`declare void @scr_discard_unhandled_rejections()`);
     }
@@ -2843,6 +2844,8 @@ export class LlEmitter {
       ...(runsLoop
         ? [
             ...(this.mod.commonJsEntry === true ? [`  call void @scr_loop_commonjs_entry()`] : []),
+            // performance.eventLoopUtilization measures from here on.
+            ...(this.readsLoopMetrics() ? [`  call void @scr_perf_loop_mark()`] : []),
             `  %loop_rejection = call zeroext i1 @scr_loop_run(ptr ${asyncEntry ? "%top" : "null"})`,
             `  %lexc = call zeroext i1 @scr_exc_pending()`,
             `  br i1 %lexc, label %luncaught, label %lok`,
@@ -7858,6 +7861,20 @@ export class LlEmitter {
 
   /** Moves need plain slots that nothing else reads behind the binding's
    * back: no debugger view, no coroutine frame, no borrowed (+0) return. */
+  /** Whether the program reads event-loop utilization (perf.loopStart /
+   * perf.idleTime): main then marks the loop's start before running it. */
+  private loopMetricsRead: boolean | undefined;
+  private readsLoopMetrics(): boolean {
+    if (this.loopMetricsRead !== undefined) return this.loopMetricsRead;
+    const visitor = {
+      expr: (e: IrExpr): boolean =>
+        !(e.kind === "libCall" && (e.fn === "perf.loopStart" || e.fn === "perf.idleTime")),
+      stmt: (): boolean => true,
+    };
+    this.loopMetricsRead = !this.mod.functions.every((fn) => everyStmtList(fn.body, visitor));
+    return this.loopMetricsRead;
+  }
+
   private lastUseMovesAllowed(): boolean {
     return (
       this.debug === null &&

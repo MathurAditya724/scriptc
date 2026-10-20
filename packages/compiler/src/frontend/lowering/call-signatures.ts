@@ -443,7 +443,12 @@ export function paramShapes(
       declParam,
       lowerer.runtimeOptionalBindingType(
         declParam.name,
-        lowerer.mapTypeOf(tsType) ?? lowerer.irTypeOf(declParam.name),
+        lowerer.mapTypeOf(tsType) ??
+          // A TypeScript instantiation at `any` (a type argument inferred
+          // from an untyped value) takes the checked-dynamic slot.
+          ((tsType.flags & ts.TypeFlags.Any) !== 0 && !isJsSourceFile(declParam.getSourceFile())
+            ? DYN
+            : lowerer.irTypeOf(declParam.name)),
       ),
       lowerer.shapes,
       lowerer.unions,

@@ -1,3 +1,5 @@
+import { lowerHistogramProperty } from "./builtins/performance.js";
+import { cleanFuncAdaptable } from "./coercions/function-adapters.js";
 import { staticFunctionNameRead } from "./static-function-names.js";
 import { argumentsOwner, typedArgumentsArity, typedArgumentsCandidate } from "./typed-arguments.js";
 import { dateJsonType, isDateJsonSource } from "./builtins/dates.js";
@@ -1947,6 +1949,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     {
       const staticName = staticFunctionNameRead(lowerer, expr);
       if (staticName !== null) return { kind: "strLit", value: staticName, type: STRING, loc };
+    }
+    // An IntervalHistogram's readings (min, max, mean, stddev, count, exceeds).
+    {
+      const reading = lowerHistogramProperty(lowerer, expr);
+      if (reading) return reading;
     }
     // `.length` of a forwarded fixed tuple (a typed `arguments`, a tuple
     // rest parameter, an alias of either): the signature's arity.
@@ -4713,6 +4720,22 @@ function lowerNullishPair(
         () => lowerer.lowerExprExpecting(expr.right, type),
         (stable) => ({ kind: "call", callee: retag, args: [stable], type, loc }),
       );
+    }
+  }
+  // An optional callback defaulted to a function of another signature
+  // (`o.tags ?? (() => ({}))`, fewer parameters or a narrower result): the
+  // result is the callback's own function type, and the default adapts into
+  // it (JavaScript ignores surplus arguments). The checker's merged union
+  // signature would lose the callback's result shape.
+  if (present?.kind === "func" && present.rest !== true) {
+    const raw = lowerer.lowerExpr(expr.right);
+    if (
+      raw.type.kind === "func" &&
+      (typeEquals(raw.type, present) || cleanFuncAdaptable(lowerer, raw.type, present))
+    ) {
+      const right = lowerer.coerceInto(expr.right, raw, present);
+      lowerer.nullishFuncResults.add(expr);
+      return { kind: "nullish", left, right, type: present, loc };
     }
   }
   lowerer.unsupported(
@@ -12688,6 +12711,19 @@ export function caughtRead(
   if (narrowed?.kind === "dyn") {
     return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   }
+  // A binding a user type predicate (or an assertion) narrowed to a
+  // structural type (`isErrorLike(e)` → `{ message: string; … }`, an
+  // intersection like `TypeError & { code: unknown }`): the thrown value is
+  // still whatever was thrown, so it crosses as a checked-dynamic value and
+  // each member read validates its own result, as JavaScript reads it.
+  const checked = lowerer.typeOf(node);
+  if (
+    narrowed?.kind === "record" ||
+    narrowed?.kind === "union" ||
+    (narrowed === null && (checked.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !== 0)
+  ) {
+    return { kind: "caughtToDyn", value: ref, type: DYN, loc };
+  }
   lowerer.unsupported("SC1063", node);
 }
 
@@ -13765,6 +13801,24 @@ const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
  * idiom over multiple shapes), index-signature keys, class instances,
  * and dyn/unknown stay fenced. Keys are literal strings — a computed key
  * over a shape would need the runtime key table. */
+/** Keys built-in errors carry outside their class fields: Node's system
+ * error properties, and AggregateError's, SuppressedError's and
+ * AssertionError's own members. */
+const BUILTIN_ERROR_SLOT_KEYS: ReadonlySet<string> = new Set([
+  "errno",
+  "syscall",
+  "path",
+  "dest",
+  "info",
+  "errors",
+  "error",
+  "suppressed",
+  "actual",
+  "expected",
+  "operator",
+  "generatedMessage",
+]);
+
 function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
   if (
     lowerer.isStdlibGlobal(expr.right, "process") &&
@@ -13999,6 +14053,50 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
         (recv.kind === "varRef" || recv.kind === "caughtNarrow")
       ) {
         return { kind: "boolLit", value: true, type: BOOL, loc };
+      }
+      // Every Error has its own `stack`, and Error.prototype's `toString`
+      // and `constructor` are among Object.prototype's keys.
+      if (
+        (key === "stack" || OBJECT_PROTOTYPE_KEYS.has(key)) &&
+        (recv.kind === "varRef" || recv.kind === "caughtNarrow")
+      ) {
+        return { kind: "boolLit", value: true, type: BOOL, loc };
+      }
+      // Any other key: a member a program class declares. The receiver's
+      // runtime class is its static class or a descendant; the key is
+      // present exactly when that class (or an ancestor) declares it. Keys
+      // built-in errors keep outside their class fields depend on the
+      // runtime error and stay fenced, as do keys no program class declares.
+      const declares = (c: ClassInfo): boolean =>
+        c.fields.has(key) ||
+        lowerer.findMethodOn(c, key) !== null ||
+        lowerer.findMethodOn(c, `get:${key}`) !== null ||
+        lowerer.findMethodOn(c, `set:${key}`) !== null;
+      if (
+        (recv.kind === "varRef" || recv.kind === "caughtNarrow") &&
+        !BUILTIN_ERROR_SLOT_KEYS.has(key) &&
+        [...lowerer.classes.values()].some((c) => c.builtinError !== true && declares(c))
+      ) {
+        const staticName = recv.type.className;
+        const staticInfo = lowerer.classes.get(staticName);
+        if (staticInfo && declares(staticInfo))
+          return { kind: "boolLit", value: true, type: BOOL, loc };
+        const tests: IrExpr[] = [];
+        for (const c of lowerer.classes.values()) {
+          const name = c.def.name;
+          if (name === staticName || !lowerer.isSubclassOf(name, staticName) || !declares(c))
+            continue;
+          // A declaring ancestor below the static class already covers it.
+          if (c.base && c.base.def.name !== staticName && declares(c.base)) continue;
+          tests.push({ kind: "instanceOf", value: recv, className: name, type: BOOL, loc });
+        }
+        return tests.reduce<IrExpr>(
+          (acc, test) =>
+            acc.kind === "boolLit"
+              ? test
+              : { kind: "logical", op: "||", left: acc, right: test, type: BOOL, loc },
+          { kind: "boolLit", value: false, type: BOOL, loc },
+        );
       }
       lowerer.unsupported(
         "SC1090",

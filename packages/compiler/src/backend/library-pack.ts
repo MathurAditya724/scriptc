@@ -52,6 +52,7 @@ export async function compilePackedLibrary(
     nodeTest: false,
     tls: false,
     cipher: false,
+    perfLoop: false,
     tlsCa: false,
   };
   const selection = await loadRuntimePack({

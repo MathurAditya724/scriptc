@@ -1166,8 +1166,37 @@ declare module "node:perf_hooks" {
     getEntriesByType(type: EntryType): PerformanceEntry[];
     clearMarks(name?: string): void;
     clearMeasures(name?: string): void;
+    eventLoopUtilization(
+      utilization1?: EventLoopUtilization,
+      utilization2?: EventLoopUtilization,
+    ): EventLoopUtilization;
   }
   export const performance: Performance;
+  /* Event-loop metrics: utilization (idle/active ms since the loop started)
+   * and monitorEventLoopDelay's sampling histogram (nanoseconds). */
+  export interface EventLoopUtilization {
+    idle: number;
+    active: number;
+    utilization: number;
+  }
+  export interface EventLoopMonitorOptions {
+    resolution?: number | undefined;
+  }
+  export interface Histogram {
+    readonly count: number;
+    readonly exceeds: number;
+    readonly max: number;
+    readonly mean: number;
+    readonly min: number;
+    readonly stddev: number;
+    percentile(percentile: number): number;
+    reset(): void;
+  }
+  export interface IntervalHistogram extends Histogram {
+    enable(): boolean;
+    disable(): boolean;
+  }
+  export function monitorEventLoopDelay(options?: EventLoopMonitorOptions): IntervalHistogram;
 }
 declare module "perf_hooks" {
   export * from "node:perf_hooks";

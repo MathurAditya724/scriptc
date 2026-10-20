@@ -143,6 +143,7 @@ import {
 import {
   fencePerfEntryKeyWalk,
   isPerfEntryType,
+  lowerHistogramMethodCall,
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
@@ -241,7 +242,6 @@ const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "cl
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
-
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
   if (
@@ -1379,6 +1379,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // .bind(performance) function value over the runtime's
       // process-start-anchored monotonic clock.
       lowerPerfHooksCall(lowerer, expr, expr.expression) ??
+      lowerHistogramMethodCall(lowerer, expr, expr.expression) ??
       // The composed crypto pattern (randomBytes(n).toString(enc))
       // — its receiver is a Buffer-typed CALL no other lowering claims.
       lowerer.lowerCryptoComposedCall(expr, expr.expression) ??
@@ -3289,7 +3290,13 @@ function lowerDynReceiverMethodCall(
   // array — scalar narrowings bridge through maybeNarrow's dynCheck and
   // take the ordinary typed paths, but there is no static home for an
   // any-elemented array). Typed receivers keep their own lowerings.
-  const recvTs = lowerer.typeOf(access.expression);
+  // An optional step the chain already guarded (`s?.m(x)`) has a receiver
+  // proven non-nullish.
+  const rawRecvTs = lowerer.typeOf(access.expression);
+  const recvTs =
+    access.questionDotToken !== undefined && lowerer.chainHandled.has(access)
+      ? lowerer.checker.getNonNullableType(rawRecvTs)
+      : rawRecvTs;
   if (lowerer.classImplementedProtocol(recvTs)) {
     const property = lowerer.checker.getPropertyOfType(recvTs, access.name.text);
     if (

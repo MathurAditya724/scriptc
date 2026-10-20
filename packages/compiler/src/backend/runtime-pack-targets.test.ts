@@ -119,6 +119,7 @@ const features = {
   tls: false,
   tlsCa: false,
   cipher: false,
+  perfLoop: false,
 };
 
 test.each([
