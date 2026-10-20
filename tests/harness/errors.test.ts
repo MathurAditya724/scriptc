@@ -1150,6 +1150,244 @@ export function plain(x) { return x + 1; }
       /^Uncaught Error: calling a module export that reads 'this' through its module binding \('who': .*\) is not supported yet \[SC1090 at .*namespace-member-this\.mjs:3\]\n$/,
     );
   });
+
+  test("a namespace import's export that passes this on with apply or call compiles", async () => {
+    // Effect 4's provideService: `dual(...).apply(this, arguments)` hands the
+    // receiver to a function that `dual` returns, which reads it only to
+    // pass it on to an arrow, as here.
+    const r = await compileAndRun(
+      "namespace-member-forwards-this",
+      `import * as ns from './lib.mjs';
+export const added = ns.provide(1, 2, 3);
+console.log(added, ns.sum(3, 4));
+`,
+      "mjs",
+      {
+        "lib.mjs": `const dual = function (arity, body) {
+  switch (arity) {
+    case 2:
+      return function (a, b) { return arguments.length >= 2 ? body(a, b) : (self) => body(self, a); };
+    default:
+      return function () { return body.apply(this, arguments); };
+  }
+};
+export const provide = function () { return dual(3, (a, b, c) => a + b + c).apply(this, arguments); };
+const twice = function (a, b) { return (a + b) * 2; };
+export const sum = function (a, b) { return twice.call(this, a, b); };
+`,
+      },
+    );
+    expect(r).toEqual({ stdout: "6 14\n", stderr: "", exitCode: 0 });
+  });
+
+  test("a require binding's export that passes this on with apply compiles", async () => {
+    const r = await compileAndRun(
+      "require-member-forwards-this",
+      `'use strict';
+const m = require('./lib.cjs');
+console.log(m.scale(5));
+`,
+      "cjs",
+      {
+        "lib.cjs": `'use strict';
+const triple = function (x) { return x * 3; };
+exports.scale = function () { return triple.apply(this, arguments); };
+`,
+      },
+    );
+    expect(r).toEqual({ stdout: "15\n", stderr: "", exitCode: 0 });
+  });
+
+  test.each([
+    [
+      "a namespace import's export that passes this on to a function that reads it",
+      "namespace-member-forwards-to-reader",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaCall('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+function read(suffix) { return this.tag + suffix; }
+export function viaCall(suffix) { return read.call(this, suffix); }
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaCall",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory to a function that reads it",
+      "namespace-member-forwards-through-factory",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaDual('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const dual = function (arity, body) {
+  switch (arity) {
+    case 2:
+      return function (a, b) { return arguments.length >= 2 ? body(a, b) : (self) => body(self, a); };
+    default:
+      return function () { return body.apply(this, arguments); };
+  }
+};
+export const viaDual = function () { return dual(9, function (s) { return this.tag + s; }).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaDual",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory that reassigns its parameter",
+      "namespace-member-forwards-reassigned",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  body = function (s) { return this.tag + s; };
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory that replaces its parameter as a destructuring",
+      "namespace-member-forwards-destructured",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  [body] = [function (s) { return this.tag + s; }];
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory that replaces its parameter as a object destructuring",
+      "namespace-member-forwards-object-destructured",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  ({ body } = { body: function (s) { return this.tag + s; } });
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory that replaces its parameter as a for-of target",
+      "namespace-member-forwards-for-of",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  for (body of [function (s) { return this.tag + s; }]);
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
+      "a require binding's export that passes this on to a function that reads it",
+      "require-member-forwards-to-reader",
+      "cjs",
+      `'use strict';
+const m = require('./lib.cjs');
+console.log(m.plain(21));
+console.log(m.viaApply('!'));
+`,
+      {
+        "lib.cjs": `'use strict';
+exports.name = 'lib';
+const read = function (suffix) { return this.name + suffix; };
+exports.viaApply = function () { return read.apply(this, arguments); };
+exports.plain = function (x) { return x * 2; };
+`,
+      },
+      "42\n",
+      "viaApply",
+      4,
+    ],
+  ] as const)(
+    "%s is a named deferred fence",
+    async (_, name, ext, source, files, stdout, member, line) => {
+      // Node passes the module object on to `read`, which reads it; the
+      // direct call has none to pass.
+      const r = await compileAndRun(name, source, ext, files);
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe(stdout);
+      expect(r.stderr).toMatch(
+        new RegExp(
+          `^Uncaught Error: calling a module export that reads 'this' through its module binding \\('${member}': .*\\) is not supported yet \\[SC1090 at .*${name}\\.${ext}:${line}\\]\\n$`,
+        ),
+      );
+    },
+  );
+
+  test("an export that also reads this beside passing it on is a named deferred fence", async () => {
+    const r = await compileAndRun(
+      "namespace-member-forwards-and-reads-this",
+      `import * as ns from './lib.mjs';
+console.log(ns.tag('x'));
+`,
+      "mjs",
+      {
+        "lib.mjs": `const join = function (a, b) { return a + ':' + b; };
+export function tag(x) { return join.call(this, x, typeof this); }
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('tag': .*\) is not supported yet \[SC1090 at .*namespace-member-forwards-and-reads-this\.mjs:2\]\n$/,
+    );
+  });
 });
 
 // CommonJS forms around the module's exports that keep a refusal name the
@@ -1174,7 +1412,7 @@ console.log(keys(exports));
     [
       "exports-rebinding",
       `console.log("before");
-exports = module.exports = function hash(x) {
+exports = function hash(x) {
   return x;
 };
 exports.extra = 1;
@@ -1182,7 +1420,7 @@ exports.extra = 1;
       {},
       "before\n",
       2,
-      "rebinding 'exports' \\(exports = module\\.exports = value\\)",
+      "rebinding 'exports' without module\\.exports \\(exports = value\\)",
     ],
     [
       "require-computed",

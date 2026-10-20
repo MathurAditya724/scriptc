@@ -4006,7 +4006,10 @@ declare module "readline" {
     meta?: boolean;
     shift?: boolean;
   }
-  export interface Interface extends Disposable {
+  export class Interface implements Disposable {
+    /* createInterface creates interfaces; instanceof tells the two
+     * modules' classes apart. */
+    protected constructor();
     /* terminal says whether the interface edits lines as a terminal;
      * line and cursor are the terminal's (line is '' otherwise). history
      * is the history option itself (or the interface's own empty array);
@@ -4121,7 +4124,10 @@ declare module "readline/promises" {
   /* The readline Interface with the promise question: it resolves with
    * the next line, rejects with an AbortError when options.signal aborts,
    * and with ERR_USE_AFTER_CLOSE after close(). */
-  export interface Interface extends Disposable {
+  export class Interface implements Disposable {
+    /* createInterface creates interfaces; instanceof tells the two
+     * modules' classes apart. */
+    protected constructor();
     /* terminal says whether the interface edits lines as a terminal;
      * line and cursor are the terminal's (line is '' otherwise). history
      * is the history option itself (or the interface's own empty array);

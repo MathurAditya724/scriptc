@@ -5385,8 +5385,8 @@ export class LlEmitter {
   }
 
   /** A reference held as one plain pointer that emitReadReceiver can read
-   * without owning: class instances, records, arrays, strings and
-   * nullable-pointer unions. Tagged union boxes, closures and dynamic
+   * without owning: class instances, records, arrays, strings, typed arrays
+   * and nullable-pointer unions. Tagged union boxes, closures and dynamic
    * values keep ordinary ownership. */
   plainReference(type: IrType): boolean {
     switch (type.kind) {
@@ -5394,6 +5394,7 @@ export class LlEmitter {
       case "record":
       case "array":
       case "string":
+      case "bytes":
         return true;
       case "union":
         return this.nullableUnions.has(type.unionId);
