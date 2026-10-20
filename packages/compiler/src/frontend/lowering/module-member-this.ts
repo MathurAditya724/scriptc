@@ -26,8 +26,10 @@ function exportedFunction(decl: ts.Node): ts.Node | null {
 }
 
 /** Whether `node` is `f.apply(this, ...)` or `f.call(this, ...)`, which
- * passes the receiver on without reading it. */
-function forwardsThis(node: ts.Node): node is ts.CallExpression {
+ * passes the receiver on to `f`. */
+function forwardsThis(node: ts.Node): node is ts.CallExpression & {
+  expression: ts.PropertyAccessExpression;
+} {
   if (!ts.isCallExpression(node)) return false;
   const callee = node.expression;
   if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.name)) return false;
@@ -35,28 +37,160 @@ function forwardsThis(node: ts.Node): node is ts.CallExpression {
   return node.arguments.nodes[0]?.kind === ts.SyntaxKind.ThisKeyword;
 }
 
-/** Whether a function's own body reads `this` (arrows share it; other
- * functions and classes have their own). A `this` that `.apply` or `.call`
- * only passes on is not a read. */
-function readsOwnThis(fn: ts.Node): boolean {
-  let found = false;
+/* The arguments a call gave a function's parameters, while the analysis
+ * follows the call into the function: each with the bindings of its own
+ * scope. */
+type Bindings = ReadonlyMap<ts.Symbol, { expr: ts.Expression; bindings: Bindings }>;
+const noBindings: Bindings = new Map();
+
+// How many calls and functions deep the analysis follows a forwarded
+// `this`: enough for a wrapper over a function factory, as Effect's
+// `dual(3, body).apply(this, arguments)`.
+const maxDepth = 6;
+
+/** Whether `fn`'s own body uses `this` only to pass it on with `.apply` or
+ * `.call` to functions that ignore it (and so also when it doesn't use
+ * `this` at all). */
+function ignoresOwnThis(lowerer: Lowerer, fn: ts.Node, bindings: Bindings, depth: number): boolean {
+  let ignores = true;
   const visit = (node: ts.Node): void => {
-    if (found) return;
+    if (!ignores) return;
     if (node.kind === ts.SyntaxKind.ThisKeyword) {
-      found = true;
+      ignores = false;
       return;
     }
     if ((ts.isFunctionLike(node) && !ts.isArrowFunction(node)) || ts.isClassLikeDeclaration(node))
       return;
     if (forwardsThis(node)) {
-      visit(node.expression);
+      if (!ignoresThis(lowerer, node.expression.expression, bindings, depth + 1)) {
+        ignores = false;
+        return;
+      }
+      visit(node.expression.expression);
       for (const arg of node.arguments.nodes.slice(1)) visit(arg);
       return;
     }
     node.forEachChild(visit);
   };
   fn.forEachChild(visit);
+  return ignores;
+}
+
+/** The function `name` provably holds: a function declaration, a const
+ * initialized with a function, or an import of one. */
+function functionOfName(
+  lowerer: Lowerer,
+  name: ts.Identifier,
+  bindings: Bindings,
+): { fn: ts.Node | null; bound?: { expr: ts.Expression; bindings: Bindings } } {
+  let symbol = lowerer.checker.getSymbolAtLocation(name);
+  if (symbol === undefined) return { fn: null };
+  const bound = bindings.get(symbol);
+  if (bound) return { fn: null, bound };
+  if ((symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  const decls = symbol.declarations;
+  if (decls.length !== 1) return { fn: null };
+  const decl = decls[0]!;
+  if (ts.isFunctionDeclaration(decl)) return { fn: decl };
+  if (
+    ts.isVariableDeclaration(decl) &&
+    decl.initializer &&
+    ts.isVariableDeclarationList(decl.parent) &&
+    (decl.parent.flags & ts.NodeFlags.Const) !== 0
+  ) {
+    let init: ts.Expression = decl.initializer;
+    while (ts.isParenthesizedExpression(init)) init = init.expression;
+    if (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) return { fn: init };
+  }
+  return { fn: null };
+}
+
+/** Whether `fn` (with its nested functions) assigns the binding `symbol`. */
+function assigns(lowerer: Lowerer, fn: ts.Node, symbol: ts.Symbol): boolean {
+  let found = false;
+  const isTarget = (node: ts.Node): boolean =>
+    ts.isIdentifier(node) && lowerer.checker.getSymbolAtLocation(node) === symbol;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      (ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        isTarget(node.left)) ||
+      ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken) &&
+        isTarget(node.operand))
+    ) {
+      found = true;
+      return;
+    }
+    node.forEachChild(visit);
+  };
+  fn.forEachChild(visit);
   return found;
+}
+
+/** The expressions `fn` returns from its own body. */
+function returnedExpressions(fn: ts.Node): ts.Expression[] | null {
+  const body = (fn as { body?: ts.Node }).body;
+  if (body === undefined) return null;
+  if (!ts.isBlock(body)) return [body as ts.Expression];
+  const result: ts.Expression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node) || ts.isClassLikeDeclaration(node)) return;
+    if (ts.isReturnStatement(node) && node.expression) result.push(node.expression);
+    node.forEachChild(visit);
+  };
+  body.forEachChild(visit);
+  return result;
+}
+
+/** Whether the function `expr` evaluates to provably ignores the `this`
+ * it is called with. */
+function ignoresThis(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  bindings: Bindings,
+  depth: number,
+): boolean {
+  if (depth > maxDepth) return false;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (ts.isArrowFunction(expr)) return true;
+  if (ts.isFunctionExpression(expr)) return ignoresOwnThis(lowerer, expr, bindings, depth);
+  if (ts.isIdentifier(expr)) {
+    const { fn, bound } = functionOfName(lowerer, expr, bindings);
+    if (bound) return ignoresThis(lowerer, bound.expr, bound.bindings, depth + 1);
+    if (fn === null) return false;
+    return ts.isArrowFunction(fn) || ignoresOwnThis(lowerer, fn, noBindings, depth + 1);
+  }
+  // A call of a known function: what it returns, with its parameters bound
+  // to this call's arguments.
+  if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression)) {
+    const { fn } = functionOfName(lowerer, expr.expression, bindings);
+    if (fn === null) return false;
+    const params = (fn as { parameters?: ts.NodeArray<ts.ParameterDeclaration> }).parameters;
+    const inner = new Map(bindings);
+    for (const [i, param] of (params?.nodes ?? []).entries()) {
+      if (!ts.isIdentifier(param.name) || param.dotDotDotToken) return false;
+      const arg = expr.arguments.nodes[i];
+      const symbol = lowerer.checker.getSymbolAtLocation(param.name);
+      if (arg === undefined || ts.isSpreadElement(arg) || symbol === undefined) return false;
+      // The parameter holds the argument for as long as the function runs.
+      if (assigns(lowerer, fn, symbol)) return false;
+      inner.set(symbol, { expr: arg, bindings });
+    }
+    const returned = returnedExpressions(fn);
+    return returned !== null && returned.every((r) => ignoresThis(lowerer, r, inner, depth + 1));
+  }
+  return false;
+}
+
+/** Whether calling `fn` with another `this` than Node's can change what it
+ * does: it reads `this`, or passes it on to a function that may. */
+function readsOwnThis(lowerer: Lowerer, fn: ts.Node): boolean {
+  return !ignoresOwnThis(lowerer, fn, noBindings, 0);
 }
 
 export function refuseModuleMemberThis(
@@ -70,7 +204,7 @@ export function refuseModuleMemberThis(
   if (symbol === undefined) return;
   for (const decl of symbol.declarations) {
     const fn = exportedFunction(decl);
-    if (fn === null || !readsOwnThis(fn)) continue;
+    if (fn === null || !readsOwnThis(lowerer, fn)) continue;
     lowerer.unsupported(
       "SC1090",
       call,
