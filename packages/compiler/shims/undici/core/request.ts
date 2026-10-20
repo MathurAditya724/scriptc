@@ -228,6 +228,8 @@ export class Request {
 function processHeader(request: Request, key: string, val: string, profile: Profile): void {
   const lower = key.toLowerCase();
   if (lower === "host") {
+    // The client writes the Host value into the request head as given.
+    if (headerCharRegex.test(val)) throw new InvalidArgumentError(`invalid ${key} header`);
     if (request.host === null) {
       request.host = val;
       return;

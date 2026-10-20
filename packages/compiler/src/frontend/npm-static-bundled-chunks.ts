@@ -742,8 +742,20 @@ function scopeRoot(node: ts.Node): ts.Node {
 }
 
 /** The text replacing a require of an aliased module, or null when its uses
- * do not determine one. */
+ * do not determine one or when the file declares the global the text
+ * starts with (`process`, `Array`): the text would read that binding
+ * instead of the builtin. `require` roots are the require the call site
+ * already uses. */
 export function aliasReplacement(call: ts.CallExpression, alias: BuiltinAlias): string | null {
+  const text = aliasUseReplacement(call, alias);
+  if (text === null) return null;
+  const root = /^[A-Za-z_$][\w$]*/.exec(text)?.[0];
+  if (root !== undefined && root !== "require" && countDeclarations(call.getSourceFile(), root) > 0)
+    return null;
+  return text;
+}
+
+function aliasUseReplacement(call: ts.CallExpression, alias: BuiltinAlias): string | null {
   const members = alias.members;
   if (members === undefined) return alias.whole;
   const whole = alias.whole;

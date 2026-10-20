@@ -176,10 +176,12 @@ export function packageShimFor(fromFile: string, specifier: string): string | nu
 }
 
 /** The builtin a bare specifier's module is on Node 24, as installed where
- * Node's resolution from `fromFile` finds it, or null. */
+ * Node's resolution from `fromFile` finds it, or null. A package the
+ * project marks unloaded has no alias: its require throws MODULE_NOT_FOUND. */
 export function builtinPackageAliasFor(fromFile: string, specifier: string): BuiltinAlias | null {
   if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("#"))
     return null;
+  if (isUnloadedPackage(specifier)) return null;
   const name = packageNameOfSpecifier(specifier);
   if (!BUILTIN_ALIAS_PACKAGES.has(name)) return null;
   const dir = installedPackageDir(fromFile, name);

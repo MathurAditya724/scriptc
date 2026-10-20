@@ -284,6 +284,13 @@ server.listen(0, "127.0.0.1", async () => {
   } catch (err) {
     console.log("protocol:", describe(err));
   }
+  const hostAgent = new Agent();
+  try {
+    await request(`${origin}/hello`, { dispatcher: hostAgent, headers: { host: "a\r\nx-injected: 1" } });
+  } catch (err) {
+    console.log("host header:", describe(err));
+  }
+  await hostAgent.close();
   const early = await request(`${origin}/hello`, { dispatcher: agent });
   early.body.on("error", (err: Error) => console.log("destroyed body:", describe(err)));
   early.body.destroy();
