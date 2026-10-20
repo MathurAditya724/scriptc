@@ -190,9 +190,9 @@ export function lowerValueReturningConstructorNew(
   if (symbol !== null && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
     symbol = lowerer.checker.getAliasedSymbol(symbol);
   const decl = symbol
-    ? lowerer.checker
-        .declarationsOf(symbol)
-        .find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && isDynamic(node))
+    ? symbol.declarations.find(
+        (node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && isDynamic(node),
+      )
     : undefined;
   if (decl === undefined) return null;
   const loc = locOf(expr);

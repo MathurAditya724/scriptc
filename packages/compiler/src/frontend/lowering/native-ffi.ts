@@ -163,7 +163,7 @@ function ffiDeclarationDiagnostic(
   loc: SrcLoc,
 ): ScrDiagnostic | null {
   const { binding: bindingDiag, signature: signatureDiag } = ffiFlavor(lowerer);
-  const declarations = lowerer.checker.declarationsOf(symbol);
+  const declarations = symbol.declarations;
   const functionDecls = declarations.filter(ts.isFunctionDeclaration);
   if (
     functionDecls.length === 0 ||
@@ -386,7 +386,7 @@ export function lowerFfiCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr 
     // are untouched.
     if (lowerer.libraryCallbacks) {
       const symbol = lowerer.resolveValueSymbol(expr.expression);
-      const decls = symbol === null ? [] : lowerer.checker.declarationsOf(symbol);
+      const decls = symbol === null ? [] : symbol.declarations;
       const callbackShaped =
         decls.length > 0 &&
         decls.every(
@@ -427,7 +427,7 @@ export function lowerFfiCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr 
     if (validSymbols === undefined) throw new PoisonError();
     if (!validSymbols.has(symbol)) {
       if (lowerer.libraryCallbacks) {
-        const declarations = lowerer.checker.declarationsOf(symbol);
+        const declarations = symbol.declarations;
         const programDeclarations = declarations.filter((decl) =>
           libraryCallbackOwnsFile(lowerer, decl.getSourceFile()),
         );

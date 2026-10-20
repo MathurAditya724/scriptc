@@ -27,3 +27,8 @@ function local(slots: ThreadSlots<Key, State>, key: Key): State | undefined {
 const ctor = ThreadSlots;
 const getter = first.get;
 console.log(named, second, shaped, callbacks, local(first, new Key()), ctor, getter);
+
+// A read through an annotated value type the stored values can't be converted
+// to: they are stored as records, which a read as the class can't convert.
+const records: ThreadSlots<Key, State> = new ThreadSlots<Key, { count: number }>("fences.records");
+console.log(records.get(new Key()));

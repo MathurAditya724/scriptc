@@ -51,6 +51,7 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["dns.", "the node:dns surface"],
   ["tls.", "the node:tls surface"],
   ["crypto.cipherNew", "crypto.createCipheriv and createDecipheriv"],
+  ["webcrypto.", "WebCrypto (crypto.subtle)"],
   ["fs.watch", "fs.watch"],
   ["watcher.", "fs.watch"],
   // The event-loop metrics sample the loop and its timers (scr_perf_loop.c),

@@ -60,7 +60,7 @@ test.each([
   writeFileSync(output, "previous executable");
   writeFileSync(llvmPath, "previous LLVM");
   const module: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: entry,
     entry: "%main",
     functions: [
@@ -197,7 +197,7 @@ test.each([false, true])(
     writeFileSync(output, "previous object");
     writeFileSync(llvmPath, "previous LLVM");
     const module: IrModule = {
-      irVersion: 16,
+      irVersion: 17,
       sourceFile: entry,
       entry: "%main",
       functions: [

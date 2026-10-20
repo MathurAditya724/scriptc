@@ -16,12 +16,15 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
+    ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.stdioExtended ? { stdioExtended: true } : {}),
     zlib: features.zlib,
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,
+    ...(features.dynTier ? { dynTier: true } : {}),
     events: features.processEvents,
     emitter: features.emitter,
     symbol: features.symbol,
@@ -40,6 +43,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     tls: features.tls,
     tlsCa: features.tlsCa,
     cipher: features.cipher,
+    webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
   };
 }

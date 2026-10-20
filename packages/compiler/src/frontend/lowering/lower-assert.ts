@@ -870,7 +870,7 @@ export function lowerAssertDirectCall(
   const module = lowerer.builtinNamespaceModuleOf(callee);
   if (module !== "assert" && module !== "assert/strict") return null;
   const calleeSym = lowerer.checker.getSymbolAtLocation(callee);
-  const decl = calleeSym ? lowerer.checker.declarationsOf(calleeSym)[0] : undefined;
+  const decl = calleeSym ? calleeSym.declarations[0] : undefined;
   if (decl && ts.isNamespaceImport(decl)) {
     lowerer.unsupported(
       "SC1013",
