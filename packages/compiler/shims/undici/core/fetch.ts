@@ -117,8 +117,9 @@ interface RawResponse {
   status: number;
   statusText: string;
   headers: string[];
-  /** null when the response has no body to expose (null-body status, HEAD,
-   * or a redirect fetch follows); its bytes are then read and dropped. */
+  /** null when the response has no body to expose: a null-body status or
+   * HEAD (its bytes, if any, are read and dropped), or a redirect fetch
+   * follows or rejects (the request is aborted, closing its connection). */
   body: ReadableStream<Uint8Array> | null;
 }
 
@@ -520,6 +521,10 @@ function dispatchOnce(
           dump = true;
           stopListening();
           resolve({ status: statusCode, statusText: text, headers: rawHeaders, body: null });
+          // A redirect that is followed or rejected never reads its body:
+          // abort the request so the connection is released instead of
+          // draining a body that may never end.
+          if (follows) abortRequest(new DOMException("The operation was aborted.", "AbortError"));
           return true;
         }
         const codings =

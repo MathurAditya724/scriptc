@@ -147,15 +147,17 @@ test("relative and bare specifiers across the whole test tree resolve identicall
       // The deliberate package-shim delta: a package scriptc implements
       // itself (package-shims.ts) answers its shim module here, where
       // 5.9.3 answers the installed package as an external import; the
-      // installed package's answer is still compared below.
-      const shimmed = packageShimFor(file, spec) !== null;
-      const theirsProj = shimmed
-        ? reference && reference.isExternalLibraryImport
-          ? packageShimFor(file, spec)
-          : null
-        : reference && !reference.isExternalLibraryImport
-          ? reference.resolvedFileName
-          : null;
+      // installed package's answer is still compared below. Resolved
+      // answers use forward slashes on every platform, as 5.9.3's do.
+      const shim = packageShimFor(file, spec);
+      const theirsProj =
+        shim !== null
+          ? reference && reference.isExternalLibraryImport
+            ? shim.replaceAll("\\", "/")
+            : null
+          : reference && !reference.isExternalLibraryImport
+            ? reference.resolvedFileName
+            : null;
       if (oursProj !== theirsProj) {
         failures.push(`${file} '${spec}' (project): ours=${oursProj} ts5=${theirsProj}`);
       }
