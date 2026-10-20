@@ -388,6 +388,38 @@ export function dynamicTierSymbols(names) {
     .sort();
 }
 
+/* Bench workloads whose release binaries link dynamic-tier symbols on
+ * b14377864: JSON.parse trees, worker messages, regex exec metadata
+ * (two-tier §3.3 L5), and a shared scr_dyn_call/scr_dyn_define_property core
+ * not yet traced to its typed root. bench/thread-slots, added later, links
+ * them through worker messages: node:worker_threads values are dyn objects.
+ * Every other bench workload is fully typed and must link none. The gate and
+ * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
+ * fails when a listed workload stops linking them, so remove a workload here
+ * when a leak fix makes its binary clean. */
+export const DYNAMIC_WORKLOADS = new Set([
+  "bench/json-records",
+  "bench/cli-config",
+  "bench/http-api",
+  "bench/validate-errors",
+  "bench/regex-logs",
+  "bench/atomics-contended",
+  "bench/intern-table",
+  "bench/thread-slots",
+  "bench/typed-array-scan-workers",
+  "bench/log-summary",
+  "bench/inventory-report",
+]);
+
+/** Names of the functions (text and weak symbols) in `nm` output. Mach-O
+ * prefixes C names with an underscore; on Darwin it is dropped so the names
+ * match DYNAMIC_TIER_PREFIXES as they do on ELF. */
+export function definedFunctionNames(text, platform = process.platform) {
+  return parseNm(text)
+    .filter((s) => /^[tTwW]$/.test(s.type))
+    .map((s) => (platform === "darwin" && s.name.startsWith("_") ? s.name.slice(1) : s.name));
+}
+
 /* ── cachegrind ────────────────────────────────────────────────────────── */
 
 /** Background threads whose instruction counts depend on scheduling: the

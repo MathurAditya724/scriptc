@@ -9,7 +9,11 @@ import { withLibraryRuntimeFlavors } from "./library-matrix.mjs";
 const any = (...features) => ({ any: features });
 const all = (...features) => ({ all: features });
 
-const BASE_RUNTIME_SOURCES = [
+/* Every runtime pack matrix uses these lists, so a new runtime source is
+ * one line here. Their order is the link order of the units an executable
+ * selects: keep a new unit next to the units it references, and treat any
+ * reordering as a change to every executable's layout. */
+export const BASE_RUNTIME_SOURCES = [
   "scr_context.c",
   "scr_shared.c",
   "scr_number.c",
@@ -47,7 +51,7 @@ const BASE_RUNTIME_SOURCES = [
   "scr_alloc.c",
 ];
 
-const OPTIONAL = [
+export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   ["scr_regex.c", "regex"],
@@ -58,6 +62,9 @@ const OPTIONAL = [
   ["scr_console_native.c", "inspect"],
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch")],
   ["scr_dc.c", "dc"],
+  // The dynamic tier's jsval values (two-tier design I3): linked only into
+  // programs whose IR has dynamic-tier operations.
+  ["scr_js_value.c", "dynTier"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch")],
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
@@ -107,7 +114,7 @@ const OPTIONAL = [
   ["scr_fetch.c", "nativeFetch"],
 ];
 
-function variantsFor(source) {
+export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
   if (source === "scr_bytes.c") {
     variants.push({
@@ -172,7 +179,7 @@ export function createRuntimePackMatrix({
           (source) => ({ source, predicate: true }),
         ),
         ...extraRuntimeSources.map((source) => ({ source, predicate: true })),
-        ...OPTIONAL.filter(([source]) => !omitOptionalSources.includes(source)).map(
+        ...OPTIONAL_RUNTIME_SOURCES.filter(([source]) => !omitOptionalSources.includes(source)).map(
           ([source, predicate]) => ({ source, predicate }),
         ),
       ].map((unit) => ({ ...unit, variants: variantsFor(unit.source) })),

@@ -227,8 +227,16 @@ export class Request {
 
 function processHeader(request: Request, key: string, val: string, profile: Profile): void {
   const lower = key.toLowerCase();
+  // undici 7 checks the name and every value before the special cases;
+  // undici 5 checks the first Host value before storing it. Either way a
+  // CR or LF in a value never reaches the request head.
+  if (profile.major >= 7) {
+    if (!tokenRegExp.test(lower)) throw new InvalidArgumentError("invalid header key");
+    if (headerCharRegex.test(val)) throw new InvalidArgumentError(`invalid ${key} header`);
+  }
   if (lower === "host") {
     if (request.host === null) {
+      if (headerCharRegex.test(val)) throw new InvalidArgumentError(`invalid ${key} header`);
       request.host = val;
       return;
     }

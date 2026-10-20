@@ -782,6 +782,50 @@ function errorCode(err: Error): string {
 
 const CRLF = Buffer.from("\r\n");
 
+// Chunk-size line states (llhttp's chunk_size* and chunk_extension* nodes).
+const SIZE_FIRST = 0;
+const SIZE_DIGITS = 1;
+const SIZE_AFTER = 2;
+const SIZE_EXT = 3;
+const SIZE_EXT_NAME = 4;
+const SIZE_EXT_VALUE = 5;
+const SIZE_EXT_QUOTED = 6;
+const SIZE_EXT_PAIR = 7;
+const SIZE_EXT_QUOTED_DONE = 8;
+const SIZE_CR = 9;
+
+function hexDigit(c: number): number {
+  if (c >= 0x30 && c <= 0x39) return c - 0x30;
+  if (c >= 0x41 && c <= 0x46) return c - 0x37;
+  if (c >= 0x61 && c <= 0x66) return c - 0x57;
+  return -1;
+}
+
+/** tchar: ALPHA, DIGIT and !#$%&'*+-.^_`|~. */
+const TOKEN_BYTES = tokenBytes();
+
+function tokenBytes(): Uint8Array {
+  const table = new Uint8Array(256);
+  const marks = "!#$%&'*+-.^_`|~";
+  for (let i = 0; i < marks.length; i++) table[marks.charCodeAt(i)] = 1;
+  for (let c = 0x30; c <= 0x39; c++) table[c] = 1;
+  for (let c = 0x41; c <= 0x5a; c++) {
+    table[c] = 1;
+    table[c + 0x20] = 1;
+  }
+  return table;
+}
+
+/** qdtext: HTAB, SP and 0x21-0xff but '"' and '\\'. */
+function isQuotedByte(c: number): boolean {
+  return c === 0x09 || c === 0x20 || (c >= 0x21 && c !== 0x22 && c !== 0x5c);
+}
+
+/** The byte after '\\' in a quoted-pair: HTAB, SP, VCHAR or obs-text. */
+function isQuotedPairByte(c: number): boolean {
+  return c === 0x09 || c === 0x20 || (c >= 0x21 && c !== 0x7f);
+}
+
 /** An incremental HTTP/1.1 response parser (the subset of llhttp undici
  * relies on): status line, raw header pairs, Content-Length, chunked and
  * read-until-close bodies, trailers, and pause/resume back-pressure. */
@@ -805,6 +849,9 @@ class ResponseParser {
   bytesRead: number;
   trailers: Buffer[];
   skipBody: boolean;
+  sizeState: number;
+  sizeDigits: number;
+  chunkSize: number;
 
   constructor(client: Client, socket: Socket) {
     this.client = client;
@@ -826,6 +873,9 @@ class ResponseParser {
     this.bytesRead = 0;
     this.trailers = [];
     this.skipBody = false;
+    this.sizeState = SIZE_FIRST;
+    this.sizeDigits = 0;
+    this.chunkSize = 0;
   }
 
   reset(): void {
@@ -868,9 +918,152 @@ class ResponseParser {
     }
   }
 
-  fail(message: string, code: string): void {
-    this.client.__onParseError(this.socket, new HTTPParserError(message, code, ""));
+  /** A parse error with llhttp's reason: undici 7 puts it inside its
+   * protocol message and, as its error table maps names to numbers only,
+   * sets no code; undici 5 uses the reason as the message and the code. */
+  fail(reason: string, code: string): void {
+    const err =
+      this.client.__profile.major >= 7
+        ? new HTTPParserError(`Response does not match the HTTP/1.1 protocol (${reason})`)
+        : new HTTPParserError(reason, code, "");
+    this.client.__onParseError(this.socket, err);
     this.state = 99;
+  }
+
+  /** Reads the chunk-size line one byte at a time as llhttp does, so a line
+   * that never ends holds no memory: hex digits (past 16 significant ones
+   * the size overflows), then extensions, checked and dropped, then CRLF.
+   * The 7.x profile follows llhttp 9 (undici 7), the 5.x profile llhttp 8
+   * in its lenient mode (undici 5). Returns true when the line is complete
+   * and chunkSize holds its size; false when it needs more bytes or failed. */
+  chunkSizeLine(): boolean {
+    const buf = this.buf;
+    if (this.sizeState === SIZE_FIRST) {
+      // The common line, hex digits then CRLF in this buffer, in one pass;
+      // any other line takes the byte loop below from its start.
+      let size = 0;
+      let digits = 0;
+      let j = 0;
+      for (; j < buf.length && j < 32; j++) {
+        const d = hexDigit(buf[j]!);
+        if (d === -1) break;
+        if (digits > 0 || d !== 0) {
+          digits++;
+          size = size * 16 + d;
+        }
+      }
+      if (j > 0 && digits <= 16 && j + 1 < buf.length && buf[j] === 0x0d && buf[j + 1] === 0x0a) {
+        this.chunkSize = size;
+        this.buf = buf.subarray(j + 2);
+        return true;
+      }
+    }
+    const v7 = this.client.__profile.major >= 7;
+    let i = 0;
+    while (i < buf.length) {
+      const c = buf[i]!;
+      const state = this.sizeState;
+      if (state === SIZE_FIRST || state === SIZE_DIGITS) {
+        const d = hexDigit(c);
+        if (d === -1) {
+          if (state === SIZE_FIRST) {
+            this.fail("Invalid character in chunk size", "INVALID_CHUNK_SIZE");
+            return false;
+          }
+          this.sizeState = SIZE_AFTER;
+          continue;
+        }
+        if (state === SIZE_FIRST) {
+          this.chunkSize = 0;
+          this.sizeDigits = 0;
+          this.sizeState = SIZE_DIGITS;
+        }
+        if (this.sizeDigits > 0 || d !== 0) {
+          if (this.sizeDigits === 16) {
+            this.fail("Chunk size overflow", "INVALID_CHUNK_SIZE");
+            return false;
+          }
+          this.sizeDigits++;
+          this.chunkSize = this.chunkSize * 16 + d;
+        }
+      } else if (state === SIZE_AFTER) {
+        if (c === 0x0d) this.sizeState = SIZE_CR;
+        else if (c === 0x3b) this.sizeState = SIZE_EXT;
+        else if (c === 0x0a && v7) {
+          this.fail("Missing expected CR after chunk size", "CR_EXPECTED");
+          return false;
+        } else {
+          this.fail("Invalid character in chunk size", "INVALID_CHUNK_SIZE");
+          return false;
+        }
+      } else if (state === SIZE_EXT) {
+        if (c === 0x20 || c === 0x0d) {
+          this.fail("Invalid character in chunk extensions", "STRICT");
+          return false;
+        }
+        this.sizeState = SIZE_EXT_NAME;
+        continue;
+      } else if (state === SIZE_EXT_NAME) {
+        if (c === 0x3d) this.sizeState = SIZE_EXT_VALUE;
+        else if (c === 0x3b) this.sizeState = SIZE_EXT;
+        else if (c === 0x0d) this.sizeState = SIZE_CR;
+        else if (c === 0x0a && v7) {
+          this.fail("Missing expected CR after chunk extension name", "CR_EXPECTED");
+          return false;
+        } else if (TOKEN_BYTES[c] !== 1) {
+          this.fail("Invalid character in chunk extensions name", "STRICT");
+          return false;
+        }
+      } else if (state === SIZE_EXT_VALUE) {
+        if (c === 0x22) this.sizeState = SIZE_EXT_QUOTED;
+        // llhttp 8 goes on with the chunk-size node after a value's ';'.
+        else if (c === 0x3b) this.sizeState = v7 ? SIZE_EXT : SIZE_AFTER;
+        else if (c === 0x0d) this.sizeState = SIZE_CR;
+        else if (c === 0x0a && v7) {
+          this.fail("Missing expected CR after chunk extension value", "CR_EXPECTED");
+          return false;
+        } else if (TOKEN_BYTES[c] !== 1) {
+          this.fail("Invalid character in chunk extensions value", "STRICT");
+          return false;
+        }
+      } else if (state === SIZE_EXT_QUOTED) {
+        if (c === 0x22) this.sizeState = SIZE_EXT_QUOTED_DONE;
+        else if (c === 0x5c && v7) this.sizeState = SIZE_EXT_PAIR;
+        else if (!isQuotedByte(c)) {
+          this.fail("Invalid character in chunk extensions quoted value", "STRICT");
+          return false;
+        }
+      } else if (state === SIZE_EXT_PAIR) {
+        if (!isQuotedPairByte(c)) {
+          this.fail("Invalid quoted-pair in chunk extensions quoted value", "STRICT");
+          return false;
+        }
+        this.sizeState = SIZE_EXT_QUOTED;
+      } else if (state === SIZE_EXT_QUOTED_DONE) {
+        if (c === 0x3b) this.sizeState = SIZE_EXT;
+        else if (c === 0x0d) this.sizeState = SIZE_CR;
+        else if (c === 0x0a && v7) {
+          this.fail("Missing expected CR after chunk extension value", "CR_EXPECTED");
+          return false;
+        } else {
+          this.fail("Invalid character in chunk extensions quote value", "STRICT");
+          return false;
+        }
+      } else {
+        // SIZE_CR: llhttp 9 needs the LF; llhttp 8's lenient mode skips
+        // whatever byte follows the CR.
+        if (c !== 0x0a && v7) {
+          this.fail("Expected LF after chunk size", "STRICT");
+          return false;
+        }
+        this.buf = buf.subarray(i + 1);
+        this.sizeState = SIZE_FIRST;
+        return true;
+      }
+      i++;
+    }
+    this.buf = Buffer.alloc(0);
+    return false;
   }
 
   line(): Buffer | null {
@@ -897,7 +1090,12 @@ class ResponseParser {
         const text = line.toString("latin1");
         const m = /^HTTP\/1\.([01]) (\d{3})(?: (.*))?$/.exec(text);
         if (m === null) {
-          this.fail("Response does not match the HTTP/1.1 protocol", "INVALID_CONSTANT");
+          const v7 = this.client.__profile.major >= 7;
+          if (!text.startsWith("HTTP/")) {
+            this.fail(v7 ? "Expected HTTP/, RTSP/ or ICE/" : "Expected HTTP/", "INVALID_CONSTANT");
+          } else {
+            this.fail(v7 ? "Invalid status code" : "Invalid response status", "INVALID_STATUS");
+          }
           return;
         }
         this.versionMinor = Number(m[1]);
@@ -1007,18 +1205,11 @@ class ResponseParser {
         }
       } else if (this.state === 3) {
         // Chunk size line.
-        const line = this.line();
-        if (line === null) return;
-        const sizeText = line.toString("latin1").split(";")[0]!.trim();
-        if (!/^[0-9a-fA-F]+$/.test(sizeText)) {
-          this.fail("Invalid character in chunk size", "INVALID_CHUNK_SIZE");
-          return;
-        }
-        const size = parseInt(sizeText, 16);
-        if (size === 0) {
+        if (!this.chunkSizeLine()) return;
+        if (this.chunkSize === 0) {
           this.state = 5;
         } else {
-          this.remaining = size;
+          this.remaining = this.chunkSize;
           this.state = 4;
         }
       } else if (this.state === 4) {
