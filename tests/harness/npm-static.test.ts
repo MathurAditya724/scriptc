@@ -76,8 +76,9 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2566, 2571)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2584)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
+    ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
@@ -828,30 +829,41 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
 
   // Types-first resolution answers @types/twinned, but the refusal names the
   // package that has the code and the flag that compiles it.
-  test("an @types-typed package is refused under its runtime name with the opt-in remedy", () => {
-    const { coverage } = analyze(join(pilotRoot, "twinned-cli.ts"));
+  // The default selection compiles a package typed by a DefinitelyTyped
+  // twin that describes its installed release, and the untyped
+  // dependencies of compiled packages.
+  test("an @types-typed package and its untyped dependency compile by default", async () => {
+    const entry = join(pilotRoot, "twinned-cli.ts");
+    const { coverage } = analyze(entry);
     expect(coverage.npmStatic).toEqual([
-      {
-        package: "twinned",
-        status: "refused",
-        detail:
-          "its declared types come from the separate @types/twinned package, not the package itself",
-        hint: "to compile it anyway, name it with --npm-static=twinned (or --npm-static=twinned... to include its dependencies)",
-      },
+      { package: "twinned", status: "static" },
+      { package: "ms", status: "static" },
     ]);
-    const diagnostic = coverage.diagnostics.find((d) => d.code === "SC2013");
-    expect(diagnostic?.message).toContain("'twinned'");
-    expect(diagnostic?.hint).toContain("--npm-static=twinned");
+    expect(coverage.preflightFailed).toBe(false);
+    const binary = await buildStatic(entry, "auto");
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
+  // The twin only checks the program; the JavaScript compiles with its
+  // inferred surface, so a twin naming an export the JavaScript lacks
+  // (Node's link error) fails the build at the import's use instead of
+  // compiling against the declaration.
+  test("an @types twin that disagrees with the shipped JavaScript does not build", () => {
+    const { coverage } = analyze(join(pilotRoot, "twinstale-cli.ts"));
+    expect(coverage.npmStatic).toEqual([{ package: "twinstale", status: "static" }]);
+    expect(coverage.diagnostics).toContainEqual(
+      expect.objectContaining({ message: expect.stringContaining("'stale'") as string }),
+    );
   }, 120_000);
 
-  test("a named package's untyped dependency points at the transitive opt-in", () => {
+  test("a named package's untyped dependency compiles with it", () => {
     const { coverage } = analyze(join(pilotRoot, "twinned-cli.ts"), { npmStatic: ["twinned"] });
-    expect(coverage.npmStatic).toContainEqual({
-      package: "ms",
-      status: "refused",
-      detail: "it ships no own .d.ts declaration surface",
-      hint: "to compile it anyway, name it with --npm-static=ms, or use --npm-static=twinned... to include all of twinned's dependencies",
-    });
+    expect(coverage.npmStatic).toContainEqual({ package: "ms", status: "static" });
   }, 120_000);
 
   test("--npm-static=pkg... compiles the package's dependency closure", async () => {
@@ -1455,6 +1467,92 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         ) as string,
       },
     ]);
+  }, 120_000);
+
+  // 2563: lazily initialized ES modules (__esm) in esbuild 0.25 plain and
+  // whitespace/syntax-minified bundles.
+  test("bundled ES module initializers 2563-bundled-esm-inits compile statically and byte-match Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2563-bundled-esm-inits/main.ts"), [
+      "gtesm",
+      "gtesmws",
+      "gtcore",
+    ]);
+  }, 180_000);
+
+  // 2580-2581: a barrel whose re-exports are memoized lazy loaders of
+  // lazily initialized ES modules (a bundle plugin's shape): ES-module
+  // importers copy every export when they link (Node's CommonJS import),
+  // require() reads each export's getter at the read.
+  test.each([
+    ["2580-lazy-barrel", ["gtlazy", "gtlazyws"]],
+    ["2581-lazy-barrel-require", ["gtlazyuser", "gtlazy"]],
+  ])(
+    "the lazy barrel %s compiles statically and byte-matches Node",
+    async (name, packages) => {
+      await expectNodeParity(join(fixturesRoot, `npm/cases/${name}/main.ts`), packages);
+    },
+    180_000,
+  );
+
+  // 2582: two releases of one package in a pnpm store, the newer through
+  // an npm alias directory; the default selection compiles both copies.
+  test("an npm alias of a selected package compiles from its JavaScript", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2582-npm-alias-two-releases/main.ts");
+    const { coverage } = analyze(entry);
+    expect(coverage.npmStatic).toEqual(
+      expect.arrayContaining([
+        { package: "gtroute", status: "static" },
+        { package: "gtpattern", status: "static" },
+      ]),
+    );
+    const binary = await buildStatic(entry, "auto");
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
+  // 2583: a module whose export object is one of its functions (semver
+  // 5/6's `exports = module.exports = Version`), under both values of the
+  // environment variable the module reads.
+  test("function export objects 2583-cjs-function-exports compile statically and byte-match Node", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2583-cjs-function-exports/main.ts");
+    await expectNodeParity(entry, ["gtfnexports", "gtfnmembers"]);
+    const binary = await buildStatic(entry, ["gtfnexports", "gtfnmembers"]);
+    const env = { ...process.env, GT_LABEL: "x" };
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry], env),
+      runBinary(binary, [], env),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.stdout.toString("utf8")).toContain("[x]");
+  }, 180_000);
+
+  // 2584: an export object replaced inside an environment-dependent branch
+  // (readable-stream 2.x) is named precisely.
+  test("an environment-dependent export object is refused by name", () => {
+    const entry = join(fixturesRoot, "npm/cases/2584-cjs-conditional-exports/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcondexports"] });
+    expect(JSON.stringify(coverage)).toContain(
+      "replacing module.exports outside a top-level statement (a conditional or environment-dependent export object)",
+    );
+  }, 120_000);
+
+  // 2567: an export that reads `this`, called through its namespace, sees
+  // Node's module object; the lowered namespace would differ, so the
+  // package stays refused.
+  test("a namespace call to an export that reads `this` stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2567-esm-namespace-this/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtesmthis", "gtcore"] });
+    expect(coverage.npmStatic).toContainEqual({
+      package: "gtesmthis",
+      status: "refused",
+      detail: expect.stringMatching(
+        /calls only of exported functions that do not read 'this'/,
+      ) as string,
+    });
   }, 120_000);
 
   // 2562: a file with unverifiable interop that no compiled code can load

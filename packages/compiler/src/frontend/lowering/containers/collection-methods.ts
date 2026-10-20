@@ -42,6 +42,8 @@ import {
 import { strCharsCall } from "./array-construction.js";
 import { arrayElementRead } from "./array-iteration.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
+import { classGeneratorIterable } from "../class-iterables.js";
+import { generatorDrain } from "../iterator-adapters.js";
 
 /** Ambient Map method calls. `get`/`set`/`has`/`delete`/`clear` lower to
  * mapIntrinsic; `forEach` desugars to a direct call of a synthetic loop
@@ -1048,6 +1050,14 @@ function setFromSeedValue(
         }
       : null;
   }
+  // A generator, or a class whose [Symbol.iterator] is a generator method:
+  // the Set takes every value it yields, in order.
+  const generator =
+    classGeneratorIterable(lowerer, source) ?? (source.type.kind === "generator" ? source : null);
+  if (generator) {
+    const drained = generatorDrain(lowerer, generator, setT.elem, loc);
+    return drained ? { kind: "setNew", seed: drained, type: setT, loc } : null;
+  }
   let seed: IrExpr;
   if (source.type.kind === "set" && typeEquals(source.type, setT)) {
     return { kind: "setIntrinsic", method: "clone", receiver: source, args: [], type: setT, loc };
@@ -1245,6 +1255,24 @@ export function mapFromSeedValue(
           loc,
         }
       : null;
+  }
+  // A generator of entries, or a class whose [Symbol.iterator] is one: the
+  // Map takes every [key, value] pair it yields, in order.
+  const generator =
+    classGeneratorIterable(lowerer, seed) ?? (seed.type.kind === "generator" ? seed : null);
+  if (generator) {
+    const entry: IrType = {
+      kind: "record",
+      shapeId: lowerer.shapes.intern(
+        [
+          { name: "0", type: mapT.key },
+          { name: "1", type: mapT.value },
+        ],
+        true,
+      ),
+    };
+    const drained = generatorDrain(lowerer, generator, entry, loc);
+    return drained ? mapFromSeedValue(lowerer, drained, mapT) : null;
   }
   if (seed.type.kind === "map") {
     if (!typeEquals(seed.type, mapT)) return null;
