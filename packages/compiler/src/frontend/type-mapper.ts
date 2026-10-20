@@ -4773,6 +4773,9 @@ function unionDiscriminant(
 ): IrUnionDiscriminant | undefined {
   if (arms.filter((arm) => arm.kind === "record").length < 2 || parts.length < 2) return undefined;
   const { checker } = ctx;
+  // Tuple shapes keep positions only: their checker `length` literal has
+  // no slot to compare (discriminantField refuses tuple shapes too).
+  if (parts.some((part) => ctx.shapes.get(part.mapped.shapeId)?.tuple)) return undefined;
   for (const candidate of checker.getPropertiesOfType(parts[0]!.source)) {
     if (candidate.name.startsWith("__@")) continue;
     const byTag = new Map<number, (string | number | boolean)[]>();
