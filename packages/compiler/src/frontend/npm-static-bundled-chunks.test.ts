@@ -246,7 +246,8 @@ test("a readable-stream 2.x entry chunk follows its uses", () => {
     `node_modules/.pnpm/readable-stream@2.3.8/node_modules/readable-stream/${file}`;
   const chunk = (name: string, file: string, body: string) =>
     `var ${name} = __commonJS({\n  "${key(file)}"(exports2, module2) {\n    ${body}\n  }\n});\n`;
-  const result = split(`${keyedHelper}${chunk("require_readable", "readable.js", 'module2.exports = require("stream").Readable;')}${chunk("require_transform", "transform.js", "module2.exports = require_readable().Transform;")}
+  const result =
+    split(`${keyedHelper}${chunk("require_readable", "readable.js", 'module2.exports = require("stream").Readable;')}${chunk("require_transform", "transform.js", "module2.exports = require_readable().Transform;")}
 var members = require_readable();
 console.log(members.Readable, members.Writable);
 var value = require_readable();
@@ -262,7 +263,8 @@ console.log(require_transform());
   expect(answer.text).toContain('console.log(require("stream").Transform);');
   // A use the alias cannot answer keeps the package's own module for
   // every call site of that chunk.
-  const mixed = split(`${keyedHelper}${chunk("require_readable", "readable.js", 'module2.exports = require("stream").Readable;')}
+  const mixed =
+    split(`${keyedHelper}${chunk("require_readable", "readable.js", 'module2.exports = require("stream").Readable;')}
 var members = require_readable();
 console.log(members.Readable);
 var mixed = require_readable();

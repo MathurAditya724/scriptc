@@ -449,14 +449,14 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
             original = esm;
           }
           // Polyfill packages that ARE a Node builtin compile as the builtin.
-          const aliased =
-            original === null ? null : services.builtinAliasRequires(original, path);
+          const aliased = original === null ? null : services.builtinAliasRequires(original, path);
           if (aliased !== null) original = aliased;
           // A module exporting one of its functions reaches its members
           // through that function.
           const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
           if (fnExports !== null) original = fnExports;
-          const respelled = split !== null || esm !== null || aliased !== null || fnExports !== null;
+          const respelled =
+            split !== null || esm !== null || aliased !== null || fnExports !== null;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;

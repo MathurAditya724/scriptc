@@ -55,7 +55,9 @@ test("pnpm module keys name the package, version and file", () => {
   ).toEqual({ name: "@scope/pkg", version: "2.1.0", subpath: "lib/a.js" });
   // A store entry's own dependency links name other packages.
   expect(
-    versionedPackageOfKey("node_modules/.pnpm/from2@2.3.0/node_modules/readable-stream/readable.js"),
+    versionedPackageOfKey(
+      "node_modules/.pnpm/from2@2.3.0/node_modules/readable-stream/readable.js",
+    ),
   ).toBeNull();
   expect(versionedPackageOfKey("node_modules/isarray/index.js")).toBeNull();
 });

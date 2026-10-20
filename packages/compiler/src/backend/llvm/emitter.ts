@@ -5932,9 +5932,6 @@ export class LlEmitter {
       // A module namespace object is always present.
       case "moduleNs":
         return "true";
-      // A module namespace (a required builtin module object) is an object.
-      case "moduleNs":
-        return "true";
       case "array":
       case "record":
       case "object":
