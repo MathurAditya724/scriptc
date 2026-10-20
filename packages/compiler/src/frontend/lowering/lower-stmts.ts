@@ -1476,6 +1476,18 @@ function lowerLabeled(lowerer: Lowerer, stmt: ts.LabeledStatement): IrStmt | IrS
   return { kind: "block", body, labels, loc: locOf(stmt) };
 }
 
+// Value kinds a `throw` converts to a checked-dynamic value, so the catch
+// binding sees the thrown object rather than a type-erased reference.
+const THROWN_AS_DYN: ReadonlySet<IrType["kind"]> = new Set([
+  "array",
+  "union",
+  "map",
+  "set",
+  "bytes",
+  "func",
+  "regex",
+]);
+
 export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt[] | null {
   if (ts.isClassDeclaration(stmt)) {
     if (!stmt.name) lowerer.unsupported("SC1090", stmt, "anonymous local class declarations");
@@ -1654,14 +1666,12 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
       value = lowerer.coerceToExpected(value, DYN);
     } else if (value.type.kind === "record" && lowerer.dynConvertible(value.type)) {
       value = { kind: "dynFrom", value, liveRef: true, type: DYN, loc: locOf(stmt.expression) };
-    } else if (
-      (value.type.kind === "array" || value.type.kind === "union") &&
-      lowerer.dynConvertible(value.type)
-    ) {
-      // Arrays, and unions over records and arrays, keep their identity
-      // and contents the same way: the catch binding, `Array.isArray`,
+    } else if (THROWN_AS_DYN.has(value.type.kind) && lowerer.dynConvertible(value.type)) {
+      // Arrays, Maps, Sets, typed arrays, Buffers, functions, regexes and
+      // unions over them keep their identity and contents the same way:
+      // the catch binding, `typeof`, `instanceof`, `Array.isArray`,
       // inspection and typed views read the thrown object.
-      value = lowerer.coerceToExpected(value, DYN);
+      value = lowerer.coerceInto(stmt.expression, value, DYN);
     }
     if (value.type.kind === "date") {
       lowerer.unsupported(
@@ -6455,7 +6465,10 @@ function lowerCjsExportStatement(
     // storage — collectGlobals skipped it; importers re-resolve through
     // cjsMemberExportClassSymbol): the statement lowers to nothing.
     if (lowerer.cjsMemberExportClassSymbol(cjs.expr) !== null) {
-      return { kind: "block", body: [], loc };
+      // An inline require still evaluates its module here.
+      const req = inlineProgramRequireOf(lowerer, cjs.value);
+      const init = req !== null ? lowerer.requireInitStmt(req.spec, req.call) : null;
+      return init ?? { kind: "block", body: [], loc };
     }
     // The tsc VOID-INIT PREAMBLE (`exports.leaf = void 0;` with the real
     // `exports.leaf = leaf;` further down — every tsc-emitted dist file
@@ -6916,12 +6929,13 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     if (
       ts.isBinaryExpression(expr) &&
       expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      isCjsExportsIdentifier(lowerer, expr.left)
+      isCjsExportsIdentifier(lowerer, expr.left) &&
+      cjsExportAssignmentOf(stmtNode)?.kind !== "table"
     ) {
       lowerer.unsupported(
         "SC1090",
         expr.left,
-        "rebinding 'exports' (exports = module.exports = value): members attached through 'exports' afterwards are properties of that value, which the static export table does not model — write module.exports.<name> = … and module.exports = value",
+        "rebinding 'exports' without module.exports (exports = value): members attached through 'exports' afterwards are properties of that value, which module.exports does not hold — write exports = module.exports = value",
       );
     }
     const cjs = cjsExportAssignmentOf(stmtNode);

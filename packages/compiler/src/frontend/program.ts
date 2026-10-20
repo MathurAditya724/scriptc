@@ -5967,10 +5967,15 @@ export function isModuleExportsAccess(expr: ts.Expression): expr is ts.PropertyA
  *   - member: `exports.f = <expr>` / `module.exports.f = <expr>`.
  * Null for everything else. Callers gate on top-level position in a JS
  * module file — these forms anywhere else keep their generic fences. */
-export function cjsExportAssignmentOf(
-  stmt: ts.Statement,
-):
-  | { kind: "table"; obj: ts.ObjectLiteralExpression | null; expr: ts.BinaryExpression }
+export function cjsExportAssignmentOf(stmt: ts.Statement):
+  | {
+      kind: "table";
+      obj: ts.ObjectLiteralExpression | null;
+      expr: ts.BinaryExpression;
+      /** `exports = module.exports = value`: the `exports` binding names
+       * the new value too, so later `exports.f =` members attach to it. */
+      rebindsExports?: true;
+    }
   | { kind: "member"; name: ts.MemberName; value: ts.Expression; expr: ts.BinaryExpression }
   | null {
   if (!ts.isExpressionStatement(stmt)) return null;
@@ -5978,6 +5983,20 @@ export function cjsExportAssignmentOf(
   if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
   if (isModuleExportsAccess(e.left)) {
     return { kind: "table", obj: ts.isObjectLiteralExpression(e.right) ? e.right : null, expr: e };
+  }
+  if (ts.isIdentifier(e.left) && e.left.text === "exports") {
+    let inner: ts.Expression = e.right;
+    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    if (
+      ts.isBinaryExpression(inner) &&
+      inner.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isModuleExportsAccess(inner.left) &&
+      // `exports = module.exports = {}` is the fresh-table reset, which the
+      // export walk handles on its own.
+      !ts.isObjectLiteralExpression(inner.right)
+    ) {
+      return { kind: "table", obj: null, expr: inner, rebindsExports: true };
+    }
   }
   if (ts.isPropertyAccessExpression(e.left) && !e.left.questionDotToken) {
     const recv = e.left.expression;
@@ -6110,6 +6129,8 @@ export function cjsExportDiscardReason(stmt: ts.Statement): string | null {
     return "export members attached before a 'module.exports =' assignment (Node replaces the export object — importers never see this member; attach it to module.exports AFTER the table)";
   }
   const left = mine.expr.left as ts.PropertyAccessExpression;
+  const last = cjsExportAssignmentOf(stmts[lastTable]!);
+  if (last?.kind === "table" && last.rebindsExports === true) return null;
   return ts.isIdentifier(left.expression) && left.expression.text === "exports"
     ? "'exports.f =' after a 'module.exports =' assignment ('exports' still references the replaced object — Node discards this member; write module.exports.f instead)"
     : null;

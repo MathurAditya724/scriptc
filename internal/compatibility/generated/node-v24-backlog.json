@@ -58982,7 +58982,9 @@
             "tests/corpus/5298-readline-abort.cjs",
             "tests/corpus/5299-readline-stdin.ts",
             "tests/corpus/5872-readline-positional-create-interface.mjs",
-            "tests/corpus/5873-readline-promises-namespace.cjs"
+            "tests/corpus/5873-readline-promises-namespace.cjs",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59014,7 +59016,9 @@
             "tests/corpus/5298-readline-abort.cjs",
             "tests/corpus/5299-readline-stdin.ts",
             "tests/corpus/5872-readline-positional-create-interface.mjs",
-            "tests/corpus/5873-readline-promises-namespace.cjs"
+            "tests/corpus/5873-readline-promises-namespace.cjs",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59242,7 +59246,9 @@
             "tests/corpus/5298-readline-abort.cjs",
             "tests/corpus/5299-readline-stdin.ts",
             "tests/corpus/5872-readline-positional-create-interface.mjs",
-            "tests/corpus/5873-readline-promises-namespace.cjs"
+            "tests/corpus/5873-readline-promises-namespace.cjs",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59303,7 +59309,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59335,7 +59343,9 @@
             "tests/corpus/5298-readline-abort.cjs",
             "tests/corpus/5299-readline-stdin.ts",
             "tests/corpus/5872-readline-positional-create-interface.mjs",
-            "tests/corpus/5873-readline-promises-namespace.cjs"
+            "tests/corpus/5873-readline-promises-namespace.cjs",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59418,7 +59428,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:readline.createInterface",
           "tests": [
-            "tests/corpus/1475-readline-closed-stdin.ts"
+            "tests/corpus/1475-readline-closed-stdin.ts",
+            "tests/corpus/5878-readline-dynamic-streams.mjs"
           ]
         }
       }
@@ -59557,7 +59568,8 @@
           "confidence": "high",
           "source": "compiler-dedicated:rl.close",
           "tests": [
-            "tests/corpus/1475-readline-closed-stdin.ts"
+            "tests/corpus/1475-readline-closed-stdin.ts",
+            "tests/corpus/5878-readline-dynamic-streams.mjs"
           ]
         }
       }
@@ -59587,7 +59599,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59617,7 +59631,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59647,7 +59663,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59677,7 +59695,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59707,7 +59727,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59737,7 +59759,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59767,7 +59791,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59797,7 +59823,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59917,7 +59945,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59947,7 +59977,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -59977,7 +60009,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -60035,7 +60069,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }
@@ -60065,7 +60101,9 @@
             "tests/corpus/5295-readline-promises-question.ts",
             "tests/corpus/5296-readline-lines.ts",
             "tests/corpus/5297-readline-callback-events.cjs",
-            "tests/corpus/5299-readline-stdin.ts"
+            "tests/corpus/5299-readline-stdin.ts",
+            "tests/corpus/5876-readline-dispose-instanceof.ts",
+            "tests/corpus/5877-readline-question-query.cjs"
           ]
         }
       }

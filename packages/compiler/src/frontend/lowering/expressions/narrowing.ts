@@ -1151,6 +1151,18 @@ export function withRuntimeOptionalNarrowed<T>(
  *   memory);
  * - dyn → anything else (closures, class instances, void) is rejected:
  *   those types cannot be found inside a JSON dyn. */
+/** A class instance, or a union of class instances and unit arms (a
+ * runtime-optional binding such as `const node = stack.pop()!`). */
+function classInstanceOrAbsent(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "object") return true;
+  if (type.kind !== "union") return false;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  return (
+    arms.some((arm) => arm.kind === "object") &&
+    arms.every((arm) => arm.kind === "object" || isUnitType(arm))
+  );
+}
+
 /** `e as T` and the old-style assertion `<T>e` — one node shape (both
  * carry `.type` and `.expression`), one lowering. */
 export function lowerAsExpression(
@@ -1228,8 +1240,10 @@ export function lowerAsExpression(
     if (target?.kind === "dyn" && (targetTs0.flags & ts.TypeFlags.Object) !== 0) {
       // A class instance asserted to a class-backed protocol view (a type
       // class instances flow into): the same identity-keeping box an
-      // implicit flow into the view uses.
-      if (inner.type.kind === "object" && lowerer.classImplementedProtocol(targetTs0))
+      // implicit flow into the view uses. A runtime-optional binding of a
+      // class (`const node = stack.pop()!`) boxes the same way, and its
+      // undefined arm stays undefined, as in Node.
+      if (classInstanceOrAbsent(lowerer, inner.type) && lowerer.classImplementedProtocol(targetTs0))
         return lowerer.coerceInto(expr, inner, DYN);
       const sourceShape =
         inner.type.kind === "record" ? lowerer.shapes.get(inner.type.shapeId) : undefined;
