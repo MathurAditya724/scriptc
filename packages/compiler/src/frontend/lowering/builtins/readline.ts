@@ -46,7 +46,7 @@ export function isReadlineTyped(lowerer: Lowerer, node: ts.Expression): boolean 
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getAliasSymbol() ?? t.getSymbol();
   if (sym?.name !== "Interface") return false;
-  return lowerer.checker.declarationsOf(sym).some((d) => {
+  return sym.declarations.some((d) => {
     if (!ts.isClassDeclaration(d) && !ts.isInterfaceDeclaration(d)) return false;
     if (!lowerer.isStdlibFile(d.getSourceFile())) return false;
     return isReadlineModule(ambientModuleOf(d));
@@ -107,7 +107,7 @@ function isReadlineUiTyped(lowerer: Lowerer, node: ts.Expression): boolean {
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getAliasSymbol() ?? t.getSymbol();
   if (sym?.name !== "Readline") return false;
-  return lowerer.checker.declarationsOf(sym).some((d) => {
+  return sym.declarations.some((d) => {
     if (!ts.isClassDeclaration(d) && !ts.isInterfaceDeclaration(d)) return false;
     if (!lowerer.isStdlibFile(d.getSourceFile())) return false;
     const spec = ambientModuleOf(d);

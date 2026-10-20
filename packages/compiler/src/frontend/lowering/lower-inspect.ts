@@ -10,6 +10,7 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrFunction,
   type IrStmt,
   type IrType,
   RUNTIME_ERROR_CLASSES,
@@ -992,6 +993,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       // Object.keys' declared order (SEMANTICS.md 36's stance). Retained
       // reachability can settle this shape after the helper is first
       // interned, so rebuild the field walk once metadata is final.
+      lowerer.keyOrder.observe(t);
       rebuildShapeOrderBody = (): void => {
         const current = lowerer.shapes.get(t.shapeId) ?? shape;
         const order = current.declaredOrder ?? current.fields.map((f) => f.name);
@@ -1342,7 +1344,10 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
     prependCycleGuard();
   }
 
-  const fn = {
+  // Typed as the IR function itself: the finalizer below replaces the
+  // body of the very object liftedFns holds (natively, a differently typed
+  // literal would be copied into the list).
+  const fn: IrFunction = {
     name,
     params: [
       { localId: "v.0", name: "v", type: t },
@@ -1768,7 +1773,7 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
     const base = cls.base ? ` extends ${cls.base.def.name.replace(/^%/, "")}` : "";
     return strLit(`[class ${cls.def.name}${base}]`, loc);
   }
-  const decl = lowerer.checker.declarationsOf(sym)[0];
+  const decl = sym.declarations[0];
   if (!decl) return null;
   if (ts.isFunctionDeclaration(decl) && decl.name) {
     return strLit(`[Function: ${decl.name.text}]`, loc);

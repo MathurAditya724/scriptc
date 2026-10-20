@@ -408,7 +408,15 @@ export function paramShapes(
       return { type: mapped, mode: "rest" };
     }
     if (declParam.initializer) return defaultParameterShape(lowerer, declParam, mapped);
-    if (declParam.questionToken && !lowerer.bareUndefinedArmedUnion(mapped)) {
+    // A checked-value slot holds undefined directly, so an omitted
+    // argument needs no union arm (paramShape's declared-signature rule;
+    // an erased type parameter and a class-implemented interface view
+    // both map here).
+    if (
+      declParam.questionToken &&
+      !lowerer.bareUndefinedArmedUnion(mapped) &&
+      mapped.kind !== "dyn"
+    ) {
       lowerer.unsupported(
         "SC1090",
         declParam,
@@ -903,8 +911,7 @@ export function lambdaSignature(
     const ctxSigs = ctxType
       ? lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType))
       : [];
-    const ctxDecl =
-      ctxSigs.length === 1 ? lowerer.checker.signatureDeclaration(ctxSigs[0]!) : undefined;
+    const ctxDecl = ctxSigs.length === 1 ? ctxSigs[0]!.declaration : undefined;
     const ctxRetRaw =
       ctxDecl && !ctxDecl.getSourceFile().isDeclarationFile
         ? lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!))

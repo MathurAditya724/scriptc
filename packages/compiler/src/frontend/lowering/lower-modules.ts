@@ -93,6 +93,7 @@ import {
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
+import { isWebCryptoMemberType } from "./builtins/webcrypto.js";
 import {
   bindingContextualGenericFnNodeOf,
   bindingGenericFnAliasInfoOf,
@@ -113,6 +114,7 @@ import {
   isVarDeclared,
   numericIteratorSourceOf,
   provenanceElidedConstDecl,
+  stdlibBufferVarAlias,
 } from "./lower-stmts.js";
 import { objectFactoryGlobalType } from "./object-factory-new.js";
 import { streamClassAliasDecl } from "./lower-stream.js";
@@ -144,6 +146,7 @@ import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { handleEventReaderPrelude } from "./lower-event-target.js";
 import { cjsAccessorSnapshotStores, jsHoldsDynObject } from "./lower-exprs.js";
+import { keptIdentityAssertion } from "./assertion-identity.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
 export interface FileParts {
@@ -651,9 +654,7 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
         const modSym = lowerer.checker.getSymbolAtLocation(node.arguments.nodes[0]);
         const ownModule =
           modSym !== undefined &&
-          lowerer.checker
-            .declarationsOf(modSym)
-            .some((d) => ts.isSourceFile(d) && !d.isDeclarationFile);
+          modSym.declarations.some((d) => ts.isSourceFile(d) && !d.isDeclarationFile);
         const builtin = canonicalBuiltinModule(spec);
         const res = ownModule
           ? ({ kind: "program-module" } as const)
@@ -691,7 +692,7 @@ export function collectJsonImports(lowerer: Lowerer, parts: FileParts[]): void {
       const nameSym = lowerer.checker.getSymbolAtLocation(clause.name);
       if (!nameSym || !(nameSym.flags & ts.SymbolFlags.Alias)) continue;
       const target = lowerer.checker.getAliasedSymbol(nameSym);
-      const jsonSf = lowerer.checker.declarationsOf(target)[0]?.getSourceFile();
+      const jsonSf = target.declarations[0]?.getSourceFile();
       if (!jsonSf || !jsonSf.fileName.endsWith(".json")) continue;
       try {
         const tsType = lowerer.typeOf(clause.name);
@@ -1053,7 +1054,7 @@ function checkedGlobalReference(lowerer: Lowerer, expression: ts.Expression): bo
   )
     return false;
   const root = lowerer.checker.getSymbolAtLocation(expression.expression);
-  const namespace = root && lowerer.checker.declarationsOf(root).some(ts.isNamespaceImport);
+  const namespace = root && root.declarations.some(ts.isNamespaceImport);
   return (
     (namespace || lowerer.cjsLocalModuleBindingOf(expression.expression)) &&
     lowerer.globalOf(expression.name)?.type.kind === "dyn"
@@ -1261,7 +1262,7 @@ export function collectGlobals(
       if (!symbol) continue;
       if (symbol.flags & ts.SymbolFlags.Alias) {
         const target = lowerer.checker.getAliasedSymbol(symbol);
-        const vd = lowerer.checker.valueDeclarationOf(target);
+        const vd = target.valueDeclaration;
         const mutableVar =
           vd !== undefined &&
           ts.isVariableDeclaration(vd) &&
@@ -1370,8 +1371,7 @@ export function collectGlobals(
               if (vG) {
                 if (!vG.mutable) {
                   lowerer.globalsBySymbol.set(symbol, vG);
-                  for (const d of lowerer.checker.declarationsOf(symbol))
-                    lowerer.globalsByDeclNode.set(d, vG);
+                  for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, vG);
                   return;
                 }
                 const g: IrGlobal = {
@@ -1381,8 +1381,7 @@ export function collectGlobals(
                   mutable: false,
                 };
                 lowerer.globalsBySymbol.set(symbol, g);
-                for (const d of lowerer.checker.declarationsOf(symbol))
-                  lowerer.globalsByDeclNode.set(d, g);
+                for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
                 lowerer.globalsList.push(g);
                 return;
               }
@@ -1392,8 +1391,7 @@ export function collectGlobals(
           lowerer.globalsBySymbol.set(symbol, g);
           // Importer aliases resolve to a DISTINCT late-bound symbol with
           // the same declaration — key the node too (globalOf's fallback).
-          for (const d of lowerer.checker.declarationsOf(symbol))
-            lowerer.globalsByDeclNode.set(d, g);
+          for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
           lowerer.globalsList.push(g);
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
@@ -1536,7 +1534,7 @@ export function collectGlobals(
       )
         continue;
       const target = lowerer.checker.getAliasedSymbol(aliasSym);
-      const vd = lowerer.checker.valueDeclarationOf(target);
+      const vd = target.valueDeclaration;
       const mutableVar =
         vd !== undefined &&
         ts.isVariableDeclaration(vd) &&
@@ -1895,6 +1893,7 @@ export function collectGlobals(
       // same test).
       const stableStdlibAlias =
         isConst ||
+        stdlibBufferVarAlias(lowerer, decl) ||
         ((list.flags & ts.NodeFlags.Let) !== 0 &&
           ts.isIdentifier(decl.name) &&
           stdlibGlobalAliasNameOf(lowerer, decl.initializer) !== null &&
@@ -1919,7 +1918,8 @@ export function collectGlobals(
             decl.initializer &&
             !decl.type &&
             !hasJsTypeAnnotation(decl) &&
-            !lowerer.mapTypeOf(lowerer.typeOf(nameNode))
+            (!lowerer.mapTypeOf(lowerer.typeOf(nameNode)) ||
+              isWebCryptoMemberType(lowerer, lowerer.typeOf(nameNode)))
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
@@ -1954,6 +1954,30 @@ export function collectGlobals(
                 checkedGlobalReference(lowerer, initializer)) ||
               stdlibGlobalNameOf(lowerer, initializer) === "globalThis")
           ) {
+            const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+            if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+              const g: IrGlobal = {
+                id: `%g.${tag}${nsPrefix}${nameNode.text}`,
+                name: nameNode.text,
+                type: DYN,
+                mutable: isLet,
+                source: bindingSource(nameNode),
+                ...(!isVarDeclared(decl) ? { tdz: true as const } : {}),
+              };
+              lowerer.globalsBySymbol.set(symbol, g);
+              lowerer.globalsList.push(g);
+              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+            }
+            continue;
+          }
+          // A file-scope binding of an assertion of the global object
+          // (`const state = globalThis as { [KEY]?: State }`): the binding
+          // holds that object, so writes through it reach the object other
+          // modules read (assertion-identity.ts).
+          const asserted = decl.initializer
+            ? keptIdentityAssertion(lowerer, decl.initializer)
+            : undefined;
+          if (nameNode === decl.name && !decl.type && asserted) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
               const g: IrGlobal = {
@@ -2248,8 +2272,7 @@ export function collectGlobals(
             ts.isCallExpression(decl.initializer)
               ? lowerer.checker.getResolvedSignature(decl.initializer)
               : undefined;
-          const callDeclaration =
-            callSignature && lowerer.checker.signatureDeclaration(callSignature);
+          const callDeclaration = callSignature && callSignature.declaration;
           const callType =
             callDeclaration && isJsSourceFile(callDeclaration.getSourceFile())
               ? lowerer.mapTypeOf(lowerer.typeOf(nameNode))
@@ -2516,6 +2539,11 @@ export function collectGlobals(
           };
           lowerer.globalsBySymbol.set(symbol, g);
           lowerer.globalsList.push(g);
+          // `let f: T;` initializes the binding (to undefined) where the
+          // declaration runs: later writes are ordinary stores, which the
+          // pointer guard alone would refuse (markCycleEarlyBindings).
+          if (g.tdz && !decl.initializer)
+            lowerer.uninitializedLexicalGlobals.set(g.id, { name: nameNode, module: sf, symbol });
           // Mutable checked-dynamic LET globals ride the same entry
           // init: a closure called above the declaration statement
           // reads the dyn undefined instead of faulting on NULL — the
@@ -2885,11 +2913,16 @@ export function lowerFileInit(
     // a function called above the declaration reads `undefined`, exactly
     // Node); checked-dynamic var globals hold the dyn undefined the same
     // way. After the guard: a cache-hit revisit must not reset them.
+    // A union slot the body retypes checked-dynamic (lowerVarDecl: a
+    // JavaScript var initialized with an existing checked-dynamic object)
+    // gets the dyn undefined once the body has lowered.
+    const unionEntryInits: { at: number; g: IrGlobal }[] = [];
     for (const g of lowerer.varGlobalEntryInits.get(sf) ?? []) {
       if (g.type.kind !== "union" && g.type.kind !== "dyn") continue;
       const wrapped =
         g.type.kind === "dyn" ? dynUndefinedExpr(loc0) : lowerer.unassignedSlotInit(g.type, loc0);
       if (wrapped) {
+        if (g.type.kind === "union") unionEntryInits.push({ at: header.length, g });
         // A let global whose early reads are checked (initFlag) only
         // gets its storage filled here: this is not the source write, so
         // it must neither run the TDZ check nor set the flag.
@@ -2983,6 +3016,16 @@ export function lowerFileInit(
         ),
       );
       at++;
+    }
+    for (const { at, g } of unionEntryInits) {
+      if (g.type.kind !== "dyn") continue;
+      body[at] = {
+        kind: "assign",
+        localId: g.id,
+        value: dynUndefinedExpr(loc0),
+        ...(g.initFlag !== undefined ? { initializes: true as const } : {}),
+        loc: loc0,
+      };
     }
     const moduleRef = cjsModuleRef(lowerer, sf);
     if (moduleRef !== null) {

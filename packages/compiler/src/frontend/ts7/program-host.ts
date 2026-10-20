@@ -40,6 +40,7 @@ import {
   trackedReadFile,
   trackedRealpath,
 } from "../input-tracker.js";
+import { packageShimDeclarationText } from "../package-shims.js";
 
 /** The compiler options our createProgram accepts: TS7's CompilerOptions
  * shape (numeric enums for target/module/moduleResolution — the enums module
@@ -154,6 +155,11 @@ export class Ts7Host {
             const replacement = shadow.readFile(fileName);
             if (replacement !== undefined) return stripSourceBom(replacement);
           }
+          // A package scriptc implements itself (package-shims.ts): its
+          // installed declaration entry re-exports the shim module, in every
+          // program the host creates.
+          const shim = packageShimDeclarationText(fileName);
+          if (shim !== undefined) return shim;
           const source = trackedReadFile(fileName);
           return source === null ? null : stripSourceBom(source);
         },

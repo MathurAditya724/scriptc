@@ -24,6 +24,7 @@ import { PoisonError, neverTaintedJsType } from "../lowerer.js";
 import type { Lowerer } from "../lowerer.js";
 import { lowerIndexMergeHelper } from "../containers/indexed-objects.js";
 import type { IndexMergeContributor } from "../containers/indexed-objects.js";
+import type { KeyOrderSegment } from "../key-order-witness.js";
 import {
   PERF_ENTRY_MARKER,
   isGenericCallableMemberType,
@@ -1596,6 +1597,8 @@ export function lowerObjectLiteral(
   // Member names DROPPED from the shape (JS deferral — unlowerable pure
   // member reads narrow away; see the catch in the property loop).
   const droppedNames = new Set<string>();
+  // The order this literal creates its keys in (key-order-witness.ts).
+  const orderSegments: KeyOrderSegment[] = [];
   for (const prop of expr.properties.nodes) {
     // A later contributor can mutate an earlier source or overwrite a
     // value with effects. Snapshot pending fields at their source position,
@@ -1651,6 +1654,7 @@ export function lowerObjectLiteral(
         v = lowerer.coerceInto(valueNode, v, fieldType);
         if (!typeEquals(v.type, fieldType)) lowerer.badType(valueNode, lowerer.typeOf(valueNode));
         conditionalNames.add(name);
+        orderSegments.push({ kind: "key", name, definite: false });
         fields.push({
           name,
           value: {
@@ -1758,6 +1762,7 @@ export function lowerObjectLiteral(
           }
         }
         const srcRef = (): IrExpr => srcLowered ?? lowerer.lowerExpr(srcNode);
+        orderSegments.push({ kind: "spread", shapeId: recArm.shapeId, maybeAbsent: true });
         for (const f of srcShape.fields) {
           if (laterNames.has(f.name)) continue;
           const targetType = fieldTypes.get(f.name);
@@ -1993,6 +1998,12 @@ export function lowerObjectLiteral(
           laterNames.add(propNameText(lowerer, later.name));
         }
       }
+      // A checked-dynamic source's keys are a run-time fact.
+      orderSegments.push(
+        srcLowered.type.kind === "dyn"
+          ? { kind: "opaque" }
+          : { kind: "spread", shapeId: srcType.shapeId, maybeAbsent: false },
+      );
       for (const f of srcShape.fields) {
         if (laterNames.has(f.name)) continue;
         let targetType = fieldTypes.get(f.name);
@@ -2307,6 +2318,7 @@ export function lowerObjectLiteral(
     const at = fields.findIndex((x) => x.name === name);
     if (at >= 0) fields.splice(at, 1);
     fields.push({ name, value });
+    orderSegments.push({ kind: "key", name, definite: true });
   }
   // Optional fields may be omitted: the field holds its absent state.
   // tsc rejects omission of required fields before lowering.
@@ -2335,7 +2347,10 @@ export function lowerObjectLiteral(
       fields.push({ name: f.name, value: absent });
     }
   }
-  const result: IrExpr = { kind: "recordLit", fields, type, loc };
+  const result: IrExpr = lowerer.keyOrder.literal(
+    { kind: "recordLit", fields, type, loc },
+    orderSegments,
+  );
   return spreadStmts.length === 0
     ? result
     : { kind: "seqExpr", stmts: spreadStmts, result, type, loc };
@@ -3047,7 +3062,7 @@ export function lowerShorthandValue(
       return lowerer.maybeNarrow({ kind: "varRef", localId: g.id, type: g.type, loc }, propName);
     }
     const sig = lowerer.fnSigsBySymbol.get(resolved);
-    const decl = lowerer.checker.declarationsOf(resolved)[0];
+    const decl = resolved.declarations[0];
     if (
       sig &&
       decl &&

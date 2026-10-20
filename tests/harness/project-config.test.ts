@@ -839,6 +839,42 @@ test("node-types: Cipheriv and Decipheriv match Node under @types/node", async (
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: WebCrypto HMAC matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-webcrypto-hmac");
+  const entry = join(nodeTypesDir, "webcrypto-hmac.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "webcrypto-hmac"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: the navigator global's runtime probe matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-navigator");
+  const entry = join(nodeTypesDir, "navigator.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "navigator"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: declared-but-not-lowered surface fences, naming @types/node", async () => {
   const outDir = outDirFor("node-fenced");
   const result = await compile(join(nodeTypesDir, "fenced.ts"), {

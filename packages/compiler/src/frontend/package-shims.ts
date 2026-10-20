@@ -1,0 +1,200 @@
+/** Package shims: npm packages that compile from an implementation module
+ * shipped with scriptc instead of from their own published JavaScript, and
+ * packages a project marks as never loaded.
+ *
+ * Two kinds of entries:
+ *
+ * - implementation: a built-in TypeScript module per supported major version
+ *   (packages/compiler/shims/<name>/v<major>.ts). The importing package's
+ *   INSTALLED version selects the entry, so a program with undici 5.x in one
+ *   workspace package and 7.x in another compiles both, each against its own
+ *   version's behavior. A package that is not installed, or whose major
+ *   version has no entry, is not shimmed and resolves exactly as before.
+ *
+ *   The module edge goes through resolveProjectImport (preflight, module
+ *   order, the CommonJS link) and resolveNpmImport7 / the pipeline's npm-edge
+ *   walk skip the package. The checker sees the same module through the fs
+ *   shadow: the installed package's types entry (index.d.ts) reads as a
+ *   re-export of the shim, so types resolve per importer like the real
+ *   package's declarations (tsconfig `paths` would map every importer to one
+ *   file).
+ *
+ * - unloaded: a package the project declares never loaded
+ *   (`"scriptc": { "packages": { "encoding": "unloaded" } }` in the entry's
+ *   package.json). `require()` of it throws Node's MODULE_NOT_FOUND exactly
+ *   as when the package is not installed, so the optional-dependency pattern
+ *   `try { require("encoding") } catch {}` takes its absent branch, and the
+ *   package never joins the program.
+ *
+ * A configured stand-in (for example a no-op tracer for dd-trace) is an
+ * implementation entry whose module the project supplies. Today a tsconfig
+ * `paths` mapping already does that: resolveProjectImport honors project
+ * paths for module edges and the checker uses the same map. A config
+ * spelling (`"dd-trace": "./native-shims/dd-trace.ts"`) would add the path
+ * as a project-owned implementation entry here.
+ */
+import { dirname, join, resolve } from "node:path";
+import { packageShimRoot, tsgoPath } from "./dts-paths.js";
+import { trackedDirectoryExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import { packageNameOfSpecifier } from "./workspace-registry.js";
+
+interface ImplementationShim {
+  /** npm package name. */
+  name: string;
+  /** Supported major versions and their entry modules, relative to the
+   * shim root. */
+  versions: ReadonlyMap<number, string>;
+}
+
+const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
+  [
+    "undici",
+    {
+      name: "undici",
+      versions: new Map([
+        [5, "undici/v5.ts"],
+        [7, "undici/v7.ts"],
+      ]),
+    },
+  ],
+]);
+
+/** Package names the project marks never loaded. */
+let unloadedPackages: ReadonlySet<string> = new Set();
+
+/** Reads the project's package-shim configuration: the `scriptc.packages`
+ * map of the entry's nearest package.json. Called once per program load. */
+export function configurePackageShims(entryPath: string): void {
+  const packages = new Set<string>();
+  for (let dir = dirname(resolve(entryPath)); ;) {
+    const text = trackedReadFile(join(dir, "package.json"));
+    if (text !== null) {
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
+      }
+      const config =
+        parsed !== null && typeof parsed === "object"
+          ? (parsed as Record<string, unknown>)["scriptc"]
+          : undefined;
+      const map =
+        config !== null && typeof config === "object"
+          ? (config as Record<string, unknown>)["packages"]
+          : undefined;
+      if (map !== null && typeof map === "object") {
+        for (const [name, kind] of Object.entries(map as Record<string, unknown>)) {
+          if (kind === "unloaded") packages.add(name);
+        }
+      }
+      break;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  unloadedPackages = packages;
+}
+
+/** True for a package name the registry implements or the project marks
+ * never loaded: such a package never compiles its published JavaScript. */
+export function isPackageShimName(name: string): boolean {
+  return IMPLEMENTATION_SHIMS.has(name) || unloadedPackages.has(name);
+}
+
+/** True when `specifier` names a package the project marks never loaded. */
+export function isUnloadedPackage(specifier: string): boolean {
+  if (unloadedPackages.size === 0) return false;
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("#")) {
+    return false;
+  }
+  return unloadedPackages.has(packageNameOfSpecifier(specifier));
+}
+
+const installedCache = new Map<string, string | null>();
+
+/** The installed package directory Node's resolution would reach for
+ * `name` from `fromFile` (node_modules walked upward, realpath'd). */
+function installedPackageDir(fromFile: string, name: string): string | null {
+  const start = dirname(resolve(fromFile));
+  const key = `${start}\0${name}`;
+  const cached = installedCache.get(key);
+  if (cached !== undefined) return cached;
+  let found: string | null = null;
+  for (let dir = start; ;) {
+    const candidate = join(dir, "node_modules", name);
+    if (trackedDirectoryExists(candidate)) {
+      found = trackedRealpath(candidate) ?? candidate;
+      break;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  installedCache.set(key, found);
+  return found;
+}
+
+/** The shim entry for an installed package directory, or null when the
+ * directory is not a registered package at a supported major version. */
+function shimEntryForPackageDir(pkgDir: string, expectedName: string | null): string | null {
+  const text = trackedReadFile(join(pkgDir, "package.json"));
+  if (text === null) return null;
+  let pkg: { name?: unknown; version?: unknown };
+  try {
+    pkg = JSON.parse(text) as { name?: unknown; version?: unknown };
+  } catch {
+    return null;
+  }
+  if (typeof pkg.name !== "string" || typeof pkg.version !== "string") return null;
+  if (expectedName !== null && pkg.name !== expectedName) return null;
+  const shim = IMPLEMENTATION_SHIMS.get(pkg.name);
+  if (shim === undefined) return null;
+  const major = Number(/^(\d+)\./.exec(pkg.version)?.[1] ?? NaN);
+  const entry = shim.versions.get(major);
+  return entry === undefined ? null : join(packageShimRoot(), entry);
+}
+
+/** The shim module `specifier` resolves to from `fromFile`, or null. Only
+ * the package's main entry is shimmed; subpath imports resolve as before. */
+export function packageShimFor(fromFile: string, specifier: string): string | null {
+  if (!IMPLEMENTATION_SHIMS.has(specifier)) return null;
+  const dir = installedPackageDir(fromFile, specifier);
+  return dir === null ? null : shimEntryForPackageDir(dir, specifier);
+}
+
+/** True when a bare specifier is served by a shim or marked unloaded: it is
+ * not an npm import for the npm-static machinery. */
+export function isShimmedImport(fromFile: string, specifier: string): boolean {
+  return isUnloadedPackage(specifier) || packageShimFor(fromFile, specifier) !== null;
+}
+
+/** The fs-shadow answer for a shimmed package's declaration entry: the
+ * installed `index.d.ts` reads as a re-export of the version's shim module,
+ * so the checker types each importer against its own version. Undefined
+ * for every other path. */
+export function packageShimDeclarationText(path: string): string | undefined {
+  if (!path.endsWith("/index.d.ts")) return undefined;
+  const pkgDir = dirname(path);
+  const name = pkgDir.slice(pkgDir.lastIndexOf("/") + 1);
+  if (!IMPLEMENTATION_SHIMS.has(name)) return undefined;
+  const entry = shimEntryForPackageDir(pkgDir, name);
+  if (entry === null) return undefined;
+  const target = JSON.stringify(tsgoPath(entry));
+  return `// scriptc: this package compiles from its built-in implementation.\nexport * from ${target};\n`;
+}
+
+/** True for a file of the shipped package shims. They are compiler-owned
+ * implementations, type-checked by scriptc's own tests: like library
+ * declarations under skipLibCheck, a project's lib and @types/node choice
+ * must not turn their internals into the project's type errors. */
+export function isPackageShimFile(fileName: string): boolean {
+  const root = tsgoPath(packageShimRoot());
+  return fileName.startsWith(root.endsWith("/") ? root : `${root}/`);
+}
+
+/** Resets per-compile caches. */
+export function clearPackageShimCaches(): void {
+  installedCache.clear();
+}

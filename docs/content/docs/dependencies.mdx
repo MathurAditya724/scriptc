@@ -73,6 +73,33 @@ $ scriptc build app.ts --npm-static=three -o app >/dev/null
 
 Naming a package skips the declaration requirement above, but the package still has to compile. Add a trailing `...` to select a package together with every package it depends on, for example `--npm-static=fs-extra...`. `--npm-static=auto` uses the default automatic selection. The option accepts a comma-separated list and can be repeated.
 
+## Built-in packages
+
+scriptc implements a few packages itself and compiles that implementation in place of the package's published JavaScript. Which implementation compiles depends on the version your program has installed, so an import resolves the same way it does under Node.js: a package that isn't installed is still a missing package, and a version scriptc doesn't implement compiles from its own files as usual.
+
+`undici` 5.x and 7.x are built in. The implementation covers `request()`, `Dispatcher` (including subclasses that override `dispatch`), `Client`, `Pool` with its `stats`, `Agent` with per-origin `factory` functions and `connect` options, `buildConnector`, the `errors` classes and their `UND_ERR_*` codes, `setGlobalDispatcher` and `getGlobalDispatcher`, `fetch` and `Headers`, and the request events undici publishes on `node:diagnostics_channel`. Requests use HTTP/1.1 with keep-alive connection reuse and undici's headers, body and idle timeouts, and each version keeps its own behavior where 5.x and 7.x differ, such as the error an aborted request rejects with. The package's other exports aren't declared, so using one is a type error at build time. Known differences:
+
+- A response body supports the readable-stream members undici's body mixin uses: `on`, `once`, `pause`, `resume`, `destroy`, `text()`, `json()`, `arrayBuffer()`, `bytes()`, `blob()` and `dump()`. It can't be piped or iterated with `for await`.
+- Diagnostics channel messages carry the request but not the socket or connector.
+- `fetch` with a dispatcher returns a response whose `url` is empty and whose `redirected` is `false`, offers only `gzip, deflate` encodings, and sends string and byte bodies. Without a dispatcher it is the built-in `fetch`.
+- Request bodies are strings and bytes; stream, iterable and form-data bodies, `pipelining` above 1, `CONNECT` requests and Unix socket paths aren't supported.
+
+## Optional dependencies that never load
+
+Some packages load an optional dependency inside `try`/`catch` and work without it, such as `node-fetch` with `encoding`. To keep such a dependency out of the native build even when it is installed, mark it unloaded in your entry's `package.json`:
+
+```json:package.json
+{
+  "scriptc": {
+    "packages": {
+      "encoding": "unloaded"
+    }
+  }
+}
+```
+
+A `require()` of an unloaded package throws the same `MODULE_NOT_FOUND` error Node.js throws when the package isn't installed, and the package isn't compiled.
+
 ## CommonJS packages
 
 CommonJS packages compile with Node.js's module semantics. Each `require()` evaluates its module at the call, once, and later calls return the cached exports. A package can assign `module.exports` and run code before it requires its dependencies. If that code reads a `const` or `let` require binding before its `require` runs, the read throws the same `ReferenceError` as Node.js. A `var` binding that earlier code can reach is reported at build time. A `require()` of a JSON file, such as a package's own `package.json`, returns one object parsed at build time, shared by every module that requires it. A require cycle compiles when each of its modules assigns its exports before requiring anything, as semver's classes and esbuild's per-file output do, and uses the other modules only inside functions that its top-level code can't call. Bundles built by esbuild compile with their bundled CommonJS modules and lazily initialized ES modules, each evaluated once, at its first use, as under Node.js. Other require cycles are reported at build time. The [limitations](/docs/limitations) page lists the supported `require` forms.
