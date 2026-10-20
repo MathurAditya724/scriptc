@@ -10,6 +10,7 @@ import {
   type IrLocal,
   type IrType,
   NULL_T,
+  STRING,
   type SrcLoc,
   UNDEFINED_T,
   arrayOf,
@@ -25,7 +26,10 @@ import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
 import { narrowClassUnion, narrowStoredClassValue, structuralNarrowing } from "../class-unions.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "../class-assertions.js";
-import { isOptionalProcessStreamProperty } from "../builtins/process.js";
+import {
+  isOptionalProcessStreamProperty,
+  isOptionalProcessVersionsRead,
+} from "../builtins/process.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
@@ -413,6 +417,9 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
   // instead of misreading the payload (the dyn boundary's usual stance).
   // Object/array narrowings stay dyn-typed and keep their fences.
   if (expr.type.kind === "dyn") {
+    // A process.versions entry declared as a string can be absent here.
+    if (isOptionalProcessVersionsRead(lowerer, node))
+      return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(STRING));
     // An inferred JS member's storage may be deliberately wider than its
     // declaration (prototype-selected buffers, null-initialized scratch
     // objects). Extract at the consuming operation, not at the read.
@@ -591,6 +598,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
   if (expr.type.kind !== "union") return expr;
   if (ts.isPropertyAccessExpression(node) && isOptionalProcessStreamProperty(lowerer, node))
     return expr;
+  if (isOptionalProcessVersionsRead(lowerer, node)) return expr;
 
   // Represented fields and index values can include undefined even when
   // checker inference or lib.d.ts declares strings (RegExp captures).
