@@ -132,6 +132,12 @@ function toFile() {
   new Words(["written ", "by ", "a ", "constructor"]).pipe(Upper()).pipe(ws);
   ws.on("finish", () => {
     console.log("file", JSON.stringify(fs.readFileSync(file, "utf8")));
-    fs.rmSync(dir, { recursive: true });
+    // A runtime stream piped into a constructor-function stream.
+    const back = new Collect();
+    fs.createReadStream(file).pipe(new ByteCounter()).pipe(back);
+    back.on("finish", () => {
+      console.log("read back", JSON.stringify(back.text()));
+      fs.rmSync(dir, { recursive: true });
+    });
   });
 }
