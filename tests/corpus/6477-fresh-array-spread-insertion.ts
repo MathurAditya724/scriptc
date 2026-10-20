@@ -11,3 +11,9 @@ const tail = results.length > 5 ? [] : [{ message: "tail", file: undefined, nois
 results.push(...tail);
 console.log(results.map((r) => `${r.message}:${r.file?.path ?? "-"}:${r.noisy}`).join(" "));
 console.log(JSON.stringify(results[1]));
+// A const declared in the loop body is a new array on every iteration.
+for (let i = 0; i < 2; i++) {
+  const step = [{ message: `step${i}`, file: undefined, noisy: false }];
+  results.push(...step);
+}
+console.log(results.map((r) => r.message).join(" "), results[results.length - 1] === results[results.length - 2]);

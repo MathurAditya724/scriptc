@@ -5,7 +5,8 @@ import type { Lowerer } from "../lowerer.js";
 
 /** Whether the elements a spread inserts are reachable only through it: an
  * array literal (`...(cond ? [{ ... }] : [])`), or a const initialized by
- * one that this spread is the only reference to. Converting such elements
+ * one that this spread is the only reference to, and that the spread reads
+ * at most once per evaluation of the initializer. Converting such elements
  * into the destination's element layout copies them, which nothing can
  * observe. */
 export function freshSpreadSource(lowerer: Lowerer, node: ts.Expression): boolean {
@@ -36,7 +37,26 @@ export function freshSpreadSource(lowerer: Lowerer, node: ts.Expression): boolea
     ts.forEachChild(n, visit);
   };
   visit(scope);
-  return uses === 1;
+  return uses === 1 && runsOnceInScope(node, scope);
+}
+
+/** Whether `node` runs at most once each time `scope` runs: no loop body,
+ * loop test or update, function, or class field initializer lies between
+ * them. A spread that runs again inserts the same elements again, and
+ * copies would no longer be the same objects. */
+function runsOnceInScope(node: ts.Node, scope: ts.Node): boolean {
+  let child = node;
+  for (let n = node.parent; n && n !== scope; child = n, n = n.parent) {
+    if (ts.isFunctionLike(n) || ts.isPropertyDeclaration(n)) return false;
+    if (ts.isForOfStatement(n) || ts.isForInStatement(n)) {
+      if (child !== n.expression) return false;
+    } else if (ts.isForStatement(n)) {
+      if (child !== n.initializer) return false;
+    } else if (ts.isWhileStatement(n) || ts.isDoStatement(n)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function isReference(e: ts.Expression): boolean {
