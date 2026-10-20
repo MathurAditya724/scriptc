@@ -1238,4 +1238,36 @@ console.log("done", caught);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("done 100\n");
   });
+
+  test("an inspection refusal throws before console.log writes", async () => {
+    // A promise reached through `unknown` has no dynamic rendering; the
+    // refusal must stop the call, not print a partial line and continue.
+    const r = await compileAndRun(
+      "inspect-refusal-unwind",
+      `import { inspect } from "node:util";
+const p: unknown = Promise.resolve(3);
+function attempt(label: string, f: () => void): void {
+  try {
+    f();
+    console.log(label, "returned");
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+attempt("log", () => console.log("x", p));
+attempt("inspect", () => console.log(inspect(p).length));
+attempt("record", () => console.log({ a: p }));
+attempt("array", () => console.log([p]));
+console.log("before");
+console.log(p);
+console.log("after");
+`,
+    );
+    const refusal = "util.inspect of a promise value is not supported yet";
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(
+      ["log", "inspect", "record", "array"].map((l) => `${l} ${refusal}\n`).join("") + "before\n",
+    );
+    expect(r.stderr).toContain(`Uncaught Error: ${refusal}`);
+  });
 });

@@ -249,7 +249,8 @@ export function lowerConsoleArg(
   // inspect at the rest-args depth 2 (formatWithOptions) — scalar
   // kinds byte-exactly, boxed functions as [Function: name] /
   // [Function (anonymous)], composites through the dyn walk
-  // (insp.dyn). Never throws — Node's console.log never does.
+  // (insp.dyn). A value the inspector does not render throws the
+  // 'not supported yet' Error before anything is written.
   if (lowered.type.kind === "dyn") {
     return {
       kind: "libCall",
