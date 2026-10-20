@@ -32,3 +32,16 @@ function read<T, K extends keyof T>(row: T, key: K, fallback?: T[K]): T[K] {
 const row: Row = { a: 1, b: 2, name: "r" };
 console.log(read(row, "a"), read(row, "b"), read(row, "name"));
 console.log(read(row, "b", 0) + read(row, "a", 0));
+
+// An overload call whose implementation returns an indexed read that
+// misses returns undefined, as the implementation's own calls do.
+function at<T>(items: T[], index: number): T;
+function at<T>(items: T[], index: number, label: string): T;
+function at<T>(items: T[], index: number, label?: string): T {
+  if (label !== undefined) console.log(label);
+  return items[index];
+}
+console.log(at([1, 2, 3], 1), at([1, 2, 3], 5));
+console.log(at(["a", "b"], 0, "strings"), at(["a", "b"], 9, "strings"));
+const missing = at([{ id: 1 }], 3);
+console.log(missing === undefined, typeof missing);

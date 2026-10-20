@@ -303,14 +303,7 @@ export function genericCallInstance(
     fenceGenericSignatureResult(lowerer, expr, retTs);
     lowerer.badType(expr, retTs);
   }
-  // A body that can return an indexed read that misses returns undefined
-  // there, as in JavaScript, whatever the declared result says. An async
-  // body's promise is always present and settles with undefined there.
-  const returnType = lowerer.runtimeOptionalGenericReturns.has(info.decl)
-    ? mappedReturn.kind === "promise"
-      ? { kind: "promise" as const, inner: lowerer.runtimeOptionalType(mappedReturn.inner) }
-      : lowerer.runtimeOptionalType(mappedReturn)
-    : mappedReturn;
+  const returnType = runtimeReturnType(lowerer, info, mappedReturn);
 
   // keyof-constrained type parameters (`K extends keyof T`): the bound
   // LITERAL is semantic — the instance body reads the named field — so
@@ -417,12 +410,24 @@ function overloadCallInstance(
   if (!returnType) return null;
   // keyof-constrained parameters key their instance on the bound literal,
   // as on the implementation-signature path.
-  return internGenericInstance(lowerer, expr, info, params, returnType, () => bindings, {
+  const runtimeReturn = runtimeReturnType(lowerer, info, returnType);
+  return internGenericInstance(lowerer, expr, info, params, runtimeReturn, () => bindings, {
     ...(keyofConstrainedTypeParams(info).size > 0
       ? { extraKey: keyofLiteralKey(info, tsBindings) }
       : {}),
     tsBindings,
   });
+}
+
+/** An instance's result type: a body that can return an indexed read
+ * that misses returns undefined there, as in JavaScript, whatever the
+ * declared result says. An async body's promise is always present and
+ * settles with undefined there. */
+function runtimeReturnType(lowerer: Lowerer, info: GenericFnInfo, mapped: IrType): IrType {
+  if (!lowerer.runtimeOptionalGenericReturns.has(info.decl)) return mapped;
+  return mapped.kind === "promise"
+    ? { kind: "promise", inner: lowerer.runtimeOptionalType(mapped.inner) }
+    : lowerer.runtimeOptionalType(mapped);
 }
 
 /** A generic factory whose result is one of its own local classes
