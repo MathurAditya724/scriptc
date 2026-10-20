@@ -854,6 +854,24 @@ export function lowerBundledEsmInits(
   return applyEdits(source, 0, source.length, edits);
 }
 
+/** Global constructors a hoisted class may extend: reading one runs no
+ * code. */
+const GLOBAL_BASES: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+  "Array",
+  "Map",
+  "Set",
+  "Promise",
+  "Object",
+]);
+
 /** The run-once closure's closing text after the initializer function. */
 const RUN_ONCE_TAIL =
   "return function () { if (__scriptc_done) return; __scriptc_done = true; __scriptc_init(); }; })()";
@@ -891,6 +909,21 @@ function hoistInitClasses(
 ): Map<string, { edits: Edit[]; declarators: ts.VariableDeclaration[] }> {
   const out = new Map<string, { edits: Edit[]; declarators: ts.VariableDeclaration[] }>();
   const hoistedNames = new Set<string>();
+  /** esbuild's `0 && (module.exports = { … })` annotation for Node's
+   * CommonJS lexer: code that never runs. */
+  const inDeadAnnotation = (n: ts.Node): boolean => {
+    for (let child: ts.Node = n, p = n.parent; p !== undefined; child = p, p = p.parent) {
+      if (
+        ts.isBinaryExpression(p) &&
+        p.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+        p.right === child &&
+        ts.isNumericLiteral(unparen(p.left)) &&
+        (unparen(p.left) as ts.NumericLiteral).text === "0"
+      )
+        return true;
+    }
+    return false;
+  };
   const insideFunction = (n: ts.Node): boolean => {
     for (let p = n.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent)
       if (ts.isFunctionLike(p)) return true;
@@ -905,7 +938,13 @@ function hoistInitClasses(
     let root: ts.Expression = type.expression;
     while (ts.isPropertyAccessExpression(root) && !root.questionDotToken) root = root.expression;
     if (ts.isIdentifier(root)) {
-      if (root === type.expression) return hoistedNames.has(root.text);
+      if (root === type.expression)
+        return (
+          hoistedNames.has(root.text) ||
+          // A standard global constructor the bundle never rebinds
+          // (`class extends Error`, an error base class).
+          (GLOBAL_BASES.has(root.text) && countDeclarations(sf, root.text) === 0)
+        );
       const spec = interopSpecs.get(root.text);
       return spec !== undefined && canonicalBuiltinModule(spec) !== null;
     }
@@ -925,7 +964,7 @@ function hoistInitClasses(
   for (const init of inits.values()) {
     const stmts = init.body.statements.nodes;
     if (stmts.some((st) => !ts.isExpressionStatement(st) && !ts.isEmptyStatement(st))) continue;
-    // The initializer's declaration is a statement of its own.
+    // The initializer's declarator is its statement's last one.
     const declarator = init.call.parent;
     const list = declarator?.parent;
     if (
@@ -933,7 +972,9 @@ function hoistInitClasses(
       !ts.isVariableDeclaration(declarator) ||
       list === undefined ||
       !ts.isVariableDeclarationList(list) ||
-      list.declarations.nodes.length !== 1 ||
+      // The initializer ends its statement: the split pieces follow it
+      // (`var A, B, init_x = __esm(…)` keeps A and B declared before).
+      list.declarations.nodes[list.declarations.nodes.length - 1] !== declarator ||
       unparen(declarator.initializer!) !== init.call
     )
       continue;
@@ -974,6 +1015,7 @@ function hoistInitClasses(
               r === target ||
               // The class's own methods name the class itself.
               (r.getStart(sf) >= cls.getStart(sf) && r.getEnd() <= cls.getEnd()) ||
+              inDeadAnnotation(r) ||
               (insideFunction(r) &&
                 // The initializer's own earlier code reads the unassigned binding.
                 !(r.getStart(sf) >= init.body.getStart(sf) && r.getStart(sf) < el.getEnd())),

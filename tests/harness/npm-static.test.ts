@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2588)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2590)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
     ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
@@ -1607,6 +1607,23 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test("bundled ES module classes 2588-bundled-esm-classes compile statically and byte-match Node", async () => {
     await expectNodeParity(join(fixturesRoot, "npm/cases/2588-bundled-esm-classes/main.ts"), [
       "gtesmclass",
+    ]);
+  }, 180_000);
+
+  // 2589: a program class over an error class a bundled package defines
+  // inside a lazy initializer (build-utils' NowBuildError shape), with new
+  // and instanceof against both.
+  test("a program subclass 2589-bundled-error-subclass of a bundled error class byte-matches Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2589-bundled-error-subclass/main.ts"), [
+      "gtesmerror",
+    ]);
+  }, 180_000);
+
+  // 2590: a bundle that embeds fs-extra 9 (build-utils' shape): its
+  // fs-extra chunk compiles as the built-in package.
+  test("a bundled fs-extra copy 2590-bundled-fs-extra compiles as the built-in package", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2590-bundled-fs-extra/main.ts"), [
+      "gtfsxbundle",
     ]);
   }, 180_000);
 
