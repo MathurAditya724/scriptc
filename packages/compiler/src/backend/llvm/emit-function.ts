@@ -16,9 +16,7 @@ import {
   withInitializerBindings,
   withInitializerLocals,
 } from "../../ir/initializer-bindings.js";
-import { findUnaliasedLocalArrays } from "../../ir/array-length-stability.js";
 import { constructorClass } from "../../ir/final-fields.js";
-import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findCallArrayReads, findLocalArrayReads } from "./local-array-reads.js";
 import { findScalarStringSlices, findScratchStringSlices } from "./string-slices.js";
@@ -54,6 +52,7 @@ import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { f64Lit } from "./common.js";
 import { RESULT_ENTRY_PREFIX } from "./record-results.js";
 import { emitIntegerClone, emitIntegerDispatcher } from "./integer-clones.js";
+import { beginFunctionLoops, LOOPS } from "./loop-state.js";
 
 export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const B = new BlockBuilder();
@@ -95,7 +94,6 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const initializerBindings = emitter.initializerBindings.get(fn.name) ?? [];
   const numericFn = withInitializerBindings(fn, initializerBindings);
   emitter.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
-  emitter.unaliasedArrays = findUnaliasedLocalArrays(fn);
   emitter.borrowedParameters.clear();
   emitter.referenceWrites?.enter(fn);
   emitter.reboundOwnerSlots.clear();
@@ -126,8 +124,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.stableCaptureIds =
     fn.captures !== undefined ? emitter.lazyCaptures.stableCaptures(fn.name) : new Set();
   emitter.integerLoopBindings.clear();
-  emitter.countedLoopsEnabled = emitter.debug === null && !fn.async && !fn.generator;
-  emitter.speculativeLoopsEnabled = emitter.countedLoopsEnabled;
+  beginFunctionLoops(emitter, fn, numericFn);
+  emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
   emitter.speculativeFunction = fn.name;
   emitter.speculation = null;
   emitter.speculationResume = null;
@@ -136,20 +134,6 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     !fn.generator &&
     constructorClass(fn.name) === null &&
     emitter.finalFields.size > 0;
-  emitter.byteWindowsEnabled = emitter.countedLoopsEnabled;
-  emitter.bytesLoopVersionsEnabled = emitter.countedLoopsEnabled;
-  emitter.bytesLoopEntries = null;
-  emitter.bytesLoopFunction = fn;
-  emitter.denseLoopsEnabled = emitter.countedLoopsEnabled;
-  emitter.denseLoop = null;
-  emitter.denseLoopEntries =
-    emitter.denseLoopsEnabled && numericFn.locals.some((l) => l.type.kind === "array")
-      ? findInitializedByteLoopBindings(fn)
-      : new Map();
-  emitter.byteWindowEntries =
-    emitter.byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === "bytes")
-      ? findInitializedByteLoopBindings(fn)
-      : new Map();
   emitter.integerViews.clear();
   emitter.fieldPointerTags.clear();
   emitter.integerArrayBindings.clear();
@@ -403,7 +387,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
       if (local.boxed || emitter.captureIds.has(local.id)) slots.add(`%${mangleLocal(local.id)}`);
     B.volatileSlots = slots;
     // Without optimization a versioned copy only adds code.
-    emitter.bytesLoopVersionsEnabled = false;
+    LOOPS.of(emitter).bytesLoopVersionsEnabled = false;
   }
   // Captured bindings come in through the environment — borrowed for the
   // whole call (the closure owns them): bound here, never released here.

@@ -59,7 +59,6 @@ import {
   moduleUsesMockTimers,
 } from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
-import { type DenseArrayLoop } from "./dense-array-loops.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
 import { globalSlotAlias } from "./bytes-alias.js";
@@ -179,6 +178,7 @@ import { PublishWalkers } from "./publish.js";
 import { computeImmutableFields, stableGlobals, type ImmutableFields } from "../immutability.js";
 import { computePublishedTypes, type PublishedTypes } from "../publication.js";
 import { emitExpr } from "./expr-dispatch.js";
+import { LOOPS } from "./loop-state.js";
 
 import {
   dynKind,
@@ -570,6 +570,8 @@ function mentionsLocal(e: IrExpr, localId: string): boolean {
 }
 
 export class LlEmitter {
+  /** Per-feature state (emitter-state.ts), indexed by each key's slot. */
+  readonly moduleStates: unknown[] = [];
   localArrayReads = new Map<string, LocalArrayRead>();
   loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
@@ -626,7 +628,7 @@ export class LlEmitter {
    * prefix: the counter of a dense array loop's fast copy indexing one of
    * the arrays its entry test covered. */
   provenDenseIndex(arr: IrExpr, index: IrExpr): boolean {
-    const loop = this.denseLoop;
+    const loop = LOOPS.of(this).denseLoop;
     return (
       loop !== null &&
       arr.kind === "varRef" &&
@@ -1000,21 +1002,12 @@ export class LlEmitter {
    * immortal from construction (classes.ts programLifetimeClass). */
   readonly programLifetime: ReadonlySet<string>;
   numericLocals = new Map<string, IrLocal>();
-  /** Local arrays of the current function that no other binding can hold
-   * (ir/array-length-stability.ts). */
-  unaliasedArrays: ReadonlySet<string> = new Set();
-  /** Dense array loops (dense-array-loops.ts) run in this function. */
-  denseLoopsEnabled = false;
-  denseLoopEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
-  /** The fast copy of a dense array loop being emitted. */
-  denseLoop: DenseArrayLoop | null = null;
   captureIds = new Set<string>();
   /** Active induction bindings retain their width independently of size_t. */
   integerLoopBindings = new Map<
     string,
     { slot: string; type: "i32" | "i64"; signed?: boolean; range?: { min: number; max: number } }
   >();
-  countedLoopsEnabled = false;
   /** Speculative integer loops (speculative-integers.ts) run in this function. */
   speculativeLoopsEnabled = false;
   /** The fast copy of a speculative integer loop being emitted: its
@@ -1042,19 +1035,6 @@ export class LlEmitter {
   int32Elements: ((arr: IrExpr) => boolean) | null = null;
   /** Sums whose result only feeds 32-bit conversions (wrapping-sums.ts). */
   wrappingSums = new Set<IrExpr>();
-  byteWindowsEnabled = true;
-  byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
-  /** Typed-array loop versioning (bytes-loop-versions.ts) for the current
-   * function: off in debug and suspending functions and inside a copy. */
-  bytesLoopVersionsEnabled = false;
-  /** Loops being versioned around the statement being emitted: a loop is
-   * never versioned inside its own copies, and versions nest boundedly. */
-  readonly bytesLoopVersioning = new Set<IrStmt>();
-  bytesLoopEntries: ReturnType<typeof findInitializedByteLoopBindings> | null = null;
-  bytesLoopFunction: IrFunction | null = null;
-  /** Counted loops whose integer-form safety test an enclosing version
-   * guard already passed. */
-  readonly provenCountedGuards = new Set<IrStmt>();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
   integerViews = new Map<string, string>();
   /** Module globals the current function owns outright (initializer
@@ -3391,10 +3371,10 @@ export class LlEmitter {
     s: IrStmt & { kind: "for" },
     counted: IntegerCountedForLoop | null,
   ): ReturnType<typeof matchBytesLoopVersion> {
-    const fn = this.bytesLoopFunction;
+    const fn = LOOPS.of(this).bytesLoopFunction;
     if (!fn) return null;
-    this.bytesLoopEntries ??= findInitializedByteLoopBindings(fn);
-    const initialized = this.bytesLoopEntries.get(s);
+    LOOPS.of(this).bytesLoopEntries ??= findInitializedByteLoopBindings(fn);
+    const initialized = LOOPS.of(this).bytesLoopEntries!.get(s);
     if (!initialized) return null;
     const invariantGlobals = new Set(this.stableGlobals);
     for (const global of this.initializerBindings.get(fn.name) ?? [])
