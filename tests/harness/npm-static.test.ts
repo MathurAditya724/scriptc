@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2572)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2588)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
     ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
@@ -1479,13 +1479,13 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     ]);
   }, 180_000);
 
-  // 2564-2565: a barrel whose re-exports are memoized lazy loaders of
+  // 2580-2581: a barrel whose re-exports are memoized lazy loaders of
   // lazily initialized ES modules (a bundle plugin's shape): ES-module
   // importers copy every export when they link (Node's CommonJS import),
   // require() reads each export's getter at the read.
   test.each([
-    ["2564-lazy-barrel", ["gtlazy", "gtlazyws"]],
-    ["2565-lazy-barrel-require", ["gtlazyuser", "gtlazy"]],
+    ["2580-lazy-barrel", ["gtlazy", "gtlazyws"]],
+    ["2581-lazy-barrel-require", ["gtlazyuser", "gtlazy"]],
   ])(
     "the lazy barrel %s compiles statically and byte-matches Node",
     async (name, packages) => {
@@ -1494,10 +1494,10 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     180_000,
   );
 
-  // 2566: two releases of one package in a pnpm store, the newer through
+  // 2582: two releases of one package in a pnpm store, the newer through
   // an npm alias directory; the default selection compiles both copies.
   test("an npm alias of a selected package compiles from its JavaScript", async () => {
-    const entry = join(fixturesRoot, "npm/cases/2566-npm-alias-two-releases/main.ts");
+    const entry = join(fixturesRoot, "npm/cases/2582-npm-alias-two-releases/main.ts");
     const { coverage } = analyze(entry);
     expect(coverage.npmStatic).toEqual(
       expect.arrayContaining([
@@ -1514,11 +1514,11 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  // 2567: a module whose export object is one of its functions (semver
+  // 2583: a module whose export object is one of its functions (semver
   // 5/6's `exports = module.exports = Version`), under both values of the
   // environment variable the module reads.
-  test("function export objects 2567-cjs-function-exports compile statically and byte-match Node", async () => {
-    const entry = join(fixturesRoot, "npm/cases/2567-cjs-function-exports/main.ts");
+  test("function export objects 2583-cjs-function-exports compile statically and byte-match Node", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2583-cjs-function-exports/main.ts");
     await expectNodeParity(entry, ["gtfnexports", "gtfnmembers"]);
     const binary = await buildStatic(entry, ["gtfnexports", "gtfnmembers"]);
     const env = { ...process.env, GT_LABEL: "x" };
@@ -1530,19 +1530,34 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.stdout.toString("utf8")).toContain("[x]");
   }, 180_000);
 
-  // 2568: an export object replaced inside an environment-dependent branch
+  // 2584: an export object replaced inside an environment-dependent branch
   // (readable-stream 2.x) is named precisely.
   test("an environment-dependent export object is refused by name", () => {
-    const entry = join(fixturesRoot, "npm/cases/2568-cjs-conditional-exports/main.ts");
+    const entry = join(fixturesRoot, "npm/cases/2584-cjs-conditional-exports/main.ts");
     const { coverage } = analyze(entry, { npmStatic: ["gtcondexports"] });
     expect(JSON.stringify(coverage)).toContain(
       "replacing module.exports outside a top-level statement (a conditional or environment-dependent export object)",
     );
   }, 120_000);
 
-  /* 2569-2571: polyfill packages whose module IS a Node builtin on Node 24
+  // 2567: an export that reads `this`, called through its namespace, sees
+  // Node's module object; the lowered namespace would differ, so the
+  // package stays refused.
+  test("a namespace call to an export that reads `this` stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2567-esm-namespace-this/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtesmthis", "gtcore"] });
+    expect(coverage.npmStatic).toContainEqual({
+      package: "gtesmthis",
+      status: "refused",
+      detail: expect.stringMatching(
+        /calls only of exported functions that do not read 'this'/,
+      ) as string,
+    });
+  }, 120_000);
+
+  /* 2585-2587: polyfill packages whose module IS a Node builtin on Node 24
    * compile as the builtins (builtin-package-aliases.ts), installed
-   * (2569, 2570) and bundled as versioned __commonJS chunks (2571).
+   * (2585, 2586) and bundled as versioned __commonJS chunks (2587).
    * readable-stream compiles as its own READABLE_STREAM=disable behavior,
    * so the Node side runs with that variable; util-deprecate's warning
    * reaches stderr on both sides (Node's carries its pid). */
@@ -1572,25 +1587,25 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   }
   const disabled = { ...process.env, READABLE_STREAM: "disable" };
 
-  test("installed polyfill packages 2569-builtin-polyfill-aliases compile as the Node builtins", async () => {
-    const entry = join(fixturesRoot, "npm/cases/2569-builtin-polyfill-aliases/main.ts");
+  test("installed polyfill packages 2585-builtin-polyfill-aliases compile as the Node builtins", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2585-builtin-polyfill-aliases/main.ts");
     await expectAliasParity(entry, ["gtpolyfills"], process.env);
   }, 180_000);
 
-  test("readable-stream 2.x and 4.x 2570-readable-stream-builtin compile as node:stream", async () => {
-    const entry = join(fixturesRoot, "npm/cases/2570-readable-stream-builtin/main.ts");
+  test("readable-stream 2.x and 4.x 2586-readable-stream-builtin compile as node:stream", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2586-readable-stream-builtin/main.ts");
     await expectAliasParity(entry, ["gtrs2", "gtrs4"], disabled);
   }, 180_000);
 
-  test("bundled polyfill chunks 2571-bundled-polyfill-aliases compile as the Node builtins", async () => {
-    const entry = join(fixturesRoot, "npm/cases/2571-bundled-polyfill-aliases/main.ts");
+  test("bundled polyfill chunks 2587-bundled-polyfill-aliases compile as the Node builtins", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2587-bundled-polyfill-aliases/main.ts");
     await expectAliasParity(entry, ["gtpolybundle"], disabled);
   }, 180_000);
 
-  // 2572: classes a bundled ES module defines inside its lazy initializer,
+  // 2588: classes a bundled ES module defines inside its lazy initializer,
   // over stream.Readable and over each other, compile as declarations.
-  test("bundled ES module classes 2572-bundled-esm-classes compile statically and byte-match Node", async () => {
-    await expectNodeParity(join(fixturesRoot, "npm/cases/2572-bundled-esm-classes/main.ts"), [
+  test("bundled ES module classes 2588-bundled-esm-classes compile statically and byte-match Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2588-bundled-esm-classes/main.ts"), [
       "gtesmclass",
     ]);
   }, 180_000);
@@ -1603,6 +1618,61 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       "gtsubpath",
     ]);
   }, 180_000);
+
+  // 2566: the same early read through esbuild's `(0, binding.fn)()` call
+  // spelling also keeps SC1016.
+  test("a CommonJS cycle that calls an export during initialization stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2566-cjs-cycle-indirect-call/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcyclecall"] });
+    expect(coverage.npmStatic).toEqual([
+      {
+        package: "gtcyclecall",
+        status: "refused",
+        detail: expect.stringMatching(
+          /circular imports .*can use its binding 'import_index' of a module of the cycle/,
+        ) as string,
+      },
+    ]);
+  }, 120_000);
+
+  // 2571: the partner stores the export (in a const, or in an object
+  // literal) and calls it while the cycle initializes; both keep SC1016.
+  test("a CommonJS cycle that stores an export and calls it stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2571-cjs-cycle-stored-function/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcyclealias", "gtcyclebox"] });
+    for (const pkg of ["gtcyclealias", "gtcyclebox"])
+      expect(coverage.npmStatic).toContainEqual({
+        package: pkg,
+        status: "refused",
+        detail: expect.stringMatching(
+          /circular imports .*can use its binding 'import_index' of a module of the cycle/,
+        ) as string,
+      });
+  }, 120_000);
+
+  // 2564: a chunk reads a top-level function whose name a nested scope of
+  // the chunk also declares; the function still travels with the chunk.
+  test("a chunk carries a top-level function its nested scopes shadow", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2564-chunk-helper-shadowing/main.ts"), [
+      "gtchunkshadow",
+    ]);
+  }, 180_000);
+
+  // 2565: Node shares one function between the chunks that export it; a
+  // per-chunk copy would not, so the package stays refused.
+  test("chunks that export a shared top-level function stay refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2565-chunk-shared-function/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtchunkshared"] });
+    expect(coverage.npmStatic).toEqual([
+      {
+        package: "gtchunkshared",
+        status: "refused",
+        detail: expect.stringMatching(
+          /uses the bundle's top-level function 'tally' as a value, which its chunks cannot share/,
+        ) as string,
+      },
+    ]);
+  }, 120_000);
 
   test("published type-only declarations coexist with a static runtime bundle", async () => {
     const entry = join(fixturesRoot, "npm/cases/2469-bundle-offender/main.ts");
