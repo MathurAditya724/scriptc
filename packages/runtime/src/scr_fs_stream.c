@@ -562,6 +562,7 @@ static ScrStream *scr_fss_new(const ScrDyn *path, const ScrDyn *opts_in, bool re
     scr_dyn_release(eo);
   }
   if (!s) goto fail;
+  s->cls = readable ? "ReadStream" : "WriteStream";
   bool unknown_encoding = false;
   if (!readable) {
     /* setDefaultEncoding(options.encoding) after the Writable constructor:

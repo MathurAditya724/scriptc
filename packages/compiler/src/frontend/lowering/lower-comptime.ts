@@ -162,7 +162,7 @@ export function rejectComptimeCaptures(
         const symbol = ts.isShorthandPropertyAssignment(parent)
           ? lowerer.checker.getShorthandAssignmentValueSymbol(parent)
           : lowerer.checker.getSymbolAtLocation(node);
-        const decls = symbol ? lowerer.checker.declarationsOf(symbol) : undefined;
+        const decls = symbol ? symbol.declarations : undefined;
         if (symbol && decls && decls.length > 0) {
           const ownLocal = decls.every(
             (d) => d.getSourceFile() === sf && d.pos >= cb.pos && d.end <= cb.end,

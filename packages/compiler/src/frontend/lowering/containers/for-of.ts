@@ -153,7 +153,7 @@ export function lowerForOfSearchParams(
           }
         : singleRead();
       if (ts.isIdentifier(decl.name)) {
-        const varTarget = forOfVarTarget(lowerer, decl);
+        const varTarget = forOfVarTarget(lowerer, decl, elemT!);
         if (varTarget) {
           // `for (var x of ...)`: one function-scoped binding, assigned
           // per pass — closures made in the loop share it, and the value
@@ -357,7 +357,7 @@ export function lowerForOfArrayIter(
           }
         : keyRead();
       if (ts.isIdentifier(decl.name)) {
-        const varTarget = forOfVarTarget(lowerer, decl);
+        const varTarget = forOfVarTarget(lowerer, decl, declT!);
         if (varTarget) {
           // `for (var x of ...)`: one function-scoped binding, assigned
           // per pass — closures made in the loop share it, and the value
@@ -650,7 +650,7 @@ function lowerForOfMapOrSet(
             }
           : singleRead();
         if (ts.isIdentifier(decl!.name)) {
-          const varTarget = forOfVarTarget(lowerer, decl!);
+          const varTarget = forOfVarTarget(lowerer, decl!, elemT!);
           if (varTarget) {
             // `for (var x of ...)`: one function-scoped binding, assigned
             // per pass — closures made in the loop share it, and the value

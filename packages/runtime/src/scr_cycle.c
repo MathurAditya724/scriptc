@@ -121,7 +121,9 @@
  *   mature         the same two rules one level down: a growth fraction
  *                  measured from the last mature-or-full pass and scheduled
  *                  by everything mature passes free, and a backlog rule over
- *                  the mature buffer.
+ *                  the mature buffer. Until a mature pass has had
+ *                  candidates, the backlog threshold widens with the growth
+ *                  fraction (scr_cyc_backlog_threshold).
  *   scheduled age  a mature or old candidate has waited through a nursery's
  *                  worth of event-loop checkpoints. Candidate COUNT cannot
  *                  bound the garbage behind one root, and an idle heap does
@@ -217,6 +219,7 @@ typedef struct {
   unsigned char growth_shift[SCR_CYC_NGENS];
   unsigned char growth_streak[SCR_CYC_NGENS];
   unsigned backlog_shift[SCR_CYC_NGENS];
+  bool backlog_judged[SCR_CYC_NGENS];
   size_t fallen;
   size_t live_seen;
   size_t full_after;
@@ -256,6 +259,7 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_cyc_growth_shift (scr_cyc_thread.growth_shift)
 #define scr_cyc_growth_streak (scr_cyc_thread.growth_streak)
 #define scr_cyc_backlog_shift (scr_cyc_thread.backlog_shift)
+#define scr_cyc_backlog_judged (scr_cyc_thread.backlog_judged)
 #define scr_cyc_trigger (scr_cyc_thread.trigger)
 #define scr_cyc_alloc_trigger (scr_cyc_thread.alloc_trigger)
 #define scr_gray_referenced (scr_cyc_thread.gray_referenced)
@@ -535,11 +539,13 @@ static unsigned scr_cyc_growth_max_shift(void) {
 }
 
 /* Doublings of each generation's backlog threshold earned by consecutive
- * passes that found almost nothing to free (see scr_cyc_backlog_threshold).
+ * passes that found almost nothing to free (see scr_cyc_backlog_threshold),
+ * and whether a pass at that level has had candidates to judge them by.
  * Only the mature and old entries are used. */
 #define SCR_CYC_BACKLOG_MAX_SHIFT 8
 #ifndef SCR_WORKERS
 static SCR_TL unsigned scr_cyc_backlog_shift[SCR_CYC_NGENS];
+static SCR_TL bool scr_cyc_backlog_judged[SCR_CYC_NGENS];
 #endif
 
 /* Mature objects in the last full pass's dead set (scr_cyc_adapt_growth). */
@@ -684,11 +690,21 @@ static SCR_CYC_SCHEDULING bool scr_cyc_grown(unsigned gen) {
  * this trigger rests, leaving heap growth, the scheduled age and exit to
  * collect. That only delays garbage made from existing data: replacing it
  * requires allocation, which grows the heap and trips a growth trigger. The
- * first productive pass at that level restores the original fraction. */
+ * first productive pass at that level restores the original fraction.
+ *
+ * Only passes that had candidates adapt the threshold. Until one has, the
+ * level uses its growth fraction's doublings instead (scr_cyc_adapt_growth),
+ * which every growth-triggered pass at the level adapts, candidates or not.
+ * A program can keep a level's buffer empty while its heap grows, so that
+ * growth passes there find nothing and widen, and then fill the buffer with
+ * live objects (a structure it builds and reads as it builds it); at the
+ * base threshold, the first backlog pass would walk a quarter of the live
+ * heap to find nothing. */
 static size_t scr_cyc_backlog_threshold(unsigned gen) {
   size_t t = scr_cyc_live / SCR_CYC_GROWTH_DIV;
   if (t < SCR_CYC_NURSERY_CANDIDATES) t = SCR_CYC_NURSERY_CANDIDATES;
-  unsigned shift = scr_cyc_backlog_shift[gen];
+  unsigned shift =
+      scr_cyc_backlog_judged[gen] ? scr_cyc_backlog_shift[gen] : scr_cyc_growth_shift[gen];
   return t > (SIZE_MAX >> shift) ? SIZE_MAX : t << shift;
 }
 
@@ -788,6 +804,7 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
   size_t old_reclaimed = scr_cyc_old_freed - old_freed_before + scr_cyc_mature_dead;
   if (gen == SCR_CYC_NURSERY) return;
   if (scr_cands.n != 0) {
+    scr_cyc_backlog_judged[gen] = true;
     if (freed * SCR_CYC_GROWTH_DIV >= scr_cands.n)
       scr_cyc_backlog_shift[gen] = 0;
     else if (scr_cyc_backlog_shift[gen] < SCR_CYC_BACKLOG_MAX_SHIFT)
@@ -2088,6 +2105,13 @@ size_t scr_cyc_pass_at(unsigned gen) { return scr_cyc_pass(gen); }
 /* Tests only: route appended candidates of bypassing types, as the next
  * scheduling decision or pass would. */
 void scr_cyc_route_bypassed_at(void) { scr_cyc_route_bypassed(); }
+/* Tests only: the backlog threshold at `gen`, and forgetting what passes
+ * there have taught it, as on a thread that has not collected yet. */
+size_t scr_cyc_backlog_threshold_at(unsigned gen) { return scr_cyc_backlog_threshold(gen); }
+void scr_cyc_forget_backlog_at(unsigned gen) {
+  scr_cyc_backlog_shift[gen] = 0;
+  scr_cyc_backlog_judged[gen] = false;
+}
 #endif
 
 size_t scr_cyc_collect_set(const ScrCycSet *set, unsigned gen) {

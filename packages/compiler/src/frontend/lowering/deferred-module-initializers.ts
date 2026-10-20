@@ -286,7 +286,7 @@ function registryInitializer(
     )
       return true;
     const symbol = lowerer.resolveValueSymbol(callee);
-    const declaration = symbol && lowerer.checker.valueDeclarationOf(symbol);
+    const declaration = symbol && symbol.valueDeclaration;
     if (!symbol || !declaration || !bindingNeverReassigned(lowerer, symbol, declaration))
       return false;
     if (ts.isFunctionDeclaration(declaration)) return true;
@@ -346,7 +346,7 @@ function registryInitializer(
     }
     if (packageSource && ts.isPropertyAccessExpression(node)) {
       const symbol = lowerer.checker.getSymbolAtLocation(node.name);
-      const declaration = symbol && lowerer.checker.valueDeclarationOf(symbol);
+      const declaration = symbol && symbol.valueDeclaration;
       const owner = ts.isIdentifier(node.expression)
         ? lowerer.resolveValueSymbol(node.expression)
         : undefined;
@@ -394,7 +394,7 @@ function registryInitializer(
     )
       return true;
     const symbol = lowerer.resolveValueSymbol(node);
-    const functionDeclaration = symbol && lowerer.checker.valueDeclarationOf(symbol);
+    const functionDeclaration = symbol && symbol.valueDeclaration;
     if (
       functionDeclaration &&
       ts.isFunctionDeclaration(functionDeclaration) &&
@@ -449,7 +449,7 @@ function registryOwnerIsData(
   symbol: ts.Symbol,
   statement: ts.Statement,
 ): boolean {
-  const declaration = lowerer.checker.valueDeclarationOf(symbol);
+  const declaration = symbol.valueDeclaration;
   if (
     !declaration ||
     !ts.isVariableDeclaration(declaration) ||

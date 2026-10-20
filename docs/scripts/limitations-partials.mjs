@@ -6,7 +6,9 @@
  *   introduction.mdx                  prose before the first heading
  *   <section>.mdx                     a section's prose (paragraphs, code
  *                                     blocks, unlabeled lists)
- *   <section>/<label>.mdx             one labeled bullet (`- **Label:** ...`)
+ *   <section>/<label>.mdx             one labeled bullet (`- **Label:** ...`),
+ *                                     one sentence per line, continuation
+ *                                     lines indented two spaces
  *
  * <section> is the slug of the nearest heading and <label> the slug of the
  * bullet's bold label. The page includes each partial with
@@ -31,6 +33,7 @@ const defaultPage = join(docsRoot, "content/docs/limitations.mdx");
 const partialsDir = join(docsRoot, "content/limitations");
 const includeLine = /^<include>(\.\.\/limitations\/[\w/-]+\.mdx)<\/include>$/;
 const labeledBullet = /^- \*\*([^*]+?):\*\*/;
+const bulletContinuation = /^ {2}\S/;
 
 export function slug(text) {
   return text
@@ -51,7 +54,7 @@ export function joinPage(page = defaultPage) {
   let text = out.join("\n");
   for (let prev; prev !== text; ) {
     prev = text;
-    text = text.replace(/^(- \*\*[^\n]*)\n\n(?=- \*\*)/gm, "$1\n");
+    text = text.replace(/^(- \*\*[^\n]*(?:\n {2}\S[^\n]*)*)\n\n(?=- \*\*)/gm, "$1\n");
   }
   return text.replace(/\n*$/, "\n");
 }
@@ -81,15 +84,25 @@ export function splitPage(text) {
     page.push("", `<include>../limitations/${name}</include>`);
   };
   let inFence = false;
-  let afterBullet = false;
+  let bulletName = null;
+  let bulletLines = [];
+  const flushBullet = () => {
+    if (bulletName !== null) add(bulletName, bulletLines.join("\n"));
+    bulletName = null;
+    bulletLines = [];
+  };
   for (const line of lines.slice(fmEnd + 1)) {
-    if (afterBullet && line !== "" && !labeledBullet.test(line) && !/^#{2,6} /.test(line))
-      throw new Error(`a labeled bullet is followed by a line that is not a blank line, bullet or heading: ${line.slice(0, 60)}`);
+    if (bulletName !== null && bulletContinuation.test(line)) {
+      bulletLines.push(line);
+      continue;
+    }
+    if (bulletName !== null && line !== "" && !labeledBullet.test(line) && !/^#{2,6} /.test(line))
+      throw new Error(`a labeled bullet is followed by a line that is not a blank line, bullet, heading or indented continuation: ${line.slice(0, 60)}`);
+    flushBullet();
     if (/^(```|~~~)/.test(line)) inFence = !inFence;
     const heading = !inFence && line.match(/^#{2,6} (.*)$/);
     const anchor = !inFence && /^<span id="[\w-]+" \/>$/.test(line);
     const bullet = !inFence && line.match(labeledBullet);
-    afterBullet = Boolean(bullet);
     if (heading || anchor) {
       flushProse();
       page.push("", line);
@@ -99,11 +112,13 @@ export function splitPage(text) {
       }
     } else if (bullet) {
       flushProse();
-      add(`${section}/${slug(bullet[1])}.mdx`, line);
+      bulletName = `${section}/${slug(bullet[1])}.mdx`;
+      bulletLines = [line];
     } else {
       prose.push(line);
     }
   }
+  flushBullet();
   flushProse();
   // Collapse the blank-line runs the pushes above produce.
   const pageText = page.join("\n").replace(/\n{3,}/g, "\n\n") + "\n";
