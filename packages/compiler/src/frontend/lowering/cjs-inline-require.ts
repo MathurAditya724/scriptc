@@ -353,7 +353,7 @@ export function cjsExportValueByName(
   if (sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
   const direct = lowerer.globalsBySymbol.get(sym);
   if (direct) return { kind: "varRef", localId: direct.id, type: direct.type, loc: locOf(blame) };
-  for (const d of lowerer.checker.declarationsOf(sym)) {
+  for (const d of sym.declarations) {
     const byDecl = lowerer.globalsByDeclNode.get(d);
     if (byDecl) return { kind: "varRef", localId: byDecl.id, type: byDecl.type, loc: locOf(blame) };
     // Alias plumbing: a shorthand/identifier table entry or a member

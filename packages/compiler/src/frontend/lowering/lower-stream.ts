@@ -492,7 +492,7 @@ function followOptionsArg(
     } catch {
       return node;
     }
-    const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
+    const decl = sym ? sym.valueDeclaration : undefined;
     if (!sym || !decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
       return node;
     if ((ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) === 0) return node;
@@ -999,6 +999,15 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
   };
 }
 
+/** True when a value of Node's argument type `passed` widens implicitly
+ * into the declared parameter type `declared` (one of its union arms, or a
+ * sub-union of it). */
+function widensInto(lowerer: Lowerer, passed: IrType, declared: IrType, loc: SrcLoc): boolean {
+  if (declared.kind !== "union") return false;
+  const probe: IrExpr = { kind: "varRef", localId: "%probe", type: passed, loc };
+  return typeEquals(lowerer.coerceToExpected(probe, declared).type, declared);
+}
+
 /* ── user subclasses (`extends Readable`, the underscore-override form) ── */
 
 /** The wrapper closure binding one overridden underscore method as the
@@ -1075,10 +1084,17 @@ function streamMethodWrapper(
         );
       }
     } else if (!typeEquals(got.type, want)) {
+      // A declared supertype of what Node passes (`chunk: Buffer | string`)
+      // is sound: the wrapper takes Node's value and widens it into the
+      // declared parameter.
+      if (widensInto(lowerer, want, got.type, loc)) {
+        paramTypes.push(want);
+        continue;
+      }
       lowerer.noLowering(
         `a '${methodName}' method whose parameter ${i} is '${lowerer.fmt(got.type)}' where Node passes '${lowerer.fmt(want)}'`,
         blame,
-        "annotate the parameter with the Node signature's type (chunks are Buffers here)",
+        "annotate the parameter with the Node signature's type or a supertype of it (chunks are Buffers here)",
       );
     }
     paramTypes.push(got.type);
@@ -1094,7 +1110,11 @@ function streamMethodWrapper(
     for (let i = 0; i < paramTypes.length; i++) {
       const local = lowerer.declareHiddenLocal(`a${i}`, paramTypes[i]!);
       params.push({ localId: local.id, name: local.name, type: paramTypes[i]! });
-      argRefs.push({ kind: "varRef", localId: local.id, type: paramTypes[i]!, loc });
+      const arg: IrExpr = { kind: "varRef", localId: local.id, type: paramTypes[i]!, loc };
+      const declaredType = declared[i]!.type;
+      argRefs.push(
+        typeEquals(arg.type, declaredType) ? arg : lowerer.coerceToExpected(arg, declaredType),
+      );
     }
     const thisRef: IrExpr = { kind: "varRef", localId: thisLocal.id, type: thisType, loc };
     let call: IrExpr;
