@@ -127,9 +127,10 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
     const sf = queue.pop()!;
     if (sf.fileName.includes("/node_modules/")) continue;
     const specs: string[] = [];
-    const calls = /\bimport\s*\(/.test(sf.text)
-      ? moduleSourceCandidates(load.program, sf).calls
-      : [];
+    // Every literal import() in the file, read from the syntax: a comment
+    // can stand between the keyword and its parenthesis. A file without
+    // the keyword has none.
+    const calls = sf.text.includes("import") ? moduleSourceCandidates(load.program, sf).calls : [];
     for (const call of calls) {
       const arg = call.arguments.nodes[0];
       if (
