@@ -15,12 +15,14 @@
  * runs and nothing replaces the export object again: the statement is a
  * top-level statement preceded only by inert declarations, it is the
  * file's only write of `module.exports` and `exports`, the function is a
- * top-level declaration nothing reassigns, and `exports`/`module` are the
- * CommonJS globals (never declared in the file). Other shapes answer
+ * top-level declaration nothing reassigns and the file's only binding of
+ * its name, and `exports`/`module` are the CommonJS globals (never
+ * declared in the file). Other shapes answer
  * null and keep their existing treatment. */
 import * as ts from "./ts7/syntax.js";
 import {
   applyEdits,
+  countDeclarations,
   declaredNames,
   isWritten,
   references,
@@ -105,7 +107,10 @@ export function normalizeCjsFunctionExports(sf: ts.SourceFile): string | null {
   const fnDecls = stmts.filter(
     (st) => ts.isFunctionDeclaration(st) && st.name?.text === fnName && st.body !== undefined,
   );
-  if (fnDecls.length !== 1) return null;
+  // The respelled reads name the function from wherever they sit, so no
+  // other binding of its name (a parameter, a local, a nested function)
+  // may exist anywhere in the file.
+  if (fnDecls.length !== 1 || countDeclarations(sf, fnName) !== 1) return null;
 
   const edits: Edit[] = [];
   let unsafe = false;
@@ -131,7 +136,14 @@ export function normalizeCjsFunctionExports(sf: ts.SourceFile): string | null {
         unsafe = true;
         continue;
       }
-      edits.push({ start: r.getStart(sf), end: r.getEnd(), text: fnName });
+      // `{ exports }` keeps its key: the shorthand spells out the value.
+      const shorthand =
+        r.parent !== undefined && ts.isShorthandPropertyAssignment(r.parent) && r.parent.name === r;
+      edits.push({
+        start: r.getStart(sf),
+        end: r.getEnd(),
+        text: shorthand ? `exports: ${fnName}` : fnName,
+      });
       continue;
     }
     if (r.text === "module") {
