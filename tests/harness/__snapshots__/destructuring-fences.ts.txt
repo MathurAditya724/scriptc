@@ -38,9 +38,9 @@ destructuring-fences.ts:46:10 - error SC2004: uses of 'b' inherit the blocker on
 destructuring-fences.ts:51:7 - error SC1031: object destructuring of non-record values (the source is array-typed) are not supported yet
 
   50 | const xs = [1, 2, 3];
-  51 | const { length: len } = xs; // object patterns over arrays keep the fence
-     |       ^~~~~~~~~~~~~~~
-  52 | console.log(len);
+  51 | const { push: append } = xs; // object patterns over arrays read positions and length only
+     |       ^~~~~~~~~~~~~~~~
+  52 | console.log(typeof append);
 
 destructuring-fences.ts:55:9 - error SC1031: rest bindings over index-signature shapes (the undeclared entries would need overflow packing) are not supported yet
 

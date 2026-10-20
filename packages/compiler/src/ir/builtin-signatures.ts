@@ -2637,6 +2637,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.generateKeyCb": { argTypes: [DYN, DYN, null], result: VOID },
   "crypto.keyObjectInput": { argTypes: [DYN], result: BYTES_U8 },
   "crypto.isKeyObject": { argTypes: [DYN], result: BOOL },
+  /** WebCrypto (scr_webcrypto.c): each method takes its argument vector as
+   * one dyn array and answers a promise that argument and validation
+   * failures reject. CryptoKey values are native handles. */
+  "webcrypto.importKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.verify": { argTypes: [DYN], result: { kind: "promise", inner: BOOL } },
+  "webcrypto.digest": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.isCryptoKey": { argTypes: [DYN], result: BOOL },
   "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
   "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
   "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
@@ -4200,6 +4208,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * warnings and DeprecationWarning emissions read their truthiness. */
   "process.deprecationFlag": { argTypes: [F64], result: DYN },
   "process.setDeprecationFlag": { argTypes: [F64, DYN], result: VOID },
+  "process.setEmitWarning": { argTypes: [DYN], result: VOID },
   /** AsyncLocalStorage (node:async_hooks — scr_async.c): stores are f64
    * handles; contexts are immutable fiber-carried snapshots (spawned
    * fibers inherit the spawner's — Node's init-time capture). run/exit

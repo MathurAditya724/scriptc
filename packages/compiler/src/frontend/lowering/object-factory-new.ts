@@ -21,15 +21,13 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
     lowerer.collecting = wasCollecting;
   }
   if (!symbol) return false;
-  const owner = lowerer.checker
-    .declarationsOf(symbol)
-    .find(
-      (node) =>
-        (ts.isFunctionDeclaration(node) && node.body !== undefined) ||
-        (ts.isVariableDeclaration(node) &&
-          node.initializer &&
-          ts.isFunctionExpression(node.initializer)),
-    );
+  const owner = symbol.declarations.find(
+    (node) =>
+      (ts.isFunctionDeclaration(node) && node.body !== undefined) ||
+      (ts.isVariableDeclaration(node) &&
+        node.initializer &&
+        ts.isFunctionExpression(node.initializer)),
+  );
   const declaration =
     owner &&
     ts.isVariableDeclaration(owner) &&

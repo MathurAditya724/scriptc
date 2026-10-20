@@ -528,6 +528,8 @@ async function compileExecutableNative(
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
+    ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.stdioExtended ? { stdioExtended: true } : {}),
     zlib: features.zlib,
     assert: features.assert,
     inspect: features.inspect,
@@ -555,6 +557,7 @@ async function compileExecutableNative(
     tls: features.tls,
     tlsCa: features.tlsCa,
     cipher: features.cipher,
+    webcrypto: features.webcrypto,
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
     ...(ffi === null
       ? {}

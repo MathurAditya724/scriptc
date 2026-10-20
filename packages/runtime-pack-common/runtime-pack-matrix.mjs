@@ -106,6 +106,7 @@ const OPTIONAL = [
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
+  ["scr_webcrypto.c", "webcrypto"],
   ["scr_fetch.c", "nativeFetch"],
 ];
 
@@ -116,6 +117,23 @@ function variantsFor(source) {
       id: "text-decoder-legacy",
       when: { textDecoderLegacy: true },
       defines: ["SCR_TEXT_DECODER_LEGACY"],
+    });
+  }
+  // Programs that assign process.emitWarning link the replacement-aware
+  // warning paths; every other program keeps the default object.
+  if (source === "scr_async_dyn.c") {
+    variants.push({
+      id: "warning-replace",
+      when: { warningReplace: true },
+      defines: ["SCR_WARNING_REPLACE"],
+    });
+  }
+  // stdin setEncoding, string data listeners and stdio 'resize' events.
+  if (source === "scr_events.c") {
+    variants.push({
+      id: "stdio-extended",
+      when: { stdioExtended: true },
+      defines: ["SCR_STDIO_EXTENDED"],
     });
   }
   if (source === "scr_cycle.c") {

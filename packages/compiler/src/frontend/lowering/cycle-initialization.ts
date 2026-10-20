@@ -41,6 +41,10 @@ export interface CycleInitFlag {
    * own module's early calls is checked opportunistically: whatever cannot
    * be checked keeps the unchecked behavior instead of refusing. */
   cycle: boolean;
+  /** A pointer-guarded binding declared without an initializer: its
+   * declaration initializes it (to undefined, which the pointer cannot
+   * hold), so the flag alone decides its writes (markUninitializedWrites). */
+  uninitialized?: true;
   /** A class binding: its references are the class's own IR forms and its
    * static field storage (`global` is the flag itself). */
   className?: string;
@@ -106,6 +110,30 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
     if (global !== undefined && binding.folded === undefined) {
       registerInitFlag(lowerer, binding, global, false);
     }
+  }
+  // `let f: T;` with a pointer-guarded slot: once the declaration ran the
+  // binding is initialized while the slot is still empty, so a write
+  // checks the flag (where code can run before the declaration) instead of
+  // the empty pointer. `f = () => f(...)` is the shape.
+  for (const [id, entry] of lowerer.uninitializedLexicalGlobals) {
+    const global = lowerer.globalsList.find((g) => g.id === id);
+    if (global === undefined) continue;
+    if (!lowerer.cycleInitFlags.has(id)) {
+      registerInitFlag(
+        lowerer,
+        {
+          symbol: entry.symbol,
+          name: entry.name,
+          kind: "lexical",
+          module: entry.module,
+          reference: entry.name,
+          settled: new Set(),
+        },
+        global,
+        false,
+      );
+    }
+    lowerer.cycleInitFlags.get(id)!.uninitialized = true;
   }
 }
 
@@ -304,6 +332,22 @@ export function checkCycleBindingAccesses(lowerer: Lowerer, mod: IrModule): void
   const fileOfInit = new Map<string, ts.SourceFile>();
   for (const [sf, name] of lowerer.initNameOf) fileOfInit.set(name, sf);
   for (const fn of mod.functions) rewriteFunction(lowerer, fn, fileOfInit.get(fn.name));
+  markUninitializedWrites(lowerer, mod);
+}
+
+/** Writes to a binding declared without an initializer that run after its
+ * declaration store into an initialized binding whose slot may still be
+ * empty: the pointer guard must not refuse them. Writes that can run
+ * earlier carry the flag check rewriteFunction inserted. */
+function markUninitializedWrites(lowerer: Lowerer, mod: IrModule): void {
+  const ids = new Set<string>();
+  for (const [id, flag] of lowerer.cycleInitFlags) if (flag.uninitialized) ids.add(id);
+  if (ids.size === 0) return;
+  const mark = (s: IrStmt): IrStmt =>
+    s.kind === "assign" && !s.initializes && ids.has(s.localId) ? { ...s, initializes: true } : s;
+  const rewriteExpr = (e: IrExpr): IrExpr => mapExprChildren(e, rewriteExpr, rewriteStmt);
+  const rewriteStmt = (s: IrStmt): IrStmt => mark(mapStmtChildren(s, rewriteExpr, rewriteStmt));
+  for (const fn of mod.functions) fn.body = fn.body.map(rewriteStmt);
 }
 
 function rewriteFunction(
@@ -444,6 +488,7 @@ function rewriteFunction(
         kind: "assign",
         localId: s.localId,
         value: { kind: "varRef", localId: t, type: s.value.type, loc: s.loc },
+        ...(flag.uninitialized ? { initializes: true as const } : {}),
         loc: s.loc,
       };
       return {
