@@ -43,6 +43,14 @@ export function npmStaticLiveExportTable(path: string): boolean {
   return liveExportFiles.has(path.split("\\").join("/"));
 }
 
+/** Names Node's lexer detects in a rewritten file's original text that
+ * its rewrite spells only as accessors (the lexer skips those). */
+const lexerNames = new Map<string, readonly string[]>();
+
+export function npmStaticLexerVisibleNames(path: string): readonly string[] {
+  return lexerNames.get(path.split("\\").join("/")) ?? [];
+}
+
 export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): void {
   activePackages = new Set(packages);
   declarationOverloads = new Map();
@@ -51,9 +59,11 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   fileDegrades.clear();
   rewriteCache.clear();
   liveExportFiles.clear();
+  lexerNames.clear();
   clearVirtualSources();
   untypedPkgCache.clear();
   realpathProbed.clear();
+  aliasNames.clear();
 }
 
 export function setNpmStaticDeclarationOverloads(
@@ -168,7 +178,30 @@ function shadowTargetOf(path: string): { pkg: string; viaTypes: boolean } | null
       if (mangledTypesName(pkg) === mangled) return { pkg, viaTypes: true };
     }
   }
+  // An npm alias (`"x-updated": "npm:x@6.3.0"`) installs the package under
+  // another directory name: its own manifest names the package.
+  const aliased = aliasedPackageName(`${norm.slice(0, idx)}/node_modules/${dirName}`);
+  if (aliased !== null && aliased !== dirName && activePackages.has(aliased))
+    return { pkg: aliased, viaTypes: false };
   return null;
+}
+
+/** The "name" a node_modules directory's own package.json declares, or
+ * null (cached per load). */
+const aliasNames = new Map<string, string | null>();
+function aliasedPackageName(pkgDir: string): string | null {
+  const hit = aliasNames.get(pkgDir);
+  if (hit !== undefined) return hit;
+  let name: string | null = null;
+  try {
+    const text = trackedReadFile(`${pkgDir}/package.json`);
+    const declared = text === null ? undefined : (JSON.parse(text) as { name?: unknown }).name;
+    if (typeof declared === "string") name = declared;
+  } catch {
+    name = null;
+  }
+  aliasNames.set(pkgDir, name);
+  return name;
 }
 
 /** The opted-in package.json transform, applied identically in BOTH
@@ -407,10 +440,24 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
             for (const chunk of split.chunks) setVirtualSource(chunk.path, chunk.source);
             original = split.text;
           }
+          // Then its lazily initialized ES modules become run-once closures.
+          const esm = original === null ? null : services.lowerEsmInits(original, path);
+          if (esm !== null && typeof esm === "object") {
+            reportFileDegrade(path, target.pkg, esm.degrade);
+            original = null;
+          } else if (esm !== null) {
+            original = esm;
+          }
+          // A module exporting one of its functions reaches its members
+          // through that function.
+          const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
+          if (fnExports !== null) original = fnExports;
           // A module that names its export object through a variable reaches
           // its members through `exports`.
           const exportsVar = original === null ? null : services.cjsExportsVar(original, path);
           if (exportsVar !== null) original = exportsVar;
+          const respelled =
+            split !== null || esm !== null || fnExports !== null || exportsVar !== null;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;
@@ -434,6 +481,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 source,
               path,
               (live) => liveExportFiles.add(live.split("\\").join("/")),
+              (file, names) => lexerNames.set(file.split("\\").join("/"), names),
             );
             if (answer !== null && typeof answer === "object") {
               reportFileDegrade(path, target.pkg, answer.degrade);
@@ -445,7 +493,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 findWidened?.text ??
                 classFields?.text ??
                 namepaths ??
-                (split !== null || exportsVar !== null ? original : null);
+                (respelled ? original : null);
             }
           }
         } catch {
@@ -496,6 +544,20 @@ function hasTransformMarkers(source: string): boolean {
   return TRANSFORM_MARKERS.some((m) => source.includes(m));
 }
 
+/** Why the declarations at `typesFile` cannot stand for the runtime
+ * package `pkg`, or null when they are its DefinitelyTyped twin
+ * (`@types/<mangled pkg>`). The declarations only check the importing
+ * program; the JavaScript compiles with its inferred types, and an
+ * inferred surface the program does not typecheck against refuses the
+ * package afterwards, whatever release the twin describes. */
+export function definitelyTypedMismatch(pkg: string, typesFile: string): string | null {
+  const owner = npmPackageNameOf(typesFile.split("\\").join("/"));
+  const twin = `@types/${mangledTypesName(pkg)}`;
+  return owner === twin
+    ? null
+    : `its declared types come from ${owner ?? typesFile}, which is not ${pkg}'s DefinitelyTyped package ${twin}`;
+}
+
 /** Auto-mode eligibility for one candidate package: `typesFile` is what
  * the ordinary (types-first) resolution answered for the import,
  * `jsEntry` what the js-only resolution answers. Returns null when
@@ -504,12 +566,17 @@ export function npmStaticIneligibleReason(
   pkgName: string,
   typesFile: string,
   jsEntry: string | null,
+  /** A dependency another package's JavaScript imports: no declarations
+   * check that importer, so the package need not ship its own. */
+  untypedDependency = false,
 ): string | null {
-  if (npmPackageNameOf(typesFile) !== pkgName) {
-    return "its declared types come from a third-party @types package, not the package itself";
-  }
-  if (!/\.d\.(ts|mts|cts)$/.test(typesFile)) {
-    return "it ships no own .d.ts declaration surface";
+  if (!untypedDependency) {
+    if (npmPackageNameOf(typesFile) !== pkgName) {
+      return "its declared types come from a third-party @types package, not the package itself";
+    }
+    if (!/\.d\.(ts|mts|cts)$/.test(typesFile)) {
+      return "it ships no own .d.ts declaration surface";
+    }
   }
   if (jsEntry === null) return "no runtime JS entry resolves";
   const source = trackedReadFile(jsEntry);
