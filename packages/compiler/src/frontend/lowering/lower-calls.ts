@@ -3677,8 +3677,20 @@ function lowerDynReceiverMethodCall(
         )
     )
       return true;
+    // A standard-library member spelled as a function-typed property
+    // (undici-types declares Headers.append/forEach/... and the body mixin
+    // as `readonly append: (...) => void`; scriptc's own declarations use
+    // methods) is still the handle's native method: it takes the shared
+    // receiver dispatch below either way (which also calls a plain object's
+    // own member), so the lowering does not depend on which declaration
+    // file supplies the type.
+    const libMethod =
+      prop !== undefined &&
+      prop.declarations.length > 0 &&
+      prop.declarations.every((decl) => lowerer.isStdlibFile(decl.getSourceFile()));
     return (
       prop !== undefined &&
+      !libMethod &&
       prop.declarations.some(
         (decl) => ts.isPropertyDeclaration(decl) || ts.isPropertySignature(decl),
       )

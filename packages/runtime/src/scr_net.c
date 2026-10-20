@@ -4908,17 +4908,30 @@ static int scr_net_pollfd(void) {
   return scr_net_poller != NULL ? scrp_poller_fd(scr_net_poller) : -1;
 }
 
+bool scr_loop_io_take(void);
+bool scr_loop_io_more(void);
+void scr_loop_io_reopen(void);
+
 static void scr_net_dispatch(void) {
   if (!scr_net_servers && !scr_net_socks &&
       !scr_net_proto_pending()) {
     return;
   }
+  /* One poller drain per loop iteration (scr_loop_io_take); a full batch
+   * keeps draining within the phase's batch budget (scr_loop_io_more), like
+   * libuv's poll phase. Deferred emits (the sweep) still run on every
+   * call. */
+  bool may_drain = scr_loop_io_take();
   for (;;) {
     scr_net_sweep();
     if (scr_exc_pending()) return;
     if (scr_net_poller == NULL) return;
     ScrPollerEvent evs[64];
-    int n = scrp_drain(scr_net_poller, evs, 64);
+    int n = 0;
+    if (may_drain) {
+      n = scrp_drain(scr_net_poller, evs, 64);
+      may_drain = n == 64 && scr_loop_io_more();
+    }
     for (int i = 0; i < n; i++) {
       void *udata = evs[i].udata;
       if (!udata) continue;
@@ -4992,8 +5005,13 @@ static void scr_net_dispatch(void) {
       }
       if (scr_exc_pending()) return;
     }
-    if (!scr_net_flags_pending()) return;
-    if (scr_loop_has_ready()) return; /* microtasks interleave first */
+    if (!scr_net_flags_pending() && !may_drain) return;
+    if (scr_loop_has_ready()) {
+      /* microtasks interleave first; a full batch's rest drains on the
+       * next call, still within this poll phase */
+      if (may_drain) scr_loop_io_reopen();
+      return;
+    }
   }
 }
 

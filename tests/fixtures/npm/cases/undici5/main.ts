@@ -196,7 +196,6 @@ server.listen(0, "127.0.0.1", async () => {
   for (let i = 0; i < 4; i++) {
     const r = await request(`${origin}/r${i}`, { dispatcher: agent });
     await r.body.text();
-    await turn();
   }
   console.log("connections opened:", agent.connections);
   console.log("stats:", agent.statsFor(origin));
