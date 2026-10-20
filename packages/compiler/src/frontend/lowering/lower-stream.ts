@@ -49,7 +49,8 @@ import { sideEffectFreeOptionValue } from "./surfaces.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { genResultRecord } from "../type-mapper.js";
-import { requestGeneralStreamSurface } from "./general-streams.js";
+import { noteUntypedStreamFlow, requestGeneralStreamSurface } from "./general-streams.js";
+import { dynNativeBranch } from "./dyn-streams.js";
 import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import {
   BOOL,
@@ -2081,13 +2082,16 @@ function lowerStreamArg(
   // a boxed native stream unwraps at run time; other values (iterables,
   // functions) throw the not-supported Error there.
   if (v.type.kind === "dyn" && what === "pipeline") {
+    noteUntypedStreamFlow(lowerer, null);
     return {
       kind: "libCall",
       fn: "stream.unboxDyn",
       args: [
         v,
         strLit(
-          "pipeline stages other than native streams (iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet",
+          lowerer.dynNodeStreams
+            ? "pipeline stages other than native streams (JavaScript stream objects, iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet"
+            : "pipeline stages other than native streams (iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet",
           locOf(node),
         ),
       ],
@@ -3403,6 +3407,63 @@ function pipeIntoStdio(
   };
 }
 
+/** `readable.unpipe(untyped)`: a native destination (boxed) unpipes as a
+ * typed one does; any other value unpipes the JavaScript destination a
+ * pipe into it registered (scr_stream_dyn.c), or does nothing when there
+ * is none, as Node's unpipe does for a destination it is not piped into.
+ * The call answers the source. */
+function unpipeDyn(lowerer: Lowerer, receiver: IrExpr, dst: IrExpr, loc: SrcLoc): IrExpr {
+  noteUntypedStreamFlow(lowerer, null);
+  const source = lowerer.declareHiddenLocal("%unpipeSource", receiver.type);
+  const destination = lowerer.declareHiddenLocal("%unpipeDestination", dst.type);
+  const sourceRef = varRef(source.id, receiver.type, loc);
+  const destinationRef = varRef(destination.id, dst.type, loc);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: source.id, init: receiver, loc },
+    { kind: "varDecl", localId: destination.id, init: dst, loc },
+  ];
+  const unpipeNative = (native: IrExpr): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "readable.unpipe",
+      args: [sourceRef, native],
+      type: receiver.type,
+      loc,
+    },
+    loc,
+  });
+  if (lowerer.dynNodeStreams) {
+    stmts.push(
+      dynNativeBranch(lowerer, destinationRef, "w", unpipeNative, {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "stream.unpipeDyn",
+          args: [sourceRef, destinationRef],
+          type: VOID,
+          loc,
+        },
+        loc,
+      }),
+    );
+  } else {
+    stmts.push(
+      unpipeNative({
+        kind: "libCall",
+        fn: "stream.unboxDyn",
+        args: [
+          destinationRef,
+          strLit("unpipe destinations other than native streams are not supported yet", loc),
+        ],
+        type: { kind: "object", className: "%Duplex" },
+        loc,
+      }),
+    );
+  }
+  return { kind: "seqExpr", stmts, result: sourceRef, type: receiver.type, loc };
+}
+
 /** The pipe() libCall for a destination of type `dst`. Under the general
  * stream representation a Writable slot can hold the converted
  * process.stdout / process.stderr, which a pipe never ends (as in Node), so
@@ -3423,6 +3484,7 @@ function pipeIntoDyn(
   target: IrExpr,
 ): IrExpr {
   const loc = locOf(call);
+  noteUntypedStreamFlow(lowerer, null);
   const receiverValue = lowerer.lowerExpr(access.expression);
   const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
   const destination = lowerer.declareHiddenLocal("%pipeDestination", target.type);
@@ -3432,6 +3494,59 @@ function pipeIntoDyn(
   ];
   const end = pipeEndOption(lowerer, call.arguments.nodes[1], loc);
   const duplex: IrType = { kind: "object", className: "%Duplex" };
+  // Checked-dynamic stream slots (dyn-streams.ts): a JavaScript stream
+  // object is a destination too, piped with Node's listener protocol.
+  if (lowerer.dynNodeStreams) {
+    const sourceRef: IrExpr = { kind: "varRef", localId: source.id, type: receiverValue.type, loc };
+    const destinationRef: IrExpr = {
+      kind: "varRef",
+      localId: destination.id,
+      type: target.type,
+      loc,
+    };
+    const ending = lowerer.declareHiddenLocal("%pipeEnd", BOOL);
+    stmts.push({ kind: "varDecl", localId: ending.id, init: end, loc });
+    const endRef: IrExpr = { kind: "varRef", localId: ending.id, type: BOOL, loc };
+    stmts.push(
+      dynNativeBranch(
+        lowerer,
+        destinationRef,
+        "w",
+        (native) => ({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            // Checked-dynamic slots come with the general representation,
+            // where a boxed native destination can be the converted
+            // process.stdout (generalPipe).
+            fn: "readable.pipeGeneral",
+            args: [sourceRef, native, endRef],
+            type: native.type,
+            loc,
+          },
+          loc,
+        }),
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "stream.pipeDyn",
+            args: [sourceRef, lowerer.coerceToExpected(sourceRef, DYN), destinationRef, endRef],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ),
+    );
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: destinationRef,
+      type: target.type,
+      loc,
+    };
+  }
   stmts.push({
     kind: "exprStmt",
     expr: {
@@ -3746,6 +3861,7 @@ export function lowerStreamMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     if (args[0] !== undefined) {
       const dst = lowerer.lowerExpr(args[0]);
+      if (dst.type.kind === "dyn") return unpipeDyn(lowerer, receiver, dst, loc);
       const dstInfo =
         dst.type.kind === "object" ? lowerer.classes.get(dst.type.className) : undefined;
       const dstSides = streamSidesOf(lowerer, dstInfo);
@@ -3756,6 +3872,44 @@ export function lowerStreamMethodCall(
         kind: "libCall",
         fn: "readable.unpipe",
         args: [receiver, dst],
+        type: receiver.type,
+        loc,
+      };
+    }
+    // Checked-dynamic slots: unpipe() also unpipes the JavaScript
+    // destinations stream.pipeDyn registered (stream.unpipeDyn with an
+    // undefined destination), as Node's unpipe() empties every pipe.
+    if (lowerer.dynNodeStreams) {
+      const source = lowerer.declareHiddenLocal("%unpipeSource", receiver.type);
+      const sourceRef = varRef(source.id, receiver.type, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: source.id, init: receiver, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "readable.unpipe",
+              args: [sourceRef],
+              type: receiver.type,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "stream.unpipeDyn",
+              args: [sourceRef, dynUndefinedExpr(loc)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: sourceRef,
         type: receiver.type,
         loc,
       };

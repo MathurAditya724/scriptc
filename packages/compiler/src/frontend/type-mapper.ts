@@ -1178,6 +1178,12 @@ export interface TypeMapperCtx {
    * from every stream producer share their slots. Off (the default), the
    * stdio handles keep those spellings. */
   generalNodeStreams?: boolean;
+  /** With generalNodeStreams, the program's checked-dynamic stream slots
+   * (lowerToIr decides it per program, dyn-streams.ts): NodeJS.ReadableStream
+   * and NodeJS.WritableStream map to the checked-dynamic representation, so
+   * a slot holds a native stream (a boxed runtime stream, identity kept) or
+   * a JavaScript stream object. Members dispatch per value at run time. */
+  dynNodeStreams?: boolean;
   /** Successful context-free mappings, keyed by the
    * TypeScript server's stable type id. A generated facade can reference the
    * same large record/function type thousands of times; remapping its full
@@ -3224,6 +3230,27 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Under the program's general stream representation (generalNodeStreams)
   // NodeJS.WritableStream is the runtime Writable instead: the process
   // streams convert into it where they flow (process.stdioWritable).
+  // Checked-dynamic stream slots: an intersection over a NodeJS stream
+  // interface (`NodeJS.ReadableStream & { destroy?(): void }`) holds the
+  // same values as the interface.
+  if (
+    ctx.dynNodeStreams === true &&
+    (type.flags & ts.TypeFlags.Intersection) !== 0 &&
+    ts.constituentTypes(type).some((part) => {
+      const sym = part.getSymbol();
+      return (
+        (sym?.name === "ReadableStream" || sym?.name === "WritableStream") &&
+        sym.declarations.some(
+          (d) =>
+            ts.isInterfaceDeclaration(d) &&
+            ctx.isStdlibFile(d.getSourceFile()) &&
+            isDeclaredInAmbientNamespace(d, "NodeJS"),
+        )
+      );
+    })
+  ) {
+    return DYN;
+  }
   const nodeWritableInterface =
     psym?.name === "WritableStream" &&
     psym.declarations.some(
@@ -3233,7 +3260,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         isDeclaredInAmbientNamespace(d, "NodeJS"),
     );
   if (nodeWritableInterface && ctx.generalNodeStreams === true) {
-    return { kind: "object", className: "%Writable" };
+    return ctx.dynNodeStreams === true ? DYN : { kind: "object", className: "%Writable" };
   }
   if (
     (psym?.name === "WriteStream" &&
@@ -3359,8 +3386,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ))
   ) {
     // The general representation: the runtime Readable, which child
-    // stdio reads produce through the child stream bridge.
-    if (ctx.generalNodeStreams === true) return { kind: "object", className: "%Readable" };
+    // stdio reads produce through the child stream bridge. With
+    // checked-dynamic stream slots, NodeJS.ReadableStream holds any
+    // stream value (dyn-streams.ts); stream.Readable keeps the class.
+    if (ctx.generalNodeStreams === true) {
+      if (ctx.dynNodeStreams === true && psym.name === "ReadableStream") return DYN;
+      return { kind: "object", className: "%Readable" };
+    }
     return { kind: "childStream" };
   }
   // dgram.Socket: the same ambiguous "Socket" name disambiguated by its
@@ -4435,7 +4467,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (ctx.generalNodeStreams === true &&
           arm.kind === "object" &&
           ((expected === "childStream" && arm.className === "%Readable") ||
-            (expected === "childWriter" && arm.className === "%Writable")));
+            (expected === "childWriter" && arm.className === "%Writable"))) ||
+        // Checked-dynamic stream slots: `NodeJS.ReadableStream | null`
+        // collapses to dyn (the reads still produce the bridged stream).
+        (ctx.dynNodeStreams === true &&
+          arm.kind === "dyn" &&
+          (expected === "childStream" || expected === "childWriter"));
       return (
         arms !== undefined &&
         arms.some(isExpected) &&

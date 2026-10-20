@@ -113,6 +113,9 @@ export interface CcOptions {
    * the IR): compiles the scr_js_* units (two-tier design I3). Programs
    * without them link no scr_js_ symbol. */
   dynTier?: boolean;
+  /** Checked-dynamic stream slots (stream.dynNative / stream.pipeDyn):
+   * compiles scr_stream_dyn.c. */
+  streamDyn?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles

@@ -2,6 +2,7 @@ import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import { declaredMemberOf } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
+import { lowerForAwaitDynStream } from "./dyn-streams.js";
 import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
@@ -9025,6 +9026,11 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     ) {
       return lowerForAwaitStdin(lowerer, stmt);
     }
+    // A checked-dynamic NodeJS.ReadableStream iterates its native stream.
+    const dynStream = lowerForAwaitDynStream(lowerer, stmt, () =>
+      lowerForAwaitBuiltin(lowerer, stmt),
+    );
+    if (dynStream) return dynStream;
     const builtin = lowerForAwaitBuiltin(lowerer, stmt);
     if (builtin) return builtin;
     // A NodeJS.ReadableStream iterates as the general Readable.

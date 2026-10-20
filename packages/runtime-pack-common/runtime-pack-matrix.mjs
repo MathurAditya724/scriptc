@@ -99,6 +99,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
   ["scr_stream_ops.c", all("stream", "dynAsync")],
+  // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
+  ["scr_stream_dyn.c", "streamDyn"],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],
   // FileHandle streams reference both the stream unit and FileHandle.

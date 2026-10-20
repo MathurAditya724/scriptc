@@ -43,6 +43,9 @@ export interface NativeLinkFeatures {
   /** Dynamic-tier jsval operations: the scr_js_* units. Absent (not false)
    * for programs without them, so their link features stay unchanged. */
   dynTier?: boolean;
+  /** Checked-dynamic stream slots: the scr_stream_dyn.c unit. Absent (not
+   * false) for programs without them. */
+  streamDyn?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;

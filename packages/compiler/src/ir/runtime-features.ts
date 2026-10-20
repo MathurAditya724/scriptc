@@ -168,6 +168,9 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.destroyErr",
   "stream.errored",
   "stream.prop",
+  "stream.dynNative",
+  "stream.pipeDyn",
+  "stream.unpipeDyn",
   "stream.stdioWritable",
   "stream.unboxDyn",
   "stream.workerStdio",
@@ -204,6 +207,9 @@ const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "rea
 
 /** Entry points that link the dyn-invoke unit. */
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "stream.dynNative",
+  "stream.pipeDyn",
+  "stream.unpipeDyn",
   "dyn.arrayProtoCall",
   "dyn.arrayPrototype",
   "dyn.builtinFunction",
@@ -553,6 +559,9 @@ const RUNTIME_FEATURE_RULES = {
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
   dynTier: rule({ prefixes: ["js."] }),
+  /** Checked-dynamic stream slots test values and pipe into JavaScript
+   * stream objects (scr_stream_dyn.c). */
+  streamDyn: rule({ fns: ["stream.dynNative", "stream.pipeDyn", "stream.unpipeDyn"] }),
   /** The stream unit emits through the emitter unit, also when the
    * program constructs no stream (a pipeline of functions). */
   emitter: rule({
@@ -731,6 +740,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     searchParams: false,
     stdioExtended: false,
     stream: false,
+    streamDyn: false,
     symbol: false,
     tls: false,
     tlsCa: false,
