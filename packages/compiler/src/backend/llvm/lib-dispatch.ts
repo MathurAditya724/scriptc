@@ -832,6 +832,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "util":
     case "bigint":
     case "crypto":
+    case "webcrypto":
     case "buffer":
     case "bytes":
     case "tlsca":

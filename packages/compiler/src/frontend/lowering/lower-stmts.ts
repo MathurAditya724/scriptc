@@ -2063,6 +2063,43 @@ export function isParseArgsDynCheckerType(lowerer: Lowerer, type: ts.Type): bool
     .some((p) => p.declarations.some(declarationBelongs));
 }
 
+/** True when an `any` value comes from a JavaScript function's result:
+ * a call (possibly awaited) whose callee is declared in a JavaScript file,
+ * or a const bound to one. A TypeScript program importing a JavaScript
+ * package sees the package's inferred types (`jwtVerify` from jose
+ * answers `any`), and its object destructuring reads the members of that
+ * checked-dynamic value as JavaScript does — member reads on the same
+ * value already compile. Other `any` sources keep the fence. */
+function javaScriptAnyOrigin(lowerer: Lowerer, node: ts.Expression, depth: number): boolean {
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr) || ts.isAwaitExpression(expr)) expr = expr.expression;
+  if (ts.isCallExpression(expr)) {
+    const callee = ts.isPropertyAccessExpression(expr.expression)
+      ? expr.expression.name
+      : expr.expression;
+    if (!ts.isIdentifier(callee)) return false;
+    const symbol = lowerer.resolveValueSymbol(callee);
+    const declarations = symbol ? lowerer.checker.declarationsOf(symbol) : [];
+    return (
+      declarations.length > 0 &&
+      declarations.every((d) => isJsSourceFile(d.getSourceFile()) && ts.isFunctionLike(d))
+    );
+  }
+  if (ts.isIdentifier(expr) && depth === 0) {
+    const symbol = lowerer.resolveValueSymbol(expr);
+    const declaration = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+    return (
+      declaration !== undefined &&
+      ts.isVariableDeclaration(declaration) &&
+      ts.isIdentifier(declaration.name) &&
+      declaration.initializer !== undefined &&
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0 &&
+      javaScriptAnyOrigin(lowerer, declaration.initializer, depth + 1)
+    );
+  }
+  return false;
+}
+
 /** Destructuring declarations, desugared as sugar over indexed/field
  * reads: the initializer evaluates ONCE into a hidden temp, then each
  * bound name declares (or assigns its pre-registered module global) from
@@ -2107,7 +2144,12 @@ export function lowerDestructuringDecl(
     lowerer.anyOrigin(decl.initializer) &&
     !isJsSourceFile(decl.getSourceFile()) &&
     init.type.kind !== "record" &&
-    init.type.kind !== "array"
+    init.type.kind !== "array" &&
+    !(
+      init.type.kind === "dyn" &&
+      ts.isObjectBindingPattern(decl.name) &&
+      javaScriptAnyOrigin(lowerer, decl.initializer, 0)
+    )
   ) {
     lowerer.anyOpFence("destructuring", decl);
   }
@@ -3029,6 +3071,10 @@ export function lowerBindingPattern(
     lowerMatchResultObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
     return;
   }
+  if (srcType.kind === "array" && isArrayPositionPattern(lowerer, pattern)) {
+    lowerArrayPositionObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
+    return;
+  }
   if (srcType.kind !== "record") {
     lowerer.unsupported(
       "SC1031",
@@ -3359,19 +3405,8 @@ function lowerMatchResultObjectPattern(
       );
     }
     let value: IrExpr;
-    if (/^(?:0|[1-9]\d{0,8})$/.test(propName)) {
-      const index = Number(propName);
-      const position: IrExpr = { kind: "numLit", value: index, type: F64, loc };
-      value = lowerSafeIndexRead(lowerer, srcRef(), position, loc) ?? {
-        kind: "arrayGet",
-        arr: srcRef(),
-        index: position,
-        type: srcType.elem,
-        loc,
-      };
-      if (el.initializer) {
-        value = arrayPositionDefault(lowerer, el, value, srcRef, index, srcType.elem, out);
-      }
+    if (ARRAY_POSITION_KEY.test(propName)) {
+      value = arrayPositionBinding(lowerer, el, srcRef, srcType, Number(propName), out);
     } else if (propName === "index" || propName === "input") {
       if (el.initializer) {
         lowerer.unsupported(
@@ -3413,6 +3448,83 @@ function lowerMatchResultObjectPattern(
         `destructuring the property '${propName}' of a regex match result (numeric positions, index, input and groups compile)`,
       );
     }
+    lowerer.bindPatternTarget(el.name, value, isLet, out);
+  }
+}
+
+/** A canonical array index key (the numeric positions an object pattern
+ * reads off an array). */
+const ARRAY_POSITION_KEY = /^(?:0|[1-9]\d{0,8})$/;
+
+/** The positional read `{ <index>: x }` takes off an array: the element,
+ * undefined past the end, with the binding default applied. */
+function arrayPositionBinding(
+  lowerer: Lowerer,
+  el: ts.BindingElement,
+  srcRef: () => IrExpr,
+  srcType: IrType & { kind: "array" },
+  index: number,
+  out: IrStmt[],
+): IrExpr {
+  const loc = locOf(el);
+  const position: IrExpr = { kind: "numLit", value: index, type: F64, loc };
+  const value = lowerSafeIndexRead(lowerer, srcRef(), position, loc) ?? {
+    kind: "arrayGet",
+    arr: srcRef(),
+    index: position,
+    type: srcType.elem,
+    loc,
+  };
+  return el.initializer
+    ? arrayPositionDefault(lowerer, el, value, srcRef, index, srcType.elem, out)
+    : value;
+}
+
+/** Whether every element of an object pattern over an array names a
+ * numeric position or `length` (`const { 0: a, 1: b, length } =
+ * s.split(".")`), with no rest element. */
+function isArrayPositionPattern(lowerer: Lowerer, pattern: ts.ObjectBindingPattern): boolean {
+  return pattern.elements.nodes.every((el) => {
+    if (el.name === undefined) return true;
+    if (el.dotDotDotToken) return false;
+    const prop = el.propertyName ?? el.name;
+    if (
+      !ts.isIdentifier(prop) &&
+      !ts.isComputedPropertyName(prop) &&
+      !ts.isStringLiteralLike(prop) &&
+      !ts.isNumericLiteral(prop)
+    )
+      return false;
+    const name = patternKeyNameOf(lowerer, prop as ts.PropertyName);
+    return name !== null && (name === "length" || ARRAY_POSITION_KEY.test(name));
+  });
+}
+
+/** An object pattern of positions and `length` over an array: each
+ * position is the read the equivalent array pattern makes, and `length`
+ * the array's length (always present, so its default never runs). */
+function lowerArrayPositionObjectPattern(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  srcRef: () => IrExpr,
+  srcType: IrType & { kind: "array" },
+  isLet: boolean,
+  out: IrStmt[],
+): void {
+  for (const el of pattern.elements.nodes) {
+    if (el.name === undefined) continue;
+    const name = patternKeyNameOf(lowerer, (el.propertyName ?? el.name) as ts.PropertyName)!;
+    const value: IrExpr =
+      name === "length"
+        ? {
+            kind: "arrIntrinsic",
+            method: "length",
+            receiver: srcRef(),
+            args: [],
+            type: F64,
+            loc: locOf(el),
+          }
+        : arrayPositionBinding(lowerer, el, srcRef, srcType, Number(name), out);
     lowerer.bindPatternTarget(el.name, value, isLet, out);
   }
 }
@@ -7435,12 +7547,74 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
   if (droppedPureStdlibStatement(lowerer, expr)) {
     return { kind: "block", body: [], loc: locOf(expr) };
   }
+  if (
+    stmtNode !== undefined &&
+    ts.isExpressionStatement(stmtNode) &&
+    ts.isBinaryExpression(expr) &&
+    (expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+      expr.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+  ) {
+    return lowerDiscardedLogical(lowerer, expr);
+  }
   const value = lowerer.lowerExpr(expr);
   // A bare unit-literal statement (`undefined;`): a pure no-op in JS,
   // and the IR has no bare-unit VALUE outside a union wrap — drop it
   // instead of tripping the validator's bare-unitLit rule.
   if (value.kind === "unitLit") return { kind: "block", body: [], loc: locOf(expr) };
   return { kind: "exprStmt", expr: value, loc: locOf(expr) };
+}
+
+/** A discarded `a && b` / `a || b` statement (the minifier's `if`). The
+ * value form lowers first, exactly as before. Only when it fails on the
+ * logical's own result type — the operands have no common representation
+ * (jose's `(!m || m[4] && m[1]) && invalid()` joins a boolean, a string
+ * and undefined into the checker's `string`) — does the statement lower
+ * as the control flow it is: `if (a) b;` / `if (!a) b;`, a condition test
+ * that needs no result value. Diagnostics outside the statement, and
+ * internal errors, keep the original failure. */
+function lowerDiscardedLogical(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt {
+  const diagsBefore = lowerer.diags.length;
+  try {
+    const value = lowerer.lowerExpr(expr);
+    if (value.kind === "unitLit") return { kind: "block", body: [], loc: locOf(expr) };
+    return { kind: "exprStmt", expr: value, loc: locOf(expr) };
+  } catch (e) {
+    // A probe (a capture buffer is active) keeps its failure: its owner
+    // picks another lowering, exactly as before.
+    if (!(e instanceof PoisonError) || lowerer.diagSink !== null) throw e;
+    const added = lowerer.diags.slice(diagsBefore);
+    const file = expr.getSourceFile().fileName;
+    const start = expr.getStart();
+    const local =
+      added.length > 0 &&
+      added.every(
+        (d) =>
+          d.code !== "SC9001" &&
+          d.loc.file === file &&
+          d.loc.start >= start &&
+          d.loc.end <= expr.end,
+      );
+    if (!local) throw e;
+    lowerer.diags.length = diagsBefore;
+  }
+  const and = expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken;
+  const cond = lowerer.lowerCondition(expr.left);
+  if (cond.kind === "boolLit") {
+    return cond.value === and
+      ? lowerExprStatement(lowerer, expr.right)
+      : { kind: "block", body: [], loc: locOf(expr) };
+  }
+  const right = (): IrStmt[] =>
+    lowerer.narrowingAliases(aliasTypeofNarrows(lowerer, expr.left, and), () =>
+      and
+        ? withRuntimeOptionalNarrowed(lowerer, runtimeOptionalTrueIds(lowerer, expr.left), () => [
+            lowerExprStatement(lowerer, expr.right),
+          ])
+        : [lowerExprStatement(lowerer, expr.right)],
+    );
+  return and
+    ? { kind: "if", cond, then: right(), else_: [], loc: locOf(expr) }
+    : { kind: "if", cond, then: [], else_: right(), loc: locOf(expr) };
 }
 
 /** True for a statement-position expression whose evaluation cannot be

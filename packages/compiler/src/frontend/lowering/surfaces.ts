@@ -2163,6 +2163,20 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     note: "a Blob with name and lastModified (Date.now() when absent)",
   },
   {
+    id: "stdlib.webcrypto.subtle",
+    kind: "stdlib",
+    name: "globalThis.crypto.subtle",
+    fns: ["webcrypto.importKey", "webcrypto.sign", "webcrypto.verify", "webcrypto.digest"],
+    note: "importKey('raw') for HMAC keys, HMAC sign and verify, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
+  },
+  {
+    id: "stdlib.webcrypto.CryptoKey",
+    kind: "stdlib",
+    name: "CryptoKey",
+    fns: ["webcrypto.isCryptoKey"],
+    note: "secret HMAC keys with type, extractable, algorithm and usages, and instanceof CryptoKey",
+  },
+  {
     id: "stdlib.atomics",
     kind: "stdlib",
     name: "Atomics",

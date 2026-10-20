@@ -51,6 +51,9 @@ export interface NativeLinkFeatures {
    * archive. */
   cipher: boolean;
   tlsCa: boolean;
+  /** crypto.subtle importKey/sign/verify/digest and CryptoKey values:
+   * scr_webcrypto.c. */
+  webcrypto: boolean;
 }
 
 export interface NativeLinkInfo {

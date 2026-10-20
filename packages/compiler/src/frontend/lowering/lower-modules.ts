@@ -93,6 +93,7 @@ import {
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
+import { isWebCryptoMemberType } from "./builtins/webcrypto.js";
 import {
   bindingContextualGenericFnNodeOf,
   bindingGenericFnAliasInfoOf,
@@ -1917,7 +1918,8 @@ export function collectGlobals(
             decl.initializer &&
             !decl.type &&
             !hasJsTypeAnnotation(decl) &&
-            !lowerer.mapTypeOf(lowerer.typeOf(nameNode))
+            (!lowerer.mapTypeOf(lowerer.typeOf(nameNode)) ||
+              isWebCryptoMemberType(lowerer, lowerer.typeOf(nameNode)))
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {

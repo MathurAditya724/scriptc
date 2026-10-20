@@ -1,4 +1,5 @@
-/* scriptc runtime — node:crypto (scr_lib.c, scr_crypto_async.c). Included by
+/* scriptc runtime — node:crypto (scr_lib.c, scr_crypto_async.c) and the
+ * WebCrypto HMAC slice (scr_webcrypto.c). Included by
  * scr_runtime.h, which says where new declarations go. */
 #ifndef SCR_CRYPTO_H
 #define SCR_CRYPTO_H
@@ -193,6 +194,22 @@ size_t scr_crypto_digest_raw(const char *alg, const unsigned char *data, size_t 
                              unsigned char out[64]);
 size_t scr_crypto_hmac_raw(const char *alg, const unsigned char *key, size_t keylen,
                            const unsigned char *data, size_t len, unsigned char out[64]);
+/* ── WebCrypto (scr_webcrypto.c) ─────────────────────────────────────
+ * crypto.subtle.importKey (raw HMAC keys), sign and verify (HMAC) and
+ * digest (SHA-1/SHA-2) over node:crypto's digest core. Each takes the
+ * call's argument vector as one dyn array (borrowed) and answers a +1
+ * promise that every argument or validation failure rejects with Node's
+ * TypeError or DOMException; algorithms and formats outside the slice
+ * reject with a coded SC2020 Error. importKey settles at once with a
+ * CryptoKey handle; sign and digest fulfill with an ArrayBuffer and
+ * verify with a boolean on a later loop turn. scr_webcrypto_is_crypto_key
+ * answers `value instanceof CryptoKey`. */
+ScrPromise *scr_webcrypto_import_key(ScrDyn *args);
+ScrPromise *scr_webcrypto_sign(ScrDyn *args);
+ScrPromise *scr_webcrypto_verify(ScrDyn *args);
+ScrPromise *scr_webcrypto_digest(ScrDyn *args);
+bool scr_webcrypto_is_crypto_key(const ScrDyn *value);
+
 /* The composed `new crypto.X509Certificate(data).fingerprint` read (the
  * handle never materializes): the SHA-1 of the DER, uppercase
  * colon-separated — PEM or raw-DER input; anything else throws Node's

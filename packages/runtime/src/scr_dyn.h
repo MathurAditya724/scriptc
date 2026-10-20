@@ -137,6 +137,7 @@ typedef enum {
   SCR_DYNH_CIPHER = 45, /* node:crypto Cipheriv (scr_cipher.c) */
   SCR_DYNH_CONSOLE = 32, /* stored global console value */
   SCR_DYNH_CONSOLE_INSTANCE = 38, /* node:console Console instance */
+  SCR_DYNH_CRYPTO_KEY = 56, /* WebCrypto CryptoKey (scr_webcrypto.c) */
   SCR_DYNH_CUSTOM_EVENT = 40, /* ScrEvent with detail — new CustomEvent() */
   SCR_DYNH_DATE = 30, /* JavaScript Date with stable native identity */
   SCR_DYNH_DECIPHER = 46, /* node:crypto Decipheriv (scr_cipher.c) */

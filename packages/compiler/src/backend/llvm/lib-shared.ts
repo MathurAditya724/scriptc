@@ -588,6 +588,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.generateKeySync": "scr_crypto_generate_key_sync",
   "crypto.keyObjectInput": "scr_crypto_key_object_input",
   "crypto.isKeyObject": "scr_crypto_is_key_object",
+  "webcrypto.importKey": "scr_webcrypto_import_key",
+  "webcrypto.sign": "scr_webcrypto_sign",
+  "webcrypto.verify": "scr_webcrypto_verify",
+  "webcrypto.digest": "scr_webcrypto_digest",
+  "webcrypto.isCryptoKey": "scr_webcrypto_is_crypto_key",
   "crypto.randomUUIDv7": "scr_crypto_random_uuid_v7",
   "crypto.pbkdf2": "scr_crypto_pbkdf2",
   "crypto.hkdf": "scr_crypto_hkdf",
@@ -1471,6 +1476,10 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "process.emitWarning",
   // Decipheriv.setAuthTag reports DEP0182 on the next tick.
   "crypto.cipherNew",
+  // WebCrypto results settle through the deferred crypto queue.
+  "webcrypto.sign",
+  "webcrypto.verify",
+  "webcrypto.digest",
   "process.emitWarningText",
   // The legacy url entries queue DEP0169/DEP0170 on the next tick.
   "url.legacyParse",

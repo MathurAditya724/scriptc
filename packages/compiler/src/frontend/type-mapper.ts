@@ -125,6 +125,19 @@ export function jsOpenObjectType(
     : type;
 }
 
+/** The WebCrypto interfaces whose values are checked-dynamic: the crypto
+ * global, SubtleCrypto, CryptoKey handles and the algorithm dictionaries
+ * (scr_webcrypto.c). */
+export const WEBCRYPTO_DYN_TYPES: ReadonlySet<string> = new Set([
+  "Crypto",
+  "SubtleCrypto",
+  "CryptoKey",
+  "Algorithm",
+  "KeyAlgorithm",
+  "HmacImportParams",
+  "HmacKeyAlgorithm",
+]);
+
 export const FETCH_AMBIENT_TYPES = [
   "Response",
   "Request",
@@ -2456,6 +2469,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(d.getSourceFile()),
     )
+  ) {
+    return DYN;
+  }
+  // WebCrypto: the crypto global and its subtle object are dynamic
+  // objects, CryptoKey values are native handles (scr_webcrypto.c), and
+  // the algorithm dictionaries the methods take and keys report are plain
+  // checked-dynamic objects.
+  if (
+    psym &&
+    WEBCRYPTO_DYN_TYPES.has(psym.name) &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()),
+      )
   ) {
     return DYN;
   }
