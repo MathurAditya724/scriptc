@@ -10,11 +10,13 @@ import {
   checkPreflight,
   isNodeTypesPath,
   locOf,
+  npmStaticLoadableFiles,
   requiresOf,
   resolveNpmImport,
   type LoadResult,
 } from "./program.js";
 import {
+  npmStaticFileDegrades,
   npmStaticIneligibleReason,
   npmStaticOffenders,
   npmStaticPackageOfPath,
@@ -146,7 +148,7 @@ function detectAutoPackages(
     const owner = npmStaticPackageOfPath(sf.fileName);
     const viaTransitive = owner !== null && transitive.has(owner);
     const edges: { spec: string; loc: SrcLoc }[] = [];
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (
         (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
         stmt.moduleSpecifier &&
@@ -167,7 +169,7 @@ function detectAutoPackages(
     // anywhere in the package, nested ones included.
     if (viaTransitive) {
       for (const call of moduleSourceCandidates(load.program, sf).calls) {
-        const arg = call.arguments[0];
+        const arg = call.arguments.nodes[0];
         if (
           arg !== undefined &&
           isStringLiteralLike(arg) &&
@@ -458,6 +460,15 @@ function loadFrontend(
   const typecheckRefused = new Set<string>();
   while (effective.size > 0) {
     const reasons = new Map<string, string>(npmStaticOffenders());
+    // Bundler interop the rewrite could not finish refuses its package
+    // only where the compiled program can load the file.
+    if (npmStaticFileDegrades().size > 0) {
+      const loadable = npmStaticLoadableFiles(load.program, load.moduleOrder);
+      for (const [file, { pkg, reason }] of npmStaticFileDegrades()) {
+        if (!reasons.has(pkg) && (loadable === null || loadable.has(file)))
+          reasons.set(pkg, reason);
+      }
+    }
     for (const d of preflight) {
       const pkg = npmStaticPackageOfPath(d.loc.file);
       if (pkg !== null && !reasons.has(pkg))

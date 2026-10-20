@@ -271,11 +271,11 @@ function lowerAssertLooseEqual(
 ): IrExpr {
   const surface = negated ? "assert.notEqual" : "assert.equal";
   requireStatementPosition(lowerer, expr, surface);
-  if (expr.arguments.length < 2 || expr.arguments.length > 3) {
-    lowerer.noLowering(`${surface} with ${expr.arguments.length} arguments`, expr);
+  if (expr.arguments.nodes.length < 2 || expr.arguments.nodes.length > 3) {
+    lowerer.noLowering(`${surface} with ${expr.arguments.nodes.length} arguments`, expr);
   }
-  const aNode = expr.arguments[0];
-  const bNode = expr.arguments[1];
+  const aNode = expr.arguments.nodes[0];
+  const bNode = expr.arguments.nodes[1];
   if (!aNode || !bNode)
     throw new InternalCompilerError(`${surface} arity fence returned unexpectedly`);
   const left = lowerer.lowerExpr(aNode);
@@ -329,7 +329,7 @@ function lowerAssertLooseEqual(
   });
   const actual = inspectOnFailure(a);
   const expected = inspectOnFailure(b);
-  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments[2], loc);
+  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments.nodes[2], loc);
   const result: IrExpr = {
     kind: "libCall",
     fn: "assert.looseResult",
@@ -352,7 +352,7 @@ function lowerComparedOperands(
   loc: SrcLoc,
 ): { a: IrExpr; b: IrExpr } {
   const emptyArrayLit = (n: ts.Expression): boolean =>
-    ts.isArrayLiteralExpression(n) && n.elements.length === 0;
+    ts.isArrayLiteralExpression(n) && n.elements.nodes.length === 0;
   const emptyOf = (t: IrType): IrExpr => ({ kind: "arrayLit", elems: [], type: t, loc });
   // A dyn other side adopts number[] — the dyn array a boxed empty
   // literal builds is elementless, so any elem type serves.
@@ -408,13 +408,13 @@ function lowerAssertLooseDeep(
 ): IrExpr {
   const surface = negated ? "assert.notDeepEqual" : "assert.deepEqual";
   requireStatementPosition(lowerer, expr, surface);
-  if (expr.arguments.length < 2 || expr.arguments.length > 3) {
-    lowerer.noLowering(`${surface} with ${expr.arguments.length} arguments`, expr);
+  if (expr.arguments.nodes.length < 2 || expr.arguments.nodes.length > 3) {
+    lowerer.noLowering(`${surface} with ${expr.arguments.nodes.length} arguments`, expr);
   }
-  const aNode = expr.arguments[0]!;
-  const bNode = expr.arguments[1]!;
+  const aNode = expr.arguments.nodes[0]!;
+  const bNode = expr.arguments.nodes[1]!;
   const { a, b } = lowerComparedOperands(lowerer, aNode, bNode, loc);
-  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments[2], loc);
+  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments.nodes[2], loc);
   refuseUnrenderedDeepOperands(
     lowerer,
     surface,
@@ -532,13 +532,13 @@ function boxDeepOperand(
 function lowerAssertPartialDeep(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   const surface = "assert.partialDeepStrictEqual";
   requireStatementPosition(lowerer, expr, surface);
-  if (expr.arguments.length < 2 || expr.arguments.length > 3) {
-    lowerer.noLowering(`${surface} with ${expr.arguments.length} arguments`, expr);
+  if (expr.arguments.nodes.length < 2 || expr.arguments.nodes.length > 3) {
+    lowerer.noLowering(`${surface} with ${expr.arguments.nodes.length} arguments`, expr);
   }
-  const aNode = expr.arguments[0]!;
-  const bNode = expr.arguments[1]!;
+  const aNode = expr.arguments.nodes[0]!;
+  const bNode = expr.arguments.nodes[1]!;
   const { a, b } = lowerComparedOperands(lowerer, aNode, bNode, loc);
-  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments[2], loc);
+  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments.nodes[2], loc);
   refuseUnrenderedDeepOperands(
     lowerer,
     surface,
@@ -870,7 +870,7 @@ export function lowerAssertDirectCall(
   const module = lowerer.builtinNamespaceModuleOf(callee);
   if (module !== "assert" && module !== "assert/strict") return null;
   const calleeSym = lowerer.checker.getSymbolAtLocation(callee);
-  const decl = calleeSym ? lowerer.checker.declarationsOf(calleeSym)[0] : undefined;
+  const decl = calleeSym ? calleeSym.declarations[0] : undefined;
   if (decl && ts.isNamespaceImport(decl)) {
     lowerer.unsupported(
       "SC1013",
@@ -888,14 +888,14 @@ export function lowerAssertDirectCall(
  * the same bytes at compile time). */
 function lowerAssertOk(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   requireStatementPosition(lowerer, expr, expr.expression.getText());
-  if (expr.arguments.length < 1 || expr.arguments.length > 2) {
+  if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 2) {
     lowerer.noLowering(
-      `${expr.expression.getText()} with ${expr.arguments.length} arguments`,
+      `${expr.expression.getText()} with ${expr.arguments.nodes.length} arguments`,
       expr,
       "the supported forms are assert(value) and assert(value, message)",
     );
   }
-  const valueNode = expr.arguments[0]!;
+  const valueNode = expr.arguments.nodes[0]!;
   const stmts: IrStmt[] = [];
   const value = stableValue(lowerer, stmts, lowerer.lowerExpr(valueNode), "%assertOkValue", loc);
   const pass = stableValue(
@@ -905,7 +905,7 @@ function lowerAssertOk(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): 
     "%assertOkPass",
     loc,
   );
-  const msgNode = expr.arguments[1];
+  const msgNode = expr.arguments.nodes[1];
   let msg: IrExpr;
   let generated = false;
   if (!msgNode || (ts.isIdentifier(msgNode) && msgNode.text === "undefined")) {
@@ -936,16 +936,16 @@ function lowerAssertOk(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): 
  * assert.ok over a false literal. */
 function lowerAssertFail(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   requireStatementPosition(lowerer, expr, "assert.fail");
-  if (expr.arguments.length > 1) {
+  if (expr.arguments.nodes.length > 1) {
     lowerer.noLowering(
-      `assert.fail with ${expr.arguments.length} arguments`,
+      `assert.fail with ${expr.arguments.nodes.length} arguments`,
       expr,
       "the supported form is fail(message?) — the deprecated fail(actual, expected, ...) has no lowering",
     );
   }
   let msg: IrExpr;
   let generated: IrExpr;
-  const msgNode = expr.arguments[0];
+  const msgNode = expr.arguments.nodes[0];
   const stmts: IrStmt[] = [];
   if (!msgNode || (ts.isIdentifier(msgNode) && msgNode.text === "undefined")) {
     msg = { kind: "strLit", value: "Failed", type: STRING, loc };
@@ -996,13 +996,13 @@ function lowerAssertEqual(
 ): IrExpr {
   const surface = `assert.${deep ? (negated ? "notDeepStrictEqual" : "deepStrictEqual") : negated ? "notStrictEqual" : "strictEqual"}`;
   requireStatementPosition(lowerer, expr, surface);
-  if (expr.arguments.length < 2 || expr.arguments.length > 3) {
-    lowerer.noLowering(`${surface} with ${expr.arguments.length} arguments`, expr);
+  if (expr.arguments.nodes.length < 2 || expr.arguments.nodes.length > 3) {
+    lowerer.noLowering(`${surface} with ${expr.arguments.nodes.length} arguments`, expr);
   }
-  const aNode = expr.arguments[0]!;
-  const bNode = expr.arguments[1]!;
+  const aNode = expr.arguments.nodes[0]!;
+  const bNode = expr.arguments.nodes[1]!;
   const { a, b } = lowerComparedOperands(lowerer, aNode, bNode, loc);
-  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments[2], loc);
+  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments.nodes[2], loc);
   // An Assert instance with skipPrototype: Node compares own properties
   // without the prototype check, so operands of different static types (two
   // classes, a class and a record) can be equal. They compare as
@@ -1155,8 +1155,8 @@ function lowerAssertEqual(
   // the call through a binding whose DECLARED constructor differs from the
   // value's runtime one compares by the declared brand (SEMANTICS.md).
   if (a.type.kind === "bytes" && typeEquals(a.type, b.type)) {
-    const brandA = bytesBrandOf(lowerer, expr.arguments[0]!);
-    const brandB = bytesBrandOf(lowerer, expr.arguments[1]!);
+    const brandA = bytesBrandOf(lowerer, expr.arguments.nodes[0]!);
+    const brandB = bytesBrandOf(lowerer, expr.arguments.nodes[1]!);
     if (!deep) {
       // Brands shape only the failure HEADER (same-structure vs
       // reference-equal expectation); an unclassifiable side defers to the
@@ -1173,7 +1173,7 @@ function lowerAssertEqual(
     if (!skipPrototype && (brandA === null || brandB === null)) {
       lowerer.noLowering(
         `${surface} of typed-array values whose constructor is not in the static type`,
-        brandA === null ? expr.arguments[0]! : expr.arguments[1]!,
+        brandA === null ? expr.arguments.nodes[0]! : expr.arguments.nodes[1]!,
         "Node's deep equality compares prototypes (a Buffer is never deep-equal to a plain Uint8Array) — annotate the value so its constructor is visible",
       );
     }
@@ -1350,19 +1350,19 @@ function lowerAssertMatch(
 ): IrExpr {
   const surface = negated ? "assert.doesNotMatch" : "assert.match";
   requireStatementPosition(lowerer, expr, surface);
-  if (expr.arguments.length < 2 || expr.arguments.length > 3) {
-    lowerer.noLowering(`${surface} with ${expr.arguments.length} arguments`, expr);
+  if (expr.arguments.nodes.length < 2 || expr.arguments.nodes.length > 3) {
+    lowerer.noLowering(`${surface} with ${expr.arguments.nodes.length} arguments`, expr);
   }
-  const s = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-  const re = lowerer.lowerExpr(expr.arguments[1]!);
+  const s = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+  const re = lowerer.lowerExpr(expr.arguments.nodes[1]!);
   if (re.type.kind !== "regex") {
     lowerer.noLowering(
       `${surface} with a non-regex pattern`,
-      expr.arguments[1]!,
+      expr.arguments.nodes[1]!,
       "the second argument must be a regular expression",
     );
   }
-  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments[2], loc);
+  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments.nodes[2], loc);
   const neg: IrExpr = { kind: "boolLit", value: negated, type: BOOL, loc };
   return { kind: "libCall", fn: "assert.match", args: [s, re, neg, msg, hasMsg], type: VOID, loc };
 }
@@ -1478,7 +1478,7 @@ function classifyThrowsExpected(
   let obj: ts.Expression = node;
   while (ts.isParenthesizedExpression(obj)) obj = obj.expression;
   if (ts.isObjectLiteralExpression(obj)) {
-    if (obj.properties.length === 0) {
+    if (obj.properties.nodes.length === 0) {
       lowerer.noLowering(
         `${surface} with an empty expected object`,
         obj,
@@ -1488,7 +1488,7 @@ function classifyThrowsExpected(
     // Duplicate keys keep the LAST value (JS object-literal semantics);
     // property order is preserved for argument evaluation.
     const byId = new Map<number, ThrowsShapeKey>();
-    for (const prop of obj.properties) {
+    for (const prop of obj.properties.nodes) {
       const named =
         ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop) ? prop : null;
       if (!named || !(ts.isIdentifier(named.name) || ts.isStringLiteral(named.name))) {
@@ -1585,18 +1585,18 @@ function lowerAssertThrows(
 ): IrExpr {
   const surface = doesNot ? "assert.doesNotThrow" : "assert.throws";
   requireStatementPosition(lowerer, expr, surface);
-  if (expr.arguments.length < 1 || expr.arguments.length > 3) {
+  if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 3) {
     lowerer.noLowering(
-      `${surface} with ${expr.arguments.length} arguments`,
+      `${surface} with ${expr.arguments.nodes.length} arguments`,
       expr,
       `the supported forms are ${surface}(fn), ${surface}(fn, expected), and ${surface}(fn, expected, message)`,
     );
   }
-  const fn = lowerer.lowerExpr(expr.arguments[0]!);
+  const fn = lowerer.lowerExpr(expr.arguments.nodes[0]!);
   if (fn.type.kind !== "func" || fn.type.params.length !== 0) {
     lowerer.noLowering(
       `${surface} with this callback shape`,
-      expr.arguments[0]!,
+      expr.arguments.nodes[0]!,
       "the callback must be a zero-parameter function",
     );
   }
@@ -1637,14 +1637,14 @@ function lowerAssertRejects(
   doesNot: boolean,
 ): IrExpr {
   const surface = doesNot ? "assert.doesNotReject" : "assert.rejects";
-  if (expr.arguments.length < 1 || expr.arguments.length > 3) {
+  if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 3) {
     lowerer.noLowering(
-      `${surface} with ${expr.arguments.length} arguments`,
+      `${surface} with ${expr.arguments.nodes.length} arguments`,
       expr,
       `the supported forms are ${doesNot ? "doesNotReject" : "rejects"}(fn), (fn, expected), and (fn, expected, message)`,
     );
   }
-  const recv = lowerer.lowerExpr(expr.arguments[0]!);
+  const recv = lowerer.lowerExpr(expr.arguments.nodes[0]!);
   const recvIsPromise = recv.type.kind === "promise";
   if (
     !recvIsPromise &&
@@ -1652,7 +1652,7 @@ function lowerAssertRejects(
   ) {
     lowerer.noLowering(
       `${surface} with this first argument`,
-      expr.arguments[0]!,
+      expr.arguments.nodes[0]!,
       "an async (promise-returning) zero-parameter function or a promise are the lowered forms " +
         "(a bare thenable — an object with a then method — has no lowering: wrap it, e.g. Promise.resolve().then(() => thenable))",
     );
@@ -1728,7 +1728,7 @@ function refuseNoErrorShape(
     // statement of the same rule.
     lowerer.noLowering(
       `${surface} with an object-shape expectation`,
-      expr.arguments[1]!,
+      expr.arguments.nodes[1]!,
       "Node rejects this form when the callback fails — use a class, a regex, a validation callback, or a bare call",
     );
   }
@@ -1743,7 +1743,7 @@ function throwsArguments(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): { expected: ThrowsExpected; msg: IrExpr; hasMsg: IrExpr } {
-  const expectedNode = expr.arguments[1];
+  const expectedNode = expr.arguments.nodes[1];
   // A literal `undefined` expected counts as omitted (Node reads the
   // message from the THIRD argument in that spelling).
   const expected: ThrowsExpected =
@@ -1752,20 +1752,20 @@ function throwsArguments(
       : { form: "bare" };
   if (expected.form === "message") {
     if (
-      expr.arguments.length === 3 &&
+      expr.arguments.nodes.length === 3 &&
       surface !== "assert.doesNotThrow" &&
       surface !== "assert.doesNotReject"
     ) {
       lowerer.noLowering(
         `${surface} with a string expected argument AND a message`,
-        expr.arguments[2]!,
+        expr.arguments.nodes[2]!,
         "Node rejects this form (the string IS the message) — use an expected shape second",
       );
     }
-    if (expr.arguments[2]) {
+    if (expr.arguments.nodes[2]) {
       // No-error assertions ignore the third value in the string-second
       // form, while ordinary argument evaluation still runs it once.
-      const ignored = lowerer.lowerExpr(expr.arguments[2]);
+      const ignored = lowerer.lowerExpr(expr.arguments.nodes[2]);
       const message = lowerer.declareHiddenLocal("%assertNoErrorMessage", STRING);
       return {
         expected,
@@ -1784,7 +1784,7 @@ function throwsArguments(
     }
     return { expected, msg: expected.msg, hasMsg: expected.hasMsg };
   }
-  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments[2], loc);
+  const { msg, hasMsg } = lowerMessageArg(lowerer, expr.arguments.nodes[2], loc);
   return { expected, msg, hasMsg };
 }
 
@@ -2218,14 +2218,14 @@ function ifErrorLibFn(
  * an interned helper. Anything else fences. */
 function lowerAssertIfError(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   requireStatementPosition(lowerer, expr, "assert.ifError");
-  if (expr.arguments.length !== 1) {
+  if (expr.arguments.nodes.length !== 1) {
     lowerer.noLowering(
-      `assert.ifError with ${expr.arguments.length} arguments`,
+      `assert.ifError with ${expr.arguments.nodes.length} arguments`,
       expr,
       "the supported form is ifError(value)",
     );
   }
-  const argNode = expr.arguments[0]!;
+  const argNode = expr.arguments.nodes[0]!;
   const argT = lowerer.mapTypeOf(lowerer.typeOf(argNode));
   if (argT && isUnitType(argT)) {
     // null/undefined can never throw, and a unit-typed expression has no

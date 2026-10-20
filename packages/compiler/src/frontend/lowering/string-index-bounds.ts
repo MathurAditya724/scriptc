@@ -113,7 +113,7 @@ function exits(node: ts.Statement): boolean {
   )
     return true;
   if (ts.isBlock(node)) {
-    const last = node.statements[node.statements.length - 1];
+    const last = node.statements.nodes[node.statements.nodes.length - 1];
     return last !== undefined && exits(last);
   }
   return false;
@@ -542,7 +542,7 @@ export class StringIndexBounds {
             return true;
         }
       } else if (ts.isBlock(node) || ts.isCaseClause(node) || ts.isDefaultClause(node)) {
-        const statements = node.statements;
+        const statements = node.statements.nodes;
         for (let i = statements.indexOf(child as ts.Statement) - 1; i >= 0; i--) {
           const statement = statements[i]!;
           if (

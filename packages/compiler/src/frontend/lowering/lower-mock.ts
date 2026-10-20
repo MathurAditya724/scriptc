@@ -154,7 +154,12 @@ function mockWrapperFactory(
     const { fn, call, calls, once, onceEntry, result, args } = mockContextFields(lowerer, ctxType)!;
     const impl = `${name}.impl`;
     const ctx = () => varRef("ctx.0", ctxType, loc);
+    // A checked-dynamic rest function (mock.fn()'s default type) takes its
+    // arguments as one trailing dyn array, recorded as the call's arguments
+    // and spread into the implementation.
+    const dynRest = fn.rest === true && fn.restAbi === undefined;
     const params = fn.params.map((type, i) => ({ localId: `p${i}.0`, name: `p${i}`, type }));
+    if (dynRest) params.push({ localId: "rest.0", name: "args", type: DYN });
     const paramRefs = () => params.map((p) => varRef(p.localId, p.type, loc));
     const argumentsValue = (): IrExpr =>
       fn.rest
@@ -219,13 +224,23 @@ function mockWrapperFactory(
         loc,
       };
     };
-    const invoke: IrExpr = {
-      kind: "callValue",
-      callee: varRef("f.0", fn, loc),
-      args: paramRefs(),
-      type: fn.ret,
-      loc,
-    };
+    const invoke: IrExpr = dynRest
+      ? {
+          kind: "dynCall",
+          callee: { kind: "dynFrom", value: varRef("f.0", fn, loc), type: DYN, loc },
+          calleeName: "implementation",
+          args: paramRefs(),
+          spreads: [{ arg: 0, what: "args" }],
+          type: DYN,
+          loc,
+        }
+      : {
+          kind: "callValue",
+          callee: varRef("f.0", fn, loc),
+          args: paramRefs(),
+          type: fn.ret,
+          loc,
+        };
     const tryBody: IrStmt[] = voidReturn
       ? [
           { kind: "exprStmt", expr: invoke, loc },
@@ -629,7 +644,37 @@ function requireUndefinedResultArm(
   }
 }
 
-/** mock.fn(original, implementation?) and t.mock.fn(...). */
+/** `%mock.noop.N`: mock.fn()'s original, Node's `function () {}` — it
+ * returns undefined. Null when the function type's return type cannot hold
+ * undefined. */
+function mockNoopOriginal(
+  lowerer: Lowerer,
+  ctxType: IrType,
+  fn: FuncType,
+  loc: SrcLoc,
+): IrExpr | null {
+  const voidReturn = fn.ret.kind === "void" || fn.ret.kind === "undefinedT";
+  const undefinedValue = voidReturn ? null : lowerer.wrappedUndefined(fn.ret, loc);
+  if (!voidReturn && !undefinedValue) return null;
+  const name = liftOnce(lowerer, ctxType, "noop", (name) => {
+    const params = fn.params.map((type, i) => ({ localId: `p${i}.0`, name: `p${i}`, type }));
+    if (fn.rest === true && fn.restAbi === undefined)
+      params.push({ localId: "rest.0", name: "args", type: DYN });
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: fn.ret,
+      locals: params.map((p) => local(p.localId, p.name, p.type)),
+      body: [{ kind: "return", value: undefinedValue, loc }],
+      loc,
+    });
+  });
+  return { kind: "closure", fnName: name, captures: [], type: fn, loc };
+}
+
+/** mock.fn(original?, implementation?) and t.mock.fn(...). Without an
+ * original, the mock's original and implementation are a function that
+ * returns undefined, as in Node. */
 export function lowerMockFn(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -657,12 +702,20 @@ export function lowerMockFn(
   const fields = mockContextFields(lowerer, ctxType!)!;
   const { fn } = fields;
   requireUndefinedResultArm(lowerer, fields, call, what);
-  const args = call.arguments;
-  if (args.length === 0 || args.length > 2 || args.some(ts.isSpreadElement)) {
+  const args = call.arguments.nodes;
+  if (args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
       call,
-      "the supported forms are mock.fn(original) and mock.fn(original, implementation); mock.fn() and mock options have no lowering",
+      "the supported forms are mock.fn(), mock.fn(original) and mock.fn(original, implementation); mock options have no lowering",
+    );
+  }
+  const noop = args.length === 0 ? mockNoopOriginal(lowerer, ctxType!, fn, loc) : null;
+  if (args.length === 0 && !noop) {
+    lowerer.noLowering(
+      `${what}() of a function returning '${lowerer.fmt(fn.ret)}'`,
+      call,
+      "mock.fn() without an original returns undefined: pass an original, or use a function type whose return type includes undefined",
     );
   }
   const stmts: IrStmt[] = [];
@@ -670,7 +723,7 @@ export function lowerMockFn(
   stmts.push({
     kind: "varDecl",
     localId: originalLocal.id,
-    init: lowerer.lowerExprExpecting(args[0]!, fn),
+    init: noop ?? lowerer.lowerExprExpecting(args[0]!, fn),
     loc,
   });
   const implementation =
@@ -717,7 +770,7 @@ export function lowerMockMethod(
   tracker: MockTracker,
 ): IrExpr {
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
@@ -844,8 +897,8 @@ export function lowerMockTrackerCall(
   member: "restoreAll" | "reset",
   tracker: MockTracker,
 ): IrExpr {
-  if (call.arguments.length > 0) {
-    lowerer.noLowering(`MockTracker.${member} with ${call.arguments.length} arguments`, call);
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering(`MockTracker.${member} with ${call.arguments.nodes.length} arguments`, call);
   }
   const fn = tracker
     ? member === "reset"
@@ -893,7 +946,7 @@ export function lowerMockTimersCall(
   sym: ts.Symbol | null,
 ): IrExpr {
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const optionalNumber = (fallback: number): IrExpr[] => {
     if (args.length > 1)
       lowerer.noLowering(`${what}.${member} with ${args.length} arguments`, call);
@@ -935,9 +988,9 @@ export function lowerMockTimersCall(
  * (1 = `now` given, 2 = it is a Date). */
 function lowerMockTimersOptions(lowerer: Lowerer, call: ts.CallExpression, what: string): IrExpr[] {
   const loc = locOf(call);
-  const options = call.arguments[0];
-  if (call.arguments.length > 1) {
-    lowerer.noLowering(`${what}.enable with ${call.arguments.length} arguments`, call);
+  const options = call.arguments.nodes[0];
+  if (call.arguments.nodes.length > 1) {
+    lowerer.noLowering(`${what}.enable with ${call.arguments.nodes.length} arguments`, call);
   }
   if (options === undefined) {
     return [strLit(MOCK_TIMERS_ALL_APIS, loc), numLit(0, loc), numLit(0, loc)];
@@ -953,7 +1006,7 @@ function lowerMockTimersOptions(lowerer: Lowerer, call: ts.CallExpression, what:
   let listed = false;
   let now: IrExpr = numLit(0, loc);
   let flags = 0;
-  for (const prop of options.properties) {
+  for (const prop of options.properties.nodes) {
     // `{ apis: [...] }`, `{ "now": n }` and the `{ now }` shorthand.
     const init = ts.isPropertyAssignment(prop)
       ? prop.initializer
@@ -974,7 +1027,7 @@ function lowerMockTimersOptions(lowerer: Lowerer, call: ts.CallExpression, what:
         );
       }
       listed = true;
-      for (const el of list.elements) {
+      for (const el of list.elements.nodes) {
         if (!ts.isStringLiteralLike(el)) {
           lowerer.noLowering(
             `${what}.enable with a non-literal API name`,
@@ -1046,7 +1099,7 @@ export function lowerMockContextCall(
   const { fn, calls, once, onceEntry } = mockContextFields(lowerer, ctxType)!;
   const loc = locOf(call);
   const member = access.name.text;
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const arity = (min: number, max: number = min) => {
     if (args.length < min || args.length > max || args.some(ts.isSpreadElement))
       lowerer.noLowering(`MockFunctionContext.${member} with ${args.length} arguments`, call);

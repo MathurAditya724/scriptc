@@ -12,6 +12,7 @@ import { lowerEventsEmitterHelper, lowerEventsOnce } from "./lower-event-emitter
 import type { Lowerer } from "./lowerer.js";
 import { lowerTimersMemberCall } from "./lower-timers.js";
 import { lowerStreamModuleCall } from "./lower-stream.js";
+import { lowerCallbackPromisify } from "./builtins/promisify-callback.js";
 import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
 import { builtinModuleFnOf, builtinFenceHintOf } from "./surfaces.js";
 
@@ -24,7 +25,7 @@ export function lowerAddAbortListener(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`addAbortListener with this argument list`, expr);
   }
@@ -87,6 +88,10 @@ export function lowerBuiltinCall(
   if (testServed) return testServed;
   const utilServed = lowerer.lowerUtilModuleCall(expr, bi, loc);
   if (utilServed) return utilServed;
+  if (bi.module === "util" && bi.member === "promisify") {
+    const promisified = lowerCallbackPromisify(lowerer, expr, loc);
+    if (promisified) return promisified;
+  }
   const streamServed = lowerStreamModuleCall(lowerer, expr, bi, loc);
   if (streamServed) return streamServed;
   const fsTs = lowerer.lowerFsToUnixTimestampCall(expr, bi, loc);

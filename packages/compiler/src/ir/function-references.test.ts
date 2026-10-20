@@ -143,6 +143,7 @@ const FUNCTION_FIELDS: Record<StringFields<Omit<IrFunction, "body">>, Role> = {
   "captures[].localId": "other",
   "classCaptures[].name": "other",
   "classCaptures[].localId": "other",
+  "generator.tag": "other",
 };
 
 const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
@@ -211,6 +212,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "contracts.programLifetime[]": "other",
   "wasmModules[].sha256": "other",
   "wasmModules[].bytes": "other",
+  "threadSlotKeys[]": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };
@@ -232,7 +234,7 @@ const entry = (body: IrStmt[] = []): IrFunction => ({
   loc,
 });
 const module = (body: IrStmt[] = []): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: loc.file,
   entry: "%main",
   functions: [target, entry(body)],

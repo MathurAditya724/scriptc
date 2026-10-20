@@ -275,7 +275,7 @@ function lowerStreamCallback(
 ): IrExpr {
   const loc = locOf(node);
   const { shapes, funcType } = lowerer.lambdaSignature(node);
-  if (node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+  if (node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
     lowerer.unsupported("SC1090", node, `async stream '${which}' callbacks`);
   }
   if (funcType.params.length > fullTuple.length) {
@@ -309,10 +309,10 @@ function lowerStreamCallback(
     const thisLocal = ts.isArrowFunction(node)
       ? lowerer.declareHiddenLocal("this", thisType)
       : lowerer.declareThis(thisType);
-    const { params, prologue } = lowerer.declareParams(node.parameters, shapes);
+    const { params, prologue } = lowerer.declareParams(node.parameters.nodes, shapes);
     let body: IrStmt[];
     if (node.body !== undefined && ts.isBlock(node.body)) {
-      body = lowerer.lowerStmts(node.body.statements);
+      body = lowerer.lowerStmts(node.body.statements.nodes);
     } else if (node.body !== undefined) {
       // Bare-expression bodies (`read: () => this.push(null)`): the value
       // is discarded when the signature returns void — Node ignores
@@ -492,7 +492,7 @@ function followOptionsArg(
     } catch {
       return node;
     }
-    const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
+    const decl = sym ? sym.valueDeclaration : undefined;
     if (!sym || !decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
       return node;
     if ((ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) === 0) return node;
@@ -627,7 +627,7 @@ function parseStreamOptions(
   }
   const tuples = cbTuples(lowerer);
   const present = new Map<string, IrExpr>();
-  for (const prop of optsLit?.properties ?? []) {
+  for (const prop of optsLit?.properties?.nodes ?? []) {
     const propName = ts.isSpreadAssignment(prop) ? undefined : prop.name;
     const name =
       propName && ts.isIdentifier(propName)
@@ -932,7 +932,7 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
   const cls = info.def.name;
   if (!RUNTIME_STREAM_CLASSES.has(cls)) lowerer.unsupported("SC1090", expr, `constructing ${cls}`);
   const thisType: IrType = { kind: "object", className: cls };
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   if (args.length > 1) {
     lowerer.noLowering(
       `new ${info.def.name.slice(1)} with ${args.length} arguments`,
@@ -997,6 +997,15 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
     type: thisType,
     loc,
   };
+}
+
+/** True when a value of Node's argument type `passed` widens implicitly
+ * into the declared parameter type `declared` (one of its union arms, or a
+ * sub-union of it). */
+function widensInto(lowerer: Lowerer, passed: IrType, declared: IrType, loc: SrcLoc): boolean {
+  if (declared.kind !== "union") return false;
+  const probe: IrExpr = { kind: "varRef", localId: "%probe", type: passed, loc };
+  return typeEquals(lowerer.coerceToExpected(probe, declared).type, declared);
 }
 
 /* ── user subclasses (`extends Readable`, the underscore-override form) ── */
@@ -1075,10 +1084,17 @@ function streamMethodWrapper(
         );
       }
     } else if (!typeEquals(got.type, want)) {
+      // A declared supertype of what Node passes (`chunk: Buffer | string`)
+      // is sound: the wrapper takes Node's value and widens it into the
+      // declared parameter.
+      if (widensInto(lowerer, want, got.type, loc)) {
+        paramTypes.push(want);
+        continue;
+      }
       lowerer.noLowering(
         `a '${methodName}' method whose parameter ${i} is '${lowerer.fmt(got.type)}' where Node passes '${lowerer.fmt(want)}'`,
         blame,
-        "annotate the parameter with the Node signature's type (chunks are Buffers here)",
+        "annotate the parameter with the Node signature's type or a supertype of it (chunks are Buffers here)",
       );
     }
     paramTypes.push(got.type);
@@ -1094,7 +1110,11 @@ function streamMethodWrapper(
     for (let i = 0; i < paramTypes.length; i++) {
       const local = lowerer.declareHiddenLocal(`a${i}`, paramTypes[i]!);
       params.push({ localId: local.id, name: local.name, type: paramTypes[i]! });
-      argRefs.push({ kind: "varRef", localId: local.id, type: paramTypes[i]!, loc });
+      const arg: IrExpr = { kind: "varRef", localId: local.id, type: paramTypes[i]!, loc };
+      const declaredType = declared[i]!.type;
+      argRefs.push(
+        typeEquals(arg.type, declaredType) ? arg : lowerer.coerceToExpected(arg, declaredType),
+      );
     }
     const thisRef: IrExpr = { kind: "varRef", localId: thisLocal.id, type: thisType, loc };
     let call: IrExpr;
@@ -1410,15 +1430,15 @@ export function lowerStreamStaticCall(
   if (
     member === "toWeb" &&
     cls === "%Readable" &&
-    call.arguments.length === 2 &&
+    call.arguments.nodes.length === 2 &&
     isJsSourceFile(call.getSourceFile()) &&
-    ts.isObjectLiteralExpression(call.arguments[1]!)
+    ts.isObjectLiteralExpression(call.arguments.nodes[1]!)
   ) {
-    for (const p of call.arguments[1]!.properties) {
+    for (const p of call.arguments.nodes[1]!.properties.nodes) {
       if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "type") {
         const t = lowerer.typeOf(p.initializer);
         if (t.isStringLiteralType() && t.value !== "bytes") {
-          lowerer.lowerExpr(call.arguments[0]!); // evaluation order (the stream argument)
+          lowerer.lowerExpr(call.arguments.nodes[0]!); // evaluation order (the stream argument)
           return nodeThrowExpr(
             1,
             "ERR_INVALID_ARG_VALUE",
@@ -1436,7 +1456,7 @@ export function lowerStreamStaticCall(
   if (cls !== "%Readable") {
     lowerer.noLowering(`${cls.slice(1)}.from`, call, "Readable.from is the lowered form");
   }
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length > 2) {
     lowerer.noLowering(
       `Readable.from with ${args.length} arguments`,
@@ -1955,7 +1975,7 @@ function fromOptions(
   if (!ts.isObjectLiteralExpression(node)) return null;
   let flags = 0;
   let hwm: ts.Expression | null = null;
-  for (const prop of node.properties) {
+  for (const prop of node.properties.nodes) {
     if (
       !ts.isPropertyAssignment(prop) ||
       !(ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name))
@@ -2062,7 +2082,7 @@ function lowerStreamArg(
           argTypeThrow("body", PIPELINE_STAGE_EXPECTED);
         }
       } else if (
-        (ts.isObjectLiteralExpression(node) && node.properties.length === 0) ||
+        (ts.isObjectLiteralExpression(node) && node.properties.nodes.length === 0) ||
         v.type.kind === "record" ||
         v.type.kind === "string" ||
         v.type.kind === "f64" ||
@@ -2193,7 +2213,7 @@ function eosOptions(
       "pass true or false",
     );
   };
-  for (const p of node.properties) {
+  for (const p of node.properties.nodes) {
     const key =
       (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && ts.isIdentifier(p.name)
         ? p.name.text
@@ -2236,7 +2256,7 @@ function pipelineOptions(
   node: ts.ObjectLiteralExpression,
 ): { end: boolean; signal: IrExpr | null } {
   const out = { end: true, signal: null as IrExpr | null };
-  for (const p of node.properties) {
+  for (const p of node.properties.nodes) {
     const key =
       (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && ts.isIdentifier(p.name)
         ? p.name.text
@@ -2279,7 +2299,7 @@ export function lowerStreamModuleCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (bi.module === "stream/promises") {
-    const args = call.arguments;
+    const args = call.arguments.nodes;
     // finished(stream) → a pending void promise the terminal watcher
     // settles (rejected with the stream's error, or
     // ERR_STREAM_PREMATURE_CLOSE — the callback form's status, boxed
@@ -2389,7 +2409,7 @@ export function lowerStreamModuleCall(
     return null;
   }
   if (bi.module === "stream/consumers") {
-    const args = call.arguments;
+    const args = call.arguments.nodes;
     // text/json/buffer/arrayBuffer(stream) → a pending promise the
     // accumulate-and-settle machinery resolves at the terminal point (the
     // utf8 decode / the parsed JSON dyn tree / the concatenated bytes / an
@@ -2440,7 +2460,7 @@ export function lowerStreamModuleCall(
     return null;
   }
   if (bi.module !== "stream") return null;
-  const args = call.arguments;
+  const args = call.arguments.nodes;
 
   if (bi.member === "getDefaultHighWaterMark") {
     // Node 24: 65536 bytes / 16 objects — compile-time literals only.
@@ -2657,7 +2677,7 @@ function lowerPipelineStages(
   for (let i = first; i < end; i++) {
     const fn = stageArgs[i] as ts.FunctionExpression | ts.ArrowFunction;
     const isLast = destFn && i === end - 1;
-    const isAsync = (fn.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+    const isAsync = (fn.modifiers?.nodes ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
     const isGen = ts.isFunctionExpression(fn) && fn.asteriskToken !== undefined;
     if (isLast && isGen) {
       // pipeline() pumps it into an object-mode PassThrough, whose
@@ -2680,10 +2700,10 @@ function lowerPipelineStages(
       );
     }
     const optionsAt = srcT === null ? 0 : 1;
-    if (fn.parameters.length > optionsAt + 1) {
+    if (fn.parameters.nodes.length > optionsAt + 1) {
       lowerer.noLowering(
         "pipeline stages with parameters after the options argument",
-        fn.parameters[optionsAt + 1]!,
+        fn.parameters.nodes[optionsAt + 1]!,
         "a stage takes the source and { signal }",
       );
     }
@@ -2693,7 +2713,7 @@ function lowerPipelineStages(
       if (params[optionsAt]!.kind !== "dyn") {
         lowerer.noLowering(
           "a pipeline stage's options argument with this type",
-          fn.parameters[optionsAt]!,
+          fn.parameters.nodes[optionsAt]!,
           "type it as { signal: AbortSignal }",
         );
       }
@@ -2897,7 +2917,7 @@ function lowerStageFunction(
   fn: ts.FunctionExpression | ts.ArrowFunction,
   srcT: IrType | null,
 ): { closure: IrExpr; out: IrType & ({ kind: "generator" } | { kind: "promise" }) } {
-  const param = srcT === null ? undefined : fn.parameters[0];
+  const param = srcT === null ? undefined : fn.parameters.nodes[0];
   const symbol =
     param && ts.isIdentifier(param.name)
       ? lowerer.checker.getSymbolAtLocation(param.name)
@@ -2955,7 +2975,7 @@ function lowerStageFunction(
  * the wrong position, a single Readable or Writable (Duplex.from wraps
  * those), and functions, iterables or web streams have no lowering. */
 function lowerStreamCompose(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const duplex: IrType = { kind: "object", className: "%Duplex" };
   if (args.some((a) => ts.isSpreadElement(a))) {
     lowerer.noLowering("compose with spread arguments", call, "pass the streams directly");
@@ -3048,9 +3068,9 @@ function lowerOperatorCallback(
     );
   if (
     (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-    node.parameters.length > maxParams
+    node.parameters.nodes.length > maxParams
   ) {
-    optionsParam(node.parameters[maxParams]!);
+    optionsParam(node.parameters.nodes[maxParams]!);
   }
   const v = lowerer.lowerExpr(node);
   if (v.type.kind === "dyn") return v;
@@ -3135,7 +3155,7 @@ function lowerStreamOperator(
   member: string,
 ): IrExpr {
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const recv = lowerer.lowerExpr(access.expression);
   const readable: IrType = { kind: "object", className: "%Readable" };
   const opts = (i: number): IrExpr =>
@@ -3267,7 +3287,7 @@ function pipeEndOption(lowerer: Lowerer, options: ts.Expression | undefined, loc
       "{ end: <bool> } inline is the supported form",
     );
   }
-  for (const prop of options.properties) {
+  for (const prop of options.properties.nodes) {
     if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name) || prop.name.text !== "end") {
       lowerer.noLowering("a pipe option other than 'end'", prop);
     }
@@ -3292,7 +3312,7 @@ export function lowerStreamMethodCall(
   const sides = streamSidesOf(lowerer, info);
   if (!sides) return null;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const readableSide = sides === "r" || sides === "rw";
   const writableSide = sides === "w" || sides === "rw";
   const cls = info.def.name.slice(1);

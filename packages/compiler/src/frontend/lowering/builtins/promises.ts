@@ -37,12 +37,12 @@ export function lowerPromiseStaticCall(
   if (member === null) return null;
   const loc = locOf(call);
   if (member === "race") {
-    const argNode = call.arguments.length === 1 ? call.arguments[0]! : null;
+    const argNode = call.arguments.nodes.length === 1 ? call.arguments.nodes[0]! : null;
     if (
       !argNode ||
       !ts.isArrayLiteralExpression(argNode) ||
-      argNode.elements.some(ts.isSpreadElement) ||
-      argNode.elements.length === 0
+      argNode.elements.nodes.some(ts.isSpreadElement) ||
+      argNode.elements.nodes.length === 0
     ) {
       lowerer.noLowering(
         "Promise.race over this argument shape",
@@ -65,13 +65,16 @@ export function lowerPromiseStaticCall(
     const compatible = (inner: IrType): boolean => {
       if (typeEquals(inner, resultT.inner)) return true;
       if (!resultArms) return false;
+      // A Promise<void> entry fulfills with undefined, which the result
+      // holds when the checker folded `void` into its undefined arm.
+      if (inner.kind === "void") return resultArms.some((a) => a.kind === "undefinedT");
       if (inner.kind === "union") {
         const arms = lowerer.unions.get(inner.unionId)?.arms ?? [];
         return arms.every((a) => resultArms.some((b) => typeEquals(a, b)));
       }
       return resultArms.some((a) => typeEquals(a, inner));
     };
-    const entries = argNode.elements.map((el) => {
+    const entries = argNode.elements.nodes.map((el) => {
       const entry = lowerer.lowerExpr(el);
       if (entry.type.kind !== "promise") {
         lowerer.noLowering(
@@ -106,7 +109,7 @@ export function lowerPromiseStaticCall(
   // Heterogeneous ARRAY LITERALS land on the tuple overload
   // (Promise<[A, B]>) and fence here — one promise type is the bound.
   if (member === "all") {
-    const argNode = call.arguments.length === 1 ? call.arguments[0]! : null;
+    const argNode = call.arguments.nodes.length === 1 ? call.arguments.nodes[0]! : null;
     if (!argNode) {
       lowerer.noLowering(
         "Promise.all with this argument shape",
@@ -123,10 +126,10 @@ export function lowerPromiseStaticCall(
     // like the tuple; the elements are the same T either way).
     if (
       ts.isArrayLiteralExpression(argNode) &&
-      !argNode.elements.some(ts.isSpreadElement) &&
-      argNode.elements.length > 0
+      !argNode.elements.nodes.some(ts.isSpreadElement) &&
+      argNode.elements.nodes.length > 0
     ) {
-      const elems = argNode.elements.map((el) => lowerer.lowerExpr(el));
+      const elems = argNode.elements.nodes.map((el) => lowerer.lowerExpr(el));
       const first = elems[0]!.type;
       if (
         first.kind === "promise" &&
@@ -213,7 +216,7 @@ export function lowerPromiseStaticCall(
     return { kind: "intrinsic", name: "promise.all", args: [entries], type: resultT, loc };
   }
   if (member === "allSettled" || member === "any") {
-    const argNode = call.arguments.length === 1 ? call.arguments[0]! : null;
+    const argNode = call.arguments.nodes.length === 1 ? call.arguments.nodes[0]! : null;
     if (!argNode || ts.isSpreadElement(argNode)) {
       lowerer.noLowering(
         `Promise.${member} with this argument shape`,
@@ -224,8 +227,11 @@ export function lowerPromiseStaticCall(
     if (isJsSourceFile(call.getSourceFile())) {
       // JavaScript entries are checked-dynamic: any iterable, thenables
       // and plain values included, exactly like Promise.all.
-      if (ts.isArrayLiteralExpression(argNode) && !argNode.elements.some(ts.isSpreadElement)) {
-        const elems = argNode.elements.map((el) => lowerer.lowerExpr(el));
+      if (
+        ts.isArrayLiteralExpression(argNode) &&
+        !argNode.elements.nodes.some(ts.isSpreadElement)
+      ) {
+        const elems = argNode.elements.nodes.map((el) => lowerer.lowerExpr(el));
         if (elems.every((entry) => lowerer.dynConvertible(entry.type))) {
           const entries: IrExpr = {
             kind: "arrayLit",
@@ -258,7 +264,7 @@ export function lowerPromiseStaticCall(
   // (plain-value resolve, Error-pinned reject); the emitter assembles
   // the record from the newPromise machinery.
   if (member === "withResolvers") {
-    if (call.arguments.length !== 0) {
+    if (call.arguments.nodes.length !== 0) {
       lowerer.noLowering(`Promise.withResolvers with arguments`, call);
     }
     // The type mapper owns the record shape (its withResolvers
@@ -284,11 +290,11 @@ export function lowerPromiseStaticCall(
   // types. `Promise.try(f, ...args)` evaluates the arguments at the call
   // and passes them to f, which still runs synchronously.
   if (member === "try") {
-    const fNode = call.arguments[0];
-    const argNodes = call.arguments.slice(1);
-    if (fNode === undefined || call.arguments.some(ts.isSpreadElement)) {
+    const fNode = call.arguments.nodes[0];
+    const argNodes = call.arguments.nodes.slice(1);
+    if (fNode === undefined || call.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(
-        `Promise.try with ${call.arguments.length === 0 ? "no" : "spread"} arguments`,
+        `Promise.try with ${call.arguments.nodes.length === 0 ? "no" : "spread"} arguments`,
         call,
         "pass the callback and its arguments directly: Promise.try(f, a, b)",
       );
@@ -391,10 +397,13 @@ export function lowerPromiseStaticCall(
   // object would be ADOPTED in JS, not wrapped) and promise-armed
   // unions (wrap-or-identity depends on the runtime arm) fence.
   if (member === "resolve") {
-    if (call.arguments.length > 1 || call.arguments.some((a) => ts.isSpreadElement(a))) {
-      lowerer.noLowering(`Promise.resolve with ${call.arguments.length} arguments`, call);
+    if (
+      call.arguments.nodes.length > 1 ||
+      call.arguments.nodes.some((a) => ts.isSpreadElement(a))
+    ) {
+      lowerer.noLowering(`Promise.resolve with ${call.arguments.nodes.length} arguments`, call);
     }
-    const argNode = call.arguments[0];
+    const argNode = call.arguments.nodes[0];
     if (argNode !== undefined) {
       const argT = lowerer.typeOf(argNode);
       const argIr = lowerer.mapTypeOf(argT);
@@ -502,10 +511,10 @@ function typedPromiseEntries(
     entries = lowered;
   } else if (
     ts.isArrayLiteralExpression(argNode) &&
-    !argNode.elements.some(ts.isSpreadElement) &&
-    argNode.elements.length > 0
+    !argNode.elements.nodes.some(ts.isSpreadElement) &&
+    argNode.elements.nodes.length > 0
   ) {
-    const elems = argNode.elements.map((el) => lowerer.lowerExpr(el));
+    const elems = argNode.elements.nodes.map((el) => lowerer.lowerExpr(el));
     const first = elems[0]!.type;
     if (
       first.kind !== "promise" ||

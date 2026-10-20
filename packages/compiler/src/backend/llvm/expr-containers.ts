@@ -118,7 +118,7 @@ export function emitArrayValues(
   sharedBuffer?: string,
 ): string {
   const B = host.B;
-  if (acc === "ref") values.forEach((value) => host.moveTemp(value));
+  if (acc === "ref") values.forEach((value) => host.toHeap(value));
   if (values.length === 0) {
     host.declare("declare double @scr_arr_len(ptr)");
     const result = B.tmp();
@@ -219,7 +219,7 @@ function emitDiscarded(host: LlvmEmitterContext, e: IrExpr): void {
       B.startBlock(label);
       host.frames.push([]);
       emitDiscarded(host, arm);
-      host.releaseFrame(host.frames.pop()!);
+      host.releaseTemps(host.frames.pop()!);
       B.br(lj);
     }
     B.startBlock(lj);
@@ -235,7 +235,7 @@ function emitDiscarded(host: LlvmEmitterContext, e: IrExpr): void {
   const start = host.emitExpr(e.args[0]!);
   const count = e.args[1] ? host.emitExpr(e.args[1]).name : F64_INF;
   const values = items.map((item) => host.emitExpr(item));
-  if (acc === "ref") values.forEach((value) => host.moveTemp(value));
+  if (acc === "ref") values.forEach((value) => host.toHeap(value));
   let buffer = "null";
   if (values.length > 0) {
     buffer = B.tmp();
@@ -528,7 +528,7 @@ export function emitStableReceiver(
     if (b.kind !== "boxed") {
       if (b.kind === "global") host.checkGlobalTdz(receiver.localId);
       const value = host.B.tmp();
-      host.B.line(`${value} = load ptr, ptr ${b.slot}`);
+      host.B.line(`${value} = load ptr, ptr ${b.slot}${host.slotAlias(receiver.localId)}`);
       return { name: value, type: receiver.type };
     }
   }
@@ -1069,7 +1069,7 @@ export function emitMapNew(host: LlvmEmitterContext, e: IrExpr & { kind: "mapNew
   for (const pair of e.seed ?? []) {
     const k = emitBorrowedInput(host, pair.key);
     const v = host.emitExpr(pair.value);
-    if (vAcc === "ref") host.moveTemp(v); // the value MOVES in
+    if (vAcc === "ref") host.toHeap(v); // the value MOVES in
     host.mapSet(m, kAcc, vAcc, k.name, v.name);
   }
   return out;
@@ -1370,7 +1370,7 @@ export function emitMapLikeIntrinsic(
       const k = emitBorrowedInput(host, e.args[0]!);
       const v = host.emitExpr(e.args[1]!);
       const vAcc = elemAccess(receiverType.value);
-      if (vAcc === "ref") host.moveTemp(v);
+      if (vAcc === "ref") host.toHeap(v);
       const ordinary = (): void => host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
       if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
         const bits = B.tmp();

@@ -638,6 +638,7 @@ static _Thread_local ScrSaKeep *scr_sa_keep; /* while the worker's memory is kep
 static void scr_sa_keep_begin(unsigned i);
 static void scr_sa_keep_drained(ScrSaKeep *k, ScrSaBlock *b, unsigned c);
 static bool scr_sa_drain(void);
+static bool scr_sa_drain_some(bool one);
 #endif
 
 /* Moves every block other threads freed into this arena's free lists. */
@@ -672,8 +673,8 @@ static bool scr_sa_reserve(void) {
     if (claimed == UINT32_MAX) {
 #ifdef SCR_SA_TRIM
       /* Arenas held by discards that wait (see scr_sa_thread_park): this
-       * thread discards them and claims one. */
-      if (scr_sa_drain()) {
+       * thread discards one of them and claims it. */
+      if (scr_sa_drain_some(true)) {
         scr_sa_refused = false;
         claimed = atomic_load_explicit(&scr_sa_claimed, memory_order_relaxed);
         continue;
@@ -934,6 +935,19 @@ static void scr_sa_trim(void) {
  *   interrupts every running thread of the process to flush its TLB, and
  *   glibc's trim locks the arenas other threads allocate from, so discards
  *   wait for the last worker of a group, which hands them to one helper;
+ * - the helper waits a delay (scr_sa_discard_delay_ms: 1 s to start,
+ *   doubled each time workers start again soon after a discard) and stops if
+ *   a worker started meanwhile: a program that starts its next workers or
+ *   exits within that time does not return pages it would fault back in or
+ *   never touch again, and the last worker of the next group hands the
+ *   discards to a new helper; a thread that finds every arena claimed
+ *   discards one waiting arena and claims it;
+ * - once the event loop of the thread that is not a worker runs, the
+ *   helper then discards one arena at a time, and only while that loop
+ *   waits with nothing ready (scr_sa_loop_waiting): a program that does
+ *   its next work on that thread alone (a compiler rebuilding one file in
+ *   watch mode) would otherwise have it slowed by the discards. A loop that
+ *   does not wait gets them SCR_SA_DISCARD_DELAY_MAX_MS after the delay;
  * - the helper then returns the pages
  *   it carved (MADV_DONTNEED; the start of the first page, which it may
  *   share with older blocks, is cleared), frees the recorded system blocks,
@@ -1207,11 +1221,19 @@ void scr_sa_thread_shares(void) {
 /* Worker threads that started and have not parked. */
 static _Atomic(unsigned) scr_sa_workers_live;
 
+#ifdef SCR_SA_TRIM
+static void scr_sa_group_starting(void);
+#endif
+
 /* Library archives run on their embedder's threads and keep their memory. */
 static void scr_sa_worker_starting(void) {
 #ifndef SCR_LIB
   scr_sa_worker = true;
+#ifdef SCR_SA_TRIM
+  if (atomic_fetch_add_explicit(&scr_sa_workers_live, 1, memory_order_relaxed) == 0) scr_sa_group_starting();
+#else
   atomic_fetch_add_explicit(&scr_sa_workers_live, 1, memory_order_relaxed);
+#endif
 #endif
 }
 #define SCR_SA_WORKER_STARTING() scr_sa_worker_starting()
@@ -1276,11 +1298,13 @@ static void scr_sa_defer_discard(unsigned i, ScrSaKeep *k) {
   pthread_mutex_unlock(&scr_sa_pending_lock);
 }
 
-/* Runs the waiting discards on the calling thread, which ends with no arena;
- * returns whether there were any. */
-static bool scr_sa_drain(void) {
+/* Runs the waiting discards on the calling thread, which ends with no arena:
+ * all of them, or only the first one when `one` is set; returns whether
+ * there were any. */
+static bool scr_sa_drain_some(bool one) {
   bool any = false;
   for (;;) {
+    if (one && any) return true;
     pthread_mutex_lock(&scr_sa_pending_lock);
     uint32_t pending = scr_sa_pending;
     unsigned i = pending ? (unsigned)__builtin_ctz(pending) : 0;
@@ -1298,9 +1322,93 @@ static bool scr_sa_drain(void) {
   }
 }
 
+static bool scr_sa_drain(void) { return scr_sa_drain_some(false); }
+
+/* How long the trim helper waits after the last worker parks before it
+ * returns their memory: SCR_SA_DISCARD_DELAY_MS (1000 by default) to start.
+ * Each time workers start again within ten delays of a discard, the delay
+ * doubles, up to SCR_SA_DISCARD_DELAY_MAX_MS (10000 by default): a program
+ * that keeps starting workers (a compiler rebuilding in watch mode, a
+ * server) would fault the returned pages straight back in. Memory that
+ * stays idle for the grown delay still goes back. */
+static _Atomic(long) scr_sa_delay_grown_ms; /* 0 until a discard proved too early */
+static _Atomic(long) scr_sa_discarded_ms;   /* when the helper last discarded; 0: not since */
+
+static long scr_sa_env_ms(const char *name, long fallback) {
+  const char *value = getenv(name);
+  if (!value) return fallback;
+  long ms = strtol(value, NULL, 10);
+  return ms < 0 ? 0 : ms;
+}
+
+static long scr_sa_discard_delay_ms(void) {
+  long start = scr_sa_env_ms("SCR_SA_DISCARD_DELAY_MS", 1000);
+  long max = scr_sa_env_ms("SCR_SA_DISCARD_DELAY_MAX_MS", 10000);
+  long grown = atomic_load_explicit(&scr_sa_delay_grown_ms, memory_order_relaxed);
+  long delay = grown > start ? grown : start;
+  return max >= start && delay > max ? max : delay;
+}
+
+static long scr_sa_now_ms(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (long)now.tv_sec * 1000 + now.tv_nsec / 1000000 + 1;
+}
+
+/* The first worker of a group starts: a discard shortly before means the
+ * delay was too short for this program. */
+static void scr_sa_group_starting(void) {
+  long at = atomic_exchange_explicit(&scr_sa_discarded_ms, 0, memory_order_relaxed);
+  if (!at) return;
+  long delay = scr_sa_discard_delay_ms();
+  if (scr_sa_now_ms() - at >= 10 * (delay > 10 ? delay : 10)) return;
+  long max = scr_sa_env_ms("SCR_SA_DISCARD_DELAY_MAX_MS", 10000);
+  long grown = delay > 0 ? 2 * delay : 1;
+  if (grown > max) grown = max;
+  if (grown > atomic_load_explicit(&scr_sa_delay_grown_ms, memory_order_relaxed))
+    atomic_store_explicit(&scr_sa_delay_grown_ms, grown, memory_order_relaxed);
+}
+
+/* The event loop of the thread that is not a worker: an odd count while it
+ * waits with nothing ready, an even one while it runs, 0 until it first
+ * waits. Only that thread writes it. */
+static _Atomic(unsigned long) scr_sa_loop_turns;
+
+void scr_sa_loop_waiting(bool waiting) {
+  if (scr_sa_worker) return;
+  unsigned long turns = atomic_load_explicit(&scr_sa_loop_turns, memory_order_relaxed);
+  if ((bool)(turns & 1) != waiting) atomic_store_explicit(&scr_sa_loop_turns, turns + 1, memory_order_relaxed);
+}
+
+/* Waits out the delay first, and stops if a worker starts meanwhile: the
+ * discards then wait for the last worker of that group. A program that exits
+ * within the delay does not spend its last milliseconds returning pages, and
+ * one that starts its next workers within it does not return pages while
+ * they start. Once the event loop runs, each discard then waits until the
+ * loop has been in one wait for a step, or until the maximum delay has
+ * passed. */
 static void *scr_sa_drain_main(void *arg) {
   (void)arg;
-  scr_sa_drain();
+  long delay = scr_sa_discard_delay_ms(), step = delay > 200 ? 20 : 5;
+  for (long left = delay; left > 0; left -= step) {
+    struct timespec pause = {0, (left < step ? left : step) * 1000000L};
+    nanosleep(&pause, NULL);
+    if (atomic_load_explicit(&scr_sa_workers_live, memory_order_acquire) != 0) return NULL;
+  }
+  long max = scr_sa_env_ms("SCR_SA_DISCARD_DELAY_MAX_MS", 10000);
+  unsigned long seen = 0;
+  for (long waited = 0; atomic_load_explicit(&scr_sa_workers_live, memory_order_acquire) == 0;) {
+    unsigned long turns = atomic_load_explicit(&scr_sa_loop_turns, memory_order_relaxed);
+    if (turns == 0 || ((turns & 1) && turns == seen) || waited >= max) {
+      if (!scr_sa_drain_some(true)) break;
+      atomic_store_explicit(&scr_sa_discarded_ms, scr_sa_now_ms(), memory_order_relaxed);
+      continue;
+    }
+    seen = turns;
+    struct timespec pause = {0, step * 1000000L};
+    nanosleep(&pause, NULL);
+    waited += step;
+  }
   return NULL;
 }
 
@@ -1331,6 +1439,7 @@ void scr_sa_wait_trims(void) {
 #else
 void scr_sa_wait_trims(void) {}
 void scr_sa_thread_shares(void) {}
+void scr_sa_loop_waiting(bool waiting) { (void)waiting; }
 #endif
 
 static void scr_sa_park_arena(void);
@@ -1534,6 +1643,7 @@ void *scr_mem_realloc(void *p, size_t n) { return realloc(p, n); }
 void scr_sa_thread_park(void) {}
 void scr_sa_wait_trims(void) {}
 void scr_sa_thread_shares(void) {}
+void scr_sa_loop_waiting(bool waiting) { (void)waiting; }
 void scr_sa_free_foreign(void *p) { free(p); }
 #endif
 #endif

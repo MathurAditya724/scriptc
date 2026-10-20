@@ -297,7 +297,7 @@ test("--explain-dynamic attributes each refusal to the unit the dynamic tier wou
     requests.map((r) => [r.code, r.seed, r.scope, r.unit.kind, r.unit.name, r.enclosing.name]),
   ).toEqual([
     ["SC1090", "reflection", "reached", "class", "Point", "<top level>"],
-    ["SC2012", "operation", "reached", "binding", "n", "precise"],
+    ["SC2020", "operation", "reached", "binding", "n", "precise"],
   ]);
   expect(tiers.units.map((u) => [u.kind, u.name, u.requests, u.sites])).toEqual([
     ["class", "Point", 1, 0],
@@ -423,7 +423,7 @@ test("a rejected class reached only through a receiver probe reports its own dia
   const { coverage } = analyze(join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts"));
   const messages = coverage.diagnostics.map((d) => d.message);
   expect(
-    messages.filter((m) => m.startsWith("'WeakMap<object, string>'-typed class fields")),
+    messages.filter((m) => m.startsWith("'MapIterator<string>'-typed class fields")),
   ).toHaveLength(1);
   expect(messages.some((m) => m.startsWith("constructing through a class value"))).toBe(true);
   expect(coverage.unreached?.diagnostics ?? []).toEqual([]);

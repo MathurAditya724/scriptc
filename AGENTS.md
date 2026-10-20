@@ -46,6 +46,8 @@ SCRIPTC_TEST_WORKERS=4 SCRIPTC_SAN=1 pnpm test  # sanitized lane
 
 Corpus programs are differential tests against Node: every program runs under Node and as a compiled native binary, and stdout, stderr, and exit codes must match byte-for-byte. A new feature lands with corpus programs that pin its behavior both ways.
 
+Record a new or remeasured program's CI cost (used to balance the test shards) in `tests/harness/corpus-costs/<program>.json`, not in `tests/harness/corpus-costs.json`; see the README there.
+
 Before opening a PR that adds or changes corpus, diagnostic, or frontend fixtures, run `pnpm test:ts7 --baselines-only`. This fast completeness check uses the same fixture discovery as the parity suite; it does not type-check or replace behavioral parity. Generate missing preflight/order baselines, review their diagnostics and module order, and run the affected `order-parity.test.ts` batches before pushing. Keep existing baseline entries unchanged unless the corresponding behavior intentionally changes. The full `pnpm test:ts7` command also checks completeness before starting its sweep.
 
 A change that must not cost good code anything, such as a compatibility fix that replaces a refusal, proves it with the zero-cost gate. The gate compiles the benchmark workloads, the self-hosted compiler, and the TypeScript corpus with two built checkouts. It requires byte-identical IR, LLVM, and release executables, and compile time within tolerance. `--allow=<regex>` names the change's pattern signature: programs whose sources match may differ, and the PR lists them. Any other difference fails the gate, which names the first differing function. The gate also enforces the two-tier runtime separation: no executable may gain symbols from `DYNAMIC_TIER_PREFIXES` in `scripts/zero-cost-compare.mjs`, and fully typed benchmarks may link none; extend that list as dynamic-tier units land. `--quick` checks only the benchmarks; `--cachegrind` adds per-function instruction counts for executables that differ. Run it in a Sandbox with both checkouts prepared:
@@ -140,7 +142,6 @@ Never hand-edit these files:
 - `internal/compatibility/generated/node-v24-internal.json`
 - `internal/compatibility/generated/node-v24-backlog.json`
 - `docs/src/generated/node-v24-compatibility.json`
-- `docs/src/generated/node-v24-compatibility-meta.json`
 
 Change compiler decision sources or the implementation-owned compatibility manifests, then regenerate. Use `pnpm manifest` when compiler decision tables change and `pnpm node-compat` whenever the Node pin, compatibility manifests, compiler surface manifest, changes.
 
@@ -195,6 +196,7 @@ The docs site is a standalone pnpm workspace under `docs/`. It uses Next.js App 
 - A labeled bullet (`- **Crypto:** ...`) is `docs/content/limitations/<section>/<label>.mdx`, for example `builtin-apis/crypto.mdx`. Edit that file to change the bullet.
 - The other text of a section (paragraphs, code blocks, unlabeled lists) is `docs/content/limitations/<section>.mdx`; text before the first heading is `introduction.mdx`.
 - `<section>` and `<label>` are the heading and label text in lowercase with each run of other characters replaced by `-`.
+- Write one sentence per line; a bullet's continuation lines are indented two spaces. Markdown joins the lines, and edits to different sentences don't conflict.
 - To add a bullet, add its file and an include line at its position in `limitations.mdx`, with a blank line on each side. Consecutive bullet includes render as one list.
 - To add a section, add the heading to `limitations.mdx` and include the section's partial below it.
 

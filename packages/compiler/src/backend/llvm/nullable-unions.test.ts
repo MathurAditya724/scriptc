@@ -16,7 +16,7 @@ const c: IrType = { kind: "record", shapeId: "c" };
 
 function module(unions: IrUnionDef[], extra: Partial<IrModule> = {}): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: ["a", "b", "c"].map((id) => ({ id, fields: [{ name: id, type: F64 }] })),

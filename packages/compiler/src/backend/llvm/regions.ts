@@ -36,7 +36,7 @@ import {
   mangleRecordStruct,
 } from "../mangle.js";
 import { threadHotAddressLines } from "./alloc.js";
-import type { LlClassMeta } from "./classes.js";
+import { classFieldBase, type LlClassMeta } from "./classes.js";
 import { llvmCommentText } from "./common.js";
 import type { NullableRefFields } from "./nullable-fields.js";
 import { FN_ATTRS, rcMembers, releaseSym, vAdapters, type ShapeHost } from "./shapes.js";
@@ -84,7 +84,7 @@ export class LifetimeRegions {
 
   /** The reference-holding fields; inline scalar unions own nothing. */
   private classFields(def: IrClassDef, meta: LlClassMeta): Field[] {
-    const base = meta.hierarchy ? 2 : 1;
+    const base = classFieldBase(meta);
     return def.fields.flatMap((f, i) =>
       this.host.inlineUnions.classField(def.name, f.name)
         ? []
@@ -120,6 +120,7 @@ export class LifetimeRegions {
       // Closures capture anything, and dyn values box class instances.
       case "func":
       case "dyn":
+      case "jsval":
         return true;
       default:
         return false;

@@ -181,72 +181,33 @@ void scr_assert_eq_sym(ScrSym *a, ScrSym *b, bool negated, bool deep,
   scr_str_release(ib);
 }
 
-/* Symbol-keyed globals share the symbol unit's link gate. The always-linked
- * JSON unit must not depend on optional symbol retain/release functions. */
-typedef struct ScrGlobalSymbolProperty {
-  ScrSym *key;
-  ScrDyn *value;
-  struct ScrGlobalSymbolProperty *next;
-} ScrGlobalSymbolProperty;
-
-static SCR_TL ScrGlobalSymbolProperty *scr_global_symbols = NULL;
-static SCR_TL bool scr_global_symbols_cleanup_registered = false;
-
-static void scr_global_symbols_cleanup(void) {
-  while (scr_global_symbols) {
-    ScrGlobalSymbolProperty *entry = scr_global_symbols;
-    scr_global_symbols = entry->next;
-    scr_sym_release(entry->key);
-    scr_dyn_release(entry->value);
-    free(entry);
-  }
-}
-
+/* Direct `globalThis[symbol]` accesses use the symbol-keyed properties of
+ * the global object's box (scr_global_object), the storage every other
+ * spelling of the global object reaches, so all of them see one property. */
 ScrDyn *scr_dyn_global_symbol_get(ScrSym *key) {
-  for (ScrGlobalSymbolProperty *entry = scr_global_symbols; entry; entry = entry->next) {
-    if (entry->key == key) return scr_dyn_retain(entry->value);
-  }
-  return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *k = scr_dyn_new_symbol(key);
+  ScrDyn *value = scr_dyn_symbol_key_get(scr_global_object(), k, false);
+  scr_dyn_release(k);
+  return value;
 }
 
 void scr_dyn_global_symbol_set(ScrSym *key, ScrDyn *value) {
-  for (ScrGlobalSymbolProperty *entry = scr_global_symbols; entry; entry = entry->next) {
-    if (entry->key != key) continue;
-    ScrDyn *previous = entry->value;
-    entry->value = scr_dyn_retain(value);
-    scr_dyn_release(previous);
-    return;
-  }
-  if (!scr_global_symbols_cleanup_registered) {
-    scr_atexit(scr_global_symbols_cleanup);
-    scr_global_symbols_cleanup_registered = true;
-  }
-  ScrGlobalSymbolProperty *entry = malloc(sizeof *entry);
-  if (!entry) scr_trap("scriptc: out of memory\n");
-  entry->key = scr_sym_retain(key);
-  entry->value = scr_dyn_retain(value);
-  entry->next = scr_global_symbols;
-  scr_global_symbols = entry;
+  ScrDyn *k = scr_dyn_new_symbol(key);
+  scr_dyn_symbol_key_set(scr_global_object(), k, value);
+  scr_dyn_release(k);
 }
 
 bool scr_dyn_global_symbol_has(ScrSym *key) {
-  for (ScrGlobalSymbolProperty *entry = scr_global_symbols; entry; entry = entry->next) {
-    if (entry->key == key) return true;
-  }
-  return false;
+  ScrDyn *k = scr_dyn_new_symbol(key);
+  bool present = scr_dyn_has_own_computed(scr_global_object(), k);
+  scr_dyn_release(k);
+  return present;
 }
 
 void scr_dyn_global_symbol_delete(ScrSym *key) {
-  ScrGlobalSymbolProperty **slot = &scr_global_symbols;
-  while (*slot) {
-    ScrGlobalSymbolProperty *entry = *slot;
-    if (entry->key != key) { slot = &entry->next; continue; }
-    *slot = entry->next;
-    scr_sym_release(entry->key);
-    scr_dyn_release(entry->value);
-    free(entry);
-    return;
-  }
+  ScrDyn *k = scr_dyn_new_symbol(key);
+  scr_dyn_key_delete_computed(scr_global_object(), k, false);
+  scr_dyn_release(k);
 }
 
 /* ── fs.Dirent as a dynamic value ────────────────────────────────────

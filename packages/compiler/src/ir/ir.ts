@@ -337,6 +337,17 @@ export type IrType =
    * <type>' first" hint — or, in JavaScript sources, met with per-site
    * checked lowerings (SEMANTICS.md 115-117). */
   | { kind: "dyn" }
+  /** A dynamic-tier value (two-tier design §5.1, stage S3): one 64-bit
+   * NaN-boxed word. Numbers, booleans, undefined and null are immediates
+   * (no allocation); strings and BigInts are the static tier's own objects
+   * under a pointer tag; every other value is a `dyn` cell under the cell
+   * tag. Only dynamic-tier functions operate on it (ir/tiers.ts, I1), and
+   * only through the `js.*` builtins, locals and moves: the jsval pass
+   * (ir/jsval.ts) introduces it after lowering, never the frontend. Static
+   * functions see it only as the operand or result of a boundary
+   * conversion. Refcounted: retain/release skip immediates. 32-bit targets
+   * represent it as a boxed `dyn` cell. */
+  | { kind: "jsval" }
   /** A catch binding or its closure capture (never parameters, returns,
    * fields, arms or elements). The one global form is a module's recorded
    * evaluation error, written only from that module's catch binding and
@@ -437,6 +448,7 @@ const POINTER_KIND_LIST = [
   "record",
   "union",
   "dyn",
+  "jsval",
   "caught",
   "promise",
   "generator",
@@ -490,6 +502,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   record: "",
   union: "scr_union",
   dyn: "scr_dyn",
+  jsval: "scr_js",
   caught: "scr_caught",
   promise: "scr_promise",
   generator: "scr_gen",
@@ -595,6 +608,7 @@ export const CHILDWRITER_T: IrType = { kind: "childWriter" };
 export const PROCSTREAM_T: IrType = { kind: "procStream" };
 export const VOID: IrType = { kind: "void" };
 export const DYN: IrType = { kind: "dyn" };
+export const JSVAL: IrType = { kind: "jsval" };
 export const CAUGHT: IrType = { kind: "caught" };
 export const UNDEFINED_T: IrType = { kind: "undefinedT" };
 export const NULL_T: IrType = { kind: "nullT" };
@@ -840,6 +854,7 @@ export function typeKey(t: IrType): string {
     case "searchParams":
     case "symbol":
     case "dyn":
+    case "jsval":
     case "caught":
     case "void":
       return t.kind;
@@ -877,6 +892,33 @@ export function typeKey(t: IrType): string {
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** The type a CALL SITE (or function value) receives from a module
+ * function: an async body's returnType is the promise's INNER type, so
+ * calls and closures over it see Promise<T>; a generator body's is the
+ * TReturn channel, so call sites see the generator type. The one place
+ * the body/call-site split is spelled out, for the validator and lowering. */
+export function callSiteReturnType(fn: IrFunction): IrType {
+  if (fn.async && fn.generator !== undefined) {
+    return {
+      kind: "generator",
+      async: true,
+      yieldT: fn.generator.yieldT,
+      retT: fn.returnType,
+      nextT: fn.generator.nextT,
+    };
+  }
+  if (fn.async) return { kind: "promise", inner: fn.returnType };
+  if (fn.generator !== undefined) {
+    return {
+      kind: "generator",
+      yieldT: fn.generator.yieldT,
+      retT: fn.returnType,
+      nextT: fn.generator.nextT,
+    };
+  }
+  return fn.returnType;
 }
 
 export function typeEquals(a: IrType, b: IrType): boolean {
@@ -940,7 +982,7 @@ export function isRefCounted(t: IrType): boolean {
 
 export interface IrModule {
   /** Bumped on any breaking IR change; serialize.ts refuses mismatches. */
-  irVersion: 16;
+  irVersion: 17;
   sourceFile: string;
   functions: IrFunction[];
   /** Class shapes. Constructors and methods are ordinary module functions
@@ -977,6 +1019,10 @@ export interface IrModule {
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
   lifetimeRegions?: true;
+  /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
+   * each one's hierarchy carries a slot word (the slots.* intrinsics;
+   * backend/llvm/thread-slots.ts). */
+  threadSlotKeys?: string[];
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
@@ -1481,6 +1527,27 @@ export const RUNTIME_ERROR_CLASSES: ReadonlyMap<
  * owns listener closures, whatever the subclass fields say. */
 export const RUNTIME_EMITTER_CLASS = "%EventEmitter";
 
+/** The function that construction through a class value calls, and the
+ * index of its first argument. A program class constructs through
+ * `%C.constructor(this, ...)` after the thunk allocates; a runtime-provided
+ * class (EventEmitter, the stream and error classes) through the
+ * frontend's `%C.construct(...)`, which allocates through the runtime and
+ * returns the new instance. */
+export function classValueConstructor(def: { name: string; runtime?: true }): {
+  fn: string;
+  firstArg: number;
+} {
+  return def.runtime
+    ? { fn: `%${def.name}.construct`, firstArg: 0 }
+    : { fn: `%${def.name}.constructor`, firstArg: 1 };
+}
+
+/** The JavaScript `.name` of a class: its jsName, or the runtime-provided
+ * class's own name (`%TypeError` is TypeError). */
+export function classJsName(def: { name: string; runtime?: true; jsName?: string }): string {
+  return def.jsName ?? (def.runtime ? def.name.replace(/^%/, "") : "");
+}
+
 /** The runtime-provided node:stream classes (ScrStream / scr_stream_*,
  * scr_stream.c — link-gated by moduleUsesStream). They root at the
  * emitter class (base chains below), so the emitter method surface and
@@ -1699,6 +1766,15 @@ export interface IrFunction {
      * iterator helper's source): `.return()` before the first `.next()`
      * closes it. */
     closesSource?: true;
+    /** The @@toStringTag the object prints with (util.inspect,
+     * Object.prototype.toString) when it is not a generator object:
+     * "Iterator Helper", "Array Iterator", "String Iterator". A tag that
+     * starts with '!' marks a generator standing in for an object of
+     * another class, which those refuse to print. */
+    tag?: string;
+    /** The first parameter is a generator this one adapts: it prints with
+     * that generator's tag. */
+    inheritsTag?: true;
   };
   /** Source function name for native error stack frames. */
   sourceName?: string;
@@ -1874,8 +1950,23 @@ export type IrStmt =
   | { kind: "return"; value: IrExpr | null; awaited?: true; loc: SrcLoc }
   /** Field write `obj.f = v` — statement-only, like `assign`/`arraySet`.
    * Evaluation order: obj, then value. The old value is released; ownership
-   * of a refcounted new value MOVES into the object. */
-  | { kind: "fieldSet"; obj: IrExpr; className: string; field: string; value: IrExpr; loc: SrcLoc }
+   * of a refcounted new value MOVES into the object. `sloppy` marks a write
+   * in sloppy-mode code, which skips a read-only field instead of throwing.
+   * `define` marks a class field initializer, which defines the property
+   * (a non-extensible instance rejects it). `attributesChecked` marks a
+   * write that already honors the instance's property attributes
+   * (CLASS_ATTRIBUTES). */
+  | {
+      kind: "fieldSet";
+      obj: IrExpr;
+      className: string;
+      field: string;
+      value: IrExpr;
+      sloppy?: true;
+      define?: true;
+      attributesChecked?: true;
+      loc: SrcLoc;
+    }
   /** Record field write `r.f = v` — mirrors `fieldSet` exactly (evaluation
    * order obj then value; old value released; refcounted new value moved
    * in), with a shape id in place of a class name. */
@@ -2418,13 +2509,21 @@ export type IrRegexIntrinsicMethod =
    * unobservable across the lowered surface (strings are immutable; the
    * spec clones the regex at the call, so lastIndex games can't reach the
    * drain either). Non-global regexes THROW Node's exact TypeError
-   * (catchable — replaceAll's stance). */
+   * (catchable — replaceAll's stance). Each row carries its index, input
+   * and groups properties. */
   | "matchAll"
+  /** matchAll whose rows are read only through their elements
+   * (matchAllRowsReadByElements): the rows carry no index, input or
+   * groups properties. Same result and throw contract as matchAll. */
+  | "matchAllCaptures"
   /** matchAll's companion-index form (the for-of-over-matchAll desugar):
    * args[1] is a number[] the drain ALSO fills with each match's UTF-16
    * start index — the row's `.index`, always present (every drained row
    * matched). Same result and throw contract as matchAll. */
   | "matchAllInto"
+  /** matchAllInto whose rows are read only through their elements and the
+   * companion index: the rows carry no index, input or groups properties. */
+  | "matchAllCapturesInto"
   /** `s.search(re)` — the first match's UTF-16 index, or -1. Symbol.search
    * neither reads nor writes lastIndex (a fresh exec from position 0), so
    * no g/y fence applies: /g is irrelevant and /y anchors at 0 — exactly
@@ -2540,18 +2639,8 @@ export type IrExpr =
   | { kind: "logical"; op: "&&" | "||"; left: IrExpr; right: IrExpr; type: IrType; loc: SrcLoc }
   | { kind: "strConcat"; left: IrExpr; right: IrExpr; type: IrType; loc: SrcLoc }
   | { kind: "strEq"; negated: boolean; left: IrExpr; right: IrExpr; type: IrType; loc: SrcLoc }
-  /** String ordering. Ordinary source comparisons omit `utf16` and retain
-   * scriptc's documented code-point order; the default Array sort comparator
-   * sets it to request ECMAScript's UTF-16 code-unit order. */
-  | {
-      kind: "strCmp";
-      op: IrStrCmpOp;
-      left: IrExpr;
-      right: IrExpr;
-      utf16?: boolean;
-      type: IrType;
-      loc: SrcLoc;
-    }
+  /** String ordering in ECMAScript's UTF-16 code-unit order. */
+  | { kind: "strCmp"; op: IrStrCmpOp; left: IrExpr; right: IrExpr; type: IrType; loc: SrcLoc }
   /** f64|bool → string, JS-exact (Number::toString / "true"/"false").
    * Union operands dispatch through the per-union ToString helper (arms
    * fenced to unit/string/f64/bool by the frontend); a CAUGHT operand is
@@ -3632,7 +3721,19 @@ export type IrExpr =
         | "itable.find"
         | "itable.insert"
         | "itable.value"
-        | "itable.size";
+        | "itable.size"
+        /* ThreadSlots (@scriptc/experimental; scr_slots.c). Every one takes
+         * the family name (a string literal), the family's %ThreadSlots
+         * value (read for its effects only) and the key, a class instance
+         * whose hierarchy is in IrModule.threadSlotKeys:
+         * slots.get → V | undefined, a nullable union, owned (+1);
+         * slots.has → bool; slots.delete → bool, releasing the value;
+         * slots.set (…, V value) → void, or the %ThreadSlots value when the
+         * result is used. Nothing throws. */
+        | "slots.get"
+        | "slots.has"
+        | "slots.set"
+        | "slots.delete";
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;
@@ -3823,6 +3924,9 @@ function isJsonSafeAt(
       const shape = getRecord(t.shapeId);
       if (!shape) return false;
       if (recordTextCodecClass(shape) !== null) return false;
+      // Accessor slots are not function-valued properties: Node's
+      // JSON.stringify invokes the getter (see accessorSlotProp).
+      if (shapeHasAccessorSlots(shape)) return false;
       // The recursive knot: answer true and let the rest of the graph
       // decide (any unsafe constituent ends the traversal immediately).
       if (visiting.has(t.shapeId)) return true;
@@ -3913,6 +4017,7 @@ function isJsonSafeAt(
     // diagnostic.
     case "symbol":
     case "caught":
+    case "jsval":
     case "promise":
     case "generator":
     case "moduleNs":
@@ -4005,6 +4110,27 @@ export function isClassOwnEnumerableFieldName(name: string): boolean {
 
 /** Compiler-owned storage for properties added through untyped references. */
 export const DYN_CLASS_PROPERTIES = "%dynProperties";
+
+/** Compiler-owned integrity state of a class instance whose hierarchy is
+ * passed to Object.freeze, Object.seal, Object.preventExtensions or
+ * Object.defineProperty: an f64 holding CLASS_NOT_EXTENSIBLE, CLASS_SEALED
+ * and CLASS_FROZEN bits. Other hierarchies have no such field. */
+export const CLASS_ATTRIBUTES = "%attributes";
+export const CLASS_NOT_EXTENSIBLE = 1;
+export const CLASS_SEALED = 2;
+export const CLASS_FROZEN = 4;
+
+/** Compiler-owned attributes of one declared field that Object.defineProperty
+ * changes: an f64 holding FIELD_NOT_WRITABLE, FIELD_NOT_ENUMERABLE and
+ * FIELD_NOT_CONFIGURABLE bits (zero is an ordinary data property). */
+export const CLASS_FIELD_ATTRIBUTES_PREFIX = "%attr:";
+export const FIELD_NOT_WRITABLE = 1;
+export const FIELD_NOT_ENUMERABLE = 2;
+export const FIELD_NOT_CONFIGURABLE = 4;
+
+export function classFieldAttributesName(field: string): string {
+  return CLASS_FIELD_ATTRIBUTES_PREFIX + field;
+}
 
 /** A class capsule can always preserve its exact native identity. Its
  * optional property view additionally needs converters in both directions;
@@ -4159,6 +4285,9 @@ function canBoxDynCompositeAt(
       const shape = getRecord(t.shapeId);
       if (!shape) return false;
       if (recordTextCodecClass(shape) !== null) return false;
+      // Accessor slots hold the getter and setter closures, not property
+      // values (see accessorSlotProp).
+      if (shapeHasAccessorSlots(shape)) return false;
       // Recursive shapes answer coinductively, like isJsonSafeType.
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);

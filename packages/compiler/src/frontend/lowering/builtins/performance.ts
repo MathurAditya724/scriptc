@@ -83,7 +83,7 @@ export function lowerPerfHooksCall(
   if (access.questionDotToken) return null;
   const loc = locOf(expr);
   if (access.name.text === "now" && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
-    if (expr.arguments.length !== 0) {
+    if (expr.arguments.nodes.length !== 0) {
       lowerer.noLowering(
         "performance.now with arguments",
         expr,
@@ -99,7 +99,10 @@ export function lowerPerfHooksCall(
     access.expression.name.text === "now" &&
     isPerfHooksPerformanceExpr(lowerer, access.expression.expression)
   ) {
-    if (expr.arguments.length !== 1 || !isPerfHooksPerformanceExpr(lowerer, expr.arguments[0]!)) {
+    if (
+      expr.arguments.nodes.length !== 1 ||
+      !isPerfHooksPerformanceExpr(lowerer, expr.arguments.nodes[0]!)
+    ) {
       lowerer.noLowering(
         "this performance.now.bind form",
         expr,
@@ -118,7 +121,7 @@ export function lowerPerfHooksCall(
     access.name.text === "toJSON" &&
     isPerfEntryType(lowerer, lowerer.mapTypeOf(lowerer.typeOf(access.expression)))
   ) {
-    if (expr.arguments.length !== 0) {
+    if (expr.arguments.nodes.length !== 0) {
       lowerer.noLowering("PerformanceEntry toJSON with arguments", expr);
     }
     const entry = lowerer.lowerExpr(access.expression);
@@ -241,10 +244,10 @@ function perfEntryRecord(
  * protocol), and a non-iterable spread throws V8's TypeError, so the
  * runtime always receives an array. */
 function lowerPerfArguments(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (!call.arguments.some(ts.isSpreadElement)) {
+  if (!call.arguments.nodes.some(ts.isSpreadElement)) {
     return {
       kind: "dynArrLit",
-      elems: call.arguments.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+      elems: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
       type: DYN,
       loc,
     };
@@ -259,7 +262,7 @@ function lowerPerfArguments(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
       loc,
     },
   ];
-  for (const arg of call.arguments) {
+  for (const arg of call.arguments.nodes) {
     if (!ts.isSpreadElement(arg)) {
       const value = lowerer.lowerExprExpecting(arg, DYN);
       stmts.push({

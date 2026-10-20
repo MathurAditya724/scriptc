@@ -32,10 +32,11 @@ import {
   compareArtifact,
   compareCounts,
   compareExecutables,
+  DYNAMIC_WORKLOADS,
+  definedFunctionNames,
   dynamicTierSymbols,
   median,
   nmOutput,
-  parseNm,
   programVerdict,
   timeRatio,
 } from "./zero-cost-compare.mjs";
@@ -96,7 +97,7 @@ that straddles it is reported as inconclusive.
 Dynamic-tier symbols (two-tier invariant I3): no executable may gain
 symbols under DYNAMIC_TIER_PREFIXES (scripts/zero-cost-compare.mjs) unless
 it matches --allow, and fully typed bench workloads (all but
-DYNAMIC_WORKLOADS in this script) may define none.
+DYNAMIC_WORKLOADS in scripts/zero-cost-compare.mjs) may define none.
 
 --cachegrind (Linux, valgrind on PATH) runs differing executables under
 cachegrind (bench workloads with their arguments, corpus programs without)
@@ -307,29 +308,7 @@ function nm(binary) {
 }
 
 /** Names of the functions an executable defines. */
-const definedFunctions = (binary) =>
-  parseNm(nm(binary))
-    .filter((s) => /^[tTwW]$/.test(s.type))
-    .map((s) => s.name);
-
-/* Bench workloads whose release binaries link dynamic-tier symbols on
- * b14377864 (DYNAMIC_TIER_PREFIXES in zero-cost-compare.mjs): JSON.parse
- * trees, worker messages, regex exec metadata (two-tier §3.3 L5), and a
- * shared scr_dyn_call/scr_dyn_define_property core not yet traced to its
- * typed root. Every other bench workload is fully typed and must link none.
- * Remove a workload here when a leak fix makes its binary clean. */
-const DYNAMIC_WORKLOADS = new Set([
-  "bench/json-records",
-  "bench/cli-config",
-  "bench/http-api",
-  "bench/validate-errors",
-  "bench/regex-logs",
-  "bench/atomics-contended",
-  "bench/intern-table",
-  "bench/typed-array-scan-workers",
-  "bench/log-summary",
-  "bench/inventory-report",
-]);
+const definedFunctions = (binary) => definedFunctionNames(nm(binary));
 
 /** The I3 symbol check. Every executable may not gain dynamic-tier symbols
  * over the baseline (unless the program matches --allow); a fully typed

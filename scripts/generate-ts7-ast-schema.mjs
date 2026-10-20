@@ -277,12 +277,12 @@ const getters = names
     const match = declarations.match(new RegExp(`get ${name}\\(\\): ([^;]+);`));
     if (!match) throw new Error(`Missing AST child declaration: ${name}`);
     const type = match[1]
-      .replaceAll("RemoteNodeList", "readonly AstNode[]")
+      .replaceAll("RemoteNodeList", "AstNodeList")
       .replaceAll("RemoteNode", "AstNode");
     const method =
-      type.includes("AstNode |") && type.includes("AstNode[]")
+      type.includes("AstNode |") && type.includes("AstNodeList")
         ? "child"
-        : type.includes("AstNode[]")
+        : type.includes("AstNodeList")
           ? "childList"
           : "childNode";
     return `  get ${name}(): ${type} {\n    return this.${method}(${JSON.stringify(name)});\n  }`;

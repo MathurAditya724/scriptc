@@ -627,7 +627,7 @@ static void *small_worker(void *arg) {
 
 /* Discards wait while another worker runs, and the last worker to park
  * starts them. When every arena is held by a discard that waits, a worker
- * that needs one runs them itself. */
+ * that needs one discards one of them and claims it. */
 static void check_deferred_discard(void) {
   size_t page = (size_t)sysconf(_SC_PAGESIZE);
   atomic_store(&discard_step, 0);
@@ -654,6 +654,135 @@ static void check_deferred_discard(void) {
   scr_sa_wait_trims();
   assert(resident_pages(first, discard_hi) < total / 2);
   discard_in_old_arena = true;
+}
+
+/* A plain thread that holds an arena until discard_step reaches 3. */
+static void *holding_thread(void *arg) {
+  (void)arg;
+  void *p = scr_mem_alloc(DISCARD_SIZE);
+  assert(p && owned(p));
+  atomic_store(&discard_step, 1);
+  wait_step(3);
+  scr_mem_free(p);
+  scr_sa_thread_park();
+  return NULL;
+}
+
+/* The helper waits SCR_SA_DISCARD_DELAY_MS before it returns the pages, and
+ * stops if a worker starts meanwhile; the last worker of that group starts
+ * the discards again. A plain thread holds the arena whose slice the earlier
+ * checks filled, so the worker carves a slice of its own. */
+static void check_discard_delay(void) {
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  setenv("SCR_SA_DISCARD_DELAY_MS", "300", 1);
+  atomic_store(&discard_step, 0);
+  pthread_t plain;
+  assert(pthread_create(&plain, NULL, holding_thread, NULL) == 0);
+  wait_step(1);
+  discard_shares = false;
+  discard_in_old_arena = false;
+  pthread_t t;
+  assert(pthread_create(&t, NULL, discard_worker, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+  atomic_store(&discard_step, 0);
+  pthread_t holder;
+  assert(pthread_create(&holder, NULL, holding_worker, NULL) == 0);
+  wait_step(1);
+  /* Past the delay: the helper stopped when the holder started. */
+  struct timespec pause = {0, 600000000L};
+  nanosleep(&pause, NULL);
+  uintptr_t first = (discard_lo + page - 1) & ~(uintptr_t)(page - 1);
+  size_t total = (discard_hi - first) / page;
+  assert(resident_pages(first, discard_hi) > total / 2);
+  for (size_t i = 0; i < DISCARD_BLOCKS; i += 4099) verify(discard_blocks[i], block_size, (unsigned char)i);
+  setenv("SCR_SA_DISCARD_DELAY_MS", "0", 1);
+  atomic_store(&discard_step, 3);
+  assert(pthread_join(holder, NULL) == 0);
+  assert(pthread_join(plain, NULL) == 0);
+  scr_sa_wait_trims();
+  setenv("SCR_SA_DISCARD_DELAY_MS", "100", 1);
+  assert(resident_pages(first, discard_hi) < total / 2);
+  discard_in_old_arena = true;
+}
+
+/* A discard that workers follow within ten delays was too early: the next
+ * delay is twice as long, and memory idle for that long still goes back. */
+static void *plain_discard_worker(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  allocate_discardable();
+  scr_sa_thread_park();
+  return NULL;
+}
+
+static void check_discard_delay_grows(void) {
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  setenv("SCR_SA_DISCARD_DELAY_MS", "100", 1);
+  setenv("SCR_SA_DISCARD_DELAY_MAX_MS", "10000", 1);
+  discard_blocks = malloc(DISCARD_BLOCKS * sizeof *discard_blocks);
+  assert(discard_blocks);
+  /* A plain thread holds the arena whose slice the earlier checks filled. */
+  atomic_store(&discard_step, 0);
+  pthread_t plain;
+  assert(pthread_create(&plain, NULL, holding_thread, NULL) == 0);
+  wait_step(1);
+  run(plain_discard_worker); /* returned after the delay */
+  pthread_t t;
+  assert(pthread_create(&t, NULL, plain_discard_worker, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+  uintptr_t first = (discard_lo + page - 1) & ~(uintptr_t)(page - 1);
+  size_t total = (discard_hi - first) / page;
+  struct timespec pause = {0, 140000000L};
+  nanosleep(&pause, NULL);
+  assert(resident_pages(first, discard_hi) > total / 2); /* the delay is 200 ms or more now */
+  scr_sa_wait_trims();
+  assert(resident_pages(first, discard_hi) < total / 2);
+  setenv("SCR_SA_DISCARD_DELAY_MS", "100", 1);
+  setenv("SCR_SA_DISCARD_DELAY_MAX_MS", "0", 1);
+  atomic_store(&discard_step, 3);
+  assert(pthread_join(plain, NULL) == 0);
+  free(discard_blocks);
+}
+
+/* Once the event loop runs, discards wait for it to wait with nothing
+ * ready; a loop that does not wait gets them SCR_SA_DISCARD_DELAY_MAX_MS
+ * after the delay. The test's thread plays the loop's. */
+static void check_discard_waits_for_loop(void) {
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  setenv("SCR_SA_DISCARD_DELAY_MS", "100", 1);
+  setenv("SCR_SA_DISCARD_DELAY_MAX_MS", "10000", 1);
+  discard_blocks = malloc(DISCARD_BLOCKS * sizeof *discard_blocks);
+  assert(discard_blocks);
+  atomic_store(&discard_step, 0);
+  pthread_t plain;
+  assert(pthread_create(&plain, NULL, holding_thread, NULL) == 0);
+  wait_step(1);
+  scr_sa_loop_waiting(true);
+  scr_sa_loop_waiting(false); /* the loop runs */
+  pthread_t t;
+  assert(pthread_create(&t, NULL, plain_discard_worker, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+  uintptr_t first = (discard_lo + page - 1) & ~(uintptr_t)(page - 1);
+  size_t total = (discard_hi - first) / page;
+  struct timespec pause = {0, 900000000L};
+  nanosleep(&pause, NULL);
+  assert(resident_pages(first, discard_hi) > total / 2); /* past the delay */
+  scr_sa_loop_waiting(true);
+  scr_sa_wait_trims();
+  assert(resident_pages(first, discard_hi) < total / 2);
+  /* A loop that keeps running. */
+  scr_sa_loop_waiting(false);
+  setenv("SCR_SA_DISCARD_DELAY_MAX_MS", "300", 1);
+  assert(pthread_create(&t, NULL, plain_discard_worker, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+  first = (discard_lo + page - 1) & ~(uintptr_t)(page - 1);
+  total = (discard_hi - first) / page;
+  scr_sa_wait_trims();
+  assert(resident_pages(first, discard_hi) < total / 2);
+  setenv("SCR_SA_DISCARD_DELAY_MAX_MS", "0", 1);
+  atomic_store(&discard_step, 3);
+  assert(pthread_join(plain, NULL) == 0);
+  free(discard_blocks);
 }
 
 static void check_discard(void) {
@@ -750,6 +879,7 @@ static void check_discard(void) {
   free(trim_blocks);
 
   check_deferred_discard();
+  check_discard_delay();
   for (unsigned i = 0; i < DISCARD_OLD; i++) scr_mem_free(old_blocks[i]);
   free(discard_blocks);
 }
@@ -769,10 +899,15 @@ int main(void) {
   check_heap_huge_pages();
 #endif
 #if defined(SCR_WORKERS) && SCR_SMALL_ALLOC
+  /* A short discard delay, which stays at its start until check_discard_delay_grows. */
+  setenv("SCR_SA_DISCARD_DELAY_MS", "100", 1);
+  setenv("SCR_SA_DISCARD_DELAY_MAX_MS", "0", 1);
   check_threads();
 #ifdef __linux__
   check_trim();
   check_discard();
+  check_discard_delay_grows();
+  check_discard_waits_for_loop();
 #endif
   printf("allocator checks passed: size-class workers\n");
 #else

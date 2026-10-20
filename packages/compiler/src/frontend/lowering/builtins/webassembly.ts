@@ -177,8 +177,8 @@ function lowerArg(lowerer: Lowerer, arg: ts.Expression): IrExpr {
  * identifier, or an empty object or array literal. */
 function isInert(arg: ts.Expression): boolean {
   const node = bare(arg);
-  if (ts.isObjectLiteralExpression(node)) return node.properties.length === 0;
-  if (ts.isArrayLiteralExpression(node)) return node.elements.length === 0;
+  if (ts.isObjectLiteralExpression(node)) return node.properties.nodes.length === 0;
+  if (ts.isArrayLiteralExpression(node)) return node.elements.nodes.length === 0;
   return (
     ts.isIdentifier(node) ||
     ts.isNumericLiteral(node) ||
@@ -235,7 +235,7 @@ function lowerModuleStatic(lowerer: Lowerer, call: ts.CallExpression): IrExpr | 
     : null;
   if (name !== "imports" && name !== "exports" && name !== "customSections") return null;
   const loc = locOf(call);
-  const args = lowerArgs(lowerer, call.arguments, name === "customSections" ? 2 : 1, loc);
+  const args = lowerArgs(lowerer, call.arguments.nodes, name === "customSections" ? 2 : 1, loc);
   if (args === null) return null;
   lowerer.usesWebAssembly = true;
   if (name === "customSections") lowerer.usesWasmCustomSections = true;
@@ -261,7 +261,7 @@ export function lowerWebAssemblyCall(lowerer: Lowerer, call: ts.CallExpression):
   const newOnly = NEW_ONLY.indexOf(member);
   if (newOnly >= 0) {
     // The arguments evaluate, then the call throws.
-    const args = lowerArgs(lowerer, call.arguments, 2, loc);
+    const args = lowerArgs(lowerer, call.arguments.nodes, 2, loc);
     if (args === null) return null;
     lowerer.usesWebAssembly = true;
     return {
@@ -276,7 +276,7 @@ export function lowerWebAssemblyCall(lowerer: Lowerer, call: ts.CallExpression):
   if (member !== "compile" && member !== "instantiate" && member !== "validate" && !isError)
     return null;
   const used = member === "instantiate" || isError ? 2 : 1;
-  const args = lowerArgs(lowerer, call.arguments, used, loc);
+  const args = lowerArgs(lowerer, call.arguments.nodes, used, loc);
   if (args === null) return null;
   lowerer.usesWebAssembly = true;
   let result: IrExpr;
@@ -314,7 +314,7 @@ export function lowerWebAssemblyNew(lowerer: Lowerer, expr: ts.NewExpression): I
   if (!NEW_ONLY.includes(member) && !isError) return null;
   const loc = locOf(expr);
   const used = member === "Module" || member === "Memory" ? 1 : 2;
-  const args = lowerArgs(lowerer, expr.arguments ?? [], used, loc);
+  const args = lowerArgs(lowerer, expr.arguments?.nodes ?? [], used, loc);
   if (args === null) return null;
   lowerer.usesWebAssembly = true;
   let result: IrExpr;

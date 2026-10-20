@@ -619,6 +619,12 @@
       "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
     },
     {
+      "id": "node-builtin.crypto.getRandomValues",
+      "kind": "node-builtin",
+      "name": "crypto.getRandomValues",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.hash",
       "kind": "node-builtin",
       "name": "crypto.hash",
@@ -867,6 +873,13 @@
       "kind": "node-builtin",
       "name": "fs.closeSync",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.constants",
+      "kind": "node-builtin",
+      "name": "fs.constants",
+      "status": "static",
+      "note": "node_constants.cc's fs group under the target libc's macros; members a platform lacks read as undefined"
     },
     {
       "id": "node-builtin.fs.copyFileSync",
@@ -1975,7 +1988,7 @@
       "kind": "node-builtin",
       "name": "process.exitCode",
       "status": "static",
-      "note": "numeric writes in statement position set the implicit exit status; process.exit() reads it"
+      "note": "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it"
     },
     {
       "id": "node-builtin.process.getBuiltinModule",
@@ -2519,7 +2532,7 @@
       "name": "util.promisify",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart; call the bound function directly"
+      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",
@@ -4210,11 +4223,37 @@
       "note": "one date string, using the bounded parser shared with new Date(dateString).getTime()"
     },
     {
+      "id": "stdlib.date.toDateString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toDateString",
+      "status": "static"
+    },
+    {
       "id": "stdlib.date.toISOString",
       "kind": "stdlib",
       "name": "Date.prototype.toISOString",
       "status": "static",
       "note": "UTC ISO formatting over constructed and stored Date values"
+    },
+    {
+      "id": "stdlib.date.toString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toString",
+      "status": "static",
+      "note": "local time with the host zone's long English name; String(date) and template literals use it"
+    },
+    {
+      "id": "stdlib.date.toTimeString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toTimeString",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.toUTCString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toUTCString",
+      "status": "static",
+      "note": "RFC 7231 IMF-fixdate formatting over stored Date values"
     },
     {
       "id": "stdlib.date.valueOf",
@@ -4823,8 +4862,8 @@
       "id": "stdlib.number.toPrecision",
       "kind": "stdlib",
       "name": "number.prototype.toPrecision",
-      "status": "unsupported",
-      "code": "SC2012"
+      "status": "static",
+      "note": "the lowered call form takes 0 to 1 arguments"
     },
     {
       "id": "stdlib.number.toString",
@@ -5293,9 +5332,8 @@
       "id": "stdlib.response.static.json",
       "kind": "stdlib",
       "name": "Response.json",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: webidl-conversion, error-shape; supported scope: data that crosses the checked-dynamic boundary, serialized with JSON.stringify (toJSON hooks included); ResponseInit as for the constructor; differential evidence: fixture:static-response-json"
     },
     {
       "id": "stdlib.response.static.redirect",
@@ -5636,6 +5674,20 @@
       "name": "globalThis.WebAssembly",
       "status": "static",
       "note": "compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, instanceof, the error classes, exports, imports and Module transfer to workers, over the modules translated at build time; the rest refuses with SC2020 (the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations))"
+    },
+    {
+      "id": "stdlib.webcrypto.CryptoKey",
+      "kind": "stdlib",
+      "name": "CryptoKey",
+      "status": "static",
+      "note": "secret HMAC keys with type, extractable, algorithm and usages, and instanceof CryptoKey"
+    },
+    {
+      "id": "stdlib.webcrypto.subtle",
+      "kind": "stdlib",
+      "name": "globalThis.crypto.subtle",
+      "status": "static",
+      "note": "importKey('raw') for HMAC keys, HMAC sign and verify, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused"
     },
     {
       "id": "syntax.async-generators",

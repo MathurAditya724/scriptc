@@ -91,7 +91,7 @@ export function emitStringSliceSnapshot(
   B.line(
     `call void @scr_str_slice_range(ptr ${source.name}, double ${args[0]?.name ?? f64Lit(0)}, double ${args[1]?.name ?? F64_INF}, i1 ${slice.method === "substring" ? "true" : "false"}, ptr ${range})`,
   );
-  host.moveTemp(source);
+  host.toFrame(source);
   return { source: sourceSlot, range };
 }
 

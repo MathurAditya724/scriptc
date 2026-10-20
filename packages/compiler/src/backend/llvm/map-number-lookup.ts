@@ -105,7 +105,7 @@ function emitMapEntryGetRef(host: LlvmEmitterContext, entry: string, value: IrTy
     join = B.newLabel("mapn.join");
   B.condBr(found, hit, miss);
   B.startBlock(hit);
-  const retained = host.retainValue(emitNumberMapSlot(host, entry, "ptr"), value);
+  const retained = host.retainFrame(emitNumberMapSlot(host, entry, "ptr"), value);
   B.br(join);
   B.startBlock(miss);
   B.br(join);
@@ -251,7 +251,7 @@ export function emitMapIterSlot(
     B.line(`${loaded} = icmp ne i64 ${bits}, 0`);
   } else {
     B.line(`${loaded} = load ${llTy}, ptr ${slot}`);
-    if (access === "ref") loaded = host.retainValue(loaded, type);
+    if (access === "ref") loaded = host.retainFrame(loaded, type);
   }
   const hitEnd = B.currentLabel();
   B.br(join);
