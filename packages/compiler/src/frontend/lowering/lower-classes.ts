@@ -5463,12 +5463,33 @@ function namedEvaluationName(expr: ts.ClassLikeDeclaration): string {
 }
 
 /** Each evaluation of a function-local class creates fresh private names,
- * while the compiled class shares one layout across evaluations. They agree
- * when every private name is used only on `this` inside the class's own
- * instance members (`this.#x`, `#x in this`), outside nested classes and
- * non-arrow functions, and the class has no static members that could hand
- * instances across evaluations: each instance then meets only the methods
- * of its own evaluation (undici's webidl FastIterableIterator). */
+ * while the compiled class shares one layout across evaluations. A
+ * JavaScript class's prototype methods are closures per evaluation, so the
+ * names agree when every private member is an instance field and every use
+ * is on `this` (privateNamesOnlyOnThis): native methods only run on their
+ * own evaluation's instances, and the closures, which receive any `this`,
+ * check the receiver's evaluation against the class's own binding
+ * (private-brands.ts), so the class must be a named declaration (undici's
+ * webidl FastIterableIterator). The checker rejects writes to that binding. */
+function localPrivateFieldsAgree(expr: ts.ClassLikeDeclaration): boolean {
+  if (!isJsSourceFile(expr.getSourceFile()) || !ts.isClassDeclaration(expr) || !expr.name)
+    return false;
+  if (
+    expr.members.nodes.some(
+      (member) =>
+        member.name !== undefined &&
+        ts.isPrivateIdentifier(member.name) &&
+        !ts.isPropertyDeclaration(member),
+    )
+  )
+    return false;
+  return privateNamesOnlyOnThis(expr);
+}
+
+/** Every private name is used only on `this` inside the class's own instance
+ * members (`this.#x`, `#x in this`), outside nested classes and non-arrow
+ * functions, and the class has no static members that could hand instances
+ * across evaluations. */
 function privateNamesOnlyOnThis(expr: ts.ClassLikeDeclaration): boolean {
   let ok = true;
   for (const member of expr.members.nodes) {
@@ -5548,7 +5569,7 @@ export function lowerClassExpressionInfo(
   if (
     local &&
     expr.members.nodes.some((member) => member.name && ts.isPrivateIdentifier(member.name)) &&
-    !privateNamesOnlyOnThis(expr)
+    !localPrivateFieldsAgree(expr)
   ) {
     lowerer.unsupported("SC1090", expr, "function-local classes with private brands");
   }

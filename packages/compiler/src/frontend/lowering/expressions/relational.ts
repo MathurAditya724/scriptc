@@ -1,5 +1,11 @@
 /* instanceof and in, including private-name and runtime-key in. */
 import * as ts from "../../ts7/adapter.js";
+import {
+  checkedPrivateIn,
+  localPrivateBrandClass,
+  primitiveOperand,
+  privateInMessage,
+} from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   BOOL,
@@ -23,7 +29,7 @@ import { refuseWebAssemblyUse } from "../builtins/webassembly.js";
 import { lowerSocketInstanceOf } from "../lower-server.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
-import { varRef } from "../../../ir/build.js";
+import { numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
@@ -1045,6 +1051,18 @@ function lowerPrivateIn(
   // reference carries the class it was boxed under: the declarer or a
   // descendant answers true; an ancestor answers per instance.
   if (recv.type.kind === "dyn" && recv.kind === "varRef" && isJsSourceFile(expr.getSourceFile())) {
+    // A function-local class has one brand per evaluation.
+    if (info.localClass) {
+      const owner = localPrivateBrandClass(lowerer, priv);
+      if (!owner) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `'${pname} in …' inside a function-local class that is not a named declaration`,
+        );
+      }
+      return checkedPrivateIn(lowerer, owner.info, owner.decl, pname, recv, loc);
+    }
     const typedRefIs = (className: string): IrExpr => ({
       kind: "libCall",
       fn: "dyn.typedRefIs",
@@ -1080,7 +1098,22 @@ function lowerPrivateIn(
         loc,
       });
     }
-    return test!;
+    // Only objects carry private names: a primitive operand throws Node's
+    // TypeError.
+    return {
+      kind: "ternary",
+      cond: primitiveOperand(recv, loc),
+      then: {
+        kind: "libCall",
+        fn: "error.nodeThrow",
+        args: [numLit(1, loc), strLit("", loc), privateInMessage(pname, recv, loc)],
+        type: BOOL,
+        loc,
+      },
+      else_: test!,
+      type: BOOL,
+      loc,
+    };
   }
   if (recv.type.kind !== "object") {
     lowerer.unsupported(

@@ -129,6 +129,7 @@ import {
 } from "../tier-analysis.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
+import { finalizePrivateBrands } from "./private-brands.js";
 import { type ClassSymbolKey, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
 export type { WidthLift } from "./width-lift.js";
@@ -6926,6 +6927,7 @@ export class Lowerer {
   finishModule(functions: IrFunction[]): LowerResult {
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
+    finalizePrivateBrands(this, functions);
     trackClassFieldCreation(this, functions);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
