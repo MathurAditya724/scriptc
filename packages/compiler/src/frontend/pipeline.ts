@@ -12,6 +12,7 @@ import {
   locOf,
   npmStaticLoadableFiles,
   requiresOf,
+  resolveImport,
   resolveNpmImport,
   type LoadResult,
 } from "./program.js";
@@ -36,6 +37,7 @@ import {
   isStringLiteral,
   isStringLiteralLike,
   SyntaxKind,
+  type SourceFile,
 } from "./ts7/adapter.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { CONTRACT_TYPES_MODULE } from "./contract-types.js";
@@ -113,6 +115,52 @@ export type FrontendFactory = (
   libraryNpmStatic?: readonly string[],
 ) => Frontend;
 
+/** Adds the program modules a literal `import()` reaches to `scanned`,
+ * with their own static import graphs: they load at the call, outside the
+ * startup module order, and their npm imports are dependencies all the
+ * same (a workspace package loaded on demand, the vercel.ts config parser
+ * shape). Package files are the package machinery's business. */
+function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void {
+  const queue = [...scanned];
+  const added = new Set<SourceFile>();
+  while (queue.length > 0) {
+    const sf = queue.pop()!;
+    if (sf.fileName.includes("/node_modules/")) continue;
+    const specs: string[] = [];
+    const calls = /\bimport\s*\(/.test(sf.text)
+      ? moduleSourceCandidates(load.program, sf).calls
+      : [];
+    for (const call of calls) {
+      const arg = call.arguments.nodes[0];
+      if (
+        call.expression.kind === SyntaxKind.ImportKeyword &&
+        arg !== undefined &&
+        isStringLiteralLike(arg)
+      )
+        specs.push(arg.text);
+    }
+    // The startup graph's static edges are already in the module order.
+    if (added.has(sf)) {
+      for (const stmt of sf.statements.nodes) {
+        if (
+          (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
+          stmt.moduleSpecifier &&
+          isStringLiteral(stmt.moduleSpecifier) &&
+          !(isImportDeclaration(stmt) ? erasedTypeOnlyImport(stmt) : stmt.isTypeOnly)
+        )
+          specs.push(stmt.moduleSpecifier.text);
+      }
+    }
+    for (const spec of specs) {
+      const dep = resolveImport(load.program, sf, spec);
+      if (dep === null || scanned.has(dep) || dep.fileName.includes("/node_modules/")) continue;
+      scanned.add(dep);
+      added.add(dep);
+      queue.push(dep);
+    }
+  }
+}
+
 function detectAutoPackages(
   load: LoadResult,
   statuses: NpmStaticStatus[],
@@ -135,6 +183,7 @@ function detectAutoPackages(
   // nested require() calls the graph walk does not model) still name its
   // dependencies.
   const scanned = new Set([...load.moduleOrder, load.entry]);
+  addDynamicImportGraph(load, scanned);
   const transitiveFiles =
     transitive.size === 0
       ? []

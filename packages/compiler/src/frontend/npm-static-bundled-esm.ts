@@ -29,6 +29,7 @@
 import * as ts from "./ts7/syntax.js";
 import { bareRequireSpecOf } from "./cjs-syntax.js";
 import { helperTokens } from "./helper-tokens.js";
+import { canonicalBuiltinModule } from "./builtin-modules.js";
 import {
   applyEdits,
   countDeclarations,
@@ -37,6 +38,7 @@ import {
   helperBase,
   isWritten,
   references,
+  strictPrologue,
   unparen,
   type Edit,
 } from "./npm-static-bundled-chunks.js";
@@ -131,6 +133,17 @@ function removeDeclarators(sf: ts.SourceFile, dead: ReadonlySet<ts.VariableDecla
     }
   }
   return edits;
+}
+
+/** True when `id` roots the member chain a `new` expression constructs. */
+function inNewCallee(id: ts.Identifier): boolean {
+  let e: ts.Node = id;
+  for (let p = e.parent; p !== undefined; e = p, p = p.parent) {
+    if ((ts.isPropertyAccessExpression(p) || ts.isElementAccessExpression(p)) && p.expression === e)
+      continue;
+    return ts.isNewExpression(p) && p.expression === e;
+  }
+  return false;
 }
 
 /** The elements of an expression statement's comma chain, in order. */
@@ -342,6 +355,7 @@ export function lowerBundledEsmInits(
     else list.push(r);
   }
   const deadDeclarators = new Set<ts.VariableDeclaration>();
+  const interopSpecs = new Map<string, string>();
   for (const init of inits.values()) {
     for (const stmt of init.body.statements.nodes) {
       if (!ts.isExpressionStatement(stmt)) continue;
@@ -403,13 +417,26 @@ export function lowerBundledEsmInits(
           }
           if (defaultIsModule && access.name.text === "default")
             uses.push({ start: access.getStart(sf), end: access.getEnd(), text: `(${req})` });
-          else uses.push({ start: r.getStart(sf), end: r.getEnd(), text: req });
+          // `new import_x.C()` must stay `new (require("x")).C()`: a bare
+          // `new require("x").C()` constructs the require call itself.
+          else
+            uses.push({
+              start: r.getStart(sf),
+              end: r.getEnd(),
+              text: inNewCallee(r) ? `(${req})` : req,
+            });
         }
         if (!ok) continue;
         edits.push({ start: el.getStart(sf), end: el.getEnd(), text: req }, ...uses);
         deadDeclarators.add(decl);
+        interopSpecs.set(name, spec);
       }
     }
+  }
+  const hoisted = hoistInitClasses(sf, inits, top, duplicate, writes, refsByName, interopSpecs);
+  for (const h of hoisted.values()) {
+    edits.push(...h.edits);
+    for (const d of h.declarators) deadDeclarators.add(d);
   }
   edits.push(...removeDeclarators(sf, deadDeclarators));
 
@@ -752,14 +779,177 @@ export function lowerBundledEsmInits(
       {
         start: call.getStart(sf),
         end: body.getStart(sf) + 1,
-        text: "(() => { let __scriptc_done = false; function __scriptc_init() {",
+        text: `(() => { let __scriptc_done = false; function __scriptc_init() {`,
       },
       {
         start: body.getEnd() - 1,
         end: call.getEnd(),
-        text: "} return function () { if (__scriptc_done) return; __scriptc_done = true; __scriptc_init(); }; })()",
+        // A body split around hoisted classes ends in its last tail function.
+        text: hoisted.has(init.name) ? "}" : `} ${RUN_ONCE_TAIL}`,
       },
     );
   }
   return applyEdits(source, 0, source.length, edits);
+}
+
+/** The run-once closure's closing text after the initializer function. */
+const RUN_ONCE_TAIL =
+  "return function () { if (__scriptc_done) return; __scriptc_done = true; __scriptc_init(); }; })()";
+
+interface InitBody {
+  name: string;
+  call: ts.CallExpression;
+  body: ts.Block;
+}
+
+/* Classes an initializer defines into a module binding,
+ *
+ *   var Multi;
+ *   var init_m = __esm({ "src/m.ts"() { Multi = class extends import_stream.Readable { … }; } });
+ *
+ * become class declarations in the bundle's scope, at the same text
+ * position: the initializer's body splits around each class into run-once
+ * pieces that call one another in order (`… __scriptc_rest_init_m_1(); }
+ * return …; })(); class Multi extends … { … } function
+ * __scriptc_rest_init_m_1() { … }`), so the class's own text stays where
+ * it was and only its binding changes. A stored class value with a
+ * runtime-provided base has no static representation, while a declared
+ * class does.
+ *
+ * Exact where defining the class earlier is unobservable: its heritage is
+ * absent, a builtin module member, or a class hoisted before it; it has no
+ * static field initializers, static blocks or computed member names, so
+ * evaluating the definition runs no code; the binding is declared once,
+ * assigned only there, and read only inside functions (which esbuild's
+ * code reaches only after the initializer ran, the assumption the interop
+ * respelling makes too); and the body declares nothing, so its statements
+ * can move between functions. */
+function hoistInitClasses(
+  sf: ts.SourceFile,
+  inits: ReadonlyMap<string, InitBody>,
+  top: ReadonlyMap<string, { node: ts.Node }>,
+  duplicate: ReadonlySet<string>,
+  writes: ReadonlyMap<string, number>,
+  refsByName: ReadonlyMap<string, ts.Identifier[]>,
+  interopSpecs: ReadonlyMap<string, string>,
+): Map<string, { edits: Edit[]; declarators: ts.VariableDeclaration[] }> {
+  const out = new Map<string, { edits: Edit[]; declarators: ts.VariableDeclaration[] }>();
+  const hoistedNames = new Set<string>();
+  const insideFunction = (n: ts.Node): boolean => {
+    for (let p = n.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent)
+      if (ts.isFunctionLike(p)) return true;
+    return false;
+  };
+  const heritageOk = (cls: ts.ClassExpression): boolean => {
+    const clause = cls.heritageClauses?.nodes.find((c) => c.token === ts.SyntaxKind.ExtendsKeyword);
+    if (clause === undefined) return true;
+    const type = clause.types.nodes[0];
+    if (type === undefined || clause.types.nodes.length !== 1 || type.typeArguments !== undefined)
+      return false;
+    let root: ts.Expression = type.expression;
+    while (ts.isPropertyAccessExpression(root) && !root.questionDotToken) root = root.expression;
+    if (ts.isIdentifier(root)) {
+      if (root === type.expression) return hoistedNames.has(root.text);
+      const spec = interopSpecs.get(root.text);
+      return spec !== undefined && canonicalBuiltinModule(spec) !== null;
+    }
+    const spec = bareRequireSpecOf(root);
+    return spec !== null && canonicalBuiltinModule(spec) !== null && root !== type.expression;
+  };
+  const definitionInert = (cls: ts.ClassExpression): boolean =>
+    (cls.modifiers?.nodes.length ?? 0) === 0 &&
+    cls.members.nodes.every((m) => {
+      if (ts.isClassStaticBlockDeclaration(m)) return false;
+      if (m.name !== undefined && ts.isComputedPropertyName(m.name)) return false;
+      if (m.modifiers?.nodes.some((x) => x.kind === ts.SyntaxKind.Decorator)) return false;
+      const isStatic = m.modifiers?.nodes.some((x) => x.kind === ts.SyntaxKind.StaticKeyword);
+      return !(isStatic && ts.isPropertyDeclaration(m));
+    });
+
+  for (const init of inits.values()) {
+    const stmts = init.body.statements.nodes;
+    if (stmts.some((st) => !ts.isExpressionStatement(st) && !ts.isEmptyStatement(st))) continue;
+    // The initializer's declaration is a statement of its own.
+    const declarator = init.call.parent;
+    const list = declarator?.parent;
+    if (
+      declarator === undefined ||
+      !ts.isVariableDeclaration(declarator) ||
+      list === undefined ||
+      !ts.isVariableDeclarationList(list) ||
+      list.declarations.nodes.length !== 1 ||
+      unparen(declarator.initializer!) !== init.call
+    )
+      continue;
+    const strict = strictPrologue(stmts) ? '"use strict"; ' : "";
+    const edits: Edit[] = [];
+    const declarators: ts.VariableDeclaration[] = [];
+    let piece = 0;
+    for (const stmt of stmts) {
+      if (!ts.isExpressionStatement(stmt)) continue;
+      const els = commaElements(stmt.expression);
+      const hoistedEls = new Set<ts.Expression>();
+      for (let i = 0; i < els.length; i++) {
+        const el = els[i]!;
+        if (
+          !ts.isBinaryExpression(el) ||
+          el.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+          !ts.isIdentifier(el.left) ||
+          !ts.isClassExpression(el.right)
+        )
+          continue;
+        const name = el.left.text;
+        const cls = el.right;
+        const target = el.left;
+        const decl = top.get(name)?.node;
+        if (
+          decl === undefined ||
+          !ts.isVariableDeclaration(decl) ||
+          decl.initializer !== undefined ||
+          duplicate.has(name) ||
+          writes.get(name) !== 1 ||
+          (cls.name !== undefined && cls.name.text !== name) ||
+          // The binding's declarator (and the class's own name, if spelled).
+          countDeclarations(sf, name) !== (cls.name === undefined ? 1 : 2) ||
+          !definitionInert(cls) ||
+          !heritageOk(cls) ||
+          !(refsByName.get(name) ?? []).every(
+            (r) =>
+              r === target ||
+              // The class's own methods name the class itself.
+              (r.getStart(sf) >= cls.getStart(sf) && r.getEnd() <= cls.getEnd()) ||
+              (insideFunction(r) &&
+                // The initializer's own earlier code reads the unassigned binding.
+                !(r.getStart(sf) >= init.body.getStart(sf) && r.getStart(sf) < el.getEnd())),
+          )
+        )
+          continue;
+        piece++;
+        const rest = `__scriptc_rest_${init.name}_${piece}`;
+        const close = piece === 1 ? `} ${RUN_ONCE_TAIL};` : "}";
+        // `a, X = class …, b`: the elements around the class end and begin
+        // the neighboring pieces.
+        // After a hoisted neighbor the separating comma is already gone.
+        const fresh = i === 0 || hoistedEls.has(els[i - 1]!);
+        const from = i === 0 ? stmt.getStart(sf) : fresh ? el.getStart(sf) : els[i - 1]!.getEnd();
+        const sep = fresh ? "" : ";";
+        hoistedEls.add(el);
+        edits.push({ start: from, end: cls.getStart(sf), text: `${sep} ${rest}(); ${close} ` });
+        const next = els[i + 1];
+        edits.push({
+          start: cls.getEnd(),
+          end: next === undefined ? cls.getEnd() : next.getStart(sf),
+          text: ` function ${rest}() { ${strict}`,
+        });
+        if (cls.name === undefined) {
+          const keyword = cls.getStart(sf);
+          edits.push({ start: keyword, end: keyword + "class".length, text: `class ${name}` });
+        }
+        declarators.push(decl);
+        hoistedNames.add(name);
+      }
+    }
+    if (piece > 0) out.set(init.name, { edits, declarators });
+  }
+  return out;
 }
