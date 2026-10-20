@@ -824,8 +824,12 @@ function checkedStaleArm(
 ): IrExpr | null {
   if (value.type.kind !== "union" || tag < 0) return null;
   if (!lowerer.narrowing.untrusted(node, narrowed)) return null;
-  const inPlace = checkedArmExtraction(lowerer, value, tag, arm, (found) =>
-    staleReadMessage(node, found),
+  const inPlace = checkedArmExtraction(
+    lowerer,
+    value,
+    tag,
+    arm,
+    (found) => staleReadMessage(node, found) ?? missingMethodMessage(lowerer, node, found),
   );
   if (inPlace) return inPlace;
   const helper = lowerer.narrowedArmHelper(value.type.unionId, arm, value.loc);
@@ -880,6 +884,47 @@ function staleReadMessage(node: ts.Node, found: IrType): string | null {
     store.operatorToken.kind === ts.SyntaxKind.EqualsToken
     ? `Cannot set properties of ${unit} (setting '${key}')`
     : `Cannot read properties of ${unit} (reading '${key}')`;
+}
+
+/** Node's TypeError for calling `node.m()` when `node` holds a value of type
+ * `found` that has no member `m`, or null. */
+function missingMethodMessage(lowerer: Lowerer, node: ts.Node, found: IrType): string | null {
+  let child: ts.Node = node;
+  let parent = node.parent;
+  while (ts.isParenthesizedExpression(parent)) {
+    child = parent;
+    parent = parent.parent;
+  }
+  if (!ts.isPropertyAccessExpression(parent) || parent.expression !== child) return null;
+  if (parent.questionDotToken) return null;
+  const call = parent.parent;
+  if (!ts.isCallExpression(call) || call.expression !== parent || call.questionDotToken)
+    return null;
+  if (!armLacksMember(lowerer, node as ts.Expression, found, parent.name.text)) return null;
+  return `${v8CalleeText(parent)} is not a function`;
+}
+
+/** The declared types of `reference` that `found` represents all lack the
+ * member `name`, so reading it from such a value answers undefined. False
+ * when no declared type maps to `found`. */
+export function armLacksMember(
+  lowerer: Lowerer,
+  reference: ts.Expression,
+  found: IrType,
+  name: string,
+): boolean {
+  const declared = lowerer.narrowing.declaredTypeOf(reference);
+  if (declared === null) return false;
+  const checker = lowerer.checker;
+  const types = declared.isUnionType() ? ts.constituentTypes(declared) : [declared];
+  const matching = types.filter((type) => {
+    const mapped = lowerer.mapTypeOf(type);
+    return mapped !== null && typeEquals(mapped, found);
+  });
+  return (
+    matching.length > 0 &&
+    matching.every((type) => checker.getPropertyOfType(type, name) === undefined)
+  );
 }
 
 /** A runtime-optional slot can be assigned while a truthy guard is in

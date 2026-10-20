@@ -35,6 +35,13 @@ import type { Lowerer } from "./lowerer.js";
  * stale inherits that narrowing (`const held: Expr = current` keeps the arm
  * `current` was typed with), so its narrowed reads are never trusted.
  *
+ * A hand-written type predicate or assertion function (`x is T`, `asserts x
+ * is T`) is a claim TypeScript does not check, so a reference one of them
+ * may have narrowed is never trusted either: its reads check the stored
+ * value and behave as Node does when the claim is wrong. Inferred
+ * predicates and the standard library's are checked or implemented by the
+ * compiler and keep the guarded extraction.
+ *
  * TypeScript never carries a property narrowing into a nested function,
  * and every narrowing (an assignment, test, predicate or assertion of the
  * reference) is an occurrence of the reference, so a narrowed use always
@@ -48,6 +55,7 @@ export class NarrowingStability {
   private readonly effects = new Map<ts.Node, boolean>();
   private readonly capturedMutable = new Map<ts.Symbol, boolean>();
   private readonly staleBindings = new Map<ts.Symbol, boolean>();
+  private readonly predicateTargets = new Map<ts.SourceFile, Map<string, ts.CallExpression[]>>();
   private readonly identifierWrites = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   private readonly widened = new Map<ts.Node, ts.Type | null>();
   private readonly plainContainers = new Map<ts.Node, boolean>();
@@ -88,7 +96,9 @@ export class NarrowingStability {
     // keep their established stance; only flow narrowing is in question.
     if (this.files === null) return false;
     if (ts.isPropertyAccessExpression(node)) {
-      const declared = this.declaredPropertyType(node);
+      const declared = this.predicateNarrowed(node)
+        ? this.declaredTypeOf(node)
+        : this.declaredPropertyType(node);
       if (declared === null) return false;
       const declaredIr = this.lowerer.mapTypeOf(declared);
       if (declaredIr === null || typeEquals(declaredIr, narrowed)) return false;
@@ -96,10 +106,34 @@ export class NarrowingStability {
     }
     if (ts.isIdentifier(node)) {
       const symbol = this.bindingOf(node);
-      if (!symbol || !this.mayHoldStaleNarrowing(symbol)) return false;
-      return !this.trusted(node);
+      if (!symbol) return false;
+      if (this.mayHoldStaleNarrowing(symbol)) return !this.trusted(node);
+      if (!this.predicateNarrowed(node)) return false;
+      const declaredIr = this.lowerer.mapTypeOf(this.lowerer.checker.getTypeOfSymbol(symbol));
+      return declaredIr !== null && !typeEquals(declaredIr, narrowed);
     }
     return false;
+  }
+
+  /** A hand-written type predicate or assertion function may have narrowed
+   * this reference, so the stored value may have another declared type. */
+  predicateClaim(node: ts.Expression): boolean {
+    return this.files !== null && this.predicateNarrowed(node);
+  }
+
+  /** The reference's type before flow narrowing, or null for other
+   * expressions. A member of a reference is read from the reference's own
+   * declared type, so a claim about `o` does not narrow `o.p`'s answer. */
+  declaredTypeOf(node: ts.Expression): ts.Type | null {
+    const checker = this.lowerer.checker;
+    if (ts.isPropertyAccessExpression(node)) {
+      const receiver = this.declaredTypeOf(skipOuter(node.expression));
+      const property = receiver && checker.getPropertyOfType(receiver, node.name.text);
+      return property ? checker.getTypeOfSymbol(property) : this.declaredPropertyType(node);
+    }
+    if (!ts.isIdentifier(node)) return null;
+    const symbol = this.bindingOf(node);
+    return symbol ? checker.getTypeOfSymbol(symbol) : null;
   }
 
   private bindingOf(node: ts.Identifier): ts.Symbol | null {
@@ -120,7 +154,9 @@ export class NarrowingStability {
     } else {
       const symbol = this.bindingOf(node);
       declared =
-        symbol && this.mayHoldStaleNarrowing(symbol) ? checker.getTypeOfSymbol(symbol) : null;
+        symbol && (this.mayHoldStaleNarrowing(symbol) || this.predicateNarrowed(node))
+          ? checker.getTypeOfSymbol(symbol)
+          : null;
     }
     if (declared === null) return null;
     const narrowedTs = checker.getTypeAtLocation(node);
@@ -134,6 +170,9 @@ export class NarrowingStability {
     const classNarrowing = declaredIr.kind === "object" && narrowedIr.kind === "object";
     if (declaredIr.kind !== "union" && !classNarrowing) return null;
     if (position === "member") {
+      // A predicate's claim reads its members through the claimed arm
+      // (predicate-reads.ts).
+      if (this.predicateNarrowed(node)) return null;
       // A member the declared type itself supports (every arm has it, so
       // no arm is nullish) reads the current value's member, as Node does.
       // Calls dispatch only through a single class.
@@ -239,6 +278,7 @@ export class NarrowingStability {
   private computeTrusted(node: ts.Expression): boolean {
     const chain = referenceChain(node);
     if (chain === null) return true;
+    if (this.predicateNarrowed(node)) return false;
     const program = this.program();
     // A getter answers a fresh value on every read: neither its own result
     // nor anything read through it keeps a narrowing.
@@ -356,6 +396,80 @@ export class NarrowingStability {
   private constructionOnly(name: string): boolean {
     const program = this.program();
     return !program.wildcard && !program.mutable.has(name) && !program.accessors.has(name);
+  }
+
+  /** A hand-written type predicate or assertion function call on this
+   * reference, or on a reference it reads a member of (a claim about `o`
+   * narrows `o.p`), may have narrowed it: one runs earlier in the file, or
+   * in a loop around the use. */
+  private predicateNarrowed(node: ts.Expression): boolean {
+    const program = this.program();
+    if (program.predicateNames.size === 0 && !program.predicateCalls) return false;
+    let key = referenceKey(node);
+    if (key === null) return false;
+    const targets = this.predicateTargetsIn(node.getSourceFile());
+    const start = node.getStart();
+    for (;;) {
+      const calls = targets.get(key);
+      if (calls?.some((call) => call.getStart() < start || inSameLoop(call, node))) return true;
+      const dot = key.lastIndexOf(".");
+      if (dot < 0) return false;
+      key = key.slice(0, dot);
+    }
+  }
+
+  /** The references each hand-written predicate or assertion call in `file`
+   * narrows, by reference key. */
+  private predicateTargetsIn(file: ts.SourceFile): Map<string, ts.CallExpression[]> {
+    let targets = this.predicateTargets.get(file);
+    if (targets) return targets;
+    const found = new Map<string, ts.CallExpression[]>();
+    targets = found;
+    this.predicateTargets.set(file, found);
+    const program = this.program();
+    const add = (target: ts.Node, call: ts.CallExpression): void => {
+      const key = referenceKey(target);
+      if (key === null) return;
+      let list = found.get(key);
+      if (!list) found.set(key, (list = []));
+      list.push(call);
+    };
+    ts.walkPreorder(file, (node) => {
+      if (!ts.isCallExpression(node)) return undefined;
+      const callee = skipOuter(node.expression);
+      const name = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee)
+          ? callee.name.text
+          : null;
+      if (!program.predicateCalls && (name === null || !program.predicateNames.has(name)))
+        return undefined;
+      const declaration = this.lowerer.checker.getResolvedSignature(node)?.declaration;
+      if (!declaration || this.lowerer.isStdlibFile(declaration.getSourceFile())) return undefined;
+      const predicate = declaration.type;
+      if (!predicate || !ts.isTypePredicateNode(predicate)) return undefined;
+      if (!ts.isIdentifier(predicate.parameterName)) {
+        if (ts.isPropertyAccessExpression(callee)) add(callee.expression, node);
+        return undefined;
+      }
+      const parameterName = predicate.parameterName.text;
+      const index = (declaration.parameters?.nodes ?? []).findIndex(
+        (p) => ts.isIdentifier(p.name) && p.name.text === parameterName,
+      );
+      const argument = index < 0 ? undefined : node.arguments?.nodes[index];
+      if (argument === undefined) return undefined;
+      if (predicate.type !== undefined) {
+        add(argument, node);
+        return undefined;
+      }
+      // `asserts condition` narrows every reference its argument tests.
+      ts.walkPreorder(argument, (inner) => {
+        if (ts.isIdentifier(inner) || ts.isPropertyAccessExpression(inner)) add(inner, node);
+        return undefined;
+      });
+      return undefined;
+    });
+    return found;
   }
 
   /** A binding whose narrowed reads may observe a narrowing that no longer
@@ -480,6 +594,8 @@ export class NarrowingStability {
       wildcard: false,
       conversion: false,
       iteration: false,
+      predicateNames: new Set(),
+      predicateCalls: false,
     };
     this.programFacts = facts;
     for (const file of this.files) {
@@ -514,6 +630,11 @@ export class NarrowingStability {
           facts.iteration = true;
         }
         if (ts.isCallExpression(node) && reflectiveStore(node)) facts.wildcard = true;
+        if (ts.isTypePredicateNode(node)) {
+          const name = predicateSignatureName(node);
+          if (name === null) facts.predicateCalls = true;
+          else facts.predicateNames.add(name);
+        }
         const target = writeTargetOf(node);
         if (target) {
           forEachWriteTarget(target, (t) => {
@@ -775,6 +896,12 @@ interface ProgramFacts {
   conversion: boolean;
   /** The program defines generators or `Symbol.iterator` members. */
   iteration: boolean;
+  /** Names of functions and methods declared with a hand-written type
+   * predicate or assertion signature. */
+  predicateNames: Set<string>;
+  /** A predicate signature is declared on an unnamed function type, so any
+   * call can resolve to it. */
+  predicateCalls: boolean;
 }
 
 /** A node and the source position at which its evaluation takes effect. */
@@ -1263,4 +1390,47 @@ function between<T extends ts.Node>(
   const out: Timed<T>[] = [];
   for (let i = lo; i < entries.length && entries[i]!.at <= end; i++) out.push(entries[i]!);
   return out;
+}
+
+/** The name calls use for the function or method whose signature declares
+ * `predicate`, or null when the signature is an unnamed function type. */
+function predicateSignatureName(predicate: ts.TypePredicateNode): string | null {
+  const signature = predicate.parent;
+  if (!signature) return null;
+  if (
+    (ts.isFunctionDeclaration(signature) ||
+      ts.isMethodDeclaration(signature) ||
+      ts.isMethodSignatureDeclaration(signature)) &&
+    signature.name !== undefined
+  )
+    return memberName(signature.name);
+  if (ts.isFunctionExpression(signature) || ts.isArrowFunction(signature)) {
+    const holder = signature.parent;
+    if (ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name)) return holder.name.text;
+    if (ts.isPropertyAssignment(holder) || ts.isPropertyDeclaration(holder))
+      return memberName(holder.name);
+    return null;
+  }
+  if (ts.isFunctionTypeNode(signature)) {
+    const holder = signature.parent;
+    if (ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name)) return holder.name.text;
+    if (ts.isPropertySignature(holder) || ts.isPropertyDeclaration(holder))
+      return memberName(holder.name);
+  }
+  return null;
+}
+
+/** `a` and `b` share an enclosing loop within one function, so `a` can run
+ * before `b` on a later iteration. */
+function inSameLoop(a: ts.Node, b: ts.Node): boolean {
+  for (let n: ts.Node | undefined = a.parent; n && !isFlowBoundary(n); n = n.parent) {
+    const loop =
+      ts.isForStatement(n) ||
+      ts.isForInStatement(n) ||
+      ts.isForOfStatement(n) ||
+      ts.isWhileStatement(n) ||
+      ts.isDoStatement(n);
+    if (loop && n.pos <= b.pos && b.end <= n.end) return true;
+  }
+  return false;
 }

@@ -105,6 +105,10 @@ import { devirtualizeVirtualCalls } from "./devirtualize.js";
 import { foldRegexSpanReads } from "./regex-span-reads.js";
 import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
 import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
+import {
+  lowerPredicateNarrowedCall,
+  predicateReadMayBeUndefined,
+} from "./expressions/predicate-reads.js";
 import { NarrowingStability } from "./narrowing-stability.js";
 import { ArrayElementStates } from "./runtime-optional-elements.js";
 import { indexReadInBounds } from "./runtime-optional-bounds.js";
@@ -5084,6 +5088,7 @@ export class Lowerer {
       const e = peel(node);
       if (isIndexedRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isRecordIndexPropertyRead(e)) return true;
+      if (ts.isPropertyAccessExpression(e) && predicateReadMayBeUndefined(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isSettledIteratorValueRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOsConstantsSymbol(symbolOf(e.expression), this))
@@ -12254,6 +12259,10 @@ export class Lowerer {
   }
 
   lowerCall(expr: ts.CallExpression): IrExpr {
+    // A method of a receiver a hand-written type predicate or assertion
+    // narrowed: other arms invoke it as Node does.
+    const claimed = lowerPredicateNarrowedCall(this, expr, () => this.lowerCall(expr));
+    if (claimed) return claimed;
     // dispatch. The general identifier-call paths have no lowering for a
     // promise-returning ambient global, and `import` is a keyword callee no
     // identifier path matches.

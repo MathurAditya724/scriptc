@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6714-array-from-optional-mapper.ts"
+ ],
+ "diags": []
+}

@@ -6,10 +6,11 @@
  * caught kind is compared and a mismatch stops the program through the
  * runtime trap funnel instead of reading the payload as the wrong type. The
  * frontend lowers every narrowing it knows it cannot prove through checked
- * extraction, which throws the catchable TypeError, so a failing guard means
- * either a compiler bug or a program whose hand-written type predicate or
- * assertion function (`x is T`, `asserts x is T`) lied about a value's type:
- * TypeScript trusts those claims without checking them. The guard aborts
+ * extraction, which throws the catchable TypeError. That includes narrowings
+ * by the program's own type predicates and assertion functions (`x is T`,
+ * `asserts x is T`), claims TypeScript trusts without checking them. A
+ * failing guard means a compiler bug, or a claim the frontend cannot see,
+ * such as a predicate declared only in a declaration file. The guard aborts
  * rather than unwinding through code that assumed the extraction could not
  * throw. The guards are cheap: one load and compare per site, which LLVM
  * folds where an identical test already dominates. */

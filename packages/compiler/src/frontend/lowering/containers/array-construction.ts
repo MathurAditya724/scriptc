@@ -28,6 +28,7 @@ import {
   isRefCounted,
   isSupportedArrayElem,
   typeEquals,
+  UNDEFINED_T,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { arrayValueRead, arrayValueStore, arrayValueType } from "../array-values.js";
@@ -1114,6 +1115,14 @@ function buildArrayFromArrayFn(
     type: fnRet,
     loc,
   };
+  // A mapper result that can be undefined is tested before it is stored:
+  // hold it in the helper's own local (arrayValueStore would otherwise
+  // declare one in the function lowering the call).
+  const held =
+    !typeEquals(fnRet, outElem) &&
+    fnRet.kind === "union" &&
+    lowerer.armTag(fnRet.unionId, UNDEFINED_T) >= 0;
+  const value = held ? varRef("v.0", fnRet, loc) : mapped;
   return {
     name,
     params: [
@@ -1126,6 +1135,7 @@ function buildArrayFromArrayFn(
       { id: "f.0", name: "f", type: fnT, mutable: true },
       { id: "out.0", name: "out", type: outT, mutable: false },
       { id: "i.0", name: "i", type: F64, mutable: true },
+      ...(held ? [{ id: "v.0", name: "v", type: fnRet, mutable: true }] : []),
     ],
     body: [
       {
@@ -1146,7 +1156,8 @@ function buildArrayFromArrayFn(
           loc,
         },
         body: [
-          arrayValueStore(lowerer, out, i, mapped, outElem, loc),
+          ...(held ? [{ kind: "varDecl" as const, localId: "v.0", init: mapped, loc }] : []),
+          arrayValueStore(lowerer, out, i, value, outElem, loc),
           {
             kind: "assign",
             localId: "i.0",
