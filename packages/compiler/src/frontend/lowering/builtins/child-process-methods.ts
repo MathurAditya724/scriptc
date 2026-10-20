@@ -541,23 +541,62 @@ export function lowerChildWriterMethodCall(
 }
 
 /** A receiver spelled as a plain access path (`child.stdout`, `out`): its
- * root symbol and member names, or null for other forms. */
+ * root symbol and member names, or null for other forms. A `const` alias
+ * of an access path (`const out = child.stdout`) resolves to that path,
+ * so every spelling of one stream gets the same key. */
 function accessPathOf(
   lowerer: Lowerer,
   expr: ts.Expression,
+  depth = 0,
 ): { root: ts.Symbol; path: string } | null {
+  if (depth > 16) return null;
   if (ts.isParenthesizedExpression(expr) || ts.isNonNullExpression(expr)) {
-    return accessPathOf(lowerer, expr.expression);
+    return accessPathOf(lowerer, expr.expression, depth + 1);
   }
   if (ts.isIdentifier(expr)) {
     const root = lowerer.checker.getSymbolAtLocation(expr);
-    return root ? { root, path: "" } : null;
+    if (!root) return null;
+    const init = constInitializerOf(root);
+    const aliased = init === null ? null : accessPathOf(lowerer, init, depth + 1);
+    return aliased ?? { root, path: "" };
   }
   if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
-    const base = accessPathOf(lowerer, expr.expression);
+    const base = accessPathOf(lowerer, expr.expression, depth + 1);
     return base === null ? null : { root: base.root, path: `${base.path}.${expr.name.text}` };
   }
   return null;
+}
+
+/** The initializer of a symbol declared once as a `const` variable, else null. */
+function constInitializerOf(symbol: ts.Symbol): ts.Expression | null {
+  const decls = symbol.declarations;
+  if (decls.length !== 1) return null;
+  const decl = decls[0]!;
+  if (
+    !ts.isVariableDeclaration(decl) ||
+    !ts.isIdentifier(decl.name) ||
+    decl.initializer === undefined ||
+    (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  return decl.initializer;
+}
+
+/** Whether two resolved access paths name different objects: the same root
+ * with different members, or two `const` roots each initialized by a call
+ * or `new` (such as two `spawn()` results). */
+function distinctPaths(
+  a: { root: ts.Symbol; path: string },
+  b: { root: ts.Symbol; path: string },
+): boolean {
+  if (a.root === b.root) return a.path !== b.path;
+  const fresh = (root: ts.Symbol): boolean => {
+    let init = constInitializerOf(root);
+    while (init !== null && (ts.isParenthesizedExpression(init) || ts.isAwaitExpression(init)))
+      init = init.expression;
+    return init !== null && (ts.isCallExpression(init) || ts.isNewExpression(init));
+  };
+  return fresh(a.root) && fresh(b.root);
 }
 
 /** Whether an unknown-typed 'data' listener registered by `call` receives
@@ -594,10 +633,7 @@ function childStreamEncodedAt(
     }
     node = parent;
   }
-  const samePath = (
-    a: { root: ts.Symbol; path: string } | null,
-    b: { root: ts.Symbol; path: string },
-  ): boolean => a !== null && a.root === b.root && a.path === b.path;
+  const receiverType = lowerer.checker.getNonNullableType(lowerer.typeOf(receiver));
   let before = false;
   let elsewhere = false;
   const visit = (node: ts.Node): void => {
@@ -605,11 +641,21 @@ function childStreamEncodedAt(
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === "setEncoding" &&
-      samePath(accessPathOf(lowerer, node.expression.expression), key)
+      node.expression.name.text === "setEncoding"
     ) {
-      if (ts.isExpressionStatement(node.parent) && preceding.has(node.parent)) before = true;
-      else elsewhere = true;
+      const target = node.expression.expression;
+      const path = accessPathOf(lowerer, target);
+      if (path !== null && path.root === key.root && path.path === key.path) {
+        if (ts.isExpressionStatement(node.parent) && preceding.has(node.parent)) before = true;
+        else elsewhere = true;
+      } else if (
+        (path === null || !distinctPaths(path, key)) &&
+        lowerer.checker.isTypeAssignableTo(receiverType, lowerer.typeOf(target))
+      ) {
+        // Another spelling that can hold this stream (a parameter, a `let`
+        // copy, a call result): its setEncoding may be this stream's.
+        elsewhere = true;
+      }
     }
     ts.forEachChild(node, visit);
   };

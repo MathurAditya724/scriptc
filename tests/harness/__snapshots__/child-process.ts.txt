@@ -99,3 +99,10 @@ child-process.ts:48:21 - error SC1090: untyped child-stream 'data' listeners who
   48 | pipedOut.on("data", (chunk: unknown) => console.log(String(chunk)));
      |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   49 | pipedOut.setEncoding("utf8");
+
+child-process.ts:54:26 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
+
+  53 | pipedErr.setEncoding("utf8");
+  54 | piped.stderr!.on("data", (chunk: unknown) => console.log(String(chunk)));
+     |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  55 | 

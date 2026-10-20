@@ -60,6 +60,28 @@ function runRaw(script: string): Promise<void> {
   });
 }
 
+// setEncoding through one const alias of the stream and the listener
+// through another: both name child.stdout, so chunks are strings.
+function runAliased(script: string): Promise<void> {
+  return new Promise((resolve) => {
+    const child = spawn("/bin/sh", ["-c", script], { stdio: "pipe" });
+    const encoded = child.stdout!;
+    const listened = child.stdout!;
+    let stdout = "";
+    const kinds: string[] = [];
+    encoded.setEncoding("utf8");
+    listened.on("data", (c: unknown) => {
+      kinds.push(typeof c);
+      stdout += String(c);
+    });
+    child.on("close", (code) => {
+      report(code, kinds, stdout, "");
+      resolve();
+    });
+  });
+}
+
 runEncoded("printf 'h\\303\\251llo'; echo warn >&2")
   .then(() => runRaw("printf raw; echo oops >&2; exit 2"))
+  .then(() => runAliased("printf alias"))
   .then(() => console.log("done"));

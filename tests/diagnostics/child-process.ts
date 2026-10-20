@@ -47,3 +47,8 @@ fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
 const pipedOut = piped.stdout!;
 pipedOut.on("data", (chunk: unknown) => console.log(String(chunk)));
 pipedOut.setEncoding("utf8");
+// A setEncoding through a copy that can hold the same stream (a `let`
+// binding here) leaves the state unclear as well.
+let pipedErr = piped.stderr!;
+pipedErr.setEncoding("utf8");
+piped.stderr!.on("data", (chunk: unknown) => console.log(String(chunk)));
