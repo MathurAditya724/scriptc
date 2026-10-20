@@ -8605,6 +8605,32 @@ function inheritsBuiltinStreamCtor(lowerer: Lowerer, info: ClassInfo): boolean {
   return false;
 }
 
+/** `new C(args)` where C's constructor is the inherited runtime stream or
+ * EventEmitter constructor (a ctor-less chain into the base): that
+ * constructor takes zero arguments here (the options bag fences, like the
+ * super() form), so arguments report at the first one. Applies to direct
+ * construction and to construction through a class value of C. Stream
+ * subclasses come first: their chain roots at the emitter too, but the
+ * message should name the stream story. */
+function refuseInheritedBuiltinCtorArgs(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  expr: ts.NewExpression,
+): void {
+  const first = expr.arguments?.nodes[0];
+  if (first === undefined) return;
+  if (inheritsBuiltinStreamCtor(lowerer, info)) {
+    lowerer.noLowering(
+      `new ${info.def.name.replace(/^%/, "")} with arguments through an inherited stream constructor`,
+      first,
+      "declare a constructor that passes an inline options object to super(...)",
+    );
+  }
+  if (lowerer.inheritsBuiltinEmitterCtor(info)) {
+    lowerer.unsupported("SC1090", first, "EventEmitter constructor options ('captureRejections')");
+  }
+}
+
 /** Preserve argument evaluation order and option presence through builtin
  * and inherited Error constructors. Checked-dynamic conversion retains
  * Error identity and distinguishes a missing cause from undefined. */
@@ -8729,24 +8755,7 @@ function lowerProgramClassNew(
       "construction through a function-local class's internal name",
     );
   lowerer.noteEdge(`%${info.def.name}.constructor`);
-  // A ctor-less chain into an EventEmitter base inherits `new C()` —
-  // zero arguments (the options bag fences, like the super() form).
-  // Stream subclasses come first: their chain roots at the emitter
-  // too, but the message should name the stream story.
-  if (inheritsBuiltinStreamCtor(lowerer, info) && (expr.arguments?.nodes ?? []).length > 0) {
-    lowerer.noLowering(
-      `new ${info.def.name.replace(/^%/, "")} with arguments through an inherited stream constructor`,
-      expr.arguments!.nodes[0]!,
-      "declare a constructor that passes an inline options object to super(...)",
-    );
-  }
-  if (lowerer.inheritsBuiltinEmitterCtor(info) && (expr.arguments?.nodes ?? []).length > 0) {
-    lowerer.unsupported(
-      "SC1090",
-      expr.arguments!.nodes[0]!,
-      "EventEmitter constructor options ('captureRejections')",
-    );
-  }
+  refuseInheritedBuiltinCtorArgs(lowerer, info, expr);
   // A ctor-less chain into a builtin error base inherits both arguments;
   // each synthesized constructor forwards the same pair to its base.
   const args = lowerer.inheritsBuiltinErrorCtor(info)
@@ -9994,6 +10003,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           `EventEmitter and stream class values constructed with options (construct with 'new ${info.def.name.slice(1)}({ ... })' directly)`,
         );
       }
+      // A program class whose constructor is the inherited runtime one
+      // takes no arguments through its class value either.
+      refuseInheritedBuiltinCtorArgs(lowerer, info, expr);
       defineClassValueConstruct(lowerer, info);
       const args = lowerer.completeArgs(
         expr.arguments?.nodes ?? [],
