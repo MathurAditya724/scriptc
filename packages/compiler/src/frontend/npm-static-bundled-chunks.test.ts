@@ -172,6 +172,25 @@ console.log(require_g().join(","));
   expect(chunk).toContain("var fact = function self(n)");
 });
 
+test("a helper a parameter default reads travels with a chunk whose body declares its name", () => {
+  const answer = expectSameBehavior(`${keyedHelper}var ten = function () {
+  return 10;
+};
+var add = function (n, base = ten()) {
+  var ten = 1;
+  return n + base + ten;
+};
+var require_g = __commonJS({
+  "g.js"(exports2, module2) {
+    module2.exports = add(1);
+  }
+});
+console.log(require_g());
+`);
+  const chunk = answer.chunks[0]!.source;
+  expect(chunk).toContain("var ten = function ()");
+});
+
 test.each([
   ["exports it", `function tally() {}`, `module2.exports = { tally };`],
   ["reads its properties", `function tally() {}`, `exports2.calls = tally.calls;`],
@@ -185,6 +204,11 @@ test.each([
   [
     "calls a function whose parameter default reads its own name",
     `var tally = function self(box = self) { box.n = (box.n || 0) + 1; return box.n; };`,
+    `exports2.count = tally();`,
+  ],
+  [
+    "calls a function whose parameter default reads its own name past a body var of that name",
+    `var tally = function self(box = self) { var self = 0; box.n = (box.n || 0) + 1; return box.n + self; };`,
     `exports2.count = tally();`,
   ],
 ])("a chunk that %s keeps the package refused", (_, declaration, statement) => {

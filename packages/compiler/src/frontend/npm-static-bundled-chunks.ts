@@ -146,6 +146,26 @@ function varScopedNames(body: ts.Node): Set<string> {
   return out;
 }
 
+/** The names a function binds for references in its parameter list
+ * (default values, computed keys of destructuring patterns): its
+ * parameters and a function expression's own name. Parameter initializers
+ * run in their own scope, so the body's `var`s are not visible there. */
+function parameterScopeNames(scope: ts.SignatureDeclaration): Set<string> {
+  const out = new Set<string>();
+  for (const param of scope.parameters.nodes) addBindingNames(param.name, out);
+  if (ts.isFunctionExpression(scope) && scope.name !== undefined) out.add(scope.name.text);
+  return out;
+}
+
+const NO_NAMES: ReadonlySet<string> = new Set();
+
+/** True when `node` lies inside `ancestor` (or is it). */
+function within(node: ts.Node, ancestor: ts.Node): boolean {
+  for (let n: ts.Node | undefined = node; n !== undefined; n = n.parent)
+    if (n === ancestor) return true;
+  return false;
+}
+
 /** The names one scope node binds for the references inside it. */
 function scopeNames(scope: ts.Node): Set<string> {
   const out = new Set<string>();
@@ -189,6 +209,7 @@ function scopeNames(scope: ts.Node): Set<string> {
  * names for the bundle's split. */
 class BundleScopes {
   private readonly names = new Map<ts.Node, Set<string>>();
+  private readonly parameterNames = new Map<ts.Node, Set<string>>();
 
   private of(scope: ts.Node): Set<string> {
     let names = this.names.get(scope);
@@ -199,11 +220,26 @@ class BundleScopes {
     return names;
   }
 
+  /** The names `scope` binds for a reference reached through its child
+   * `from`: a function's parameter list sees its parameters and own name
+   * but not its body's `var`s, and a computed method name sees none of
+   * them. */
+  private visible(scope: ts.Node, from: ts.Node): ReadonlySet<string> {
+    if (!isFunctionScope(scope) || from === scope.body) return this.of(scope);
+    if (from === scope.name) return NO_NAMES;
+    let names = this.parameterNames.get(scope);
+    if (names === undefined) {
+      names = parameterScopeNames(scope);
+      this.parameterNames.set(scope, names);
+    }
+    return names;
+  }
+
   /** True when a scope between the reference and `root` (inclusive)
    * binds its name. */
   boundWithin(id: ts.Identifier, root: ts.Node): boolean {
-    for (let n = id.parent; n !== undefined; n = n.parent) {
-      if (this.of(n).has(id.text)) return true;
+    for (let from: ts.Node = id, n = id.parent; n !== undefined; from = n, n = n.parent) {
+      if (this.visible(n, from).has(id.text)) return true;
       if (n === root) return false;
     }
     return false;
@@ -212,16 +248,24 @@ class BundleScopes {
   /** True when a scope inside `root` (exclusive) binds the reference's
    * name. */
   boundInside(id: ts.Identifier, root: ts.Node): boolean {
-    for (let n = id.parent; n !== undefined && n !== root; n = n.parent) {
-      if (this.of(n).has(id.text)) return true;
+    for (
+      let from: ts.Node = id, n = id.parent;
+      n !== undefined && n !== root;
+      from = n, n = n.parent
+    ) {
+      if (this.visible(n, from).has(id.text)) return true;
     }
     return false;
   }
 
   /** True when the reference resolves to a top-level binding of `sf`. */
   topLevel(id: ts.Identifier, sf: ts.SourceFile): boolean {
-    for (let n = id.parent; n !== undefined && n !== sf; n = n.parent) {
-      if (this.of(n).has(id.text)) return false;
+    for (
+      let from: ts.Node = id, n = id.parent;
+      n !== undefined && n !== sf;
+      from = n, n = n.parent
+    ) {
+      if (this.visible(n, from).has(id.text)) return false;
     }
     return true;
   }
@@ -370,12 +414,24 @@ function selfCalledOnly(
   const fn = unparen(node.initializer);
   if (!ts.isFunctionExpression(fn) || fn.name === undefined || fn.body === undefined) return true;
   const self = fn.name.text;
-  // A parameter or `var` of the same name hides the function's own name.
-  const own = varScopedNames(fn.body);
-  for (const param of fn.parameters.nodes) addBindingNames(param.name, own);
-  if (own.has(self)) return true;
-  // Its parameter initializers see the name too.
-  return references(fn).every((r) => r.text !== self || scopes.boundInside(r, fn) || isCallee(r));
+  // A parameter of the same name hides the function's own name everywhere
+  // in it; a `var` of the same name hides it only in the body, since the
+  // parameter initializers do not see the body's `var`s.
+  if (fn.parameters.nodes.some((p) => bindsName(p.name, self))) return true;
+  const bodyVar = varScopedNames(fn.body).has(self);
+  const body = fn.body;
+  return references(fn).every(
+    (r) =>
+      r.text !== self || scopes.boundInside(r, fn) || (bodyVar && within(r, body)) || isCallee(r),
+  );
+}
+
+/** True when a binding name (an identifier or a destructuring pattern)
+ * declares `name`. */
+function bindsName(binding: ts.BindingName, name: string): boolean {
+  const names = new Set<string>();
+  addBindingNames(binding, names);
+  return names.has(name);
 }
 
 /** True when a reference is the function a call invokes: `f(...)`, or the
