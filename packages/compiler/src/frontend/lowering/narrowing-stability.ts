@@ -190,7 +190,7 @@ export class NarrowingStability {
     const { call, argument } = slot;
     const checker = this.lowerer.checker;
     const signature = checker.getResolvedSignature(call);
-    const declaration = signature ? checker.signatureDeclaration(signature) : undefined;
+    const declaration = signature ? signature.declaration : undefined;
     if (!declaration || !this.lowerer.isStdlibFile(declaration.getSourceFile())) return true;
     const callee = skipOuter(call.expression);
     if (
@@ -372,7 +372,7 @@ export class NarrowingStability {
     this.staleBindings.set(symbol, false);
     let result = false;
     try {
-      const decl = this.lowerer.checker.valueDeclarationOf(symbol);
+      const decl = symbol.valueDeclaration;
       if (decl !== undefined && ts.isVariableDeclaration(decl)) {
         if (decl.initializer !== undefined && this.mayBeStale(decl.initializer)) result = true;
         else {
@@ -421,7 +421,7 @@ export class NarrowingStability {
     if (cached !== undefined) return cached;
     let result = false;
     try {
-      const decl = this.lowerer.checker.valueDeclarationOf(symbol);
+      const decl = symbol.valueDeclaration;
       const mutableBinding =
         decl !== undefined &&
         ((ts.isVariableDeclaration(decl) &&

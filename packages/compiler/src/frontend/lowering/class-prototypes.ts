@@ -578,7 +578,7 @@ function prototypeProtectedKeys(
       } else if (name.startsWith("%symbol:")) {
         const entries: [ts.Symbol, string][] = owner.symbolMethods ? [...owner.symbolMethods] : [];
         const entry = entries.find(([, field]) => field === name);
-        const declaration = entry ? lowerer.checker.valueDeclarationOf(entry[0]) : undefined;
+        const declaration = entry ? entry[0].valueDeclaration : undefined;
         // A CommonJS key-table property holds its key in the table's global.
         const tableKey =
           declaration && ts.isPropertyAssignment(declaration)

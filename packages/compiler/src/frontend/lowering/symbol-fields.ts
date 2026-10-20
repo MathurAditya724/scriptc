@@ -31,7 +31,7 @@ function constantSymbolDescription(
   const symbol = lowerer.resolveValueSymbol(name);
   if (!symbol || seen.has(symbol)) return null;
   seen.add(symbol);
-  const declaration = lowerer.checker.valueDeclarationOf(symbol);
+  const declaration = symbol.valueDeclaration;
   if (
     !declaration ||
     !ts.isVariableDeclaration(declaration) ||
@@ -99,8 +99,8 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
   const cached = cache.get(sym);
   if (cached !== undefined) return cached;
   cache.set(sym, null);
-  const decls = lowerer.checker.declarationsOf(sym);
-  const decl = lowerer.checker.valueDeclarationOf(sym);
+  const decls = sym.declarations;
+  const decl = sym.valueDeclaration;
   if (decls.length === 1 && decl && ts.isPropertyAssignment(decl)) {
     const key = cjsTableSymbolKeyOf(lowerer, sym, decl);
     if (key) cache.set(sym, key);
@@ -432,7 +432,7 @@ export function tableKeyFieldType(
     return null;
   const resolved = classSymbolKeyOf(lowerer, key);
   if (!resolved) return null;
-  const decl = lowerer.checker.valueDeclarationOf(resolved.identity);
+  const decl = resolved.identity.valueDeclaration;
   if (!decl || !ts.isPropertyAssignment(decl)) return null;
   const receiver = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(node.expression));
   if (receiver?.kind !== "object") return null;

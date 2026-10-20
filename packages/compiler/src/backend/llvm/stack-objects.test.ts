@@ -214,7 +214,7 @@ test("loop bindings are never reassigned into a fixed slot", () => {
     ],
   };
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [{ id: "point", fields: [{ name: "x", type: F64 }] }],
