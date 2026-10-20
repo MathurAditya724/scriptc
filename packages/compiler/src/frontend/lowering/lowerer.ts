@@ -13007,8 +13007,7 @@ function refuseInferredCallbackDrops(
     t.kind === "record" || t.kind === "array" || t.kind === "promise";
   if (!structured(actual) || !structured(expected)) return;
   let site: ts.Node = node;
-  while (ts.isParenthesizedExpression(site.parent) || ts.isAwaitExpression(site.parent))
-    site = site.parent;
+  while (yieldsOperand(site)) site = site.parent!;
   let fn: ts.Node | undefined;
   if (ts.isReturnStatement(site.parent) && site.parent.expression === site) {
     fn = site.parent.parent;
@@ -13029,6 +13028,34 @@ function refuseInferredCallbackDrops(
     node,
     `returning '${lowerer.fmt(actual)}' from a callback whose result the checker infers as the narrower '${lowerer.fmt(expected)}' (the conversion would drop ${dropped.map((d) => `'${d}'`).join(", ")}, which the object keeps at run time — annotate the callback's return type or the call's type argument with a type that declares them)`,
   );
+}
+
+/** True when the value of `node`'s parent can be `node`'s own value:
+ * parentheses, `await`, `satisfies`, a non-null assertion, a conditional's
+ * branch, either operand of `??`, `||` and `&&`, and the right operand of a
+ * comma. */
+function yieldsOperand(node: ts.Node): boolean {
+  const p = node.parent;
+  if (p === undefined) return false;
+  if (
+    ts.isParenthesizedExpression(p) ||
+    ts.isAwaitExpression(p) ||
+    ts.isSatisfiesExpression(p) ||
+    ts.isNonNullExpression(p)
+  )
+    return true;
+  if (ts.isConditionalExpression(p)) return p.whenTrue === node || p.whenFalse === node;
+  if (ts.isBinaryExpression(p)) {
+    const op = p.operatorToken.kind;
+    if (
+      op === ts.SyntaxKind.QuestionQuestionToken ||
+      op === ts.SyntaxKind.BarBarToken ||
+      op === ts.SyntaxKind.AmpersandAmpersandToken
+    )
+      return true;
+    return op === ts.SyntaxKind.CommaToken && p.right === node;
+  }
+  return false;
 }
 
 /** Member names a structural conversion from `from` into `to` drops:
