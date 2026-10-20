@@ -9338,15 +9338,18 @@ function lowerObjLitGenericMethodCall(
       lowerer.checker.getCallSignatures(recvT).length > 0
     ) {
       const value = tryLowerExpression(lowerer, access.expression);
+      // Builtin function values held as checked-dynamic functions
+      // (String.fromCharCode, JSON.stringify) bind the same way.
       if (
-        value?.type.kind === "func" &&
-        lowerer.dynConvertible(value.type) &&
+        value &&
+        (value.type.kind === "dyn" ||
+          (value.type.kind === "func" && lowerer.dynConvertible(value.type))) &&
         !call.arguments.nodes.some(ts.isSpreadElement)
       ) {
         const loc = locOf(call);
         return {
           kind: "dynInvoke",
-          recv: { kind: "dynFrom", value, type: DYN, loc },
+          recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
           method: name,
           calleeName: ts.getTextOfNode(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),

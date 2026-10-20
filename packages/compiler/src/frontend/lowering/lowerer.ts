@@ -12945,6 +12945,8 @@ export class Lowerer {
         loc,
       };
     }
+    if (bi.module === "fs" && (bi.member === "realpathSync" || bi.member === "realpathSync.native"))
+      return fsRealpathValue(this, bi.member === "realpathSync.native", loc);
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
   }
@@ -13656,4 +13658,52 @@ function droppedMembers(lowerer: Lowerer, from: IrType, to: IrType, seen: Set<st
     else out.push(...droppedMembers(lowerer, f.type, t.type, seen).map((n) => `${f.name}.${n}`));
   }
   return out;
+}
+
+/** fs.realpathSync and its .native as function values (fs.realpath stores
+ * `var origRealpathSync = fs.realpathSync`): path and options pass through
+ * unchecked to the runtime, which applies Node's argument handling. */
+function fsRealpathValue(lowerer: Lowerer, native: boolean, loc: SrcLoc): IrExpr {
+  const name = native ? "%builtin.fs.realpathSync.native" : "%builtin.fs.realpathSync";
+  if (!lowerer.builtinCallableValueFns.has(name)) {
+    lowerer.builtinCallableValueFns.set(name, name);
+    const params = ["path", "options"].map((id) => ({ localId: id, name: id, type: DYN }));
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: DYN,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: DYN, mutable: false })),
+      loc,
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "libCall",
+            fn: "fs.realpathValue",
+            args: [
+              { kind: "varRef", localId: "path", type: DYN, loc },
+              { kind: "varRef", localId: "options", type: DYN, loc },
+              { kind: "boolLit", value: native, type: BOOL, loc },
+            ],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: {
+      kind: "closure",
+      fnName: name,
+      captures: [],
+      type: { kind: "func", params: [DYN, DYN], ret: DYN },
+      loc,
+    },
+    fnName: native ? "native" : "realpathSync",
+    type: DYN,
+    loc,
+  };
 }

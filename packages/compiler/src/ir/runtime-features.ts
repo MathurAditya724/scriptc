@@ -569,6 +569,8 @@ const RUNTIME_FEATURE_RULES = {
   /** Checked-dynamic stream slots test values and pipe into JavaScript
    * stream objects (scr_stream_dyn.c). */
   streamDyn: rule({ fns: ["stream.dynNative", "stream.pipeDyn", "stream.unpipeDyn"] }),
+  /** Builtin functions read as values (scr_builtin_values.c). */
+  builtinValues: rule({ fns: ["buffer.byteLenValue", "buffer.allocValue", "fs.realpathValue"] }),
   /** The stream unit emits through the emitter unit, also when the
    * program constructs no stream (a pipeline of functions). */
   emitter: rule({
@@ -752,6 +754,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdioExtended: false,
     stream: false,
     streamDyn: false,
+    builtinValues: false,
     symbol: false,
     tls: false,
     tlsCa: false,

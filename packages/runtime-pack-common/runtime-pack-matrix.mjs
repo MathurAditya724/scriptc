@@ -61,6 +61,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch")],
+  // Builtin functions read as values in JavaScript dependencies.
+  ["scr_builtin_values.c", "builtinValues"],
   ["scr_dc.c", "dc"],
   // The dynamic tier's jsval values (two-tier design I3): linked only into
   // programs whose IR has dynamic-tier operations.

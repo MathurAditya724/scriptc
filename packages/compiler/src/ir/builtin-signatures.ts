@@ -687,6 +687,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** realpath(3) with Node's error shape (syscall "lstat" in the message,
    * Node's own spelling for realpathSync failures). +1 fresh string. */
   "fs.realpathSync": { argTypes: [STRING], result: STRING },
+  /** fs.realpathSync (or its .native when the flag is true) as a function
+   * value: path and options arrive unchecked; the result is a string or a
+   * Buffer by the options' encoding. */
+  "fs.realpathValue": { argTypes: [DYN, DYN, BOOL], result: DYN },
   /** Native realpath with syscall "realpath" on failure. +1 fresh string. */
   "fs.realpathNativeSync": { argTypes: [STRING], result: STRING },
   /** The os.userInfo() field trio (uv_os_get_passwd's slices): pw_name,
@@ -2868,6 +2872,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * allocUnsafeSlow never pool. The size forms validate like Node
    * (ERR_OUT_OF_RANGE). poolSize reads and writes Buffer.poolSize. */
   "buffer.alloc": { argTypes: [F64], result: BYTES_U8 },
+  /** Buffer.alloc as a function value: the size arrives unchecked. */
+  "buffer.allocValue": { argTypes: [DYN], result: BYTES_U8 },
   "buffer.allocUnsafe": { argTypes: [F64], result: BYTES_U8 },
   "buffer.allocUnsafeSlow": { argTypes: [F64], result: BYTES_U8 },
   "buffer.poolFromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
@@ -2881,6 +2887,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * fromStr's — and Buffer.isEncoding(name) over a runtime string
    * (case-insensitive against Node's alias set). Pure; never throw. */
   "buffer.byteLenDyn": { argTypes: [DYN, STRING], result: F64 },
+  /** Buffer.byteLength as a function value: the encoding arrives at run time. */
+  "buffer.byteLenValue": { argTypes: [DYN, DYN], result: F64 },
   "buffer.byteLenStr": { argTypes: [STRING, STRING], result: F64 },
   "buffer.isEncoding": { argTypes: [STRING], result: BOOL },
   /** Buffer.concat(list, totalLength): the concatenation truncated or

@@ -27,6 +27,7 @@ import {
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
+  BYTES_U8,
   DYN,
   F64,
   type IrExpr,
@@ -156,7 +157,7 @@ import { narrowStoredClassValue, structuralReadType } from "../class-unions.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { lowerUnionFieldRead } from "./union-fields.js";
 import { errorPropertyRead } from "../error-methods.js";
-import { isSafeToRepeat } from "./evaluation-safety.js";
+import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/compression.js";
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
 import { keyedFieldRead } from "./keyed-field-targets.js";
@@ -1624,6 +1625,38 @@ export function lowerIntrinsicProperty(
   if (netAddressStatic) return netAddressStatic;
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "isBuffer")
     return lowerCheckedPredicateValue(lowerer, "Buffer.isBuffer", "buffer", locOf(expr));
+  // Buffer statics as function values (`Buffer.byteLength.bind(Buffer)` in
+  // truncate-utf8-bytes): the checked forms take any argument as Node does.
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "byteLength")
+    return lowerer.lowerNativeCallableValue(
+      {
+        fn: "buffer.byteLenValue",
+        params: [DYN, DYN],
+        result: F64,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+      },
+      "Buffer.byteLength",
+      locOf(expr),
+    );
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "alloc")
+    return bufferAllocValue(lowerer, locOf(expr));
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "compare")
+    return lowerer.lowerNativeCallableValue(
+      {
+        fn: "buffer.compareChk",
+        params: [DYN, DYN],
+        result: F64,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "required", type: DYN },
+        ],
+      },
+      "Buffer.compare",
+      locOf(expr),
+    );
   if (lowerer.stdlibGlobalMember(expr, "Date") === "now")
     return lowerer.lowerNativeCallableValue(
       {
@@ -2205,9 +2238,163 @@ export function lowerIntrinsicProperty(
         own(STDLIB_SURFACE.string, name) !== undefined
       : ARRAY_METHODS.has(name)
   ) {
+    // A JavaScript string method read as a value (smol-toml's
+    // `!!(''.isWellFormed)` feature probe): String.prototype's method, the
+    // runtime's interned function that runs it on its receiver.
+    if (kind === "string" && isJsSourceFile(expr.getSourceFile()) && !expr.questionDotToken) {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      const method: IrExpr = {
+        kind: "libCall",
+        fn: "dyn.builtinMethod",
+        args: [
+          { kind: "strLit", value: "String", type: STRING, loc: locOf(expr) },
+          { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
+        ],
+        type: DYN,
+        loc: locOf(expr),
+      };
+      return isSafeToDiscard(receiver)
+        ? method
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(expr.expression) }],
+            result: method,
+            type: DYN,
+            loc: locOf(expr),
+          };
+    }
     lowerer.unsupported("SC1090", expr, `${kind} methods as values (call '${name}' directly)`);
   }
   return null;
+}
+
+/** The fill step of Buffer.alloc's value form: a number, or a string with
+ * no encoding (utf8), fills the fresh buffer statically; any other fill
+ * takes the checked-dynamic `fill` dispatch. */
+function bufferAllocFill(loc: SrcLoc): IrStmt {
+  const buf = varRef("buf", BYTES_U8, loc);
+  const fill = varRef("fill", DYN, loc);
+  const encoding = varRef("encoding", DYN, loc);
+  const test = (kind: "number" | "string" | "undefined", value: IrExpr): IrExpr => ({
+    kind: "dynTest",
+    test: kind,
+    value,
+    type: BOOL,
+    loc,
+  });
+  const fillStr: IrExpr = {
+    kind: "bytesIntrinsic",
+    method: "fillStr",
+    receiver: buf,
+    args: [
+      { kind: "dynCheck", value: fill, type: STRING, loc },
+      { kind: "strLit", value: "utf8", type: STRING, loc },
+    ],
+    type: BYTES_U8,
+    loc,
+  };
+  const fillNum: IrExpr = {
+    kind: "bytesIntrinsic",
+    method: "fillNum",
+    receiver: buf,
+    args: [{ kind: "dynCheck", value: fill, type: F64, loc }],
+    type: BYTES_U8,
+    loc,
+  };
+  const other: IrExpr = {
+    kind: "dynInvoke",
+    recv: { kind: "dynFrom", value: buf, type: DYN, loc },
+    method: "fill",
+    calleeName: "buf.fill",
+    args: [fill, encoding],
+    type: DYN,
+    loc,
+  };
+  return {
+    kind: "if",
+    cond: test("number", fill),
+    then: [{ kind: "exprStmt", expr: fillNum, loc }],
+    else_: [
+      {
+        kind: "if",
+        cond: {
+          kind: "logical",
+          op: "&&",
+          left: test("string", fill),
+          right: test("undefined", encoding),
+          type: BOOL,
+          loc,
+        },
+        then: [{ kind: "exprStmt", expr: fillStr, loc }],
+        else_: [{ kind: "exprStmt", expr: other, loc }],
+        loc,
+      },
+    ],
+    loc,
+  };
+}
+
+/** Buffer.alloc as a function value (`var alloc = Buffer.alloc` in
+ * tar-stream): the checked allocation, then `fill(fill, encoding)` on the
+ * fresh buffer when a fill is given, which is how Node's alloc fills. */
+function bufferAllocValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const name = "%builtin.Buffer.alloc";
+  if (!lowerer.builtinCallableValueFns.has(name)) {
+    lowerer.builtinCallableValueFns.set(name, name);
+    const params = ["size", "fill", "encoding"].map((id) => ({ localId: id, name: id, type: DYN }));
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: BYTES_U8,
+      locals: [
+        ...params.map((p) => ({ id: p.localId, name: p.name, type: DYN, mutable: false })),
+        { id: "buf", name: "buf", type: BYTES_U8, mutable: false },
+      ],
+      loc,
+      body: [
+        {
+          kind: "varDecl",
+          localId: "buf",
+          init: {
+            kind: "libCall",
+            fn: "buffer.allocValue",
+            args: [varRef("size", DYN, loc)],
+            type: BYTES_U8,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: {
+            kind: "dynTest",
+            test: "undefined",
+            negated: true,
+            value: varRef("fill", DYN, loc),
+            type: BOOL,
+            loc,
+          },
+          then: [bufferAllocFill(loc)],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: varRef("buf", BYTES_U8, loc), loc },
+      ],
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: {
+      kind: "closure",
+      fnName: name,
+      captures: [],
+      type: { kind: "func", params: [DYN, DYN, DYN], ret: BYTES_U8 },
+      loc,
+    },
+    fnName: "alloc",
+    type: DYN,
+    loc,
+  };
 }
 
 /** A `T | undefined` class field read that the checker narrowed to `T`

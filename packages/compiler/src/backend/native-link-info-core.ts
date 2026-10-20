@@ -49,6 +49,9 @@ export interface NativeLinkFeatures {
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
+  /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
+   * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
+  builtinValues?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
