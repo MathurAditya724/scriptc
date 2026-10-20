@@ -8,6 +8,7 @@ node_modules/
 !tests/fixtures/npm/node_modules/
 !tests/corpus/*/node_modules/
 !tests/fixtures/npm-static/node_modules/
+!tests/coverage-fixtures/wasm/node_modules/
 !tests/fixtures/npm-static/nested/inner/node_modules/
 !tests/fixtures/npm-static/node_modules/*/node_modules/
 !tests/fixtures/npm/store/*/node_modules/
@@ -34,6 +35,7 @@ output/
 !tests/fixtures/npm/cases/workspace-copied/node_modules/*/dist/
 !tests/fixtures/provenance/node_modules/*/dist/
 !tests/fixtures/npm-static/node_modules/*/dist/
+!tests/corpus/*/node_modules/*/dist/
 .scriptc/
 *.log
 .DS_Store

@@ -73,7 +73,10 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
             systemLibraries: [],
             features: {
               workers: false,
+              youngNursery: false,
               eventTarget: false,
+              warningReplace: false,
+              stdioExtended: false,
               regex: true,
               copying: false,
               textDecoderLegacy: false,
@@ -103,6 +106,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
               tls: false,
               tlsCa: false,
               cipher: false,
+              webcrypto: false,
               nativeFetch: false,
               netEffective: false,
               httpEffective: false,

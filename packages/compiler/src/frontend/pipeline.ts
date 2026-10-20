@@ -39,6 +39,21 @@ import { THREADS_MODULE } from "./threads-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 
+/** Where a package-anchored preflight diagnostic sits, as
+ * `<package path>:<line>` — the SC2013 refusal that drops the package
+ * reports only at the consumer's import, so its reason carries the inner
+ * location. */
+function packageDiagWhere(load: LoadResult, loc: SrcLoc): string {
+  const file = loc.file.split("\\").join("/");
+  const at = file.lastIndexOf("/node_modules/");
+  const shown = at >= 0 ? file.slice(at + "/node_modules/".length) : file;
+  const text = load.program.getSourceFile(loc.file)?.text;
+  if (text === undefined) return shown;
+  let line = 1;
+  for (let i = 0; i < loc.start && i < text.length; i++) if (text.charCodeAt(i) === 10) line++;
+  return `${shown}:${line}`;
+}
+
 export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   externalTypes?: Readonly<Record<string, string>> | undefined;
@@ -131,7 +146,7 @@ function detectAutoPackages(
     const owner = npmStaticPackageOfPath(sf.fileName);
     const viaTransitive = owner !== null && transitive.has(owner);
     const edges: { spec: string; loc: SrcLoc }[] = [];
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (
         (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
         stmt.moduleSpecifier &&
@@ -152,7 +167,7 @@ function detectAutoPackages(
     // anywhere in the package, nested ones included.
     if (viaTransitive) {
       for (const call of moduleSourceCandidates(load.program, sf).calls) {
-        const arg = call.arguments[0];
+        const arg = call.arguments.nodes[0];
         if (
           arg !== undefined &&
           isStringLiteralLike(arg) &&
@@ -445,7 +460,8 @@ function loadFrontend(
     const reasons = new Map<string, string>(npmStaticOffenders());
     for (const d of preflight) {
       const pkg = npmStaticPackageOfPath(d.loc.file);
-      if (pkg !== null && !reasons.has(pkg)) reasons.set(pkg, `${d.code}: ${d.message}`);
+      if (pkg !== null && !reasons.has(pkg))
+        reasons.set(pkg, `${d.code} at ${packageDiagWhere(load, d.loc)}: ${d.message}`);
     }
     if (![...reasons.keys()].some((p) => effective.has(p))) {
       const named = new Map<string, number>();
@@ -577,6 +593,7 @@ function loadFrontend(
         ...opts,
         frontendServices: finalLoad.services,
         startupCrash: finalLoad.startupCrash ?? null,
+        inlineRequireCycleCalls: finalLoad.inlineRequireCycleCalls,
         projectCheckJs: finalLoad.typeWorld?.projectCheckJs ?? false,
         externalTypes: finalLoad.externalTypes,
         externalTypeSpecifiersByFile: finalLoad.externalTypeSpecifiersByFile,

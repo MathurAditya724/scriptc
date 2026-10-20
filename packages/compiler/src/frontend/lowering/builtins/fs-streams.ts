@@ -34,15 +34,13 @@ function isFsFallbackDecl(lowerer: Lowerer, d: ts.Node): boolean {
 export function isFsStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(access.name);
   if (!symbol) return false;
-  return lowerer.checker
-    .declarationsOf(symbol)
-    .some(
-      (d) =>
-        d.parent !== undefined &&
-        ts.isClassDeclaration(d.parent) &&
-        (d.parent.name?.text === "ReadStream" || d.parent.name?.text === "WriteStream") &&
-        isFsFallbackDecl(lowerer, d.parent),
-    );
+  return symbol.declarations.some(
+    (d) =>
+      d.parent !== undefined &&
+      ts.isClassDeclaration(d.parent) &&
+      (d.parent.name?.text === "ReadStream" || d.parent.name?.text === "WriteStream") &&
+      isFsFallbackDecl(lowerer, d.parent),
+  );
 }
 
 /** bytesRead / bytesWritten / pending / path reads. Null for other
@@ -87,7 +85,7 @@ export function lowerFsStreamMethodCall(
 ): IrExpr | null {
   if (access.name.text !== "close") return null;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.some(ts.isSpreadElement)) lowerer.noLowering("close with spread arguments", call);
   if (args.length > 1) lowerer.noLowering(`close with ${args.length} arguments`, call);
   const receiver = lowerer.lowerExpr(access.expression);
@@ -156,9 +154,9 @@ export function fsStreamClassOf(
   symbol: ts.Symbol | null | undefined,
 ): "ReadStream" | "WriteStream" | null {
   if (!symbol || (symbol.name !== "ReadStream" && symbol.name !== "WriteStream")) return null;
-  const declared = lowerer.checker
-    .declarationsOf(symbol)
-    .some((d) => ts.isClassDeclaration(d) && isFsFallbackDecl(lowerer, d));
+  const declared = symbol.declarations.some(
+    (d) => ts.isClassDeclaration(d) && isFsFallbackDecl(lowerer, d),
+  );
   return declared ? symbol.name : null;
 }
 
@@ -171,7 +169,7 @@ export function lowerFsStreamNew(
 ): IrExpr {
   return fsStreamCreateExpr(
     lowerer,
-    expr.arguments ?? [],
+    expr.arguments?.nodes ?? [],
     cls === "ReadStream",
     `new fs.${cls}`,
     expr,

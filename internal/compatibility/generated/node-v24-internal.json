@@ -190,10 +190,10 @@
       "entries": 179,
       "apiEntries": 152,
       "static": {
-        "supported": 5,
+        "supported": 6,
         "partial": 39,
         "refused": 21,
-        "not-implemented": 87,
+        "not-implemented": 86,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -326,9 +326,9 @@
       "apiEntries": 280,
       "static": {
         "supported": 7,
-        "partial": 198,
+        "partial": 200,
         "refused": 0,
-        "not-implemented": 75,
+        "not-implemented": 73,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -340,10 +340,10 @@
       "entries": 94,
       "apiEntries": 92,
       "static": {
-        "supported": 0,
-        "partial": 12,
-        "refused": 0,
-        "not-implemented": 80,
+        "supported": 1,
+        "partial": 15,
+        "refused": 1,
+        "not-implemented": 75,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -746,9 +746,9 @@
       "apiEntries": 117,
       "static": {
         "supported": 0,
-        "partial": 64,
+        "partial": 65,
         "refused": 0,
-        "not-implemented": 53,
+        "not-implemented": 52,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -910,10 +910,10 @@
       "entries": 176,
       "apiEntries": 156,
       "static": {
-        "supported": 1,
-        "partial": 10,
+        "supported": 2,
+        "partial": 21,
         "refused": 0,
-        "not-implemented": 145,
+        "not-implemented": 133,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1953,7 +1953,8 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -2002,7 +2003,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2074,7 +2076,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.disable",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2100,7 +2103,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.getStore",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2126,7 +2130,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.enterWith",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2152,7 +2157,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.run",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2178,7 +2184,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:asyncLocalStorage.exit",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2481,6 +2488,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -3042,7 +3050,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
-          "tests/corpus/2213-async-local-storage.cjs"
+          "tests/corpus/2213-async-local-storage.cjs",
+          "tests/corpus/5815-als-callback-context.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19861,6 +19870,10 @@
           "tests/corpus/5760-crypto-hash-stream.ts",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
+          "tests/corpus/6204-crypto-get-random-values.ts",
+          "tests/corpus/6205-crypto-get-random-values.js",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -20402,6 +20415,8 @@
         "evidence": "compiler-dedicated:crypto.createHash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -20439,6 +20454,8 @@
         "evidence": "compiler-dedicated:crypto.createHmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -21013,8 +21030,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.getRandomValues",
+        "tests": [
+          "tests/corpus/6204-crypto-get-random-values.ts",
+          "tests/corpus/6205-crypto-get-random-values.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21040,6 +21061,8 @@
         "evidence": "compiler-dedicated:crypto.hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -21158,6 +21181,8 @@
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -21195,6 +21220,8 @@
         "evidence": "compiler-dedicated:crypto.pbkdf2Sync",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23095,6 +23122,8 @@
         "evidence": "compiler-dedicated:Hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23132,6 +23161,8 @@
         "evidence": "compiler-dedicated:hash.copy",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23169,6 +23200,8 @@
         "evidence": "compiler-dedicated:hash.digest",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23206,6 +23239,8 @@
         "evidence": "compiler-dedicated:hash.update",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23243,6 +23278,8 @@
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23280,6 +23317,8 @@
         "evidence": "compiler-dedicated:hmac.digest",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -23317,6 +23356,8 @@
         "evidence": "compiler-dedicated:hmac.update",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -25031,6 +25072,8 @@
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -28114,6 +28157,8 @@
         "evidence": "compiler-dedicated:Hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -28164,6 +28209,8 @@
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
+          "tests/corpus/5768-crypto-hash-unknown.ts",
+          "tests/corpus/5769-crypto-hash-unknown.cjs",
           "tests/corpus/5761-crypto-hash-stream-states.ts",
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/2890-crypto-static-utility.ts",
@@ -44097,6 +44144,8 @@
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
           "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/6207-fs-constants-object.ts",
+          "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
@@ -45884,8 +45933,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.constants",
+        "tests": [
+          "tests/corpus/6207-fs-constants-object.ts",
+          "tests/corpus/6208-fs-constants-require.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -51756,8 +51809,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.constants",
+        "tests": [
+          "tests/corpus/6207-fs-constants-object.ts",
+          "tests/corpus/6208-fs-constants-require.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -52185,8 +52242,16 @@
           "tests/corpus/5288-blob-validation.js",
           "tests/corpus/5290-blob-dynamic.js",
           "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/corpus/6331-jose-root-entry/main.ts",
           "tests/corpus/text-codec-values/main.ts",
-          "tests/harness/fetch-conformance.test.ts"
+          "tests/fixtures/node-types/navigator.ts",
+          "tests/harness/fetch-conformance.test.ts",
+          "tests/harness/project-config.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -52607,8 +52672,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.CryptoKey",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53281,8 +53353,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.SubtleCrypto",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53521,8 +53600,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:stdlib.webassembly"
       },
       "anchorSource": "exact"
     },
@@ -54187,8 +54266,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.navigator",
+        "tests": [
+          "tests/fixtures/node-types/navigator.ts",
+          "tests/harness/project-config.test.ts",
+          "tests/corpus/6331-jose-root-entry/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -54325,8 +54409,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.userAgent",
+        "tests": [
+          "tests/fixtures/node-types/navigator.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91014,6 +91102,8 @@
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
+          "tests/fixtures/node-test/cases/get-test-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
@@ -94762,8 +94852,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.getTestContext",
+        "tests": [
+          "tests/fixtures/node-test/cases/get-test-context.ts",
+          "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106806,10 +106901,18 @@
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
+          "tests/corpus/6204-crypto-get-random-values.ts",
+          "tests/corpus/6205-crypto-get-random-values.js",
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
+          "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -110290,8 +110393,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.getRandomValues",
+        "tests": [
+          "tests/corpus/6204-crypto-get-random-values.ts",
+          "tests/corpus/6205-crypto-get-random-values.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110341,8 +110448,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110364,8 +110478,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.CryptoKey",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110387,8 +110506,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.cryptoKey.algorithm",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110410,8 +110534,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.extractable",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110433,8 +110562,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.type",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110456,8 +110590,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.usages",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110548,8 +110687,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.SubtleCrypto",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110686,8 +110832,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.digest",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110847,8 +111001,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.importKey",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110870,8 +111032,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.sign",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110916,8 +111086,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.verify",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },

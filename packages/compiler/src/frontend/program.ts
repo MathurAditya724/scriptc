@@ -340,6 +340,12 @@ export interface LoadResult {
    * last. Empty until checkPreflight runs (and empty when preflight fails
    * structurally). */
   moduleOrder: ts.SourceFile[];
+  /** Inline require() calls whose edge closes a require cycle. Node answers
+   * them with the still-evaluating module's partial exports, which the
+   * static export globals do not model; their lowering refuses them by name
+   * at run time instead of refusing the whole program. Filled by
+   * checkPreflight. */
+  inlineRequireCycleCalls?: ReadonlySet<ts.Node>;
   /** Node's startup refusal, when the graph carries an import edge Node
    * rejects before ANY module evaluates — a RESOLUTION refusal (a bare
    * specifier nothing installed resolves, an exports/imports map that
@@ -585,13 +591,13 @@ function createRequireProgramRoots7(program: ts.Program): string[] {
     for (const node of moduleSourceCandidates(program, sf).calls) {
       if (
         node.questionDotToken !== undefined ||
-        node.arguments.length !== 1 ||
-        !ts.isStringLiteralLike(node.arguments[0]!) ||
+        node.arguments.nodes.length !== 1 ||
+        !ts.isStringLiteralLike(node.arguments.nodes[0]!) ||
         !ts.isIdentifier(node.expression)
       ) {
         continue;
       }
-      calls.push({ callee: node.expression, spec: node.arguments[0]!.text });
+      calls.push({ callee: node.expression, spec: node.arguments.nodes[0]!.text });
     }
     // Root discovery only needs the callee's binding. A first-miss lookup
     // otherwise fetches symbols and types for every identifier in the file,
@@ -1038,9 +1044,10 @@ export function loadProgram(
  * preflight diagnostics. Preserve the caller's complete load shape when
  * mutating it, including its owned services and disposal callback. */
 export function checkPreflight<T extends LoadResult>(load: T): ScrDiagnostic[] {
-  const { diags, moduleOrder, startupCrash } = preflight7(load);
+  const { diags, moduleOrder, startupCrash, inlineRequireCycleCalls } = preflight7(load);
   load.moduleOrder = moduleOrder;
   load.startupCrash = startupCrash;
+  load.inlineRequireCycleCalls = inlineRequireCycleCalls;
   return diags;
 }
 
@@ -1101,8 +1108,8 @@ function requireSpecOf7(node: ts.Node): string | null {
   }
   if (!ts.isCallExpression(value)) return null;
   if (!ts.isIdentifier(value.expression) || value.expression.text !== "require") return null;
-  if (value.arguments.length !== 1) return null;
-  const arg = value.arguments[0]!;
+  if (value.arguments.nodes.length !== 1) return null;
+  const arg = value.arguments.nodes[0]!;
   return ts.isStringLiteral(arg) ? arg.text : null;
 }
 
@@ -1114,7 +1121,7 @@ function requireSpecOf7(node: ts.Node): string | null {
 function isRequireStatement7(stmt: ts.Statement): boolean {
   if (ts.isExpressionStatement(stmt)) return requireSpecOf7(stmt.expression) !== null;
   if (!ts.isVariableStatement(stmt)) return false;
-  const decls = stmt.declarationList.declarations;
+  const decls = stmt.declarationList.declarations.nodes;
   return (
     decls.length > 0 &&
     decls.every((d) => d.initializer !== undefined && requireSpecOf7(d.initializer) !== null)
@@ -1132,7 +1139,7 @@ function requiresOf7(
   }
   if (!ts.isVariableStatement(stmt)) return [];
   const out: { spec: string; node: ts.Node; decl: ts.VariableDeclaration | null }[] = [];
-  for (const decl of stmt.declarationList.declarations) {
+  for (const decl of stmt.declarationList.declarations.nodes) {
     const spec = decl.initializer !== undefined ? requireSpecOf7(decl.initializer) : null;
     if (spec !== null) out.push({ spec, node: decl, decl });
   }
@@ -1153,8 +1160,8 @@ export function isEsModuleStamp(expr: ts.Expression): boolean {
   ) {
     return false;
   }
-  if (expr.arguments.length !== 3) return false;
-  const [recv, nameArg, desc] = expr.arguments as unknown as [
+  if (expr.arguments.nodes.length !== 3) return false;
+  const [recv, nameArg, desc] = expr.arguments.nodes as unknown as [
     ts.Expression,
     ts.Expression,
     ts.Expression,
@@ -1168,8 +1175,8 @@ export function isEsModuleStamp(expr: ts.Expression): boolean {
       recv.name.text === "exports");
   if (!isExports) return false;
   if (!ts.isStringLiteral(nameArg) || nameArg.text !== "__esModule") return false;
-  if (!ts.isObjectLiteralExpression(desc) || desc.properties.length !== 1) return false;
-  const p = desc.properties[0]!;
+  if (!ts.isObjectLiteralExpression(desc) || desc.properties.nodes.length !== 1) return false;
+  const p = desc.properties.nodes[0]!;
   return (
     ts.isPropertyAssignment(p) &&
     ts.isIdentifier(p.name) &&
@@ -1190,7 +1197,7 @@ function pureCjsExport7(program: ts.Program, stmt: ts.Statement): boolean {
     if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return false;
     // A replacement export can have setters or non-writable function
     // properties. Only the wrapper's original object gets this exception.
-    if (sf.statements.some((s) => cjsExportAssignmentOf(s)?.kind === "table")) return false;
+    if (sf.statements.nodes.some((s) => cjsExportAssignmentOf(s)?.kind === "table")) return false;
     if (left.name.text === "__proto__" || left.name.text === "__esModule") return false;
     let receiver = left.expression;
     if (isModuleExportsAccess(receiver)) {
@@ -1228,9 +1235,9 @@ function pureCjsExport7(program: ts.Program, stmt: ts.Statement): boolean {
   const symbol = checker.getSymbolAtLocation(value);
   return (
     symbol !== undefined &&
-    checker
-      .declarationsOf(symbol)
-      .some((decl) => ts.isFunctionDeclaration(decl) && decl.parent === stmt.parent)
+    symbol.declarations.some(
+      (decl) => ts.isFunctionDeclaration(decl) && decl.parent === stmt.parent,
+    )
   );
 }
 
@@ -1239,9 +1246,9 @@ function sourceBinding7(program: ts.Program, ident: ts.Identifier): boolean {
   const symbol = checker.getSymbolAtLocation(ident);
   return (
     symbol !== undefined &&
-    checker
-      .declarationsOf(symbol)
-      .some((decl) => !decl.getSourceFile().isDeclarationFile && !ts.isSourceFile(decl))
+    symbol.declarations.some(
+      (decl) => !decl.getSourceFile().isDeclarationFile && !ts.isSourceFile(decl),
+    )
   );
 }
 
@@ -1271,7 +1278,7 @@ function purePrefixStmt7(program: ts.Program, s: ts.Statement): boolean {
     if (ts.isExpressionStatement(s) && isEsModuleStamp(s.expression)) {
       const call = s.expression as ts.CallExpression;
       const object = (call.expression as ts.PropertyAccessExpression).expression as ts.Identifier;
-      let receiver = call.arguments[0]!;
+      let receiver = call.arguments.nodes[0]!;
       if (ts.isPropertyAccessExpression(receiver)) receiver = receiver.expression;
       if (
         !sourceBinding7(program, object) &&
@@ -1283,7 +1290,7 @@ function purePrefixStmt7(program: ts.Program, s: ts.Statement): boolean {
     if (pureCjsExport7(program, s)) return true;
   }
   if (ts.isVariableStatement(s)) {
-    return s.declarationList.declarations.every(purePrefixDecl7);
+    return s.declarationList.declarations.nodes.every(purePrefixDecl7);
   }
   return false;
 }
@@ -1313,7 +1320,7 @@ export function bindingEarlyUse7(
   const bound: ts.Identifier[] = [];
   if (ts.isIdentifier(decl.name)) bound.push(decl.name);
   else if (ts.isObjectBindingPattern(decl.name)) {
-    for (const el of decl.name.elements)
+    for (const el of decl.name.elements.nodes)
       if (el.name !== undefined && ts.isIdentifier(el.name)) bound.push(el.name);
   }
   const bindings = new Map<ts.Symbol, string>();
@@ -1322,7 +1329,7 @@ export function bindingEarlyUse7(
     if (sym) bindings.set(sym, id.text);
   }
   if (bindings.size === 0) return null;
-  const stmts = sf.statements;
+  const stmts = sf.statements.nodes;
   const hoisted = new Map<ts.Symbol, ts.Statement>();
   for (const s of stmts) {
     if ((ts.isFunctionDeclaration(s) || ts.isClassDeclaration(s)) && s.name) {
@@ -1396,9 +1403,9 @@ function requireEarlyReference7(
   const stmt = decl.parent?.parent;
   const sf = decl.getSourceFile();
   if (stmt !== undefined && ts.isVariableStatement(stmt) && ts.isSourceFile(stmt.parent)) {
-    const stmts = sf.statements;
+    const stmts = sf.statements.nodes;
     const k = stmts.indexOf(stmt);
-    const declarations = stmt.declarationList.declarations;
+    const declarations = stmt.declarationList.declarations.nodes;
     // Earlier declarators run too: `const x = read(), dep = require('./dep')`.
     const precedingDecls = declarations.slice(0, declarations.indexOf(decl));
     let firstRunnable = program.analysis.requireFirstRunnable.get(sf);
@@ -1449,7 +1456,7 @@ export function requireBindingEarlyUse7(
     if (sym) bindings.add(sym);
   }
   if (bindings.size === 0) return null;
-  const stmts = sf.statements;
+  const stmts = sf.statements.nodes;
   const cjs = isCjsJsFile7(sf, program);
   const symbolOf = (id: ts.Identifier): ts.Symbol | undefined => {
     const parent = id.parent;
@@ -1474,7 +1481,7 @@ export function requireBindingEarlyUse7(
     if (ts.isArrowFunction(e) || ts.isFunctionExpression(e) || ts.isClassExpression(e)) {
       out.push(e);
     } else if (ts.isObjectLiteralExpression(e)) {
-      for (const p of e.properties) {
+      for (const p of e.properties.nodes) {
         if (
           (ts.isMethodDeclaration(p) ||
             ts.isGetAccessorDeclaration(p) ||
@@ -1492,7 +1499,7 @@ export function requireBindingEarlyUse7(
     if ((ts.isFunctionDeclaration(s) || ts.isClassDeclaration(s)) && s.name !== undefined) {
       addUnit(s.name, s);
     } else if (i < k && ts.isVariableStatement(s)) {
-      for (const d of s.declarationList.declarations) {
+      for (const d of s.declarationList.declarations.nodes) {
         if (!ts.isIdentifier(d.name) || d.initializer === undefined) continue;
         const out: ts.Node[] = [];
         storedCallables(d.initializer, out);
@@ -1524,7 +1531,7 @@ export function requireBindingEarlyUse7(
     for (const s of stmts.slice(0, k)) {
       ts.walkPreorder(s, (node) => {
         if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && laterJob(node.expression)) {
-          for (const arg of node.arguments ?? []) callbacks(arg);
+          for (const arg of node.arguments?.nodes ?? []) callbacks(arg);
         }
         return undefined;
       });
@@ -1705,7 +1712,7 @@ export function requireBindingEarlyUse7(
       return;
     }
     if (ts.isObjectLiteralExpression(value)) {
-      for (const p of value.properties) {
+      for (const p of value.properties.nodes) {
         if (ts.isShorthandPropertyAssignment(p)) {
           const sym = checker.getShorthandAssignmentValueSymbol(p);
           if (sym !== undefined && bindings.has(sym)) hit = p.name as ts.Identifier;
@@ -1826,9 +1833,9 @@ export function requireBindingEarlyUse7(
       ts.isPropertyAccessExpression(e.expression) &&
       isWrapperName(e.expression.expression, "Object") &&
       e.expression.name.text === "defineProperty" &&
-      e.arguments.length === 3
+      e.arguments.nodes.length === 3
     ) {
-      const [recv, key, desc] = e.arguments as unknown as [
+      const [recv, key, desc] = e.arguments.nodes as unknown as [
         ts.Expression,
         ts.Expression,
         ts.Expression,
@@ -1837,7 +1844,7 @@ export function requireBindingEarlyUse7(
       if (!ts.isObjectLiteralExpression(desc)) return false;
       const keyTarget: Target = { kind: "key", key: key.text };
       const link = (node: ts.Node): void => linkTo(keyTarget, node);
-      for (const p of desc.properties) {
+      for (const p of desc.properties.nodes) {
         if (
           (ts.isMethodDeclaration(p) || ts.isPropertyAssignment(p)) &&
           ts.isIdentifier(p.name) &&
@@ -1905,6 +1912,36 @@ function nestedBareRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
   return out;
 }
 
+/** INLINE `require("...")` calls in expression position anywhere in a file
+ * (`require("./x").f`, `require("debug")("ns")`, `module.exports =
+ * require("./y")`, `{ v: require("./v") }`): each evaluates its module at
+ * that position, exactly like a bare require statement. Top-level require
+ * statements and bare require statements are collected by their own
+ * scans; a require that initializes a nested declaration keeps its
+ * lowering fence and is not an edge. */
+function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
+  const out: ts.CallExpression[] = [];
+  ts.walkPreorder(sf, (n) => {
+    if (!ts.isCallExpression(n) || requireSpecOf7(n) === null) return;
+    let outer: ts.Node = n;
+    while (
+      outer.parent !== undefined &&
+      (ts.isParenthesizedExpression(outer.parent) ||
+        ts.isAsExpression(outer.parent) ||
+        ts.isTypeAssertion(outer.parent) ||
+        ts.isNonNullExpression(outer.parent))
+    ) {
+      outer = outer.parent;
+    }
+    const parent = outer.parent;
+    if (parent !== undefined && ts.isExpressionStatement(parent)) return;
+    if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === outer)
+      return;
+    out.push(n);
+  });
+  return out;
+}
+
 type RequireCallBindingKind7 = "ambient" | "createRequire" | "source";
 
 function stripRequireCasts7(expr: ts.Expression): ts.Expression {
@@ -1926,7 +1963,7 @@ function stripRequireCasts7(expr: ts.Expression): ts.Expression {
 function isCreateRequireImport7(program: ts.Program, ident: ts.Identifier): boolean {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(ident);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isImportSpecifier(decl)) return false;
   const importDecl = decl.parent?.parent?.parent;
   if (ts.isImportDeclaration(importDecl) && ts.isStringLiteral(importDecl.moduleSpecifier)) {
@@ -1936,7 +1973,7 @@ function isCreateRequireImport7(program: ts.Program, ident: ts.Identifier): bool
   }
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
     const target = checker.getAliasedSymbol(symbol);
-    const targetDecl = checker.declarationsOf(target)[0];
+    const targetDecl = target.declarations[0];
     if (targetDecl !== undefined && targetDecl.getSourceFile().isDeclarationFile) {
       for (
         let p: ts.Node | undefined = targetDecl.parent;
@@ -1961,9 +1998,7 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(callee);
   const decl = symbol
-    ? checker
-        .declarationsOf(symbol)
-        .find((d): d is ts.VariableDeclaration => ts.isVariableDeclaration(d))
+    ? symbol.declarations.find((d): d is ts.VariableDeclaration => ts.isVariableDeclaration(d))
     : undefined;
   if (
     decl === undefined ||
@@ -2005,8 +2040,8 @@ function staticCreateRequireUse7(expr: ts.Expression): boolean {
     ts.isCallExpression(call) &&
     call.expression === use &&
     !call.questionDotToken &&
-    call.arguments.length === 1 &&
-    ts.isStringLiteralLike(call.arguments[0]!)
+    call.arguments.nodes.length === 1 &&
+    ts.isStringLiteralLike(call.arguments.nodes[0]!)
   );
 }
 
@@ -2027,7 +2062,7 @@ function stableCreateRequireBindingReason7(
     }
     const checker = program.getTypeChecker();
     const symbol = checker.getSymbolAtLocation(decl.name);
-    if (!symbol || checker.declarationsOf(symbol).length !== 1)
+    if (!symbol || symbol.declarations.length !== 1)
       return "its createRequire binding is redeclared";
     if ((ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Export) !== 0)
       return "its createRequire result escapes through an exported binding";
@@ -2045,11 +2080,13 @@ function stableCreateRequireBindingReason7(
         return "its createRequire binding is reassigned, escapes, or uses a computed specifier";
       }
     }
-    const preceding = stmt.declarationList.declarations.slice(
+    const preceding = stmt.declarationList.declarations.nodes.slice(
       0,
-      stmt.declarationList.declarations.indexOf(decl),
+      stmt.declarationList.declarations.nodes.indexOf(decl),
     );
-    if (bindingEarlyUse7(program, sf, sf.statements.indexOf(stmt), decl, preceding) !== null) {
+    if (
+      bindingEarlyUse7(program, sf, sf.statements.nodes.indexOf(stmt), decl, preceding) !== null
+    ) {
       return "its createRequire binding can be used before initialization";
     }
     return null;
@@ -2066,11 +2103,11 @@ function isCreateRequireBaseCall7(program: ts.Program, expr: ts.Expression): boo
     init.questionDotToken !== undefined ||
     !ts.isIdentifier(init.expression) ||
     !isCreateRequireImport7(program, init.expression) ||
-    init.arguments.length !== 1
+    init.arguments.nodes.length !== 1
   ) {
     return false;
   }
-  const base = stripRequireCasts7(init.arguments[0]!);
+  const base = stripRequireCasts7(init.arguments.nodes[0]!);
   if (ts.isIdentifier(base) && base.text === "__filename") return !sourceBinding7(program, base);
   return (
     ts.isPropertyAccessExpression(base) &&
@@ -2097,7 +2134,7 @@ function npmStaticModuleImportReason7(
   if (!bindings || !ts.isNamedImports(bindings)) return null;
   const checker = program.getTypeChecker();
   const sf = stmt.getSourceFile();
-  for (const specifier of bindings.elements) {
+  for (const specifier of bindings.elements.nodes) {
     if ((specifier.propertyName?.text ?? specifier.name.text) !== "createRequire") continue;
     const imported = checker.getSymbolAtLocation(specifier.name);
     if (!imported) return "its createRequire import could not be resolved";
@@ -2175,7 +2212,7 @@ function requireCallBindingKind7(program: ts.Program, node: ts.Node): RequireCal
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(call.expression);
   if (symbol === undefined) return "ambient";
-  const decls = checker.declarationsOf(symbol);
+  const decls = symbol.declarations;
   if (decls.every((d) => d.getSourceFile().isDeclarationFile)) return "ambient";
   return isCreateRequireBinding7(program, call.expression) ? "createRequire" : "source";
 }
@@ -2190,7 +2227,7 @@ const CJS_WRAPPER_NAMES = new Set(["require", "module", "exports", "__dirname", 
 
 function bindingDeclaresCjsWrapper7(name: ts.BindingName): ts.Identifier | null {
   if (ts.isIdentifier(name)) return CJS_WRAPPER_NAMES.has(name.text) ? name : null;
-  for (const el of name.elements) {
+  for (const el of name.elements.nodes) {
     if (el.name === undefined) continue;
     const hit = bindingDeclaresCjsWrapper7(el.name);
     if (hit !== null) return hit;
@@ -2212,7 +2249,7 @@ function insideFunctionLike7(node: ts.Node): boolean {
  * import/export forms, import.meta, top-level await/for-await, or a top-level
  * lexical declaration that would redeclare a CommonJS wrapper binding. */
 function nodeEsmSyntaxMarker7(sf: ts.SourceFile): ts.Node | null {
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     if (ts.isImportDeclaration(stmt) && !erasedTypeOnlyImport(stmt)) return stmt;
     if (ts.isExportDeclaration(stmt) && !stmt.isTypeOnly) {
       return stmt;
@@ -2228,7 +2265,7 @@ function nodeEsmSyntaxMarker7(sf: ts.SourceFile): ts.Node | null {
       ts.isVariableStatement(stmt) &&
       (stmt.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0
     ) {
-      for (const decl of stmt.declarationList.declarations) {
+      for (const decl of stmt.declarationList.declarations.nodes) {
         const hit = bindingDeclaresCjsWrapper7(decl.name);
         if (hit !== null) return hit;
       }
@@ -2330,7 +2367,7 @@ function selfImportTdzFences7(
   // The aliased declaration's TDZ horizon: the position after which reads
   // are initialized. Hoisted functions have none.
   const tdzEndOf = (aliased: ts.Symbol): number | null => {
-    const d = checker.valueDeclarationOf(aliased) ?? checker.declarationsOf(aliased)[0];
+    const d = aliased.valueDeclaration ?? aliased.declarations[0];
     if (d === undefined || d.getSourceFile() !== sf) return null;
     if (ts.isFunctionDeclaration(d)) return null;
     return d.getEnd();
@@ -2367,7 +2404,7 @@ function selfImportTdzFences7(
   };
   if (clause.name !== undefined) checkNamed(clause.name);
   if (clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)) {
-    for (const el of clause.namedBindings.elements) {
+    for (const el of clause.namedBindings.elements.nodes) {
       if (!el.isTypeOnly) checkNamed(el.name);
     }
   }
@@ -2471,6 +2508,13 @@ function nsBindingUsesAreBareStatements7(
 export interface CycleEdge {
   dep: ts.SourceFile;
   stmt?: ts.ImportDeclaration | ts.ExportDeclaration;
+  /** An inline require() in a deferred position (a function body): Node
+   * evaluates the dependency when that code runs, after this module's own
+   * top level, so the edge orders the dependency after the module and
+   * never closes a cycle through the module's initialization. */
+  lazy?: true;
+  /** The inline require() call behind the edge (inline edges only). */
+  call?: ts.CallExpression;
 }
 
 /** True when the reference at `node` can only evaluate AFTER the module
@@ -2538,7 +2582,7 @@ function inTypePosition7(node: ts.Node): boolean {
  * coercion of a user object) disqualifies the module's cycles. */
 function nonInertTopLevel7(program: ts.Program, sf: ts.SourceFile): ts.Node | null {
   const nonInert = topLevelInertness7(program);
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     const offence = nonInert(stmt);
     if (offence !== null) return offence;
   }
@@ -2580,11 +2624,11 @@ function topLevelInertness7(program: ts.Program): (stmt: ts.Statement) => ts.Nod
     let sym = checker.getSymbolAtLocation(root);
     if (sym === undefined) return false;
     if (sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
-    const decls = checker.declarationsOf(sym);
+    const decls = sym.declarations;
     return decls.length > 0 && decls.every((d) => d.getSourceFile().isDeclarationFile);
   };
   const hasDecorator = (n: ts.Node): boolean =>
-    ((n as { modifiers?: readonly ts.Node[] }).modifiers ?? []).some(
+    ((n as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []).some(
       (m) => m.kind === ts.SyntaxKind.Decorator,
     );
   /** No function-like node anywhere in the subtree — arguments to builtin
@@ -2602,11 +2646,11 @@ function topLevelInertness7(program: ts.Program): (stmt: ts.Statement) => ts.Nod
   };
   const inertClass = (c: ts.ClassLikeDeclaration): ts.Node | null => {
     if (hasDecorator(c)) return c;
-    for (const h of c.heritageClauses ?? []) {
+    for (const h of c.heritageClauses?.nodes ?? []) {
       if (h.token !== ts.SyntaxKind.ExtendsKeyword) continue;
-      for (const t of h.types) if (!inert(t.expression)) return t.expression;
+      for (const t of h.types.nodes) if (!inert(t.expression)) return t.expression;
     }
-    for (const m of c.members) {
+    for (const m of c.members.nodes) {
       if (ts.isClassStaticBlockDeclaration(m)) return m;
       if (hasDecorator(m)) return m;
       const memberName = (m as { name?: ts.PropertyName }).name;
@@ -2665,7 +2709,9 @@ function topLevelInertness7(program: ts.Program): (stmt: ts.Statement) => ts.Nod
       return dtsRooted(e) && inert(e.argumentExpression) && primitiveTyped(e.argumentExpression);
     }
     if (ts.isTemplateExpression(e)) {
-      return e.templateSpans.every((s) => inert(s.expression) && primitiveTyped(s.expression));
+      return e.templateSpans.nodes.every(
+        (s) => inert(s.expression) && primitiveTyped(s.expression),
+      );
     }
     if (ts.isVoidExpression(e) || ts.isTypeOfExpression(e)) return inert(e.expression);
     if (ts.isPrefixUnaryExpression(e)) {
@@ -2687,9 +2733,9 @@ function topLevelInertness7(program: ts.Program): (stmt: ts.Statement) => ts.Nod
     if (ts.isConditionalExpression(e))
       return inert(e.condition) && inert(e.whenTrue) && inert(e.whenFalse);
     if (ts.isArrayLiteralExpression(e))
-      return e.elements.every((el) => !ts.isSpreadElement(el) && inert(el));
+      return e.elements.nodes.every((el) => !ts.isSpreadElement(el) && inert(el));
     if (ts.isObjectLiteralExpression(e)) {
-      return e.properties.every((p) => {
+      return e.properties.nodes.every((p) => {
         if (ts.isShorthandPropertyAssignment(p)) return true;
         if (!ts.isPropertyAssignment(p) || ts.isComputedPropertyName(p.name)) return false;
         return inert(p.initializer);
@@ -2697,7 +2743,7 @@ function topLevelInertness7(program: ts.Program): (stmt: ts.Statement) => ts.Nod
     }
     if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
       if (!dtsRooted(e.expression) || !ts.isIdentifier(chainRoot7(e.expression))) return false;
-      const args = e.arguments ?? [];
+      const args = e.arguments?.nodes ?? [];
       // A CALLABLE argument is admissible when it is itself dts-rooted:
       // a builtin-owned function value (the `promisify(fs.readFile)`
       // at every cycle member's top level) is runtime-implemented — even
@@ -2729,11 +2775,13 @@ function topLevelInertness7(program: ts.Program): (stmt: ts.Statement) => ts.Nod
       return null;
     }
     if (ts.isEnumDeclaration(stmt)) {
-      return stmt.members.find((m) => m.initializer !== undefined && !inert(m.initializer)) ?? null;
+      return (
+        stmt.members.nodes.find((m) => m.initializer !== undefined && !inert(m.initializer)) ?? null
+      );
     }
     if (ts.isClassDeclaration(stmt)) return inertClass(stmt);
     if (ts.isVariableStatement(stmt)) {
-      for (const d of stmt.declarationList.declarations) {
+      for (const d of stmt.declarationList.declarations.nodes) {
         if (!ts.isIdentifier(d.name)) return d.name; // patterns can invoke getters/iterators
         if (d.initializer !== undefined && !inert(d.initializer)) return d.initializer;
       }
@@ -2786,7 +2834,7 @@ function backEdgeUseOffence7(
   if (clause.namedBindings !== undefined) {
     if (ts.isNamespaceImport(clause.namedBindings)) bindingNames.push(clause.namedBindings.name);
     else
-      for (const el of clause.namedBindings.elements)
+      for (const el of clause.namedBindings.elements.nodes)
         if (!el.isTypeOnly) bindingNames.push(el.name);
   }
   for (const bindingName of bindingNames) {
@@ -2982,7 +3030,7 @@ function cjsCycleRefusal7(
     if (ts.isFunctionExpression(e) || ts.isArrowFunction(e)) return true;
     if (ts.isClassExpression(e)) return classSyncParts7(e).every(inertPart);
     if (ts.isObjectLiteralExpression(e)) {
-      return e.properties.every((p) =>
+      return e.properties.nodes.every((p) =>
         ts.isShorthandPropertyAssignment(p)
           ? true
           : ts.isPropertyAssignment(p)
@@ -2994,7 +3042,7 @@ function cjsCycleRefusal7(
       );
     }
     if (ts.isArrayLiteralExpression(e)) {
-      return e.elements.every((el) => !ts.isSpreadElement(el) && inertExpr(el));
+      return e.elements.nodes.every((el) => !ts.isSpreadElement(el) && inertExpr(el));
     }
     if (ts.isPropertyAccessExpression(e)) return builtinRoot(e);
     if (ts.isVoidExpression(e)) return literal(e.expression);
@@ -3002,13 +3050,13 @@ function cjsCycleRefusal7(
       return (
         requireSpecOf7(e) === null &&
         builtinRoot(e.expression) &&
-        (e.arguments ?? []).every(literal)
+        (e.arguments?.nodes ?? []).every(literal)
       );
     }
     return false;
   };
   const inertPart = (part: ts.Node): boolean => {
-    if (ts.isHeritageClause(part)) return part.types.every((t) => inertExpr(t.expression));
+    if (ts.isHeritageClause(part)) return part.types.nodes.every((t) => inertExpr(t.expression));
     if (ts.isComputedPropertyName(part)) return inertExpr(part.expression);
     return ts.isExpression(part) && inertExpr(part);
   };
@@ -3046,17 +3094,17 @@ function cjsCycleRefusal7(
       call.expression.expression.text === "Object" &&
       !sourceBinding7(program, call.expression.expression) &&
       call.expression.name.text === "defineProperty" &&
-      call.arguments.length === 3 &&
-      exportObject(call.arguments[0]!) &&
-      ts.isStringLiteralLike(call.arguments[1]!) &&
-      inertExpr(call.arguments[2]!)
+      call.arguments.nodes.length === 3 &&
+      exportObject(call.arguments.nodes[0]!) &&
+      ts.isStringLiteralLike(call.arguments.nodes[1]!) &&
+      inertExpr(call.arguments.nodes[2]!)
     );
   };
   for (const m of comp) {
     if (!isCjsJsFile7(m, program)) {
       return `${m.fileName} is not a CommonJS module — require cycles are admitted between CommonJS modules only`;
     }
-    const stmts = m.statements;
+    const stmts = m.statements.nodes;
     // The first statement that can run another module's code.
     let firstEntry = stmts.length;
     for (let i = 0; i < stmts.length; i++) {
@@ -3067,7 +3115,7 @@ function cjsCycleRefusal7(
         (ts.isExpressionStatement(st) && ts.isStringLiteral(st.expression)) ||
         (ts.isClassDeclaration(st) && classSyncParts7(st).every(inertPart)) ||
         (ts.isVariableStatement(st) &&
-          st.declarationList.declarations.every(
+          st.declarationList.declarations.nodes.every(
             (d) =>
               ts.isIdentifier(d.name) && (d.initializer === undefined || inertExpr(d.initializer)),
           )) ||
@@ -3202,7 +3250,7 @@ function exactCycleRefusal7(
     if (hasTopLevelAwait7(m)) {
       return `${m.fileName} uses top-level await inside the cycle`;
     }
-    for (const stmt of m.statements) {
+    for (const stmt of m.statements.nodes) {
       if (ts.isExportAssignment(stmt) && !stmt.isExportEquals) {
         return `the default export expression at ${lineOf(stmt)} has no initialization state inside the cycle`;
       }
@@ -3396,7 +3444,7 @@ function computeCycleEarlyBindings7(
     const names = new Set<string>();
     let dirty = !known;
     evaluation.forEach((m, rank) => {
-      for (const stmt of m.statements) {
+      for (const stmt of m.statements.nodes) {
         const offence = nonInert(stmt);
         const exposed = dirty || offence !== null;
         const declared: { name: ts.Identifier; kind: CycleEarlyBinding["kind"] }[] = [];
@@ -3408,7 +3456,7 @@ function computeCycleEarlyBindings7(
         ) {
           const lexical =
             (stmt.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
-          for (const d of stmt.declarationList.declarations) {
+          for (const d of stmt.declarationList.declarations.nodes) {
             for (const name of boundNames7(d.name)) {
               declared.push({ name, kind: lexical ? "lexical" : "var" });
             }
@@ -3580,7 +3628,7 @@ function moduleEarlyBindingsOf7(
       units.push(e);
       immediate.set(e, classSyncParts7(e));
     } else if (ts.isObjectLiteralExpression(e)) {
-      for (const p of e.properties) {
+      for (const p of e.properties.nodes) {
         if (
           ts.isMethodDeclaration(p) ||
           ts.isGetAccessorDeclaration(p) ||
@@ -3596,11 +3644,11 @@ function moduleEarlyBindingsOf7(
         } else if (ts.isPropertyAssignment(p)) storedIn(p.initializer, units);
       }
     } else if (ts.isArrayLiteralExpression(e)) {
-      for (const el of e.elements) if (!ts.isSpreadElement(el)) storedIn(el, units);
+      for (const el of e.elements.nodes) if (!ts.isSpreadElement(el)) storedIn(el, units);
     } else if (ts.isCallExpression(e)) {
       // `const f = wrap(callback)` where wrap only returns closures over
       // the callback: it runs when the stored result is called.
-      e.arguments.forEach((arg, index) => {
+      e.arguments.nodes.forEach((arg, index) => {
         let fn: ts.Expression = arg;
         while (ts.isParenthesizedExpression(fn)) fn = fn.expression;
         if (
@@ -3611,7 +3659,7 @@ function moduleEarlyBindingsOf7(
       });
     }
   };
-  sf.statements.forEach((stmt, index) => {
+  sf.statements.nodes.forEach((stmt, index) => {
     if (ambient(stmt)) return;
     if (ts.isFunctionDeclaration(stmt) && stmt.name !== undefined && stmt.body !== undefined) {
       store(stmt.name, [stmt]);
@@ -3621,7 +3669,7 @@ function moduleEarlyBindingsOf7(
       candidateNames.add(stmt.name.text);
     } else if (ts.isVariableStatement(stmt)) {
       const lexical = (stmt.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
-      for (const d of stmt.declarationList.declarations) {
+      for (const d of stmt.declarationList.declarations.nodes) {
         if (ts.isIdentifier(d.name) && d.initializer !== undefined) {
           const units: ts.Node[] = [];
           storedIn(d.initializer, units);
@@ -3668,7 +3716,7 @@ function moduleEarlyBindingsOf7(
       while (ts.isParenthesizedExpression(e)) e = e.expression;
       if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) stored.add(e);
       else if (ts.isObjectLiteralExpression(e)) {
-        for (const p of e.properties) {
+        for (const p of e.properties.nodes) {
           if (ts.isMethodDeclaration(p)) stored.add(p);
           else if (ts.isPropertyAssignment(p)) callbacks(p.initializer);
         }
@@ -3679,7 +3727,7 @@ function moduleEarlyBindingsOf7(
         (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
         laterJobCallee7(checker, node.expression)
       ) {
-        for (const arg of node.arguments ?? []) callbacks(arg);
+        for (const arg of node.arguments?.nodes ?? []) callbacks(arg);
       }
       return undefined;
     });
@@ -3759,7 +3807,7 @@ function moduleEarlyBindingsOf7(
       });
     }
   };
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     if (ts.isClassDeclaration(stmt)) {
       // The binding initializes once the class definition, static
       // initializers included, has run.
@@ -3769,7 +3817,7 @@ function moduleEarlyBindingsOf7(
     } else if (ts.isVariableStatement(stmt)) {
       // Declarators run in order: a later declarator's initializer cannot
       // observe an earlier binding before it was initialized.
-      for (const d of stmt.declarationList.declarations) {
+      for (const d of stmt.declarationList.declarations.nodes) {
         visit(d);
         drain();
         report(d);
@@ -3800,7 +3848,7 @@ function returnsOnlyClosuresOver7(
   if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
     symbol = checker.getAliasedSymbol(symbol);
   }
-  const decls = symbol === undefined ? [] : checker.declarationsOf(symbol);
+  const decls = symbol === undefined ? [] : symbol.declarations;
   if (decls.length !== 1) return false;
   const decl = decls[0]!;
   if (decl.getSourceFile().isDeclarationFile) return false;
@@ -3814,10 +3862,11 @@ function returnsOnlyClosuresOver7(
   if (fn === undefined) return false;
   const like = fn as ts.FunctionLikeDeclaration;
   const body = like.body;
-  const param = like.parameters[index];
+  const param = like.parameters.nodes[index];
   if (body === undefined || !ts.isBlock(body) || param === undefined) return false;
   if (!ts.isIdentifier(param.name) || param.dotDotDotToken !== undefined) return false;
-  if (like.parameters.slice(0, index).some((p) => p.dotDotDotToken !== undefined)) return false;
+  if (like.parameters.nodes.slice(0, index).some((p) => p.dotDotDotToken !== undefined))
+    return false;
   const paramName = param.name.text;
   let deferred = true;
   ts.walkPreorder(body, (node) => {
@@ -3863,11 +3912,11 @@ function returnsOnlyClosuresOver7(
  * call or a construction. */
 function classSyncParts7(c: ts.ClassLikeDeclaration): ts.Node[] {
   const decorators = (n: ts.Node): ts.Node[] =>
-    ((n as { modifiers?: readonly ts.Node[] }).modifiers ?? []).filter(
+    ((n as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []).filter(
       (m) => m.kind === ts.SyntaxKind.Decorator,
     );
-  const parts: ts.Node[] = [...decorators(c), ...(c.heritageClauses ?? [])];
-  for (const m of c.members) {
+  const parts: ts.Node[] = [...decorators(c), ...(c.heritageClauses?.nodes ?? [])];
+  for (const m of c.members.nodes) {
     parts.push(...decorators(m));
     const memberName = (m as { name?: ts.PropertyName }).name;
     if (memberName !== undefined && ts.isComputedPropertyName(memberName)) parts.push(memberName);
@@ -3922,7 +3971,7 @@ function laterJobCallee7(checker: ts.TypeChecker, callee: ts.Expression): boolea
     symbol = checker.getAliasedSymbol(symbol);
   }
   if (symbol === undefined) return false;
-  const decls = checker.declarationsOf(symbol);
+  const decls = symbol.declarations;
   if (decls.length === 0 || !decls.every((d) => d.getSourceFile().isDeclarationFile)) return false;
   if (LATER_JOB_BUILTINS7.has(name.text)) return true;
   // The JavaScript standard library's callbacks mostly run synchronously;
@@ -3993,7 +4042,7 @@ function foldablePosition7(ref: ts.Identifier): boolean {
 function boundNames7(name: ts.BindingName): ts.Identifier[] {
   if (ts.isIdentifier(name)) return [name];
   const out: ts.Identifier[] = [];
-  for (const el of name.elements) {
+  for (const el of name.elements.nodes) {
     if (ts.isOmittedExpression(el) || el.name === undefined) continue;
     out.push(...boundNames7(el.name));
   }
@@ -4006,7 +4055,7 @@ function typeOnlyNamespace7(decl: ts.ModuleDeclaration): boolean {
   let body = decl.body;
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined || !ts.isModuleBlock(body)) return true;
-  return body.statements.every(
+  return body.statements.nodes.every(
     (s) =>
       ts.isInterfaceDeclaration(s) ||
       ts.isTypeAliasDeclaration(s) ||
@@ -4040,6 +4089,12 @@ function resolveNpmImport7(
   if (isRelativeSpecifier(specifier) || specifier.startsWith("node:")) {
     return null;
   }
+  // Node resolves a bare core-module name (`string_decoder`, `events`,
+  // `fs/promises`) to the builtin before it looks in node_modules, so an
+  // installed npm package of the same name never answers it. Prefix-only
+  // builtins (`node:test`) are listed with their prefix, so a bare `test`
+  // still names the package.
+  if (nodeBuiltinNames.has(specifier)) return null;
   // --provenance-sources: a registered specifier is NOT an npm import —
   // its attested source compiles as program modules (resolveProjectModule
 
@@ -4155,6 +4210,7 @@ function preflight7(load: LoadResult): {
   diags: ScrDiagnostic[];
   moduleOrder: ts.SourceFile[];
   startupCrash: StartupCrash | null;
+  inlineRequireCycleCalls: ReadonlySet<ts.Node>;
 } {
   const { program, entry } = load;
   const diags: ScrDiagnostic[] = [...load.configDiags];
@@ -4239,7 +4295,7 @@ function preflight7(load: LoadResult): {
       names = new Set();
       builtinNamespaceNames.set(d.fileName, names);
       const sf = p.getSourceFile(d.fileName);
-      for (const stmt of sf?.statements ?? []) {
+      for (const stmt of sf?.statements?.nodes ?? []) {
         if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
         if (canonicalBuiltinModule(stmt.moduleSpecifier.text) === null) continue;
         const bindings = stmt.importClause?.namedBindings;
@@ -4450,7 +4506,7 @@ function preflight7(load: LoadResult): {
     if (ambientModuleDecls === null) {
       ambientModuleDecls = { names: new Set(), patterns: [] };
       for (const f of program.getSourceFiles()) {
-        for (const s of f.statements) {
+        for (const s of f.statements.nodes) {
           if (!ts.isModuleDeclaration(s) || !ts.isStringLiteral(s.name)) continue;
           const name = s.name.text;
           if (name.includes("*")) ambientModuleDecls.patterns.push(name);
@@ -4501,7 +4557,7 @@ function preflight7(load: LoadResult): {
     edges.set(sf, deps);
     refusals.set(sf, []);
     depPositions.set(sf, []);
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (ts.isImportEqualsDeclaration(stmt)) {
         // The ENTITY form (`import a = A`, `import x = N.y`) is namespace
         // alias plumbing — the lowerer resolves references through it and
@@ -4863,7 +4919,7 @@ function preflight7(load: LoadResult): {
     }
     {
       const jsRequireFile = isJsSourceFileName(sf.fileName);
-      const stmts = sf.statements;
+      const stmts = sf.statements.nodes;
       // A binding that code running before the require can reach. Node
       // initializes it AT the require: a const/let read earlier throws
       // ReferenceError, which the lowering reproduces with an
@@ -4952,9 +5008,24 @@ function preflight7(load: LoadResult): {
               pattern: ts.ObjectBindingPattern,
               module: string | null,
             ): boolean =>
-              pattern.elements.every((e) => {
+              pattern.elements.nodes.every((e) => {
                 if (e.initializer !== undefined || e.dotDotDotToken !== undefined) return false;
                 if (e.name !== undefined && ts.isIdentifier(e.name)) return true;
+                // A nested pattern under a named export of a program module
+                // destructures that export's VALUE at the require
+                // (`const { codes: { ERR_X } } = require("./errors")`): the
+                // inner bindings are ordinary destructured storage.
+                if (
+                  module === null &&
+                  builtin === null &&
+                  bindingKind !== "createRequire" &&
+                  pattern === req.decl!.name &&
+                  e.name !== undefined &&
+                  ts.isObjectBindingPattern(e.name) &&
+                  e.propertyName !== undefined &&
+                  ts.isIdentifier(e.propertyName)
+                )
+                  return true;
                 if (module === null || e.name === undefined || !ts.isObjectBindingPattern(e.name))
                   return false;
                 const key = e.propertyName;
@@ -5068,6 +5139,32 @@ function preflight7(load: LoadResult): {
           continue;
         }
       }
+      // Inline requires of program modules are module edges like the bare
+      // statements above (cjs-inline-require.ts lowers each to the module's
+      // %init at its position). Only the CommonJS global in a CommonJS file
+      // counts, and targets outside the compiled graph add nothing here:
+      // their use sites keep their existing lowering fences.
+      if (jsRequireFile && !isNodeEsmFile7(sf, program)) {
+        for (const call of inlineRequiresOf7(sf)) {
+          if (requireCallBindingKind7(program, call) !== "ambient") continue;
+          const spec = requireSpecOf7(call)!;
+          if (load.externalTypes.has(spec) || canonicalBuiltinModule(spec) !== null) continue;
+          const lazy = inDeferredPosition7(call);
+          const edgeTo = (dep: ts.SourceFile): CycleEdge =>
+            lazy ? { dep, lazy: true, call } : { dep, call };
+          const projectDep = resolveImport7(program, sf, spec, "require");
+          if (projectDep !== null) {
+            if (!projectDep.fileName.endsWith(".json")) deps.push(edgeTo(projectDep));
+            continue;
+          }
+          if (isRelativeSpecifier(spec) || spec.startsWith("#")) continue;
+          const npmReq = resolveNpmImport7(sf.fileName, spec, "require");
+          if (npmReq !== null && isNpmStaticPackage(npmReq.packageName)) {
+            const nDep = npmStaticProgramDep(program, npmReq.packageName, npmReq.typesFile);
+            if (nDep !== null) deps.push(edgeTo(nDep));
+          }
+        }
+      }
     }
   }
 
@@ -5094,8 +5191,12 @@ function preflight7(load: LoadResult): {
   //    reads are all let/const bindings with module storage — the
   //    lowering checks each one (cycleEarlyBindings) and throws Node's
   //    ReferenceError on a read before the declaration ran.
-  const cycleAdmissionReason = makeCycleAdmission(program, (sf) => edges.get(sf) ?? []);
+  const cycleAdmissionReason = makeCycleAdmission(program, (sf) => {
+    const all = edges.get(sf) ?? [];
+    return all.some((e) => e.call !== undefined) ? all.filter((e) => e.call === undefined) : all;
+  });
   const order: ts.SourceFile[] = [];
+  const inlineRequireCycleCalls = new Set<ts.Node>();
   const state = new Map<ts.SourceFile, "visiting" | "done">();
   const stack: string[] = [];
   const visit = (sf: ts.SourceFile): void => {
@@ -5103,9 +5204,14 @@ function preflight7(load: LoadResult): {
     stack.push(sf.fileName);
     for (const e of edges.get(sf) ?? []) {
       if (e.dep === sf) continue; // self-import: a Node cache hit, not a cycle
+      if (e.lazy === true) continue; // visited after this module completes
       const s = state.get(e.dep);
       if (s === "done") continue;
       if (s === "visiting") {
+        if (e.call !== undefined) {
+          inlineRequireCycleCalls.add(e.call);
+          continue;
+        }
         // A back-edge: Node answers it from the cache (the module is
         // already evaluating) — admitted by the cheap per-edge rule, the
         // declaration-only init window rule, or the exact initialization
@@ -5129,6 +5235,11 @@ function preflight7(load: LoadResult): {
     stack.pop();
     state.set(sf, "done");
     order.push(sf);
+    // Lazy inline requires run after this module's top level: their
+    // modules join the order afterwards (cache hits when already loaded).
+    for (const e of edges.get(sf) ?? []) {
+      if (e.lazy === true && state.get(e.dep) === undefined) visit(e.dep);
+    }
   };
   visit(entry);
 
@@ -5182,7 +5293,12 @@ function preflight7(load: LoadResult): {
           esmNamedImportLinkCheck(program, entry, order, diags),
         );
 
-  return { diags, moduleOrder: order, startupCrash: resolveCrash ?? linkCrash };
+  return {
+    diags,
+    moduleOrder: order,
+    startupCrash: resolveCrash ?? linkCrash,
+    inlineRequireCycleCalls,
+  };
 }
 
 /* ── the CJS named-import link check ─────────────────────────────────────
@@ -5268,7 +5384,7 @@ function cjsNamedImportLinkCheck(
       spec: string;
       dep: ts.SourceFile;
     }[] = [];
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (
         !ts.isImportDeclaration(stmt) ||
         stmt.moduleSpecifier === undefined ||
@@ -5281,7 +5397,7 @@ function cjsNamedImportLinkCheck(
       const spec = stmt.moduleSpecifier.text;
       const dep = cjsDepOf(sf, spec);
       if (dep === null) continue;
-      for (const e of clause.namedBindings.elements) {
+      for (const e of clause.namedBindings.elements.nodes) {
         if (e.isTypeOnly) continue;
         const nameNode = e.propertyName ?? e.name;
         entries.push({ local: e.name.text, exportName: nameNode.text, nameNode, spec, dep });
@@ -5292,14 +5408,14 @@ function cjsNamedImportLinkCheck(
       if (!visible(e.dep, e.exportName))
         return { exportName: e.exportName, spec: e.spec, nameNode: e.nameNode, sf };
     }
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (!ts.isExportDeclaration(stmt) || stmt.isTypeOnly) continue;
       if (stmt.moduleSpecifier === undefined || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
       if (!stmt.exportClause || !ts.isNamedExports(stmt.exportClause)) continue;
       const spec = stmt.moduleSpecifier.text;
       const dep = cjsDepOf(sf, spec);
       if (dep === null) continue;
-      for (const e of stmt.exportClause.elements) {
+      for (const e of stmt.exportClause.elements.nodes) {
         if (e.isTypeOnly) continue;
         const nameNode = e.propertyName ?? e.name;
         if (!visible(dep, nameNode.text)) return { exportName: nameNode.text, spec, nameNode, sf };
@@ -5316,7 +5432,7 @@ function cjsNamedImportLinkCheck(
   const dfs = (sf: ts.SourceFile): BadCjsImport | null => {
     if (visited.has(sf)) return null;
     visited.add(sf);
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (!ts.isImportDeclaration(stmt) && !(ts.isExportDeclaration(stmt) && !stmt.isTypeOnly))
         continue;
       if (ts.isExportDeclaration(stmt) && isPrunedNpmReexport(program, stmt)) continue;
@@ -5361,7 +5477,7 @@ function cjsNamedImportLinkCheck(
   // it is CommonJS (module_job.js consults the ROOT job's moduleRequests/
   // commonJsDeps — a deep module's failure keeps the generic wording).
   let flavored = false;
-  for (const stmt of entry.statements) {
+  for (const stmt of entry.statements.nodes) {
     if (!ts.isImportDeclaration(stmt) && !(ts.isExportDeclaration(stmt) && !stmt.isTypeOnly))
       continue;
     if (
@@ -5480,18 +5596,16 @@ function analyzeEsmNamedImportLinks(
       if (
         name === "default" &&
         hasNodeTsDefaultInterfacePlaceholder7(dep) &&
-        checker
-          .declarationsOf(resolved)
-          .some(
-            (declaration) =>
-              ts.isInterfaceDeclaration(declaration) &&
-              ts
-                .getModifiers(declaration)
-                ?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) === true &&
-              ts
-                .getModifiers(declaration)
-                ?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true,
-          )
+        resolved.declarations.some(
+          (declaration) =>
+            ts.isInterfaceDeclaration(declaration) &&
+            ts
+              .getModifiers(declaration)
+              ?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) === true &&
+            ts
+              .getModifiers(declaration)
+              ?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true,
+        )
       ) {
         return resolved;
       }
@@ -5505,7 +5619,7 @@ function analyzeEsmNamedImportLinks(
     // symbols make the name unavailable. `default` never star-reexports.
     if (name === "default") return undefined;
     let starExport: ts.Symbol | undefined;
-    for (const stmt of dep.statements) {
+    for (const stmt of dep.statements.nodes) {
       if (!ts.isExportDeclaration(stmt) || stmt.isTypeOnly || stmt.exportClause !== undefined)
         continue;
       if (stmt.moduleSpecifier === undefined || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
@@ -5528,7 +5642,7 @@ function analyzeEsmNamedImportLinks(
       nameNode: ts.Node;
       dep: ts.SourceFile;
     }[] = [];
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
       const clause = stmt.importClause;
       if (clause === undefined || clause.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
@@ -5545,7 +5659,7 @@ function analyzeEsmNamedImportLinks(
         });
       }
       if (clause.namedBindings === undefined || !ts.isNamedImports(clause.namedBindings)) continue;
-      for (const element of clause.namedBindings.elements) {
+      for (const element of clause.namedBindings.elements.nodes) {
         if (element.isTypeOnly) continue;
         const nameNode = element.propertyName ?? element.name;
         imports.push({
@@ -5572,7 +5686,7 @@ function analyzeEsmNamedImportLinks(
       }
     }
 
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (!ts.isExportDeclaration(stmt) || stmt.isTypeOnly) continue;
       const moduleSpecifier = stmt.moduleSpecifier;
       const exportClause = stmt.exportClause;
@@ -5581,7 +5695,7 @@ function analyzeEsmNamedImportLinks(
       const spec = moduleSpecifier.text;
       const dep = resolveEdge(sf, spec);
       if (dep === null || dep.fileName.endsWith(".json") || !isNodeEsmFile7(dep, program)) continue;
-      for (const element of exportClause.elements) {
+      for (const element of exportClause.elements.nodes) {
         if (element.isTypeOnly) continue;
         const nameNode = element.propertyName ?? element.name;
         if (runtimeExport(dep, nameNode.text) === undefined) {
@@ -5599,7 +5713,7 @@ function analyzeEsmNamedImportLinks(
   const dfs = (sf: ts.SourceFile): BadEsmImport | null => {
     if (visited.has(sf)) return null;
     visited.add(sf);
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (!ts.isImportDeclaration(stmt) && !(ts.isExportDeclaration(stmt) && !stmt.isTypeOnly))
         continue;
       if (ts.isExportDeclaration(stmt) && isPrunedNpmReexport(program, stmt)) continue;
@@ -5697,12 +5811,12 @@ function earlierLinkCrash(
     if (sf === undefined) return first.loc.start < second.loc.start ? first : second;
     const rank = (crash: StartupCrash): [number, number] => {
       const entries: { local: string; start: number; kind: 0 | 1 }[] = [];
-      for (const stmt of sf.statements) {
+      for (const stmt of sf.statements.nodes) {
         if (ts.isImportDeclaration(stmt) && ts.isStringLiteral(stmt.moduleSpecifier)) {
           const clause = stmt.importClause;
           if (clause?.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
           if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
-            for (const element of clause.namedBindings.elements) {
+            for (const element of clause.namedBindings.elements.nodes) {
               if (!element.isTypeOnly) {
                 entries.push({
                   local: element.name.text,
@@ -5718,7 +5832,7 @@ function earlierLinkCrash(
       const direct = entries.findIndex((entry) => entry.start === crash.loc.start);
       if (direct >= 0) return [0, direct];
       let reexport = 0;
-      for (const stmt of sf.statements) {
+      for (const stmt of sf.statements.nodes) {
         const exportClause = ts.isExportDeclaration(stmt) ? stmt.exportClause : undefined;
         if (
           !ts.isExportDeclaration(stmt) ||
@@ -5727,7 +5841,7 @@ function earlierLinkCrash(
           !ts.isNamedExports(exportClause)
         )
           continue;
-        for (const element of exportClause.elements) {
+        for (const element of exportClause.elements.nodes) {
           if (
             !element.isTypeOnly &&
             (element.propertyName ?? element.name).getStart(sf) === crash.loc.start
@@ -5795,7 +5909,7 @@ export function isJsSourceFile(sf: ts.SourceFile): boolean {
 export function isCheckedJsSourceFile(sf: ts.SourceFile, projectCheckJs: boolean): boolean {
   if (!isJsSourceFile(sf) || isNodeModulesPath(sf.fileName)) return false;
   let checked = projectCheckJs;
-  const head = sf.text.slice(0, sf.statements[0]?.getStart(sf) ?? sf.text.length);
+  const head = sf.text.slice(0, sf.statements.nodes[0]?.getStart(sf) ?? sf.text.length);
   for (const line of head.split("\n")) {
     const directive = /^\s*\/\/\s*@ts-(no)?check\b/.exec(line);
     if (directive) checked = directive[1] === undefined;
@@ -5808,7 +5922,7 @@ export function orderedImportsOf(
   sf: ts.SourceFile,
 ): { stmt: ts.Statement; dep: ts.SourceFile | null }[] {
   const out: { stmt: ts.Statement; dep: ts.SourceFile | null }[] = [];
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     if (ts.isExportDeclaration(stmt) && isPrunedNpmReexport(program, stmt)) continue;
     if (ts.isExportDeclaration(stmt) && (stmt.isTypeOnly || !stmt.moduleSpecifier)) continue;
     if (!ts.isImportDeclaration(stmt) && !ts.isExportDeclaration(stmt)) continue;
@@ -5885,6 +5999,98 @@ export function cjsExportAssignmentOf(
   return null;
 }
 
+/** The tsc VOID-INIT PREAMBLE (`exports.a = exports.b = void 0;` with the
+ * real `exports.a = a;` further down; every tsc-emitted dist file opens its
+ * exports this way): when every name in the chain has a later real
+ * assignment, the export takes its value there and the preamble lowers to
+ * nothing. Returns those later assignments by name, or null when this is
+ * not such a preamble (a preamble with no later real assignment keeps the
+ * ordinary path: the export IS undefined then). */
+export function cjsVoidInitPreambleReals(
+  cjs: Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "member" }>,
+): Map<string, Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "member" }>> | null {
+  if (!ts.isIdentifier(cjs.name)) return null;
+  const isExportsMember = (e: ts.Expression): e is ts.PropertyAccessExpression =>
+    ts.isPropertyAccessExpression(e) &&
+    ts.isIdentifier(e.name) &&
+    ((ts.isIdentifier(e.expression) && e.expression.text === "exports") ||
+      (ts.isPropertyAccessExpression(e.expression) &&
+        ts.isIdentifier(e.expression.expression) &&
+        e.expression.expression.text === "module" &&
+        ts.isIdentifier(e.expression.name) &&
+        e.expression.name.text === "exports"));
+  const isVoid = (e: ts.Expression): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    return (
+      e.kind === ts.SyntaxKind.VoidExpression || (ts.isIdentifier(e) && e.text === "undefined")
+    );
+  };
+  // chains: `exports.a = exports.b = void 0;` collects every name
+  const names: string[] = [cjs.name.text];
+  let tail: ts.Expression = cjs.value;
+  while (
+    ts.isBinaryExpression(tail) &&
+    tail.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    isExportsMember(tail.left)
+  ) {
+    names.push((tail.left.name as ts.Identifier).text);
+    tail = tail.right;
+  }
+  if (!isVoid(tail)) return null;
+  const sf = cjs.expr.getSourceFile();
+  const myPos = cjs.expr.getStart(sf);
+  const reals = new Map<
+    string,
+    Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "member" }>
+  >();
+  for (const name of names) {
+    const real = sf.statements.nodes
+      .map((s) => cjsExportAssignmentOf(s))
+      .find(
+        (other) =>
+          other?.kind === "member" &&
+          ts.isIdentifier(other.name) &&
+          other.name.text === name &&
+          other.expr.getStart(sf) > myPos &&
+          !isVoid(other.value),
+      );
+    if (real?.kind !== "member") return null;
+    reals.set(name, real);
+  }
+  return reals;
+}
+
+/** The members and shared value of a CHAINED member export
+ * `exports.a = exports.b = module.exports.c = value` (outermost name
+ * first), or null when the assignment is not a chain of at least two
+ * identifier-named export members or its value is undefined. */
+export function cjsExportChainOf(
+  e: ts.BinaryExpression,
+): { names: ts.Identifier[]; value: ts.Expression } | null {
+  const names: ts.Identifier[] = [];
+  let cur: ts.Expression = e;
+  for (;;) {
+    while (ts.isParenthesizedExpression(cur)) cur = cur.expression;
+    if (!ts.isBinaryExpression(cur) || cur.operatorToken.kind !== ts.SyntaxKind.EqualsToken) break;
+    const left = cur.left;
+    if (
+      !ts.isPropertyAccessExpression(left) ||
+      left.questionDotToken ||
+      !ts.isIdentifier(left.name)
+    )
+      break;
+    const recv = left.expression;
+    if (!((ts.isIdentifier(recv) && recv.text === "exports") || isModuleExportsAccess(recv))) break;
+    names.push(left.name);
+    cur = cur.right;
+  }
+  // tsc's `exports.a = exports.b = void 0;` preamble is not a value chain
+  // (the export-statement lowering owns it).
+  const isVoid =
+    cur.kind === ts.SyntaxKind.VoidExpression || (ts.isIdentifier(cur) && cur.text === "undefined");
+  return names.length >= 2 && !isVoid ? { names, value: cur } : null;
+}
+
 /** Why Node would DISCARD this CommonJS export statement, or null when it
  * survives (Node's export-object identity rules — checker-free, pure
  * AST): `module.exports = {...}` REPLACES the export object, so members
@@ -5898,7 +6104,7 @@ export function cjsExportDiscardReason(stmt: ts.Statement): string | null {
   if (!ts.isSourceFile(sf)) return null;
   const mine = cjsExportAssignmentOf(stmt);
   if (!mine) return null;
-  const stmts = sf.statements;
+  const stmts = sf.statements.nodes;
   let lastTable = -1;
   for (let i = 0; i < stmts.length; i++) {
     if (cjsExportAssignmentOf(stmts[i]!)?.kind === "table") lastTable = i;
@@ -5936,15 +6142,15 @@ export function cjsExportTargetLiteral(
     ts.isNewExpression(e) &&
     ts.isIdentifier(e.expression) &&
     e.expression.text === "Proxy" &&
-    (e.arguments?.length ?? 0) >= 1
+    (e.arguments?.nodes.length ?? 0) >= 1
   ) {
-    return cjsExportTargetLiteral(e.arguments![0]!, sf);
+    return cjsExportTargetLiteral(e.arguments!.nodes[0]!, sf);
   }
   if (ts.isIdentifier(e)) {
-    for (const stmt of sf.statements) {
+    for (const stmt of sf.statements.nodes) {
       if (!ts.isVariableStatement(stmt)) continue;
       if ((stmt.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
-      for (const d of stmt.declarationList.declarations) {
+      for (const d of stmt.declarationList.declarations.nodes) {
         if (
           d.name !== undefined &&
           ts.isIdentifier(d.name) &&
@@ -5970,7 +6176,7 @@ export function cjsClassExprWholeExportOf(
   sf: ts.SourceFile,
 ): { classExpr: ts.ClassExpression; stmt: ts.Statement } | null {
   let last: { classExpr: ts.ClassExpression; stmt: ts.Statement } | null = null;
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     const cjs = cjsExportAssignmentOf(stmt);
     if (!cjs || cjs.kind !== "table") continue;
     let rhs: ts.Expression = cjs.expr.right;
@@ -6003,7 +6209,7 @@ export function isCjsExportTableLiteral(obj: ts.ObjectLiteralExpression): boolea
   if (!ts.isVariableDeclaration(decl) || decl.initializer !== obj) return false;
   const sf = obj.getSourceFile();
   if (!isJsSourceFile(sf)) return false;
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     const cjs = cjsExportAssignmentOf(stmt);
     if (cjs?.kind === "table" && cjsExportDiscardReason(stmt) === null) {
       return cjsExportTargetLiteral(cjs.expr.right, sf) === obj;
@@ -6107,7 +6313,7 @@ function receiverRoot(text: string, pos: number): string | null {
 /** Whether `name` is bound in `fileName` by an import of a Node builtin. */
 function importsNodeBuiltin(load: LoadResult, fileName: string, name: string): boolean {
   const sf = load.program.getSourceFile(fileName);
-  for (const stmt of sf?.statements ?? []) {
+  for (const stmt of sf?.statements?.nodes ?? []) {
     if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
     if (canonicalBuiltinModule(stmt.moduleSpecifier.text) === null) continue;
     const clause = stmt.importClause;
@@ -6117,7 +6323,7 @@ function importsNodeBuiltin(load: LoadResult, fileName: string, name: string): b
     if (
       bindings &&
       ts.isNamedImports(bindings) &&
-      bindings.elements.some((e) => e.name.text === name)
+      bindings.elements.nodes.some((e) => e.name.text === name)
     )
       return true;
   }

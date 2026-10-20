@@ -29,22 +29,21 @@ export class ClassProtocols {
       node.kind === ts.SyntaxKind.ThisKeyword || ts.forEachChild(node, usesReceiver) === true;
     const visit = (node: ts.Node): void => {
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
-        for (const clause of node.heritageClauses ?? [])
+        for (const clause of node.heritageClauses?.nodes ?? [])
           if (clause.token === ts.SyntaxKind.ImplementsKeyword)
-            for (const protocol of clause.types) add(this.checker.getTypeAtLocation(protocol));
+            for (const protocol of clause.types.nodes)
+              add(this.checker.getTypeAtLocation(protocol));
         const symbol = node.name ? this.checker.getSymbolAtLocation(node.name) : undefined;
         const instance = symbol ? this.checker.getDeclaredTypeOfSymbol(symbol) : undefined;
         for (const property of instance ? this.checker.getPropertiesOfType(instance) : []) {
           if (
-            !this.checker
-              .declarationsOf(property)
-              .some(
-                (member) =>
-                  ts.isMethodDeclaration(member) &&
-                  !member.modifiers?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
-                  ),
-              )
+            !property.declarations.some(
+              (member) =>
+                ts.isMethodDeclaration(member) &&
+                !member.modifiers?.nodes.some(
+                  (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
+                ),
+            )
           )
             continue;
           const entries = this.methods.get(property.name) ?? [];
@@ -54,7 +53,7 @@ export class ClassProtocols {
       }
       if (
         ts.isObjectLiteralExpression(node) &&
-        node.properties.some(
+        node.properties.nodes.some(
           (property) =>
             (ts.isMethodDeclaration(property) ||
               ts.isGetAccessorDeclaration(property) ||
@@ -167,14 +166,14 @@ export class ClassProtocols {
         observed.push(node.expression);
       } else if (ts.isSwitchStatement(node)) {
         // `switch` matches its cases with ===.
-        const cases = node.caseBlock.clauses
+        const cases = node.caseBlock.clauses.nodes
           .filter(ts.isCaseClause)
           .map((clause) => clause.expression)
           .filter((expr) => !isNullishLiteral(expr) && !isPrimitiveLiteral(expr));
         if (cases.length > 0) observed.push(node.expression, ...cases);
       } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
         const callee = node.expression;
-        const args = node.arguments ?? [];
+        const args = node.arguments?.nodes ?? [];
         const member = ts.isPropertyAccessExpression(callee) ? callee.name.text : null;
         const owner =
           ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)
@@ -204,7 +203,8 @@ export class ClassProtocols {
     };
     const visit = (node: ts.Node): void => {
       observe(node);
-      if (ts.isCallExpression(node) || ts.isNewExpression(node)) node.arguments?.forEach(flow);
+      if (ts.isCallExpression(node) || ts.isNewExpression(node))
+        node.arguments?.nodes.forEach(flow);
       else if (ts.isVariableDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isPropertyDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isParameter(node) && node.type !== undefined) flow(node.initializer);
@@ -212,7 +212,7 @@ export class ClassProtocols {
       else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) flow(node.body);
       else if (ts.isYieldExpression(node)) flow(node.expression);
       else if (ts.isArrayLiteralExpression(node))
-        node.elements.forEach((element) => {
+        node.elements.nodes.forEach((element) => {
           if (!ts.isSpreadElement(element) && !ts.isOmittedExpression(element)) flow(element);
         });
       else if (ts.isPropertyAssignment(node)) flow(node.initializer);
@@ -234,7 +234,7 @@ export class ClassProtocols {
         });
       }
       if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
-        node.parameters.forEach((param, index) => {
+        node.parameters.nodes.forEach((param, index) => {
           if (param.type !== undefined) callbackParams.push({ fn: node, index, name: param.name });
         });
       ts.forEachChild(node, visit);
@@ -287,7 +287,7 @@ export class ClassProtocols {
       for (const part of parts) {
         if ((part.flags & ts.TypeFlags.TypeParameter) === 0) continue;
         const symbol = part.getSymbol();
-        for (const declaration of symbol ? this.checker.declarationsOf(symbol) : [])
+        for (const declaration of symbol ? symbol.declarations : [])
           if (ts.isTypeParameterDeclaration(declaration) && declaration.parent !== undefined)
             facts.genericObservers.add(declaration.parent);
       }
@@ -499,7 +499,7 @@ export class ClassProtocols {
           if (context !== undefined && this.acceptsAnyValue(context)) return true;
           if (facts.genericObservers.size === 0) return false;
           const signature = this.checker.getResolvedSignature(arg.call);
-          const declaration = signature && this.checker.signatureDeclaration(signature);
+          const declaration = signature && signature.declaration;
           return (
             declaration !== undefined &&
             (facts.genericObservers.has(declaration) ||
@@ -518,13 +518,10 @@ export class ClassProtocols {
       .some(
         (property) =>
           names.has(property.name) &&
-          this.checker
-            .declarationsOf(property)
-            .some(
-              (declaration) =>
-                ts.isGetAccessorDeclaration(declaration) ||
-                ts.isSetAccessorDeclaration(declaration),
-            ),
+          property.declarations.some(
+            (declaration) =>
+              ts.isGetAccessorDeclaration(declaration) || ts.isSetAccessorDeclaration(declaration),
+          ),
       );
   }
 
@@ -578,9 +575,7 @@ export class ClassProtocols {
     return (
       symbol !== undefined &&
       (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
-      this.checker
-        .declarationsOf(symbol)
-        .some((declaration) => !declaration.getSourceFile().isDeclarationFile) &&
+      symbol.declarations.some((declaration) => !declaration.getSourceFile().isDeclarationFile) &&
       // `typeof C` (the class value) shares the class symbol.
       this.checker.getConstructSignatures(type).length === 0
     );
@@ -601,13 +596,10 @@ export class ClassProtocols {
     // A program interface a class matches by its methods (protocol below).
     return (
       this.methods.size > 0 &&
-      this.checker
-        .declarationsOf(symbol)
-        .some(
-          (declaration) =>
-            ts.isInterfaceDeclaration(declaration) &&
-            !declaration.getSourceFile().isDeclarationFile,
-        ) &&
+      symbol.declarations.some(
+        (declaration) =>
+          ts.isInterfaceDeclaration(declaration) && !declaration.getSourceFile().isDeclarationFile,
+      ) &&
       this.protocol(type)
     );
   }
@@ -622,7 +614,7 @@ export class ClassProtocols {
     if (this.checker.getConstructSignatures(type).length > 0) return false;
     const symbol = type.getSymbol();
     if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Class) !== 0) return false;
-    const declarations = this.checker.declarationsOf(symbol);
+    const declarations = symbol.declarations;
     return (
       declarations.length > 0 &&
       declarations.every((declaration) => !declaration.getSourceFile().isDeclarationFile)
@@ -710,13 +702,10 @@ export class ClassProtocols {
     if (symbol && protocols.has(symbol)) return true;
     if (
       !symbol ||
-      !this.checker
-        .declarationsOf(symbol)
-        .some(
-          (declaration) =>
-            ts.isInterfaceDeclaration(declaration) &&
-            !declaration.getSourceFile().isDeclarationFile,
-        )
+      !symbol.declarations.some(
+        (declaration) =>
+          ts.isInterfaceDeclaration(declaration) && !declaration.getSourceFile().isDeclarationFile,
+      )
     )
       return false;
     for (const property of properties) {

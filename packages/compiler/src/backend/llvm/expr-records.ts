@@ -41,7 +41,7 @@ export function emitUnionWiden(
     B.br(join);
   });
   B.startBlock(join);
-  if (owned) host.releaseValue(value, { kind: "union", unionId: fromId });
+  if (owned) host.releaseFrame(value, { kind: "union", unionId: fromId });
   const result = B.tmp();
   B.line(`${result} = load ptr, ptr ${slot}`);
   return result;
@@ -58,7 +58,7 @@ export function emitUnionRetype(
   e: IrExpr & { kind: "unionRetype" },
 ): LlValue {
   const value = host.emitExpr(e.value);
-  host.moveTemp(value);
+  host.toFrame(value);
   const from = host.nullableUnions.get(e.fromId);
   const to = host.nullableUnions.get(e.unionId);
   if (from && to) {
@@ -131,7 +131,7 @@ function rebuildRetype(
     B.br(join);
   });
   B.startBlock(join);
-  host.releaseValue(value, { kind: "union", unionId: e.fromId });
+  host.releaseFrame(value, { kind: "union", unionId: e.fromId });
   const result = B.tmp();
   B.line(`${result} = load ptr, ptr ${slot}`);
   return result;
@@ -147,7 +147,9 @@ function directRegexOperandMethod(method: string): boolean {
     case "match":
     case "search":
     case "matchAll":
+    case "matchAllCaptures":
     case "matchAllInto":
+    case "matchAllCapturesInto":
     case "replace":
     case "replaceAll":
     case "split":
@@ -192,7 +194,7 @@ export function emitRegexIntrinsic(
   } else {
     values = preservesRegexInputs(method)
       ? emitBorrowedInputs(host, inputs)
-      : method === "matchAllInto"
+      : method === "matchAllInto" || method === "matchAllCapturesInto"
         ? inputs.map((a) => emitBorrowedInput(host, a))
         : inputs.map((a) => host.emitExpr(a));
   }
@@ -216,11 +218,19 @@ export function emitRegexIntrinsic(
       // Every match drained eagerly into a fresh +1 string[][]; throws
       // Node's TypeError on a non-global regex (catchable).
       return fallible("scr_regex_match_all", `ptr ${r.name}, ptr ${args[0]!.name}`);
+    case "matchAllCaptures":
+      // matchAll whose rows carry no index, input or groups properties.
+      return fallible("scr_regex_match_all_captures", `ptr ${r.name}, ptr ${args[0]!.name}`);
     case "matchAllInto":
       // matchAll's companion-index form: args[1] (a number[]) also
       // receives each match's UTF-16 start index.
       return fallible(
         "scr_regex_match_all_into",
+        `ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}`,
+      );
+    case "matchAllCapturesInto":
+      return fallible(
+        "scr_regex_match_all_captures_into",
         `ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}`,
       );
     case "replaceAll":
@@ -476,10 +486,10 @@ export function keyedRecordReadInto(
       if (!typeEquals(vt, resultType)) {
         throw new LlvmUnsupportedError(`recordKeyGet:narrow:${vt.kind}`, loc);
       }
-      return owned || !isRefCounted(vt) ? expr : host.retainValue(expr, vt);
+      return owned || !isRefCounted(vt) ? expr : host.retainFrame(expr, vt);
     }
     if (typeEquals(vt, resultType)) {
-      return owned ? expr : host.retainValue(expr, vt);
+      return owned ? expr : host.retainFrame(expr, vt);
     }
     if (vt.kind === "union" && resultType.kind === "union") {
       return emitUnionWiden(host, expr, vt.unionId, resultType.unionId, owned);
@@ -490,7 +500,7 @@ export function keyedRecordReadInto(
     if (vt.kind === "f64" || vt.kind === "bool") {
       return host.unionNewOwned(def.id, tag, { name: expr, type: vt });
     }
-    const payload = owned ? expr : host.retainValue(expr, vt);
+    const payload = owned ? expr : host.retainHeap(expr, vt);
     return host.unionNewOwned(def.id, tag, { name: payload, type: vt });
   };
   for (const f of overflowOnly ? [] : shape.fields) {

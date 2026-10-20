@@ -159,6 +159,8 @@ ScrBytes *scr_bytes_new(ScrBytesElem elem, double n); /* +1 */
 /* Shared u8 view over exactly the source view's raw bytes. Borrows; +1. */
 ScrBytes *scr_bytes_raw_view(ScrBytes *bytes);
 ScrBytes *scr_bytes_as_buffer(ScrBytes *bytes); /* borrows; +1, Buffer factory only */
+/* Buffer.isBuffer over a typed view: the view's Buffer brand. Borrows. */
+bool scr_bytes_is_buffer(const ScrBytes *bytes);
 /* Views retain the root allocation; offsets are relative to its complete
  * byte storage, including when src is itself a subarray. */
 ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
@@ -389,6 +391,10 @@ ScrBytes *scr_buffer_from_arr(const ScrArr *arr);     /* number[] */
 ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding);
 ScrBytes *scr_buffer_concat(const ScrArr *list);
 ScrBytes *scr_buffer_concat_len(const ScrArr *list, double total);
+/* The untyped-list forms: Node's ERR_INVALID_ARG_TYPE checks on the list
+ * and each element, then the typed concat. NULL with the exception pending. */
+ScrBytes *scr_buffer_concat_dyn(const struct ScrDyn *list);
+ScrBytes *scr_buffer_concat_len_dyn(const struct ScrDyn *list, double total);
 /* Drops the pool's slab reference and restores Buffer.poolSize (process
  * exit audits and library session resets). */
 void scr_buffer_pool_reset(void);

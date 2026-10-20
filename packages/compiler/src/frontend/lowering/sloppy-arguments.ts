@@ -36,7 +36,7 @@ export function sloppyArgumentsRefusal(
   lowerer: Lowerer,
   fn: ts.SignatureDeclaration,
 ): SloppyArgumentsRefusal | null {
-  const params = fn.parameters;
+  const params = fn.parameters.nodes;
   if (params.length === 0 || fn.body === undefined) return null;
   // A default, rest, or destructuring parameter makes the list non-simple,
   // and Node then creates an unmapped arguments object even in sloppy mode.
@@ -50,7 +50,7 @@ export function sloppyArgumentsRefusal(
   const readIndices = new Set<number>();
   for (const id of argumentsReadsOf(fn)) {
     const symbol = lowerer.checker.getSymbolAtLocation(id);
-    const declaration = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+    const declaration = symbol ? symbol.valueDeclaration : undefined;
     if (declaration !== undefined) {
       return { node: id, reason: `a binding named 'arguments' ${where}` };
     }
@@ -133,7 +133,7 @@ function classifyUse(lowerer: Lowerer, id: ts.Identifier): ArgumentsUse {
   }
   if (ts.isCallExpression(parent) && parent.expression !== node) {
     const callee = parent.expression;
-    const args = parent.arguments;
+    const args = parent.arguments.nodes;
     if (
       args.length === 2 &&
       args[1] === node &&
@@ -252,12 +252,12 @@ function constantIndex(expr: ts.Expression): number | null {
 function isStrictCode(fn: ts.Node): boolean {
   for (let node: ts.Node | undefined = fn; node; node = node.parent) {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) return true;
-    if (ts.isSourceFile(node)) return hasUseStrictDirective(node.statements);
+    if (ts.isSourceFile(node)) return hasUseStrictDirective(node.statements.nodes);
     if (
       ts.isFunctionLike(node) &&
       node.body !== undefined &&
       ts.isBlock(node.body) &&
-      hasUseStrictDirective(node.body.statements)
+      hasUseStrictDirective(node.body.statements.nodes)
     ) {
       return true;
     }

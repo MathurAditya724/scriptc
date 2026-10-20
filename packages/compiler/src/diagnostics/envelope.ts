@@ -16,6 +16,7 @@
  * bumps it. */
 import { readFileSync } from "node:fs";
 import type { ScrDiagnostic } from "./diagnostic.js";
+import type { WasmModuleReport } from "../wasm/discover.js";
 
 export const DIAGNOSTICS_SCHEMA = "scriptc-diagnostics";
 export const DIAGNOSTICS_SCHEMA_VERSION = 1;
@@ -138,6 +139,9 @@ export interface DiagnosticsEnvelope {
   artifact?: string;
   /** coverage --explain-dynamic only: the report-only tier assignment. */
   tiers?: TiersEnvelope;
+  /** coverage only: the WebAssembly modules the build can see, with their
+   * size, validity, proposals and the sources that found them. */
+  wasmModules?: WasmModuleReport[];
   groups: DiagnosticGroup[];
   diagnostics: LocatedDiagnostic[];
 }

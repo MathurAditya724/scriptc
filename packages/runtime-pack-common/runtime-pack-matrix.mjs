@@ -43,6 +43,7 @@ const BASE_RUNTIME_SOURCES = [
   "scr_publish.c",
   "scr_region.c",
   "scr_itable.c",
+  "scr_slots.c",
   "scr_alloc.c",
 ];
 
@@ -102,6 +103,7 @@ const OPTIONAL = [
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
+  ["scr_webcrypto.c", "webcrypto"],
   ["scr_fetch.c", "nativeFetch"],
 ];
 
@@ -112,6 +114,32 @@ function variantsFor(source) {
       id: "text-decoder-legacy",
       when: { textDecoderLegacy: true },
       defines: ["SCR_TEXT_DECODER_LEGACY"],
+    });
+  }
+  // Programs that assign process.emitWarning link the replacement-aware
+  // warning paths; every other program keeps the default object.
+  if (source === "scr_async_dyn.c") {
+    variants.push({
+      id: "warning-replace",
+      when: { warningReplace: true },
+      defines: ["SCR_WARNING_REPLACE"],
+    });
+  }
+  // stdin setEncoding, string data listeners and stdio 'resize' events.
+  if (source === "scr_events.c") {
+    variants.push({
+      id: "stdio-extended",
+      when: { stdioExtended: true },
+      defines: ["SCR_STDIO_EXTENDED"],
+    });
+  }
+  if (source === "scr_cycle.c") {
+    // The young-in nursery (SCRIPTC_YOUNG_NURSERY=1): the collector with
+    // nursery collections; programs built without it link the default.
+    variants.push({
+      id: "young-nursery",
+      when: { youngNursery: true },
+      defines: ["SCR_YIN"],
     });
   }
   return variants;

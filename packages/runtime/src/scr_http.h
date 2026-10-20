@@ -295,6 +295,9 @@ void scr_http_client_destroy(ScrHttpClientReq *c);
 /* req.destroy(err): err (borrowed) becomes the request's 'error'. */
 void scr_http_client_destroy_error(ScrHttpClientReq *c, ScrError *err);
 void scr_http_client_max_header_size(ScrHttpClientReq *c, double value); /* see the server form */
+/* http.request's `signal` option (borrowed), checked before the request
+ * is built. May throw ERR_INVALID_ARG_TYPE. */
+void scr_http_client_signal_check(const ScrDyn *signal);
 /* http.request's `signal` option (borrowed); `add` is
  * events.addAbortListener. May throw ERR_INVALID_ARG_TYPE. */
 void scr_http_client_add_abort_signal(ScrHttpClientReq *c, ScrDyn *signal,
@@ -350,14 +353,19 @@ bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, ScrStr **host_out
  * option" — the agent's (settable) defaultPort, then the scheme's. */
 ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
                             double max_sockets, double max_free, double timeout_ms,
-                            double port /* < 0 = unset: the option-merge default */); /* +1 */
+                            double port /* < 0 = unset: the option-merge default */,
+                            const ScrDyn *scheduling /* borrowed; NULL = 'lifo' */); /* +1 */
 ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double port,
                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                              double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                              bool auto_end, const ScrDyn *agent /*borrowed*/,
                                              ScrClosure *cb /*moves, nullable*/,
                                              ScrHttpRespFn fn, int default_port,
-                                             void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx); /* +1 */
+                                             void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx,
+                                             ScrStr *pool_key /*borrowed, nullable: https TLS options*/); /* +1 */
+/* http.globalAgent / https.globalAgent: borrowed, and as a +1 value. */
+const ScrDyn *scr_http_global_agent(bool secure);
+ScrDyn *scr_http_global_agent_value(bool secure);
 ScrHttpClientReq *scr_http_request_agent(ScrStr *host /*borrowed*/, double port,
                                           ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                           double timeout_ms, ScrArr *header_pairs /*borrowed*/,

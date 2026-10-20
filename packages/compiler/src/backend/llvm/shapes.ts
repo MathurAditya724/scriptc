@@ -28,7 +28,16 @@ import {
   mangleRecordStruct,
   mangleRecordTrace,
 } from "../mangle.js";
-import { cycTypeDescriptor, emitObjectAlloc, emitObjectFree } from "./alloc.js";
+import {
+  CYC_HDR,
+  cycTypeDescriptor,
+  emitObjectAlloc,
+  emitObjectFree,
+  CYC_APPEND,
+  cycleAppendDecls,
+  cycleAppendHelper,
+  inlineBufferingSupported,
+} from "./alloc.js";
 import type { BlockBuilder } from "./blocks.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
@@ -50,67 +59,132 @@ import {
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
+/** SCR_CYC_MAX_TYPES (scr_rc.h): the registry's size, and the length of
+ * the young-in nursery's per-id skip countdown. */
+const CYC_MAX_TYPES = 32768;
+
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
-  declare(decl: string): void;
   /** The hierarchy root of a class (a program class or a runtime base),
    * or undefined for classes outside the class graph. */
   classRootOf?(className: string): string | undefined;
-  /** Request the shared OOM abort helper (@sc_oom) — emitted once. */
-  needOom(): void;
+  /** Byte offset from an object pointer back to ScrCycHdr.buf. */
+  readonly cycleBufOffset: number;
+  declare(decl: string): void;
+  /** Inline the small-object allocator's fast paths (llvm/alloc.ts). */
+  readonly inlineAlloc?: boolean;
+  /** Record and class fields that store a scalar union's tag and bits
+   * inline (inline-unions.ts): they own nothing. */
+  readonly inlineUnions: InlineUnionFields;
   /** The immutable ScrMapOps descriptor (scr_map.h) of a Map or Set type:
    * a module constant holding the LLVM operands { key retain, key release,
    * key trace, value retain, value release, value trace, union key kinds },
    * or `null` when every operand is null. */
   mapOps(operands: readonly string[]): string;
-  /** The target C ABI's `size_t` / refcount integer type. */
-  readonly sizeType: "i32" | "i64";
-  /** Byte offset from an object pointer back to ScrCycHdr.buf. */
-  readonly cycleBufOffset: number;
-  readonly tracedShapes: Set<string>;
-  readonly tracedUnions: Set<string>;
+  /** Request the shared OOM abort helper (@sc_oom) — emitted once. */
+  needOom(): void;
+  /** The next collector statistics index for an emitted ScrCycType
+   * descriptor (cycTypeDescriptor), counting from FIRST_EMITTED_CYC_KIND
+   * in emission order.
+   * Absent: every descriptor gets 0, which keeps no statistics. */
+  nextCycKind?(): number;
   /** Unions represented as a nullable arm pointer (nullable-unions.ts):
    * their RC and trace entry points are the arm's NULL-tolerant ones. */
   readonly nullableUnions: NullableUnions;
-  /** Record and class fields that store a scalar union's tag and bits
-   * inline (inline-unions.ts): they own nothing. */
-  readonly inlineUnions: InlineUnionFields;
-  /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
-  unionNoneRef(): string;
-  readonly recordsById: Map<string, IrRecordShape>;
-  readonly recordCloneShapes: ReadonlySet<string>;
-  /** The program constructs lifetime regions: the ProgramLifetime classes
-   * allocate in regions and count references in their region chunk instead
-   * of being empty (llvm/regions.ts). */
-  regions?: RegionHooks | null;
-  /** The alias tag of a runtime word that lifetime-region code reads and
-   * writes outside every field: the chunk count, the chunk owner, the class
-   * cursors and scr_region_counting (", !tbaa !N", or "" in debug builds). */
-  regionAliasTag?(word: "count" | "owner" | "cursor" | "counting"): string;
   /** Emit the live-object audit notes (`scr_obj_alloc_note` /
    * `scr_obj_free_note`) in emitted new/free helpers. Only runtimes built
    * with SCR_RC_AUDIT (the sanitized lane) count them; release and dev
    * runtime packs define them empty, so plain builds omit the calls.
    * Absent means emit. */
   readonly objectAudit?: boolean;
-  /** Inline the small-object allocator's fast paths (llvm/alloc.ts). */
-  readonly inlineAlloc?: boolean;
-  /** Worker executables: the inline allocator state is thread-local. */
-  readonly threadLocalAlloc?: boolean;
   /** Inline RC fast-path helpers requested so far ("<family>:<op>"); the
    * emitter defines each once through {@link emitInlineRcHelpers}. Null
    * keeps every retain/release a runtime call. */
   readonly rcHelpers: Set<string> | null;
-  /** Which fast paths are inlined (see {@link InlineRcMode}). */
-  readonly rcMode?: InlineRcMode;
   /** Define the fast-path helpers `noinline` (see {@link inlineRcOption}). */
   readonly rcHelpersNoinline?: boolean;
-  /** The next collector statistics index for an emitted ScrCycType
-   * descriptor (cycTypeDescriptor), counting from FIRST_EMITTED_CYC_KIND
-   * in emission order.
-   * Absent: every descriptor gets 0, which keeps no statistics. */
-  nextCycKind?(): number;
+  /** Which fast paths are inlined (see {@link InlineRcMode}). */
+  readonly rcMode?: InlineRcMode;
+  readonly recordCloneShapes: ReadonlySet<string>;
+  readonly recordsById: Map<string, IrRecordShape>;
+  /** The alias tag of a runtime word that lifetime-region code reads and
+   * writes outside every field: the chunk count, the chunk owner, the class
+   * cursors and scr_region_counting (", !tbaa !N", or "" in debug builds). */
+  regionAliasTag?(word: "count" | "owner" | "cursor" | "counting"): string;
+  /** The program constructs lifetime regions: the ProgramLifetime classes
+   * allocate in regions and count references in their region chunk instead
+   * of being empty (llvm/regions.ts). */
+  regions?: RegionHooks | null;
+  /** The target C ABI's `size_t` / refcount integer type. */
+  readonly sizeType: "i32" | "i64";
+  /** Worker executables: the inline allocator state is thread-local. */
+  readonly threadLocalAlloc?: boolean;
+  readonly tracedShapes: Set<string>;
+  readonly tracedUnions: Set<string>;
+  /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
+  unionNoneRef(): string;
+  /** The young-in nursery (backend/young-nursery.ts): `new` hands each
+   * traced program-owned instance to scr_yin_enter. Absent: off. */
+  readonly youngNursery?: boolean;
+}
+
+/** The nursery entry of a new traced instance in `%o`, after its count is
+ * stored; nothing when the nursery is off. Where the allocator is inlined
+ * (64-bit, process-global state) the entry is inline too: a type that is
+ * skipping the nursery (its scr_yin_skip countdown is nonzero) counts down
+ * and stays out; otherwise, while the nursery has room (n < lim in ScrYin,
+ * scr_rc.h), list the object at index n and mark its header young
+ * (generation SCR_CYC_YOUNG, `buf` the buffered bit and the index), and
+ * call scr_yin_enter_slow when it has none (it collects the nursery
+ * first). Other targets call scr_yin_enter, which does all of it.
+ * Labels use the `ye.` prefix; the lines end in an open block. */
+export function youngEntryLines(host: ShapeHost): string[] {
+  if (host.youngNursery !== true) return [];
+  if (host.inlineAlloc !== true || host.threadLocalAlloc === true) {
+    host.declare(`declare void @scr_yin_enter(ptr)`);
+    return [`  call void @scr_yin_enter(ptr %o) ; the young-in nursery`];
+  }
+  host.declare(`@scr_yin = external global { ptr, i64, i64, i64 }`);
+  host.declare(`@scr_yin_skip = external global [${CYC_MAX_TYPES} x i32]`);
+  host.declare(`declare void @scr_yin_enter_slow(ptr)`);
+  return [
+    `  %ye.idp = getelementptr inbounds i8, ptr %o, i64 -${CYC_HDR} ; the young-in nursery`,
+    `  %ye.id16 = load i16, ptr %ye.idp ; ScrCycHdr.id`,
+    `  %ye.id = zext i16 %ye.id16 to i64`,
+    `  %ye.sp = getelementptr inbounds [${CYC_MAX_TYPES} x i32], ptr @scr_yin_skip, i64 0, i64 %ye.id`,
+    `  %ye.s = load i32, ptr %ye.sp`,
+    `  %ye.skip = icmp ne i32 %ye.s, 0`,
+    `  br i1 %ye.skip, label %ye.skipped, label %ye.enter`,
+    `ye.skipped: ; a type that does not die young: counted down, stays out`,
+    `  %ye.s1 = sub i32 %ye.s, 1`,
+    `  store i32 %ye.s1, ptr %ye.sp`,
+    `  br label %ye.done`,
+    `ye.enter:`,
+    `  %ye.v = load ptr, ptr @scr_yin`,
+    `  %ye.np = getelementptr inbounds i8, ptr @scr_yin, i64 8`,
+    `  %ye.n = load i64, ptr %ye.np`,
+    `  %ye.lp = getelementptr inbounds i8, ptr @scr_yin, i64 16`,
+    `  %ye.l = load i64, ptr %ye.lp`,
+    `  %ye.room = icmp ult i64 %ye.n, %ye.l`,
+    `  br i1 %ye.room, label %ye.fast, label %ye.slow`,
+    `ye.fast:`,
+    `  %ye.slot = getelementptr inbounds ptr, ptr %ye.v, i64 %ye.n`,
+    `  store ptr %o, ptr %ye.slot`,
+    `  %ye.n1 = add i64 %ye.n, 1`,
+    `  store i64 %ye.n1, ptr %ye.np`,
+    `  %ye.genp = getelementptr inbounds i8, ptr %o, i64 -5`,
+    `  store i8 3, ptr %ye.genp ; ScrCycHdr.gen = SCR_CYC_YOUNG`,
+    `  %ye.bufp = getelementptr inbounds i8, ptr %o, i64 -4`,
+    `  %ye.i = trunc i64 %ye.n to i32`,
+    `  %ye.buf = or i32 %ye.i, -2147483648`,
+    `  store i32 %ye.buf, ptr %ye.bufp ; ScrCycHdr.buf = buffered bit | index`,
+    `  br label %ye.done`,
+    `ye.slow:`,
+    `  call void @scr_yin_enter_slow(ptr %o)`,
+    `  br label %ye.done`,
+    `ye.done:`,
+  ];
 }
 
 /** What class emission asks of lifetime regions (LifetimeRegions in
@@ -414,6 +488,10 @@ export const INLINE_RC_FAMILIES: Readonly<Record<string, InlineRcFamily>> = {
 
 type RcOp = "retain" | "release";
 
+/** The helper key (with the "family:op" keys) of the module's candidate
+ * append helper (alloc.ts cycleAppendHelper). */
+const CYC_APPEND_KEY = "cyc:append";
+
 /** The mirrored family for an RC operation on a runtime stem (`scr_str`),
  * or null when it stays a call. */
 export function inlineRcFamily(host: ShapeHost, stem: string, op: RcOp): InlineRcFamily | null {
@@ -475,6 +553,10 @@ function requestRcHelper(host: ShapeHost, family: string, op: RcOp): string {
   }
   host.rcHelpers.add(`${family}:${op}`);
   for (const decl of rcHelperDecls(family, op)) host.declare(decl);
+  // Its body is written last (emitInlineRcHelpers), after the requests are
+  // collected: a release that can buffer a candidate requests the append
+  // helper now.
+  if (op === "release" && INLINE_RC_FAMILIES[family]!.cycle === "always") requestCycleAppend(host);
   return `@${inlineRcName(family, op)}`;
 }
 
@@ -572,6 +654,10 @@ function rcHelperKeys(host: ShapeHost): string[] {
 export function inlineRcDecls(host: ShapeHost): string[] {
   const decls = new Set<string>();
   for (const key of rcHelperKeys(host)) {
+    if (key === CYC_APPEND_KEY) {
+      for (const decl of cycleAppendDecls()) decls.add(decl);
+      continue;
+    }
     const [family, op] = key.split(":") as [string, RcOp];
     for (const decl of rcHelperDecls(family, op)) decls.add(decl);
   }
@@ -717,6 +803,10 @@ function releaseHelper(host: ShapeHost, family: string, row: InlineRcFamily): st
 export function emitInlineRcHelpers(host: ShapeHost): string[] {
   const out: string[] = [];
   for (const key of rcHelperKeys(host).sort()) {
+    if (key === CYC_APPEND_KEY) {
+      out.push(...cycleAppendHelper());
+      continue;
+    }
     const [family, op] = key.split(":") as [string, RcOp];
     const row = INLINE_RC_FAMILIES[family]!;
     out.push(
@@ -1369,12 +1459,6 @@ export function releaseFastPath(
   ];
 }
 
-/** The possible-cycle-root step of a release that left a headered object
- * alive: scr_cyc_on_release with its early return inlined. Test the sign
- * of `buf` (the i32 at obj-4; negative for a queued candidate or a tenured
- * object) and call the runtime only to enqueue a new candidate.
- * Every emitted release of a headered object shares this sequence
- * (scr_runtime.h asserts the offset); it ends by branching to `done`. */
 /** One traced field of an emitted trace function: load the slot and visit
  * it unless it is null. Every collector visitor ignores null children, and
  * most traced slots of a typical heap are empty (optional links, unset
@@ -1398,16 +1482,39 @@ export function traceFieldVisitLines(
   ];
 }
 
+/** Whether candidate buffering goes through the module's append helper
+ * (alloc.ts cycleAppendHelper), requesting its definition if so: in
+ * optimized builds (those with inline RC helpers) that support it. */
+function requestCycleAppend(host: ShapeHost): boolean {
+  if (host.rcHelpers === null || !inlineBufferingSupported(host)) return false;
+  if (!host.rcHelpers.has(CYC_APPEND_KEY)) {
+    host.rcHelpers.add(CYC_APPEND_KEY);
+    for (const decl of cycleAppendDecls()) host.declare(decl);
+  }
+  return true;
+}
+
+/** The possible-cycle-root step of a release that left a headered object
+ * alive: scr_cyc_on_release with its early return inlined. Test the sign
+ * of `buf` (the i32 at obj-4; negative for a queued candidate or a tenured
+ * object), and buffer a new candidate: through the module's
+ * cycleAppendHelper in optimized builds that support it, through
+ * scr_cyc_on_release otherwise. Every emitted release of a headered object
+ * shares this sequence (scr_runtime.h asserts the offsets); it ends by
+ * branching to `done`. */
 export function cycleRootLines(host: ShapeHost, done: string): string[] {
   const S = host.sizeType;
   host.declare(`declare void @scr_cyc_on_release(ptr)`);
+  const append = requestCycleAppend(host);
   return [
     `  %bufp = getelementptr i8, ptr %o, ${S} -${host.cycleBufOffset}`,
     `  %buf = load i32, ptr %bufp`,
     `  %queued = icmp slt i32 %buf, 0`,
     `  br i1 %queued, label %${done}, label %enqueue`,
     `enqueue:`,
-    `  call void @scr_cyc_on_release(ptr %o) ; buffer the candidate; may collect`,
+    append
+      ? `  call preserve_mostcc void @${CYC_APPEND}(ptr %o) ; buffer the candidate; may collect`
+      : `  call void @scr_cyc_on_release(ptr %o) ; buffer the candidate; may collect`,
     `  br label %${done}`,
   ];
 }
@@ -1581,6 +1688,7 @@ export function emitRecordShapes(
         `  store ptr %ovf, ptr %ovfp`,
       );
     }
+    if (traced) nw.push(...youngEntryLines(host));
     nw.push(`  ret ptr %o`, `}`, ``);
     defs.push(...nw);
 

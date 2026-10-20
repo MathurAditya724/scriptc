@@ -1,0 +1,430 @@
+/* A CommonJS module's own exports object, seen from inside the module.
+ *
+ * The compiled module system has no reflective exports object: each export
+ * is a module global (collectGlobals) or alias plumbing to a declaration.
+ * Inside the module that is enough for
+ *
+ *   - member reads and member calls (`exports.f`, `exports.f(x)`,
+ *     `module.exports.f(x)`): they are the member's export global, the
+ *     storage every `exports.f =` statement assigns;
+ *   - identity comparisons of the object itself (`root === module.exports`,
+ *     `exports === module.exports`): while the module never replaces
+ *     `module.exports` and never rebinds `exports`, both name the module's
+ *     original exports object, which top-level `this` already represents
+ *     (lowerCjsTopLevelThis). `typeof` and truthiness keep their existing
+ *     lowerings.
+ *
+ * Every other use of the object as a value (passing it to a function,
+ * storing it, reading a member through an alias) would need a real object
+ * whose properties are the exports; those uses keep a named refusal. The
+ * dynamic CommonJS module object is the two-tier design's S9 stage. */
+import * as ts from "../ts7/adapter.js";
+import type { Lowerer } from "./lowerer.js";
+import {
+  cjsExportAssignmentOf,
+  cjsExportTargetLiteral,
+  isCjsJsFile,
+  isModuleExportsAccess,
+  isRequireStatement,
+  locOf,
+} from "../program.js";
+import { isCjsModuleGlobal } from "./lower-node-module.js";
+import { DYN, type IrExpr, type IrGlobal } from "../../ir/ir.js";
+
+/** True for the CommonJS wrapper's `exports` binding (not shadowed by any
+ * source declaration) in a CommonJS JS file. */
+export function isCjsExportsIdentifier(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isIdentifier(node) || node.text !== "exports") return false;
+  if (!isCjsJsFile(node.getSourceFile(), lowerer.program)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(node);
+  const decls = symbol ? symbol.declarations : [];
+  return !decls.some(
+    (d) =>
+      !d.getSourceFile().isDeclarationFile &&
+      (ts.isVariableDeclaration(d) ||
+        ts.isParameter(d) ||
+        ts.isBindingElement(d) ||
+        ts.isFunctionDeclaration(d) ||
+        ts.isClassDeclaration(d) ||
+        ts.isImportSpecifier(d) ||
+        ts.isNamespaceImport(d) ||
+        ts.isImportEqualsDeclaration(d)),
+  );
+}
+
+/** `module.exports` over the CommonJS `module` global in a CommonJS file. */
+export function isCjsModuleExports(lowerer: Lowerer, node: ts.Expression): boolean {
+  return (
+    isModuleExportsAccess(node) &&
+    isCjsModuleGlobal(lowerer, node.expression) &&
+    isCjsJsFile(node.getSourceFile(), lowerer.program)
+  );
+}
+
+/** The export global behind a same-module member access `exports.<name>` /
+ * `module.exports.<name>`, or null (identifier-valued members are alias
+ * plumbing with no storage, and other receivers are not the exports
+ * object). */
+export function cjsInFileExportGlobalOf(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrGlobal | null {
+  if (access.questionDotToken || !ts.isIdentifier(access.name)) return null;
+  const sf = access.getSourceFile();
+  const recv =
+    isModuleExportsAccess(access.expression) ||
+    (ts.isIdentifier(access.expression) &&
+      access.expression.text === "exports" &&
+      !lowerer.resolveLocal(access.expression) &&
+      !lowerer.globalOf(access.expression));
+  if (!recv || !isCjsJsFile(sf, lowerer.program)) return null;
+  const sym =
+    lowerer.checker.getSymbolAtLocation(access.name) ??
+    lowerer.cjsModuleExportSymbol(sf, access.name.text);
+  const resolved =
+    sym !== undefined && sym.flags & ts.SymbolFlags.Alias
+      ? lowerer.checker.getAliasedSymbol(sym)
+      : sym;
+  return (
+    (sym ? lowerer.globalsBySymbol.get(sym) : undefined) ??
+    (resolved ? lowerer.globalsBySymbol.get(resolved) : undefined) ??
+    null
+  );
+}
+
+/** Whether `node` is an operand of an equality operator: only its identity
+ * is observed. */
+function identityUse(node: ts.Expression): boolean {
+  let child: ts.Node = node;
+  let parent = node.parent;
+  while (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+    child = parent;
+    parent = parent.parent;
+  }
+  if (parent === undefined || !ts.isBinaryExpression(parent)) return false;
+  const op = parent.operatorToken.kind;
+  return (
+    (op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+      op === ts.SyntaxKind.EqualsEqualsToken ||
+      op === ts.SyntaxKind.ExclamationEqualsToken) &&
+    (parent.left === child || parent.right === child)
+  );
+}
+
+/** Uses whose answer does not need the object: `typeof`, `void`, and
+ * truthiness tests (their existing lowerings answer them). */
+function answeredWithoutObject(node: ts.Expression): boolean {
+  let child: ts.Node = node;
+  let parent = node.parent;
+  while (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+    child = parent;
+    parent = parent.parent;
+  }
+  if (parent === undefined) return false;
+  if (ts.isTypeOfExpression(parent) || ts.isVoidExpression(parent)) return true;
+  return truthinessOnly(child as ts.Expression);
+}
+
+function truthinessOnly(node: ts.Expression): boolean {
+  let child: ts.Node = node;
+  for (let parent = node.parent; parent !== undefined; child = parent, parent = parent.parent) {
+    if (ts.isParenthesizedExpression(parent)) continue;
+    if (ts.isPrefixUnaryExpression(parent))
+      return parent.operator === ts.SyntaxKind.ExclamationToken;
+    if (
+      ts.isBinaryExpression(parent) &&
+      (parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    )
+      continue;
+    if (ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent))
+      return parent.expression === child;
+    if (ts.isForStatement(parent)) return parent.condition === child;
+    if (ts.isConditionalExpression(parent)) return parent.condition === child;
+    return false;
+  }
+  return false;
+}
+
+/** Which of the module's exports bindings the file ever assigns (any
+ * nesting, compound operators included), cached per file on the lowerer
+ * (Lowerer.cjsExportsAssignments). */
+function exportsAssignments(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+): { exports: boolean; moduleExports: boolean } {
+  const cached = lowerer.cjsExportsAssignments.get(sf);
+  if (cached !== undefined) return cached;
+  const out = { exports: false, moduleExports: false };
+  lowerer.cjsExportsAssignments.set(sf, out);
+  ts.walkPreorder(sf, (node) => {
+    // A fresh `exports = module.exports = {}` reset leaves both bindings
+    // naming one (new, empty) exports object for the rest of the module.
+    if (ts.isExpressionStatement(node) && isFreshExportsReset(lowerer, node)) return "skip";
+    if (
+      !ts.isBinaryExpression(node) ||
+      node.operatorToken.kind < ts.SyntaxKind.FirstAssignment ||
+      node.operatorToken.kind > ts.SyntaxKind.LastAssignment
+    )
+      return undefined;
+    let target = node.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (isCjsModuleExports(lowerer, target)) out.moduleExports = true;
+    if (isCjsExportsIdentifier(lowerer, target)) out.exports = true;
+    return undefined;
+  });
+  return out;
+}
+
+/** Whether `node` still names the module's ORIGINAL exports object wherever
+ * it runs: `exports` unless the file rebinds it; `module.exports` unless the
+ * file rebinds `exports` or replaces `module.exports`. */
+function namesOriginalExports(lowerer: Lowerer, node: ts.Expression): boolean {
+  const assigned = exportsAssignments(lowerer, node.getSourceFile());
+  if (assigned.exports) return false;
+  return ts.isIdentifier(node) || !assigned.moduleExports;
+}
+
+/** The uses this module answers with the original exports object: identity
+ * comparisons and `typeof` of either spelling, and truthiness or `void` of
+ * `exports` (`module.exports` truthiness keeps its existing fold). */
+function objectAnsweredUse(node: ts.Expression): boolean {
+  if (identityUse(node)) return true;
+  let parent = node.parent;
+  while (parent !== undefined && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+  if (parent !== undefined && ts.isTypeOfExpression(parent)) return true;
+  return ts.isIdentifier(node) && answeredWithoutObject(node);
+}
+
+/** Whether `node` (`exports` or `module.exports`) is a use of the module's
+ * exports object as a VALUE (not a member access receiver, not an
+ * assignment target). */
+export function isCjsExportsObjectValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!isCjsExportsIdentifier(lowerer, node) && !isCjsModuleExports(lowerer, node)) return false;
+  let outer: ts.Node = node;
+  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
+    outer = outer.parent;
+  const parent = outer.parent;
+  if (parent === undefined) return false;
+  if (
+    (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+    parent.expression === outer
+  )
+    return false;
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.left === outer &&
+    parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+  )
+    return false;
+  return true;
+}
+
+/** Files whose exports object is observed by identity somewhere: their top-
+ * level `this` object must exist (lowerFileInit creates it). */
+export function usesCjsExportsIdentity(lowerer: Lowerer, sf: ts.SourceFile): boolean {
+  if (!isCjsJsFile(sf, lowerer.program)) return false;
+  let found = false;
+  ts.walkPreorder(sf, (node) => {
+    if (
+      (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) &&
+      isCjsExportsObjectValue(lowerer, node) &&
+      objectAnsweredUse(node) &&
+      namesOriginalExports(lowerer, node)
+    ) {
+      found = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return found;
+}
+
+/** `exports` / `module.exports` used as a value inside its own module: the
+ * original exports object for identity, typeof and truthiness, or a named
+ * refusal. Null when `node` is not such a use. */
+export function lowerCjsExportsObjectValue(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  if (!isCjsExportsObjectValue(lowerer, node)) return null;
+  const sf = node.getSourceFile();
+  // A module that replaces module.exports answers `module.exports` reads
+  // through the replacement's own machinery (the class-expression whole
+  // export, the replaced-exports reads).
+  if (!ts.isIdentifier(node) && exportsAssignments(lowerer, sf).moduleExports) return null;
+  const spelled = ts.isIdentifier(node) ? "exports" : "module.exports";
+  const original = lowerer.cjsExportsThis.get(sf);
+  if (objectAnsweredUse(node) && original !== undefined && namesOriginalExports(lowerer, node)) {
+    return { kind: "varRef", localId: original.id, type: DYN, loc: locOf(node) };
+  }
+  // `module.exports` truthiness keeps its existing fold (and anything the
+  // object is not needed for keeps whatever answered it before).
+  if (answeredWithoutObject(node)) return null;
+  lowerer.unsupported(
+    "SC1090",
+    node,
+    identityUse(node)
+      ? `comparing '${spelled}' in a module that replaces module.exports or rebinds exports (the compiled exports are a static table, not an object with an identity)`
+      : `'${spelled}' as a value other than a member access, comparison, typeof or truthiness test (the compiled exports are a static table, not an object: read ${spelled}.<name>)`,
+  );
+}
+
+/** `exports = module.exports = {}` (either order) as a top-level statement
+ * that runs before anything could observe or extend the original exports
+ * object: only directives, require statements and function declarations
+ * precede it, and the module assigns neither binding anywhere else. Node
+ * swaps the original empty exports object for another empty one that both
+ * bindings name; the compiled module's static exports start out exactly
+ * the same, so the statement is a no-op (semver's internal/re.js). */
+export function isFreshExportsReset(lowerer: Lowerer, stmt: ts.ExpressionStatement): boolean {
+  const sf = stmt.parent;
+  if (!ts.isSourceFile(sf) || !isCjsJsFile(sf, lowerer.program)) return false;
+  let e: ts.Expression = stmt.expression;
+  const targets: ts.Expression[] = [];
+  for (;;) {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken) break;
+    targets.push(e.left);
+    e = e.right;
+  }
+  if (!ts.isObjectLiteralExpression(e) || e.properties.nodes.length !== 0) return false;
+  if (targets.length !== 2) return false;
+  const hasExports = targets.some((t) => isCjsExportsIdentifier(lowerer, t));
+  const hasModuleExports = targets.some((t) => isCjsModuleExports(lowerer, t));
+  if (!hasExports || !hasModuleExports) return false;
+  for (const prior of sf.statements.nodes) {
+    if (prior === stmt) break;
+    if (ts.isFunctionDeclaration(prior) || isRequireStatement(prior)) continue;
+    if (ts.isExpressionStatement(prior) && ts.isStringLiteral(prior.expression)) continue;
+    return false;
+  }
+  let others = 0;
+  ts.walkPreorder(sf, (node) => {
+    if (
+      !ts.isBinaryExpression(node) ||
+      node.operatorToken.kind < ts.SyntaxKind.FirstAssignment ||
+      node.operatorToken.kind > ts.SyntaxKind.LastAssignment
+    )
+      return undefined;
+    let target = node.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (isCjsModuleExports(lowerer, target) || isCjsExportsIdentifier(lowerer, target)) others++;
+    return undefined;
+  });
+  return others === 2;
+}
+
+/** The export global a WRITE `exports.<name> = v` / `module.exports.<name> =
+ * v` updates when it is not a top-level export statement (inside a
+ * function, or in value position): only while the module keeps its
+ * original exports object, which is then the object every requirer reads
+ * the member from. */
+export function cjsExportMemberWriteGlobalOf(
+  lowerer: Lowerer,
+  target: ts.PropertyAccessExpression,
+): IrGlobal | null {
+  const sf = target.getSourceFile();
+  if (!isCjsJsFile(sf, lowerer.program)) return null;
+  const assigned = exportsAssignments(lowerer, sf);
+  if (assigned.exports || assigned.moduleExports) return null;
+  return cjsInFileExportGlobalOf(lowerer, target);
+}
+
+/** Whether a function body reads `this` (arrow functions inherit it; other
+ * nested functions bind their own). */
+function functionUsesThis(fn: ts.FunctionLikeDeclaration): boolean {
+  if (fn.body === undefined) return false;
+  let found = false;
+  ts.walkPreorder(fn.body, (node) => {
+    if (node !== fn.body && ts.isFunctionLike(node) && !ts.isArrowFunction(node)) return "skip";
+    if (node.kind === ts.SyntaxKind.ThisKeyword) {
+      found = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return found;
+}
+
+/** A function declaration, or a variable initialized with a function or
+ * arrow expression, that never reads `this`. */
+function symbolIsThisFreeFunction(lowerer: Lowerer, sym: ts.Symbol | undefined): boolean {
+  const decls = sym ? sym.declarations : [];
+  const fn = decls.find(ts.isFunctionDeclaration);
+  if (fn !== undefined) return !functionUsesThis(fn);
+  const v = decls.find(ts.isVariableDeclaration);
+  let init = v?.initializer;
+  while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
+  return (
+    init !== undefined &&
+    (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) &&
+    !functionUsesThis(init)
+  );
+}
+
+/** True when every value the module assigns to its export `name` is a
+ * function that never reads `this`. A call through the exports object
+ * (`exports.f(x)`) binds `this` to that object, which the static export
+ * table cannot supply, so only these calls lower; the others keep a fence. */
+export function cjsExportCallIgnoresThis(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  name: string,
+  depth = 0,
+): boolean {
+  if (depth > 16) return false;
+  const values: ts.Expression[] = [];
+  ts.walkPreorder(sf, (node) => {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(node.left) &&
+      node.left.name.text === name &&
+      (isCjsExportsIdentifier(lowerer, node.left.expression) ||
+        isCjsModuleExports(lowerer, node.left.expression))
+    ) {
+      values.push(node.right);
+    }
+    return undefined;
+  });
+  // Entries of a `module.exports = { ... }` table (direct, or a const
+  // literal the statement names).
+  let methodEntry: ts.MethodDeclaration | null = null;
+  let shorthandOnly = false;
+  for (const stmt of sf.statements.nodes) {
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs?.kind !== "table") continue;
+    const table = cjs.obj ?? cjsExportTargetLiteral(cjs.expr.right, sf);
+    for (const prop of table?.properties?.nodes ?? []) {
+      if (prop.name === undefined || !ts.isIdentifier(prop.name) || prop.name.text !== name)
+        continue;
+      if (ts.isPropertyAssignment(prop)) values.push(prop.initializer);
+      else if (ts.isShorthandPropertyAssignment(prop)) {
+        const value = lowerer.checker.getShorthandAssignmentValueSymbol(prop);
+        if (!symbolIsThisFreeFunction(lowerer, value)) return false;
+        shorthandOnly = true;
+      } else if (ts.isMethodDeclaration(prop)) methodEntry = prop;
+    }
+  }
+  if (methodEntry !== null) return values.length === 0 && !functionUsesThis(methodEntry);
+  if (values.length === 0) return shorthandOnly;
+  return values.every((v) => {
+    let e = v;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isFunctionExpression(e) || ts.isArrowFunction(e)) return !functionUsesThis(e);
+    if (ts.isIdentifier(e)) {
+      return symbolIsThisFreeFunction(lowerer, lowerer.checker.getSymbolAtLocation(e));
+    }
+    // Another module's member (`exports.f = require("./lib").f`, or through
+    // a module binding): that module's own export values decide.
+    if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) {
+      const dep = ts.isIdentifier(e.expression)
+        ? lowerer.cjsLocalModuleBindingOf(e.expression)
+          ? lowerer.cjsModuleBindingDepOf(e.expression)
+          : null
+        : lowerer.cjsModuleRefDepOf(e.expression);
+      return dep !== null && cjsExportCallIgnoresThis(lowerer, dep, e.name.text, depth + 1);
+    }
+    return false;
+  });
+}

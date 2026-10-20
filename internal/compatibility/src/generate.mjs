@@ -24,7 +24,6 @@ const root = fileURLToPath(new URL("../../../", import.meta.url));
 const internalOutputPath = `${packageRoot}generated/node-v24-internal.json`;
 const backlogOutputPath = `${packageRoot}generated/node-v24-backlog.json`;
 const publicOutputPath = `${root}docs/src/generated/node-v24-compatibility.json`;
-const publicMetaOutputPath = `${root}docs/src/generated/node-v24-compatibility-meta.json`;
 const compilerManifestPath = `${root}packages/compiler/surface-manifest.json`;
 const compilerCompatPath = `${packageRoot}static-support.json`;
 const pinPath = `${packageRoot}node-v24.json`;
@@ -203,6 +202,10 @@ function featureOf(row, entries, parentSignature) {
 
 function symbolCandidates(row) {
   const result = new Set([row.apiSymbol]);
+  // A global's own row (`WebAssembly`) matches the compiler's
+  // `globalThis.<name>` entries.
+  if (row.chapter === "globals" && row.apiSymbol && !row.apiSymbol.includes("."))
+    result.add(`globalThis.${row.apiSymbol}`);
   const aliases = [
     ["fsPromises.", "fs/promises."],
     ["dnsPromises.", "dns/promises."],
@@ -1005,17 +1008,6 @@ function publicSnapshot(snapshot) {
   };
 }
 
-function publicMetadata(publicRendered, snapshot) {
-  const matrix = projectPublicMatrix(snapshot);
-  return {
-    schemaVersion: 3,
-    nodeVersion: snapshot.nodeVersion,
-    nodeCommit: snapshot.nodeCommit,
-    artifactVersion: sha(publicRendered).slice(0, 20),
-    rowCount: matrix.rows.length,
-  };
-}
-
 function checkLocal() {
   const snapshot = JSON.parse(readFileSync(internalOutputPath, "utf8"));
   if (snapshot.nodeVersion !== pin.version || snapshot.nodeCommit !== pin.commit) {
@@ -1067,11 +1059,8 @@ function checkLocal() {
   if (readFileSync(backlogOutputPath, "utf8") !== render(buildBacklog(snapshot))) {
     throw new Error("the Node compatibility backlog is stale; run 'pnpm node-compat'");
   }
-  const publicRendered = render(publicSnapshot(snapshot));
-  if (
-    readFileSync(publicMetaOutputPath, "utf8") !== render(publicMetadata(publicRendered, snapshot))
-  ) {
-    throw new Error("the docs compatibility metadata is stale; run 'pnpm node-compat'");
+  if (readFileSync(publicOutputPath, "utf8") !== render(publicSnapshot(snapshot))) {
+    throw new Error("the docs compatibility artifact is stale; run 'pnpm node-compat'");
   }
   for (const row of snapshot.rows) {
     for (const key of ["static"]) {
@@ -1137,7 +1126,6 @@ async function main() {
   const internalRendered = render(snapshot);
   const backlogRendered = render(buildBacklog(snapshot));
   const publicRendered = render(publicSnapshot(snapshot));
-  const publicMetaRendered = render(publicMetadata(publicRendered, snapshot));
 
   if (args.has("--check")) {
     if (readFileSync(internalOutputPath, "utf8") !== internalRendered)
@@ -1146,8 +1134,6 @@ async function main() {
       throw new Error("Node compatibility backlog is stale; run 'pnpm node-compat'");
     if (readFileSync(publicOutputPath, "utf8") !== publicRendered)
       throw new Error("public Node compatibility snapshot is stale; run 'pnpm node-compat'");
-    if (readFileSync(publicMetaOutputPath, "utf8") !== publicMetaRendered)
-      throw new Error("public Node compatibility metadata is stale; run 'pnpm node-compat'");
     console.log(
       `Node compatibility snapshot matches ${pin.tag} (${snapshot.rows.length} API rows, commit ${pin.commit.slice(0, 12)})`,
     );
@@ -1156,7 +1142,6 @@ async function main() {
   writeFileSync(internalOutputPath, internalRendered);
   writeFileSync(backlogOutputPath, backlogRendered);
   writeFileSync(publicOutputPath, publicRendered);
-  writeFileSync(publicMetaOutputPath, publicMetaRendered);
   console.log(
     `wrote compatibility ledger, backlog, and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
   );

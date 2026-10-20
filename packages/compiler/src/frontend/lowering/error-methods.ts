@@ -315,7 +315,13 @@ export function refreshErrorPropertyDispatch(
                       info.def.name,
                       member,
                       value,
-                      [varRef("value", STRING, loc)],
+                      [
+                        // A JavaScript setter takes its value untyped.
+                        lowerer.coerceToExpected(
+                          varRef("value", STRING, loc),
+                          accessor.sig.params[0]?.type ?? STRING,
+                        ),
+                      ],
                       VOID,
                       loc,
                     ),

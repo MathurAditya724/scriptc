@@ -1249,6 +1249,56 @@ static ScrBytes *scr_buffer_from_array_like(const ScrDyn *value, double length) 
   return out;
 }
 
+/* Buffer.concat over an untyped list: Node's checks in Node's order (an
+ * Array, then the total of the two-argument form unless the list is empty,
+ * then every element a Uint8Array, ERR_INVALID_ARG_TYPE otherwise), then the
+ * typed concat over the elements. NULL with the exception pending. */
+static ScrBytes *scr_buffer_concat_dyn_impl(const ScrDyn *list, double total, bool has_total) {
+  ScrDyn *materialized = NULL;
+  if (list->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(list) != NULL) {
+    materialized = scr_dyn_typed_ref_materialize(list);
+    list = materialized;
+  }
+  if (list->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("list", "an instance of Array", list);
+    scr_dyn_release(materialized);
+    return NULL;
+  }
+  size_t n = list->v.arr.len;
+  if (has_total && n > 0 && !scr_bytes_validate_off("length", total, 9007199254740991.0)) {
+    scr_dyn_release(materialized);
+    return NULL;
+  }
+  ScrArr *parts = scr_arr_new(SCR_ELEM_BYTES, (double)n);
+  for (size_t i = 0; i < n; i++) {
+    ScrDyn *item = scr_dyn_index_get(list, (double)i);
+    const ScrDyn *shown = item != NULL ? item : scr_dyn_undefined();
+    if (!scr_dyn_bytes_is(shown, SCR_BYTES_U8) || shown->v.bytes->is_data_view) {
+      char name[40];
+      snprintf(name, sizeof name, "list[%zu]", i);
+      scr_dyn_arg_type_fail(name, "an instance of Buffer or Uint8Array", shown);
+      scr_dyn_release(item);
+      scr_arr_release(parts);
+      scr_dyn_release(materialized);
+      return NULL;
+    }
+    scr_arr_push_ref(parts, scr_bytes_retain(shown->v.bytes));
+    scr_dyn_release(item);
+  }
+  ScrBytes *out = has_total ? scr_buffer_concat_len(parts, total) : scr_buffer_concat(parts);
+  scr_arr_release(parts);
+  scr_dyn_release(materialized);
+  return out;
+}
+
+ScrBytes *scr_buffer_concat_dyn(const ScrDyn *list) {
+  return scr_buffer_concat_dyn_impl(list, 0, false);
+}
+
+ScrBytes *scr_buffer_concat_len_dyn(const ScrDyn *list, double total) {
+  return scr_buffer_concat_dyn_impl(list, total, true);
+}
+
 ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
   if (value->kind == SCR_DYN_STR) return scr_bytes_from_str(value->v.str, encoding);
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(SCR_BYTES_U8, value->v.bytes);

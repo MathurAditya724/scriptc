@@ -80,7 +80,10 @@ export interface RuntimePackManifest {
 
 export interface RuntimeFeatureSet extends NativeLinkFeatures {
   workers: boolean;
+  youngNursery: boolean;
   eventTarget: boolean;
+  warningReplace: boolean;
+  stdioExtended: boolean;
   nativeFetch: boolean;
   netEffective: boolean;
   httpEffective: boolean;
@@ -266,7 +269,10 @@ export function effectiveRuntimeFeatures(
   return {
     ...features,
     workers: features.workers === true,
+    youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
+    warningReplace: features.warningReplace === true,
+    stdioExtended: features.stdioExtended === true,
     nativeFetch,
     netEffective,
     httpEffective,

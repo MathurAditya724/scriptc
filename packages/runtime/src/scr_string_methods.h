@@ -73,6 +73,10 @@ bool scr_str_ends_with_from(ScrStr *s, ScrStr *needle, double end_position);
 ScrStr *scr_str_slice(ScrStr *s, double start, double end);
 /* substring: clamp-and-swap (negatives clamp to 0, start > end swaps). */
 ScrStr *scr_str_substring(ScrStr *s, double start, double end);
+/* Annex B substr(start, length): start already ToNumber'd (NaN → 0), a
+ * negative start counts from the end, length absent (has_length false)
+ * runs to the end. Returns +1. */
+ScrStr *scr_str_substr(ScrStr *s, double start, double length, bool has_length);
 
 /* Scalar-only local slices retain their original owner without copying.
  * Bounds and split-surrogate replacements are snapshotted at construction. */
@@ -111,6 +115,13 @@ ScrStr *scr_str_trim(ScrStr *s);
 ScrStr *scr_str_to_lower(const ScrStr *s);
 ScrStr *scr_str_to_upper(const ScrStr *s);
 ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form);
+/* toLocaleLowerCase/toLocaleUpperCase(locales) (scr_regex.c): undefined,
+ * empty lists, and primitives other than strings use the default case
+ * conversion; the first requested tag selects the Turkic (tr, az) rules or
+ * the default ones. Lithuanian, Greek uppercasing and tags outside the
+ * structural grammar throw a 'not supported yet' Error; null throws Node's
+ * TypeError. Borrows both; +1 or NULL with an exception pending. */
+ScrStr *scr_str_locale_case(const ScrStr *s, struct ScrDyn *locales, bool upper);
 /* NFC over a code point buffer (scr_regex.c, beside normalize): a fresh
  * malloc'd buffer the caller frees, its length in *out_len. Borrows input. */
 uint32_t *scr_nfc_code_points(const uint32_t *input, size_t length, size_t *out_len);

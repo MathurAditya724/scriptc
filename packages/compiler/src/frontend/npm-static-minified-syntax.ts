@@ -24,7 +24,7 @@ export function moduleExportsOfFile(sf: ts.SourceFile): ModuleExportNames | null
   }
   const names: string[] = [];
   const reexports: string[] = [];
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     if (ts.isExportDeclaration(stmt)) {
       if (stmt.isTypeOnly) continue;
       const clause = stmt.exportClause;
@@ -33,7 +33,7 @@ export function moduleExportsOfFile(sf: ts.SourceFile): ModuleExportNames | null
         if (spec === undefined || !ts.isStringLiteral(spec)) return null;
         reexports.push(spec.text);
       } else if (ts.isNamedExports(clause)) {
-        for (const element of clause.elements) {
+        for (const element of clause.elements.nodes) {
           if (!element.isTypeOnly) names.push(element.name.text);
         }
       } else {
@@ -45,12 +45,12 @@ export function moduleExportsOfFile(sf: ts.SourceFile): ModuleExportNames | null
       (ts.isFunctionDeclaration(stmt) ||
         ts.isClassDeclaration(stmt) ||
         ts.isVariableStatement(stmt)) &&
-      stmt.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+      stmt.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
     ) {
-      if (stmt.modifiers.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword)) {
+      if (stmt.modifiers.nodes.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword)) {
         names.push("default");
       } else if (ts.isVariableStatement(stmt)) {
-        for (const decl of stmt.declarationList.declarations) {
+        for (const decl of stmt.declarationList.declarations.nodes) {
           if (!ts.isIdentifier(decl.name)) return null;
           names.push(decl.name.text);
         }
@@ -63,7 +63,7 @@ export function moduleExportsOfFile(sf: ts.SourceFile): ModuleExportNames | null
 }
 
 function hasModuleSyntax(sf: ts.SourceFile): boolean {
-  return sf.statements.some(
+  return sf.statements.nodes.some(
     (stmt) =>
       ts.isImportDeclaration(stmt) ||
       ts.isExportDeclaration(stmt) ||
@@ -71,6 +71,6 @@ function hasModuleSyntax(sf: ts.SourceFile): boolean {
       ((ts.isFunctionDeclaration(stmt) ||
         ts.isClassDeclaration(stmt) ||
         ts.isVariableStatement(stmt)) &&
-        stmt.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true),
+        stmt.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true),
   );
 }

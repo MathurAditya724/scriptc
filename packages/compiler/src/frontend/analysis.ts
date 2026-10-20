@@ -93,6 +93,7 @@ export function analyzeWithFrontend(
       ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
       ...(opts.tier !== undefined ? { tierMode: opts.tier } : {}),
       ...(opts.explainDynamic === true ? { tierReport: { preflight } } : {}),
+      ...(opts.wasm !== undefined && opts.wasm.length > 0 ? { wasmFiles: opts.wasm } : {}),
     });
     const provenance = provenanceSources();
     return {
@@ -113,6 +114,7 @@ export function analyzeWithFrontend(
         ...(lowered.statsByFile ? { statsByFile: lowered.statsByFile } : {}),
         ...(lowered.provenanceElided ? { provenanceElided: lowered.provenanceElided } : {}),
         ...(lowered.tiers !== undefined ? { tiers: lowered.tiers } : {}),
+        ...(lowered.wasmModules !== undefined ? { wasmModules: lowered.wasmModules } : {}),
         preflightFailed: false,
       },
       sourceTexts: fe.sourceTexts(),

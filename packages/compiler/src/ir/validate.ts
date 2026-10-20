@@ -53,10 +53,10 @@ import {
   STRING,
   typeEquals,
   typeKey,
-  unionContainerArmsOk,
+  maybePromiseUnionArmsOk,
   VOID,
 } from "./ir.js";
-import { DYN_CLASS_PROPERTIES } from "./ir.js";
+import { DYN_CLASS_PROPERTIES, callSiteReturnType, classValueConstructor } from "./ir.js";
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
@@ -83,33 +83,6 @@ function isBuiltinErrorObject(t: IrType): boolean {
 export interface IrValidationError {
   message: string;
   loc: SrcLoc;
-}
-
-/** The type a CALL SITE (or function value) receives from a module
- * function: an async body's returnType is the promise's INNER type, so
- * calls and closures over it see Promise<T>; a generator body's is the
- * TReturn channel, so call sites see the generator type. The one place
- * the body/call-site split is spelled out in the validator. */
-function callSiteReturnType(fn: IrFunction): IrType {
-  if (fn.async && fn.generator !== undefined) {
-    return {
-      kind: "generator",
-      async: true,
-      yieldT: fn.generator.yieldT,
-      retT: fn.returnType,
-      nextT: fn.generator.nextT,
-    };
-  }
-  if (fn.async) return { kind: "promise", inner: fn.returnType };
-  if (fn.generator !== undefined) {
-    return {
-      kind: "generator",
-      yieldT: fn.generator.yieldT,
-      retT: fn.returnType,
-      nextT: fn.generator.nextT,
-    };
-  }
-  return fn.returnType;
 }
 
 interface VirtualCallInfo {
@@ -821,7 +794,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     u.arms.forEach((arm, i) => {
       // The unit kinds (undefinedT/nullT) are valid arms — union membership
       // is the ONLY place they may appear. Container payloads preserve
-      // identity; promise data siblings retain their separate fence.
+      // identity; a union carries at most one promise arm (maybe-promise).
       if (
         arm.kind === "void" ||
         arm.kind === "union" ||
@@ -831,9 +804,9 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       ) {
         errors.push({ message: `union ${u.id}: arm ${i} is ${arm.kind}`, loc: noLoc });
       }
-      if (arm.kind === "promise" && !unionContainerArmsOk(u.arms)) {
+      if (arm.kind === "promise" && !maybePromiseUnionArmsOk(u.arms)) {
         errors.push({
-          message: `union ${u.id}: ${arm.kind} arm ${i} beside non-unit arms`,
+          message: `union ${u.id}: ${arm.kind} arm ${i} beside another promise arm`,
           loc: noLoc,
         });
       }
@@ -998,6 +971,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       errors,
       mod.workers === true,
       mod.lifetimeRegions === true,
+      new Set(mod.threadSlotKeys ?? []),
     );
   }
   return errors;
@@ -1016,6 +990,7 @@ function validateFunction(
   errors: IrValidationError[],
   workers: boolean,
   lifetimeRegions: boolean,
+  threadSlotKeys: ReadonlySet<string>,
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
@@ -2962,15 +2937,21 @@ function validateFunction(
             err(`upcast: "${sub}" does not extend "${sup}"`, e.loc);
             break;
           }
-          const subCtor = functions.get(`%${sub}.constructor`);
-          const supCtor = functions.get(`%${sup}.constructor`);
-          if (!subCtor || !supCtor) {
+          const subClass = classes.get(sub);
+          const supClass = classes.get(sup);
+          const subValueCtor = subClass ? classValueConstructor(subClass) : null;
+          const supValueCtor = supClass ? classValueConstructor(supClass) : null;
+          const subCtor = subValueCtor ? functions.get(subValueCtor.fn) : undefined;
+          const supCtor = supValueCtor ? functions.get(supValueCtor.fn) : undefined;
+          if (!subCtor || !supCtor || !subValueCtor || !supValueCtor) {
             err(`classval upcast: "${sub}"/"${sup}" lack constructor functions`, e.loc);
             break;
           }
+          const subArgs = subCtor.params.slice(subValueCtor.firstArg);
+          const supArgs = supCtor.params.slice(supValueCtor.firstArg);
           const abiEqual =
-            subCtor.params.length === supCtor.params.length &&
-            subCtor.params.every((p, i) => i === 0 || typeEquals(p.type, supCtor.params[i]!.type));
+            subArgs.length === supArgs.length &&
+            subArgs.every((p, i) => typeEquals(p.type, supArgs[i]!.type));
           if (!abiEqual) {
             err(`classval upcast: "${sub}" and "${sup}" constructor ABIs differ`, e.loc);
           }
@@ -2995,16 +2976,13 @@ function validateFunction(
           err(`classRef to undeclared class "${e.className}"`, e.loc);
           break;
         }
-        if (cls.runtime) {
-          err(`classRef to runtime-provided class "${e.className}"`, e.loc);
-        }
-        if (cls.jsName === undefined) {
+        if (cls.jsName === undefined && !cls.runtime) {
           err(`classRef to "${e.className}" without a jsName (the class object's .name)`, e.loc);
         }
         // A class value can always be constructed through — the frontend
         // notes the constructor edge at every classRef, so the emitted
         // thunk has a body to call.
-        if (!functions.has(`%${e.className}.constructor`)) {
+        if (!functions.has(classValueConstructor(cls).fn)) {
           err(`classRef to "${e.className}" without its constructor function`, e.loc);
         }
         if (!typeEquals(e.type, { kind: "classval", className: e.className })) {
@@ -3033,21 +3011,24 @@ function validateFunction(
           break;
         }
         const cls = e.callee.type.className;
-        const ctor = functions.get(`%${cls}.constructor`);
-        if (!ctor) {
+        const calleeClass = classes.get(cls);
+        const valueCtor = calleeClass ? classValueConstructor(calleeClass) : null;
+        const ctor = valueCtor ? functions.get(valueCtor.fn) : undefined;
+        if (!ctor || !valueCtor) {
           err(`newValue on "${cls}": missing constructor function`, e.loc);
           break;
         }
         // Count-exact against the static class's completed ABI (every
         // value legally in the slot shares it — the upcast rule).
-        if (ctor.params.length !== e.args.length + 1) {
+        const first = valueCtor.firstArg;
+        if (ctor.params.length !== e.args.length + first) {
           err(
-            `newValue on "${cls}": ${e.args.length} args, ctor expects ${ctor.params.length - 1}`,
+            `newValue on "${cls}": ${e.args.length} args, ctor expects ${ctor.params.length - first}`,
             e.loc,
           );
         }
         e.args.forEach((a, i) => {
-          const p = ctor.params[i + 1];
+          const p = ctor.params[i + first];
           if (p) expectType(a, p.type, `newValue on "${cls}" arg ${i}`);
         });
         if (!typeEquals(e.type, { kind: "object", className: cls })) {
@@ -3892,6 +3873,44 @@ function validateFunction(
         if (!isSupportedMapValue(e.type))
           err(`itable.value type ${typeKey(e.type)} is not a table value type`, e.loc);
       } else if (e.type.kind !== "f64") err(`${e.name} has type f64`, e.loc);
+      return;
+    }
+    if (
+      e.name === "slots.get" ||
+      e.name === "slots.has" ||
+      e.name === "slots.set" ||
+      e.name === "slots.delete"
+    ) {
+      for (const a of e.args) checkExpr(a);
+      const [name, slots, key, value] = e.args;
+      const arity = e.name === "slots.set" ? 4 : 3;
+      const isSlots = (t: IrType): boolean => t.kind === "object" && t.className === "%ThreadSlots";
+      // The key's class or one of its bases is a declared key.
+      const keyed = (className: string): boolean => {
+        for (let c: string | undefined = className; c !== undefined; c = classes.get(c)?.base)
+          if (threadSlotKeys.has(c)) return true;
+        return false;
+      };
+      if (e.args.length !== arity) err(`${e.name} takes ${arity} arguments`, e.loc);
+      else if (name!.kind !== "strLit" || !isSlots(slots!.type))
+        err(`${e.name} takes a name literal and a %ThreadSlots value`, e.loc);
+      else if (key!.type.kind !== "object" || !keyed(key!.type.className))
+        err(`${e.name} key ${typeKey(key!.type)} is not a ThreadSlots key class`, e.loc);
+      else if (e.name === "slots.set") {
+        const kind = value!.type.kind;
+        if (
+          kind !== "object" &&
+          kind !== "record" &&
+          kind !== "array" &&
+          kind !== "map" &&
+          kind !== "set"
+        )
+          err(`slots.set value ${typeKey(value!.type)} is not a ThreadSlots value type`, e.loc);
+        if (e.type.kind !== "void" && !isSlots(e.type))
+          err("slots.set has type void or %ThreadSlots", e.loc);
+      } else if (e.name === "slots.get") {
+        if (e.type.kind !== "union") err("slots.get has a V | undefined union type", e.loc);
+      } else if (e.type.kind !== "bool") err(`${e.name} has type bool`, e.loc);
       return;
     }
     if (e.name === "threads.publish") {
@@ -5084,7 +5103,8 @@ function validateFunction(
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 1;
       if (ok && cbT?.kind === "func" && cbT.params.length === 1) {
         const p = cbT.params[0]!;
-        if (e.fn === "stdin.onData") ok = p.kind === "bytes" && p.elem === "u8";
+        if (e.fn === "stdin.onData")
+          ok = (p.kind === "bytes" && p.elem === "u8") || p.kind === "string";
         else if (e.fn === "stdin.onError") ok = p.kind === "object" && p.className === "%Error";
         else ok = p.kind === "f64";
       }
@@ -5223,7 +5243,11 @@ function validateFunction(
   }
 
   function checkLibSpecialCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "crypto.randomFillView" || e.fn === "crypto.randomFillViewRest") {
+    if (
+      e.fn === "crypto.randomFillView" ||
+      e.fn === "crypto.randomFillViewRest" ||
+      e.fn === "crypto.getRandomValues"
+    ) {
       // The filled view is the result, at its own element type.
       const view = e.args[0]?.type;
       if (view?.kind !== "bytes" || !typeEquals(e.type, view)) {

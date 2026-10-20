@@ -1,3 +1,4 @@
+import { mapAsyncGeneratorAnnotation } from "../type-mapper.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
@@ -147,8 +148,14 @@ export function declaredReturnType(
   if (retTsType.flags & ts.TypeFlags.Never) return VOID;
   let mappedReturn = lowerer.mapTypeOf(retTsType);
   if (
+    mappedReturn === null &&
+    decl.asteriskToken &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+  )
+    mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx);
+  if (
     isJsSourceFile(decl.getSourceFile()) &&
-    decl.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
     !decl.asteriskToken &&
     mappedReturn?.kind !== "promise"
   ) {
@@ -157,6 +164,13 @@ export function declaredReturnType(
   }
   if (mappedReturn && isJsSourceFile(decl.getSourceFile()) && functionCanReturnUndefined(decl))
     mappedReturn = lowerer.withUndefinedArmOf(mappedReturn) ?? mappedReturn;
+  // A generic-class method body that can return an indexed read that
+  // misses returns undefined there, whatever the declared result says.
+  if (mappedReturn && lowerer.runtimeOptionalGenericReturns.has(decl))
+    mappedReturn =
+      mappedReturn.kind === "promise"
+        ? { kind: "promise", inner: lowerer.runtimeOptionalType(mappedReturn.inner) }
+        : lowerer.runtimeOptionalType(mappedReturn);
   if (isJsSourceFile(decl.getSourceFile()) && mappedReturn?.kind === "void") {
     let returnsValue = false;
     const scan = (node: ts.Node): void => {
@@ -233,8 +247,8 @@ export function declaredReturnType(
     !hasExplicitJsDocReturn(decl) &&
     mappedReturn !== null &&
     promiseCarriesDyn(lowerer, mappedReturn) &&
-    !decl.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
-    decl.parameters.some((param) => {
+    !decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
+    decl.parameters.nodes.some((param) => {
       const mapped = lowerer.mapTypeOf(lowerer.typeOf(param.name));
       return mapped === null || mapped.kind === "dyn";
     })
@@ -271,7 +285,7 @@ export function declaredReturnType(
   // Native-only members (such as Int32Array layout offsets) cannot cross
   // that boundary; their factories keep the native record ABI.
   const asyncReturn =
-    decl.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
     mappedReturn?.kind === "promise";
   const recordReturn =
     asyncReturn && mappedReturn?.kind === "promise" ? mappedReturn.inner : mappedReturn;
@@ -296,7 +310,7 @@ export function declaredReturnType(
     recordReturn !== undefined &&
     inferredRecordReturn &&
     lowerer.dynConvertible(recordReturn) &&
-    decl.parameters.every((p) => {
+    decl.parameters.nodes.every((p) => {
       const mt = lowerer.mapTypeOf(lowerer.typeOf(p));
       return mt === null || mt.kind === "dyn";
     })
