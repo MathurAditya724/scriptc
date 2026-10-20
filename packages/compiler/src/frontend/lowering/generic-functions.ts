@@ -320,23 +320,11 @@ export function genericCallInstance(
   // different fields). Non-literal bindings (a key union, plain string)
   // share one runtime-keyed instance per IR signature, exactly the
   // widened discipline.
-  const keyofTps = keyofConstrainedTypeParams(info);
-  if (keyofTps.size > 0) {
+  if (keyofConstrainedTypeParams(info).size > 0) {
     const tsBindings = new Map<ts.Symbol, ts.Type>();
     const bindings = lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings);
-    const litKey = info.typeParams
-      .filter((tp) => keyofTps.has(tp))
-      .map((tp) => {
-        const bound = tsBindings.get(tp);
-        return bound?.isStringLiteralType()
-          ? JSON.stringify(bound.value)
-          : bound?.isNumberLiteralType()
-            ? String(bound.value)
-            : "*";
-      })
-      .join(",");
     return internGenericInstance(lowerer, expr, info, params, returnType, () => bindings, {
-      extraKey: `@${litKey}`,
+      extraKey: keyofLiteralKey(info, tsBindings),
       tsBindings,
     });
   }
@@ -381,7 +369,26 @@ function overloadCallInstance(
   const declSig = lowerer.checker.getSignatureFromDeclaration(impl);
   if (!declSig) return null;
   const tsBindings = new Map<ts.Symbol, ts.Type>();
-  const bindings = lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings);
+  const bindings = new Map<ts.Symbol, IrType>();
+  unifySignatureBindings(lowerer, info, rsig, bindings, tsBindings);
+  // Explicit type arguments name the OVERLOAD's type parameters, which
+  // need not match the implementation's in order: the resolved overload
+  // already carries them, so unification binds first, and an explicit
+  // argument binds only a still-unbound implementation parameter of the
+  // same name.
+  const overloadTps = rdecl.typeParameters?.nodes ?? [];
+  expr.typeArguments?.nodes.forEach((ta, i) => {
+    const name = overloadTps[i]?.name.text;
+    const tp = info.typeParams.find((p) => p.name === name);
+    if (!tp || bindings.has(tp)) return;
+    const taT = lowerer.checker.getTypeFromTypeNode(ta);
+    const mapped = lowerer.mapTypeOf(taT);
+    if (mapped) {
+      bindings.set(tp, mapped);
+      tsBindings.set(tp, taT);
+    }
+  });
+  bindDefaultTypeParams(lowerer, info.typeParams, impl.typeParameters?.nodes, bindings, tsBindings);
   // A type parameter the overload never mentions (a handler the overload
   // omits) is `unknown`, the checker's own answer for an uninferred one.
   for (const tp of info.typeParams) {
@@ -408,7 +415,12 @@ function overloadCallInstance(
     lowerer.typeParamTsBindings = previousTs;
   }
   if (!returnType) return null;
+  // keyof-constrained parameters key their instance on the bound literal,
+  // as on the implementation-signature path.
   return internGenericInstance(lowerer, expr, info, params, returnType, () => bindings, {
+    ...(keyofConstrainedTypeParams(info).size > 0
+      ? { extraKey: keyofLiteralKey(info, tsBindings) }
+      : {}),
     tsBindings,
   });
 }
@@ -639,6 +651,25 @@ function keyofConstrainedTypeParams(info: GenericFnInfo): Set<ts.Symbol> {
   });
   info.keyofTps = out;
   return out;
+}
+
+/** The instance-key suffix of the literals bound to `info`'s
+ * keyof-constrained type parameters (`@"a"`; `*` for a non-literal
+ * binding): two literals can map to one IR signature while their bodies
+ * read different fields. */
+function keyofLiteralKey(info: GenericFnInfo, tsBindings: Map<ts.Symbol, ts.Type>): string {
+  const keyofTps = keyofConstrainedTypeParams(info);
+  const literals = info.typeParams
+    .filter((tp) => keyofTps.has(tp))
+    .map((tp) => {
+      const bound = tsBindings.get(tp);
+      return bound?.isStringLiteralType()
+        ? JSON.stringify(bound.value)
+        : bound?.isNumberLiteralType()
+          ? String(bound.value)
+          : "*";
+    });
+  return `@${literals.join(",")}`;
 }
 
 /** Type-parameter symbol → concrete IR type for one instantiation.

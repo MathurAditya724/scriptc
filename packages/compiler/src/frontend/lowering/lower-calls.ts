@@ -10120,6 +10120,20 @@ function pickViewGenericMethodCall(
   const loc = locOf(access.expression);
   const lowered = lowerer.lowerExpr(access.expression);
   const instance: IrType = { kind: "object", className: info.def.name };
+  // A view that statically holds an instance of another class (a
+  // structurally compatible one) calls that class's method in Node, not
+  // C's: the call is refused rather than extracted as a C instance.
+  if (
+    lowered.type.kind === "object" &&
+    lowered.type.className !== info.def.name &&
+    !lowerer.isSubclassOf(lowered.type.className, info.def.name)
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      access,
+      `calling the generic method '${access.name.text}' through a '${alias.name}' view of '${info.def.name}' that holds a '${lowerer.fmt(lowered.type)}'`,
+    );
+  }
   const receiver: IrExpr =
     lowered.type.kind === "object"
       ? lowered
