@@ -113,6 +113,7 @@ import {
   isVarDeclared,
   numericIteratorSourceOf,
   provenanceElidedConstDecl,
+  stdlibBufferVarAlias,
 } from "./lower-stmts.js";
 import { objectFactoryGlobalType } from "./object-factory-new.js";
 import { streamClassAliasDecl } from "./lower-stream.js";
@@ -1895,6 +1896,7 @@ export function collectGlobals(
       // same test).
       const stableStdlibAlias =
         isConst ||
+        stdlibBufferVarAlias(lowerer, decl) ||
         ((list.flags & ts.NodeFlags.Let) !== 0 &&
           ts.isIdentifier(decl.name) &&
           stdlibGlobalAliasNameOf(lowerer, decl.initializer) !== null &&
@@ -2877,11 +2879,16 @@ export function lowerFileInit(
     // a function called above the declaration reads `undefined`, exactly
     // Node); checked-dynamic var globals hold the dyn undefined the same
     // way. After the guard: a cache-hit revisit must not reset them.
+    // A union slot the body retypes checked-dynamic (lowerVarDecl: a
+    // JavaScript var initialized with an existing checked-dynamic object)
+    // gets the dyn undefined once the body has lowered.
+    const unionEntryInits: { at: number; g: IrGlobal }[] = [];
     for (const g of lowerer.varGlobalEntryInits.get(sf) ?? []) {
       if (g.type.kind !== "union" && g.type.kind !== "dyn") continue;
       const wrapped =
         g.type.kind === "dyn" ? dynUndefinedExpr(loc0) : lowerer.unassignedSlotInit(g.type, loc0);
       if (wrapped) {
+        if (g.type.kind === "union") unionEntryInits.push({ at: header.length, g });
         // A let global whose early reads are checked (initFlag) only
         // gets its storage filled here: this is not the source write, so
         // it must neither run the TDZ check nor set the flag.
@@ -2975,6 +2982,16 @@ export function lowerFileInit(
         ),
       );
       at++;
+    }
+    for (const { at, g } of unionEntryInits) {
+      if (g.type.kind !== "dyn") continue;
+      body[at] = {
+        kind: "assign",
+        localId: g.id,
+        value: dynUndefinedExpr(loc0),
+        ...(g.initFlag !== undefined ? { initializes: true as const } : {}),
+        loc: loc0,
+      };
     }
     const moduleRef = cjsModuleRef(lowerer, sf);
     if (moduleRef !== null) {
