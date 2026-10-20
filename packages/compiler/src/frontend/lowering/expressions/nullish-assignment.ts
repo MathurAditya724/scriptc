@@ -214,6 +214,37 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
           !nullish && !and && element.kind === "f64"
             ? arrayNumberRead(receiver, key, elementLoc)
             : arrayValueRead(lowerer, receiver, key, element, elementLoc);
+      } else if (
+        receiver.type.kind === "record" &&
+        key.type.kind === "string" &&
+        pureIndexShapeOf(lowerer, receiver.type.shapeId) !== null
+      ) {
+        // `timings[phase] ??= v` over a pure index-signature record
+        // (`Record<string, number>`): the keyed read answers the value or
+        // undefined for a missing key, and the write inserts or replaces
+        // the key, exactly the two halves `o[k]` and `o[k] = v` lower to.
+        const shapeId = receiver.type.shapeId;
+        const indexValue = pureIndexShapeOf(lowerer, shapeId)!;
+        key = save(key, "%shortCircuitKey");
+        const readType =
+          indexValue.kind === "dyn" ? indexValue : lowerer.withUndefinedArmOf(indexValue);
+        if (!readType) {
+          lowerer.unsupported(
+            "SC1090",
+            target,
+            "short-circuit assignment through this indexed receiver",
+          );
+        }
+        storage = indexValue;
+        read = { kind: "recordKeyGet", obj: receiver, shapeId, key, type: readType, loc };
+        write = (value) => ({
+          kind: "recordKeySet",
+          obj: receiver,
+          shapeId,
+          key,
+          value: lowerer.coerceToExpected(value, indexValue),
+          loc,
+        });
       } else {
         lowerer.unsupported(
           "SC1090",
@@ -264,4 +295,12 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
     return finish(right);
   }
   return finish({ kind: "nullish", left: read, right, type: read.type, loc });
+}
+
+/** The value type of a pure index-signature record shape (no declared
+ * fields, not a tuple), or null. */
+function pureIndexShapeOf(lowerer: Lowerer, shapeId: string): IrType | null {
+  const shape = lowerer.shapes.get(shapeId);
+  if (!shape || shape.tuple || shape.fields.length > 0 || !shape.indexValue) return null;
+  return shape.indexValue;
 }

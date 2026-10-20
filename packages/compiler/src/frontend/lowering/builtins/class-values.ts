@@ -93,7 +93,7 @@ export function builtinClassAliasOwnsNoSlot(lowerer: Lowerer, symbol: ts.Symbol)
   if (builtinClassAliasOf(lowerer, symbol) === null) return false;
   const binding =
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-  const decl = lowerer.checker.valueDeclarationOf(binding);
+  const decl = binding.valueDeclaration;
   if (decl === undefined || !ts.isVariableDeclaration(decl)) return false;
   if (builtinMemberRequireDecl(decl.name, decl.initializer)) return false;
   if (streamClassAliasDecl(lowerer, decl.name, decl.initializer)) return false;
@@ -189,7 +189,7 @@ export function sameBuiltinClass(a: BuiltinClassRef, b: BuiltinClassRef): boolea
  * can name a class (an identifier or a property access), or null. */
 function constInitializerOf(lowerer: Lowerer, symbol: ts.Symbol): ts.Expression | null {
   if ((symbol.flags & ts.SymbolFlags.BlockScopedVariable) === 0) return null;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (
     decl === undefined ||
     !ts.isVariableDeclaration(decl) ||

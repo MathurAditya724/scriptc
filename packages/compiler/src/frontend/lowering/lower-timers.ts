@@ -330,7 +330,7 @@ function isRealTimerCallee(lowerer: Lowerer, callee: ts.Expression): boolean {
   if (ts.isIdentifier(callee)) return lowerer.builtinImportOf(callee)?.module === "timers";
   if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
     const sym = lowerer.checker.getSymbolAtLocation(callee.expression);
-    const decl = sym ? lowerer.checker.declarationsOf(sym)[0] : undefined;
+    const decl = sym ? sym.declarations[0] : undefined;
     return decl !== undefined && ts.isNamespaceImport(decl);
   }
   return false;
