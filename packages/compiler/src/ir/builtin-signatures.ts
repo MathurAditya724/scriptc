@@ -3499,6 +3499,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * throws err when unhandled. count/countFn/names/listeners/getMax/
    * setMax/setDefaultMax/getDefaultMax are the introspection surface. */
   "emitter.new": { argTypes: [], result: VOID },
+  /** `x.constructor.name` of an emitter or stream (a borrowed object of
+   * EventEmitter's hierarchy): the +1 class name the instance records. */
+  "emitter.className": { argTypes: [null], result: STRING },
   "emitter.ctor": { argTypes: [null], result: VOID },
   "emitter.on": { argTypes: [null, STRING, null, BOOL, BOOL], result: VOID },
   "emitter.off": { argTypes: [null, STRING, null], result: VOID },

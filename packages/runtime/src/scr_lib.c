@@ -8540,6 +8540,8 @@ void scr_crypto_hash_stream_close(ScrCryptoHash *hash) {
   if (stream) stream_release(stream);
 }
 
+bool scr_crypto_hash_is_hmac(const ScrCryptoHash *hash) { return hash->hmac; }
+
 bool scr_crypto_hash_stream_usable(const ScrCryptoHash *hash) {
   if (!hash->stream_closed) return true;
   static const char msg[] = "Stream use of a Hash or Hmac after its stream closed has no lowering";

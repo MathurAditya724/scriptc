@@ -6458,7 +6458,7 @@ static ScrDyn *scr_child_bridge_readable(ScrChildStream *reader, ScrDyn **cached
     return NULL;
   }
   if (!*cached) {
-    ScrStream *stream = scr_child_stream_ops->readable();
+    ScrStream *stream = scr_child_stream_ops->readable("Socket");
     scr_child_stream_on_data(reader, scr_child_bridge_callback(stream, (void *)scr_child_bridge_data),
         scr_child_bridge_data, false);
     scr_child_stream_on_end(reader, scr_child_bridge_callback(stream, (void *)scr_child_bridge_end), false);
@@ -6578,7 +6578,7 @@ static ScrDyn *scr_child_bridge_writable(ScrChildWriter *writer, ScrDyn **cached
     return NULL;
   }
   if (!*cached) {
-    ScrStream *stream = scr_child_stream_ops->writable(
+    ScrStream *stream = scr_child_stream_ops->writable("Socket",
         scr_child_writer_bridge_callback(writer, (void *)scr_child_bridge_write), scr_child_bridge_write,
         scr_child_writer_bridge_callback(writer, (void *)scr_child_bridge_final), scr_child_bridge_final);
     *cached = scr_child_writable_box(stream);
