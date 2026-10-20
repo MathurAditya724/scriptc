@@ -236,7 +236,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_util_callable.c",
   ),
   unit(
-    (u) => u.opts.dynBuiltinClass && u.opts.inspect && u.opts.dynInvoke && u.opts.symbol,
+    (u) =>
+      u.opts.dynBuiltinClass &&
+      u.opts.inspect &&
+      u.opts.dynInvoke &&
+      u.opts.symbol &&
+      (u.opts.emitter || u.opts.workers),
     "scr_dyn_builtin_class.c",
   ),
   unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),

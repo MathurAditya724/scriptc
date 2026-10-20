@@ -263,9 +263,7 @@ static double bc_max_listeners(ScrDyn *self) {
   if (!max) return -1;
   double value;
   if (bc_undefined(max)) {
-    ScrDyn *fallback = bc_get(bc_class(BC_EMITTER), "defaultMaxListeners");
-    value = fallback ? bc_number(fallback) : 10;
-    if (fallback) scr_dyn_release(fallback);
+    value = scr_emitter_get_default_max();
   } else {
     value = bc_number(max);
   }
@@ -1017,6 +1015,42 @@ static ScrDyn *bc_set_max(ScrClosure *closure, ScrDyn *const *args, size_t argc)
   return self;
 }
 
+/* EventEmitter.defaultMaxListeners, Node's accessor over the one default
+ * the typed EventEmitter reads too (scr_events_emitter.c). The setter
+ * validates as Node's validateNumber(arg, 'defaultMaxListeners', 0). */
+static ScrDyn *bc_default_max_get(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  return scr_dyn_new_num(scr_emitter_get_default_max());
+}
+
+static ScrDyn *bc_default_max_set(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  static const char name[] = "defaultMaxListeners";
+  ScrStr *key = scr_str_new(name, sizeof name - 1);
+  scr_emitter_set_default_max_chk(argc ? args[0] : scr_dyn_undefined(), key);
+  scr_str_release(key);
+  if (scr_exc_pending()) return NULL;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static void bc_define_default_max(ScrDyn *ctor) {
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "get", 3,
+                  scr_dyn_new_func(scr_closure_new(NULL, 0), bc_default_max_get, 0, "native:events", "get"));
+  scr_dyn_obj_set(descriptor, "set", 3,
+                  scr_dyn_new_func(scr_closure_new(NULL, 0), bc_default_max_set, 1, "native:events", "set"));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(true));
+  ScrStr *name = scr_str_new("defaultMaxListeners", 19);
+  ScrDyn *key = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *defined = scr_dyn_define_property(ctor, key, descriptor);
+  if (defined) scr_dyn_release(defined);
+  scr_dyn_release(key);
+  scr_dyn_release(descriptor);
+}
+
 static ScrDyn *bc_get_max(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure;
   (void)args;
@@ -1070,6 +1104,13 @@ static bool bc_pipe_on(ScrDyn *emitter, const char *event, ScrClosure *state, in
 }
 
 static bool bc_pipe_cleanup(ScrClosure *state) {
+  /* A second run (dest emitting 'close' from end(), with cleanup still
+   * queued on the source's 'end') finds the listeners removed, as Node's
+   * repeated removeListener calls do. */
+  ScrDyn *handlers = bc_cap(state, BC_PIPE_HANDLERS);
+  bool cleaned = handlers->kind == SCR_DYN_ARR && scr_dyn_arr_len(handlers) == 0;
+  scr_dyn_release(handlers);
+  if (cleaned) return true;
   ScrDyn *source = bc_cap(state, BC_PIPE_SOURCE);
   ScrDyn *dest = bc_cap(state, BC_PIPE_DEST);
   bool ok = bc_pipe_remove(source, "data", state, BC_ONDATA) &&
@@ -1367,7 +1408,7 @@ static ScrDyn *bc_new_class(int kind, ScrDyn *parent) {
     bc_method(prototype, "listenerCount", bc_listener_count, 2);
     bc_method(prototype, "eventNames", bc_event_names, 0);
     bc_set(ctor, "EventEmitter", scr_dyn_retain(ctor));
-    bc_set(ctor, "defaultMaxListeners", scr_dyn_new_num(10));
+    bc_define_default_max(ctor);
     ScrDyn *count = scr_dyn_new_func(scr_closure_new(NULL, 0), bc_static_listener_count, 2, "native:events", "listenerCount");
     bc_set(ctor, "listenerCount", count);
   } else if (kind == BC_STREAM) {
