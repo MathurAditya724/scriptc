@@ -32,8 +32,15 @@ test("readable-stream aliases follow each major's layout", () => {
     'require("stream").Duplex',
   );
   expect(builtinAliasOf("readable-stream", "2.3.8", "lib/internal/streams/destroy.js")).toBeNull();
-  // 3.x's disable branch throws on Node 24: nothing to alias.
-  expect(builtinAliasOf("readable-stream", "3.6.2", "")).toBeNull();
+  // 3.x has no root writable.js; its entry also carries finished and pipeline.
+  const rs3 = builtinAliasOf("readable-stream", "3.6.2", "");
+  expect(rs3?.whole).toBe('require("stream").Readable');
+  expect([...(rs3?.members?.names ?? [])]).toContain("pipeline");
+  expect(builtinAliasOf("readable-stream", "3.6.2", "lib/_stream_writable.js")?.whole).toBe(
+    'require("stream").Writable',
+  );
+  expect(builtinAliasOf("readable-stream", "3.6.2", "writable.js")).toBeNull();
+  expect(builtinAliasOf("readable-stream", "3.6.2", "lib/internal/streams/pipeline.js")).toBeNull();
   const rs4 = builtinAliasOf("readable-stream", "4.7.0", "lib/ours/index.js");
   expect(rs4?.whole).toBeNull();
   expect(rs4?.members?.names.has("pipeline")).toBe(true);
