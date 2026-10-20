@@ -55,6 +55,23 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
   if (sym) return sym;
   sym = `sc_race_${host.resolveThunks.size}`;
   host.resolveThunks.set(key, sym);
+  const toArms = to.kind === "union" ? (host.unionsById.get(to.unionId)?.arms ?? []) : [];
+  if (from.kind === "void" && !toArms.some((a) => a.kind === "undefinedT")) {
+    // A Promise<never> entry (the frontend admits void entries without an
+    // undefined result arm only for those): it can only reject, so its
+    // fulfillment adapter never runs.
+    host.declare(`declare void @scr_trap(ptr)`);
+    const msg = host.cstr("scriptc: a Promise<never> race entry fulfilled\n");
+    host.resolveThunkDefs.push(
+      `define internal void @${sym}(ptr %dst, ptr %src) ${FN_ATTRS} { ; race ${key}`,
+      `entry:`,
+      `  call void @scr_trap(ptr ${msg})`,
+      `  unreachable`,
+      `}`,
+      ``,
+    );
+    return sym;
+  }
   if (to.kind !== "union")
     throw new InternalCompilerError("llvm emitter bug: race adapter to a non-union");
   const toDef = host.unionsById.get(to.unionId);
@@ -747,6 +764,31 @@ export function childDataThunkFor(host: LlvmEmitterContext, param: IrType): stri
     `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
     `  %fn = load ptr, ptr %fnp`,
     `  call void %fn(ptr %cb, ptr %u)`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  return sym;
+}
+
+/** The child-stream 'data' thunk for an unknown/any chunk parameter: the
+ * runtime's Buffer (or, after setEncoding, string) chunk boxes into a
+ * checked-dynamic value the listener owns. */
+export function childDataDynThunkFor(host: LlvmEmitterContext, chunk: "bytes" | "str"): string {
+  const key = `cdd:${chunk}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = `sc_cdd_${host.resolveThunks.size}`;
+  host.resolveThunks.set(key, sym);
+  const box = chunk === "bytes" ? "scr_dyn_new_buffer" : "scr_dyn_new_str";
+  host.declare(`declare ptr @${box}(ptr)`);
+  host.resolveThunkDefs.push(
+    `define internal void @${sym}(ptr %cb, ptr %chunk) ${FN_ATTRS} { ; child 'data' → dyn (${chunk})`,
+    `entry:`,
+    `  %d = call ptr @${box}(ptr %chunk)`,
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+    `  call void %fn(ptr %cb, ptr %d)`,
     `  ret void`,
     `}`,
     ``,

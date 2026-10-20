@@ -1,24 +1,6 @@
-object-literal-accessor-values.ts:18:28 - error SC1090: JSON.stringify of '{ get doubled(): number; count: number }' values (only number, string, boolean, records, arrays, unions of those, and 'unknown' stringify) are not supported yet
+object-literal-accessor-values.ts:13:28 - error SC1090: JSON.stringify of '{ get doubled(): number; count: number }' values (only number, string, boolean, records, arrays, unions of those, and 'unknown' stringify) are not supported yet
 
-  17 | // JSON.stringify of the typed value would omit the getter's property.
-  18 | console.log(JSON.stringify(counter));
+  12 | // JSON.stringify of the typed value would omit the getter's property.
+  13 | console.log(JSON.stringify(counter));
      |                            ^~~~~~~
-  19 | 
-
-object-literal-accessor-values.ts:21:6 - error SC1101: converting typed values to 'unknown' is not supported yet
-
-  20 | // Converting the typed value to `unknown` or `any` would lose the getter.
-  21 | hold(counter);
-     |      ^~~~~~~
-  22 | const viaAny: any = counter;
-
-  hint: numbers, strings, booleans, JSON-safe records/arrays/unions (a deep copy), functions, program class instances, and supported native handles convert into 'unknown' slots; functions, exact-class round trips, and handles preserve identity, while this value's type has no dynamic representation yet
-
-object-literal-accessor-values.ts:22:21 - error SC1101: converting typed values to 'unknown' is not supported yet
-
-  21 | hold(counter);
-  22 | const viaAny: any = counter;
-     |                     ^~~~~~~
-  23 | console.log(viaAny);
-
-  hint: numbers, strings, booleans, JSON-safe records/arrays/unions (a deep copy), functions, program class instances, and supported native handles convert into 'unknown' slots; functions, exact-class round trips, and handles preserve identity, while this value's type has no dynamic representation yet
+  14 | 

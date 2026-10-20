@@ -28,6 +28,7 @@
     "webstreams": "unreviewed"
   },
   "evidenceByManifestPrefix": {
+    "stdlib.webassembly": ["tests/corpus/webassembly-api.mjs", "tests/corpus/webassembly-typed.ts", "tests/corpus/webassembly-worker.ts", "tests/corpus/webassembly-spec-int/main.mjs", "tests/corpus/webassembly-spec-float/main.mjs", "tests/corpus/webassembly-spec-control/main.mjs", "tests/corpus/webassembly-spec-memory/main.mjs", "tests/corpus/webassembly-spec-table/main.mjs"],
     "node-builtin.fs.readFileSync": ["tests/corpus/1403-buffer-fs.ts", "tests/corpus/2595-fs-arg-ladders.cjs", "tests/corpus/2919-fs-function-values.ts", "tests/corpus/2920-fs-promises-function-values.ts", "tests/corpus/fs-read-encodings.ts"],
     "syntax.using-declarations": ["tests/corpus/2841-using-sync.ts"],
     "syntax.await-using-declarations": ["tests/corpus/2842-await-using.ts"],
@@ -47,6 +48,10 @@
     "node-builtin.dgram": ["tests/corpus/2597-dgram-send-ladders.cjs"],
     "node-builtin.diagnostics_channel": ["tests/corpus/2214-dc-bind-store.cjs"],
     "node-builtin.dns": ["tests/corpus/2597-dgram-send-ladders.cjs"],
+    "node-builtin.dns.promises": ["tests/corpus/dns-promises-lookup.ts", "tests/corpus/dns-promises-untyped.cjs"],
+    "node-builtin.stream.web": ["tests/corpus/stream-web-readable.ts", "tests/corpus/stream-web-require.cjs"],
+    "node-builtin.v8": ["tests/corpus/v8-require-optional.cjs"],
+    "node-builtin.v8.getHeapStatistics": ["tests/corpus/v8-heap-statistics.ts", "tests/corpus/v8-require-optional.cjs"],
     "node-builtin.events": ["tests/corpus/1677-emitter-listeners.ts", "tests/corpus/2620-ee-override-once-order.ts"],
     "node-builtin.fs": ["tests/corpus/1403-buffer-fs.ts", "tests/corpus/2595-fs-arg-ladders.cjs", "tests/corpus/2919-fs-function-values.ts", "tests/corpus/2920-fs-promises-function-values.ts"],
     "node-builtin.fs.realpathSync.native": ["tests/corpus/fs-native-realpath.ts"],
@@ -134,6 +139,8 @@
     "node-builtin.perf_hooks.performance.getEntries": ["tests/corpus/5212-perf-marks-measures.ts", "tests/corpus/5214-perf-entry-inspect.ts", "tests/corpus/5215-perf-timing-validation.js"],
     "node-builtin.perf_hooks.performance.clearMarks": ["tests/corpus/5212-perf-marks-measures.ts", "tests/corpus/5213-perf-timing-errors.ts", "tests/corpus/5215-perf-timing-validation.js"],
     "node-builtin.perf_hooks.performance.clearMeasures": ["tests/corpus/5212-perf-marks-measures.ts"],
+    "node-builtin.perf_hooks.performance.eventLoopUtilization": ["tests/corpus/6397-event-loop-metrics.ts", "tests/fixtures/node-types/event-loop-metrics.ts"],
+    "node-builtin.perf_hooks.monitorEventLoopDelay": ["tests/corpus/6397-event-loop-metrics.ts", "tests/fixtures/node-types/event-loop-metrics.ts"],
     "node-builtin.process": ["tests/corpus/990-process-basics.ts", "tests/corpus/2314-process-introspection.ts"],
     "node-builtin.process.hrtime": ["tests/corpus/process-hrtime.js"],
     "node-builtin.process.memoryUsage": ["tests/corpus/5210-process-memory-usage.ts"],
@@ -242,6 +249,8 @@
     { "chapter": "util", "symbols": ["util.parseEnv"], "status": "partial", "evidence": ["tests/corpus/node24-env-parse.ts", "tests/corpus/node24-env-parse-errors.ts", "tests/corpus/node24-env-imports.cjs", "tests/fixtures/node-types/env-files.ts", "tests/harness/project-config.test.ts"] },
     { "chapter": "process", "symbols": ["process.memoryUsage.rss"], "status": "partial", "evidence": ["tests/corpus/5210-process-memory-usage.ts"] },
     { "chapter": "perf_hooks", "symbols": ["performance.now"], "status": "partial", "evidence": ["tests/corpus/2427-perf-hooks-now.ts", "tests/corpus/2446-performance-global.ts"] },
+    { "chapter": "perf_hooks", "symbols": ["performance.eventLoopUtilization"], "status": "partial", "evidence": ["tests/corpus/6397-event-loop-metrics.ts", "tests/fixtures/node-types/event-loop-metrics.ts"] },
+    { "chapter": "perf_hooks", "symbols": ["histogram.enable", "histogram.disable", "histogram.percentile", "histogram.reset"], "status": "partial", "evidence": ["tests/corpus/6397-event-loop-metrics.ts", "tests/fixtures/node-types/event-loop-metrics.ts"] },
     { "chapter": "perf_hooks", "symbols": ["performance.mark", "performance.measure", "performance.getEntries", "performance.getEntriesByName", "performance.getEntriesByType", "performance.clearMarks", "performance.clearMeasures"], "status": "partial", "evidence": ["tests/corpus/5212-perf-marks-measures.ts", "tests/corpus/5213-perf-timing-errors.ts", "tests/corpus/5214-perf-entry-inspect.ts", "tests/corpus/5215-perf-timing-validation.js"] },
     { "chapter": "perf_hooks", "symbols": ["PerformanceEntry", "PerformanceMark", "PerformanceMeasure"], "status": "partial", "evidence": ["tests/corpus/5212-perf-marks-measures.ts", "tests/corpus/5214-perf-entry-inspect.ts"] },
     { "chapter": "perf_hooks", "parent": "Class: `PerformanceEntry`", "symbols": ["duration", "entryType", "name", "startTime"], "status": "partial", "evidence": ["tests/corpus/5212-perf-marks-measures.ts", "tests/corpus/5214-perf-entry-inspect.ts"] },
@@ -370,7 +379,7 @@
     { "chapter": "test", "parent": "Class: `TestContext`", "symbols": ["context.filePath", "passed", "attempt", "tags", "workerId"], "status": "partial", "evidence": ["tests/fixtures/node-test/cases/ctx-members.ts", "tests/harness/node-test.test.ts"] },
     { "chapter": "test", "parent": "Class: `SuiteContext`", "symbols": ["context.name", "context.fullName", "context.filePath", "context.diagnostic", "passed", "attempt"], "status": "partial", "evidence": ["tests/fixtures/node-test/cases/suite-context.ts", "tests/harness/node-test.test.ts"] },
     { "chapter": "test", "parent": "Class: `TestContext`", "symbols": ["context.diagnostic", "context.name"], "status": "partial", "evidence": ["tests/harness/node-test.test.ts"] },
-    { "chapter": "test", "parent": "Class: `MockTracker`", "symbols": ["mock.fn"], "status": "partial", "evidence": ["tests/fixtures/node-test/cases/mock-fn.ts", "tests/harness/node-test.test.ts"] },
+    { "chapter": "test", "parent": "Class: `MockTracker`", "symbols": ["mock.fn"], "status": "partial", "evidence": ["tests/fixtures/node-test/cases/mock-fn.ts", "tests/fixtures/node-test/cases/mock-fn-default.ts", "tests/harness/node-test.test.ts"] },
     { "chapter": "test", "parent": "Class: `MockTracker`", "symbols": ["mock.method", "mock.reset", "mock.restoreAll"], "status": "partial", "evidence": ["tests/fixtures/node-test/cases/mock-method.ts", "tests/corpus/5810-mock-method-records.ts", "tests/corpus/5811-mock-tracker-restore.ts", "tests/harness/node-test.test.ts"] },
     { "chapter": "test", "parent": "Class: `MockTimers`", "symbols": ["timers.enable", "timers.reset", "timers.tick", "timers.runAll", "timers.setTime"], "status": "partial", "evidence": ["tests/fixtures/node-test/cases/mock-timers.ts", "tests/fixtures/node-test/cases/mock-timers-date.ts", "tests/corpus/5813-mock-timers-module.ts", "tests/corpus/5814-mock-timers-date.ts", "tests/harness/node-test.test.ts"] },
     { "chapter": "test", "parent": "Class: `MockTimers`", "signatures": ["`timers[Symbol.dispose]()`"], "status": "partial", "evidence": ["tests/fixtures/node-test/cases/mock-timers-date.ts", "tests/harness/node-test.test.ts"] },
@@ -381,7 +390,10 @@
     { "chapter": "util", "signatures": ["`util.promisify(original)`"], "status": "partial", "evidence": ["tests/corpus/1473-promisify-execfile.ts", "tests/corpus/1573-promisify-execfile-env-spread.ts", "tests/corpus/2912-promisify-fs-readfile.ts", "tests/corpus/5625-promisify-exec.ts", "tests/corpus/5626-promisify-forms.ts", "tests/fixtures/node-types/promisify-fs.ts", "tests/corpus/5628-promisify-timers.ts", "tests/fixtures/node-types/promisify-timers.ts", "tests/corpus/5629-promisify-stream.ts", "tests/corpus/5630-promisify-zlib.ts", "tests/fixtures/node-types/promisify-zlib.ts", "tests/corpus/5631-promisify-crypto.ts", "tests/fixtures/node-types/promisify-crypto.ts", "tests/corpus/5632-promisify-dns.ts", "tests/fixtures/node-types/promisify-dns.ts", "tests/corpus/6428-promisify-callback-functions.ts", "tests/fixtures/node-types/promisify-callback-functions.ts", "tests/harness/project-config.test.ts"] },
     { "chapter": "typescript", "symbols": ["type"], "status": "supported", "evidence": ["tests/corpus/2702-type-import-link-static/main.ts", "tests/corpus/2703-type-import-link-static-reexport/main.ts", "tests/corpus/2704-type-import-link-static-success/main.ts", "tests/corpus/2707-type-import-link-static-default-reexport/main.ts", "tests/harness/errors.test.ts"] },
     { "chapter": "zlib", "signatures": ["Class: `zlib.Deflate`", "Class: `zlib.Inflate`", "Class: `zlib.Gzip`", "Class: `zlib.Gunzip`", "Class: `zlib.DeflateRaw`", "Class: `zlib.InflateRaw`", "Class: `zlib.Unzip`", "Class: `zlib.ZlibBase`", "`zlib.close([callback])`", "`zlib.flush([kind, ]callback)`", "`zlib.params(level, strategy, callback)`", "`zlib.reset()`", "`bytesWritten` Type: {number}", "Class: `Options`"], "status": "partial", "evidence": ["tests/corpus/5370-zlib-stream-roundtrip.ts", "tests/corpus/5371-zlib-stream-chunking.cjs", "tests/corpus/5372-zlib-stream-errors.cjs", "tests/corpus/5373-zlib-stream-options.cjs", "tests/corpus/5374-zlib-stream-flush-params.ts", "tests/corpus/5375-zlib-stream-promises.ts", "tests/corpus/5377-zlib-stream-backpressure.cjs"] },
-    { "chapter": "zlib", "signatures": ["`zlib.constants`"], "status": "partial", "evidence": ["tests/corpus/5376-zlib-constants.cjs", "tests/corpus/5374-zlib-stream-flush-params.ts"] }
+    { "chapter": "zlib", "signatures": ["`zlib.constants`"], "status": "partial", "evidence": ["tests/corpus/5376-zlib-constants.cjs", "tests/corpus/5374-zlib-stream-flush-params.ts"] },
+    { "chapter": "dns", "symbols": ["dns.lookup", "dns.lookupService", "dns.getServers", "dns.getDefaultResultOrder", "dns.setDefaultResultOrder"], "status": "partial", "evidence": ["tests/corpus/5648-dns-lookup-forms.ts", "tests/corpus/5649-dns-service-servers.ts", "tests/corpus/5650-dns-lookup-errors-untyped.cjs"] },
+    { "chapter": "dns", "symbols": ["dnsPromises.lookup", "dnsPromises.lookupService", "dnsPromises.getDefaultResultOrder"], "status": "partial", "evidence": ["tests/corpus/dns-promises-lookup.ts", "tests/corpus/dns-promises-untyped.cjs"] },
+    { "chapter": "webstreams", "symbols": ["ReadableStream"], "status": "partial", "evidence": ["tests/corpus/stream-web-readable.ts", "tests/corpus/stream-web-require.cjs", "tests/corpus/2862-web-readable-async-iteration.ts"] }
   ],
   "dedicated": [
     { "symbols": ["assert.doesNotThrow", "assert.doesNotReject"], "status": "partial", "evidence": ["tests/corpus/node24-no-error-assertions.ts", "tests/corpus/node24-no-error-assertions.cjs", "tests/corpus/node24-no-error-assertions-coercion.js", "tests/fixtures/node-types/no-error-assertions.ts", "tests/harness/project-config.test.ts"] },

@@ -121,7 +121,16 @@ export function requestGeneralStreamSurface(lowerer: Lowerer, receiver: ts.Expre
  * (dyn-streams.ts), where NodeJS.ReadableStream / NodeJS.WritableStream
  * hold JavaScript stream objects too. */
 export function noteUntypedStreamFlow(lowerer: Lowerer, expected: IrType | null): void {
-  if (!lowerer.generalNodeStreams || lowerer.dynNodeStreams) return;
+  if (lowerer.dynNodeStreams) return;
+  if (!lowerer.generalNodeStreams) {
+    // An untyped pipe or pipeline stage needs both: the next pass lowers
+    // with the general representation and checked-dynamic slots at once.
+    if (expected === null) {
+      lowerer.requiresGeneralNodeStreams = true;
+      lowerer.requiresDynNodeStreams = true;
+    }
+    return;
+  }
   if (expected === null || containsPart(lowerer, expected, (p) => isGeneralStream(lowerer, p)))
     lowerer.requiresDynNodeStreams = true;
 }

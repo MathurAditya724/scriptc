@@ -4356,6 +4356,31 @@ void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value
   scr_dyn_obj_put(obj, key, key_len, value);
 }
 
+/* The getter (or, with `setter`, the setter) of the own accessor property
+ * `key`: +1, or the undefined value when the property is not an accessor
+ * or has none. */
+ScrDyn *scr_dyn_obj_accessor_fn(const ScrDyn *obj, const char *key, size_t key_len, bool setter) {
+  const ScrDynEntry *entry = obj->kind == SCR_DYN_OBJ ? scr_dyn_find_entry(obj, key, key_len) : NULL;
+  ScrDyn *fn = entry && entry->accessor ? (setter ? entry->setter : entry->getter) : NULL;
+  return scr_dyn_retain(fn ? fn : scr_dyn_undefined());
+}
+
+/* An object literal's get/set accessor property on a fresh copy:
+ * enumerable and configurable, with the given getter and setter functions
+ * (either NULL when the literal declares none). Moves both. */
+void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter) {
+  scr_dyn_obj_put(obj, key, key_len, scr_dyn_retain(scr_dyn_undefined()));
+  ScrDynEntry *entry = scr_dyn_find_entry(obj, key, key_len);
+  if (!entry) {
+    scr_dyn_release(getter);
+    scr_dyn_release(setter);
+    return;
+  }
+  entry->accessor = true;
+  entry->getter = getter;
+  entry->setter = setter;
+}
+
 /* A class instance's view takes its native field values whatever the
  * attributes copied into it (a frozen instance's view is built the same way
  * as any other). Consumes value. */
@@ -6421,6 +6446,28 @@ void scr_dyn_throw(ScrDyn *d) {
     scr_dyn_release(d);
     return;
   }
+  /* A checked-dynamic primitive throws as the primitive itself, as a
+   * statically typed `throw 5` does: catch bindings test and extract the
+   * same snapshot kinds (`typeof e === "number"`), and a primitive has no
+   * identity to keep. */
+  if (d->kind == SCR_DYN_NUM) {
+    double value = d->v.num;
+    scr_dyn_release(d);
+    scr_throw_f64(value);
+    return;
+  }
+  if (d->kind == SCR_DYN_BOOL) {
+    bool value = d->v.b;
+    scr_dyn_release(d);
+    scr_throw_bool(value);
+    return;
+  }
+  if (d->kind == SCR_DYN_STR) {
+    ScrStr *value = scr_str_retain(d->v.str);
+    scr_dyn_release(d);
+    scr_throw_str(value);
+    return;
+  }
   scr_throw_ref_classified(d, scr_dyn_retain_v, scr_dyn_release_v,
                           scr_dyn_trace_v, scr_dyn_is_object(d));
 }
@@ -6959,10 +7006,6 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
   /* Node lists `stack` first among an error's own properties. */
   scr_error_dyn_add_stack(d);
-  if (e->name_present) {
-    scr_dyn_obj_set(d, "name", 4, scr_dyn_new_str(e->name));
-    d->v.obj.entries[d->v.obj.len - 1].enumerable = e->name_enumerable;
-  }
   if (!e->name_present || !e->message_present) {
     ScrDyn *prototype = scr_dyn_new_obj();
     if (!e->name_present) {
@@ -7038,7 +7081,35 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_obj_set(d, "errors", 6, scr_aggregate_errors((ScrError *)e));
     d->v.obj.entries[d->v.obj.len - 1].enumerable = false;
   }
+  /* An own `name` is assigned after construction defines the others. */
+  if (e->name_present) {
+    scr_dyn_obj_set(d, "name", 4, scr_dyn_new_str(e->name));
+    d->v.obj.entries[d->v.obj.len - 1].enumerable = e->name_enumerable;
+  }
   return d;
+}
+
+/* Moves an Error subclass view's own `name` to follow the property
+ * `after`, or every other property when `after` is NULL: the position
+ * the class's construction creates it at. Nothing changes when the view
+ * has no own `name` or no `after` property. */
+void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len) {
+  if (view->kind != SCR_DYN_OBJ) return;
+  ScrDynEntry *entries = view->v.obj.entries;
+  size_t n = view->v.obj.len, from = n, to = n;
+  for (size_t i = 0; i < n; i++) {
+    if (entries[i].key_len == 4 && memcmp(entries[i].key, "name", 4) == 0) from = i;
+    else if (after && entries[i].key_len == after_len && memcmp(entries[i].key, after, after_len) == 0) to = i;
+  }
+  if (from == n || (after && to == n)) return;
+  size_t at = after ? (to > from ? to : to + 1) : n - 1;
+  if (at == from) return;
+  ScrDynEntry name = entries[from];
+  memmove(&entries[from], &entries[from + 1], (n - from - 1) * sizeof *entries);
+  memmove(&entries[at + 1], &entries[at], (n - 1 - at) * sizeof *entries);
+  entries[at] = name;
+  free(view->v.obj.index);
+  view->v.obj.index = NULL;
 }
 
 ScrDyn *scr_dyn_from_error(const ScrError *e) {

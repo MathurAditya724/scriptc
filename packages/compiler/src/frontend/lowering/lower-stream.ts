@@ -588,6 +588,33 @@ function dynOptionsValue(lowerer: Lowerer, arg: ts.Expression): IrExpr | null {
   return v.type.kind === "dyn" ? v : null;
 }
 
+/** @types/node declares the transform/flush completion callback as
+ * `(error?: Error | null, data?: any) => void`. Outside objectMode Node
+ * accepts only a Buffer, a string or nothing as `data`, so the callback
+ * parameter is typed with that union while the option callback lowers: a
+ * checked-dynamic value passed as `data` converts at the call. Returns the
+ * pinned parameter symbol (the caller unpins it), or null when the
+ * declared type needs no pin. */
+function pinAnyDataCompletion(
+  lowerer: Lowerer,
+  which: string,
+  fnNode: ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+): ts.Symbol | null {
+  const index = which === "transform" ? 2 : which === "flush" ? 0 : -1;
+  const param = index < 0 ? undefined : fnNode.parameters.nodes[index];
+  if (param === undefined || !ts.isIdentifier(param.name) || param.dotDotDotToken) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(param.name);
+  if (!symbol || lowerer.stageSourceTypes.has(symbol)) return null;
+  const declared = lowerer.paramShape(param).type;
+  if (declared.kind !== "func" || declared.rest || declared.params[1]?.kind !== "dyn") return null;
+  const data = unionOf(lowerer, [BYTES, STRING, { kind: "undefinedT" }]);
+  lowerer.stageSourceTypes.set(
+    symbol,
+    funcOf([declared.params[0]!, data, ...declared.params.slice(2)], declared.ret),
+  );
+  return symbol;
+}
+
 /** Parses the options object literal of a stream constructor. `which`
  * names the callbacks this class accepts, in canonical flag order. */
 function parseStreamOptions(
@@ -673,22 +700,27 @@ function parseStreamOptions(
         continue;
       }
       const full = tuples[name]!.map((t) => (t === "fn" ? null : t));
-      // The completion-callback tail: typed by the checker contextually;
-      // accept the user's declared func type as the tuple's entry so the
-      // prefix check compares like with like.
-      const { funcType } = lowerer.lambdaSignature(fnNode);
-      const tuple: IrType[] = full.map((t, i) => {
-        if (t !== null) return t;
-        const declared = funcType.params[i];
-        if (declared !== undefined && declared.kind !== "func" && declared.kind !== "dyn") {
-          lowerer.noLowering(
-            `a '${name}' callback whose parameter ${i} is '${lowerer.fmt(declared)}' where Node passes the completion callback`,
-            fnNode!,
-          );
-        }
-        return declared ?? funcOf([], VOID);
-      });
-      present.set(name, lowerStreamCallback(lowerer, name, fnNode, thisType, tuple));
+      const pinned = pinAnyDataCompletion(lowerer, name, fnNode);
+      try {
+        // The completion-callback tail: typed by the checker contextually;
+        // accept the user's declared func type as the tuple's entry so the
+        // prefix check compares like with like.
+        const { funcType } = lowerer.lambdaSignature(fnNode);
+        const tuple: IrType[] = full.map((t, i) => {
+          if (t !== null) return t;
+          const declared = funcType.params[i];
+          if (declared !== undefined && declared.kind !== "func" && declared.kind !== "dyn") {
+            lowerer.noLowering(
+              `a '${name}' callback whose parameter ${i} is '${lowerer.fmt(declared)}' where Node passes the completion callback`,
+              fnNode!,
+            );
+          }
+          return declared ?? funcOf([], VOID);
+        });
+        present.set(name, lowerStreamCallback(lowerer, name, fnNode, thisType, tuple));
+      } finally {
+        if (pinned) lowerer.stageSourceTypes.delete(pinned);
+      }
       continue;
     }
     // `{ signal }` shorthand: the binding is the value.
@@ -3375,6 +3407,73 @@ function pipeIntoStdio(
   };
 }
 
+/** `readable.unpipe(untyped)`: a native destination (boxed) unpipes as a
+ * typed one does; any other value unpipes the JavaScript destination a
+ * pipe into it registered (scr_stream_dyn.c), or does nothing when there
+ * is none, as Node's unpipe does for a destination it is not piped into.
+ * The call answers the source. */
+function unpipeDyn(lowerer: Lowerer, receiver: IrExpr, dst: IrExpr, loc: SrcLoc): IrExpr {
+  noteUntypedStreamFlow(lowerer, null);
+  const source = lowerer.declareHiddenLocal("%unpipeSource", receiver.type);
+  const destination = lowerer.declareHiddenLocal("%unpipeDestination", dst.type);
+  const sourceRef = varRef(source.id, receiver.type, loc);
+  const destinationRef = varRef(destination.id, dst.type, loc);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: source.id, init: receiver, loc },
+    { kind: "varDecl", localId: destination.id, init: dst, loc },
+  ];
+  const unpipeNative = (native: IrExpr): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "readable.unpipe",
+      args: [sourceRef, native],
+      type: receiver.type,
+      loc,
+    },
+    loc,
+  });
+  if (lowerer.dynNodeStreams) {
+    stmts.push(
+      dynNativeBranch(lowerer, destinationRef, "w", unpipeNative, {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "stream.unpipeDyn",
+          args: [sourceRef, destinationRef],
+          type: VOID,
+          loc,
+        },
+        loc,
+      }),
+    );
+  } else {
+    stmts.push(
+      unpipeNative({
+        kind: "libCall",
+        fn: "stream.unboxDyn",
+        args: [
+          destinationRef,
+          strLit("unpipe destinations other than native streams are not supported yet", loc),
+        ],
+        type: { kind: "object", className: "%Duplex" },
+        loc,
+      }),
+    );
+  }
+  return { kind: "seqExpr", stmts, result: sourceRef, type: receiver.type, loc };
+}
+
+/** The pipe() libCall for a destination of type `dst`. Under the general
+ * stream representation a Writable slot can hold the converted
+ * process.stdout / process.stderr, which a pipe never ends (as in Node), so
+ * the pipe takes readable.pipeGeneral, which checks for them. */
+function generalPipe(lowerer: Lowerer, dst: IrType): "readable.pipe" | "readable.pipeGeneral" {
+  return lowerer.generalNodeStreams && dst.kind === "object" && dst.className === "%Writable"
+    ? "readable.pipeGeneral"
+    : "readable.pipe";
+}
+
 /** `readable.pipe(untyped)`: a checked-dynamic destination unwraps a boxed
  * native stream at run time (stream.unboxDyn; other values throw the
  * not-supported Error), and pipe() answers the destination value itself. */
@@ -3417,7 +3516,10 @@ function pipeIntoDyn(
           kind: "exprStmt",
           expr: {
             kind: "libCall",
-            fn: "readable.pipe",
+            // Checked-dynamic slots come with the general representation,
+            // where a boxed native destination can be the converted
+            // process.stdout (generalPipe).
+            fn: "readable.pipeGeneral",
             args: [sourceRef, native, endRef],
             type: native.type,
             loc,
@@ -3449,7 +3551,7 @@ function pipeIntoDyn(
     kind: "exprStmt",
     expr: {
       kind: "libCall",
-      fn: "readable.pipe",
+      fn: lowerer.generalNodeStreams ? "readable.pipeGeneral" : "readable.pipe",
       args: [
         { kind: "varRef", localId: source.id, type: receiverValue.type, loc },
         {
@@ -3746,7 +3848,7 @@ export function lowerStreamMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     return {
       kind: "libCall",
-      fn: "readable.pipe",
+      fn: generalPipe(lowerer, dst.type),
       args: [receiver, dst, end],
       type: dst.type,
       loc,
@@ -3759,6 +3861,7 @@ export function lowerStreamMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     if (args[0] !== undefined) {
       const dst = lowerer.lowerExpr(args[0]);
+      if (dst.type.kind === "dyn") return unpipeDyn(lowerer, receiver, dst, loc);
       const dstInfo =
         dst.type.kind === "object" ? lowerer.classes.get(dst.type.className) : undefined;
       const dstSides = streamSidesOf(lowerer, dstInfo);
@@ -3860,8 +3963,10 @@ export function lowerStreamMethodCall(
         : lowerer.lowerExprExpecting(args[0]!, STRING);
     const fn = kind === "bytes" ? "writable.write" : "writable.writeStr";
     if (cbArg !== undefined) {
-      const cb = lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb.type.kind !== "func" || cb.type.params.length > 0) {
+      const cb = callbackDeclaresParameters(cbArg)
+        ? null
+        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
+      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
         lowerer.noLowering(
           "write completion callbacks taking the error argument",
           cbArg,
@@ -3918,8 +4023,10 @@ export function lowerStreamMethodCall(
       );
     }
     if (cbArg !== undefined) {
-      const cb = lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb.type.kind !== "func" || cb.type.params.length > 0) {
+      const cb = callbackDeclaresParameters(cbArg)
+        ? null
+        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
+      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
         lowerer.noLowering(
           "end callbacks with parameters",
           cbArg,
@@ -4183,4 +4290,18 @@ export function lowerStreamProperty(
     return propCall(BOOL);
   }
   return null;
+}
+
+/** Whether an inline completion callback declares a parameter. Node calls
+ * write and end callbacks with an error argument (null on success), but the
+ * native callback receives none, so the parameter would read undefined
+ * where Node passes null or the error. A function literal with parameters
+ * would otherwise adapt to the zero-parameter slot silently. */
+function callbackDeclaresParameters(node: ts.Expression): boolean {
+  let callback = node;
+  while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
+  return (
+    (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) &&
+    callback.parameters.nodes.length > 0
+  );
 }

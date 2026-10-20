@@ -56,6 +56,7 @@ export interface EarlyExecutableNativeFeatures {
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
+  wasm?: boolean;
   warningReplace?: boolean;
   stdioExtended?: boolean;
   zlib: boolean;
@@ -72,17 +73,20 @@ export interface EarlyExecutableNativeFeatures {
   bigint: boolean;
   searchParams: boolean;
   qs: boolean;
+  dynBuiltinClass: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
   http: boolean;
   http2: boolean;
   dgram: boolean;
+  dnsPromises: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
   cipher: boolean;
+  perfLoop: boolean;
   tlsCa: boolean;
   webcrypto: boolean;
 }
@@ -117,6 +121,9 @@ export interface EarlyExecutableCacheOptions {
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** Omitted for the default tsgo checker; with SCRIPTC_CHECKER=tsc-ts, the
+   * tsc-ts executable's file identity. */
+  checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
   npmStatic: readonly string[] | "auto" | null;
@@ -186,12 +193,14 @@ const BOOLEAN_NATIVE_KEYS = [
   "bigint",
   "searchParams",
   "qs",
+  "dynBuiltinClass",
   "parseArgs",
   "stream",
   "net",
   "http",
   "http2",
   "dgram",
+  "dnsPromises",
   "watch",
   "foreignFfi",
   "nodeTest",
@@ -199,6 +208,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "tlsCa",
   "cipher",
   "webcrypto",
+  "perfLoop",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {
@@ -231,6 +241,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.strip ? ["strip"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
@@ -271,6 +282,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.strip) hash.update("strip\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
   hash
     .update(

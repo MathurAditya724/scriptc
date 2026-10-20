@@ -1044,6 +1044,20 @@ export interface IrModule {
    * write in the program (ir/contract-check.ts). Backends may rely on them
    * unconditionally. Absent when the program writes no contract. */
   contracts?: IrContracts;
+  /** The WebAssembly modules translated into this program (wasm/
+   * translate.ts), present exactly when the program uses the WebAssembly
+   * API (possibly empty). The backend appends each module's translation
+   * and emits the registry the runtime looks modules up in. */
+  wasmModules?: IrWasmModule[];
+}
+
+/** A WebAssembly module whose bytes the build saw, validated within the
+ * translatable feature level. */
+export interface IrWasmModule {
+  /** Hex SHA-256 of the bytes. */
+  sha256: string;
+  /** The bytes, base64. */
+  bytes: string;
 }
 
 /** Verified contract facts, keyed by IR names. */
@@ -1406,6 +1420,11 @@ export interface IrClassDef {
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
   tracksOwnFields?: boolean;
+  /** Error subclasses: the field an instance's own `name` follows among its
+   * own properties, or null when it precedes every field. Absent when no
+   * class of the chain sets `name` during construction, and then an own
+   * `name` follows every other own property. */
+  errorNameAfter?: string | null;
   /** Stable module symbol identities for public instance layout fields. */
   symbolFields?: { field: string; globalId: string }[];
   /** RUNTIME-PROVIDED class (the builtin Error hierarchy): the struct, RC
@@ -1621,6 +1640,10 @@ export interface IrRecordShape {
    * fields carry that declaredOrder OMITS are internal '%'-fields (Dirent's
    * %dtype) — hidden from every key-order surface, JSON included. */
   declaredOrder?: string[];
+  /** Shapes with accessor slots: every own key in declaration order, with
+   * an accessor property named once (see accessorSlotProp). The
+   * checked-dynamic copy lists its keys in this order. */
+  accessorOrder?: string[];
 }
 
 /** fs.Dirent rows: the hidden %dtype entry kind (libuv's UV_DIRENT
@@ -3346,9 +3369,10 @@ export type IrExpr =
   /** Keyed read on a dyn value — `pkg.name` / `pkg["k"]` / the
    * `pkg?.scripts` chain step on a JSON.parse result. `key` is
    * string-typed (a strLit for the dot form); `type` is always dyn. An
-   * OBJ receiver answers the member (+1) or the undefined singleton (the
-   * own-property answer — prototype members like `toString` answer
-   * undefined, SEMANTICS.md); ARR answers `length` and canonical
+   * OBJ receiver answers the member (+1), an inherited Object.prototype
+   * member (the Object constructor and the interned valueOf/toString/
+   * hasOwnProperty/propertyIsEnumerable values), or the undefined singleton;
+   * ARR answers `length` and canonical
    * in-range indices, STR answers `length` (UTF-16-exact), both
    * undefined otherwise; NUM/BOOL/BYTES answer undefined. An
    * undefined/null receiver THROWS the catchable Node-shaped TypeError
@@ -4267,9 +4291,6 @@ function canBoxDynCompositeAt(
       const shape = getRecord(t.shapeId);
       if (!shape) return false;
       if (recordTextCodecClass(shape) !== null) return false;
-      // Accessor slots hold the getter and setter closures, not property
-      // values (see accessorSlotProp).
-      if (shapeHasAccessorSlots(shape)) return false;
       // Recursive shapes answer coinductively, like isJsonSafeType.
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);
