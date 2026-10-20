@@ -7209,6 +7209,30 @@ function refinedConstituentShape(
   return found;
 }
 
+/** The optional `undefined` members widening adds to an object literal's
+ * type for properties only its sibling literals declare (`[{ a: 1 }, { b: 2
+ * }]` gives the first `b?: undefined`). They are never own keys of the
+ * literal's value, so they go after the declared members, by name. Where
+ * the checker lists them is not observable: TypeScript 7.0.2 orders them
+ * by the literal its checker widened first, TypeScript 7.1 by the sibling
+ * that declares them. */
+function wideningAddedProperties(
+  type: ts.Type,
+  props: readonly ts.Symbol[],
+  ctx: TypeMapperCtx,
+): Set<string> {
+  const added = new Set<string>();
+  const literal = type.getSymbol()?.declarations.find(ts.isObjectLiteralExpression);
+  if (literal === undefined || literal.properties.nodes.some(ts.isSpreadAssignment)) return added;
+  for (const prop of props) {
+    if ((prop.flags & ts.SymbolFlags.Optional) === 0 || prop.declarations.length === 0) continue;
+    if (prop.declarations.some((d) => d.parent === literal)) continue;
+    if ((ctx.checker.getTypeOfSymbol(prop).flags & ts.TypeFlags.Undefined) === 0) continue;
+    added.add(prop.name);
+  }
+  return added;
+}
+
 function mapRecordTypeInner(
   widened: ts.Type,
   ctx: TypeMapperCtx,
@@ -7523,8 +7547,12 @@ function mapRecordTypeInner(
     // indices, from folded numeric computed keys and quoted numeric keys)
     // enumerate FIRST ascending, then string keys in insertion order
     // (OrdinaryOwnPropertyKeys) — Object.keys/JSON/inspect all read it.
+    const widenedAbsent = wideningAddedProperties(widened, props, ctx);
     const declaredOrder = esOwnKeyOrder(
-      fields.filter((f) => accessorSlotProp(f.name) === null).map((f) => f.name),
+      fields
+        .filter((f) => accessorSlotProp(f.name) === null && !widenedAbsent.has(f.name))
+        .map((f) => f.name)
+        .concat([...widenedAbsent].sort()),
     );
     // With accessors: every own key in that order, an accessor property
     // named once for its get/set pair (the checked-dynamic copy lists it).
