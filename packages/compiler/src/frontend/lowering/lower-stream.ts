@@ -2045,6 +2045,24 @@ function lowerStreamArg(
   const v = isHashValueType(lowered.type)
     ? hashStreamOf(lowered, what === "pipeline" || what === "compose")
     : lowered;
+  // A checked-dynamic pipeline stage (an untyped source or destination):
+  // a boxed native stream unwraps at run time; other values (iterables,
+  // functions) throw the not-supported Error there.
+  if (v.type.kind === "dyn" && what === "pipeline") {
+    return {
+      kind: "libCall",
+      fn: "stream.unboxDyn",
+      args: [
+        v,
+        strLit(
+          "pipeline stages other than native streams (iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet",
+          locOf(node),
+        ),
+      ],
+      type: { kind: "object", className: "%Duplex" },
+      loc: locOf(node),
+    };
+  }
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
   if (!streamSidesOf(lowerer, info)) {
     // A provably-non-stream value in a JS source (the invalid-input

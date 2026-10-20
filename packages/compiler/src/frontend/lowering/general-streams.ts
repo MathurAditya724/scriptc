@@ -61,7 +61,8 @@ function isGeneralStream(lowerer: Lowerer, part: IrType): boolean {
 
 /** A mismatched flow (requireExactShape's input) that the general stream
  * representation resolves: a general stream into a stdio-represented
- * slot, or a child pipe handle into an 'unknown' slot. */
+ * slot, a child pipe handle into an 'unknown' slot, or an 'unknown' value
+ * into a child-pipe slot (the general classes take a checked cast). */
 export function needsGeneralNodeStreams(
   lowerer: Lowerer,
   actual: IrType,
@@ -70,6 +71,7 @@ export function needsGeneralNodeStreams(
   const stdio = (part: IrType): boolean => STDIO_STREAM_KINDS.has(part.kind);
   const pipeHandle = (part: IrType): boolean =>
     part.kind === "childStream" || part.kind === "childWriter";
+  if (actual.kind === "dyn") return containsPart(lowerer, expected, pipeHandle);
   if (containsPart(lowerer, expected, stdio))
     return containsPart(lowerer, actual, (p) => isGeneralStream(lowerer, p));
   return expected.kind === "dyn" && containsPart(lowerer, actual, pipeHandle);

@@ -6678,3 +6678,20 @@ ScrStream *scr_stream_stdio_writable(double fd) {
   return scr_stream_new_writable(-1, true, true, write, scr_stream_stdio_write,
       NULL, NULL, NULL, NULL);
 }
+
+/* A pipeline() stage that arrives as a checked-dynamic value (the
+ * stream.unboxDyn libCall): a boxed native stream unwraps by identity
+ * (+1); any other value throws the compiled program's not-supported
+ * message (Node also takes iterables and functions there). */
+ScrStream *scr_stream_unbox_dyn(const ScrDyn *value, const ScrStr *message) {
+  if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len > 7 &&
+      !memcmp(value->v.typed_ref.type_key, "object:", 7)) {
+    ScrStream *stream = scr_dyn_typed_ref_unbox(value);
+    const ScrVt *vt = stream->vt;
+    if ((vt->pre >= scr_readable_vt.pre && vt->pre <= scr_readable_vt.post) ||
+        (vt->pre >= scr_writable_vt.pre && vt->pre <= scr_writable_vt.post)) return stream;
+    value->v.typed_ref.release(stream);
+  }
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
+  return NULL;
+}

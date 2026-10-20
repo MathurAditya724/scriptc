@@ -164,6 +164,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.errored",
   "stream.prop",
   "stream.stdioWritable",
+  "stream.unboxDyn",
   "stream.workerStdio",
 ]);
 

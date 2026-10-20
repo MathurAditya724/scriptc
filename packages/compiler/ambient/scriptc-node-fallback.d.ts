@@ -107,6 +107,7 @@ declare namespace NodeJS {
     isPaused(): boolean;
     pipe<T extends WritableStream>(destination: T, options?: { end?: boolean }): T;
     unpipe(destination?: WritableStream): this;
+    [Symbol.asyncIterator](): AsyncIterableIterator<string | Buffer>;
   }
   /* The writable-stream interface every Node stream implements:
    * process.stdout/process.stderr, fs.WriteStream and the node:stream

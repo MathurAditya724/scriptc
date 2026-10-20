@@ -3129,7 +3129,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     ZLIB_STREAM_MODES.has(psym.name) &&
     psym.declarations.some(
       (d) =>
-        ts.isClassDeclaration(d) &&
+        (ts.isClassDeclaration(d) ||
+          (ts.isInterfaceDeclaration(d) && isNodeTypesPath(d.getSourceFile().fileName))) &&
         ctx.isStdlibFile(d.getSourceFile()) &&
         isDeclaredInAmbientModule(d, "zlib"),
     )

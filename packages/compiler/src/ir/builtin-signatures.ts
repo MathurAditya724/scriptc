@@ -2563,6 +2563,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** process.stdout/stderr flowing into a runtime Writable slot under the
    * general stream representation: an fd-backed Writable (+1) whose
    * writes take process.stdout.write's synchronous path. */
+  /** A pipeline() stage that is a checked-dynamic value: a boxed native
+   * stream unwraps by identity (+1); anything else throws the given
+   * not-supported message. Typed as a Duplex so every stage position
+   * accepts it; the runtime pipeline checks the stream's real sides. */
+  "stream.unboxDyn": {
+    argTypes: [DYN, STRING],
+    result: { kind: "object", className: "%Duplex" },
+  },
   "stream.stdioWritable": {
     argTypes: [PROCSTREAM_T],
     result: { kind: "object", className: "%Writable" },

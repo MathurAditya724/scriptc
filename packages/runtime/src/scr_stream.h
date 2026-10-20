@@ -130,6 +130,9 @@ ScrStream *scr_stream_new_writable_dyn(struct ScrDyn *opts);
  * Writable (fd 1 or 2). */
 ScrStream *scr_stream_child_stdio(void *child, const char *key, size_t key_len);
 ScrStream *scr_stream_stdio_writable(double fd);
+/* A boxed native stream out of a checked-dynamic pipeline stage (+1), or
+ * NULL with `message` thrown as the not-supported Error. */
+ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *message);
 ScrStream *scr_stream_new_duplex_dyn(struct ScrDyn *opts);
 ScrStream *scr_stream_new_transform_dyn(struct ScrDyn *opts);
 ScrStream *scr_stream_new_passthrough_dyn(struct ScrDyn *opts);
