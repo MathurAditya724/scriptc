@@ -20,6 +20,7 @@ import {
   setGlobalDispatcher,
 } from "undici";
 import type { Dispatcher } from "undici";
+import { checkPeers } from "./peers.ts";
 
 const server = http.createServer((req, res) => {
   const url = req.url ?? "/";
@@ -357,5 +358,6 @@ server.listen(0, "127.0.0.1", async () => {
 
   await agent.close();
   server.close();
+  await checkPeers();
   console.log("done");
 });
