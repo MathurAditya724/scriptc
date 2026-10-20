@@ -234,6 +234,7 @@ import {
   requireSpecOf,
   resolveImport,
   workspacePackageOfPath,
+  type CycleEdge,
 } from "../program.js";
 import {
   containsRecord,
@@ -785,6 +786,8 @@ export interface LowerOptions {
   startupCrash?: StartupCrash | null;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
+  /** LoadResult.moduleEdges. */
+  moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
   /** LIBRARY mode's reachability roots: the profile-mapped exports of the
    * entry module. Executable builds root at the entry's top level alone
    * (an unreferenced export dead-strips); a library's exports are called from
@@ -973,11 +976,15 @@ export function lowerToIr(
       ),
     );
   };
+  // Inline require() calls closing a cycle inside the appended subgraphs
+  // join preflight's set (the same run-time refusal by name).
+  const inlineRequireCycleCalls = new Set<ts.Node>(options.inlineRequireCycleCalls ?? []);
+  const graph = { edges: options.moduleEdges, inlineCycleCalls: inlineRequireCycleCalls };
   for (let pass = 0; pass < 32; pass++) {
     const before = moduleOrder.length;
-    appendDynamicImportModules(program, moduleOrder, onExtraCycle);
-    appendForkModules(program, moduleOrder, forkTargets, onExtraCycle);
-    appendWorkerModules(program, moduleOrder, workerTargets, onExtraCycle);
+    appendDynamicImportModules(program, moduleOrder, onExtraCycle, graph);
+    appendForkModules(program, moduleOrder, forkTargets, onExtraCycle, graph);
+    appendWorkerModules(program, moduleOrder, workerTargets, onExtraCycle, graph);
     if (moduleOrder.length === before) break;
     if (pass === 31) throw new Error("dynamic import and fork module discovery did not converge");
   }
@@ -992,7 +999,7 @@ export function lowerToIr(
     projectCheckJs: options.projectCheckJs ?? false,
     targetPlatform,
     startupCrash,
-    inlineRequireCycleCalls: options.inlineRequireCycleCalls,
+    inlineRequireCycleCalls,
     ffiImports,
     libraryCallbacks,
     forkTargets,
@@ -1016,7 +1023,7 @@ export function lowerToIr(
           projectCheckJs: options.projectCheckJs ?? false,
           targetPlatform,
           startupCrash,
-          inlineRequireCycleCalls: options.inlineRequireCycleCalls,
+          inlineRequireCycleCalls,
           ffiImports,
           libraryCallbacks,
           forkTargets,
@@ -1047,7 +1054,7 @@ export function lowerToIr(
       reachable,
       targetPlatform,
       startupCrash,
-      inlineRequireCycleCalls: options.inlineRequireCycleCalls,
+      inlineRequireCycleCalls,
       ffiImports,
       libraryCallbacks,
       forkTargets,
@@ -1106,7 +1113,7 @@ export function lowerToIr(
     reachable,
     remainder: true,
     alreadyFlushed: resultLowerer.flushedSymbols,
-    inlineRequireCycleCalls: options.inlineRequireCycleCalls,
+    inlineRequireCycleCalls,
     targetPlatform,
     ffiImports,
     libraryCallbacks,

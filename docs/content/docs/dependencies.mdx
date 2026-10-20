@@ -102,11 +102,11 @@ Small polyfill packages whose module is exactly a Node.js built-in on Node.js 24
     <tr><td><code>process-nextick-args</code></td><td>2.x</td><td><code>process</code></td></tr>
     <tr><td><code>inherits</code></td><td>2.x</td><td><code>require("util").inherits</code></td></tr>
     <tr><td><code>util-deprecate</code></td><td>1.x</td><td><code>require("util").deprecate</code></td></tr>
-    <tr><td><code>readable-stream</code></td><td>2.x, 4.x</td><td><code>require("stream")</code> and its classes</td></tr>
+    <tr><td><code>readable-stream</code></td><td>2.x, 3.x, 4.x</td><td><code>require("stream")</code> and its classes</td></tr>
   </tbody>
 </table>
 
-`readable-stream` compiles as its own `READABLE_STREAM=disable` mode, which can differ from its default behavior under Node.js; see [limitations](/docs/limitations#readable-stream).
+`readable-stream` compiles as Node.js's built-in streams, which is its own `READABLE_STREAM=disable` mode for 2.x and 4.x. That can differ from its default behavior under Node.js; see [limitations](/docs/limitations#readable-stream).
 
 ## Optional dependencies that never load
 

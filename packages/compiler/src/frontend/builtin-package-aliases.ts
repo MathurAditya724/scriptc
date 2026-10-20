@@ -19,17 +19,19 @@
  *   directly, 2.0.3 and later whenever it is a function, always on Node).
  * - util-deprecate 1.x: node.js (its Node entry) is
  *   `module.exports = require("util").deprecate`.
- * - readable-stream 2.x, 4.x: a documented divergence, the package's own
- *   READABLE_STREAM=disable behavior, under which its entry hands out
- *   Node's stream classes:
+ * - readable-stream 2.x, 3.x, 4.x: a documented divergence. The package
+ *   ships a JavaScript copy of Node's streams; its READABLE_STREAM=disable
+ *   behavior hands out Node's own stream classes instead, and that is what
+ *   compiles:
  *   - 2.x readable.js exports stream.Readable carrying Readable, Writable,
  *     Duplex, Transform, PassThrough and Stream; writable.js exports
  *     stream.Writable and duplex/transform/passthrough.js read the entry;
+ *   - 3.x (a copy of Node 10's streams) readable.js exports the same
+ *     members plus finished and pipeline. Its own disable branch throws on
+ *     Node 24 (it Object.assigns every stream export onto stream.Readable,
+ *     which inherits the getter-only `promises` accessor), so 3.x maps the
+ *     members its default branch exports onto the builtin's;
  *   - 4.x lib/ours/index.js exports a plain object of named stream exports.
- *   3.x is not aliased: its disable branch copies every stream export onto
- *   stream.Readable with Object.assign, which throws on Node 24 (Readable
- *   inherits the getter-only `promises` accessor), so Node 24 has no
- *   builtin behavior for it to match.
  *   The lib/_stream_*.js implementation files map to the matching builtin
  *   classes as well (Node itself loads the package's JavaScript
  *   implementations through them, whatever the environment). Without the
@@ -96,13 +98,17 @@ export function builtinAliasOf(pkg: string, version: string, subpath: string): B
         ? { whole: 'require("util").deprecate' }
         : null;
     case "readable-stream": {
-      if (major !== 2 && major !== 4) return null;
+      if (major !== 2 && major !== 3 && major !== 4) return null;
       const stream = 'require("stream")';
       const entry = major === 4 ? file === "lib/ours/index" : file === "readable";
       if (file === "" || entry) {
         if (major === 4)
           return { whole: null, members: { object: stream, names: new Set(RS4_ENTRY_EXPORTS) } };
-        const names = new Set([...STREAM_CLASSES, "Stream"]);
+        const names = new Set([
+          ...STREAM_CLASSES,
+          "Stream",
+          ...(major === 3 ? ["finished", "pipeline"] : []),
+        ]);
         return { whole: `${stream}.Readable`, members: { object: stream, names } };
       }
       for (const cls of STREAM_CLASSES) {

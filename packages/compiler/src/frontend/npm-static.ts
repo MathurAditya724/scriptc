@@ -456,8 +456,16 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // through that function.
           const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
           if (fnExports !== null) original = fnExports;
+          // TypeScript's enum IIFEs with literal members become the object
+          // literals they build.
+          const enums = original === null ? null : services.enumIifes(original, path);
+          if (enums !== null) original = enums;
           const respelled =
-            split !== null || esm !== null || aliased !== null || fnExports !== null;
+            split !== null ||
+            esm !== null ||
+            aliased !== null ||
+            fnExports !== null ||
+            enums !== null;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;

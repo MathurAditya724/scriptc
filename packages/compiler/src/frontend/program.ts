@@ -354,6 +354,11 @@ export interface LoadResult {
    * at run time instead of refusing the whole program. Filled by
    * checkPreflight. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node>;
+  /** Every program file's module edges as preflight resolved them,
+   * require() edges included: the lowering orders the modules only a
+   * literal import(), fork() or Worker reaches with them. Filled by
+   * checkPreflight. */
+  moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
   /** Node's startup refusal, when the graph carries an import edge Node
    * rejects before ANY module evaluates — a RESOLUTION refusal (a bare
    * specifier nothing installed resolves, an exports/imports map that
@@ -1052,10 +1057,12 @@ export function loadProgram(
  * preflight diagnostics. Preserve the caller's complete load shape when
  * mutating it, including its owned services and disposal callback. */
 export function checkPreflight<T extends LoadResult>(load: T): ScrDiagnostic[] {
-  const { diags, moduleOrder, startupCrash, inlineRequireCycleCalls } = preflight7(load);
+  const { diags, moduleOrder, startupCrash, inlineRequireCycleCalls, moduleEdges } =
+    preflight7(load);
   load.moduleOrder = moduleOrder;
   load.startupCrash = startupCrash;
   load.inlineRequireCycleCalls = inlineRequireCycleCalls;
+  load.moduleEdges = moduleEdges;
   return diags;
 }
 
@@ -4393,6 +4400,7 @@ function preflight7(load: LoadResult): {
   moduleOrder: ts.SourceFile[];
   startupCrash: StartupCrash | null;
   inlineRequireCycleCalls: ReadonlySet<ts.Node>;
+  moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]>;
 } {
   const { program, entry } = load;
   const diags: ScrDiagnostic[] = [...load.configDiags];
@@ -5501,6 +5509,7 @@ function preflight7(load: LoadResult): {
     moduleOrder: order,
     startupCrash: resolveCrash ?? linkCrash,
     inlineRequireCycleCalls,
+    moduleEdges: edges,
   };
 }
 
