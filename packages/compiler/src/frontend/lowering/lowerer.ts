@@ -3200,8 +3200,9 @@ export class Lowerer {
       const symbol = part.getSymbol();
       return (
         (symbol?.name === "WeakMap" || symbol?.name === "WeakSet") &&
-        symbol.declarations
-          .some((d) => ts.isInterfaceDeclaration(d) && this.isStdlibFile(d.getSourceFile()))
+        symbol.declarations.some(
+          (d) => ts.isInterfaceDeclaration(d) && this.isStdlibFile(d.getSourceFile()),
+        )
       );
     };
     if (!type.isUnionType()) return weak(type);

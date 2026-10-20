@@ -333,6 +333,31 @@ console.log(require_user().same, require_isarray()([1]), require_old()());
   expect(user.source).toContain('var inherits = require("util").inherits;');
 });
 
+test("a polyfill chunk keeps its module when the bundle declares the builtin's global", () => {
+  const key =
+    "node_modules/.pnpm/process-nextick-args@2.0.1/node_modules/process-nextick-args/index.js";
+  const answer = expectSameBehavior(`${keyedHelper}var require_pna = __commonJS({
+  "${key}"(exports2, module2) {
+    module2.exports = process;
+  }
+});
+var require_user = __commonJS({
+  "lib/user.js"(exports2) {
+    var process = { local: true };
+    var pna = require_pna();
+    exports2.same = pna === globalThis.process && process.local;
+  }
+});
+console.log(require_user().same);
+`);
+  expect(answer.chunks.map((c) => basename(c.path))).toEqual([
+    "index.js.require_pna.cjs",
+    "index.js.require_user.cjs",
+  ]);
+  const user = answer.chunks.find((c) => c.path.endsWith("require_user.cjs"))!;
+  expect(user.source).not.toContain("var pna = process;");
+});
+
 test("a readable-stream 2.x entry chunk follows its uses", () => {
   const key = (file: string) =>
     `node_modules/.pnpm/readable-stream@2.3.8/node_modules/readable-stream/${file}`;

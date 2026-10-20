@@ -4,7 +4,8 @@
 // 9.0.13, unmodified (MIT). The program reads fs-extra through its default
 // import, a namespace import and named imports: fs's re-exported members in
 // promise and callback form, fs.promises, streams, and the extras (mkdirs,
-// copy, remove, pathExists, the JSON helpers, outputFile, emptyDir, move).
+// copy, remove, pathExists, the JSON helpers, outputFile, emptyDir, move),
+// the modes of binary and JSON writes, and the sync copy and move checks.
 import fs from "fs-extra";
 import * as fsx from "fs-extra";
 // Named imports use the names Node detects in fs-extra's CommonJS source.
@@ -58,6 +59,8 @@ async function main(): Promise<void> {
   await outputFile(path.join(root, "out2", "z.txt"), "zed");
   console.log(await fs.readFile(path.join(root, "out2", "z.txt"), "utf8"));
   console.log(fs.readJsonSync(file, { throws: false }));
+  fs.writeFileSync(path.join(root, "bom.json"), '\uFEFF{"bom":true}');
+  console.log(JSON.stringify(fs.readJsonSync(path.join(root, "bom.json"))));
 
   await fs.copy(path.join(root, "deep"), path.join(root, "copied"));
   await copy(file, path.join(root, "copied", "a-copy.txt"));
@@ -85,6 +88,32 @@ async function main(): Promise<void> {
   }
   await fs.emptyDir(path.join(root, "copied"));
   console.log((await fs.readdir(path.join(root, "copied"))).length);
+
+  // Modes of binary and JSON writes, and the sync copy and move checks.
+  await fs.writeFile(path.join(root, "bytes.bin"), Buffer.from([1, 2, 3]), { mode: 0o600 });
+  await fs.outputFile(path.join(root, "out3", "bytes.bin"), new Uint8Array([4, 5]), { mode: 0o600 });
+  fs.writeJsonSync(path.join(root, "private.json"), { a: 1 }, { mode: 0o600 });
+  fs.outputJsonSync(path.join(root, "out4", "private.json"), { b: 2 }, { mode: 0o600 });
+  for (const name of ["bytes.bin", "out3/bytes.bin", "private.json", "out4/private.json"])
+    console.log(name, (fs.statSync(path.join(root, name)).mode & 0o777).toString(8));
+  const selfLink = path.join(root, "self-link");
+  fs.symlinkSync(path.join(root, "deep"), selfLink);
+  try {
+    fs.copySync(path.join(root, "deep"), path.join(selfLink, "inner"));
+  } catch (err) {
+    console.log(shown(root, (err as Error).message));
+  }
+  try {
+    fs.moveSync(path.join(root, "deep"), path.join(selfLink, "inner"));
+  } catch (err) {
+    console.log(shown(root, (err as Error).message));
+  }
+  try {
+    fs.moveSync(file, file, { overwrite: true });
+  } catch (err) {
+    console.log((err as Error).message);
+  }
+  console.log(fs.existsSync(file), fs.existsSync(path.join(root, "deep", "inner")));
 
   console.log(await readStream(file));
   console.log((await fs.promises.readFile(file, "utf8")).length);

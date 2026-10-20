@@ -207,6 +207,22 @@ export function appendFile(
   return settleVoid(fsp.appendFile(path, data), callback);
 }
 
+/** fs.writeFileSync(file, bytes, { mode }) as Node runs it: open with
+ * O_WRONLY | O_CREAT | O_TRUNC and the mode, write every byte, close. */
+function writeBytesSync(file: string, data: Uint8Array, mode: number): void {
+  const fd = fs.openSync(
+    file,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC,
+    mode,
+  );
+  try {
+    let offset = 0;
+    while (offset < data.length) offset += fs.writeSync(fd, data, offset, data.length - offset);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 async function writeData(
   file: string,
   data: string | Uint8Array,
@@ -216,7 +232,8 @@ async function writeData(
     // fs.promises.writeFile compiles string data; bytes take the
     // synchronous write after the same microtask boundary.
     await Promise.resolve();
-    fs.writeFileSync(file, data);
+    if (options === undefined || typeof options === "string") fs.writeFileSync(file, data);
+    else writeBytesSync(file, data, options.mode ?? 0o666);
     return;
   }
   if (options === undefined || typeof options === "string")
@@ -714,7 +731,7 @@ function prefixed(file: string, err: unknown): Error {
 
 function parseJson(file: string, text: string, throws: boolean): any {
   try {
-    return JSON.parse(text.replace(/^﻿/, ""));
+    return JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch (err) {
     if (!throws) return null;
     throw prefixed(file, err);
@@ -772,7 +789,9 @@ export function writeJson(
 }
 
 export function writeJsonSync(file: string, value: any, options?: WriteOptions | Utf8): void {
-  fs.writeFileSync(file, jsonText(value, options), "utf8");
+  const text = jsonText(value, options);
+  if (options === undefined || typeof options === "string") fs.writeFileSync(file, text, "utf8");
+  else fs.writeFileSync(file, text, { encoding: "utf8", mode: options.mode ?? 0o666 });
 }
 
 async function outputJsonAsync(
@@ -861,6 +880,35 @@ async function checkPaths(src: string, dest: string, verb: string): Promise<bool
     destParent = path.resolve(path.dirname(destParent));
   }
   return destStat !== null;
+}
+
+function statOrNullSync(file: string): Stats | null {
+  try {
+    return fs.statSync(file);
+  } catch (err) {
+    if (codeOf(err) === "ENOENT") return null;
+    throw err;
+  }
+}
+
+/** checkPaths for copySync and moveSync. Answers the destination's stats,
+ * or null when it does not exist. */
+function checkPathsSync(src: string, dest: string, verb: string): Stats | null {
+  const srcStat = fs.statSync(src);
+  const destStat = statOrNullSync(dest);
+  if (destStat !== null && sameNode(srcStat, destStat))
+    throw new Error("Source and destination must not be the same.");
+  if (srcStat.isDirectory() && isSrcSubdir(src, dest))
+    throw new Error(subdirMessage(src, dest, verb));
+  const srcParent = path.resolve(path.dirname(src));
+  let destParent = path.resolve(path.dirname(dest));
+  while (destParent !== srcParent && destParent !== path.parse(destParent).root) {
+    const parentStat = statOrNullSync(destParent);
+    if (parentStat === null) break;
+    if (sameNode(srcStat, parentStat)) throw new Error(subdirMessage(src, dest, verb));
+    destParent = path.resolve(path.dirname(destParent));
+  }
+  return destStat;
 }
 
 interface CopyState {
@@ -1001,12 +1049,7 @@ function copyEntrySync(
 
 export function copySync(src: string, dest: string, options?: CopyOptionsSync): void {
   const opts: CopyOptionsSync = options ?? {};
-  const srcStat = fs.statSync(src);
-  const destStat = fs.existsSync(dest) ? fs.statSync(dest) : null;
-  if (destStat !== null && sameNode(srcStat, destStat))
-    throw new Error("Source and destination must not be the same.");
-  if (srcStat.isDirectory() && isSrcSubdir(src, dest))
-    throw new Error(subdirMessage(src, dest, "copy"));
+  const destStat = checkPathsSync(src, dest, "copy");
   const filter = opts.filter;
   if (filter !== undefined && !filter(src, dest)) return;
   const parent = path.dirname(dest);
@@ -1048,9 +1091,7 @@ export function move(
 
 export function moveSync(src: string, dest: string, options?: MoveOptions): void {
   const overwrite = options === undefined ? false : (options.overwrite ?? false);
-  const srcStat = fs.statSync(src);
-  if (srcStat.isDirectory() && isSrcSubdir(src, dest))
-    throw new Error(subdirMessage(src, dest, "move"));
+  checkPathsSync(src, dest, "move");
   makeDirSync(path.dirname(dest), 0o777);
   if (overwrite) fs.rmSync(dest, { recursive: true, force: true });
   else if (fs.existsSync(dest)) throw new Error("dest already exists.");
