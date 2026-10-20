@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2571-bundled-polyfill-aliases/main.ts"
+ ],
+ "diags": []
+}
