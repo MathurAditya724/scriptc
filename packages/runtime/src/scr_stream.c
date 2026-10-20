@@ -4728,6 +4728,31 @@ static void scr_stream_rl_hooks_free(void) {
   }
 }
 
+/* createInterface's input or output given as a checked-dynamic value (a
+ * JavaScript function's result, an object's member): the stream (+1).
+ * An output of null or undefined is NULL (no output). A value that is
+ * not a stream with a readable (input) or writable (output) side is
+ * refused. */
+ScrStream *scr_stream_rl_from_dyn(const ScrDyn *value, bool output) {
+  if (output && (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF)) return NULL;
+  if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len > 7 &&
+      !memcmp(value->v.typed_ref.type_key, "object:", 7)) {
+    ScrStream *stream = scr_dyn_typed_ref_unbox(value);
+    const ScrVt *vt = stream->vt;
+    bool duplex = vt == &scr_duplex_vt || vt == &scr_transform_vt || vt == &scr_passthrough_vt ||
+                  scr_vt_within(vt, &scr_duplex_vt);
+    bool ok = duplex || (output ? vt == &scr_writable_vt || scr_vt_within(vt, &scr_writable_vt)
+                                : vt == &scr_readable_vt || scr_vt_within(vt, &scr_readable_vt));
+    if (ok) return stream;
+    value->v.typed_ref.release(stream);
+  }
+  static const char in_m[] = "createInterface with an input that is not a readable stream has no lowering";
+  static const char out_m[] = "createInterface with an output that is not a writable stream has no lowering";
+  if (output) scr_throw_error_msg_code(SCR_ERR_ERROR, out_m, sizeof out_m - 1, "SC2020");
+  else scr_throw_error_msg_code(SCR_ERR_ERROR, in_m, sizeof in_m - 1, "SC2020");
+  return NULL;
+}
+
 double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double crlf_delay,
                           ScrStr *prompt, ScrDyn *signal, ScrAbortAddFn add) {
   double id = scr_rl_open(&scr_stream_rl_io, in ? scr_stream_retain(in) : NULL,

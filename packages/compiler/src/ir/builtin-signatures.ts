@@ -4019,6 +4019,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [F64, STRING, DYN],
     result: { kind: "promise", inner: STRING },
   },
+  /** The question forms with a checked-dynamic query (a JavaScript value
+   * that need not be a string). */
+  "rl.questionDyn": { argTypes: [F64, DYN, null], result: VOID },
+  "rl.questionAsyncDyn": { argTypes: [F64, DYN], result: { kind: "promise", inner: STRING } },
+  "rl.questionAsyncSignalDyn": {
+    argTypes: [F64, DYN, DYN],
+    result: { kind: "promise", inner: STRING },
+  },
   "rl.close": { argTypes: [F64], result: VOID },
   "rl.pause": { argTypes: [F64], result: VOID },
   "rl.resume": { argTypes: [F64], result: VOID },
@@ -4026,6 +4034,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** prompt(preserveCursor): [handle, preserveCursor] */
   "rl.promptWith": { argTypes: [F64, BOOL], result: VOID },
   "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
+  "rl.setPromptDyn": { argTypes: [F64, DYN], result: VOID },
   "rl.getPrompt": { argTypes: [F64], result: STRING },
   "rl.write": { argTypes: [F64, STRING], result: VOID },
   /** write(data, key): [handle, hasData, data, hasKey, hasName, name,
@@ -4058,6 +4067,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "rl.terminal": { argTypes: [F64, F64, BOOL, DYN, BOOL], result: VOID },
   "rl.line": { argTypes: [F64], result: STRING },
   "rl.isTerminal": { argTypes: [F64], result: BOOL },
+  "rl.isPromises": { argTypes: [F64], result: BOOL },
+  /** createInterface's input or output as a checked-dynamic value:
+   * [value, output] — the stream; refused when it is not one. */
+  "rl.inputFromDyn": { argTypes: [DYN, BOOL], result: { kind: "object", className: "%Readable" } },
+  "rl.outputFromDyn": {
+    argTypes: [DYN, BOOL],
+    result: { kind: "object", className: "%Writable" },
+  },
   "rl.cursor": { argTypes: [F64], result: F64 },
   /** readline.cursorTo / moveCursor / clearLine / clearScreenDown: rl.seq
    * [kind (0-3), the first and second numbers, whether the second is
