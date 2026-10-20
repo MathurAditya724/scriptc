@@ -468,7 +468,12 @@ export function unlink(path: string, callback?: VoidCallback): Promise<void> {
 
 export function utimes(path: string, atime: Date, mtime: Date): Promise<void>;
 export function utimes(path: string, atime: Date, mtime: Date, callback: VoidCallback): void;
-export function utimes(path: string, atime: Date, mtime: Date, callback?: VoidCallback): Promise<void> {
+export function utimes(
+  path: string,
+  atime: Date,
+  mtime: Date,
+  callback?: VoidCallback,
+): Promise<void> {
   return settleVoid(fsp.utimes(path, atime, mtime), callback);
 }
 

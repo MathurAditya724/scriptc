@@ -274,12 +274,41 @@ function fail() {
   init_errors();
   throw new AppError("failed", "E1");
 }
-try {
-  fail();
-} catch (err) {
-  console.log(err instanceof AppError, err instanceof Error, err.code, err.message);
+function main() {
+  try {
+    fail();
+  } catch (err) {
+    console.log(err instanceof AppError, err instanceof Error, err.code, err.message);
+  }
 }
+main();
 0 && (module.exports = { AppError });
 `);
   expect(lowered).toContain("class AppError extends Error");
+});
+
+test("an initializer declared last in a shared var statement still hoists its classes", () => {
+  const lowered = expectSameBehavior(`"use strict";
+${helpers}var BuildError, hints, init_errors = __esm({
+  "src/errors.ts"() {
+    "use strict";
+    BuildError = class extends Error {
+      constructor(code) {
+        super("failed: " + code);
+        this.code = code;
+      }
+    }, hints = { retry: "try again" };
+  }
+});
+function run() {
+  init_errors();
+  try {
+    throw new BuildError("E2");
+  } catch (err) {
+    console.log(err instanceof BuildError, err.code, err.message, hints.retry);
+  }
+}
+run();
+`);
+  expect(lowered).toContain("class BuildError extends Error");
 });

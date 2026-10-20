@@ -956,7 +956,7 @@ function hoistInitClasses(
   for (const init of inits.values()) {
     const stmts = init.body.statements.nodes;
     if (stmts.some((st) => !ts.isExpressionStatement(st) && !ts.isEmptyStatement(st))) continue;
-    // The initializer's declaration is a statement of its own.
+    // The initializer's declarator is its statement's last one.
     const declarator = init.call.parent;
     const list = declarator?.parent;
     if (
@@ -964,7 +964,9 @@ function hoistInitClasses(
       !ts.isVariableDeclaration(declarator) ||
       list === undefined ||
       !ts.isVariableDeclarationList(list) ||
-      list.declarations.nodes.length !== 1 ||
+      // The initializer ends its statement: the split pieces follow it
+      // (`var A, B, init_x = __esm(…)` keeps A and B declared before).
+      list.declarations.nodes[list.declarations.nodes.length - 1] !== declarator ||
       unparen(declarator.initializer!) !== init.call
     )
       continue;
