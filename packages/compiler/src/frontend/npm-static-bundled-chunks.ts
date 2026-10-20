@@ -23,6 +23,7 @@
  * beside it). Anything else answers a degrade reason. */
 import * as ts from "./ts7/syntax.js";
 import { helperTokens } from "./helper-tokens.js";
+import { canonicalBuiltinModule } from "./builtin-modules.js";
 
 export interface BundledChunkSplit {
   /** The bundle with chunk declarations blanked and calls respelled. */
@@ -31,7 +32,7 @@ export interface BundledChunkSplit {
   chunks: { path: string; source: string }[];
 }
 
-interface Edit {
+export interface Edit {
   start: number;
   end: number;
   text: string;
@@ -42,11 +43,11 @@ const CHUNK_SHAPE_DEGRADE =
   "recognizer cannot verify";
 
 /** The helper a counter-suffixed bundler name spells (`__commonJS2`). */
-function helperBase(name: string): string {
+export function helperBase(name: string): string {
   return /^__[A-Za-z]+\d+$/.test(name) ? name.replace(/\d+$/, "") : name;
 }
 
-function unparen(e: ts.Expression): ts.Expression {
+export function unparen(e: ts.Expression): ts.Expression {
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   return e;
 }
@@ -54,7 +55,7 @@ function unparen(e: ts.Expression): ts.Expression {
 /** True for an identifier occurrence that reads or writes a binding (as
  * opposed to a property name, a label, or a declaration's own name).
  * Shorthand property values count: `{ x }` reads x. */
-function isReference(id: ts.Identifier): boolean {
+export function isReference(id: ts.Identifier): boolean {
   const p = id.parent;
   if (p === undefined) return false;
   if (ts.isPropertyAccessExpression(p)) return p.expression === id;
@@ -83,7 +84,7 @@ function isReference(id: ts.Identifier): boolean {
 
 /** Names a subtree declares anywhere inside it: variables (destructuring
  * included), parameters, function and class names, catch bindings. */
-function declaredNames(root: ts.Node): Set<string> {
+export function declaredNames(root: ts.Node): Set<string> {
   const names = new Set<string>();
   // Binding patterns nest BindingElements, which the walk visits too.
   ts.walkPreorder(root, (n) => {
@@ -272,7 +273,7 @@ class BundleScopes {
 }
 
 /** Every binding reference inside a subtree. */
-function references(root: ts.Node): ts.Identifier[] {
+export function references(root: ts.Node): ts.Identifier[] {
   const out: ts.Identifier[] = [];
   ts.walkPreorder(root, (n) => {
     if (n.kind >= ts.SyntaxKind.FirstJSDocNode && n.kind <= ts.SyntaxKind.LastJSDocNode)
@@ -285,7 +286,7 @@ function references(root: ts.Node): ts.Identifier[] {
 
 /** True when the reference is written (assignment target, update operand,
  * loop target, delete operand). */
-function isWritten(id: ts.Identifier): boolean {
+export function isWritten(id: ts.Identifier): boolean {
   let child: ts.Node = id;
   for (let p = child.parent; p !== undefined; child = p, p = p.parent) {
     if (ts.isBinaryExpression(p)) {
@@ -471,7 +472,7 @@ interface TopLevel {
 }
 
 /** True when the file opens with a "use strict" directive prologue. */
-function strictPrologue(stmts: readonly ts.Statement[]): boolean {
+export function strictPrologue(stmts: readonly ts.Statement[]): boolean {
   for (const s of stmts) {
     if (!ts.isExpressionStatement(s) || !ts.isStringLiteral(s.expression)) return false;
     if (s.expression.text === "use strict") return true;
@@ -637,10 +638,11 @@ export function splitBundledChunks(
       return {
         degrade: `its bundled CommonJS module factory '${r.text}' is used other than as a direct call`,
       };
+    const forwarded = forwarderSpec(chunk);
     callEdits.push({
       start: call.getStart(sf),
       end: call.getEnd(),
-      text: `require(${JSON.stringify(chunk.spec)})`,
+      text: `require(${JSON.stringify(forwarded ?? chunk.spec)})`,
     });
   }
   for (const name of chunks.keys()) {
@@ -652,6 +654,11 @@ export function splitBundledChunks(
   const out: BundledChunkSplit["chunks"] = [];
   const bundleEdits: Edit[] = [...callEdits];
   for (const chunk of chunks.values()) {
+    if (forwarderSpec(chunk) !== null) {
+      // A chunk that only re-exports a builtin module is that module.
+      bundleEdits.push({ start: chunk.stmt.getStart(sf), end: chunk.stmt.getEnd(), text: "" });
+      continue;
+    }
     const result = chunkSource(
       sf,
       chunk,
@@ -670,7 +677,7 @@ export function splitBundledChunks(
   return { text: applyEdits(source, 0, source.length, bundleEdits), chunks: out };
 }
 
-function countDeclarations(sf: ts.SourceFile, name: string): number {
+export function countDeclarations(sf: ts.SourceFile, name: string): number {
   let n = 0;
   ts.walkPreorder(sf, (node) => {
     if (
@@ -694,7 +701,7 @@ function countDeclarations(sf: ts.SourceFile, name: string): number {
 /** Applies non-overlapping edits inside [from, to): replaced spans keep
  * their newlines (blanked text stays line-aligned); edits nested in a
  * blanked span vanish with it. */
-function applyEdits(source: string, from: number, to: number, edits: Edit[]): string {
+export function applyEdits(source: string, from: number, to: number, edits: Edit[]): string {
   const inside = edits
     .filter((e) => e.start >= from && e.end <= to)
     .sort((a, b) => a.start - b.start || b.end - a.end);
@@ -710,6 +717,86 @@ function applyEdits(source: string, from: number, to: number, edits: Edit[]): st
     at = e.end;
   }
   return text + source.slice(at, to);
+}
+
+/** The builtin module a chunk forwards, or null: a body that is exactly
+ * `module.exports = require("<builtin>")` (readable-stream's
+ * internal/streams/stream.js). Requiring the chunk is then requiring the
+ * builtin itself (same object, and loading a builtin runs no code). */
+function forwarderSpec(chunk: Chunk): string | null {
+  const moduleParam = chunk.params[1];
+  if (moduleParam === undefined) return null;
+  const stmts = chunk.body.statements.nodes.filter(
+    (st) => !(ts.isExpressionStatement(st) && ts.isStringLiteral(st.expression)),
+  );
+  const only = stmts[0];
+  if (stmts.length !== 1 || only === undefined || !ts.isExpressionStatement(only)) return null;
+  const e = unparen(only.expression);
+  if (
+    !ts.isBinaryExpression(e) ||
+    e.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !ts.isPropertyAccessExpression(e.left) ||
+    !ts.isIdentifier(e.left.expression) ||
+    e.left.expression.text !== moduleParam ||
+    e.left.name.text !== "exports"
+  )
+    return null;
+  const call = unparen(e.right);
+  if (
+    !ts.isCallExpression(call) ||
+    !ts.isIdentifier(call.expression) ||
+    call.expression.text !== "require" ||
+    call.arguments.nodes.length !== 1 ||
+    !ts.isStringLiteral(call.arguments.nodes[0]!)
+  )
+    return null;
+  const spec = (call.arguments.nodes[0] as ts.StringLiteral).text;
+  return canonicalBuiltinModule(spec) !== null ? spec : null;
+}
+
+/** How code in a factory body (a chunk or a lazy ES-module initializer)
+ * observes the factory's own frame, or null: its receiver, its arguments
+ * object, `super`, a meta property, or (when `returns`) a top-level
+ * return have no module-scope equivalent. */
+export function factoryFrameUse(body: ts.Block, returns: boolean): string | null {
+  let frameUse: string | null = null;
+  /** The innermost frame boundary between a node and the factory body. */
+  const frameOf = (n: ts.Node): "factory" | "arrow" | "function" => {
+    let arrow = false;
+    for (let p = n.parent; p !== undefined && p !== body; p = p.parent) {
+      if (
+        ts.isFunctionDeclaration(p) ||
+        ts.isFunctionExpression(p) ||
+        ts.isMethodDeclaration(p) ||
+        ts.isGetAccessorDeclaration(p) ||
+        ts.isSetAccessorDeclaration(p) ||
+        ts.isConstructorDeclaration(p) ||
+        ts.isClassDeclaration(p) ||
+        ts.isClassExpression(p)
+      )
+        return "function";
+      if (ts.isArrowFunction(p)) arrow = true;
+    }
+    return arrow ? "arrow" : "factory";
+  };
+  ts.walkPreorder(body, (n) => {
+    if (frameUse !== null) return "stop";
+    if (n.kind >= ts.SyntaxKind.FirstJSDocNode && n.kind <= ts.SyntaxKind.LastJSDocNode)
+      return "skip";
+    let use: string | null = null;
+    if (n.kind === ts.SyntaxKind.ThisKeyword) use = "reads its factory's receiver (`this`)";
+    else if (n.kind === ts.SyntaxKind.SuperKeyword) use = "reads `super` at its top level";
+    else if (ts.isIdentifier(n) && n.text === "arguments" && isReference(n))
+      use = "reads its factory's arguments object";
+    else if (ts.isMetaProperty(n)) use = "reads a meta property at its top level";
+    else if (ts.isReturnStatement(n)) {
+      if (returns && frameOf(n) === "factory") frameUse = "returns from its top level";
+      return undefined;
+    }
+    if (use !== null && frameOf(n) !== "function") frameUse = use;
+    return undefined;
+  });
+  return frameUse;
 }
 
 /** The virtual module text for one chunk, or a degrade reason. */
@@ -741,45 +828,7 @@ function chunkSource(
       );
   }
 
-  /* The factory's own frame must stay unobservable: its receiver, its
-   * arguments object, and a top-level return have no module equivalent. */
-  let frameUse: string | null = null;
-  /** The innermost frame boundary between a node and the chunk body. */
-  const frameOf = (n: ts.Node): "factory" | "arrow" | "function" => {
-    let arrow = false;
-    for (let p = n.parent; p !== undefined && p !== body; p = p.parent) {
-      if (
-        ts.isFunctionDeclaration(p) ||
-        ts.isFunctionExpression(p) ||
-        ts.isMethodDeclaration(p) ||
-        ts.isGetAccessorDeclaration(p) ||
-        ts.isSetAccessorDeclaration(p) ||
-        ts.isConstructorDeclaration(p) ||
-        ts.isClassDeclaration(p) ||
-        ts.isClassExpression(p)
-      )
-        return "function";
-      if (ts.isArrowFunction(p)) arrow = true;
-    }
-    return arrow ? "arrow" : "factory";
-  };
-  ts.walkPreorder(body, (n) => {
-    if (frameUse !== null) return "stop";
-    if (n.kind >= ts.SyntaxKind.FirstJSDocNode && n.kind <= ts.SyntaxKind.LastJSDocNode)
-      return "skip";
-    let use: string | null = null;
-    if (n.kind === ts.SyntaxKind.ThisKeyword) use = "reads its factory's receiver (`this`)";
-    else if (n.kind === ts.SyntaxKind.SuperKeyword) use = "reads `super` at its top level";
-    else if (ts.isIdentifier(n) && n.text === "arguments" && isReference(n))
-      use = "reads its factory's arguments object";
-    else if (ts.isMetaProperty(n)) use = "reads a meta property at its top level";
-    else if (ts.isReturnStatement(n)) {
-      if (frameOf(n) === "factory") frameUse = "returns from its top level";
-      return undefined;
-    }
-    if (use !== null && frameOf(n) !== "function") frameUse = use;
-    return undefined;
-  });
+  const frameUse = factoryFrameUse(body, true);
   if (frameUse !== null) return why(frameUse);
 
   const edits: Edit[] = callEdits.filter((e) => e.start >= body.pos && e.end <= body.end);

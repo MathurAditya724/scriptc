@@ -6,7 +6,7 @@ scriptc coverage tests/coverage-fixtures/divergences.ts
 
   fully static — all analyzed statements compile to native code.
 
-  differs from Node   8 sites (compiles; the native program can behave differently)
+  differs from Node   5 sites (compiles; the native program can behave differently)
       ×1  SC6001  passing a 'Tagged' where 'Labeled' is expected copies the object (converting to a record type with other properties compiles as a field copy): the write to 'target.label' updates only the copy, while…
           at tests/coverage-fixtures/divergences.ts:16:9
           hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
@@ -22,12 +22,3 @@ scriptc coverage tests/coverage-fixtures/divergences.ts
       ×1  SC6004  this 'Circle' reaches a cast to the unrelated class 'Square' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally
           at tests/coverage-fixtures/divergences.ts:48:20
           hint: narrow with 'instanceof Square' before casting, or cast to a base class or interface both classes share
-      ×1  SC6005  the date string 'Jan 2, 2024' parses to an invalid date (NaN) natively, while Node accepts it (the native parser takes ISO 8601 date-times with an explicit offset, such as '2024-01-02T03:04:05Z', and…
-          at tests/coverage-fixtures/divergences.ts:51:24
-          hint: write the date in ISO 8601 with an explicit offset ('Z' or '+HH:MM'), or build it from numbers with Date.UTC
-      ×1  SC6005  the date string '2024/01/02' parses to an invalid date (NaN) natively, while Node accepts it (the native parser takes ISO 8601 date-times with an explicit offset, such as '2024-01-02T03:04:05Z', and …
-          at tests/coverage-fixtures/divergences.ts:51:49
-          hint: write the date in ISO 8601 with an explicit offset ('Z' or '+HH:MM'), or build it from numbers with Date.UTC
-      ×1  SC6005  the date string 'March 4, 2024' parses to an invalid date (NaN) natively, while Node accepts it (the native parser takes ISO 8601 date-times with an explicit offset, such as '2024-01-02T03:04:05Z', a…
-          at tests/coverage-fixtures/divergences.ts:52:41
-          hint: write the date in ISO 8601 with an explicit offset ('Z' or '+HH:MM'), or build it from numbers with Date.UTC

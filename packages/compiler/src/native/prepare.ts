@@ -149,6 +149,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "http",
     "http2",
     "dgram",
+    "dnsPromises",
     "watch",
     "foreignFfi",
     "nodeTest",

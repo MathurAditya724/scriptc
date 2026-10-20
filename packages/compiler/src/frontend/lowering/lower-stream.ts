@@ -3674,8 +3674,10 @@ export function lowerStreamMethodCall(
         : lowerer.lowerExprExpecting(args[0]!, STRING);
     const fn = kind === "bytes" ? "writable.write" : "writable.writeStr";
     if (cbArg !== undefined) {
-      const cb = lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb.type.kind !== "func" || cb.type.params.length > 0) {
+      const cb = callbackDeclaresParameters(cbArg)
+        ? null
+        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
+      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
         lowerer.noLowering(
           "write completion callbacks taking the error argument",
           cbArg,
@@ -3732,8 +3734,10 @@ export function lowerStreamMethodCall(
       );
     }
     if (cbArg !== undefined) {
-      const cb = lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb.type.kind !== "func" || cb.type.params.length > 0) {
+      const cb = callbackDeclaresParameters(cbArg)
+        ? null
+        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
+      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
         lowerer.noLowering(
           "end callbacks with parameters",
           cbArg,
@@ -3997,4 +4001,18 @@ export function lowerStreamProperty(
     return propCall(BOOL);
   }
   return null;
+}
+
+/** Whether an inline completion callback declares a parameter. Node calls
+ * write and end callbacks with an error argument (null on success), but the
+ * native callback receives none, so the parameter would read undefined
+ * where Node passes null or the error. A function literal with parameters
+ * would otherwise adapt to the zero-parameter slot silently. */
+function callbackDeclaresParameters(node: ts.Expression): boolean {
+  let callback = node;
+  while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
+  return (
+    (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) &&
+    callback.parameters.nodes.length > 0
+  );
 }

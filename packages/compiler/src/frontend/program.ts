@@ -68,6 +68,7 @@ import {
   isNpmStaticPackage,
   npmStaticActive,
   npmStaticFsShadow,
+  npmStaticLexerVisibleNames,
   npmStaticLiveExportTable,
   npmStaticPackageOfPath,
   reportNpmStaticOffender,
@@ -106,8 +107,10 @@ import {
 import {
   builtinDefaultImportModule,
   canonicalBuiltinModule,
+  npmBuiltinAliasOf,
   SUPPORTED_NODE_MODULES,
   unsupportedModuleFeatureOf,
+  TEMPORAL_GLOBAL,
 } from "./builtin-modules.js";
 import {
   clearWorkspacePackages,
@@ -718,6 +721,42 @@ function entryPackageProgramRoots7(
   return [...roots].sort();
 }
 
+/** TS 7's ESNext temporal declarations: a lib slice scriptc adds only for
+ * programs whose sources name the global (programNamesTemporal7). */
+const TEMPORAL_LIB = "lib.esnext.temporal.d.ts";
+
+/** True when a program source (user code or compiled npm JavaScript)
+ * contains the temporal global's name as a whole word. A cheap syntactic
+ * scan of the implementation files root discovery already materialized; a
+ * mention in a comment or string also counts, which only adds the lib
+ * slice. */
+function programNamesTemporal7(program: ts.Program): boolean {
+  for (const sf of program.getImplementationSourceFiles()) {
+    const text = sf.text;
+    for (
+      let at = text.indexOf(TEMPORAL_GLOBAL);
+      at >= 0;
+      at = text.indexOf(TEMPORAL_GLOBAL, at + 8)
+    ) {
+      if (!isIdentifierCharAt(text, at - 1) && !isIdentifierCharAt(text, at + 8)) return true;
+    }
+  }
+  return false;
+}
+
+function isIdentifierCharAt(text: string, index: number): boolean {
+  if (index < 0 || index >= text.length) return false;
+  const c = text.charCodeAt(index);
+  return (
+    (c >= 48 && c <= 57) ||
+    (c >= 65 && c <= 90) ||
+    (c >= 97 && c <= 122) ||
+    c === 36 ||
+    c === 95 ||
+    c > 127
+  );
+}
+
 /** "require" for a CommonJS edge (`require("x")`, `import x = require("x")`),
  * "import" for every ESM form — the resolution kind preflight uses. */
 function moduleSpecifierKind7(specifier: ts.StringLiteralLike): "import" | "require" {
@@ -796,6 +835,20 @@ function loadProgram7(
       programRoots.push(...extraRoots);
       program = host.createProgram([...programRoots, overridesDtsPath()], options);
       if (pass === 31) throw new Error("static program-root discovery did not converge");
+    }
+    // Node 24 ships no temporal global, but TS 7 types it in an ESNext
+    // lib slice. Programs that name it (feature probes such as smol-toml's
+    // typeof check) get that slice so they type-check, and lower to Node's
+    // answers (typeof "undefined", ReferenceError on use). Every other
+    // program keeps the identical lib set: the slice would add globals to
+    // the checker's world for everyone.
+    if (programNamesTemporal7(program)) {
+      program.dispose();
+      options = {
+        ...options,
+        lib: [...((options.lib as string[] | undefined) ?? []), TEMPORAL_LIB],
+      };
+      program = host.createProgram([...programRoots, overridesDtsPath()], options);
     }
     const entry = program.getSourceFile(entryPath);
     if (!entry) throw new Error(`could not load ${entryPath}`);
@@ -5224,6 +5277,9 @@ function preflight7(load: LoadResult): {
               continue;
             }
           }
+          // An npm package served as a builtin (graceful-fs as fs) is never
+          // a program-module edge, even when --npm-static names it.
+          if (npmBuiltinAliasOf(req.spec) !== null) continue;
           const isRelative = isRelativeSpecifier(req.spec);
           let dep = resolveImport7(program, sf, req.spec, "require");
           if (dep === null && !isRelative) {
@@ -5287,6 +5343,7 @@ function preflight7(load: LoadResult): {
         if (load.externalTypes.has(spec)) {
           continue;
         }
+        if (npmBuiltinAliasOf(spec) !== null) continue;
         const projectDep = resolveImport7(program, sf, spec, "require");
         if (projectDep !== null) {
           // A bare require of a JSON document only parses it: nothing to
@@ -5537,12 +5594,18 @@ function cjsNamedImportLinkCheck(
       npmStaticDepSf7(program, from, spec, "require");
     return dep !== null && isCjsJsFile7(dep, program) ? dep : null;
   };
+  // A bundler rewrite spells some lexer-visible names as accessors.
+  const lexWithAccessorNames = (sf: ts.SourceFile): ReturnType<typeof cjsLexedExportsOfFile> => {
+    const lexed = cjsLexedExportsOfFile(sf);
+    for (const name of npmStaticLexerVisibleNames(sf.fileName)) lexed.exports.add(name);
+    return lexed;
+  };
   const visible = (dep: ts.SourceFile, name: string): boolean =>
     // `default` is the module.exports binding itself — always provided.
     // The program already owns native source ASTs; reuse them without
     // starting another syntax session or reparsing their source text.
     name === "default" ||
-    cjsVisibleNames(dep, cjsLexedExportsOfFile, resolveCjsDep, lexMemo).has(name);
+    cjsVisibleNames(dep, lexWithAccessorNames, resolveCjsDep, lexMemo).has(name);
 
   /** The statement's resolved LOCAL CommonJS dependency, when it is an
    * import/re-export from one. */
@@ -6056,6 +6119,7 @@ export { ambientDtsPath, fallbackDtsPath, isNodeTypesPath, overridesDtsPath } fr
 export {
   builtinDefaultImportModule,
   canonicalBuiltinModule,
+  npmBuiltinAliasOf,
   SUPPORTED_BUILTIN_MODULES,
 } from "./builtin-modules.js";
 

@@ -26,3 +26,4 @@
   The `readline/promises` `Readline` class writes to the same outputs.
   `readline.emitKeypressEvents` emits `'keypress'` events on `process.stdin` or a readable stream, shared with terminal interfaces on that stream as in Node; a listener's first parameter must admit `undefined`, which it receives for escape sequences.
   Chained listener registration is unsupported.
+  `node:stream/web` exports the same `ReadableStream` class as the global; its other classes are unsupported.
