@@ -290,16 +290,19 @@ ScrStr *scr_str_concat_f64(ScrStr *a, double x);
 
 bool scr_str_eq(ScrStr *a, ScrStr *b);
 
-/* memcmp byte order == code-point order (see SEMANTICS.md: diverges from
- * JS UTF-16 code-unit order only for non-BMP vs U+E000..U+FFFF). Returns
- * <0, 0, >0. */
+/* memcmp byte order == code-point order, which differs from JS UTF-16
+ * code-unit order for non-BMP characters against U+E000..U+FFFF and for
+ * lone surrogates. Returns <0, 0, >0. Relational string operators use
+ * scr_str_cmp_u16. */
 int scr_str_cmp(ScrStr *a, ScrStr *b);
 /* a.localeCompare(b) with no locales/options: Node's root-locale order for
  * Latin-script text, code-point order outside it (scr_string.c). */
 double scr_str_locale_compare(ScrStr *a, ScrStr *b);
 
-/* ECMAScript string-list ordering: compare UTF-16 code units even though
- * ScrStr stores WTF-8. Returns <0, 0, >0. */
+/* ECMAScript string ordering: compare UTF-16 code units even though ScrStr
+ * stores WTF-8. Returns <0, 0, >0. */
 int scr_str_cmp_u16(ScrStr *a, ScrStr *b);
+/* scr_str_cmp_u16 for two distinct strings that are not proven ASCII. */
+int scr_str_cmp_u16_bytes(const ScrStr *a, const ScrStr *b);
 
 #endif /* SCR_STRING_H */

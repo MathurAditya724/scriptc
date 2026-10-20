@@ -492,7 +492,7 @@ function followOptionsArg(
     } catch {
       return node;
     }
-    const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
+    const decl = sym ? sym.valueDeclaration : undefined;
     if (!sym || !decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
       return node;
     if ((ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) === 0) return node;

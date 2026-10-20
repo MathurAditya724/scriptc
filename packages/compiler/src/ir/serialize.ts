@@ -7,11 +7,10 @@
  * text parts and decoded from bytes one function at a time; neither direction
  * materializes the complete document as a single string. */
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
-import { deriveModuleTiers } from "./tiers.js";
 
-// Version 16 removes embedded-engine types, operations, and module metadata.
-// Older modules can require runtime support that no longer exists.
-export const IR_VERSION = 16 as const;
+// Version 17 adds the dynamic tier's jsval type and js.* builtins (two-tier
+// design stage S3) and serializes each function's execution tier.
+export const IR_VERSION = 17 as const;
 
 /** IR artifacts are plain data. Scan each function once before deciding
  * whether its JSON encoding needs the complete-number-domain replacer. */
@@ -43,16 +42,7 @@ function encodeNumber(_key: string, value: unknown): unknown {
   return value;
 }
 
-/** Stage S2 of the two-tier design keeps function tiers out of IR
- * artifacts, so a report-only release changes no serialized byte; loaders
- * derive them again (deriveModuleTiers). No IR node other than a function
- * carries a `tier` key. */
-function encodeWithoutTier(key: string, value: unknown): unknown {
-  return key === "tier" ? undefined : encodeNumber(key, value);
-}
-
 function encodeFunction(fn: IrFunction): string | undefined {
-  if (fn.tier !== undefined) return JSON.stringify(fn, encodeWithoutTier);
   return ordinaryNumbers(fn) ? JSON.stringify(fn) : JSON.stringify(fn, encodeNumber);
 }
 
@@ -82,7 +72,7 @@ export function serializeModuleParts(mod: IrModule): string[] {
  * readable default. Both return one string, so modules whose encoding
  * exceeds the host's string limit must use `serializeModuleParts`. */
 export function serializeModule(mod: IrModule, compact = false): string {
-  if (!compact) return JSON.stringify(mod, encodeWithoutTier, 2);
+  if (!compact) return JSON.stringify(mod, encodeNumber, 2);
   return serializeModuleParts(mod).join("");
 }
 
@@ -108,7 +98,7 @@ function checkedVersion(mod: IrModule): IrModule {
 }
 
 export function deserializeModule(json: string): IrModule {
-  return deriveModuleTiers(checkedVersion(JSON.parse(json, decodeNumber) as IrModule));
+  return checkedVersion(JSON.parse(json, decodeNumber) as IrModule);
 }
 
 /** A node as it reads back from the compact encoding: a fresh object, as
@@ -261,5 +251,5 @@ export function deserializeModuleBytes(bytes: Buffer): IrModule {
     );
   }
   mod.functions = functions;
-  return deriveModuleTiers(mod);
+  return mod;
 }

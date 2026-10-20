@@ -1225,9 +1225,9 @@ function pureCjsExport7(program: ts.Program, stmt: ts.Statement): boolean {
   const symbol = checker.getSymbolAtLocation(value);
   return (
     symbol !== undefined &&
-    checker
-      .declarationsOf(symbol)
-      .some((decl) => ts.isFunctionDeclaration(decl) && decl.parent === stmt.parent)
+    symbol.declarations.some(
+      (decl) => ts.isFunctionDeclaration(decl) && decl.parent === stmt.parent,
+    )
   );
 }
 
@@ -1236,9 +1236,9 @@ function sourceBinding7(program: ts.Program, ident: ts.Identifier): boolean {
   const symbol = checker.getSymbolAtLocation(ident);
   return (
     symbol !== undefined &&
-    checker
-      .declarationsOf(symbol)
-      .some((decl) => !decl.getSourceFile().isDeclarationFile && !ts.isSourceFile(decl))
+    symbol.declarations.some(
+      (decl) => !decl.getSourceFile().isDeclarationFile && !ts.isSourceFile(decl),
+    )
   );
 }
 
@@ -1953,7 +1953,7 @@ function stripRequireCasts7(expr: ts.Expression): ts.Expression {
 function isCreateRequireImport7(program: ts.Program, ident: ts.Identifier): boolean {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(ident);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isImportSpecifier(decl)) return false;
   const importDecl = decl.parent?.parent?.parent;
   if (ts.isImportDeclaration(importDecl) && ts.isStringLiteral(importDecl.moduleSpecifier)) {
@@ -1963,7 +1963,7 @@ function isCreateRequireImport7(program: ts.Program, ident: ts.Identifier): bool
   }
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
     const target = checker.getAliasedSymbol(symbol);
-    const targetDecl = checker.declarationsOf(target)[0];
+    const targetDecl = target.declarations[0];
     if (targetDecl !== undefined && targetDecl.getSourceFile().isDeclarationFile) {
       for (
         let p: ts.Node | undefined = targetDecl.parent;
@@ -1988,9 +1988,7 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(callee);
   const decl = symbol
-    ? checker
-        .declarationsOf(symbol)
-        .find((d): d is ts.VariableDeclaration => ts.isVariableDeclaration(d))
+    ? symbol.declarations.find((d): d is ts.VariableDeclaration => ts.isVariableDeclaration(d))
     : undefined;
   if (
     decl === undefined ||
@@ -2054,7 +2052,7 @@ function stableCreateRequireBindingReason7(
     }
     const checker = program.getTypeChecker();
     const symbol = checker.getSymbolAtLocation(decl.name);
-    if (!symbol || checker.declarationsOf(symbol).length !== 1)
+    if (!symbol || symbol.declarations.length !== 1)
       return "its createRequire binding is redeclared";
     if ((ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Export) !== 0)
       return "its createRequire result escapes through an exported binding";
@@ -2204,7 +2202,7 @@ function requireCallBindingKind7(program: ts.Program, node: ts.Node): RequireCal
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(call.expression);
   if (symbol === undefined) return "ambient";
-  const decls = checker.declarationsOf(symbol);
+  const decls = symbol.declarations;
   if (decls.every((d) => d.getSourceFile().isDeclarationFile)) return "ambient";
   return isCreateRequireBinding7(program, call.expression) ? "createRequire" : "source";
 }
@@ -2359,7 +2357,7 @@ function selfImportTdzFences7(
   // The aliased declaration's TDZ horizon: the position after which reads
   // are initialized. Hoisted functions have none.
   const tdzEndOf = (aliased: ts.Symbol): number | null => {
-    const d = checker.valueDeclarationOf(aliased) ?? checker.declarationsOf(aliased)[0];
+    const d = aliased.valueDeclaration ?? aliased.declarations[0];
     if (d === undefined || d.getSourceFile() !== sf) return null;
     if (ts.isFunctionDeclaration(d)) return null;
     return d.getEnd();
@@ -2616,7 +2614,7 @@ function topLevelInertness7(program: ts.Program): (stmt: ts.Statement) => ts.Nod
     let sym = checker.getSymbolAtLocation(root);
     if (sym === undefined) return false;
     if (sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
-    const decls = checker.declarationsOf(sym);
+    const decls = sym.declarations;
     return decls.length > 0 && decls.every((d) => d.getSourceFile().isDeclarationFile);
   };
   const hasDecorator = (n: ts.Node): boolean =>
@@ -3840,7 +3838,7 @@ function returnsOnlyClosuresOver7(
   if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
     symbol = checker.getAliasedSymbol(symbol);
   }
-  const decls = symbol === undefined ? [] : checker.declarationsOf(symbol);
+  const decls = symbol === undefined ? [] : symbol.declarations;
   if (decls.length !== 1) return false;
   const decl = decls[0]!;
   if (decl.getSourceFile().isDeclarationFile) return false;
@@ -3963,7 +3961,7 @@ function laterJobCallee7(checker: ts.TypeChecker, callee: ts.Expression): boolea
     symbol = checker.getAliasedSymbol(symbol);
   }
   if (symbol === undefined) return false;
-  const decls = checker.declarationsOf(symbol);
+  const decls = symbol.declarations;
   if (decls.length === 0 || !decls.every((d) => d.getSourceFile().isDeclarationFile)) return false;
   if (LATER_JOB_BUILTINS7.has(name.text)) return true;
   // The JavaScript standard library's callbacks mostly run synchronously;
@@ -4081,6 +4079,12 @@ function resolveNpmImport7(
   if (isRelativeSpecifier(specifier) || specifier.startsWith("node:")) {
     return null;
   }
+  // Node resolves a bare core-module name (`string_decoder`, `events`,
+  // `fs/promises`) to the builtin before it looks in node_modules, so an
+  // installed npm package of the same name never answers it. Prefix-only
+  // builtins (`node:test`) are listed with their prefix, so a bare `test`
+  // still names the package.
+  if (nodeBuiltinNames.has(specifier)) return null;
   // --provenance-sources: a registered specifier is NOT an npm import —
   // its attested source compiles as program modules (resolveProjectModule
 
@@ -5582,18 +5586,16 @@ function analyzeEsmNamedImportLinks(
       if (
         name === "default" &&
         hasNodeTsDefaultInterfacePlaceholder7(dep) &&
-        checker
-          .declarationsOf(resolved)
-          .some(
-            (declaration) =>
-              ts.isInterfaceDeclaration(declaration) &&
-              ts
-                .getModifiers(declaration)
-                ?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) === true &&
-              ts
-                .getModifiers(declaration)
-                ?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true,
-          )
+        resolved.declarations.some(
+          (declaration) =>
+            ts.isInterfaceDeclaration(declaration) &&
+            ts
+              .getModifiers(declaration)
+              ?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) === true &&
+            ts
+              .getModifiers(declaration)
+              ?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true,
+        )
       ) {
         return resolved;
       }
