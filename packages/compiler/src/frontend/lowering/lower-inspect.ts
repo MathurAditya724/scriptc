@@ -1,4 +1,12 @@
-import { dynUndefinedExpr, boolLit, helperLoc, numLit, strLit, varRef } from "../../ir/build.js";
+import {
+  dynUndefinedExpr,
+  boolLit,
+  helperLoc,
+  nodeThrowExpr,
+  numLit,
+  strLit,
+  varRef,
+} from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import * as ts from "../ts7/adapter.js";
@@ -126,6 +134,334 @@ function errorRenderable(info: ClassInfo): boolean {
   return info.subclasses.every((s) => errorRenderable(s));
 }
 
+/** Error keys Node's error inspector folds into the base or hides. */
+const ERROR_SPECIAL_KEYS = new Set(["name", "message", "stack", "cause", "errors"]);
+
+/** The declared own (enumerable) fields of a user error class, in layout
+ * order (the base chain first). */
+function ownErrorFields(info: ClassInfo): { name: string; type: IrType }[] {
+  // The builtin bases' layout fields (name, message) are runtime slots the
+  // error base already renders, not own enumerable properties.
+  const builtin = new Set<string>();
+  for (let c = info.base; c; c = c.base) {
+    if (c.builtinError || c.def.runtime) for (const f of c.def.fields) builtin.add(f.name);
+  }
+  return info.def.fields.filter(
+    (f) => isClassOwnEnumerableFieldName(f.name) && !builtin.has(f.name),
+  );
+}
+
+/** `info` and its descendants that declare fields, most-derived first (a
+ * runtime instance tests against its own class before an ancestor's). */
+function fieldedErrorClasses(info: ClassInfo): ClassInfo[] {
+  const out: ClassInfo[] = [];
+  const visit = (c: ClassInfo): void => {
+    for (const s of c.subclasses) visit(s);
+    if (!c.builtinError && !c.def.runtime && ownErrorFields(c).length > 0) out.push(c);
+  };
+  visit(info);
+  return out;
+}
+
+/** Why a fielded error class's own properties have no static rendering,
+ * or null when every field renders. `visiting` and `out` are the caller's
+ * inspectSupport walk: a field typed as the class itself (`next?: Chain`)
+ * is a recursive shape, not a new walk. */
+function fieldedErrorReason(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  visiting: Set<string> = new Set(),
+  out: { recursive: boolean } = { recursive: false },
+): string | null {
+  const key = `error:${info.def.name}`;
+  if (visiting.has(key)) {
+    out.recursive = true;
+    return null;
+  }
+  visiting.add(key);
+  try {
+    for (const f of ownErrorFields(info)) {
+      if (ERROR_SPECIAL_KEYS.has(f.name))
+        return `its field '${f.name}' is one Node's error inspector treats specially`;
+      const why = inspectSupport(lowerer, f.type, visiting, out);
+      if (why !== null) return `its field '${f.name}': ${why}`;
+    }
+    return null;
+  } finally {
+    visiting.delete(key);
+  }
+}
+
+/** True when an instance of `c` can contain itself: its fields reach `c`
+ * or one of its bases, whose slots can hold a `c` (`next: Chain` in a
+ * subclass of Chain, a field typed as Error). */
+function errorInstanceReachesItself(lowerer: Lowerer, c: ClassInfo): boolean {
+  const holders = new Set<string>();
+  for (let a: ClassInfo | null = c; a; a = a.base) holders.add(a.def.name);
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    for (const x of typeConstituents(lowerer, u)) {
+      if (x.kind === "object" && holders.has(x.className)) return true;
+      const k = typeKey(x);
+      if (!seen.has(k)) {
+        seen.add(k);
+        if (walk(x)) return true;
+      }
+    }
+    return false;
+  };
+  return walk({ kind: "object", className: c.def.name });
+}
+
+/** An error value whose runtime class may declare fields
+ * (`class Bailable extends Error { bail = false }`): Node prints the error
+ * base (`[Bailable [Error]: m]`, the stackless form compiled errors use)
+ * followed by the own properties, `[Bailable [Error]: m] { bail: true }`,
+ * with the usual single-line/multi-line choice counting the base. Each
+ * fielded class (most-derived first) is an instanceof arm; other values
+ * keep the runtime's error rendering. Beyond the depth budget a fielded
+ * instance prints `[Name]`, as Node does for any object with keys. */
+function fieldedErrorInspectHelper(
+  lowerer: Lowerer,
+  t: IrType & { kind: "object" },
+  info: ClassInfo,
+  loc: SrcLoc,
+): string {
+  const key = `insp.fieldedError:${typeKey(t)}`;
+  const existing = lowerer.inspectHelpers.get(key);
+  if (existing) return existing;
+  const name = `%util.insp.${lowerer.inspectHelpers.size}`;
+  lowerer.inspectHelpers.set(key, name);
+  const v = (): IrExpr => varRef("v.0", t, loc);
+  const r = (): IrExpr => varRef("r.0", F64, loc);
+  const d = (): IrExpr => varRef("d.0", F64, loc);
+  const rPlus1 = (): IrExpr => ({
+    kind: "bin",
+    op: "+",
+    left: r(),
+    right: numLit(1, loc),
+    type: F64,
+    loc,
+  });
+  const base = (): IrExpr => ({
+    kind: "libCall",
+    fn: "insp.error",
+    args: [v(), r(), d()],
+    type: STRING,
+    loc,
+  });
+  const body: IrStmt[] = [];
+  for (const c of userErrorClasses(info)) {
+    const cls: IrType & { kind: "object" } = { kind: "object", className: c.def.name };
+    const display = c.def.jsName ?? c.decl?.name?.text ?? c.def.name.replace(/^%/, "");
+    if (ownErrorFields(c).length === 0) {
+      // A field-less program class: the header rule alone.
+      const header: IrStmt = {
+        kind: "return",
+        value: improvedErrorBase(lowerer, v(), base(), display, loc),
+        loc,
+      };
+      if (c.def.name === t.className) {
+        body.push(header);
+        break;
+      }
+      body.push({
+        kind: "if",
+        cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
+        then: [header],
+        else_: null,
+        loc,
+      });
+      continue;
+    }
+    const why = fieldedErrorReason(lowerer, c);
+    if (why !== null) {
+      // An instance of a subclass whose own properties have no rendering
+      // throws a named refusal instead of printing a partial object.
+      body.push({
+        kind: "if",
+        cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
+        then: [
+          {
+            kind: "return",
+            value: nodeThrowExpr(
+              0,
+              "SC2020",
+              `inspecting a '${display}' error (${why}) is not supported yet`,
+              STRING,
+              loc,
+            ),
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      });
+      continue;
+    }
+    const instance: IrExpr =
+      c.def.name === t.className ? v() : { kind: "downcast", value: v(), type: cls, loc };
+    // A class whose fields can hold the instance itself (`next: Chain`)
+    // runs Node's circular machinery, as other cycle-capable objects do:
+    // an instance already on the traversal stack renders [Circular *N],
+    // before the depth answer, and the frame's text gets the <ref *N>
+    // prefix when the walk found it circular.
+    const onCycle = errorInstanceReachesItself(lowerer, c);
+    const circular = (): IrExpr => varRef("cc.0", F64, loc);
+    const arm: IrStmt[] = [
+      ...(onCycle
+        ? ([
+            {
+              kind: "varDecl",
+              localId: "cc.0",
+              init: { kind: "libCall", fn: "insp.circCheck", args: [v()], type: F64, loc },
+              loc,
+            },
+            {
+              kind: "if",
+              cond: {
+                kind: "bin",
+                op: ">",
+                left: circular(),
+                right: numLit(0, loc),
+                type: BOOL,
+                loc,
+              },
+              then: [
+                {
+                  kind: "return",
+                  value: {
+                    kind: "libCall",
+                    fn: "insp.circular",
+                    args: [circular()],
+                    type: STRING,
+                    loc,
+                  },
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            },
+          ] satisfies IrStmt[])
+        : []),
+      {
+        kind: "if",
+        cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
+        then: [{ kind: "return", value: strLit(`[${display}]`, loc), loc }],
+        else_: null,
+        loc,
+      },
+      {
+        kind: "varDecl",
+        localId: "base.0",
+        init: improvedErrorBase(lowerer, v(), base(), display, loc),
+        loc,
+      },
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "insp.begin", args: [rPlus1()], type: VOID, loc },
+        loc,
+      },
+      ...(onCycle
+        ? ([
+            {
+              kind: "exprStmt",
+              expr: { kind: "libCall", fn: "insp.seenPush", args: [v()], type: VOID, loc },
+              loc,
+            },
+          ] satisfies IrStmt[])
+        : []),
+    ];
+    for (const f of ownErrorFields(c)) {
+      const read: IrExpr = {
+        kind: "fieldGet",
+        obj: instance,
+        className: c.def.name,
+        field: f.name,
+        type: f.type,
+        loc,
+      };
+      arm.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "insp.entry",
+          args: [
+            concatAll(
+              [
+                strLit(`${inspectKey(f.name)}: `, loc),
+                inspectExpr(lowerer, f.type, read, rPlus1(), d(), loc),
+              ],
+              loc,
+            ),
+            boolLit(false, loc),
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+    }
+    const ended: IrExpr = {
+      kind: "libCall",
+      fn: "insp.end",
+      args: [
+        varRef("base.0", STRING, loc),
+        strLit("{", loc),
+        strLit("}", loc),
+        rPlus1(),
+        boolLit(false, loc),
+        boolLit(false, loc),
+      ],
+      type: STRING,
+      loc,
+    };
+    arm.push({
+      kind: "return",
+      value: onCycle
+        ? { kind: "libCall", fn: "insp.refWrap", args: [v(), ended], type: STRING, loc }
+        : ended,
+      loc,
+    });
+    body.push(
+      c.def.name === t.className
+        ? { kind: "block", body: arm, loc }
+        : {
+            kind: "if",
+            cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
+            then: arm,
+            else_: null,
+            loc,
+          },
+    );
+    if (c.def.name === t.className) break;
+  }
+  if (body.at(-1)?.kind !== "return" && body.at(-1)?.kind !== "block")
+    body.push({ kind: "return", value: base(), loc });
+  lowerer.liftedFns.push({
+    name,
+    params: [
+      { localId: "v.0", name: "v", type: t },
+      { localId: "r.0", name: "r", type: F64 },
+      { localId: "d.0", name: "d", type: F64 },
+    ],
+    returnType: STRING,
+    locals: [
+      { id: "v.0", name: "v", type: t, mutable: false },
+      { id: "r.0", name: "r", type: F64, mutable: false },
+      { id: "d.0", name: "d", type: F64, mutable: false },
+      { id: "base.0", name: "base", type: STRING, mutable: false },
+      { id: "cc.0", name: "cc", type: F64, mutable: false },
+      { id: "name.0", name: "name", type: STRING, mutable: true },
+      { id: "raw.0", name: "raw", type: STRING, mutable: true },
+    ],
+    body,
+    loc,
+  });
+  return name;
+}
+
 /** The program-declared classes among `info` and its descendants, most
  * derived first (an instance tests against its own class before an
  * ancestor's). Runtime-provided error classes are not among them. */
@@ -208,7 +544,7 @@ function userErrorInspectHelper(
 
 /** Node's improveStack over the stackless base (`[Error: m]`): when the
  * instance's constructor name differs from its `name` and the name ends in
- * "Error", the header names both — `[Plain [Error]: m]`, or
+ * "Error", the header names both — `[Bailable [Error]: m]`, or
  * `[FetchError: m]` when the constructor name already contains it. */
 function improvedErrorBase(
   lowerer: Lowerer,
@@ -222,7 +558,14 @@ function improvedErrorBase(
     receiver: IrExpr,
     args: IrExpr[],
     type: IrType,
-  ): IrExpr => ({ kind: "strIntrinsic", method, receiver, args, type, loc });
+  ): IrExpr => ({
+    kind: "strIntrinsic",
+    method,
+    receiver,
+    args,
+    type,
+    loc,
+  });
   const and = (left: IrExpr, right: IrExpr): IrExpr => ({
     kind: "logical",
     op: "&&",
@@ -401,9 +744,16 @@ function inspectSupport(
       // for those classes (the runtime's capsule view).
       if (eventTargetRootOf(info) !== null) return null;
       if (isErrorClass(lowerer, t.className)) {
-        return errorRenderable(info)
-          ? null
-          : "error subclasses with declared fields have no inspect lowering yet (the extra own properties are runtime-dynamic)";
+        if (errorRenderable(info)) return null;
+        // Subclasses with declared fields render the error base followed
+        // by their own properties. The static class's own fields must
+        // render; a subclass whose fields cannot is a runtime refusal on
+        // its own instances only (see fieldedErrorInspectHelper).
+        const own = fieldedErrorClasses(info).find((c) => c === info);
+        const ownWhy = own ? fieldedErrorReason(lowerer, own, visiting, out) : null;
+        if (ownWhy !== null)
+          return `'${t.className.replace(/^%(m\d+\.)?/, "")}' error values (${ownWhy})`;
+        return null;
       }
       // A class with subclasses, or a JavaScript class, renders through its
       // checked-dynamic view, which names the instance's own class and holds
@@ -553,6 +903,15 @@ export function inspectExpr(
       }
       if (isErrorClass(lowerer, t.className)) {
         const info = lowerer.classes.get(t.className);
+        if (info && !errorRenderable(info)) {
+          return {
+            kind: "call",
+            callee: fieldedErrorInspectHelper(lowerer, t, info, loc),
+            args: [value, recurse, depth],
+            type: STRING,
+            loc,
+          };
+        }
         if (info && userErrorClasses(info).length > 0) {
           return {
             kind: "call",
