@@ -204,10 +204,10 @@ ScrDyn *scr_dyn_builtin_stream_object(ScrStream *s) {
 }
 
 /* A stream as a listener argument: its constructor-function object, or a
- * live view of another runtime stream. +1. */
+ * live view of another runtime stream whose pipe and unpipe take those
+ * objects (scr_dyn_builtin_stream_view). +1. */
 static ScrDyn *bcs_stream_value(ScrStream *s) {
-  ScrDyn *object = scr_dyn_builtin_stream_object(s);
-  return object ? object : scr_stream_dyn_view(s);
+  return scr_dyn_builtin_stream_view(s);
 }
 
 /* The receiver's stream for a prototype method, borrowed; throws Node's
@@ -398,12 +398,35 @@ static void bcs_plain_call(ScrClosure *cb, ScrStream *s, const char *method, int
   scr_dyn_release(object);
 }
 
+static bool bcs_is_function(ScrDyn *object, const char *name, bool *failed);
+
+/* prefinish reads `stream._final` when the writable side finishes, so a
+ * method assigned after the constructor runs; without one the finish goes
+ * on as Node's does when `typeof stream._final !== 'function'`. */
 static void bcs_final_inv(ScrClosure *cb, ScrStream *s) {
-  bcs_plain_call(cb, s, "_final", BCS_DONE_FINAL);
+  ScrDyn *object = scr_box_get_ref(cb->caps[0]);
+  bool failed = false;
+  bool present = bcs_is_function(object, "_final", &failed);
+  scr_dyn_release(object);
+  if (failed) return;
+  if (present) bcs_plain_call(cb, s, "_final", BCS_DONE_FINAL);
+  else scr_stream_final_done(s, NULL);
 }
 
+/* Transform's final reads `this._flush` the same way: without one it ends
+ * the readable side. */
 static void bcs_flush_inv(ScrClosure *cb, ScrStream *s) {
-  bcs_plain_call(cb, s, "_flush", BCS_DONE_FLUSH);
+  ScrDyn *object = scr_box_get_ref(cb->caps[0]);
+  bool failed = false;
+  bool present = bcs_is_function(object, "_flush", &failed);
+  if (!failed && bcs_is_function(object, "_final", &failed)) {
+    bcs_unsupported("_final on a constructor-function Transform is not supported yet");
+    failed = true;
+  }
+  scr_dyn_release(object);
+  if (failed) return;
+  if (present) bcs_plain_call(cb, s, "_flush", BCS_DONE_FLUSH);
+  else scr_stream_flush_done(s, NULL, NULL, NULL);
 }
 
 static ScrDyn *bcs_default_method(int kind, const char *name);
@@ -897,23 +920,14 @@ static ScrDyn *bcs_construct(int kind, ScrDyn *self, ScrDyn *const *args, size_t
     scr_stream_set_read(s, bcs_hook(self, (void *)bcs_read_inv), bcs_read_inv);
   if (kind == BCS_WRITABLE || kind == BCS_DUPLEX) {
     scr_stream_set_write(s, bcs_hook(self, (void *)bcs_write_inv), bcs_write_inv);
-    if (bcs_is_function(self, "_final", &failed)) scr_stream_set_final(s, bcs_hook(self, (void *)bcs_final_inv), bcs_final_inv);
-    else scr_stream_set_final(s, NULL, NULL);
+    /* _final is read when the writable side finishes (bcs_final_inv). */
+    scr_stream_set_final(s, bcs_hook(self, (void *)bcs_final_inv), bcs_final_inv);
   }
   if (kind == BCS_TRANSFORM || kind == BCS_PASSTHROUGH) {
-    bool identity = false;
-    if (kind == BCS_PASSTHROUGH) {
-      ScrDyn *own = bcs_get(self, "_transform");
-      ScrDyn *fallback = bcs_default_method(BCS_PASSTHROUGH, "_transform");
-      identity = own && fallback && scr_dyn_strict_eq(own, fallback);
-      if (own) scr_dyn_release(own);
-      else failed = true;
-      if (fallback) scr_dyn_release(fallback);
-    }
-    if (identity) scr_stream_set_transform(s, NULL, NULL);
-    else scr_stream_set_transform(s, bcs_hook(self, (void *)bcs_transform_inv), bcs_transform_inv);
-    if (bcs_is_function(self, "_flush", &failed)) scr_stream_set_flush(s, bcs_hook(self, (void *)bcs_flush_inv), bcs_flush_inv);
-    else scr_stream_set_flush(s, NULL, NULL);
+    /* _transform is read per chunk (a PassThrough's default passes the
+     * chunk on) and _flush when the writable side finishes. */
+    scr_stream_set_transform(s, bcs_hook(self, (void *)bcs_transform_inv), bcs_transform_inv);
+    scr_stream_set_flush(s, bcs_hook(self, (void *)bcs_flush_inv), bcs_flush_inv);
     if (!failed && bcs_is_function(self, "_final", &failed)) {
       bcs_unsupported("_final on a constructor-function Transform is not supported yet");
       failed = true;
