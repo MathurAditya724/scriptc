@@ -1014,7 +1014,8 @@ function publicSnapshot(snapshot) {
 
 function checkLocal() {
   for (const path of retiredOutputPaths) {
-    if (existsSync(path)) throw new Error(`${path.slice(root.length)} is no longer generated; delete it`);
+    if (existsSync(path))
+      throw new Error(`${path.slice(root.length)} is no longer generated; delete it`);
   }
   const snapshot = JSON.parse(readFileSync(internalOutputPath, "utf8"));
   if (snapshot.nodeVersion !== pin.version || snapshot.nodeCommit !== pin.commit) {
