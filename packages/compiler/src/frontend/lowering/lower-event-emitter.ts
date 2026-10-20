@@ -73,6 +73,7 @@ import { boolLit, strLit, varRef } from "../../ir/build.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerAddAbortListener } from "./builtin-calls.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
+import { nodeStreamInterfaceSide } from "./dyn-streams.js";
 
 /** True when the class descends from (or is) the runtime emitter. */
 export function emitterRooted(lowerer: Lowerer, info: ClassInfo | undefined | null): boolean {
@@ -2257,7 +2258,28 @@ export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: 
   // Node's Promise<any[]>: the arguments array of checked-dynamic values.
   const arrayT = arrayOf(DYN);
   const resultT: IrType = { kind: "promise", inner: arrayT };
-  const receiver = lowerer.lowerExpr(args[0]!);
+  let receiver = lowerer.lowerExpr(args[0]!);
+  // A checked-dynamic NodeJS stream slot (dyn-streams.ts): a native stream
+  // unboxes by identity; any other value throws the not-supported Error.
+  if (
+    receiver.type.kind === "dyn" &&
+    lowerer.dynNodeStreams &&
+    nodeStreamInterfaceSide(lowerer, lowerer.typeOf(args[0]!)) !== null
+  ) {
+    receiver = {
+      kind: "libCall",
+      fn: "stream.unboxDyn",
+      args: [
+        receiver,
+        strLit(
+          "events.once over stream objects other than native streams is not supported yet",
+          loc,
+        ),
+      ],
+      type: { kind: "object", className: "%Duplex" },
+      loc,
+    };
+  }
   const info =
     receiver.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : undefined;
   if (!emitterRooted(lowerer, info)) {
