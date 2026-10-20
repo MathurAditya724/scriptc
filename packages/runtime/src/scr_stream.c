@@ -6627,10 +6627,20 @@ ScrStream *scr_crypto_hash_stream_piped(ScrCryptoHash *hash) {
  * and reference only global symbols and no new constant data, so programs
  * that never convert link the same bytes as before. */
 
+/* destroy() on a bridged child stdin closes the pipe, as Node's does. */
+static void scr_stream_child_stdin_destroy(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  ScrChildWriter *writer = scr_box_get_ref(cb->caps[0]);
+  scr_child_writer_destroy(writer);
+  scr_child_writer_release(writer);
+  scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
+}
+
 /* A child stdio read (the child.stdioStream libCall): the bridged stream
  * the checked-dynamic ChildProcess view answers for the same key ("stdin",
  * "stdout" or "stderr", passed by the compiled program), so both views
- * share one stream per slot. +1, or NULL for an unpiped slot or a throw. */
+ * share one stream per slot. The stdin stream (the only five-byte key)
+ * gains the destroy hook that closes the pipe. +1, or NULL for an unpiped
+ * slot or a throw. */
 ScrStream *scr_stream_child_stdio(void *child, const char *key, size_t key_len) {
   ScrDyn *handle = scr_dyn_new_handle(child, SCR_DYNH_CHILD);
   ScrDyn *box = scr_dyn_handle_ops_of(handle)->get(child, key, key_len);
@@ -6638,6 +6648,16 @@ ScrStream *scr_stream_child_stdio(void *child, const char *key, size_t key_len) 
   if (box == NULL) return NULL;
   ScrStream *stream = box->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_unbox(box) : NULL;
   scr_dyn_release(box);
+  if (stream != NULL && key_len == 5 && stream->st->destroy_cb == NULL) {
+    ScrChildWriter *writer = scr_child_stdin(child);
+    if (writer != NULL) {
+      ScrClosure *destroy = scr_closure_new((void *)scr_stream_child_stdin_destroy, 1);
+      destroy->caps[0] = scr_box_new_obj(scr_child_writer_retain_v, scr_child_writer_release_v, NULL);
+      scr_box_set_ref(destroy->caps[0], writer);
+      stream->st->destroy_cb = destroy;
+      stream->st->destroy_inv = scr_stream_child_stdin_destroy;
+    }
+  }
   return stream;
 }
 

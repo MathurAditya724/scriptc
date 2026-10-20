@@ -551,26 +551,22 @@ test("node-types: promisified dns lookups settle with the lookup objects", async
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
-test("node-types: unsupported child stdin forms remain named fences", async () => {
-  const dir = outDirFor("node-child-stdin-fences");
-  const entry = join(nodeTypesDir, "child-stdin-fences.ts");
+test("node-types: child stdin forms beyond write(string) compile through the general stream representation", async () => {
+  const dir = outDirFor("node-child-stdin-streams");
+  const entry = join(nodeTypesDir, "child-stdin-streams.ts");
   const result = await compile(entry, {
-    outPath: join(dir, "child-stdin-fences"),
+    outPath: join(dir, "child-stdin-streams"),
     outDir: dir,
     sanitize,
   });
-  expect(result.ok).toBe(false);
-  if (result.ok) return;
-  expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-    "SC2020",
-    "SC2020",
-    "SC2020",
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
   ]);
-  expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
-    expect.stringContaining("child stdin write with 2 arguments"),
-    expect.stringContaining("Writable.end"),
-    expect.stringContaining("Writable.destroy"),
-  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
 test("node-types: callback exec uses the typed ExecException overloads", async () => {

@@ -93,13 +93,11 @@ declare namespace NodeJS {
     on(event: "data", listener: (chunk: Buffer) => void): void;
     on(event: "data", listener: (chunk: string) => void): void;
     on(event: "end", listener: () => void): void;
-    on(event: "close", listener: () => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
+    on(event: string, listener: (...args: any[]) => void): void;
     once(event: "data", listener: (chunk: Buffer) => void): void;
     once(event: "data", listener: (chunk: string) => void): void;
     once(event: "end", listener: () => void): void;
-    once(event: "close", listener: () => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
+    once(event: string, listener: (...args: any[]) => void): void;
     /* setEncoding('utf8') makes subsequent data chunks strings, including
      * multibyte sequences split across native pipe reads. */
     setEncoding(encoding: string): this;
@@ -126,10 +124,9 @@ declare namespace NodeJS {
     end(callback?: () => void): void;
     end(data: string | Uint8Array, callback?: () => void): void;
     end(data: string | Uint8Array, encoding: BufferEncoding, callback?: () => void): void;
-    on(event: "drain" | "finish" | "close", listener: () => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
-    once(event: "drain" | "finish" | "close", listener: () => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
+    /* Node's EventEmitter signature: listeners take untyped arguments. */
+    on(event: string, listener: (...args: any[]) => void): void;
+    once(event: string, listener: (...args: any[]) => void): void;
   }
 }
 
@@ -3092,10 +3089,12 @@ declare module "child_process" {
     write(chunk: string | Uint8Array): boolean;
     end(): void;
     destroy(): void;
-    on(event: "drain" | "finish" | "close", listener: () => void): void;
+    on(event: "drain" | "finish", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
-    once(event: "drain" | "finish" | "close", listener: () => void): void;
+    on(event: string, listener: (...args: any[]) => void): void;
+    once(event: "drain" | "finish", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(event: string, listener: (...args: any[]) => void): void;
   }
 
   export interface ChildProcess extends Disposable {
