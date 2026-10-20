@@ -137,6 +137,9 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     constructorClass(fn.name) === null &&
     emitter.finalFields.size > 0;
   emitter.byteWindowsEnabled = emitter.countedLoopsEnabled;
+  emitter.bytesLoopVersionsEnabled = emitter.countedLoopsEnabled;
+  emitter.bytesLoopEntries = null;
+  emitter.bytesLoopFunction = fn;
   emitter.denseLoopsEnabled = emitter.countedLoopsEnabled;
   emitter.denseLoop = null;
   emitter.denseLoopEntries =
@@ -399,6 +402,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     for (const local of emitter.currentLocals.values())
       if (local.boxed || emitter.captureIds.has(local.id)) slots.add(`%${mangleLocal(local.id)}`);
     B.volatileSlots = slots;
+    // Without optimization a versioned copy only adds code.
+    emitter.bytesLoopVersionsEnabled = false;
   }
   // Captured bindings come in through the environment — borrowed for the
   // whole call (the closure owns them): bound here, never released here.

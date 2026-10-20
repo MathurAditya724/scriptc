@@ -23,7 +23,7 @@ function bagOnlyProperty(owner: ClassInfo, name: string): boolean {
   return !owner.fields.has(name) && owner.subclasses.every((child) => bagOnlyProperty(child, name));
 }
 
-function runtimeRooted(info: ClassInfo): boolean {
+export function runtimeRooted(info: ClassInfo): boolean {
   for (let current: ClassInfo | null = info; current; current = current.base) {
     if (
       current.def.runtime ||

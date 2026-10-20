@@ -17,6 +17,7 @@ import {
   type IrExpr,
   type IrLibFn,
   type IrStmt,
+  type IrType,
   STRING,
   type SrcLoc,
   UNDEFINED_T,
@@ -29,6 +30,144 @@ import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
 import { canonicalBuiltinModule } from "../../builtin-modules.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
+
+/** Whether the process has an IPC channel, Node's test for defining
+ * process.send and process.disconnect: a channel this fork child opened
+ * (programs with fork targets only), or a non-empty NODE_CHANNEL_FD from a
+ * Node.js parent, the variable Node itself tests at startup. Built from the
+ * existing environment read, so the presence test links no runtime code. */
+export function processHasIpc(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const envT = lowerer.envValueType();
+  const unionId = (envT as IrType & { kind: "union" }).unionId;
+  const stringTag = lowerer.armTag(unionId, STRING);
+  const value = lowerer.declareHiddenLocal("%channelFd", envT);
+  const fromNode: IrExpr = {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: value.id,
+        init: {
+          kind: "libCall",
+          fn: "process.envGet",
+          args: [strLit("NODE_CHANNEL_FD", loc)],
+          type: envT,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: {
+      kind: "logical",
+      op: "&&",
+      left: {
+        kind: "unionIsTag",
+        unionId,
+        tag: stringTag,
+        negated: false,
+        value: varRef(value.id, envT, loc),
+        type: BOOL,
+        loc,
+      },
+      right: {
+        kind: "toBool",
+        operand: {
+          kind: "unionNarrow",
+          unionId,
+          tag: stringTag,
+          value: varRef(value.id, envT, loc),
+          type: STRING,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  };
+  if (lowerer.forkTargets.length === 0) return fromNode;
+  return {
+    kind: "logical",
+    op: "||",
+    left: { kind: "libCall", fn: "process.ipcOpen", args: [], type: BOOL, loc },
+    right: fromNode,
+    type: BOOL,
+    loc,
+  };
+}
+
+/** True when the value of `node` is consumed only by ToBoolean: a
+ * condition, the operand of `!`, `Boolean(node)`, or an operand of `&&` /
+ * `||` whose own value is consumed that way (or discarded, for the left
+ * operand). */
+export function isTruthinessOnlyRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  let child: ts.Node = node;
+  let parent = node.parent;
+  while (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+    child = parent;
+    parent = parent.parent;
+  }
+  if (parent === undefined) return false;
+  if (ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent))
+    return parent.expression === child;
+  if (ts.isForStatement(parent)) return parent.condition === child;
+  if (ts.isConditionalExpression(parent)) return parent.condition === child;
+  if (ts.isPrefixUnaryExpression(parent)) return parent.operator === ts.SyntaxKind.ExclamationToken;
+  if (ts.isCallExpression(parent)) {
+    return (
+      !parent.questionDotToken &&
+      parent.arguments.nodes.length === 1 &&
+      parent.arguments.nodes[0] === child &&
+      lowerer.isStdlibGlobal(parent.expression, "Boolean")
+    );
+  }
+  if (ts.isBinaryExpression(parent)) {
+    const op = parent.operatorToken.kind;
+    if (op !== ts.SyntaxKind.AmpersandAmpersandToken && op !== ts.SyntaxKind.BarBarToken)
+      return false;
+    if (isTruthinessOnlyRead(lowerer, parent)) return true;
+    let outer: ts.Node | undefined = parent.parent;
+    while (outer !== undefined && ts.isParenthesizedExpression(outer)) outer = outer.parent;
+    return parent.left === child && outer !== undefined && ts.isExpressionStatement(outer);
+  }
+  return false;
+}
+
+/** Whether a program source reads process.exitCode. Such a program
+ * records its exit-code assignments (process.setExitCodeTracked), so a
+ * read can tell an unset code from 0; other programs keep the untracked
+ * write. Computed once per lowering pass. */
+export function programReadsExitCode(lowerer: Lowerer): boolean {
+  if (lowerer.readsExitCode !== null) return lowerer.readsExitCode;
+  let found = false;
+  const walk = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      node.name.text === "exitCode" &&
+      !(
+        ts.isBinaryExpression(node.parent) &&
+        node.parent.left === node &&
+        node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) &&
+      lowerer.stdlibGlobalMember(node, "process") === "exitCode"
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, walk);
+  };
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    walk(sf);
+    if (found) break;
+  }
+  lowerer.readsExitCode = found;
+  return found;
+}
 
 /** The pinned Node release the runtime reports as process.versions.node
  * (packages/runtime/src/scr_lib.c SCR_NODE_COMPAT_VERSION, kept equal to
@@ -374,8 +513,44 @@ export function lowerProcessProperty(
   const member = lowerer.stdlibGlobalMember(expr, "process");
   if (member === null) return null;
   const loc = locOf(expr);
+  // `if (process.send)`: Node defines process.send and process.disconnect
+  // only when the process has an IPC channel. A read whose value only
+  // feeds a truthiness test answers that presence; other value uses keep
+  // the member fence.
+  if (
+    (member === "send" || member === "disconnect") &&
+    !expr.questionDotToken &&
+    isTruthinessOnlyRead(lowerer, expr)
+  ) {
+    return processHasIpc(lowerer, loc);
+  }
   if (member === "versions") {
     return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
+  }
+  // process.exitCode: undefined until something assigns it, then the
+  // assigned code. A read the checker narrowed to number follows an
+  // assignment, so the code is set.
+  if (member === "exitCode" && !expr.questionDotToken) {
+    const current: IrExpr = {
+      kind: "libCall",
+      fn: "process.currentExitCode",
+      args: [],
+      type: F64,
+      loc,
+    };
+    if (lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind === "f64") return current;
+    const type: IrType = { kind: "union", unionId: lowerer.unions.intern([F64, UNDEFINED_T]) };
+    return {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "process.hasExitCode", args: [], type: BOOL, loc },
+      then: lowerer.coerceToExpected(current, type),
+      else_: lowerer.coerceToExpected(
+        { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type,
+      ),
+      type,
+      loc,
+    };
   }
   // process.features as a value (`"sea" in process.features`): an object
   // holding none of the flags, consistent with the member reads above.
@@ -1575,10 +1750,36 @@ export function lowerProcessMethodCall(
   }
   if (member === "exit") {
     const arg = call.arguments.nodes[0];
-    const code: IrExpr =
+    let code: IrExpr =
       arg !== undefined
         ? lowerer.lowerExprExpecting(arg, F64)
         : { kind: "libCall", fn: "process.currentExitCode", args: [], type: F64, loc };
+    // process.exit(code) assigns process.exitCode before the 'exit'
+    // listeners run. Only a program that reads the property can observe
+    // that, so only such a program records the assignment.
+    if (arg !== undefined && programReadsExitCode(lowerer)) {
+      const binding = lowerer.declareHiddenLocal("%exitCode", F64);
+      code = {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: binding.id, init: code, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "process.setExitCodeTracked",
+              args: [varRef(binding.id, F64, loc)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: varRef(binding.id, F64, loc),
+        type: F64,
+        loc,
+      };
+    }
     return { kind: "libCall", fn: "process.exit", args: [code], type: VOID, loc };
   }
   return null; // process.argv(...) etc. are tsc errors before lowering
@@ -1594,6 +1795,16 @@ export function lowerProcessOptionalMethodCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
 ): IrExpr | null {
+  // `process.send!(message)`: the asserted direct call of the optional
+  // member (the @types/node spelling under strict null checks).
+  if (
+    !expr.questionDotToken &&
+    ts.isNonNullExpression(expr.expression) &&
+    ts.isPropertyAccessExpression(expr.expression.expression) &&
+    !expr.expression.expression.questionDotToken &&
+    lowerer.stdlibGlobalMember(expr.expression.expression, "process") === "send"
+  )
+    return lowerProcessIpcSend(lowerer, expr);
   if (!expr.questionDotToken) return null;
   if (!ts.isPropertyAccessExpression(expr.expression)) return null;
   const member = lowerer.stdlibGlobalMember(expr.expression, "process");
