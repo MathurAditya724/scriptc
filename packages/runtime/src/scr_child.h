@@ -296,5 +296,19 @@ bool scr_children_ready(void);
 bool scr_children_failed_pending(void);
 void scr_children_poll(void);
 bool scr_children_wait(double max_wait_ms);
+/* The loop reaches the functions above through this table. The child
+ * unit installs it with the first spawned child or IPC channel, so
+ * programs that never create either do not link the unit. */
+typedef struct ScrLoopChildren {
+  bool (*pending)(void);
+  bool (*ready)(void);
+  bool (*reffed_pending)(void);
+  bool (*failed_pending)(void);
+  void (*poll)(void);
+  bool (*wait)(double max_wait_ms);
+  int (*wake_fd)(void);
+  void (*teardown)(void);
+} ScrLoopChildren;
+void scr_loop_set_children(const ScrLoopChildren *hooks);
 
 #endif /* SCR_CHILD_H */

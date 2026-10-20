@@ -33,6 +33,7 @@ static void scr_ipc_deliver(void);
 static void scr_ipc_settle(ScrIpc *ipc);
 static void scr_child_fire_spawn(ScrChild *c);
 static void scr_child_drop_spawn_listeners(ScrChild *c);
+static void scr_child_loop_install(void);
 
 static ScrArr *scr_fork_argv(double target, uintptr_t read_handle,
                              uintptr_t write_handle, ScrArr *args) {
@@ -2372,6 +2373,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   scr_children_reffed_n++;
   c->next = scr_children;
   scr_children = scr_child_retain(c);
+  scr_child_loop_install();
   return c;
 }
 
@@ -5081,6 +5083,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   scr_children_reffed_n++;
   c->next = scr_children;
   scr_children = scr_child_retain(c);
+  scr_child_loop_install();
   return c;
 }
 
@@ -6087,6 +6090,7 @@ static ScrIpc *scr_ipc_new(ScrChildStream *reader, ScrChildWriter *writer) {
   ipc->registered = true;
   ipc->next = scr_ipcs;
   scr_ipcs = scr_ipc_retain(ipc); /* service-registry reference */
+  scr_child_loop_install();
   ipc->writer_error_cb = scr_ipc_closure(ipc, (void *)&scr_ipc_writer_error);
   scr_child_writer_on_error(writer, ipc->writer_error_cb,
                             &scr_ipc_writer_error, false);
@@ -6753,6 +6757,26 @@ static const ScrDynHandleOps scr_child_dyn_ops = {
 
 void scr_child_dyn_install(void) {
   scr_dyn_handle_install(SCR_DYNH_CHILD, &scr_child_dyn_ops);
+}
+
+static const ScrLoopChildren scr_child_loop_hooks = {
+  &scr_children_pending,
+  &scr_children_ready,
+  &scr_children_reffed_pending,
+  &scr_children_failed_pending,
+  &scr_children_poll,
+  &scr_children_wait,
+  &scr_children_wake_fd,
+  &scr_children_teardown,
+};
+
+/* Points the loop at the child unit (once per thread, like the
+ * registries) when the first child or IPC channel is created. */
+static void scr_child_loop_install(void) {
+  static SCR_TL bool installed = false;
+  if (installed) return;
+  installed = true;
+  scr_loop_set_children(&scr_child_loop_hooks);
 }
 
 void scr_child_on_dyn(ScrChild *child, ScrStr *event, ScrDyn *listener) {
