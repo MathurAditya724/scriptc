@@ -302,6 +302,53 @@ function lowerMethodReceiver(
   return lowerer.coerceInto(node, lowered, expected);
 }
 
+/** A `string | undefined | null` receiver of a string method: evaluated
+ * once, each unit arm throws the TypeError Node's member read throws
+ * ("Cannot read properties of undefined (reading 'replace')") before the
+ * arguments evaluate, and the string arm is the receiver. */
+function nullableStringReceiver(lowerer: Lowerer, node: ts.Expression, member: string): IrExpr {
+  const lowered = lowerer.lowerExpr(node);
+  if (lowered.type.kind !== "union") return lowerer.coerceInto(node, lowered, STRING);
+  const loc = locOf(node);
+  const unionId = lowered.type.unionId;
+  const local = lowerer.declareHiddenLocal("%nullableReceiver", lowered.type);
+  const ref: IrExpr = { kind: "varRef", localId: local.id, type: lowered.type, loc };
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  let result: IrExpr = {
+    kind: "unionNarrow",
+    unionId,
+    tag: arms.findIndex((arm) => arm.kind === "string"),
+    value: ref,
+    type: STRING,
+    loc,
+  };
+  for (const [tag, arm] of arms.entries()) {
+    if (!isUnitType(arm)) continue;
+    const unit = arm.kind === "nullT" ? "null" : "undefined";
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, value: ref, negated: false, type: BOOL, loc },
+      then: nodeThrowExpr(
+        1,
+        "",
+        `Cannot read properties of ${unit} (reading '${member}')`,
+        STRING,
+        loc,
+      ),
+      else_: result,
+      type: STRING,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: lowered, loc }],
+    result,
+    type: STRING,
+    loc,
+  };
+}
+
 /** Relative string indexing and code-point decoding over the UTF-16 intrinsics. */
 export function lowerStringIndexCall(
   lowerer: Lowerer,
@@ -733,6 +780,15 @@ export function lowerStringPaddingCall(
   return { kind: "call", callee: helper, args: values, type: STRING, loc };
 }
 
+/** String methods whose regex-argument forms lower in lowerRegexMethodCall. */
+const REGEX_ARGUMENT_STRING_METHODS = new Set([
+  "replace",
+  "replaceAll",
+  "split",
+  "search",
+  "matchAll",
+]);
+
 export function lowerRegexMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -747,11 +803,30 @@ export function lowerRegexMethodCall(
   // by construction — the symbol gate doesn't apply to `any` receivers.
   if (dynReceiver === undefined && !lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
-  const receiverKind = dynReceiver
-    ? "string"
-    : lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind;
+  const mappedReceiver = dynReceiver ? null : lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  // A nullable string receiver of a REGEX-argument call
+  // (`part.replace(re, "")` where an unchecked index read typed `part`
+  // `string | undefined`) takes the string path, as
+  // lowerStringMethodCall's gate does for the string-argument forms:
+  // lowerMethodReceiver throws Node's "Cannot read properties of
+  // undefined" on the unit arms. (`match` keeps its own gate below.)
+  const regexArgument = call.arguments.nodes[0];
+  const nullableString =
+    REGEX_ARGUMENT_STRING_METHODS.has(name) &&
+    regexArgument !== undefined &&
+    !ts.isSpreadElement(regexArgument) &&
+    lowerer.mapTypeOf(lowerer.typeOf(regexArgument))?.kind === "regex" &&
+    mappedReceiver?.kind === "union" &&
+    (lowerer.unions.get(mappedReceiver.unionId)?.arms.some((arm) => arm.kind === "string") ??
+      false) &&
+    (lowerer.unions
+      .get(mappedReceiver.unionId)
+      ?.arms.every((arm) => arm.kind === "string" || isUnitType(arm)) ??
+      false);
+  const receiverKind = dynReceiver || nullableString ? "string" : mappedReceiver?.kind;
   const lowerReceiver = (): IrExpr => {
     if (dynReceiver) return dynReceiver();
+    if (nullableString) return nullableStringReceiver(lowerer, access.expression, name);
     if (receiverKind === "string")
       return lowerMethodReceiver(lowerer, access.expression, STRING, access.name.text);
     if (receiverKind === "regex")

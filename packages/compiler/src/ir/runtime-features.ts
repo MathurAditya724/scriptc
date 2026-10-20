@@ -21,6 +21,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
+  "dyn.promiseResolve",
   "process.onUncaughtException",
   "process.offUncaughtException",
   "process.onUnhandledRejection",
