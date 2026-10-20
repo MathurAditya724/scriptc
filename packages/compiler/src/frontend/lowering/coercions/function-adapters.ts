@@ -111,12 +111,15 @@ export function coercibleValue(lowerer: Lowerer, src: IrType, dst: IrType): bool
 }
 
 /** Whether all parameters and the result adapt without a trap-only path.
- * Rest signatures are excluded; extra destination parameters are ignored. */
+ * Rest signatures are excluded, except a typed-rest source in a slot with
+ * fixed parameters (the rest packing adapter); extra destination
+ * parameters are ignored. */
 export function cleanFuncAdaptable(
   lowerer: Lowerer,
   src: IrType & { kind: "func" },
   dst: IrType & { kind: "func" },
 ): boolean {
+  if (restPackingAdapterFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
   if (src.params.length > dst.params.length) return false;
   for (let i = 0; i < src.params.length; i++) {
@@ -127,9 +130,6 @@ export function cleanFuncAdaptable(
   return src.ret.kind === "void" && dst.ret.kind === "dyn";
 }
 
-/** Adapt a function value to a destination signature, forwarding and
- * converting its arguments and result. Unsupported parameter/result pairs
- * produce checked traps when called; rest signatures remain refused. */
 /** Whether a typed-rest function (`(...m: T[]) => R`) can serve a slot
  * with fixed parameters (`(m: T) => void`): the slot's parameters convert
  * to the function's fixed parameters, then to the rest element type. */
@@ -200,6 +200,11 @@ function restPackingAdapter(
   return name;
 }
 
+/** Adapt a function value to a destination signature, forwarding and
+ * converting its arguments and result. Unsupported parameter/result pairs
+ * produce checked traps when called. Rest signatures are refused, except a
+ * typed-rest source in a slot with fixed parameters, which the rest
+ * packing adapter serves. */
 export function funcCoerceAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
