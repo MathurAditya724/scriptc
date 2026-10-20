@@ -722,12 +722,6 @@ export class ClassProtocols {
           return true;
       }
     }
-    // An interface extending a class-backed protocol holds values of that
-    // protocol (`interface TupleType extends Type`), so an assertion from
-    // the base to it keeps the instance and its methods.
-    const target = type.isTypeReference() ? type.getTarget() : type;
-    if (target?.isClassOrInterface())
-      for (const base of this.checker.getBaseTypes(target)) if (this.protocol(base)) return true;
     return false;
   }
 }
