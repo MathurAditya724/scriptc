@@ -6384,9 +6384,11 @@ static ScrStream *scr_stream_view_receiver(const ScrDyn *value) {
   if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len > 7 &&
       !memcmp(value->v.typed_ref.type_key, "object:", 7)) {
     ScrStream *stream = scr_dyn_typed_ref_unbox(value);
-    const ScrVt *vt = stream->vt;
-    if ((vt->pre >= scr_readable_vt.pre && vt->pre <= scr_readable_vt.post) ||
-        (vt->pre >= scr_writable_vt.pre && vt->pre <= scr_writable_vt.post)) return stream;
+    /* A class instance with a class id in its rc word (scr_rc.h) has no
+     * vtable word: its class is no stream. */
+    const ScrVt *vt = scr_rc_class_id(stream) == 0 ? stream->vt : NULL;
+    if (vt && ((vt->pre >= scr_readable_vt.pre && vt->pre <= scr_readable_vt.post) ||
+               (vt->pre >= scr_writable_vt.pre && vt->pre <= scr_writable_vt.post))) return stream;
     value->v.typed_ref.release(stream);
   }
   scr_dyn_arg_type_fail("destination", "an instance of Stream", value);

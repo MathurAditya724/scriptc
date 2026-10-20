@@ -1249,6 +1249,11 @@ export function rcMembers(
   ];
 }
 
+/** The integer type a release or retain loads and stores the count as:
+ * the rc word, or its low half (an i32 at offset 0) for class instances that
+ * keep their class number in the high half (classes.ts LlClassMeta.idInRc). */
+export type RcCount = "i32" | "i64";
+
 /** The NULL- and immortal-skipping retain body shared by every shape. A
  * retain never touches the cycle header: a buffered candidate that is
  * retained again stays a candidate (scr_cycle.c, markRoots). */
@@ -1257,8 +1262,9 @@ export function retainBody(
   fnName: string,
   comment = "",
   immortal = false,
+  count: RcCount = host.sizeType,
 ): string[] {
-  const S = host.sizeType;
+  const S = count;
   if (immortal) return immortalRcBody(host, fnName, "ptr", comment);
   return [
     `define internal ptr @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
@@ -1325,6 +1331,8 @@ export interface DirectDestroy {
   readonly destroy: string;
   /** The child carries a collector header. */
   readonly traced: boolean;
+  /** The child's count type, when it is not the rc word (RcCount). */
+  readonly count?: RcCount;
 }
 
 /** The release of child `value` (a loaded field, possibly NULL) inside a
@@ -1339,19 +1347,20 @@ export function directChildReleaseLines(
   comment: string,
 ): string[] {
   const S = host.sizeType;
+  const C = target.count ?? S;
   host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
   const lines = [
     `  %${tag}.nn = icmp ne ptr ${value}, null`,
     `  br i1 %${tag}.nn, label %${tag}.chk, label %${tag}.next`,
     `${tag}.chk:`,
-    `  %${tag}.rc = load ${S}, ptr ${value}`,
-    `  %${tag}.last = icmp eq ${S} %${tag}.rc, 1`,
+    `  %${tag}.rc = load ${C}, ptr ${value}`,
+    `  %${tag}.last = icmp eq ${C} %${tag}.rc, 1`,
     `  br i1 %${tag}.last, label %${tag}.dead, label %${tag}.shared`,
     `${tag}.shared:`,
     `  call void ${target.release}(ptr ${value}) ; ${comment}`,
     `  br label %${tag}.next`,
     `${tag}.dead: ; ${comment}: the last reference`,
-    `  store ${S} 0, ptr ${value}`,
+    `  store ${C} 0, ptr ${value}`,
   ];
   if (target.traced) {
     host.declare(`declare void @scr_cyc_on_dead(ptr)`);
@@ -1514,8 +1523,9 @@ export function releaseFastPath(
   traced: boolean,
   comment = "",
   immortal = false,
+  count: RcCount = host.sizeType,
 ): string[] {
-  const S = host.sizeType;
+  const S = count;
   if (immortal) return immortalRcBody(host, fnName, "void", comment);
   return [
     `define internal void @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment} (fast path)` : ""}`,

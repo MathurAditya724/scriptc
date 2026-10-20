@@ -666,11 +666,11 @@ static void scr_rgn_queue(ScrRgnWalk *w, size_t entry, void *p, int kind, void (
  * region counted as explained. RC-audit builds still enter it, and stop if
  * the walk reaches it twice. */
 static void scr_rgn_enter(ScrRgnWalk *w, void *p, int kind, void (*walk)(void *, ScrRgnWalk *)) {
-  if (!p || *(size_t *)p == SIZE_MAX) return; /* immortal: never freed, not walked */
+  if (!p || SCR_RC_COUNT(p) == SCR_RC_IMMORTAL) return; /* immortal: never freed, not walked */
 #ifdef SCR_RGN_DEBUG
-  bool single = w->src == 0 && *(size_t *)p == 1 && !w->debug;
+  bool single = w->src == 0 && SCR_RC_COUNT(p) == 1 && !w->debug;
 #else
-  bool single = w->src == 0 && *(size_t *)p == 1;
+  bool single = w->src == 0 && SCR_RC_COUNT(p) == 1;
 #endif
 #ifndef SCR_RC_AUDIT
   if (single) {
@@ -922,7 +922,7 @@ static int64_t scr_rgn_settle(ScrRgnWalk *w, size_t *black_out) {
   size_t top = 0;
   for (size_t i = 0; i < n; i++) {
     ScrRgnEntry *x = &w->ents[i];
-    if (*(size_t *)x->obj != (size_t)x->found) {
+    if (SCR_RC_COUNT(x->obj) != (ScrRcCount)x->found) {
       x->black = true;
       stack[top++] = i;
     }
@@ -1041,7 +1041,7 @@ static void scr_rgn_report(const ScrRegion *r, const ScrRgnWalk *w, int64_t unex
   }
   for (size_t i = 0; i < w->nents; i++) {
     const ScrRgnEntry *x = &w->ents[i];
-    if (*(size_t *)x->obj == (size_t)x->found) continue; /* not referenced from outside itself */
+    if (SCR_RC_COUNT(x->obj) == (ScrRcCount)x->found) continue; /* not referenced from outside itself */
     if (printed == lines) {
       more++;
       continue;
@@ -1055,7 +1055,7 @@ static void scr_rgn_report(const ScrRegion *r, const ScrRgnWalk *w, int64_t unex
     }
     const ScrRgnFrom *f = &w->from[at];
     fprintf(stderr, " held by %s.%s, with %zu references, %lld of them from what the region owns\n",
-            f->cls ? f->cls->name : "?", f->cls ? scr_rgn_field_name(f->cls, f->field) : "?", *(size_t *)x->obj,
+            f->cls ? f->cls->name : "?", f->cls ? scr_rgn_field_name(f->cls, f->field) : "?", (size_t)SCR_RC_COUNT(x->obj),
             (long long)x->found);
   }
   if (more) fprintf(stderr, "  %zu more\n", more);
@@ -1111,7 +1111,7 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r, bool tentative) {
   for (ScrRgnChunk *c = r->chunks; c; c = c->next) c->found = 0;
   size_t objects = 0;
   SCR_RGN_EACH(r, s, o) {
-    if (*(size_t *)o == SIZE_MAX) {
+    if (SCR_RC_COUNT(o) == SCR_RC_IMMORTAL) {
       /* Published: other threads may hold it, uncounted. */
       r->state = SCR_RGN_PINNED;
       t->stats.pinned++;

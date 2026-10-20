@@ -17,7 +17,7 @@ import {
 } from "../../ir/ir.js";
 import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
-import { type LlClassMeta, classFieldIndex, classStructSym } from "./classes.js";
+import { type LlClassMeta, classFieldIndex, classPreLines, classStructSym } from "./classes.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   FN_ATTRS,
@@ -229,10 +229,13 @@ export function streamTypedRefCommitAdapter(
     ];
     if (meta.hierarchy && meta.children.length) {
       lines.push(
-        `  %derived_vt_slot = getelementptr inbounds %${classStructSym(t.className)}, ptr %target, i64 0, i32 1`,
-        `  %derived_vt = load ptr, ptr %derived_vt_slot`,
-        `  %derived_pre_slot = getelementptr inbounds %ScrVt, ptr %derived_vt, i64 0, i32 0`,
-        `  %derived_pre = load ${host.sizeType}, ptr %derived_pre_slot`,
+        ...classPreLines(
+          meta,
+          classStructSym(t.className),
+          "%target",
+          "%derived_pre",
+          host.sizeType,
+        ),
       );
       const descendants = (current: typeof meta): (typeof meta)[] =>
         current.children.flatMap((child) => [child, ...descendants(child)]);
@@ -725,16 +728,9 @@ export function streamTypedRefMaterializeAdapter(
     }
     if (adapter.classOps !== undefined) liveClassOps(host, snapshot, meta);
     if (meta.hierarchy && meta.children.length) {
-      const vtSlot = B.tmp(),
-        vt = B.tmp(),
-        preSlot = B.tmp(),
-        pre = B.tmp();
-      B.line(
-        `${vtSlot} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 1`,
-      );
-      B.line(`${vt} = load ptr, ptr ${vtSlot}`);
-      B.line(`${preSlot} = getelementptr inbounds %ScrVt, ptr ${vt}, i64 0, i32 0`);
-      B.line(`${pre} = load ${host.sizeType}, ptr ${preSlot}`);
+      const pre = B.tmp();
+      for (const line of classPreLines(meta, classStructSym(t.className), "%p", pre, host.sizeType))
+        B.line(line.trimStart());
       const descendants = (current: typeof meta): (typeof meta)[] =>
         current.children.flatMap((child) => [child, ...descendants(child)]);
       for (const child of descendants(meta).reverse()) {
@@ -1313,16 +1309,9 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
   if (subclasses.length > 0) {
     exact = `@${snapshot}_cexact`;
     const B = new BlockBuilder();
-    const vtSlot = B.tmp(),
-      vt = B.tmp(),
-      preSlot = B.tmp(),
-      pre = B.tmp();
-    B.line(
-      `${vtSlot} = getelementptr inbounds %${classStructSym(meta.def.name)}, ptr %p, i64 0, i32 1`,
-    );
-    B.line(`${vt} = load ptr, ptr ${vtSlot}`);
-    B.line(`${preSlot} = getelementptr inbounds %ScrVt, ptr ${vt}, i64 0, i32 0`);
-    B.line(`${pre} = load ${host.sizeType}, ptr ${preSlot}`);
+    const pre = B.tmp();
+    for (const line of classPreLines(meta, classStructSym(meta.def.name), "%p", pre, host.sizeType))
+      B.line(line.trimStart());
     for (const child of subclasses.reverse()) {
       const childAdapter = host.liveDynRefAdapter({ kind: "object", className: child.def.name });
       const match = B.tmp(),
