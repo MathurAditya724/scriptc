@@ -100,6 +100,7 @@ async function main(): Promise<number> {
               nodeTest: false,
               tls: false,
               cipher: false,
+              perfLoop: false,
               tlsCa: false,
             },
             options.optimization ?? "release",

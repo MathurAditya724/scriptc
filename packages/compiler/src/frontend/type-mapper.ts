@@ -1556,7 +1556,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // parameter (variadic higher-order wrappers): the checker keeps both
     // conditionals symbolic inside the body, and their `infer` positions
     // match a call signature, which matchInferReference cannot decide.
-    const viaSignature = mapBoundSignatureAlias(type, ctx);
+    const viaSignature =
+      mapBoundSignatureAlias(type, ctx) ?? mapBoundKeyofNeverConditional(type, ctx);
     if (viaSignature !== null) {
       contextResolutions++;
       return viaSignature;
@@ -3809,6 +3810,27 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "record", shapeId: perfEntryShape(ctx.shapes, ctx.unions) };
   }
   // readline's getCursorPos() record, in Node's key order ({ cols, rows }).
+  // perf_hooks' EventLoopUtilization (performance.eventLoopUtilization's
+  // result): a plain data record in Node's key order.
+  if (isStdlibInterface("EventLoopUtilization")) {
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "active", type: F64 },
+          { name: "idle", type: F64 },
+          { name: "utilization", type: F64 },
+        ],
+        false,
+        undefined,
+        ["idle", "active", "utilization"],
+      ),
+    };
+  }
+  // monitorEventLoopDelay's IntervalHistogram: a numeric handle into the
+  // runtime's histogram table, like a timer handle. Its members lower over
+  // the handle (builtins/performance.ts).
+  if (isStdlibInterface("IntervalHistogram")) return F64;
   if (isStdlibInterface("CursorPos")) {
     return {
       kind: "record",
@@ -4348,6 +4370,22 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
       ts.isParameter(decl) &&
       (decl.questionToken !== undefined || decl.initializer !== undefined);
     let pt = mapType(checker.getTypeOfSymbol(p), ctx);
+    // A parameter a TypeScript program types `any` takes whatever the
+    // caller passes: the checked-dynamic slot, as an `any`-typed binding
+    // already is (dynFallbackType). Declaration files keep their paths.
+    // Only function declarations and spelled function types: lambdas and
+    // methods in object literals keep their existing checked-dynamic story.
+    if (
+      !pt &&
+      !rest &&
+      decl !== undefined &&
+      ts.isParameter(decl) &&
+      decl.parent !== undefined &&
+      (ts.isFunctionDeclaration(decl.parent) || ts.isFunctionTypeNode(decl.parent)) &&
+      !decl.getSourceFile().isDeclarationFile &&
+      (checker.getTypeOfSymbol(p).flags & ts.TypeFlags.Any) !== 0
+    )
+      pt = DYN;
     if (
       decl &&
       ts.isParameter(decl) &&
@@ -5122,7 +5160,51 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
   }
   if (!covered || covered.length === 0) return null;
   const first = covered[0]!;
-  return covered.every((t) => typeEquals(t, first)) ? first : null;
+  if (covered.every((t) => typeEquals(t, first))) return first;
+  // Only the `keyof T` index itself covers every field at once; a key
+  // parameter bound to string keeps its literal-key resolution below.
+  if (!(idx.isIndexType() && idx.getTarget() === obj)) return null;
+  // Fields of different scalar types (`Object.entries` over a bound record
+  // reads `T[keyof T]`): any one of them, the union of their types.
+  const arms: IrType[] = [];
+  for (const t of covered) {
+    const parts = t.kind === "union" ? (ctx.unions.get(t.unionId)?.arms ?? null) : [t];
+    if (!parts) return null;
+    for (const part of parts) {
+      if (
+        part.kind !== "f64" &&
+        part.kind !== "string" &&
+        part.kind !== "bool" &&
+        part.kind !== "undefinedT" &&
+        part.kind !== "nullT"
+      )
+        return null;
+      if (!arms.some((a) => typeEquals(a, part))) arms.push(part);
+    }
+  }
+  if (arms.length === 1) return arms[0]!;
+  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  return { kind: "union", unionId: ctx.unions.intern(arms) };
+}
+
+/** `keyof T extends never ? A : B` over a bound record T (the lib's
+ * Object.entries element spelling): decided by whether the binding has any
+ * key. */
+function mapBoundKeyofNeverConditional(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const { resolveTypeParam, shapes } = ctx;
+  if (!resolveTypeParam || !type.isConditionalType()) return null;
+  const check = type.getCheckType();
+  const ext = type.getExtendsType();
+  if (!check || !ext || !(ext.flags & ts.TypeFlags.Never) || !check.isIndexType()) return null;
+  const target = check.getTarget();
+  if (!target || !(target.flags & ts.TypeFlags.TypeParameter)) return null;
+  const bound = resolveTypeParam(target);
+  if (bound?.kind !== "record") return null;
+  const shape = shapes.get(bound.shapeId);
+  if (!shape || shape.tuple) return null;
+  const hasKeys = shape.fields.length > 0 || shape.indexValue !== undefined;
+  const branch = hasKeys ? type.getFalseType() : type.getTrueType();
+  return branch ? mapType(branch, ctx) : null;
 }
 
 /** A mapped type over a type parameter of the instance being lowered (`{

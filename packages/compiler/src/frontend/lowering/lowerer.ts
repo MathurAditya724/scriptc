@@ -1917,6 +1917,9 @@ export class Lowerer {
   /** Const bindings holding a forwarded fixed tuple (`const args =
    * arguments as any` in a typed-arguments function) → the tuple type. */
   readonly tupleAliasSymbols = new Map<ts.Symbol, IrType>();
+  /** `??` expressions whose result is the optional callback's own function
+   * type (an adapted function default); their bindings take that type. */
+  readonly nullishFuncResults = new Set<ts.Node>();
   /** The static names of the current generic instance's name-keyed
    * function parameters (static-function-names.ts). */
   staticFnNames: Map<ts.Symbol, string | null> | null = null;

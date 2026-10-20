@@ -4887,7 +4887,8 @@ export function lowerVarDecl(
   if (
     !decl.type &&
     init.type.kind === "func" &&
-    lowerer.typedArgumentsLambdas.has(stripTypeWrappers(decl.initializer))
+    (lowerer.typedArgumentsLambdas.has(stripTypeWrappers(decl.initializer)) ||
+      lowerer.nullishFuncResults.has(stripTypeWrappers(decl.initializer)))
   )
     type = init.type;
   // A TypeScript lambda whose closure returns the runtime result (a missing

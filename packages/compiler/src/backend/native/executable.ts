@@ -510,6 +510,8 @@ export async function compileCInternal(
     // The performance timeline (every perf_hooks user-timing call selects
     // dynAsync, whose unit carries the timeline's buffer warning).
     ...(opts.dynAsync ? [rt(join(rtDir, "scr_perf.c"))] : []),
+    // perf_hooks event-loop metrics, only for programs that read them.
+    ...(opts.perfLoop ? [rt(join(rtDir, "scr_perf_loop.c"))] : []),
     // Blob and File (every blob.* call selects dynAsync, whose unit boxes
     // their reads as dyn promises).
     ...(opts.dynAsync ? [rt(join(rtDir, "scr_blob.c"))] : []),

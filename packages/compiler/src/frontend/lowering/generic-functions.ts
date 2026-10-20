@@ -302,7 +302,13 @@ export function genericCallInstance(
   const retTs = lowerer.checker.getReturnTypeOfSignature(rsig);
   const local = localClassResultInstance(lowerer, expr, info, rsig, params, retTs);
   if (local) return local;
-  const mappedReturn = lowerer.mapTypeOf(retTs);
+  // A result instantiated at `any` (a type argument inferred from an
+  // untyped value, such as an untyped forwarding call) is checked-dynamic.
+  const mappedReturn =
+    lowerer.mapTypeOf(retTs) ??
+    ((retTs.flags & ts.TypeFlags.Any) !== 0 && !isJsSourceFile(info.decl.getSourceFile())
+      ? DYN
+      : null);
   if (!mappedReturn) {
     fenceGenericSignatureResult(lowerer, expr, retTs);
     lowerer.badType(expr, retTs);
@@ -691,7 +697,11 @@ function unifySignatureBindings(
           tsBindings.set(sym, lowerer.typeParamTsResolver(inst) ?? inst);
         }
         if (!bindings.has(sym)) {
-          const mapped = lowerer.mapTypeOf(inst);
+          const mapped =
+            lowerer.mapTypeOf(inst) ??
+            ((inst.flags & ts.TypeFlags.Any) !== 0 && !isJsSourceFile(info.decl.getSourceFile())
+              ? DYN
+              : null);
           // A visitor's inferred T can be void. It still binds the
           // return convention of `(node) => T`; discarding it leaves
           // the callback's return type spuriously uninstantiated.
