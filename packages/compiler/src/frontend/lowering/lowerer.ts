@@ -2457,6 +2457,9 @@ export class Lowerer {
   /** Generated value helpers, keyed by operation and type. Callers own
    * their key prefixes; this includes more than structural conversions. */
   readonly valueHelpers = new Map<string, string>();
+  /** structuralNarrowing's assignable classes, keyed by static and
+   * narrowed class name. */
+  readonly structuralClassPeers = new Map<string, readonly string[]>();
 
   /** Interned node:assert helpers (deep-equality comparisons keyed by
    * typeKey, throws wrappers keyed by callback type + expected class) —

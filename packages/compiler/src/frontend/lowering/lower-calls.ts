@@ -168,6 +168,7 @@ import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
+import { structuralReadType } from "./class-unions.js";
 import {
   httpClientFnBindingOf,
   lowerCompatReqStreamOptionalCall,
@@ -9104,7 +9105,9 @@ export function lowerObjectMethodCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
-  let mappedReceiver = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  let mappedReceiver =
+    structuralReadType(lowerer, access.expression) ??
+    lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   // EventEmitter's static side (the class, a value of it, or the events
   // module, which is the class) keeps its static surface on the emitter
   // dispatch (`EventEmitter.setMaxListeners(n)`), which tells the statics
@@ -9718,6 +9721,44 @@ function unionObjectMethodHelper(
   if (existing) return existing;
   const name = `%union.call.${lowerer.unionCallHelpers.size}`;
   lowerer.unionCallHelpers.set(key, name);
+  // A probe that catches a refusal while the body lowers must not leave
+  // the name registered for a helper that was never emitted.
+  try {
+    lowerer.liftedFns.push(
+      unionObjectMethodFunction(
+        lowerer,
+        name,
+        sourceCall,
+        receiverT,
+        method,
+        plans,
+        shapes,
+        resultT,
+        loc,
+      ),
+    );
+  } catch (e) {
+    lowerer.unionCallHelpers.delete(key);
+    throw e;
+  }
+  return name;
+}
+
+function unionObjectMethodFunction(
+  lowerer: Lowerer,
+  name: string,
+  sourceCall: ts.CallExpression,
+  receiverT: IrType & { kind: "union" },
+  method: string,
+  plans: {
+    arm: IrType & { kind: "object" };
+    info: ClassInfo;
+    found: NonNullable<ReturnType<Lowerer["findMethodOn"]>>;
+  }[],
+  shapes: readonly ParamShape[],
+  resultT: IrType,
+  loc: SrcLoc,
+): IrFunction {
   const receiver = varRef("this.0", receiverT, loc);
   const argRefs = shapes.map((shape, i) => varRef(`a.${i}`, shape.type, loc));
   const branch = (plan: (typeof plans)[number]): IrStmt[] => {
@@ -9792,8 +9833,7 @@ function unionObjectMethodHelper(
     type: param.type,
     mutable: false,
   }));
-  lowerer.liftedFns.push({ name, params, returnType: resultT, locals, body, loc });
-  return name;
+  return { name, params, returnType: resultT, locals, body, loc };
 }
 
 /** The argument's lowered type for a message (what the static form saw),
