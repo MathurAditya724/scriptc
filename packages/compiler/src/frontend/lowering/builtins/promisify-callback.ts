@@ -25,6 +25,9 @@ export interface CallbackShape {
   resultT: IrType & { kind: "func" };
   args: readonly IrType[];
   callbackT: IrType & { kind: "func" };
+  /** The parameter's declared type: callbackT, or `callbackT | undefined`
+   * for an optional callback. */
+  callbackParamT: IrType;
   inner: IrType;
   /** The error parameter's union and the tag of its Error arm, or null when
    * the callback declares no error parameter. */
@@ -39,7 +42,20 @@ function callbackShape(
 ): CallbackShape | null {
   if (fnT?.kind !== "func" || resultT?.kind !== "func") return null;
   if (fnT.rest || fnT.restAbi || fnT.argumentsAll || resultT.rest || resultT.restAbi) return null;
-  const callbackT = fnT.params[fnT.params.length - 1];
+  const callbackParamT = fnT.params[fnT.params.length - 1];
+  // An optional callback (`close(callback?: (err?: Error) => void)`) takes
+  // its function arm; the call passes the callback into the union.
+  const callbackT =
+    callbackParamT?.kind === "union"
+      ? (() => {
+          const arms = lowerer.unions.get(callbackParamT.unionId)?.arms ?? [];
+          const fns = arms.filter((arm) => arm.kind === "func");
+          return fns.length === 1 &&
+            arms.every((arm) => arm.kind === "func" || arm.kind === "undefinedT")
+            ? fns[0]
+            : undefined;
+        })()
+      : callbackParamT;
   if (callbackT?.kind !== "func" || callbackT.ret.kind !== "void") return null;
   if (callbackT.rest || callbackT.restAbi || callbackT.params.length > 2) return null;
   const args = fnT.params.slice(0, -1);
@@ -71,7 +87,7 @@ function callbackShape(
     const probe: IrExpr = { kind: "varRef", localId: "%probe", type: valueT, loc };
     if (!typeEquals(lowerer.coerceToExpected(probe, inner).type, inner)) return null;
   }
-  return { fnT, resultT, args, callbackT, inner, error };
+  return { fnT, resultT, args, callbackT, callbackParamT: callbackParamT!, inner, error };
 }
 
 /** The callback shape of a `promisify(fn)` call, or null. */
@@ -137,7 +153,7 @@ function promisifyMaker(lowerer: Lowerer, shape: CallbackShape, loc: SrcLoc): st
   if (existing) return existing;
   const base = `%promisify.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, base);
-  const { fnT, resultT, args, callbackT, inner, error } = shape;
+  const { fnT, resultT, args, callbackT, callbackParamT, inner, error } = shape;
   const promiseT = resultT.ret;
   const resolveT = funcOf(inner.kind === "void" ? [] : [inner], VOID);
   const rejectT = funcOf([ERROR_T], VOID);
@@ -270,13 +286,16 @@ function promisifyMaker(lowerer: Lowerer, shape: CallbackShape, loc: SrcLoc): st
           callee: varRef("f.0", fnT, loc),
           args: [
             ...args.map((type, i) => varRef(argIds[i]!, type, loc)),
-            {
-              kind: "call",
-              callee: `${base}.mkcb`,
-              args: [varRef("res.0", resolveT, loc), varRef("rej.0", rejectT, loc)],
-              type: callbackT,
-              loc,
-            },
+            lowerer.coerceToExpected(
+              {
+                kind: "call",
+                callee: `${base}.mkcb`,
+                args: [varRef("res.0", resolveT, loc), varRef("rej.0", rejectT, loc)],
+                type: callbackT,
+                loc,
+              },
+              callbackParamT,
+            ),
           ],
           type: VOID,
           loc,

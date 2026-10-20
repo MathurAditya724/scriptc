@@ -1,6 +1,7 @@
-// util.promisify over typed callback-only functions (a bound method, a
-// function declaration, an inline arrow): the error argument rejects, the
-// value fulfills, a synchronous throw rejects, and settlement is async.
+// util.promisify over typed callback-only functions (bound methods, one with
+// an optional callback, a function declaration, an inline arrow): the error
+// argument rejects, the value fulfills, a synchronous throw rejects, and
+// settlement is async.
 import { promisify } from "node:util";
 
 class Connection {
@@ -19,6 +20,9 @@ class Connection {
       callback();
     }, 1);
   }
+  flush(callback?: (error?: Error) => void): void {
+    setImmediate(() => callback?.(this.closed ? new Error("flushed after close") : undefined));
+  }
   stats(callback: (error: Error | null, open: number) => void): void {
     setImmediate(() => (this.closed ? callback(new RangeError("closed"), 0) : callback(null, 3)));
   }
@@ -32,6 +36,8 @@ async function main(): Promise<void> {
   const c = new Connection("db");
   const stats = promisify(c.stats.bind(c));
   console.log("open", await stats());
+  await promisify(c.flush.bind(c))();
+  console.log("flushed");
   const closeAsync = promisify(c.close.bind(c));
   await closeAsync();
   console.log("closed once");
@@ -45,6 +51,7 @@ async function main(): Promise<void> {
   } catch (e) {
     console.log("stats:", (e as Error).name, (e as Error).message);
   }
+  await promisify(c.flush.bind(c))().catch((e) => console.log("flush:", (e as Error).message));
   try {
     await promisify(boom)();
   } catch (e) {
