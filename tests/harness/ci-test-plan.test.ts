@@ -10,6 +10,7 @@ import {
   fileExclusions,
   caseShardedSideFiles,
   isolatedFiles,
+  leakSuppressions,
   testCosts,
 } from "../../scripts/ci-test-plan.mjs";
 import { runCiTestPlan } from "../../scripts/ci-test.mjs";
@@ -65,6 +66,20 @@ test.for([1, 3, 5, 10, 20])(
     }
   },
 );
+
+test("LeakSanitizer runs over the sanitized corpus on Linux only", () => {
+  const plan = (flavor: "plain" | "san", platform: string) =>
+    ciTestPlan({ shard: "1/20", flavor, workers: 4, platform });
+  const linuxSan = plan("san", "linux").corpus.env;
+  expect(linuxSan.ASAN_OPTIONS).toBe("detect_leaks=1");
+  expect(linuxSan.LSAN_OPTIONS).toBe(`suppressions=${leakSuppressions}:print_suppressions=0`);
+  expect(existsSync(leakSuppressions)).toBe(true);
+  for (const env of [plan("plain", "linux").corpus.env, plan("san", "darwin").corpus.env]) {
+    expect(env.ASAN_OPTIONS).toBeUndefined();
+    expect(env.LSAN_OPTIONS).toBeUndefined();
+  }
+  for (const task of plan("san", "linux").side) expect(task.env.ASAN_OPTIONS).toBeUndefined();
+});
 
 test("the side queue balances measured files across the twenty Linux shards", () => {
   for (const flavor of ["plain", "san"] as const) {
