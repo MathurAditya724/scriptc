@@ -6359,6 +6359,28 @@ void scr_dyn_throw(ScrDyn *d) {
     scr_dyn_release(d);
     return;
   }
+  /* A checked-dynamic primitive throws as the primitive itself, as a
+   * statically typed `throw 5` does: catch bindings test and extract the
+   * same snapshot kinds (`typeof e === "number"`), and a primitive has no
+   * identity to keep. */
+  if (d->kind == SCR_DYN_NUM) {
+    double value = d->v.num;
+    scr_dyn_release(d);
+    scr_throw_f64(value);
+    return;
+  }
+  if (d->kind == SCR_DYN_BOOL) {
+    bool value = d->v.b;
+    scr_dyn_release(d);
+    scr_throw_bool(value);
+    return;
+  }
+  if (d->kind == SCR_DYN_STR) {
+    ScrStr *value = scr_str_retain(d->v.str);
+    scr_dyn_release(d);
+    scr_throw_str(value);
+    return;
+  }
   scr_throw_ref_classified(d, scr_dyn_retain_v, scr_dyn_release_v,
                           scr_dyn_trace_v, scr_dyn_is_object(d));
 }
