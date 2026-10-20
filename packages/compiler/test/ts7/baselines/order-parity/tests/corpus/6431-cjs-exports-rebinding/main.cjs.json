@@ -1,6 +1,7 @@
 {
  "order": [
   "<repo>/tests/corpus/6431-cjs-exports-rebinding/lib.cjs",
+  "<repo>/tests/corpus/6431-cjs-exports-rebinding/extended.cjs",
   "<repo>/tests/corpus/6431-cjs-exports-rebinding/main.cjs"
  ],
  "diags": []

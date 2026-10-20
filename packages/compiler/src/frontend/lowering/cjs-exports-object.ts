@@ -33,6 +33,7 @@ import {
 } from "../program.js";
 import { cjsWholeExportValueOf, inlineProgramRequireOf } from "./cjs-inline-require.js";
 import { isCjsModuleGlobal } from "./lower-node-module.js";
+import { bindingNeverReassigned } from "./binding-analysis.js";
 import { DYN, type IrExpr, type IrGlobal } from "../../ir/ir.js";
 
 /** True for the CommonJS wrapper's `exports` binding (not shadowed by any
@@ -492,32 +493,68 @@ function memberAliasIn(
   name: string,
   depth: number,
 ): ts.Expression | null {
+  const member = memberWritesIn(lowerer, sf, name, depth);
+  // One write: a member written again would be a runtime slot.
+  return member !== null && member.writes === 1 ? member.value : null;
+}
+
+/** The writes of member `name` in `sf` and in the modules it re-exports
+ * through `module.exports = require("./x")`, which share its exports
+ * object. `value` is the last write's value when the use site can read
+ * it again. Null when the module does not export a value whole. */
+function memberWritesIn(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  name: string,
+  depth: number,
+): { value: ts.Expression | null; writes: number } | null {
   if (depth > 32 || sf.isDeclarationFile || !isCjsJsFile(sf, lowerer.program)) return null;
   const whole = cjsWholeExportValueOf(sf);
   if (whole === null) return null;
-  const inner = inlineProgramRequireOf(lowerer, whole.rhs);
-  if (inner !== null) return memberAliasIn(lowerer, inner.dep, name, depth + 1);
-  let found: ts.Expression | null = null;
+  let value: ts.Expression | null = null;
   let writes = 0;
+  const inner = inlineProgramRequireOf(lowerer, whole.rhs);
+  if (inner !== null) {
+    // The re-exported module runs first; this module's own writes follow.
+    const dep = memberWritesIn(lowerer, inner.dep, name, depth + 1);
+    if (dep === null) return null;
+    ({ value, writes } = dep);
+  }
   for (const stmt of sf.statements.nodes) {
     const cjs = cjsExportAssignmentOf(stmt);
     if (cjs?.kind !== "member" || !ts.isIdentifier(cjs.name) || cjs.name.text !== name) continue;
     writes++;
     if (cjsExportDiscardReason(stmt) !== null) return null;
-    let value: ts.Expression = cjs.value;
-    while (ts.isParenthesizedExpression(value)) value = value.expression;
-    // A binding of the module, or a primitive literal: reading either
-    // again at the use site observes the member's value.
-    if (
-      ts.isIdentifier(value) ||
-      ts.isStringLiteral(value) ||
-      ts.isNumericLiteral(value) ||
-      ts.isNoSubstitutionTemplateLiteral(value) ||
-      value.kind === ts.SyntaxKind.TrueKeyword ||
-      value.kind === ts.SyntaxKind.FalseKeyword
-    )
-      found = value;
+    let written: ts.Expression = cjs.value;
+    while (ts.isParenthesizedExpression(written)) written = written.expression;
+    value = rereadableMemberValue(lowerer, stmt, written) ? written : null;
   }
-  // One write: a member written again would be a runtime slot.
-  return writes === 1 ? found : null;
+  return { value, writes };
+}
+
+/** True when reading `value` again at the use site observes what the
+ * member write `stmt` stored: a primitive literal, or a module binding
+ * declared before the write and never reassigned. */
+function rereadableMemberValue(
+  lowerer: Lowerer,
+  stmt: ts.Statement,
+  value: ts.Expression,
+): boolean {
+  if (
+    ts.isStringLiteral(value) ||
+    ts.isNumericLiteral(value) ||
+    ts.isNoSubstitutionTemplateLiteral(value) ||
+    value.kind === ts.SyntaxKind.TrueKeyword ||
+    value.kind === ts.SyntaxKind.FalseKeyword
+  )
+    return true;
+  if (!ts.isIdentifier(value)) return false;
+  const sym = lowerer.resolveValueSymbol(value);
+  if (sym === null || sym.declarations.length !== 1) return false;
+  const decl = sym.declarations[0]!;
+  if (decl.getSourceFile() !== stmt.getSourceFile()) return false;
+  // A function declaration is initialized when the module starts; any
+  // other binding must be initialized before the write stores it.
+  if (!ts.isFunctionDeclaration(decl) && decl.end > stmt.pos) return false;
+  return bindingNeverReassigned(lowerer, sym, decl);
 }
