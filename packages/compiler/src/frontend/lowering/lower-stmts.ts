@@ -1654,6 +1654,14 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
       value = lowerer.coerceToExpected(value, DYN);
     } else if (value.type.kind === "record" && lowerer.dynConvertible(value.type)) {
       value = { kind: "dynFrom", value, liveRef: true, type: DYN, loc: locOf(stmt.expression) };
+    } else if (
+      (value.type.kind === "array" || value.type.kind === "union") &&
+      lowerer.dynConvertible(value.type)
+    ) {
+      // Arrays, and unions over records and arrays, keep their identity
+      // and contents the same way: the catch binding, `Array.isArray`,
+      // inspection and typed views read the thrown object.
+      value = lowerer.coerceToExpected(value, DYN);
     }
     if (value.type.kind === "date") {
       lowerer.unsupported(
