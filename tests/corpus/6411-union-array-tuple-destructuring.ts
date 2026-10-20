@@ -32,3 +32,11 @@ for (const k of ["long", "short"]) {
   const [name, flag, count = 0] = row(k);
   console.log(name, flag, count);
 }
+
+// A match or an empty string (`re.exec(s) || ""`): a string destructures
+// by code point, so the empty string binds undefined.
+function firstHit(text: string): string {
+  const [hit] = /\d+/.exec(text) || "";
+  return hit ? `hit ${hit}` : "none";
+}
+console.log(firstHit("ab12"), firstHit("ab"));

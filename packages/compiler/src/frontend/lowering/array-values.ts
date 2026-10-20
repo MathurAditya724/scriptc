@@ -8,6 +8,7 @@ import {
   type IrType,
   isIntegerBytesElem,
   type SrcLoc,
+  STRING,
   UNDEFINED_T,
   typeEquals,
   typeKey,
@@ -88,12 +89,15 @@ export function arrayValueRead(
  * (`const [a, b] = re.exec(s) || ["", ""]`) without copying the receiver
  * or its elements. Every array arm contributes its missing-value case; a
  * tuple arm answers its field, or undefined past its end. Tuple arms need
- * a constant position. */
+ * a constant position. With `stringChars` (the string iterator's code
+ * points as a fresh string[]), a string arm (`re.exec(s) || ""`) answers
+ * its code point at the position, or undefined past its end. */
 export function unionArrayValueRead(
   lowerer: Lowerer,
   value: IrExpr,
   index: IrExpr,
   loc: SrcLoc,
+  stringChars?: (text: IrExpr) => IrExpr,
 ): IrExpr | null {
   if (value.type.kind !== "union") return null;
   const unionId = value.type.unionId;
@@ -110,16 +114,20 @@ export function unionArrayValueRead(
   };
   // Keep the collection's IrType union layout and narrow each element at
   // its use; an inferred array predicate changes the collection's ABI.
-  for (const arm of arms) if (arm.kind !== "array" && tupleField(arm) === null) return null;
+  const stringArm = (arm: IrType): boolean => arm.kind === "string" && stringChars !== undefined;
+  for (const arm of arms)
+    if (arm.kind !== "array" && !stringArm(arm) && tupleField(arm) === null) return null;
   const answers = new Map<string, IrType>();
   for (const arm of arms) {
-    const field = arm.kind === "array" ? null : tupleField(arm);
+    const field = arm.kind === "array" || stringArm(arm) ? null : tupleField(arm);
     const answer =
       arm.kind === "array"
         ? arrayValueType(lowerer, arm.elem)
-        : field === "past"
-          ? UNDEFINED_T
-          : field!.type;
+        : stringArm(arm)
+          ? arrayValueType(lowerer, STRING)
+          : field === "past"
+            ? UNDEFINED_T
+            : field!.type;
     const parts = answer.kind === "union" ? lowerer.unions.get(answer.unionId)!.arms : [answer];
     for (const part of parts) answers.set(typeKey(part), part);
   }
@@ -141,6 +149,11 @@ export function unionArrayValueRead(
     if (arm.kind === "array") {
       read = lowerer.coerceToExpected(
         arrayValueRead(lowerer, receiver, index, arm.elem, loc),
+        type,
+      );
+    } else if (stringArm(arm)) {
+      read = lowerer.coerceToExpected(
+        arrayValueRead(lowerer, stringChars!(receiver), index, STRING, loc),
         type,
       );
     } else {

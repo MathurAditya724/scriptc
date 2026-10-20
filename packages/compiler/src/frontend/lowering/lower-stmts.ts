@@ -2384,8 +2384,10 @@ export function lowerBindingPattern(
         ?.arms.every(
           (arm) =>
             arm.kind === "array" ||
+            arm.kind === "string" ||
             (arm.kind === "record" && lowerer.shapes.get(arm.shapeId)?.tuple === true),
-        )
+        ) &&
+      lowerer.unions.get(srcType.unionId)!.arms.some((arm) => arm.kind !== "string")
     ) {
       for (let i = 0; i < pattern.elements.nodes.length; i++) {
         const el = pattern.elements.nodes[i]!;
@@ -2393,7 +2395,9 @@ export function lowerBindingPattern(
         if (el.dotDotDotToken)
           lowerer.unsupported("SC1031", el, "rest elements over a union of array or tuple layouts");
         const loc = locOf(el);
-        let value = unionArrayValueRead(lowerer, srcRef(), numLit(i, loc), loc);
+        let value = unionArrayValueRead(lowerer, srcRef(), numLit(i, loc), loc, (text) =>
+          strCharsCall(lowerer, text, loc),
+        );
         if (!value)
           lowerer.unsupported(
             "SC1031",
