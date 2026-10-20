@@ -1,5 +1,6 @@
 import { generatorDrain } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
+import { liftedFreshSpread } from "../coercions/fresh-spread.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
   dynUndefinedExpr,
@@ -140,6 +141,16 @@ export function lowerArraySpreadItems(
       }
       if (source.type.kind === "record" && lowerer.shapes.get(source.type.shapeId)?.tuple) {
         source = lowerer.widthCoerce(source, arrType) ?? source;
+      }
+      if (
+        !typeEquals(source.type, arrType) &&
+        !(
+          source.type.kind === "array" &&
+          identityPreservingWidening(lowerer, source.type.elem, elem)
+        )
+      ) {
+        // Fresh elements (an array literal) convert into the element layout.
+        source = liftedFreshSpread(lowerer, node.expression, source, arrType, loc) ?? source;
       }
       if (!typeEquals(source.type, arrType)) {
         if (

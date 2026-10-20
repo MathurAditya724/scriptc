@@ -5331,7 +5331,29 @@ export function lowerVarDecl(
   // `let` may be reassigned a different shape later; genuine `any`
   // only — every other unmappable keeps its own diagnostic.
   const checkerAny = (lowerer.typeOf(decl.name).flags & ts.TypeFlags.Any) !== 0;
+  // An annotation the checker could not resolve (a package type alias that
+  // reads as `any`) over an empty object literal: the binding is a
+  // dictionary the code fills by key (`files[name] = entry`), which the
+  // empty struct the literal would adopt cannot hold. It holds the
+  // checked-dynamic object instead.
+  let emptyAnyDictionary = false;
+  if (checkerAny && decl.type && !isLet && init.type.kind === "record") {
+    let lit: ts.Expression = decl.initializer;
+    while (ts.isParenthesizedExpression(lit)) lit = lit.expression;
+    const shape = lowerer.shapes.get(init.type.shapeId);
+    if (
+      ts.isObjectLiteralExpression(lit) &&
+      lit.properties.nodes.length === 0 &&
+      shape &&
+      shape.fields.length === 0 &&
+      !shape.indexValue
+    ) {
+      type = DYN;
+      emptyAnyDictionary = true;
+    }
+  }
   if (
+    !emptyAnyDictionary &&
     (type === null || (type.kind === "dyn" && checkerAny)) &&
     !isLet &&
     (checkerAny ||
