@@ -194,9 +194,9 @@ function requireStableGenericBinding(
   name: string,
 ): void {
   const isConst = (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0;
-  const redeclared = lowerer.checker
-    .declarationsOf(symbol)
-    .some((d) => d !== decl && ts.isVariableDeclaration(d) && d.initializer !== undefined);
+  const redeclared = symbol.declarations.some(
+    (d) => d !== decl && ts.isVariableDeclaration(d) && d.initializer !== undefined,
+  );
   if (!isConst && (redeclared || !bindingNeverReassigned(lowerer, symbol, decl))) {
     lowerer.unsupported(
       "SC1090",
@@ -273,7 +273,7 @@ export function genericCallInstance(
   // honest story (monomorphize per implementation signature with the
   // reconcile bridge, like the non-generic path).
   {
-    const rdecl = rsig ? lowerer.checker.signatureDeclaration(rsig) : undefined;
+    const rdecl = rsig ? rsig.declaration : undefined;
     if (
       rdecl &&
       (ts.isFunctionDeclaration(rdecl) || ts.isMethodDeclaration(rdecl)) &&
@@ -472,7 +472,7 @@ function localClassOfResult(
 ): ts.ClassLikeDeclaration | null {
   const symbol = type.getSymbol();
   if (!symbol || !(symbol.flags & ts.SymbolFlags.Class)) return null;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (!decl || !(ts.isClassExpression(decl) || ts.isClassDeclaration(decl))) return null;
   for (let parent = decl.parent; parent && !ts.isSourceFile(parent); parent = parent.parent)
     if (parent === info.decl) return decl;
@@ -1582,9 +1582,9 @@ function implicitDeclaredReturn(lowerer: Lowerer, info: GenericFnInfo): IrType |
         const symbol = lowerer.resolveValueSymbol(node.expression);
         if (
           symbol &&
-          lowerer.checker
-            .declarationsOf(symbol)
-            .some((decl) => ts.isVariableDeclaration(decl) && jsBindingHasOpenWrites(lowerer, decl))
+          symbol.declarations.some(
+            (decl) => ts.isVariableDeclaration(decl) && jsBindingHasOpenWrites(lowerer, decl),
+          )
         )
           openReturn = true;
         return undefined;
@@ -2074,9 +2074,9 @@ export function implicitLocalFnNodeOf(
     const sym = lowerer.checker.getSymbolAtLocation(decl.name);
     if (!sym) return null;
     const isConst = (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0;
-    const redeclared = lowerer.checker
-      .declarationsOf(sym)
-      .some((d) => d !== decl && ts.isVariableDeclaration(d) && d.initializer !== undefined);
+    const redeclared = sym.declarations.some(
+      (d) => d !== decl && ts.isVariableDeclaration(d) && d.initializer !== undefined,
+    );
     if (redeclared) return null;
     if (!isConst && !bindingNeverReassigned(lowerer, sym, decl)) return null;
     // The capture scan: instances are module functions with no frame.
@@ -2092,7 +2092,7 @@ export function implicitLocalFnNodeOf(
       }
       if (ts.isIdentifier(n)) {
         const s = lowerer.checker.getSymbolAtLocation(n);
-        const d = s ? lowerer.checker.valueDeclarationOf(s) : undefined;
+        const d = s ? s.valueDeclaration : undefined;
         if (
           d &&
           d.getSourceFile() === decl.getSourceFile() &&
@@ -2179,7 +2179,7 @@ export function objLitGenericFnNodeOf(
   fnNode: ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction;
   literal: ts.ObjectLiteralExpression;
 } | null {
-  const decl = lowerer.checker.valueDeclarationOf(propSym);
+  const decl = propSym.valueDeclaration;
   if (!decl) return null;
   if (ts.isMethodDeclaration(decl) && ts.isObjectLiteralExpression(decl.parent)) {
     return decl.typeParameters !== undefined && decl.body !== undefined
@@ -2453,7 +2453,7 @@ export function requireObjLitGenericReceiver(
     );
   if (!ts.isIdentifier(recv)) fenceReceiver();
   const recvSym = lowerer.resolveValueSymbol(recv);
-  const recvDecl = recvSym ? lowerer.checker.valueDeclarationOf(recvSym) : undefined;
+  const recvDecl = recvSym ? recvSym.valueDeclaration : undefined;
   if (
     !recvDecl ||
     !ts.isVariableDeclaration(recvDecl) ||

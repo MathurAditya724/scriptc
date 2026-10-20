@@ -216,6 +216,12 @@ void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
+/* process.emitWarning = fn (borrowed; the runtime keeps its own
+ * reference). Later process.emitWarning(...) calls apply the replacement
+ * to their arguments, and runtime-built warnings (Node's own modules call
+ * process.emitWarning) reach it as (message, type[, code]) instead of the
+ * report and the 'warning' listeners. */
+void scr_process_set_emit_warning(ScrDyn *fn);
 /* node:punycode's first load (scr_async_dyn.c): later calls are module
  * cache hits. The first reports DEP0040 when `report` (false for a require
  * made from node_modules) — at once for a static ES import, which Node

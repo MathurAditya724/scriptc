@@ -71,9 +71,7 @@ function functionTypedParameter(lowerer: Lowerer, param: ts.ParameterDeclaration
   if (lowerer.checker.getCallSignatures(t).length > 0) return true;
   if (!(t.flags & ts.TypeFlags.TypeParameter)) return false;
   const symbol = t.getSymbol();
-  const decl = symbol
-    ? lowerer.checker.declarationsOf(symbol).find(ts.isTypeParameterDeclaration)
-    : undefined;
+  const decl = symbol ? symbol.declarations.find(ts.isTypeParameterDeclaration) : undefined;
   if (!decl?.constraint) return false;
   const constraint = lowerer.checker.getTypeFromTypeNode(decl.constraint);
   return lowerer.checker.getCallSignatures(constraint).length > 0;
@@ -118,7 +116,7 @@ function staticNameOf(lowerer: Lowerer, expr: ts.Expression, seen: Set<ts.Node>)
     if (!symbol) return null;
     const bound = lowerer.staticFnNames?.get(symbol);
     if (bound !== undefined) return bound;
-    const decl = lowerer.checker.valueDeclarationOf(symbol);
+    const decl = symbol.valueDeclaration;
     if (decl === undefined) return null;
     if (ts.isFunctionDeclaration(decl)) return decl.name ? decl.name.text : "default";
     if (
@@ -147,7 +145,7 @@ function staticNameOf(lowerer: Lowerer, expr: ts.Expression, seen: Set<ts.Node>)
   }
   if (ts.isPropertyAccessExpression(e)) {
     const symbol = lowerer.checker.getSymbolAtLocation(e.name);
-    const decl = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+    const decl = symbol ? symbol.valueDeclaration : undefined;
     if (decl && ts.isMethodDeclaration(decl) && ts.isIdentifier(decl.name)) return decl.name.text;
     return null;
   }

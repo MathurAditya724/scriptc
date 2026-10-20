@@ -37,15 +37,13 @@ export class ClassProtocols {
         const instance = symbol ? this.checker.getDeclaredTypeOfSymbol(symbol) : undefined;
         for (const property of instance ? this.checker.getPropertiesOfType(instance) : []) {
           if (
-            !this.checker
-              .declarationsOf(property)
-              .some(
-                (member) =>
-                  ts.isMethodDeclaration(member) &&
-                  !member.modifiers?.nodes.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
-                  ),
-              )
+            !property.declarations.some(
+              (member) =>
+                ts.isMethodDeclaration(member) &&
+                !member.modifiers?.nodes.some(
+                  (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
+                ),
+            )
           )
             continue;
           const entries = this.methods.get(property.name) ?? [];
@@ -289,7 +287,7 @@ export class ClassProtocols {
       for (const part of parts) {
         if ((part.flags & ts.TypeFlags.TypeParameter) === 0) continue;
         const symbol = part.getSymbol();
-        for (const declaration of symbol ? this.checker.declarationsOf(symbol) : [])
+        for (const declaration of symbol ? symbol.declarations : [])
           if (ts.isTypeParameterDeclaration(declaration) && declaration.parent !== undefined)
             facts.genericObservers.add(declaration.parent);
       }
@@ -501,7 +499,7 @@ export class ClassProtocols {
           if (context !== undefined && this.acceptsAnyValue(context)) return true;
           if (facts.genericObservers.size === 0) return false;
           const signature = this.checker.getResolvedSignature(arg.call);
-          const declaration = signature && this.checker.signatureDeclaration(signature);
+          const declaration = signature && signature.declaration;
           return (
             declaration !== undefined &&
             (facts.genericObservers.has(declaration) ||
@@ -520,13 +518,10 @@ export class ClassProtocols {
       .some(
         (property) =>
           names.has(property.name) &&
-          this.checker
-            .declarationsOf(property)
-            .some(
-              (declaration) =>
-                ts.isGetAccessorDeclaration(declaration) ||
-                ts.isSetAccessorDeclaration(declaration),
-            ),
+          property.declarations.some(
+            (declaration) =>
+              ts.isGetAccessorDeclaration(declaration) || ts.isSetAccessorDeclaration(declaration),
+          ),
       );
   }
 
@@ -580,9 +575,7 @@ export class ClassProtocols {
     return (
       symbol !== undefined &&
       (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
-      this.checker
-        .declarationsOf(symbol)
-        .some((declaration) => !declaration.getSourceFile().isDeclarationFile) &&
+      symbol.declarations.some((declaration) => !declaration.getSourceFile().isDeclarationFile) &&
       // `typeof C` (the class value) shares the class symbol.
       this.checker.getConstructSignatures(type).length === 0
     );
@@ -603,13 +596,10 @@ export class ClassProtocols {
     // A program interface a class matches by its methods (protocol below).
     return (
       this.methods.size > 0 &&
-      this.checker
-        .declarationsOf(symbol)
-        .some(
-          (declaration) =>
-            ts.isInterfaceDeclaration(declaration) &&
-            !declaration.getSourceFile().isDeclarationFile,
-        ) &&
+      symbol.declarations.some(
+        (declaration) =>
+          ts.isInterfaceDeclaration(declaration) && !declaration.getSourceFile().isDeclarationFile,
+      ) &&
       this.protocol(type)
     );
   }
@@ -624,7 +614,7 @@ export class ClassProtocols {
     if (this.checker.getConstructSignatures(type).length > 0) return false;
     const symbol = type.getSymbol();
     if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Class) !== 0) return false;
-    const declarations = this.checker.declarationsOf(symbol);
+    const declarations = symbol.declarations;
     return (
       declarations.length > 0 &&
       declarations.every((declaration) => !declaration.getSourceFile().isDeclarationFile)
@@ -712,13 +702,10 @@ export class ClassProtocols {
     if (symbol && protocols.has(symbol)) return true;
     if (
       !symbol ||
-      !this.checker
-        .declarationsOf(symbol)
-        .some(
-          (declaration) =>
-            ts.isInterfaceDeclaration(declaration) &&
-            !declaration.getSourceFile().isDeclarationFile,
-        )
+      !symbol.declarations.some(
+        (declaration) =>
+          ts.isInterfaceDeclaration(declaration) && !declaration.getSourceFile().isDeclarationFile,
+      )
     )
       return false;
     for (const property of properties) {
@@ -735,6 +722,12 @@ export class ClassProtocols {
           return true;
       }
     }
+    // An interface extending a class-backed protocol holds values of that
+    // protocol (`interface TupleType extends Type`), so an assertion from
+    // the base to it keeps the instance and its methods.
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    if (target?.isClassOrInterface())
+      for (const base of this.checker.getBaseTypes(target)) if (this.protocol(base)) return true;
     return false;
   }
 }

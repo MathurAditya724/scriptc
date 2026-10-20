@@ -242,7 +242,7 @@ export function onlyForwarded(
         const sigs = lowerer.checker.getCallSignatures(
           lowerer.checker.getNonNullableType(lowerer.typeOf(p.parent.expression)),
         );
-        const decl = sigs.length === 1 ? lowerer.checker.signatureDeclaration(sigs[0]!) : undefined;
+        const decl = sigs.length === 1 ? sigs[0]!.declaration : undefined;
         if (decl && !decl.getSourceFile().isDeclarationFile) return undefined;
       }
       if (
@@ -311,7 +311,7 @@ export function forwardedTupleType(lowerer: Lowerer, node: ts.Expression): IrTyp
   if (!symbol) return null;
   const alias = lowerer.tupleAliasSymbols.get(symbol);
   if (alias) return alias;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (
     decl !== undefined &&
     ts.isParameter(decl) &&

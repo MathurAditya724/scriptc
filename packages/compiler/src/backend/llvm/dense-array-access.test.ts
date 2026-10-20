@@ -31,7 +31,7 @@ function module(
   unions: IrModule["unions"] = [],
 ): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     unions,

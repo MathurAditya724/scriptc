@@ -38,6 +38,7 @@ extern SCR_TL ScrVt scr_emitter_vt; /* main() stamps pre/post */
 extern SCR_TL double scr_emitter_default_max;
 
 ScrEmitter *scr_emitter_new(void); /* +1, collector-headered */
+ScrStr *scr_emitter_class_name(const ScrEmitter *em); /* +1 */
 /* Internal owner hook; observes listener presence without running script. */
 void scr_emitter_observe(ScrEmitter *em,
                         void (*observe)(void *, const ScrStr *, bool), void *context);

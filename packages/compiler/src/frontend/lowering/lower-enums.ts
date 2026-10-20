@@ -73,7 +73,7 @@ export function lowerEnumAccess(
   if (ts.isPropertyAccessExpression(expr)) {
     const sym = lowerer.checker.getSymbolAtLocation(expr.name);
     if (sym && sym.flags & ts.SymbolFlags.EnumMember) {
-      const decl = lowerer.checker.valueDeclarationOf(sym);
+      const decl = sym.valueDeclaration;
       if (decl && ts.isEnumMember(decl) && effectFreeReceiver(expr.expression)) {
         return lowerEnumMemberRead(lowerer, expr, decl);
       }
@@ -86,9 +86,9 @@ export function lowerEnumAccess(
   if (!ts.isIdentifier(recv)) return null;
   const recvSym = lowerer.resolveValueSymbol(recv);
   if (!recvSym || !(recvSym.flags & ts.SymbolFlags.Enum)) return null;
-  const decls = lowerer.checker
-    .declarationsOf(recvSym)
-    .filter((d): d is ts.EnumDeclaration => ts.isEnumDeclaration(d));
+  const decls = recvSym.declarations.filter((d): d is ts.EnumDeclaration =>
+    ts.isEnumDeclaration(d),
+  );
   if (decls.length === 0) return null;
   let key = expr.argumentExpression;
   while (ts.isParenthesizedExpression(key)) key = key.expression;
@@ -222,7 +222,7 @@ function foldConstIndex(lowerer: Lowerer, e: ts.Expression): number | null {
   if (ts.isPropertyAccessExpression(x)) {
     const sym = lowerer.checker.getSymbolAtLocation(x.name);
     if (sym && sym.flags & ts.SymbolFlags.EnumMember) {
-      const decl = lowerer.checker.valueDeclarationOf(sym);
+      const decl = sym.valueDeclaration;
       if (decl && ts.isEnumMember(decl)) {
         const v = lowerer.checker.getConstantValue(decl);
         if (typeof v === "number") return v;
