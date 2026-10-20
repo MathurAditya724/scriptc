@@ -13,8 +13,11 @@ import { writesPublished } from "./publication.js";
 /** Lib calls that read a captured stack trace. */
 const STACK_READS: ReadonlySet<string> = new Set(["error.stack"]);
 
+/** A typed `error.stack` read, or a `stack` read on a checked-dynamic
+ * value, which reaches an error's own `stack` accessor. */
 function readsStack(expr: IrExpr): boolean {
-  return expr.kind === "libCall" && STACK_READS.has(expr.fn);
+  if (expr.kind === "libCall") return STACK_READS.has(expr.fn);
+  return expr.kind === "dynKeyGet" && expr.key.kind === "strLit" && expr.key.value === "stack";
 }
 
 function containsStackRead(fn: IrFunction): boolean {
