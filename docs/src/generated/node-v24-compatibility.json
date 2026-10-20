@@ -329,8 +329,8 @@
       "apiEntries": 92,
       "static": {
         "supported": 1,
-        "partial": 15,
-        "refused": 1,
+        "partial": 16,
+        "refused": 0,
         "not-implemented": 75,
         "by-design": 0,
         "unreviewed": 0,
@@ -36590,9 +36590,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {

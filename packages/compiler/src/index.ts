@@ -535,6 +535,7 @@ async function compileExecutableNative(
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
+    ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     zlib: features.zlib,
@@ -730,6 +731,7 @@ async function prepareExecutableInput(
         wasi: buildPlatform === "wasi",
         runtimeAbiMarker: outputKind === "obj",
         objectAudit: opts.sanitize === true,
+        ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
         ...inlineRcOption(opts.optimization, opts.sanitize === true),
       });
     } catch (err) {
@@ -795,6 +797,7 @@ async function prepareExecutableInput(
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
       objectAudit: opts.sanitize === true,
+      ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
     });

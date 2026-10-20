@@ -118,6 +118,8 @@ export interface CcOptions {
    * native fetch AbortSignal built on the same engine: compiles
    * scr_event_target.c. */
   eventTarget?: boolean;
+  /** The WebAssembly API: compiles scr_wasm.c. */
+  wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */

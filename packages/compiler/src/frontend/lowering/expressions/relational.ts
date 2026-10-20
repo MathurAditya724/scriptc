@@ -25,7 +25,7 @@ import {
   typeEquals,
   typeKey,
 } from "../../../ir/ir.js";
-import { refuseWebAssemblyUse } from "../builtins/webassembly.js";
+import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/webassembly.js";
 import { lowerSocketInstanceOf } from "../lower-server.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
@@ -62,6 +62,8 @@ import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js"
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const webAssembly = lowerWebAssemblyInstanceof(lowerer, expr);
+  if (webAssembly !== null) return webAssembly;
   refuseWebAssemblyUse(lowerer, expr.right);
   // `x instanceof net.Socket` over a union with a netSocket arm — the
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.

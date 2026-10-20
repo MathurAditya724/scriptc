@@ -467,7 +467,12 @@ const RUNTIME_FEATURE_RULES = {
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
-  bigint: rule({ fns: ["process.hrtimeValue"], prefixes: ["bigint."], types: ["bigint"] }),
+  /** scr_wasm.c converts i64 values through BigInt. */
+  bigint: rule({
+    fns: ["process.hrtimeValue"],
+    prefixes: ["bigint.", "wasm."],
+    types: ["bigint"],
+  }),
   childProcess: rule({
     fns: [...CHILD_PROCESS_LIB_FNS],
     prefixes: CHILD_PROCESS_LIB_PREFIXES,
@@ -494,14 +499,15 @@ const RUNTIME_FEATURE_RULES = {
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
     // The legacy url functions and crypto.createCipheriv emit their
-    // deprecation warnings through the dyn-async unit.
+    // deprecation warnings through the dyn-async unit; scr_wasm.c boxes its
+    // handles and promises through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
     ],
-    prefixes: READABLE_DYN_ASYNC_PREFIXES,
+    prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
       (node.kind === "awaitExpr" && node.type.kind === "dyn") ||
       // Rejection reasons cross as dyn values (allSettled's records, any's
@@ -640,6 +646,8 @@ const RUNTIME_FEATURE_RULES = {
   tlsCa: rule({ prefixes: ["tlsca."] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** The WebAssembly API (scr_wasm.c). */
+  wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
    * scr_webcrypto.c. */
   webcrypto: rule({ prefixes: ["webcrypto."] }),
@@ -693,6 +701,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     tls: false,
     tlsCa: false,
     warningReplace: false,
+    wasm: false,
     webcrypto: false,
     zlib: false,
   };
