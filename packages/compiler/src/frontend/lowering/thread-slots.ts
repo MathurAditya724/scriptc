@@ -168,7 +168,7 @@ function declaringNew(lowerer: Lowerer, receiver: ts.Expression): ts.NewExpressi
   let symbol = checker.getSymbolAtLocation(ref);
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
     symbol = checker.getAliasedSymbol(symbol);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isVariableDeclaration(decl)) return null;
   const list = decl.parent;
   if (

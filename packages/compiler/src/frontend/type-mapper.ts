@@ -943,13 +943,11 @@ export function isWebAssemblyType(
 ): boolean {
   const symbol = type.getAliasSymbol() ?? type.getSymbol();
   if (!symbol) return false;
-  return ctx.checker
-    .declarationsOf(symbol)
-    .some(
-      (d) =>
-        ctx.isStdlibFile(d.getSourceFile()) &&
-        isDeclaredInAmbientNamespace(d as ts.Declaration, "WebAssembly"),
-    );
+  return symbol.declarations.some(
+    (d) =>
+      ctx.isStdlibFile(d.getSourceFile()) &&
+      isDeclaredInAmbientNamespace(d as ts.Declaration, "WebAssembly"),
+  );
 }
 
 /** True when a type contains a record anywhere (the trigger for the
@@ -1221,7 +1219,7 @@ export function isLegacyUrlSymbol(
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
 ): boolean {
   if (!symbol) return false;
-  for (const d of ctx.checker.declarationsOf(symbol)) {
+  for (const d of symbol.declarations) {
     if (!ctx.isStdlibFile(d.getSourceFile())) continue;
     let family = false;
     for (let n: ts.Node | undefined = d; n; n = n.parent) {
@@ -1258,7 +1256,7 @@ export function isOsConstantsSymbol(
   types = false,
 ): boolean {
   if (!symbol) return false;
-  for (const d of ctx.checker.declarationsOf(symbol)) {
+  for (const d of symbol.declarations) {
     const alias = types && ts.isTypeAliasDeclaration(d) && d.name.text === "SignalConstants";
     const signals =
       !types && ts.isVariableDeclaration(d) && ts.isIdentifier(d.name) && d.name.text === "signals";
@@ -1289,14 +1287,12 @@ function isWorkerHandleSymbol(
       symbol?.name === "MessagePort" ||
       symbol?.name === "MessageChannel" ||
       symbol?.name === "BroadcastChannel") &&
-    ctx.checker
-      .declarationsOf(symbol)
-      .some(
-        (d) =>
-          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "worker_threads"),
-      )
+    symbol.declarations.some(
+      (d) =>
+        (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "worker_threads"),
+    )
   );
 }
 
@@ -1310,9 +1306,7 @@ function isReceiveMessageResult(
   let found = false;
   for (const member of members) {
     if (member.flags & ts.TypeFlags.Undefined) continue;
-    const decl = member.getSymbol()
-      ? ctx.checker.declarationsOf(member.getSymbol()!)[0]
-      : undefined;
+    const decl = member.getSymbol() ? member.getSymbol()!.declarations[0] : undefined;
     let fn: ts.Node | undefined = decl?.parent;
     while (fn && ts.isUnionTypeNode(fn)) fn = fn.parent;
     if (
@@ -1371,13 +1365,11 @@ export function isFetchHandleType(
       if (
         !symbol ||
         (symbol.name !== "Headers" && symbol.name !== "Request" && symbol.name !== "Response") ||
-        !ctx.checker
-          .declarationsOf(symbol)
-          .some(
-            (d) =>
-              (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-              ctx.isStdlibFile(d.getSourceFile()),
-          )
+        !symbol.declarations.some(
+          (d) =>
+            (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+            ctx.isStdlibFile(d.getSourceFile()),
+        )
       )
         return false;
     }
@@ -1452,15 +1444,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
   // reference needs native object identity, including var's undefined state.
   const intrinsic = type.getSymbol();
-  if (intrinsic?.name === "globalThis" && checker.declarationsOf(intrinsic).length === 0)
-    return DYN;
+  if (intrinsic?.name === "globalThis" && intrinsic.declarations.length === 0) return DYN;
   if (ctx.jsDynamicDeclaration !== undefined && intrinsic !== undefined) {
     const objectLiteral = (intrinsic.flags & ts.SymbolFlags.ObjectLiteral) !== 0;
     const classInstance =
       (intrinsic.flags & ts.SymbolFlags.Class) !== 0 && type.isClassOrInterface();
     if (
       (objectLiteral || classInstance) &&
-      checker.declarationsOf(intrinsic).some((decl) => ctx.jsDynamicDeclaration!(decl))
+      intrinsic.declarations.some((decl) => ctx.jsDynamicDeclaration!(decl))
     )
       return DYN;
   }
@@ -1478,7 +1469,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const directAlias = type.getAliasSymbol();
   if (
     directAlias?.name === "ExecFileException" &&
-    checker.declarationsOf(directAlias).some((decl) => ctx.isStdlibFile(decl.getSourceFile()))
+    directAlias.declarations.some((decl) => ctx.isStdlibFile(decl.getSourceFile()))
   ) {
     return { kind: "object", className: "%Error" };
   }
@@ -1488,14 +1479,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const execException = type.getSymbol();
   if (
     execException?.name === "ExecException" &&
-    checker
-      .declarationsOf(execException)
-      .some(
-        (decl) =>
-          ts.isInterfaceDeclaration(decl) &&
-          ctx.isStdlibFile(decl.getSourceFile()) &&
-          isDeclaredInAmbientModule(decl, "child_process"),
-      )
+    execException.declarations.some(
+      (decl) =>
+        ts.isInterfaceDeclaration(decl) &&
+        ctx.isStdlibFile(decl.getSourceFile()) &&
+        isDeclaredInAmbientModule(decl, "child_process"),
+    )
   ) {
     return { kind: "object", className: "%Error" };
   }
@@ -1591,7 +1580,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const errorOptionsSymbol = widened.getSymbol();
   if (
     errorOptionsSymbol?.name === "ErrorOptions" &&
-    checker.declarationsOf(errorOptionsSymbol).some((d) => ctx.isStdlibFile(d.getSourceFile()))
+    errorOptionsSymbol.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
   ) {
     return DYN;
   }
@@ -1623,17 +1612,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (
       parseArgsSym &&
       PARSE_ARGS_DYN_TYPES.has(parseArgsSym.name) &&
-      checker.declarationsOf(parseArgsSym).some(belongs)
+      parseArgsSym.declarations.some(belongs)
     )
       return DYN;
     // ReturnType and instantiated conditional types can erase the alias.
     // Require every member to retain the util declaration provenance so
     // unrelated records with similar property names keep their own layout.
     const members = checker.getPropertiesOfType(widened);
-    if (
-      members.length > 0 &&
-      members.every((member) => checker.declarationsOf(member).some(belongs))
-    )
+    if (members.length > 0 && members.every((member) => member.declarations.some(belongs)))
       return DYN;
   }
   // The lib's BOXED wrapper interfaces used as TYPES (`const n: Number =
@@ -1646,7 +1632,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (
       boxSym &&
       (boxSym.name === "Number" || boxSym.name === "String" || boxSym.name === "Boolean") &&
-      checker.declarationsOf(boxSym).some((d) => ctx.isStdlibFile(d.getSourceFile()))
+      boxSym.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
     ) {
       return boxSym.name === "Number" ? F64 : boxSym.name === "String" ? STRING : BOOL;
     }
@@ -1669,7 +1655,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (ctorSym.name === "StringConstructor" ||
         ctorSym.name === "NumberConstructor" ||
         ctorSym.name === "BooleanConstructor") &&
-      checker.declarationsOf(ctorSym).some((d) => ctx.isStdlibFile(d.getSourceFile()))
+      ctorSym.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
     ) {
       return funcOf(
         [STRING],
@@ -1781,7 +1767,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const classSym = widened.getSymbol();
     const name = classSym?.name;
     if (name === "LifetimeRegion" || name === "InternTable" || name === "ThreadSlots") {
-      for (const d of checker.declarationsOf(classSym!)) {
+      for (const d of classSym!.declarations) {
         if (!ts.isClassDeclaration(d)) continue;
         const synthetic =
           name === "LifetimeRegion"
@@ -1803,7 +1789,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // types-only package), so it maps structurally like a local declaration.
   // Values the package itself would produce stay refused at their import.
   const packageOnly = (sym: ts.Symbol | undefined): readonly ts.Node[] | null => {
-    const decls = sym ? checker.declarationsOf(sym) : undefined;
+    const decls = sym ? sym.declarations : undefined;
     return decls &&
       decls.length > 0 &&
       decls.every((d) => {
@@ -2017,7 +2003,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Class instances name a program class. The same symbol with construct
   // signatures names its static side, mapped to classval below.
   const widenedSym = widened.getSymbol();
-  const classDecl = widenedSym ? checker.valueDeclarationOf(widenedSym) : undefined;
+  const classDecl = widenedSym ? widenedSym.valueDeclaration : undefined;
   if (
     classDecl &&
     (ts.isClassDeclaration(classDecl) || ts.isClassExpression(classDecl)) &&
@@ -2145,9 +2131,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const psym = widened.getSymbol();
   const isStdlibInterface = (name: string): boolean =>
     psym?.name === name &&
-    checker
-      .declarationsOf(psym)
-      .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()));
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+    );
   // The builtin Error classes: references to the lib's Error interfaces map to the runtime-provided class
   // hierarchy (provenance, not the name — a user's own `class Error`
   // resolved through the class-instance branch above, and a user
@@ -2161,9 +2147,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // fallback and in @types/node), not as a lib interface.
   if (
     psym?.name === "AssertionError" &&
-    checker
-      .declarationsOf(psym)
-      .some((d) => ts.isClassDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+    psym.declarations.some((d) => ts.isClassDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
   )
     return { kind: "object", className: "%AssertionError" };
   // The lib's `Object` interface is a TOP type: tsc admits every
@@ -2181,16 +2165,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // included, while unrelated user interfaces named Module stay structural.
   if (
     (psym?.name === "ScriptcModule" || psym?.name === "Module") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          (psym.name === "ScriptcModule" ||
-            isDeclaredInAmbientNamespace(d, "NodeJS") ||
-            isDeclaredInAmbientModule(d, "module")),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        (psym.name === "ScriptcModule" ||
+          isDeclaredInAmbientNamespace(d, "NodeJS") ||
+          isDeclaredInAmbientModule(d, "module")),
+    )
   ) {
     return F64;
   }
@@ -2203,14 +2185,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // et al. extend) is the same runtime value. Provenance-checked.
   if (
     psym?.name === "EventEmitter" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          (isDeclaredInAmbientModule(d, "events") || isDeclaredInAmbientNamespace(d, "NodeJS")),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        (isDeclaredInAmbientModule(d, "events") || isDeclaredInAmbientNamespace(d, "NodeJS")),
+    )
   ) {
     return { kind: "object", className: RUNTIME_EMITTER_CLASS };
   }
@@ -2220,15 +2200,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // enclosing ambient module, like net.Server.
   if (
     psym?.name === "Interface" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          (isDeclaredInAmbientModule(d, "readline") ||
-            isDeclaredInAmbientModule(d, "readline/promises")),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        (isDeclaredInAmbientModule(d, "readline") ||
+          isDeclaredInAmbientModule(d, "readline/promises")),
+    )
   ) {
     return F64;
   }
@@ -2237,29 +2215,25 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // code member).
   if (
     psym?.name === "Key" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          ts.isInterfaceDeclaration(d) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          (isDeclaredInAmbientModule(d, "readline") ||
-            isDeclaredInAmbientModule(d, "readline/promises")),
-      )
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        (isDeclaredInAmbientModule(d, "readline") ||
+          isDeclaredInAmbientModule(d, "readline/promises")),
+    )
   ) {
     return DYN;
   }
   // readline/promises.Readline: an f64 handle the same way.
   if (
     psym?.name === "Readline" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "readline/promises"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "readline/promises"),
+    )
   ) {
     return F64;
   }
@@ -2271,14 +2245,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // and @types/node's class Channel<StoreType, ContextType>.
   if (
     psym?.name === "Channel" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "diagnostics_channel"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "diagnostics_channel"),
+    )
   ) {
     return F64;
   }
@@ -2287,14 +2259,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // process-lived; contexts ride the fiber machinery).
   if (
     psym?.name === "AsyncLocalStorage" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "async_hooks"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
   ) {
     return F64;
   }
@@ -2302,21 +2272,19 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // runtime's tracing registry (five event channels per entry).
   if (
     psym?.name === "TracingChannel" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "diagnostics_channel"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "diagnostics_channel"),
+    )
   ) {
     return F64;
   }
   // Node names this result; the ambient WHATWG declaration uses a type literal.
   const encodeResult =
     psym &&
-    checker.declarationsOf(psym).some((decl) => {
+    psym.declarations.some((decl) => {
       if (!ctx.isStdlibFile(decl.getSourceFile())) return false;
       if (ts.isInterfaceDeclaration(decl) && decl.name.text === "EncodeIntoResult") return true;
       const parent = decl.parent;
@@ -2343,13 +2311,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Their private encoding slot is omitted from enumeration and JSON.
   if (
     (psym?.name === "TextEncoder" || psym?.name === "TextDecoder") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return {
       kind: "record",
@@ -2379,13 +2345,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // record shape never surfaces.
   if (
     psym?.name === "StringDecoder" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return {
       kind: "record",
@@ -2405,7 +2369,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // record-holding binding forms compile. User-declared literals with
   // these member names keep the ordinary record path (their declarations
   // are not in declaration files).
-  const promiseDeclarations = psym ? checker.declarationsOf(psym) : [];
+  const promiseDeclarations = psym ? psym.declarations : [];
   if (
     flags & ts.TypeFlags.Object &&
     promiseDeclarations.length > 0 &&
@@ -2471,9 +2435,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const alias = widened.getAliasSymbol();
     if (
       alias?.name === "ReadableStreamReadResult" &&
-      checker
-        .declarationsOf(alias)
-        .some((d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+      alias.declarations.some(
+        (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+      )
     ) {
       const elemTs = widened.getAliasTypeArguments()?.[0];
       const elem =
@@ -2486,9 +2450,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     psym &&
     (psym.name === "ReadableStreamReadValueResult" ||
       psym.name === "ReadableStreamReadDoneResult") &&
-    checker
-      .declarationsOf(psym)
-      .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     const elemTs = checker.getTypeArguments(widened as ts.TypeReference)[0];
     const elem =
@@ -2500,13 +2464,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // whose getters and methods dispatch through the handle.
   if (
     (psym?.name === "SocketAddress" || psym?.name === "BlockList") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return DYN;
   }
@@ -2532,13 +2494,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // that export() returns is a plain checked-dynamic object.
   if (
     (psym?.name === "KeyObject" || psym?.name === "JsonWebKey") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return DYN;
   }
@@ -2547,17 +2507,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     (FETCH_AMBIENT_TYPES as readonly string[]).includes(psym.name) &&
     !(
       psym.name === "ReadableStream" &&
-      checker
-        .declarationsOf(psym)
-        .some((d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientNamespace(d, "NodeJS"))
-    ) &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
+      psym.declarations.some(
+        (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientNamespace(d, "NodeJS"),
       )
+    ) &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return DYN;
   }
@@ -2573,9 +2531,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       psym?.name === "Disposable" ||
       psym?.name === "AsyncDisposable" ||
       psym?.name === "DisposableStack") &&
-    checker
-      .declarationsOf(psym)
-      .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return DYN;
   }
@@ -2585,7 +2543,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     psym !== undefined &&
     CIPHER_TYPE_NAMES.has(psym.name) &&
-    checker.declarationsOf(psym).some((d) => ctx.isStdlibFile(d.getSourceFile()))
+    psym.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
   ) {
     return DYN;
   }
@@ -2713,13 +2671,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // the same symbol); provenance-checked like URL.
   if (
     psym?.name === "Buffer" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return bytesOf("u8");
   }
@@ -2730,13 +2686,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // record/class like any other.
   if (
     psym?.name === "URL" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return { kind: "url" };
   }
@@ -2745,13 +2699,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // URLSearchParams` in the "url" module). Provenance-checked like URL.
   if (
     psym?.name === "URLSearchParams" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return { kind: "searchParams" };
   }
@@ -2759,13 +2711,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // declarations' interface. Provenance-checked like URL.
   if (
     psym?.name === "Stats" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return { kind: "stats" };
   }
@@ -2775,14 +2725,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     (psym?.name === "StatsFs" ||
       psym?.name === "BigIntStatsFs" ||
       psym?.name === "StatFsOptions") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "fs"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
   )
     return DYN;
   if (isWorkerHandleSymbol(psym, ctx)) return DYN;
@@ -2791,14 +2739,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // fallback and @types/node declare it in "fs/promises".
   if (
     psym?.name === "FileHandle" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          ts.isInterfaceDeclaration(d) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "fs/promises"),
-      )
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "fs/promises"),
+    )
   ) {
     return { kind: "fileHandle" };
   }
@@ -2806,14 +2752,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // fallback and @types/node.
   if (
     psym?.name === "Dir" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "fs"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
   ) {
     return { kind: "dir" };
   }
@@ -2823,13 +2767,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Provenance-checked like Stats.
   if (
     psym?.name === "SpawnSyncReturns" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return { kind: "spawnRes" };
   }
@@ -2841,14 +2783,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     (psym.name === "ChildProcess" ||
       psym.name === "ChildProcessWithoutNullStreams" ||
       psym.name === "ChildProcessByStdio") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "child_process"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "child_process"),
+    )
   ) {
     return { kind: "child" };
   }
@@ -2861,7 +2801,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // site.
   if (
     (psym?.name === "Server" || psym?.name === "Socket" || psym?.name === "TLSSocket") &&
-    checker.declarationsOf(psym).some(
+    psym.declarations.some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
         ctx.isStdlibFile(d.getSourceFile()) &&
@@ -2887,14 +2827,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // "tls"`, and the shipped fallback mirrors it.
   if (
     psym?.name === "SecureContext" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "tls"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "tls"),
+    )
   ) {
     return { kind: "secureCtx" };
   }
@@ -2902,14 +2840,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // checked values so presence probes and repeated getter reads match Node.
   if (
     psym?.name === "ScryptOptions" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          ts.isInterfaceDeclaration(d) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "crypto"),
-      )
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
   )
     return DYN;
   // crypto.Hash / crypto.Hmac: native incremental digest handles. Keep
@@ -2917,14 +2853,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // retain their ordinary structural/class representation.
   if (
     (psym?.name === "Hash" || psym?.name === "Hmac") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "crypto"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
   ) {
     return psym.name === "Hash" ? CRYPTOHASH_T : CRYPTOHMAC_T;
   }
@@ -2934,14 +2868,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // mirrors it.
   if (
     psym?.name === "FSWatcher" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "fs"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
   ) {
     return { kind: "fsWatcher" };
   }
@@ -2964,25 +2896,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // scalar; the lowered surface is write(string).
   if (
     (psym?.name === "WriteStream" &&
-      checker
-        .declarationsOf(psym)
-        .some(
-          (d) =>
-            (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-            ctx.isStdlibFile(d.getSourceFile()) &&
-            (isDeclaredInAmbientModule(d, "tty") ||
-              (isDeclaredInAmbientModule(d, "process") &&
-                isDeclaredInAmbientNamespace(d, "NodeJS"))),
-        )) ||
+      psym.declarations.some(
+        (d) =>
+          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          (isDeclaredInAmbientModule(d, "tty") ||
+            (isDeclaredInAmbientModule(d, "process") && isDeclaredInAmbientNamespace(d, "NodeJS"))),
+      )) ||
     (psym?.name === "WritableStream" &&
-      checker
-        .declarationsOf(psym)
-        .some(
-          (d) =>
-            ts.isInterfaceDeclaration(d) &&
-            ctx.isStdlibFile(d.getSourceFile()) &&
-            isDeclaredInAmbientNamespace(d, "NodeJS"),
-        ))
+      psym.declarations.some(
+        (d) =>
+          ts.isInterfaceDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientNamespace(d, "NodeJS"),
+      ))
   ) {
     return PROCSTREAM_T;
   }
@@ -2992,24 +2919,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // of the broad @types class fence where they are constructed.
   if (
     (psym?.name === "ChildStdin" &&
-      checker
-        .declarationsOf(psym)
-        .some(
-          (d) =>
-            ts.isInterfaceDeclaration(d) &&
-            ctx.isStdlibFile(d.getSourceFile()) &&
-            isDeclaredInAmbientModule(d, "child_process"),
-        )) ||
+      psym.declarations.some(
+        (d) =>
+          ts.isInterfaceDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientModule(d, "child_process"),
+      )) ||
     (psym?.name === "Writable" &&
-      checker
-        .declarationsOf(psym)
-        .some(
-          (d) =>
-            (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-            ctx.isStdlibFile(d.getSourceFile()) &&
-            isNodeTypesPath(d.getSourceFile().fileName) &&
-            isDeclaredInAmbientModule(d, "stream"),
-        ))
+      psym.declarations.some(
+        (d) =>
+          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isNodeTypesPath(d.getSourceFile().fileName) &&
+          isDeclaredInAmbientModule(d, "stream"),
+      ))
   ) {
     return { kind: "childWriter" };
   }
@@ -3023,15 +2946,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   for (const [irName, rec] of RUNTIME_STREAM_CLASSES) {
     if (
       psym?.name === rec.lib &&
-      checker
-        .declarationsOf(psym)
-        .some(
-          (d) =>
-            ts.isClassDeclaration(d) &&
-            ctx.isStdlibFile(d.getSourceFile()) &&
-            !isNodeTypesPath(d.getSourceFile().fileName) &&
-            isDeclaredInAmbientModule(d, "stream"),
-        )
+      psym.declarations.some(
+        (d) =>
+          ts.isClassDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          !isNodeTypesPath(d.getSourceFile().fileName) &&
+          isDeclaredInAmbientModule(d, "stream"),
+      )
     ) {
       return { kind: "object", className: irName };
     }
@@ -3041,15 +2962,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     psym !== undefined &&
     ZLIB_STREAM_MODES.has(psym.name) &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          ts.isClassDeclaration(d) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          !isNodeTypesPath(d.getSourceFile().fileName) &&
-          isDeclaredInAmbientModule(d, "zlib"),
-      )
+    psym.declarations.some(
+      (d) =>
+        ts.isClassDeclaration(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        !isNodeTypesPath(d.getSourceFile().fileName) &&
+        isDeclaredInAmbientModule(d, "zlib"),
+    )
   ) {
     return { kind: "object", className: "%Transform" };
   }
@@ -3058,37 +2977,31 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // (scr_fs_stream.c).
   if (
     (psym?.name === "ReadStream" || psym?.name === "WriteStream") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          ts.isClassDeclaration(d) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          !isNodeTypesPath(d.getSourceFile().fileName) &&
-          isDeclaredInAmbientModule(d, "fs"),
-      )
+    psym.declarations.some(
+      (d) =>
+        ts.isClassDeclaration(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        !isNodeTypesPath(d.getSourceFile().fileName) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
   ) {
     return { kind: "object", className: psym.name === "ReadStream" ? "%Readable" : "%Writable" };
   }
   if (
     (psym?.name === "Readable" &&
-      checker
-        .declarationsOf(psym)
-        .some(
-          (d) =>
-            (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-            ctx.isStdlibFile(d.getSourceFile()) &&
-            isDeclaredInAmbientModule(d, "stream"),
-        )) ||
+      psym.declarations.some(
+        (d) =>
+          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientModule(d, "stream"),
+      )) ||
     (psym?.name === "ReadableStream" &&
-      checker
-        .declarationsOf(psym)
-        .some(
-          (d) =>
-            ts.isInterfaceDeclaration(d) &&
-            ctx.isStdlibFile(d.getSourceFile()) &&
-            isDeclaredInAmbientNamespace(d, "NodeJS"),
-        ))
+      psym.declarations.some(
+        (d) =>
+          ts.isInterfaceDeclaration(d) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientNamespace(d, "NodeJS"),
+      ))
   ) {
     return { kind: "childStream" };
   }
@@ -3098,14 +3011,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // inside `declare module "dgram"`.
   if (
     psym?.name === "Socket" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "dgram"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "dgram"),
+    )
   ) {
     return { kind: "dgramSocket" };
   }
@@ -3117,14 +3028,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // both spellings).
   if (
     (psym?.name === "TestContext" || psym?.name === "SuiteContext") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "test"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "test"),
+    )
   ) {
     return { kind: "testCtx" };
   }
@@ -3133,14 +3042,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // { %call: F, mock } record through mapHybridCallableIntersection.
   if (
     (psym?.name === "MockFunctionContext" || psym?.name === "MockFunctionCall") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          ts.isInterfaceDeclaration(d) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "test"),
-      )
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "test"),
+    )
   ) {
     const fnTs = checker.getTypeArguments(widened as ts.TypeReference)[0];
     const fn = fnTs ? mapType(fnTs, ctx) : null;
@@ -3156,9 +3063,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Provenance-checked like the rest.
   if (
     psym?.name === "ErrnoException" &&
-    checker
-      .declarationsOf(psym)
-      .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return { kind: "object", className: "%Error" };
   }
@@ -3170,14 +3077,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Agent extends http's; both live in their ambient modules).
   if (
     psym?.name === "Agent" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          (isDeclaredInAmbientModule(d, "http") || isDeclaredInAmbientModule(d, "https")),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        (isDeclaredInAmbientModule(d, "http") || isDeclaredInAmbientModule(d, "https")),
+    )
   ) {
     return { kind: "dyn" };
   }
@@ -3186,14 +3091,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // rule).
   if (
     (psym?.name === "IncomingMessage" || psym?.name === "ServerResponse") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "http"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "http"),
+    )
   ) {
     return psym.name === "IncomingMessage" ? { kind: "httpReq" } : { kind: "httpRes" };
   }
@@ -3209,14 +3112,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     (psym?.name === "Http2SecureServer" ||
       psym?.name === "Http2ServerRequest" ||
       psym?.name === "Http2ServerResponse") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "http2"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "http2"),
+    )
   ) {
     return psym.name === "Http2SecureServer"
       ? { kind: "netServer" }
@@ -3235,14 +3136,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       psym?.name === "ServerHttp2Session" ||
       psym?.name === "ClientHttp2Stream" ||
       psym?.name === "ServerHttp2Stream") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "http2"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "http2"),
+    )
   ) {
     return psym.name === "Http2Server"
       ? { kind: "netServer" }
@@ -3254,14 +3153,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // like IncomingMessage.
   if (
     psym?.name === "ClientRequest" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "http"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "http"),
+    )
   ) {
     return { kind: "httpClientReq" };
   }
@@ -3275,9 +3172,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // and interns the SAME shape.
   if (
     psym?.name === "ProcessEnv" &&
-    checker
-      .declarationsOf(psym)
-      .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     const value = withUndefinedArm(STRING, ctx.unions);
     if (!value) return null;
@@ -3367,9 +3264,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const alias = widened.getAliasSymbol();
     if (
       alias?.name === "IteratorResult" &&
-      checker
-        .declarationsOf(alias)
-        .some((d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+      alias.declarations.some(
+        (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+      )
     ) {
       const targs = widened.getAliasTypeArguments() ?? [];
       const channels = genChannels(targs[0], targs[1], undefined, ctx);
@@ -3504,14 +3401,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       psym?.name === "ReadOptions" ||
       psym?.name === "ReadOptionsWithBuffer" ||
       psym?.name === "WriteOptions") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          ts.isInterfaceDeclaration(d) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          (isDeclaredInAmbientModule(d, "fs/promises") || isDeclaredInAmbientModule(d, "fs")),
-      )
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        (isDeclaredInAmbientModule(d, "fs/promises") || isDeclaredInAmbientModule(d, "fs")),
+    )
   ) {
     const fields: { name: string; type: IrType }[] = [];
     for (const property of checker.getPropertiesOfType(widened)) {
@@ -3535,16 +3430,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       psym?.name === "FileWritevResult" ||
       psym?.name === "ReadVResult" ||
       psym?.name === "WriteVResult") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          ts.isInterfaceDeclaration(d) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          (isDeclaredInAmbientModule(d, "fs/promises") ||
-            ((psym.name === "ReadVResult" || psym.name === "WriteVResult") &&
-              isDeclaredInAmbientModule(d, "fs"))),
-      )
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        (isDeclaredInAmbientModule(d, "fs/promises") ||
+          ((psym.name === "ReadVResult" || psym.name === "WriteVResult") &&
+            isDeclaredInAmbientModule(d, "fs"))),
+    )
   ) {
     const args = checker.getTypeArguments(widened as ts.TypeReference);
     if (args.length !== 1) return null;
@@ -3602,13 +3495,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // provenance-checked, the Buffer/URL pattern).
   if (
     psym?.name === "Dirent" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     const args = checker.getTypeArguments(widened as ts.TypeReference);
     if (args.length > 1) return null;
@@ -3656,18 +3547,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   });
   if (
     psym &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          ts.isTypeLiteralNode(d) &&
-          ts.isPropertySignature(d.parent) &&
-          ts.isIdentifier(d.parent.name) &&
-          d.parent.name.text === "times" &&
-          ts.isInterfaceDeclaration(d.parent.parent) &&
-          d.parent.parent.name.text === "CpuInfo" &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        ts.isTypeLiteralNode(d) &&
+        ts.isPropertySignature(d.parent) &&
+        ts.isIdentifier(d.parent.name) &&
+        d.parent.name.text === "times" &&
+        ts.isInterfaceDeclaration(d.parent.parent) &&
+        d.parent.parent.name.text === "CpuInfo" &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   )
     return cpuTimes();
   if (isStdlibInterface("CpuInfo")) {
@@ -3735,16 +3624,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // unmapped.
   if (
     psym &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          ts.isTypeLiteralNode(d) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          (isDeclaredInAmbientModule(d, "child_process") ||
-            isDeclaredInAmbientModule(d, "util") ||
-            isDeclaredInAmbientModule(d, "dns")),
-      )
+    psym.declarations.some(
+      (d) =>
+        ts.isTypeLiteralNode(d) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        (isDeclaredInAmbientModule(d, "child_process") ||
+          isDeclaredInAmbientModule(d, "util") ||
+          isDeclaredInAmbientModule(d, "dns")),
+    )
   ) {
     const props = checker.getPropertiesOfType(widened);
     const names =
@@ -3784,14 +3671,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // internal-slot object shows {} — the Dirent %dtype edge's cousin.
   if (
     psym?.name === "X509Certificate" &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "crypto"),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
   ) {
     return {
       kind: "record",
@@ -3819,13 +3704,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     (psym?.name === "PerformanceEntry" ||
       psym?.name === "PerformanceMark" ||
       psym?.name === "PerformanceMeasure") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return { kind: "record", shapeId: perfEntryShape(ctx.shapes, ctx.unions) };
   }
@@ -4078,10 +3961,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     flags & ts.TypeFlags.Object &&
     callSigs.length === 0 &&
     psym !== undefined &&
-    checker.declarationsOf(psym).length > 0 &&
-    checker
-      .declarationsOf(psym)
-      .every((d) => ts.isInterfaceDeclaration(d) && !ctx.isStdlibFile(d.getSourceFile()))
+    psym.declarations.length > 0 &&
+    psym.declarations.every(
+      (d) => ts.isInterfaceDeclaration(d) && !ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     const CHILD_SURFACE = new Set([
       "pid",
@@ -4327,7 +4210,7 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
   // convention. Detected by the param-count mismatch against the
   // signature's own declaration, excluding an erased `this` parameter.
   {
-    const sigDecl = checker.signatureDeclaration(sig);
+    const sigDecl = sig.declaration;
     const declParams =
       sigDecl !== undefined && ts.isFunctionLike(sigDecl) ? sigDecl.parameters.nodes : undefined;
     if (
@@ -4347,7 +4230,7 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
   let typedRest = false;
   let dynRest = false;
   for (const p of sig.getParameters()) {
-    const decl = checker.valueDeclarationOf(p);
+    const decl = p.valueDeclaration;
     const rest = decl !== undefined && ts.isParameter(decl) && decl.dotDotDotToken !== undefined;
 
     // arity ABI selected by lambdaSignature. Treating an inferred any[]
@@ -4383,9 +4266,7 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
       ts.isIdentifier(construction.expression) &&
       construction.expression.text === "Promise" &&
       constructorSymbol &&
-      checker
-        .declarationsOf(constructorSymbol)
-        .some((site) => ctx.isStdlibFile(site.getSourceFile()));
+      constructorSymbol.declarations.some((site) => ctx.isStdlibFile(site.getSourceFile()));
     if (
       !nativeExecutor &&
       decl &&
@@ -4439,7 +4320,7 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
   // like declaredReturnType does for declarations. JS null/undefined
   // returns can read mutable fields, so callable values use the same
   // checked-native return ABI as their implementations.
-  const sigDecl = checker.signatureDeclaration(sig);
+  const sigDecl = sig.declaration;
   const jsUnitReturn =
     sigDecl !== undefined &&
     isJsSourceFile(sigDecl.getSourceFile()) &&
@@ -4580,7 +4461,7 @@ function mapClassView(
     bases = ts.constituentTypes(type);
   } else {
     const symbol = type.getSymbol();
-    const declarations = symbol ? checker.declarationsOf(symbol) : [];
+    const declarations = symbol ? symbol.declarations : [];
     if (
       declarations.length === 0 ||
       !declarations.every(
@@ -4618,7 +4499,7 @@ function mapClassView(
     let representation: IrType | undefined;
     for (const base of bases) {
       const symbol = base.getSymbol();
-      const declaration = symbol ? checker.valueDeclarationOf(symbol) : undefined;
+      const declaration = symbol ? symbol.valueDeclaration : undefined;
       const classBase =
         declaration &&
         (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration)) &&
@@ -4642,8 +4523,8 @@ function mapClassView(
       const original = checker.getPropertyOfType(baseType, property.name);
       if (!original) return null;
       if (original === property) continue;
-      const originalDeclarations = checker.declarationsOf(original);
-      const declarations = checker.declarationsOf(property);
+      const originalDeclarations = original.declarations;
+      const declarations = property.declarations;
       // Instantiating an inherited member can create a new symbol without
       // changing its declaration or ABI. Only refinements need validation.
       if (
@@ -4681,7 +4562,7 @@ function mapCollectionView(
   if (!type.isTypeReference()) return null;
   const { checker } = ctx;
   const symbol = type.getSymbol();
-  const declarations = symbol ? checker.declarationsOf(symbol) : [];
+  const declarations = symbol ? symbol.declarations : [];
   if (
     declarations.length === 0 ||
     !declarations.every(
@@ -4734,16 +4615,14 @@ function mapCollectionView(
     const native =
       baseSymbol &&
       ["Map", "ReadonlyMap", "Set", "ReadonlySet"].includes(baseSymbol.name) &&
-      checker
-        .declarationsOf(baseSymbol)
-        .some((decl) => ts.isInterfaceDeclaration(decl) && ctx.isStdlibFile(decl.getSourceFile()));
+      baseSymbol.declarations.some(
+        (decl) => ts.isInterfaceDeclaration(decl) && ctx.isStdlibFile(decl.getSourceFile()),
+      );
     const mapped = native ? mapType(base, baseCtx) : mapCollectionView(base, baseCtx, seen);
     if (mapped?.kind !== "map" && mapped?.kind !== "set") return null;
     const hasType = funcOf([mapped.kind === "map" ? mapped.key : mapped.elem], BOOL);
     for (const property of checker.getPropertiesOfType(type)) {
-      const own = checker
-        .declarationsOf(property)
-        .filter((decl) => !ctx.isStdlibFile(decl.getSourceFile()));
+      const own = property.declarations.filter((decl) => !ctx.isStdlibFile(decl.getSourceFile()));
       if (own.length === 0) continue;
       if (
         property.name !== "has" ||
@@ -4893,8 +4772,8 @@ export function underConstAssertion(n: ts.Node): boolean {
  * panic repair): a property symbol declared by a property assignment whose
  * initializer is an EMPTY array literal inside a const assertion — its
  * type is provably `readonly []`, whatever the panicked query answered. */
-function constAssertedEmptyArrayProp(p: ts.Symbol, ctx: TypeMapperCtx): boolean {
-  const d = ctx.checker.valueDeclarationOf(p);
+function constAssertedEmptyArrayProp(p: ts.Symbol): boolean {
+  const d = p.valueDeclaration;
   if (d === undefined || !ts.isPropertyAssignment(d)) return false;
   const init = d.initializer;
   // `a: [] as const` pins the field type by itself, wherever the literal sits.
@@ -4917,9 +4796,9 @@ function mapGenericAwaitedAlias(type: ts.Type, ctx: TypeMapperCtx): IrType | nul
   if (aliasArgs.length !== 1 || !arg) return null;
   if (!(arg.flags & ts.TypeFlags.TypeParameter)) return null;
   // Provenance: the STANDARD LIBRARY's alias, not a user's shadowing one.
-  const isLibAlias = ctx.checker
-    .declarationsOf(alias)
-    .some((d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()));
+  const isLibAlias = alias.declarations.some(
+    (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+  );
   if (!isLibAlias) return null;
   const bound = resolveTypeParam(arg);
   if (!bound) return null;
@@ -4983,7 +4862,7 @@ function mapBoundMappedType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null
   if (!resolveTypeParamTs || !isMappedShape(widened)) return null;
   const symbol = widened.getSymbol();
   const node = symbol
-    ? checker.declarationsOf(symbol).find((d): d is ts.MappedTypeNode => ts.isMappedTypeNode(d))
+    ? symbol.declarations.find((d): d is ts.MappedTypeNode => ts.isMappedTypeNode(d))
     : undefined;
   const constraint = node?.typeParameter.constraint;
   if (
@@ -5069,9 +4948,7 @@ function evalMappedTemplate(
     const alias = type.getAliasSymbol();
     const aliasArgs = type.getAliasTypeArguments();
     const aliasDecl = alias
-      ? checker
-          .declarationsOf(alias)
-          .find((d): d is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(d))
+      ? alias.declarations.find((d): d is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(d))
       : undefined;
     if (
       aliasDecl?.typeParameters?.nodes &&
@@ -5129,9 +5006,7 @@ function matchInferReference(
     const want = wantArgs[i]!;
     const symbol = want.flags & ts.TypeFlags.TypeParameter ? want.getSymbol() : undefined;
     const isInfer = symbol
-      ? checker
-          .declarationsOf(symbol)
-          .some((d) => d.parent !== undefined && ts.isInferTypeNode(d.parent))
+      ? symbol.declarations.some((d) => d.parent !== undefined && ts.isInferTypeNode(d.parent))
       : false;
     if (isInfer && symbol) inferred.set(symbol, gotArgs[i]!);
     else if (want !== gotArgs[i]) return undefined;
@@ -5165,9 +5040,9 @@ function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | 
   if (aliasArgs.length !== 1 || !arg) return null;
   if (!(arg.flags & ts.TypeFlags.TypeParameter)) return null;
   // Provenance: the STANDARD LIBRARY's alias, not a user's shadowing one.
-  const isLibAlias = ctx.checker
-    .declarationsOf(alias)
-    .some((d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()));
+  const isLibAlias = alias.declarations.some(
+    (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+  );
   if (!isLibAlias) return null;
   const bound = resolveTypeParam(arg);
   if (!bound || bound.kind !== "record") return null;
@@ -5420,7 +5295,7 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
         "AggregateError",
         "SuppressedError",
       ].includes(symbol.name) &&
-      ctx.checker.declarationsOf(symbol).some((decl) => ctx.isStdlibFile(decl.getSourceFile()))
+      symbol.declarations.some((decl) => ctx.isStdlibFile(decl.getSourceFile()))
     );
   });
   if (!hasError) return null;
@@ -5562,12 +5437,12 @@ function immutableSourceType(type: ts.Type, ctx: TypeMapperCtx): ts.Type | null 
   if (!isMappedShape(type)) return null;
   const { checker } = ctx;
   const symbol = type.getSymbol();
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !CONTRACT_TYPES_FILE.test(decl.getSourceFile().fileName)) return null;
   const props = checker.getPropertiesOfType(type);
   const seen = new Set<ts.Node>();
   for (const prop of props) {
-    const owner = checker.declarationsOf(prop)[0]?.parent;
+    const owner = prop.declarations[0]?.parent;
     if (owner === undefined || seen.has(owner)) continue;
     seen.add(owner);
     let source: ts.Type | null = null;
@@ -5634,21 +5509,19 @@ function recordProvenanceOk(t: ts.Type, ctx: TypeMapperCtx): boolean {
   }
   if (isMappedShape(t)) return true;
   const tSym = t.getSymbol();
-  const decls = tSym ? checker.declarationsOf(tSym) : undefined;
+  const decls = tSym ? tSym.declarations : undefined;
   if (!decls || decls.length === 0) {
     // Inferred destructuring parameters can have a synthesized anonymous
     // shape with no declaration or member symbols to trace to a source.
     return checker
       .getPropertiesOfType(t)
       .every((property) =>
-        checker
-          .declarationsOf(property)
-          .every(
-            (decl) =>
-              !decl.getSourceFile().isDeclarationFile ||
-              ctx.isExternalTypeFile(decl.getSourceFile()) ||
-              packageTypeFile(decl.getSourceFile(), ctx),
-          ),
+        property.declarations.every(
+          (decl) =>
+            !decl.getSourceFile().isDeclarationFile ||
+            ctx.isExternalTypeFile(decl.getSourceFile()) ||
+            packageTypeFile(decl.getSourceFile(), ctx),
+        ),
       );
   }
   return !decls.some((d) => {
@@ -5757,7 +5630,7 @@ export function isOverloadedCallableMemberType(t: ts.Type, checker: ts.TypeCheck
   )
     return false;
   return sigs.every((sig) => {
-    const decl = checker.signatureDeclaration(sig);
+    const decl = sig.declaration;
     if (decl === undefined) return false;
     if (!ts.isMethodSignatureDeclaration(decl) && !ts.isCallSignatureDeclaration(decl))
       return false;
@@ -5881,7 +5754,7 @@ function describeOverloadSetBlocker(t: ts.Type, ctx: TypeMapperCtx): string {
           };
     const mapped = mapCallSignature(sig, sigCtx);
     if (mapped?.kind === "func" && mapped.rest !== true && mapped.argumentsAll !== true) continue;
-    const decl = checker.signatureDeclaration(sig);
+    const decl = sig.declaration;
     const spelled = decl ? decl.getText().replace(/\s+/g, " ").replace(/;$/, "") : "";
     const which = spelled ? `overload '${spelled}'` : "one overload";
     if (mapped?.kind === "func")
@@ -6153,7 +6026,7 @@ function mapRecordTypeInner(
   // representable.
   const anonSym = widened.getSymbol();
   const anonymousEmpty =
-    (anonSym === undefined || checker.declarationsOf(anonSym).length === 0) &&
+    (anonSym === undefined || anonSym.declarations.length === 0) &&
     !widened.isIntersectionType() &&
     indexValue === undefined &&
     checker.getPropertiesOfType(widened).length === 0;
@@ -6192,10 +6065,7 @@ function mapRecordTypeInner(
       indexValue === undefined &&
       checker.getCallSignatures(widened).length === 0 &&
       checker.getConstructSignatures(widened).length === 0 &&
-      !(
-        anonSym !== undefined &&
-        checker.declarationsOf(anonSym).some((d) => ts.isObjectLiteralExpression(d))
-      )
+      !(anonSym !== undefined && anonSym.declarations.some((d) => ts.isObjectLiteralExpression(d)))
     ) {
       return DYN;
     }
@@ -6216,7 +6086,7 @@ function mapRecordTypeInner(
         // their existing paths (the CJS export-table narrowing and the
         // checked-dynamic fallback), and .d.ts declarations stay out with
         // the rest of the lib's type worlds.
-        const decls = checker.declarationsOf(p);
+        const decls = p.declarations;
         const getDecl = decls.find((d) => ts.isGetAccessorDeclaration(d));
         const setDecl = decls.find((d) => ts.isSetAccessorDeclaration(d));
         const accessorOwned =
@@ -6266,7 +6136,7 @@ function mapRecordTypeInner(
       // declarations and pass.
       if (
         computed &&
-        checker.declarationsOf(p).some((d) => {
+        p.declarations.some((d) => {
           const sf = d.getSourceFile();
           return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf) && !packageTypeFile(sf, ctx);
         })
@@ -6297,7 +6167,7 @@ function mapRecordTypeInner(
       if (
         pt === null &&
         (fieldTs.flags & ts.TypeFlags.Any) !== 0 &&
-        constAssertedEmptyArrayProp(p, ctx)
+        constAssertedEmptyArrayProp(p)
       ) {
         pt = arrayOf(unitOnlyUnion(ctx.unions));
       }
@@ -6466,9 +6336,9 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
   const container =
     psym !== undefined &&
     Object.prototype.hasOwnProperty.call(STDLIB_CONTAINERS, psym.name) &&
-    checker
-      .declarationsOf(psym)
-      .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+    )
       ? psym.name
       : undefined;
   if (container !== undefined) {
@@ -6599,7 +6469,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
   if (callSigs.length === 1) {
     const sig = callSigs[0]!;
     if (sig.getTypeParameters().length > 0) return null;
-    const sigDecl = checker.signatureDeclaration(sig);
+    const sigDecl = sig.declaration;
     if (
       sigDecl !== undefined &&
       ts.isFunctionLike(sigDecl) &&
@@ -6649,7 +6519,7 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
     // any one member's type — that story stays with the residual fence.
     if (
       computed &&
-      checker.declarationsOf(p).some((d) => {
+      p.declarations.some((d) => {
         const sf = d.getSourceFile();
         return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf) && !packageTypeFile(sf, ctx);
       })

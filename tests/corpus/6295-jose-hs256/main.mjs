@@ -68,3 +68,36 @@ const cryptoKey = await crypto.subtle.importKey("raw", secret, { name: "HMAC", h
 await verify("crypto key", token, {}, cryptoKey);
 const signingKey = await crypto.subtle.importKey("raw", secret, { name: "HMAC", hash: "SHA-512" }, false, ["sign"]);
 await verify("wrong key hash", token, {}, signingKey);
+
+// Chained builder calls: jose's declarations type every setter's result as
+// `this`, implemented by the JWTClaimsBuilder base SignJWT extends.
+const chained = await new SignJWT({ role: "reader" })
+  .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+  .setIssuedAt(iat)
+  .setIssuer("urn:scriptc:issuer")
+  .setAudience(["urn:scriptc:audience", "urn:other"])
+  .setSubject("bob")
+  .setJti("jti-2")
+  .setNotBefore(iat - 60)
+  .setExpirationTime(iat + 60)
+  .sign(secret);
+console.log(chained);
+await verify("chained", chained, { audience: "urn:scriptc:audience" });
+
+// String durations: jose's secs() parses them.
+for (const maxTokenAge of ["10 minutes", "1 hour", "1.5h", "2 days", "+20m", "1 week", "1y", "900 secs", "3 HOURS", "2h ago", "-2h ago", "10 fortnights", ""]) {
+  await verify(`max token age ${JSON.stringify(maxTokenAge)}`, token, { maxTokenAge });
+}
+for (const clockTolerance of ["30s", "5 sec", "1 min from now", "1 min ago"]) {
+  await verify(`clock tolerance ${clockTolerance}`, token, { currentDate: new Date((iat + 3620) * 1000), clockTolerance });
+}
+const relative = new SignJWT({ role: "reader" });
+relative.setProtectedHeader({ alg: "HS256" }).setIssuedAt("-1 minute").setExpirationTime("2h");
+const claims = JSON.parse(Buffer.from((await relative.sign(secret)).split(".")[1], "base64url").toString());
+const clock = Math.floor(Date.now() / 1000);
+console.log(Math.abs(claims.exp - clock - 7200) <= 2, Math.abs(claims.iat - clock + 60) <= 2);
+try {
+  new SignJWT({}).setExpirationTime("soon");
+} catch (e) {
+  console.log(e.name, e.message);
+}

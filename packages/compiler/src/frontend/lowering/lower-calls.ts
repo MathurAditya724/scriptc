@@ -168,6 +168,7 @@ import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
+import { structuralReadType } from "./class-unions.js";
 import {
   httpClientFnBindingOf,
   lowerCompatReqStreamOptionalCall,
@@ -1170,7 +1171,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         lowerer.noteEdge(sig.name);
         const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
         const symbol = lowerer.resolveValueSymbol(expr.expression);
-        const declaration = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+        const declaration = symbol ? symbol.valueDeclaration : undefined;
         // A bare call supplies undefined as this, even inside a callback
         // currently carrying a receiver. The value-call ABI saves and
         // restores that ambient receiver around the function invocation.
@@ -3548,9 +3549,9 @@ function lowerDynReceiverMethodCall(
       // Those are not stored members of a checked-dynamic object, so
       // dynKeyGet cannot stand in for JavaScript's prototype lookup. Only
       // an authored declaration can justify the own-member path.
-      const authored = lowerer.checker
-        .declarationsOf(prop)
-        .some((decl) => !lowerer.isStdlibFile(decl.getSourceFile()));
+      const authored = prop.declarations.some(
+        (decl) => !lowerer.isStdlibFile(decl.getSourceFile()),
+      );
       return (
         authored &&
         lowerer.checker.getCallSignatures(lowerer.checker.getTypeOfSymbol(prop)).length > 0
@@ -3651,9 +3652,9 @@ function lowerDynReceiverMethodCall(
       return true;
     return (
       prop !== undefined &&
-      lowerer.checker
-        .declarationsOf(prop)
-        .some((decl) => ts.isPropertyDeclaration(decl) || ts.isPropertySignature(decl))
+      prop.declarations.some(
+        (decl) => ts.isPropertyDeclaration(decl) || ts.isPropertySignature(decl),
+      )
     );
   })();
   // Protocol methods keep their static signature: instances of the
@@ -4308,9 +4309,7 @@ function lowerCaughtPredicateCall(
   const callee = call.expression;
   if (!ts.isIdentifier(callee)) return null;
   const symbol = lowerer.resolveValueSymbol(callee);
-  const decl = symbol
-    ? lowerer.checker.declarationsOf(symbol).find(ts.isFunctionDeclaration)
-    : undefined;
+  const decl = symbol ? symbol.declarations.find(ts.isFunctionDeclaration) : undefined;
   if (!symbol || !decl || !decl.body) return null;
   if (!decl.type || !ts.isTypePredicateNode(decl.type)) return null;
   if (decl.parameters.nodes.length !== 1) return null;
@@ -4879,7 +4878,7 @@ function implicitReceiverOverloadReturn(
   if (!member) return null;
   const signatures = lowerer.checker.getCallSignatures(lowerer.checker.getTypeOfSymbol(member));
   const matches = signatures.filter((signature) => {
-    const decl = lowerer.checker.signatureDeclaration(signature);
+    const decl = signature.declaration;
     if (!decl || !(ts.isFunctionDeclaration(decl) || ts.isMethodDeclaration(decl)) || decl.body) {
       return false;
     }
@@ -4931,7 +4930,7 @@ function reconcileOverloadReturn(
   call: IrExpr,
 ): IrExpr {
   const rsig = lowerer.checker.getResolvedSignature(expr);
-  const rdecl = rsig ? lowerer.checker.signatureDeclaration(rsig) : undefined;
+  const rdecl = rsig ? rsig.declaration : undefined;
   // Nominal covariant overrides share the base's return ABI, but retain
   // their declared subclass result at the call site. Unannotated fluent
   // JS overrides use the same bridge for their proven receiver result.
@@ -6630,6 +6629,7 @@ export function recordKeysArrayCall(
   loc: SrcLoc,
 ): IrExpr {
   const resultT = arrayOf(STRING);
+  lowerer.keyOrder.observe(argIr);
   const key = `obj.keys:${argIr.shapeId}:${typeKey(resultT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
@@ -7872,7 +7872,7 @@ function lowerObjectStaticCall(
       ? lowerer.checker.getSymbolAtLocation(argNode)
       : undefined;
     const namespace = symbol
-      ? lowerer.checker.declarationsOf(symbol).some((decl) => ts.isNamespaceImport(decl))
+      ? symbol.declarations.some((decl) => ts.isNamespaceImport(decl))
       : false;
     const names = namespace ? [...UTIL_TYPES_KEYS, "default"].sort() : UTIL_TYPES_KEYS;
     const loc = locOf(call);
@@ -8110,6 +8110,7 @@ function lowerObjectStaticCall(
     valueT = tupleShape.fields.find((f) => f.name === "1")!.type;
   }
 
+  lowerer.keyOrder.observe(argIr);
   const key = `obj.${member}:${argIr.shapeId}:${typeKey(resultT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
@@ -8515,7 +8516,7 @@ function isOverloadedMemberAccess(lowerer: Lowerer, access: ts.PropertyAccessExp
 function resolvedOverloadResultType(lowerer: Lowerer, call: ts.CallExpression): IrType {
   const { checker } = lowerer;
   const signature = checker.getResolvedSignature(call);
-  const decl = signature ? checker.signatureDeclaration(signature) : undefined;
+  const decl = signature ? signature.declaration : undefined;
   const declared = decl ? checker.getSignatureFromDeclaration(decl) : undefined;
   const source = declared && declared.getTypeParameters().length === 0 ? declared : signature;
   const result = source ? lowerer.mapTypeOf(checker.getReturnTypeOfSignature(source)) : null;
@@ -8707,7 +8708,7 @@ const SP_BRAND_METHODS = new Set([
 function arrowSignatureOf(lowerer: Lowerer, node: ts.Expression): ts.Signature | null {
   const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(node));
   if (signatures.length !== 1) return null;
-  const declaration = lowerer.checker.signatureDeclaration(signatures[0]!);
+  const declaration = signatures[0]!.declaration;
   return declaration !== undefined && ts.isArrowFunction(declaration) ? signatures[0]! : null;
 }
 
@@ -8960,7 +8961,7 @@ function lowerObjLitGenericMethodCall(
   const recvT = lowerer.typeOf(access.expression);
   const propSym = lowerer.checker.getPropertyOfType(recvT, name);
   if (!propSym) return null;
-  const propertyDecl = lowerer.checker.valueDeclarationOf(propSym);
+  const propertyDecl = propSym.valueDeclaration;
   if (
     propertyDecl &&
     ts.isShorthandPropertyAssignment(propertyDecl) &&
@@ -8984,13 +8985,11 @@ function lowerObjLitGenericMethodCall(
   // claimed compilable ones; a class that failed collection keeps its
   // own diagnostics and the generic method-call fence downstream).
   if (
-    lowerer.checker
-      .declarationsOf(propSym)
-      .some(
-        (d) =>
-          d.parent !== undefined &&
-          (ts.isClassDeclaration(d.parent) || ts.isClassExpression(d.parent)),
-      )
+    propSym.declarations.some(
+      (d) =>
+        d.parent !== undefined &&
+        (ts.isClassDeclaration(d.parent) || ts.isClassExpression(d.parent)),
+    )
   ) {
     return null;
   }
@@ -9057,9 +9056,9 @@ function lowerObjLitGenericMethodCall(
     // receiver's runtime class must be provable — name that discipline
     // instead of the object-literal wording when the method lives on an
     // interface.
-    const onInterface = lowerer.checker
-      .declarationsOf(propSym)
-      .some((d) => d.parent !== undefined && ts.isInterfaceDeclaration(d.parent));
+    const onInterface = propSym.declarations.some(
+      (d) => d.parent !== undefined && ts.isInterfaceDeclaration(d.parent),
+    );
     // A receiver held as a checked-dynamic value (a class-backed interface)
     // dispatches by name to the runtime object's member, which a generic
     // method answers with its erased instance; the result converts to this
@@ -9113,7 +9112,9 @@ export function lowerObjectMethodCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
-  let mappedReceiver = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  let mappedReceiver =
+    structuralReadType(lowerer, access.expression) ??
+    lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   // EventEmitter's static side (the class, a value of it, or the events
   // module, which is the class) keeps its static surface on the emitter
   // dispatch (`EventEmitter.setMaxListeners(n)`), which tells the statics
@@ -9727,6 +9728,44 @@ function unionObjectMethodHelper(
   if (existing) return existing;
   const name = `%union.call.${lowerer.unionCallHelpers.size}`;
   lowerer.unionCallHelpers.set(key, name);
+  // A probe that catches a refusal while the body lowers must not leave
+  // the name registered for a helper that was never emitted.
+  try {
+    lowerer.liftedFns.push(
+      unionObjectMethodFunction(
+        lowerer,
+        name,
+        sourceCall,
+        receiverT,
+        method,
+        plans,
+        shapes,
+        resultT,
+        loc,
+      ),
+    );
+  } catch (e) {
+    lowerer.unionCallHelpers.delete(key);
+    throw e;
+  }
+  return name;
+}
+
+function unionObjectMethodFunction(
+  lowerer: Lowerer,
+  name: string,
+  sourceCall: ts.CallExpression,
+  receiverT: IrType & { kind: "union" },
+  method: string,
+  plans: {
+    arm: IrType & { kind: "object" };
+    info: ClassInfo;
+    found: NonNullable<ReturnType<Lowerer["findMethodOn"]>>;
+  }[],
+  shapes: readonly ParamShape[],
+  resultT: IrType,
+  loc: SrcLoc,
+): IrFunction {
   const receiver = varRef("this.0", receiverT, loc);
   const argRefs = shapes.map((shape, i) => varRef(`a.${i}`, shape.type, loc));
   const branch = (plan: (typeof plans)[number]): IrStmt[] => {
@@ -9801,8 +9840,7 @@ function unionObjectMethodHelper(
     type: param.type,
     mutable: false,
   }));
-  lowerer.liftedFns.push({ name, params, returnType: resultT, locals, body, loc });
-  return name;
+  return { name, params, returnType: resultT, locals, body, loc };
 }
 
 /** The argument's lowered type for a message (what the static form saw),

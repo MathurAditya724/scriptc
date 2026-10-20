@@ -106,6 +106,16 @@ export function applyWidthLift(
         );
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
+    case "discriminantRoute": {
+      if (dst.kind !== "union" || value.type.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: record discriminant route shape");
+      const helper = lowerer.recordUnionRouteHelper(value.type, dst.unionId, loc);
+      if (!helper)
+        throw new InternalCompilerError(
+          "lowerer bug: planned record discriminant route failed to intern",
+        );
+      return { kind: "call", callee: helper, args: [value], type: dst, loc };
+    }
     case "retag": {
       if (dst.kind !== "union" || value.type.kind !== "union")
         throw new InternalCompilerError("lowerer bug: retag lift shape");
@@ -603,6 +613,10 @@ function buildRecordProjection(
   const localId = parameter + ".0";
   const receiver = varRef(localId, source, loc);
   const result: IrType = { kind: "record", shapeId: target.id };
+  // A record source's copy keeps the source's key order; a class
+  // instance's fields keep today's table.
+  const copyOf = (node: IrExpr): IrExpr =>
+    source.kind === "record" ? lowerer.keyOrder.copy(node, source.shapeId) : node;
   return {
     name,
     params: [{ localId, name: parameter, type: source }],
@@ -611,7 +625,7 @@ function buildRecordProjection(
     body: [
       {
         kind: "return",
-        value: {
+        value: copyOf({
           kind: "recordLit",
           fields: target.fields.map((field) => {
             const conversion = plan.get(field.name)!;
@@ -661,7 +675,7 @@ function buildRecordProjection(
           }),
           type: result,
           loc,
-        },
+        }),
         loc,
       },
     ],

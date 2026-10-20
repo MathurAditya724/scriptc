@@ -93,7 +93,7 @@ export function collectClassMethodMutations(
     value = unwrap(value);
     if (ts.isIdentifier(value)) {
       const symbol = lowerer.checker.getSymbolAtLocation(value);
-      const decl = symbol && lowerer.checker.declarationsOf(symbol)[0];
+      const decl = symbol && symbol.declarations[0];
       if (
         !decl ||
         !ts.isVariableDeclaration(decl) ||
@@ -162,7 +162,7 @@ export function collectClassMethodMutations(
   const literalLoopKeys = (key: ts.Expression): (string | number)[] | null => {
     if (!ts.isIdentifier(key)) return null;
     const symbol = lowerer.checker.getSymbolAtLocation(key);
-    const decl = symbol && lowerer.checker.declarationsOf(symbol)[0];
+    const decl = symbol && symbol.declarations[0];
     if (!decl || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return null;
     const list = decl.parent;
     if (!ts.isVariableDeclarationList(list) || !(list.flags & ts.NodeFlags.Const)) return null;
@@ -413,7 +413,7 @@ export function collectClassMethodMutations(
     const symbol = ts.isPropertyAccessExpression(access)
       ? lowerer.checker.getSymbolAtLocation(access.name)
       : lowerer.checker.getPropertyOfType(lowerer.typeOf(access.expression), name);
-    if (symbol && lowerer.checker.declarationsOf(symbol).some(ts.isMethodDeclaration))
+    if (symbol && symbol.declarations.some(ts.isMethodDeclaration))
       lowerer.prototypeMethodAccesses.set(name, access);
   }
   lowerer.checker.prefetchSymbolRoots([...globals, ...reflection]);
@@ -480,8 +480,7 @@ export function collectClassMethodMutations(
       }
       const type = lowerer.checker.getDeclaredTypeOfSymbol(symbol);
       const property = lowerer.checker.getPropertyOfType(type, name);
-      if (!property || !lowerer.checker.declarationsOf(property).some(ts.isMethodDeclaration))
-        continue;
+      if (!property || !property.declarations.some(ts.isMethodDeclaration)) continue;
       if (cls.typeParameters !== undefined && cls.typeParameters.nodes.length > 0) {
         owners = null;
         break;

@@ -178,6 +178,39 @@ export function returnsOnlyThis(member: ts.MethodDeclaration): boolean {
   return valid;
 }
 
+/** returnsOnlyThis, also accepting a comma expression whose last operand
+ * is `this` (the minifier's `return a(), this.x = v, this`, jose's fluent
+ * claim setters). Used only to narrow a call's result back to the
+ * receiver's class. */
+export function returnsOnlyThisValue(member: ts.MethodDeclaration): boolean {
+  const body = member.body;
+  const last = body?.statements?.nodes.at(-1);
+  if (!body || !last || !ts.isReturnStatement(last)) return false;
+  let valid = true;
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node)) {
+      let value = node.expression;
+      for (;;) {
+        while (value && ts.isParenthesizedExpression(value)) value = value.expression;
+        if (
+          value &&
+          ts.isBinaryExpression(value) &&
+          value.operatorToken.kind === ts.SyntaxKind.CommaToken
+        ) {
+          value = value.right;
+          continue;
+        }
+        break;
+      }
+      if (!value || value.kind !== ts.SyntaxKind.ThisKeyword) valid = false;
+    }
+    node.forEachChild(visit);
+  };
+  body.forEachChild(visit);
+  return valid;
+}
+
 function functionLocalClass(decl: ts.ClassLikeDeclaration): boolean {
   for (
     let parent: ts.Node | undefined = decl.parent;
@@ -221,14 +254,12 @@ export function storedClassValueType(
     const symbol = lowerer.resolveValueSymbol(expression);
     const declaration =
       symbol &&
-      lowerer.checker
-        .declarationsOf(symbol)
-        .find(
-          (decl) =>
-            ts.isVariableDeclaration(decl) &&
-            decl.initializer &&
-            (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0,
-        );
+      symbol.declarations.find(
+        (decl) =>
+          ts.isVariableDeclaration(decl) &&
+          decl.initializer &&
+          (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0,
+      );
     if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer) {
       const value = storedClassValueType(lowerer, declaration.initializer, visiting);
       if (value?.kind === "classval") return value;
@@ -243,7 +274,7 @@ export function storedClassValueType(
   const mapped = lowerer.mapTypeOf(type);
   if (mapped?.kind === "classval" && !lowerer.classes.has(mapped.className)) {
     for (const signature of lowerer.checker.getConstructSignatures(type)) {
-      const constructor = lowerer.checker.signatureDeclaration(signature);
+      const constructor = signature.declaration;
       const declaration =
         constructor && ts.isConstructorDeclaration(constructor) ? constructor.parent : undefined;
       if (
@@ -284,14 +315,12 @@ export function storedClassValueType(
       const symbol = lowerer.resolveValueSymbol(callee);
       const declaration =
         symbol &&
-        lowerer.checker
-          .declarationsOf(symbol)
-          .find(
-            (decl) =>
-              ts.isVariableDeclaration(decl) &&
-              decl.initializer &&
-              (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0,
-          );
+        symbol.declarations.find(
+          (decl) =>
+            ts.isVariableDeclaration(decl) &&
+            decl.initializer &&
+            (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0,
+        );
       if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer) {
         callee = declaration.initializer;
         continue;
@@ -353,7 +382,7 @@ export function storedClassValueType(
   // Cache the module-level closure so its captures and lifted bodies are
   // exactly the ones used when the declaration executes.
   for (const signature of lowerer.checker.getConstructSignatures(type)) {
-    const declaration = lowerer.checker.signatureDeclaration(signature);
+    const declaration = signature.declaration;
     const cls = declaration && ts.isConstructorDeclaration(declaration) ? declaration.parent : null;
     if (!cls || (!ts.isClassExpression(cls) && !ts.isClassDeclaration(cls))) continue;
     let factory: ts.ArrowFunction | ts.FunctionExpression | undefined;
@@ -725,7 +754,7 @@ export interface GenericClassInfo {
  * or the ElementAccessExpression itself). Null when no declaration has
  * that shape (well-known-symbol members like `[Symbol.iterator]`). */
 function lateBoundKeySymOf(lowerer: Lowerer, p: ts.Symbol): ts.Symbol | null {
-  for (const d of lowerer.checker.declarationsOf(p)) {
+  for (const d of p.declarations) {
     const access =
       ts.isBinaryExpression(d) && ts.isElementAccessExpression(d.left)
         ? d.left
@@ -990,7 +1019,7 @@ export function builtinStreamInfoOf(
     // member to the stdlib class symbol. The declaration itself is
     // alias plumbing (streamClassAliasDecl — both declaration walks
     // skip it).
-    const decl = lowerer.checker.valueDeclarationOf(symbol);
+    const decl = symbol.valueDeclaration;
     if (
       decl &&
       ts.isVariableDeclaration(decl) &&
@@ -1012,7 +1041,7 @@ export function builtinStreamInfoOf(
     if (rec.lib === symbol.name) irName = name;
   }
   if (!irName) return null;
-  const declared = lowerer.checker.declarationsOf(symbol).some((d) => {
+  const declared = symbol.declarations.some((d) => {
     if (!ts.isClassDeclaration(d)) return false;
     if (isNodeTypesPath(d.getSourceFile().fileName)) return false;
     let node: ts.Node | undefined = d.parent;
@@ -1034,15 +1063,13 @@ function jsFieldInitializerType(lowerer: Lowerer, type: IrType, expression: ts.E
     const symbol = lowerer.checker.getSymbolAtLocation(expression);
     if (
       symbol &&
-      lowerer.checker
-        .declarationsOf(symbol)
-        .some(
-          (decl) =>
-            ts.isParameter(decl) &&
-            ((ts.isConstructorDeclaration(decl.parent) &&
-              !checkedJsDocumentedParameter(lowerer, decl)) ||
-              (lowerer.typeOf(expression).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0),
-        )
+      symbol.declarations.some(
+        (decl) =>
+          ts.isParameter(decl) &&
+          ((ts.isConstructorDeclaration(decl.parent) &&
+            !checkedJsDocumentedParameter(lowerer, decl)) ||
+            (lowerer.typeOf(expression).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0),
+      )
     )
       return DYN;
   }
@@ -1102,7 +1129,7 @@ function jsFieldInitializerType(lowerer: Lowerer, type: IrType, expression: ts.E
         const symbol = lowerer.checker.getSymbolAtLocation(part.name);
         if (
           symbol &&
-          lowerer.checker.declarationsOf(symbol).some((decl) => {
+          symbol.declarations.some((decl) => {
             const member = ts.isBinaryExpression(decl) ? decl.left : decl;
             return (
               ts.isPropertyAccessExpression(member) &&
@@ -1244,13 +1271,10 @@ function returnsWidenedJsField(
           : undefined;
       if (
         symbol &&
-        lowerer.checker
-          .declarationsOf(symbol)
-          .some(
-            (declaration) =>
-              ts.isMethodDeclaration(declaration) &&
-              lowerer.checkedVirtualJsMethods.has(declaration),
-          )
+        symbol.declarations.some(
+          (declaration) =>
+            ts.isMethodDeclaration(declaration) && lowerer.checkedVirtualJsMethods.has(declaration),
+        )
       )
         return true;
     }
@@ -1263,14 +1287,12 @@ function returnsWidenedJsField(
       const symbol = lowerer.checker.getSymbolAtLocation(expression.name);
       if (
         symbol &&
-        lowerer.checker
-          .declarationsOf(symbol)
-          .some(
-            (declaration) =>
-              (ts.isGetAccessorDeclaration(declaration) ||
-                ts.isSetAccessorDeclaration(declaration)) &&
-              lowerer.checkedVirtualJsAccessors.has(declaration),
-          )
+        symbol.declarations.some(
+          (declaration) =>
+            (ts.isGetAccessorDeclaration(declaration) ||
+              ts.isSetAccessorDeclaration(declaration)) &&
+            lowerer.checkedVirtualJsAccessors.has(declaration),
+        )
       )
         return true;
     }
@@ -1303,11 +1325,11 @@ function returnsWidenedJsField(
  * (genResultRecord's list, including scalar-backed Date values). */
 function undefArmedFieldType(lowerer: Lowerer, p: ts.Symbol): IrType | null {
   const t = lowerer.checker.getTypeOfSymbol(p);
-  const site = lowerer.checker.declarationsOf(p)[0];
+  const site = p.declarations[0];
   let mapped = lowerer.mapTypeOf(t) ?? (site ? dynFallbackType(lowerer, site, t) : null);
   if (mapped && site) mapped = jsOpenObjectType(site, mapped, lowerer.shapes, lowerer.unions);
   if (!mapped || mapped.kind === "void") return null;
-  for (const declaration of lowerer.checker.declarationsOf(p)) {
+  for (const declaration of p.declarations) {
     const assignment = ts.isBinaryExpression(declaration) ? declaration : declaration.parent;
     if (
       assignment &&
@@ -1354,7 +1376,7 @@ export function builtinEmitterInfoOf(
     // follow the member off the module namespace. The declaration
     // itself is alias plumbing (builtinMemberRequireDecl — both
     // declaration walks skip it).
-    const decl = lowerer.checker.valueDeclarationOf(symbol);
+    const decl = symbol.valueDeclaration;
     if (
       decl !== undefined &&
       ts.isVariableDeclaration(decl) &&
@@ -1370,7 +1392,7 @@ export function builtinEmitterInfoOf(
     return null;
   }
   if (symbol.name !== "EventEmitter") return null;
-  const declared = lowerer.checker.declarationsOf(symbol).some((d) => {
+  const declared = symbol.declarations.some((d) => {
     if (!ts.isClassDeclaration(d) && !ts.isInterfaceDeclaration(d)) return false;
     let node: ts.Node | undefined = d.parent;
     while (node) {
@@ -1539,7 +1561,7 @@ function collectClassShapeDeferring(lowerer: Lowerer, decl: ts.ClassDeclaration)
       const baseSymbol =
         reference && ts.isIdentifier(reference) ? lowerer.resolveValueSymbol(reference) : undefined;
       const baseDeclaration = baseSymbol
-        ? lowerer.checker.declarationsOf(baseSymbol).find(ts.isClassDeclaration)
+        ? baseSymbol.declarations.find(ts.isClassDeclaration)
         : undefined;
       if (
         baseDeclaration &&
@@ -1886,8 +1908,7 @@ export function collectClassShapeInner(
         return true;
       }
       const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(expression));
-      const source =
-        signatures.length === 1 ? lowerer.checker.signatureDeclaration(signatures[0]!) : undefined;
+      const source = signatures.length === 1 ? signatures[0]!.declaration : undefined;
       if (
         !source ||
         !isJsSourceFile(source.getSourceFile()) ||
@@ -2023,12 +2044,9 @@ export function collectClassShapeInner(
           // what actually blocks it).
           const rebinds =
             memberSym !== undefined &&
-            lowerer.checker
-              .declarationsOf(memberSym)
-              .filter(
-                (d) =>
-                  ts.isBinaryExpression(d) && d.operatorToken.kind === ts.SyntaxKind.EqualsToken,
-              ).length > 1;
+            memberSym.declarations.filter(
+              (d) => ts.isBinaryExpression(d) && d.operatorToken.kind === ts.SyntaxKind.EqualsToken,
+            ).length > 1;
           if (rebinds) {
             lowerer.unsupported(
               "SC1090",
@@ -4015,14 +4033,12 @@ export function collectClassShapeInner(
         if (fields.has(p.name) || methods.has(p.name)) continue;
         if (hasAccessor(p.name)) continue;
         if (base && (base.fields.has(p.name) || lowerer.findMethodOn(base, p.name))) continue;
-        const site = lowerer.checker
-          .declarationsOf(p)
-          .find(
-            (d) =>
-              ts.isPropertyAccessExpression(d) ||
-              ts.isBinaryExpression(d) ||
-              ts.isElementAccessExpression(d),
-          );
+        const site = p.declarations.find(
+          (d) =>
+            ts.isPropertyAccessExpression(d) ||
+            ts.isBinaryExpression(d) ||
+            ts.isElementAccessExpression(d),
+        );
         if (!site) continue;
         // Late-bound properties: the ones the scan above collected are
         // real fields under their printable names — skip. The rest keep
@@ -4726,8 +4742,7 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
             : null;
       if (ambientCallee !== null) {
         const sym = lowerer.resolveValueSymbol(ambientCallee);
-        const vdecl =
-          sym && !lowerer.isStdlibSymbol(sym) ? lowerer.checker.declarationsOf(sym)[0] : undefined;
+        const vdecl = sym && !lowerer.isStdlibSymbol(sym) ? sym.declarations[0] : undefined;
         const ambientVar =
           vdecl !== undefined &&
           ts.isVariableDeclaration(vdecl) &&
@@ -5747,7 +5762,7 @@ export function exactClassOfReceiver(lowerer: Lowerer, expr: ts.Expression): Cla
   // static write would create an own property in JS. The general
   // class-value write fence answers instead.
   if (direct) return direct.classDecorators?.valueGlobalId !== undefined ? null : direct;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (
     !decl ||
     !ts.isVariableDeclaration(decl) ||
@@ -5795,7 +5810,7 @@ export function propertyAssignedClassInfoOf(
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
   const registered = lowerer.classBySymbol.get(resolved);
   if (registered) return registered;
-  const decls = lowerer.checker.declarationsOf(resolved);
+  const decls = resolved.declarations;
   // The class expression's OWN symbol (tsgo's answer through CJS export
   // aliases): the declaration is the expression itself. Its top-level
   // assignment statement must be the binding's ONLY producer. The
@@ -6259,7 +6274,7 @@ function capturesEnclosingScope(
     if (captured) return;
     if (ts.isIdentifier(node)) {
       const symbol = lowerer.checker.getSymbolAtLocation(node);
-      const decl = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+      const decl = symbol ? symbol.valueDeclaration : undefined;
       // The enclosing function's own name is the same binding for every
       // evaluation.
       if (decl && decl !== scope && inside(decl, scope) && !inside(decl, member)) captured = true;
@@ -6665,7 +6680,7 @@ export function collectInheritedJsFieldWrites(
         for (const base of lowerer.checker.getBaseTypes(target)) {
           for (const [name, expressions] of writes) {
             const property = lowerer.checker.getPropertyOfType(base, name);
-            for (const declaration of property ? lowerer.checker.declarationsOf(property) : []) {
+            for (const declaration of property ? property.declarations : []) {
               if (ts.isMethodDeclaration(declaration) || ts.isAccessor(declaration)) continue;
               let owner: ts.Node | undefined = declaration.parent;
               while (owner && !ts.isClassDeclaration(owner) && !ts.isClassExpression(owner))
@@ -6724,7 +6739,7 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
             for (const member of accessors) {
               if (!ts.isIdentifier(member.name)) continue;
               const property = lowerer.checker.getPropertyOfType(base, member.name.text);
-              for (const declaration of property ? lowerer.checker.declarationsOf(property) : []) {
+              for (const declaration of property ? property.declarations : []) {
                 if (
                   (ts.isGetAccessorDeclaration(declaration) ||
                     ts.isSetAccessorDeclaration(declaration)) &&
@@ -6767,7 +6782,7 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
             for (const member of members) {
               if (!ts.isIdentifier(member.name)) continue;
               const property = lowerer.checker.getPropertyOfType(base, member.name.text);
-              for (const declaration of property ? lowerer.checker.declarationsOf(property) : []) {
+              for (const declaration of property ? property.declarations : []) {
                 if (
                   ts.isMethodDeclaration(declaration) &&
                   isJsSourceFile(declaration.getSourceFile()) &&
@@ -6877,7 +6892,7 @@ export function exactInstanceClassOf(lowerer: Lowerer, expr: ts.Expression): Cla
   if (direct) return direct;
   if (!ts.isIdentifier(e)) return null;
   const symbol = lowerer.resolveValueSymbol(e);
-  const decl = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+  const decl = symbol ? symbol.valueDeclaration : undefined;
   if (
     !decl ||
     !ts.isVariableDeclaration(decl) ||
@@ -6988,19 +7003,43 @@ export function lowerClassGenericMethodCall(
         }
       : upcastTo(lowerer, receiver, declarer.def.name);
   const args = lowerer.completeArgs(call.arguments.nodes, instance.params, loc, call);
-  return {
+  const result: IrExpr = {
     kind: "call",
     callee: instance.name,
     args: [thisArg, ...args],
     type: instance.returnType,
     loc,
   };
+  // A fluent JavaScript method (every return ends in `this`, jose's claim
+  // setters) answers the receiver: the instance returns the declarer's
+  // class, a used result's checker type is the receiver's subclass.
+  if (
+    result.type.kind === "object" &&
+    !ts.isExpressionStatement(call.parent) &&
+    ts.isMethodDeclaration(info.decl) &&
+    isJsSourceFile(info.decl.getSourceFile()) &&
+    returnsOnlyThisValue(info.decl)
+  ) {
+    return lowerer.maybeNarrow(result, call);
+  }
+  return result;
 }
 
 /** Wraps a derived-class expression in an upcast when the target base
  * class differs (a no-op reinterpret at runtime; keeps IR types exact). */
 export function upcastTo(lowerer: Lowerer, expr: IrExpr, className: string): IrExpr {
   if (expr.type.kind === "object" && expr.type.className !== className) {
+    // A value lowered at an ANCESTOR of the class the site needs (a
+    // fluent `this` result whose lowering kept the method's declaring
+    // class, the receiver of the next call in a chain): the checker
+    // vouches for the subclass, so the bridge is the verified downcast,
+    // never an upcast the validator rejects (an internal error before).
+    if (
+      !lowerer.isSubclassOf(expr.type.className, className) &&
+      lowerer.isSubclassOf(className, expr.type.className)
+    ) {
+      return { kind: "downcast", value: expr, type: { kind: "object", className }, loc: expr.loc };
+    }
     return { kind: "upcast", value: expr, type: { kind: "object", className }, loc: expr.loc };
   }
   return expr;
@@ -8767,7 +8806,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
     const symbol = lowerer.resolveValueSymbol(intlConstructor);
-    const declaration = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+    const declaration = symbol ? symbol.valueDeclaration : undefined;
     if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer)
       intlConstructor = declaration.initializer;
   }
@@ -8791,9 +8830,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     const symbol = lowerer.resolveValueSymbol(expr.expression);
     const declaration =
       symbol &&
-      lowerer.checker
-        .declarationsOf(symbol)
-        .find((node) => ts.isFunctionDeclaration(node) && node.body !== undefined);
+      symbol.declarations.find((node) => ts.isFunctionDeclaration(node) && node.body !== undefined);
     if (declaration && ts.isFunctionDeclaration(declaration) && declaration.body) {
       const last = declaration.body.statements.nodes.at(-1);
       if (
@@ -9659,7 +9696,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         const a0 = args[0]!;
         if (ts.isIdentifier(a0) && a0.text === "setImmediate") {
           const sym = lowerer.checker.getSymbolAtLocation(a0);
-          const decls = sym ? lowerer.checker.declarationsOf(sym) : [];
+          const decls = sym ? sym.declarations : [];
           if (decls.length > 0 && decls.every((d) => lowerer.isStdlibFile(d.getSourceFile()))) {
             // The settled value is the undefined dyn value — the result
             // is promise<dyn> whatever T the checker inferred for the
