@@ -182,3 +182,21 @@ export const g = import_g.g;
     degrade: expect.stringContaining("bundled CommonJS modules") as string,
   });
 });
+
+test("a chunk that only re-exports a builtin module becomes that module", () => {
+  const answer = expectSameBehavior(`${keyedHelper}var require_stream = __commonJS({
+  "lib/stream.js"(exports2, module2) {
+    module2.exports = require("stream");
+  }
+});
+var require_user = __commonJS({
+  "lib/user.js"(exports2) {
+    var Stream = require_stream();
+    exports2.same = Stream === require("stream");
+  }
+});
+console.log(typeof require_stream().PassThrough, require_user().same);
+`);
+  expect(answer.chunks.map((c) => basename(c.path))).toEqual(["index.js.require_user.cjs"]);
+  expect(answer.text).toContain('typeof require("stream").PassThrough');
+});

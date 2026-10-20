@@ -23,6 +23,7 @@
  * beside it). Anything else answers a degrade reason. */
 import * as ts from "./ts7/syntax.js";
 import { helperTokens } from "./helper-tokens.js";
+import { canonicalBuiltinModule } from "./builtin-modules.js";
 
 export interface BundledChunkSplit {
   /** The bundle with chunk declarations blanked and calls respelled. */
@@ -407,10 +408,11 @@ export function splitBundledChunks(
       return {
         degrade: `its bundled CommonJS module factory '${r.text}' is used other than as a direct call`,
       };
+    const forwarded = forwarderSpec(chunk);
     callEdits.push({
       start: call.getStart(sf),
       end: call.getEnd(),
-      text: `require(${JSON.stringify(chunk.spec)})`,
+      text: `require(${JSON.stringify(forwarded ?? chunk.spec)})`,
     });
   }
   for (const name of chunks.keys()) {
@@ -422,6 +424,11 @@ export function splitBundledChunks(
   const out: BundledChunkSplit["chunks"] = [];
   const bundleEdits: Edit[] = [...callEdits];
   for (const chunk of chunks.values()) {
+    if (forwarderSpec(chunk) !== null) {
+      // A chunk that only re-exports a builtin module is that module.
+      bundleEdits.push({ start: chunk.stmt.getStart(sf), end: chunk.stmt.getEnd(), text: "" });
+      continue;
+    }
     const result = chunkSource(sf, chunk, chunks, top, stable, callEdits, bundleStrict);
     if (typeof result !== "string") return result;
     out.push({ path: chunk.path, source: result });
@@ -470,6 +477,41 @@ export function applyEdits(source: string, from: number, to: number, edits: Edit
     at = e.end;
   }
   return text + source.slice(at, to);
+}
+
+/** The builtin module a chunk forwards, or null: a body that is exactly
+ * `module.exports = require("<builtin>")` (readable-stream's
+ * internal/streams/stream.js). Requiring the chunk is then requiring the
+ * builtin itself (same object, and loading a builtin runs no code). */
+function forwarderSpec(chunk: Chunk): string | null {
+  const moduleParam = chunk.params[1];
+  if (moduleParam === undefined) return null;
+  const stmts = chunk.body.statements.nodes.filter(
+    (st) => !(ts.isExpressionStatement(st) && ts.isStringLiteral(st.expression)),
+  );
+  const only = stmts[0];
+  if (stmts.length !== 1 || only === undefined || !ts.isExpressionStatement(only)) return null;
+  const e = unparen(only.expression);
+  if (
+    !ts.isBinaryExpression(e) ||
+    e.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !ts.isPropertyAccessExpression(e.left) ||
+    !ts.isIdentifier(e.left.expression) ||
+    e.left.expression.text !== moduleParam ||
+    e.left.name.text !== "exports"
+  )
+    return null;
+  const call = unparen(e.right);
+  if (
+    !ts.isCallExpression(call) ||
+    !ts.isIdentifier(call.expression) ||
+    call.expression.text !== "require" ||
+    call.arguments.nodes.length !== 1 ||
+    !ts.isStringLiteral(call.arguments.nodes[0]!)
+  )
+    return null;
+  const spec = (call.arguments.nodes[0] as ts.StringLiteral).text;
+  return canonicalBuiltinModule(spec) !== null ? spec : null;
 }
 
 /** How code in a factory body (a chunk or a lazy ES-module initializer)
