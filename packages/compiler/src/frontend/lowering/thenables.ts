@@ -15,22 +15,19 @@ import { thenReader } from "./checked-promise-all.js";
 import { builtinGlobalValue } from "./expressions/property-access.js";
 import type { Lowerer } from "./lowerer.js";
 
-const mayDefineThenables = new WeakMap<Lowerer, boolean>();
-
 /** Whether any program source can define a thenable: a `then` method or
- * function, a `then:` key, an assignment to `.then`, or a quoted `'then'`
- * key. `.then(` calls alone do not count. Programs without one keep the
- * plain checked-dynamic await. */
+ * function (generic ones too), a `then:` key, a quoted `'then'` key, or an
+ * assignment to `then` (a class field such as `then = (resolve) => ...` or
+ * a `.then` property). `.then(` calls alone do not count. Programs without
+ * one keep the plain checked-dynamic await. */
 export function programMayDefineThenables(lowerer: Lowerer): boolean {
-  let known = mayDefineThenables.get(lowerer);
-  if (known === undefined) {
-    const pattern = /(^|[^.\w$])then\s*\(|\bthen\s*:|['"`]then['"`]|\.then\s*=(?!=)/m;
-    known = lowerer.program
+  if (lowerer.thenablesMayBeDefined === null) {
+    const pattern = /(^|[^.\w$])then\s*[(<]|\bthen\s*:|['"`]then['"`]|(^|[^\w$])then\s*=(?![=>])/m;
+    lowerer.thenablesMayBeDefined = lowerer.program
       .getImplementationSourceFiles()
       .some((sf) => !sf.isDeclarationFile && pattern.test(sf.text));
-    mayDefineThenables.set(lowerer, known);
   }
-  return known;
+  return lowerer.thenablesMayBeDefined;
 }
 
 /** `await v` over a checked-dynamic value: PromiseResolve(v), then the await

@@ -1514,7 +1514,6 @@ describe("builtin constructor values (JS lane)", () => {
       ["Date.prototype", "Date.prototype"],
       ["RegExp.prototype", "RegExp.prototype"],
       ["Set.prototype", "Set.prototype"],
-      ["Promise.prototype", "Promise.prototype"],
       ["WeakMap.prototype", "WeakMap.prototype"],
       ["WeakSet.prototype", "WeakSet.prototype"],
       ["Date.prototype.getYear", "Date.prototype.getYear"],
@@ -1547,6 +1546,8 @@ function report(label, e) {
 ${reads.map(([label, read]) => `try { const value = ${read}; console.log(${JSON.stringify(label)}, "read", typeof value); } catch (e) { report(${JSON.stringify(label)}, e); }`).join("\n")}
 console.log(Date.length, RegExp.length, Promise.length, Object.length, Map.length, Set.length);
 console.log(Date.name, Map.name, Map.constructor === Function, Object.constructor === Function);
+const promisePrototype = Promise.prototype;
+console.log(typeof promisePrototype, typeof promisePrototype.then, promisePrototype.constructor === Promise);
 `;
     const r = await compileAndRun("builtin-constructor-members", source, "cjs");
     expect(r.stderr).toBe("");
@@ -1561,7 +1562,12 @@ console.log(Date.name, Map.name, Map.constructor === Function, Object.constructo
         ),
       ),
     );
-    expect(lines.slice(reads.length)).toEqual(["7 2 1 1 0 0", "Date Map true true"]);
+    // Promise.prototype reads as an object holding the runtime's methods.
+    expect(lines.slice(reads.length)).toEqual([
+      "7 2 1 1 0 0",
+      "Date Map true true",
+      "object function true",
+    ]);
   });
 });
 

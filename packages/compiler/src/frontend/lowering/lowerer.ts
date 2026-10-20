@@ -2073,6 +2073,9 @@ export class Lowerer {
    * setEncoding call whose receiver is a socket or an untyped value.
    * Computed once on first use (null until then). */
   socketEncodingReachable: boolean | null = null;
+  /** Whether some program source can define a thenable
+   * (programMayDefineThenables). Null until first asked. */
+  thenablesMayBeDefined: boolean | null = null;
   /** Whether some server in this program may listen on a Unix socket: a
    * listen call whose first argument is a string. Computed once on first
    * use (null until then); address() answers the path only when true. */
