@@ -22,6 +22,7 @@ import {
   HTTPCLIENTREQ_T,
   HTTPREQ_T,
   HTTPRES_T,
+  JSVAL,
   NETSERVER_T,
   NETSOCKET_T,
   PROCSTREAM_T,
@@ -2636,6 +2637,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.generateKeyCb": { argTypes: [DYN, DYN, null], result: VOID },
   "crypto.keyObjectInput": { argTypes: [DYN], result: BYTES_U8 },
   "crypto.isKeyObject": { argTypes: [DYN], result: BOOL },
+  /** WebCrypto (scr_webcrypto.c): each method takes its argument vector as
+   * one dyn array and answers a promise that argument and validation
+   * failures reject. CryptoKey values are native handles. */
+  "webcrypto.importKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.verify": { argTypes: [DYN], result: { kind: "promise", inner: BOOL } },
+  "webcrypto.digest": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.isCryptoKey": { argTypes: [DYN], result: BOOL },
   "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
   "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
   "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
@@ -3141,6 +3150,29 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.compare": { argTypes: [DYN, DYN, STRING], result: BOOL },
   "dyn.bitwise": { argTypes: [DYN, DYN, STRING], result: DYN },
   "dyn.proxyNew": { argTypes: [DYN, DYN], result: DYN },
+  /* Dynamic-tier values (jsval; two-tier design stage S3). The jsval pass
+   * (ir/jsval.ts) introduces these in dynamic-tier functions only; the
+   * runtime is scr_js_value.c. Arguments are borrowed and results owned,
+   * like every libCall. Boundary conversions: js.fromDyn (a cell keeps its
+   * identity), js.toDyn (an immediate is boxed), js.fromF64/fromBool/
+   * fromStr/fromBigInt (the design's toJs: immediates, and strings and
+   * BigInts under a tag without a copy) and js.toF64 (fromJs to number: dynCheck's
+   * number check and TypeError). The operators are the dyn.* operators
+   * over jsvals, with identical JS semantics. */
+  "js.fromDyn": { argTypes: [DYN], result: JSVAL },
+  "js.toDyn": { argTypes: [JSVAL], result: DYN },
+  "js.fromF64": { argTypes: [F64], result: JSVAL },
+  "js.fromBool": { argTypes: [BOOL], result: JSVAL },
+  "js.fromStr": { argTypes: [STRING], result: JSVAL },
+  "js.fromBigInt": { argTypes: [BIGINT_T], result: JSVAL },
+  "js.toF64": { argTypes: [JSVAL], result: F64 },
+  "js.add": { argTypes: [JSVAL, JSVAL], result: JSVAL },
+  "js.arithmetic": { argTypes: [JSVAL, JSVAL, STRING], result: JSVAL },
+  "js.bitwise": { argTypes: [JSVAL, JSVAL, STRING], result: JSVAL },
+  "js.compare": { argTypes: [JSVAL, JSVAL, STRING], result: BOOL },
+  "js.toNumeric": { argTypes: [JSVAL], result: JSVAL },
+  "js.increment": { argTypes: [JSVAL, BOOL], result: JSVAL },
+  "js.toNumberCoerce": { argTypes: [JSVAL], result: F64 },
   // Always throws; the result is the READ's declared type (a typed dummy
   // the unwind abandons) — the libCall case skips the result check.
   /** A read of a `declare`d const NOTHING defines (the bundler-define
@@ -3467,6 +3499,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * throws err when unhandled. count/countFn/names/listeners/getMax/
    * setMax/setDefaultMax/getDefaultMax are the introspection surface. */
   "emitter.new": { argTypes: [], result: VOID },
+  /** `x.constructor.name` of an emitter or stream (a borrowed object of
+   * EventEmitter's hierarchy): the +1 class name the instance records. */
+  "emitter.className": { argTypes: [null], result: STRING },
   "emitter.ctor": { argTypes: [null], result: VOID },
   "emitter.on": { argTypes: [null, STRING, null, BOOL, BOOL], result: VOID },
   "emitter.off": { argTypes: [null, STRING, null], result: VOID },
@@ -3984,6 +4019,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [F64, STRING, DYN],
     result: { kind: "promise", inner: STRING },
   },
+  /** The question forms with a checked-dynamic query (a JavaScript value
+   * that need not be a string). */
+  "rl.questionDyn": { argTypes: [F64, DYN, null], result: VOID },
+  "rl.questionAsyncDyn": { argTypes: [F64, DYN], result: { kind: "promise", inner: STRING } },
+  "rl.questionAsyncSignalDyn": {
+    argTypes: [F64, DYN, DYN],
+    result: { kind: "promise", inner: STRING },
+  },
   "rl.close": { argTypes: [F64], result: VOID },
   "rl.pause": { argTypes: [F64], result: VOID },
   "rl.resume": { argTypes: [F64], result: VOID },
@@ -3991,6 +4034,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** prompt(preserveCursor): [handle, preserveCursor] */
   "rl.promptWith": { argTypes: [F64, BOOL], result: VOID },
   "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
+  "rl.setPromptDyn": { argTypes: [F64, DYN], result: VOID },
   "rl.getPrompt": { argTypes: [F64], result: STRING },
   "rl.write": { argTypes: [F64, STRING], result: VOID },
   /** write(data, key): [handle, hasData, data, hasKey, hasName, name,
@@ -4023,6 +4067,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "rl.terminal": { argTypes: [F64, F64, BOOL, DYN, BOOL], result: VOID },
   "rl.line": { argTypes: [F64], result: STRING },
   "rl.isTerminal": { argTypes: [F64], result: BOOL },
+  "rl.isPromises": { argTypes: [F64], result: BOOL },
+  /** createInterface's input or output as a checked-dynamic value:
+   * [value, output] — the stream; refused when it is not one. */
+  "rl.inputFromDyn": { argTypes: [DYN, BOOL], result: { kind: "object", className: "%Readable" } },
+  "rl.outputFromDyn": {
+    argTypes: [DYN, BOOL],
+    result: { kind: "object", className: "%Writable" },
+  },
   "rl.cursor": { argTypes: [F64], result: F64 },
   /** readline.cursorTo / moveCursor / clearLine / clearScreenDown: rl.seq
    * [kind (0-3), the first and second numbers, whether the second is
@@ -4176,6 +4228,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * warnings and DeprecationWarning emissions read their truthiness. */
   "process.deprecationFlag": { argTypes: [F64], result: DYN },
   "process.setDeprecationFlag": { argTypes: [F64, DYN], result: VOID },
+  "process.setEmitWarning": { argTypes: [DYN], result: VOID },
   /** AsyncLocalStorage (node:async_hooks — scr_async.c): stores are f64
    * handles; contexts are immutable fiber-carried snapshots (spawned
    * fibers inherit the spawner's — Node's init-time capture). run/exit

@@ -31,7 +31,7 @@ export function lowerModuleNamespaceElement(
             ? lowerer.checker.getAliasedSymbol(exported)
             : exported;
         if (!(target.flags & ts.SymbolFlags.Value)) return;
-        const declaration = lowerer.checker.valueDeclarationOf(target);
+        const declaration = target.valueDeclaration;
         const identifier = declaration?.name as ts.Node | undefined;
         if (!identifier || !ts.isIdentifier(identifier)) {
           lowerer.unsupported("SC1090", expr, "computed namespace reads of unnamed exports");

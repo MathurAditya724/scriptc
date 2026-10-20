@@ -146,6 +146,7 @@ test("class prototype data helpers retain their ABI after serialization", () => 
     body: [{ kind: "return", value: { kind: "dynObjLit", fields: [], type: DYN, loc }, loc }],
     loc,
   });
+  assignLegacyTiers(mod.functions);
   expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
   for (const variant of ["missing", "params", "return", "captures"]) {
     const bad = structuredClone(mod);
@@ -178,6 +179,7 @@ test("instance prototype helpers require the class receiver ABI", () => {
     body: [{ kind: "return", value: { kind: "dynObjLit", fields: [], type: DYN, loc }, loc }],
     loc,
   });
+  assignLegacyTiers(mod.functions);
   expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
   for (const variant of ["missing", "params", "receiver", "return", "captures"]) {
     const bad = structuredClone(mod);
@@ -325,7 +327,7 @@ function numericReadModule(overrides: Partial<IrExpr & { kind: "arrIntrinsic" }>
     ...overrides,
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -409,7 +411,7 @@ test.each(["sortPrimitive", "toSortedPrimitive"] as const)(
 
 function expressionModule(expr: IrExpr, unions: IrUnionDef[]): IrModule {
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions,
@@ -1322,7 +1324,7 @@ test.each([
 function tdzModule(mutable = true): IrModule {
   const value: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -1615,7 +1617,7 @@ test("TDZ locals require a shared box", () => {
 
 function discriminatedModule(): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [{ name: "main", params: [], locals: [], returnType: VOID, body: [], loc }],
@@ -2132,7 +2134,7 @@ test("a caught-typed global records a module error only from a catch binding", (
   const caught: IrType = { kind: "caught" };
   const errorId = "%g.e.%loaded%error";
   const module = (value: IrExpr): IrModule => ({
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions: [],
