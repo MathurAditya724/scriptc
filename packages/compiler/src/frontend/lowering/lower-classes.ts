@@ -30,6 +30,7 @@ import type { FnCtx, Lowerer } from "./lowerer.js";
 import { inlineNamespaceRequireOf, lowerWithInlineRequireInit } from "./cjs-inline-require.js";
 import {
   BOOL,
+  canDynCheckTo,
   DATE_T,
   DYN,
   F64,
@@ -499,6 +500,12 @@ export interface ClassInfo {
   /** Own JS overrides whose signature cannot use the inherited ABI. The slot
    * retains that ABI, but its implementation throws before executing. */
   methodEntryFences?: Map<string, ScrDiagnostic>;
+  /** Own TypeScript overrides whose declared result differs from the
+   * inherited ABI's but converts into it (`Promise<void>` over `any`, a
+   * union narrowed to its inherited arm): the slot function `%C.m` keeps the
+   * inherited ABI and converts the result of the body, which lowers as
+   * `%C.m$own` with the declared result (async when declared so). */
+  returnAdapters?: Map<string, { params: ParamShape[]; ret: IrType; async: boolean }>;
   /** OWN GENERIC instance methods (own type parameters — `m<T>(x: T)`),
    * monomorphized per call site like top-level generic functions: instance
    * `n` is the module function `%C.m%n` taking `this` as param 0. They
@@ -2249,6 +2256,7 @@ export function collectClassShapeInner(
       }
     >();
     const methodEntryFences = new Map<string, ScrDiagnostic>();
+    const returnAdapters = new Map<string, { params: ParamShape[]; ret: IrType; async: boolean }>();
     // Own accessor declarations ("get:x"/"set:x" → node), for the
     // partial-override analysis below (diagnostics need the node).
     const accessorNodes = new Map<string, ts.AccessorDeclaration>();
@@ -3434,7 +3442,67 @@ export function collectClassShapeInner(
             overridden.declarer.decl !== null &&
             isJsSourceFile(overridden.declarer.decl.getSourceFile()) &&
             overridden.sig.gen === undefined;
-          if (fencedJsOverride) {
+          // A TypeScript override that only changes the result, into a
+          // type that converts into the inherited one (`Promise<void>` over
+          // an `any` base, `string | undefined` over `string`): the slot
+          // keeps the inherited ABI and converts the body's result at the
+          // boundary (lowerClassMethodMemberInner).
+          const ownAsync =
+            member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+          if (
+            !fencedJsOverride &&
+            !functionLocalClass(decl) &&
+            overridden.sig.gen === undefined &&
+            // An async base's slot answers its promise: a Promise type, or
+            // the checked-dynamic value of an untyped async method.
+            (overridden.sig.async !== true ||
+              overridden.sig.ret.kind === "promise" ||
+              overridden.sig.ret.kind === "dyn") &&
+            !overridden.sig.abstract &&
+            overridden.sig.params.length === shapes.length &&
+            overridden.sig.params.every(
+              (p, i) =>
+                p.mode === shapes[i]!.mode &&
+                (p.mode === "required" || p.mode === "omittable") &&
+                // Each inherited argument converts into the override's
+                // parameter: equal, a checked extraction from an `any`
+                // slot, or a widening (a contravariant parameter).
+                (typeEquals(p.type, shapes[i]!.type) ||
+                  (p.type.kind === "dyn" &&
+                    canDynCheckTo(
+                      shapes[i]!.type,
+                      (id) => lowerer.shapes.get(id),
+                      (id) => lowerer.unions.get(id),
+                    )) ||
+                  lowerer.coercibleValue(p.type, shapes[i]!.type)),
+            ) &&
+            (ownAsync ? ft.ret.kind === "promise" : true) &&
+            (typeEquals(ft.ret, overridden.sig.ret) ||
+              (overridden.sig.ret.kind === "dyn"
+                ? ft.ret.kind !== "void" && lowerer.dynConvertible(ft.ret)
+                : lowerer.coercibleValue(ft.ret, overridden.sig.ret) ||
+                  // A promise whose payload widens into the inherited one
+                  // (`Promise<void>` over an untyped async `Promise<any>`).
+                  (ft.ret.kind === "promise" &&
+                    overridden.sig.ret.kind === "promise" &&
+                    lowerer.promisePayloadWidens(ft.ret, overridden.sig.ret)) ||
+                  // A JavaScript override's inferred `any` result checks
+                  // into the inherited type (`toString() { return
+                  // this.message }` over Error's).
+                  (ft.ret.kind === "dyn" &&
+                    isJsSourceFile(member.getSourceFile()) &&
+                    overridden.sig.ret.kind !== "void" &&
+                    canDynCheckTo(
+                      overridden.sig.ret,
+                      (id) => lowerer.shapes.get(id),
+                      (id) => lowerer.unions.get(id),
+                    ))))
+          ) {
+            returnAdapters.set(mName, { params: [...shapes], ret: ft.ret, async: ownAsync });
+            shapes.splice(0, shapes.length, ...overridden.sig.params);
+            ft.ret = overridden.sig.ret;
+            if (overridden.sig.async === true) thunkAsyncSlot(overridden, mName);
+          } else if (fencedJsOverride) {
             // A dormant JS method must not poison the whole class. Keep
             // the inherited call/dispatch ABI and refuse at method entry;
             // lowering this body with the base signature would change JS.
@@ -3489,7 +3557,34 @@ export function collectClassShapeInner(
         // fiber spawn wrapper; vtable slots hold raw implementations) —
         // an override chain touching an async method on either end would
         // put a spawn wrapper behind a virtual slot, so it fences.
-        if (overridden && (asyncMember || overridden.sig.async === true)) {
+        // An override chain touching async methods dispatches through
+        // plain slot functions that return the body's promise: the async
+        // bodies lower as `%C.m$own` behind them (thunkAsyncSlot).
+        if (
+          overridden &&
+          !returnAdapters.has(mName) &&
+          (asyncMember || overridden.sig.async === true) &&
+          !isJsSourceFile(member.getSourceFile()) &&
+          !functionLocalClass(decl) &&
+          member.asteriskToken === undefined &&
+          overridden.sig.gen === undefined &&
+          !overridden.sig.abstract &&
+          ft.ret.kind === "promise" &&
+          typeEquals(ft.ret, overridden.sig.ret) &&
+          overridden.sig.params.length === shapes.length &&
+          overridden.sig.params.every(
+            (p, i) => typeEquals(p.type, shapes[i]!.type) && p.mode === shapes[i]!.mode,
+          )
+        ) {
+          if (overridden.sig.async === true) thunkAsyncSlot(overridden, mName);
+          if (asyncMember)
+            returnAdapters.set(mName, { params: [...shapes], ret: ft.ret, async: true });
+        }
+        if (
+          overridden &&
+          !returnAdapters.has(mName) &&
+          (asyncMember || overridden.sig.async === true)
+        ) {
           const message = `overriding ${overridden.sig.async === true ? "the async method" : "a method with an async method"} '${mName}' (async methods dispatch statically — the vtable slot machinery has no fiber-spawn story)`;
           if (isJsSourceFile(member.getSourceFile()))
             methodEntryFences.set(mName, unsupportedDiag("SC1090", locOf(member.name), message));
@@ -3520,7 +3615,7 @@ export function collectClassShapeInner(
         } else {
           methods.set(
             mName,
-            asyncMember
+            asyncMember && !returnAdapters.has(mName)
               ? { params: shapes, ret: ft.ret, async: true as const }
               : { params: shapes, ret: ft.ret },
           );
@@ -4238,6 +4333,7 @@ export function collectClassShapeInner(
       fieldOrder,
       methods,
       ...(methodEntryFences.size > 0 ? { methodEntryFences } : {}),
+      ...(returnAdapters.size > 0 ? { returnAdapters } : {}),
       decl,
       ...(emitOverride !== undefined ? { emitOverride } : {}),
       ctor,
@@ -6616,6 +6712,28 @@ function abstractMemberSignature(
 /** A nominal return subtype uses the same owned pointer as the inherited
  * return slot. The current class is still being collected, so consult its
  * already collected base chain before the complete class graph is available. */
+/** An inherited ASYNC method that an override now dispatches against: its
+ * slot becomes a plain function returning the body's promise, and the
+ * async body lowers behind it as `%C.m$own` (the adapter path with an
+ * identity conversion), so a virtual call never enters an async body
+ * without its spawn wrapper. */
+function thunkAsyncSlot(
+  overridden: { declarer: ClassInfo; sig: ClassMethodSignature },
+  mName: string,
+): void {
+  if (overridden.sig.async !== true) return;
+  const declarer = overridden.declarer;
+  declarer.returnAdapters ??= new Map();
+  if (!declarer.returnAdapters.has(mName)) {
+    declarer.returnAdapters.set(mName, {
+      params: [...overridden.sig.params],
+      ret: overridden.sig.ret,
+      async: true,
+    });
+  }
+  delete overridden.sig.async;
+}
+
 function overrideReturnAbi(
   lowerer: Lowerer,
   declared: IrType,
@@ -7838,6 +7956,82 @@ function lowerClassMethodMemberInner(
       allowDiagSink: true,
     });
   }
+  // An override converting its declared result into the inherited ABI:
+  // the body lowers as `%C.m$own` under its declared result, and the slot
+  // function forwards to it and converts what it returns.
+  const adapter = info.returnAdapters?.get(mName);
+  if (adapter) {
+    const ownSig: ClassMethodSignature = { ...sig, params: adapter.params, ret: adapter.ret };
+    if (adapter.async) ownSig.async = true;
+    const own = lowerClassMethodBody(lowerer, info, fnLike, `%${className}.${mName}$own`, ownSig);
+    if (!own) return null;
+    lowerer.liftedFns.push(own);
+    const loc = locOf(fnLike);
+    const params: IrParam[] = [
+      { localId: "this.0", name: "this", type: thisType },
+      ...sig.params.map((p, i) => ({ localId: `p.${i}`, name: `p${i}`, type: p.type })),
+    ];
+    const fnCtx = newFnCtx(false, null, null, sig.ret);
+    lowerer.fnStack.push(fnCtx);
+    try {
+      const call: IrExpr = {
+        kind: "call",
+        callee: own.name,
+        args: params.map((p, i): IrExpr => {
+          const ref: IrExpr = { kind: "varRef", localId: p.localId, type: p.type, loc };
+          // `this` passes through; each inherited argument converts into
+          // the override's declared parameter (checked where it narrows).
+          return i === 0 ? ref : lowerer.coerceInto(fnLike.name, ref, adapter.params[i - 1]!.type);
+        }),
+        type: adapter.ret,
+        loc,
+      };
+      // A void slot discards the override's result after running it. A
+      // toString slot hands on what every ToString consumer of the result
+      // makes of it (`String(err)`, templates): undefined reads
+      // "undefined", as in Node. Other slots check the result into the
+      // inherited type.
+      const result = (): IrExpr =>
+        mName === "toString" && sig.ret.kind === "string"
+          ? call.type.kind === "dyn"
+            ? { kind: "libCall", fn: "dyn.stringConstructor", args: [call], type: STRING, loc }
+            : lowerer.ensureString(call, fnLike.name)
+          : lowerer.coerceInto(fnLike.name, call, sig.ret);
+      const body: IrStmt[] =
+        sig.ret.kind === "void"
+          ? [
+              { kind: "exprStmt", expr: call, loc },
+              { kind: "return", value: null, loc },
+            ]
+          : [{ kind: "return", value: result(), loc }];
+      return {
+        name: `%${className}.${mName}`,
+        params,
+        returnType: sig.ret,
+        locals: [
+          ...params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+          ...lowerer.ctx.locals,
+        ],
+        body,
+        loc,
+      };
+    } finally {
+      lowerer.fnStack.pop();
+    }
+  }
+  return lowerClassMethodBody(lowerer, info, fnLike, `%${className}.${mName}`, sig);
+}
+
+function lowerClassMethodBody(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  fnLike: ts.MethodDeclaration | ts.AccessorDeclaration,
+  fnName: string,
+  sig: ClassMethodSignature,
+): IrFunction | null {
+  const className = info.def.name;
+  const thisType: IrType = { kind: "object", className };
+  if (!fnLike.body) return null;
   const prevClass = lowerer.currentClass;
   lowerer.currentClass = info;
   // ASYNC methods: the module function is an async IrFunction — its
@@ -7879,7 +8073,7 @@ function lowerClassMethodMemberInner(
     const body = [...declared.prologue, ...lowerer.lowerStmts(fnLike.body.statements.nodes)];
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(fnLike));
     const fn: IrFunction = {
-      name: `%${className}.${mName}`,
+      name: fnName,
       params,
       returnType: bodyReturn,
       locals: lowerer.ctx.locals,

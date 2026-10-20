@@ -60,7 +60,7 @@ const KNOWN: Record<string, Known> = {
   },
   "island-web-plumbing": { run: "SC2020" },
   "lazy-traps": { build: "SC2013" },
-  "misc-shims": { build: "SC2013" },
+  "misc-shims": { run: "SC2020" },
   "namespace": { build: "SC1013" },
   "node24-async-events": { run: "SC2020" },
   "node24-commonjs-metadata": { run: "SC2020" },

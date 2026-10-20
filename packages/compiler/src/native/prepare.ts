@@ -143,6 +143,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "bigint",
     "searchParams",
     "qs",
+    "dynBuiltinClass",
     "parseArgs",
     "stream",
     "net",
@@ -157,6 +158,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "tlsCa",
     "cipher",
     "webcrypto",
+    "perfLoop",
   ].every((name) => typeof features[name] === "boolean");
 }
 

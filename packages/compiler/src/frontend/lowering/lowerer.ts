@@ -1,5 +1,8 @@
+import { onlyForwarded } from "./typed-arguments.js";
+import { needsGeneralNodeStreams, stdioIntoGeneralStream } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
+import { builtinClassValue, builtinMemberClassKind } from "./builtins/builtin-class-dyn.js";
 import {
   lifetimeRegionType,
   lowerLifetimeRegionCall,
@@ -30,8 +33,13 @@ import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
-import { refuseWebAssemblyUse } from "./builtins/webassembly.js";
+import {
+  lowerWebAssemblyCall,
+  lowerWebAssemblyNew,
+  refuseWebAssemblyUse,
+} from "./builtins/webassembly.js";
 import { discoverWasmModules, type WasmModuleReport } from "../../wasm/discover.js";
+import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
@@ -185,6 +193,7 @@ import type {
   IrGlobal,
   IrLocal,
   IrModule,
+  IrWasmModule,
   IrParam,
   IrRecordShape,
   IrStmt,
@@ -877,6 +886,10 @@ export interface LowererMode {
   /** Statically resolved child_process.fork program roots, in stable target-id order. */
   forkTargets?: readonly ts.SourceFile[];
   frontendServices?: FrontendServices | undefined;
+  /** The program's general stream representation (TypeMapperCtx.
+   * generalNodeStreams). lowerToIr turns it on only after a pass without
+   * it saw a stream flow that needs it (requiresGeneralNodeStreams). */
+  generalNodeStreams?: boolean;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LowerOptions.libraryCallbacks (see there). */
@@ -1033,10 +1046,40 @@ export function lowerToIr(
   for (const d of extraModuleCycleDiags) reachableEmit.pushDiag(d);
   for (const d of ffiValidation.diagnostics) reachableEmit.pushDiag(d);
   const emitted = reachableEmit.emitReachable(options.libRoots);
-  const { reachable } = emitted;
+  let { reachable } = emitted;
   let result = emitted.result;
   let resultLowerer = reachableEmit;
   timing("reachable-emit", { reachable: reachable.size });
+  // The general stream representation (TypeMapperCtx.generalNodeStreams)
+  // is a per-program decision: only a program whose reachable code moved
+  // a general stream into a stdio-represented stream slot lowers again
+  // with it. Every other program keeps the single pass above unchanged.
+  const generalNodeStreams = reachableEmit.requiresGeneralNodeStreams;
+  if (generalNodeStreams) {
+    const general = new Lowerer(program, entry, moduleOrder, {
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      targetPlatform,
+      startupCrash,
+      inlineRequireCycleCalls: options.inlineRequireCycleCalls,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      generalNodeStreams: true,
+    });
+    for (const d of extraModuleCycleDiags) general.pushDiag(d);
+    for (const d of ffiValidation.diagnostics) general.pushDiag(d);
+    const generalEmitted = general.emitReachable(options.libRoots);
+    reachable = generalEmitted.reachable;
+    result = generalEmitted.result;
+    resultLowerer = general;
+    timing("general-streams-relower", { reachable: reachable.size });
+  }
   // A generic class-rest support decision can depend on record metadata
   // whose historical owner is discovered only while retained bodies lower.
   // If the settled answer is a fence, rerun the ordinary reachable emit so
@@ -1044,10 +1087,11 @@ export function lowerToIr(
   // declarators stay unvisited, bindings block, cascades and stats match the
   // historical compiler. This is a rare compatibility fallback; programs
   // without such a settled fence retain checker-backed IR exactly once.
-  if (reachableEmit.requiresHistoricalOrderRelower) {
+  if (resultLowerer.requiresHistoricalOrderRelower) {
     const emit = new Lowerer(program, entry, moduleOrder, {
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
       reachable,
       targetPlatform,
       startupCrash,
@@ -1103,25 +1147,70 @@ export function lowerToIr(
       diagnostics: [...result.diagnostics, ...contracts.diagnostics],
     };
   else if (contracts.count > 0) result = { ...result, contracts };
+  const discoverModules = (
+    onModule?: (sha256: string, bytes: Uint8Array) => void,
+  ): WasmModuleReport[] =>
+    discoverWasmModules({
+      files: moduleOrder.includes(entry) ? moduleOrder : [...moduleOrder, entry],
+      entry: entry.fileName,
+      configured: options.wasmFiles ?? [],
+      resolveRequest: (fromFile, specifier) => {
+        const resolved = resolveRequireRuntime(
+          fromFile,
+          specifier,
+          targetPlatform,
+          undefined,
+          options.frontendServices,
+        );
+        return resolved.ok ? resolved.value : null;
+      },
+      ...(onModule === undefined ? {} : { onModule }),
+    });
+  // A program that uses the WebAssembly API carries every module the build
+  // can see and translate (wasm/translate.ts); the rest fail at run time
+  // with the CompileError for untranslated bytes.
+  if (result.module !== null && resultLowerer.usesWebAssembly) {
+    const bytesByHash = new Map<string, Uint8Array>();
+    const reports = discoverModules((sha256, bytes) => bytesByHash.set(sha256, bytes));
+    const wasmModules: IrWasmModule[] = [];
+    for (const report of reports) {
+      const bytes = bytesByHash.get(report.sha256);
+      if (report.status !== "valid" || bytes === undefined) continue;
+      wasmModules.push({ sha256: report.sha256, bytes: encodeBase64(bytes) });
+    }
+    result.module.wasmModules = wasmModules;
+    if (resultLowerer.usesWasmCustomSections) result.module.wasmCustomSections = true;
+    timing("wasm-discovery", { modules: wasmModules.length });
+  }
   if (options.coverage !== true) return result;
-  const remainder = new Lowerer(program, entry, moduleOrder, {
-    frontendServices: options.frontendServices,
-    projectCheckJs: options.projectCheckJs ?? false,
-    reachable,
-    remainder: true,
-    alreadyFlushed: resultLowerer.flushedSymbols,
-    inlineRequireCycleCalls: options.inlineRequireCycleCalls,
-    targetPlatform,
-    ffiImports,
-    libraryCallbacks,
-    forkTargets,
-    workerTargets,
-    ffiBindingSymbols: ffiValidation.symbolsByName,
-    externalTypes,
-    externalTypeSpecifiersByFile,
-    tierMode,
-  });
-  const rem = remainder.run();
+  const remainderPass = (general: boolean): Lowerer =>
+    new Lowerer(program, entry, moduleOrder, {
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      ...(general ? { generalNodeStreams: true } : {}),
+      reachable,
+      remainder: true,
+      alreadyFlushed: resultLowerer.flushedSymbols,
+      inlineRequireCycleCalls: options.inlineRequireCycleCalls,
+      targetPlatform,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+    });
+  let remainder = remainderPass(generalNodeStreams);
+  let rem = remainder.run();
+  // Unreached code reports what it would compile to once reached: a
+  // stream flow there that needs the general representation lowers the
+  // remainder again with it, as reachable emit would.
+  if (!generalNodeStreams && remainder.requiresGeneralNodeStreams) {
+    remainder = remainderPass(true);
+    rem = remainder.run();
+  }
   timing("coverage-remainder");
   // Tiers (tier-analysis.ts): reached statements in dynamic-tier functions,
   // and with tierReport the report-only demotion analysis.
@@ -1156,21 +1245,7 @@ export function lowerToIr(
     },
   };
   if (tiers !== undefined) covered.tiers = tiers;
-  const wasmModules = discoverWasmModules({
-    files: moduleOrder.includes(entry) ? moduleOrder : [...moduleOrder, entry],
-    entry: entry.fileName,
-    configured: options.wasmFiles ?? [],
-    resolveRequest: (fromFile, specifier) => {
-      const resolved = resolveRequireRuntime(
-        fromFile,
-        specifier,
-        targetPlatform,
-        undefined,
-        options.frontendServices,
-      );
-      return resolved.ok ? resolved.value : null;
-    },
-  });
+  const wasmModules = discoverModules();
   timing("wasm-discovery", { modules: wasmModules.length });
   if (wasmModules.length > 0) covered.wasmModules = wasmModules;
   return covered;
@@ -1921,6 +1996,18 @@ export class Lowerer {
    * type parameters are bound to `unknown`, so lambdaSignature admits
    * them. */
   readonly erasingLambdas = new Set<ts.Node>();
+  /** Function expressions lowered against a fixed target signature with a
+   * tuple-typed `arguments` (typed-arguments.ts). */
+  readonly typedArgumentsLambdas = new Set<ts.Node>();
+  /** Const bindings holding a forwarded fixed tuple (`const args =
+   * arguments as any` in a typed-arguments function) → the tuple type. */
+  readonly tupleAliasSymbols = new Map<ts.Symbol, IrType>();
+  /** `??` expressions whose result is the optional callback's own function
+   * type (an adapted function default); their bindings take that type. */
+  readonly nullishFuncResults = new Set<ts.Node>();
+  /** The static names of the current generic instance's name-keyed
+   * function parameters (static-function-names.ts). */
+  staticFnNames: Map<ts.Symbol, string | null> | null = null;
   /** Nesting depth of erased generic bodies being lowered (erased lambdas
    * and erased instances). */
   erasingDepth = 0;
@@ -1950,6 +2037,10 @@ export class Lowerer {
    * setEncoding call whose receiver is a socket or an untyped value.
    * Computed once on first use (null until then). */
   socketEncodingReachable: boolean | null = null;
+  /** Whether some server in this program may listen on a Unix socket: a
+   * listen call whose first argument is a string. Computed once on first
+   * use (null until then); address() answers the path only when true. */
+  unixListenReachable: boolean | null = null;
   /** IMPLICIT-ANY instances lowered EAGERLY at first demand (their return
    * types are inferred from the body — the call site needs them settled),
    * collected here for run()'s function list (the liftedFns discipline). */
@@ -2018,7 +2109,9 @@ export class Lowerer {
   /** A pipeline() function stage's `source` parameter: the IR type of what
    * the pipeline passes it (the previous stage as an async iterable), set
    * while the stage lowers. Parameter typing and `for await` heads read
-   * it before the checker's `AsyncIterable<T>`. */
+   * it before the checker's `AsyncIterable<T>`. A stream option callback's
+   * completion parameter declared with an any-typed `data` is pinned here
+   * too while the callback lowers (pinAnyDataCompletion). */
   readonly stageSourceTypes = new Map<ts.Symbol, IrType>();
   /** Set when a match result lowers to execGroups/matchGroups, the inputs
    * of regex span folding. */
@@ -2496,6 +2589,12 @@ export class Lowerer {
   /** Settled generic class-rest metadata requires the historical emit
    * fallback so its fence can poison the original statement atomically. */
   requiresHistoricalOrderRelower = false;
+  /** A general stream value (a runtime stream class instance) reached a
+   * slot the child/process stdio handles represent — NodeJS.ReadableStream,
+   * NodeJS.WritableStream, or @types/node's stream.Readable/Writable — or
+   * a stdio handle reached an 'unknown' slot. lowerToIr then lowers the
+   * program again under the general stream representation. */
+  requiresGeneralNodeStreams = false;
   /** Helpers that snapshot shape declaration order into their bodies.
    * Reachability lowers inits before the declarations they discover, so
    * these rebuild after the worklist restores historical shape metadata. */
@@ -2750,6 +2849,12 @@ export class Lowerer {
   readonly workerTargets: readonly ts.SourceFile[];
   readonly workerTargetIdByPath = new Map<string, number>();
   usesWorkers = false;
+  /** The program uses the WebAssembly API (builtins/webassembly.ts): the
+   * build translates the modules it discovers. */
+  usesWebAssembly = false;
+  /** The program calls WebAssembly.Module.customSections: translated
+   * modules keep their custom sections. */
+  usesWasmCustomSections = false;
   /** The program constructs a LifetimeRegion (lifetime-regions.ts). */
   usesLifetimeRegions = false;
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
@@ -2951,6 +3056,7 @@ export class Lowerer {
    * refuse and fence exactly as before. Stage S6 demotes the units of
    * committed refusals in "auto" and keeps them refusals in "static-only". */
   readonly tierMode: TierMode;
+  readonly generalNodeStreams: boolean;
   /** Functions finishModule placed in the dynamic tier (ir/tiers.ts). */
   dynamicFunctions: DynamicFunction[] = [];
   /** Their IR, for coverage's dynamic statement count. */
@@ -3079,6 +3185,7 @@ export class Lowerer {
     this.startupCrash = mode.startupCrash ?? null;
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.tierMode = mode.tierMode ?? "auto";
+    this.generalNodeStreams = mode.generalNodeStreams ?? false;
     this.workerTargets = mode.workerTargets ?? [];
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
@@ -3175,6 +3282,7 @@ export class Lowerer {
       isExternalTypeFile: (sf) =>
         this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))),
       typeMemo: this.typeMemo,
+      ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       canMemoizeType: () =>
         this.typeParamBindings === null &&
         this.typeParamTsBindings === null &&
@@ -8459,6 +8567,8 @@ export class Lowerer {
    * validator ICEs on them as the usual backstop. */
   requireExactShape(node: ts.Node, actual: IrType, expected: IrType): void {
     if (typeEquals(actual, expected)) return;
+    if (!this.generalNodeStreams && needsGeneralNodeStreams(this, actual, expected))
+      this.requiresGeneralNodeStreams = true;
     // dyn mismatches first. A dyn ('unknown') value flowing into a typed
     // slot needs a CHECKED cast — the hint points at `as <type>`; tsc
     // usually rejects this before we do, so the fence is mostly defensive.
@@ -8676,6 +8786,9 @@ export class Lowerer {
     }
     if (expr.type.kind === "void" && expected.kind !== "void" && this.neverValued.has(expr))
       return this.divergentValue(expr, expected);
+    // process.stdout/stderr into a general Writable slot (general-streams.ts).
+    const stdioStream = stdioIntoGeneralStream(this, expr, expected);
+    if (stdioStream) return this.coerceToExpected(stdioStream, expected);
     // Iterator-typed slots: native iterators and differently typed
     // generators step through an adapter generator.
     if (expected.kind === "generator" && !typeEquals(expr.type, expected)) {
@@ -9711,6 +9824,8 @@ export class Lowerer {
       node = node.expression;
     if (expected) {
       if (ts.isConditionalExpression(node)) return lowerTernary(this, node, expected);
+      const escaped = this.neverAssertionInto(node, expected);
+      if (escaped) return escaped;
       const fresh = this.emptyCollectionFor(node, expected);
       if (fresh) return this.coerceInto(node, fresh, expected);
     }
@@ -10624,6 +10739,14 @@ export class Lowerer {
     return findMethodOn(this, info, name);
   }
 
+  /** A class whose root is the runtime's %Error (builtin errors and their
+   * program subclasses). */
+  isErrorRootedClass(className: string): boolean {
+    let info = this.classes.get(className) ?? null;
+    while (info && info.base) info = info.base;
+    return info?.def.name === "%Error";
+  }
+
   isSubclassOf(sub: string, sup: string): boolean {
     return isSubclassOf(this, sub, sup);
   }
@@ -10910,6 +11033,108 @@ export class Lowerer {
     return declareContextLocal(this.ctx, name, type, false, undefined, undefined);
   }
 
+  /** The body binding of a fixed-tuple rest parameter: one native slot per
+   * position (the flattened ABI), rebuilt into the tuple the source names.
+   * The empty tuple rides the empty-array representation. */
+  declareRestTupleParam(
+    decl: ts.ParameterDeclaration,
+    nameNode: ts.Identifier,
+    elemShapes: readonly ParamShape[],
+    params: IrParam[],
+    prologue: IrStmt[],
+  ): void {
+    const loc = locOf(decl);
+    const name = nameNode.text;
+    const fn = decl.parent;
+    const symbol = this.checker.getSymbolAtLocation(nameNode);
+    const isRead = (id: ts.Identifier): boolean =>
+      id !== nameNode && this.checker.getSymbolAtLocation(id) === symbol;
+    const pure = fn !== undefined && symbol !== undefined && onlyForwarded(this, fn, isRead);
+    // A forwarded-only tuple is never built: a tuple with optional
+    // positions (`Parameters<(n?: T) => R>`, whose length varies per call)
+    // forwards its slots, an omitted position as undefined — which a
+    // callee's default treats exactly as an omitted argument. Its length
+    // is the one read that would observe the difference.
+    const tupleType =
+      pure &&
+      elemShapes.length > 0 &&
+      this.mapTypeOf(this.typeOf(nameNode)) === null &&
+      !readsLength(fn!, isRead)
+        ? this.forwardedSlotsTuple(elemShapes)
+        : this.irTypeOf(nameNode);
+    const slots = elemShapes.map((shape, i) => {
+      const slot = this.declareHiddenLocal(`%${name}.${i}`, shape.type);
+      params.push({ localId: slot.id, name: `%${name}.${i}`, type: shape.type });
+      return slot;
+    });
+    const body = this.declareLocal(nameNode, name, tupleType, true);
+    if (pure) {
+      this.ctx.pureTuples.set(body.id, slots);
+      return;
+    }
+    const init = this.tupleOfSlots(slots, tupleType, nameNode, loc);
+    prologue.push({ kind: "varDecl", localId: body.id, init, loc });
+  }
+
+  /** `value as never` flowing into a typed slot: `never` is assignable to
+   * every type, so the assertion promises the slot's type. A dynamic value
+   * takes the checked extraction to it, as `value as T` would. Null for
+   * every other form, and for numeric, dynamic and union slots, which
+   * keep the existing lowering. */
+  private neverAssertionInto(node: ts.Expression, expected: IrType): IrExpr | null {
+    if (!(ts.isAsExpression(node) || ts.isTypeAssertion(node))) return null;
+    if (expected.kind === "f64" || expected.kind === "dyn" || expected.kind === "union")
+      return null;
+    if (!(this.checker.getTypeFromTypeNode(node.type).flags & ts.TypeFlags.Never)) return null;
+    const innerTs = this.typeOf(node.expression);
+    if (!(innerTs.flags & ts.TypeFlags.Any) && this.mapTypeOf(innerTs)?.kind !== "dyn") return null;
+    if (
+      !canDynCheckTo(
+        expected,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    )
+      return null;
+    const inner = this.lowerExpr(node.expression);
+    if (inner.type.kind !== "dyn") return null;
+    return { kind: "dynCheck", value: inner, type: expected, loc: locOf(node) };
+  }
+
+  /** The tuple record of a forwarded-only rest tuple's native slots. */
+  private forwardedSlotsTuple(elemShapes: readonly ParamShape[]): IrType {
+    const fields = elemShapes.map((shape, i) => ({ name: String(i), type: shape.type }));
+    fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { kind: "record", shapeId: this.shapes.intern(fields, true) };
+  }
+
+  /** A fresh tuple holding the given positional slots, typed `tupleType`
+   * (a tuple record, or the empty-array form of `[]`). */
+  tupleOfSlots(slots: readonly IrLocal[], tupleType: IrType, blame: ts.Node, loc: SrcLoc): IrExpr {
+    if (slots.length === 0) {
+      if (tupleType.kind !== "array") this.badType(blame, this.typeOf(blame));
+      return { kind: "arrayLit", elems: [], type: tupleType, loc };
+    }
+    const shape = tupleType.kind === "record" ? this.shapes.get(tupleType.shapeId) : undefined;
+    if (!shape?.tuple || shape.fields.length !== slots.length)
+      this.badType(blame, this.typeOf(blame));
+    return {
+      kind: "recordLit",
+      fields: slots.map((slot, i) => {
+        const field = shape.fields.find((f) => f.name === String(i))!;
+        return {
+          name: field.name,
+          value: this.coerceToExpected(
+            { kind: "varRef", localId: slot.id, type: slot.type, loc },
+            field.type,
+          ),
+        };
+      }),
+      type: tupleType,
+      loc,
+    };
+  }
+
   /** Declares a callee's parameter locals from its ParamShapes and builds
    * the DEFAULT-PARAM PROLOGUE. Required/optional/rest params bind their
    * symbol directly (one local of the ABI type). A defaulted param `x: T = e`
@@ -10946,6 +11171,17 @@ export class Lowerer {
       return defaultAfterUndefined(undefinedValue, this.coerceInto(node, absent, expected));
     };
     decls.forEach((decl, i) => {
+      // A fixed-tuple rest parameter owns every remaining (flattened)
+      // shape, possibly none for `[]` (restTupleShapes).
+      if (
+        decl.dotDotDotToken !== undefined &&
+        ts.isIdentifier(decl.name) &&
+        i === decls.length - 1 &&
+        (shapes[i] === undefined ? shapes.length === i : shapes[i]!.restTuple === true)
+      ) {
+        this.declareRestTupleParam(decl, decl.name, shapes.slice(i), params, prologue);
+        return;
+      }
       const shape = shapes[i]!;
       if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
         // Pattern parameter: one hidden ABI slot carries the source value;
@@ -11277,6 +11513,13 @@ export class Lowerer {
     }
     if (!symbol) return null;
     const direct = this.resolveKey(symbol, ident);
+    if (direct && this.ctx.pureTuples.has(direct.id)) {
+      // onlyForwarded proved every read forwards; a plain read here means
+      // the analysis and the lowering disagree.
+      throw new InternalCompilerError(
+        `lowerer bug: forwarded-only tuple '${ident.text}' read as a value`,
+      );
+    }
     if (direct) return direct;
     // A PARAMETER PROPERTY declares two symbols: references resolve to the
     // PARAMETER symbol, while the declaration's name binds the PROPERTY
@@ -11306,8 +11549,8 @@ export class Lowerer {
   /** Lexical `this` — the enclosing method's this-param, possibly captured
    * through arrows (function expressions/declarations reset `this` in JS;
    * their bodies never see an enclosing method's binding). */
-  resolveThis(): IrLocal | null {
-    return this.resolveKey(undefined);
+  resolveThis(blame?: ts.Node): IrLocal | null {
+    return this.resolveKey(undefined, blame);
   }
 
   peekLocal(ident: ts.Identifier): IrLocal | null {
@@ -11947,6 +12190,8 @@ export class Lowerer {
     // dispatch. The general identifier-call paths have no lowering for a
     // promise-returning ambient global, and `import` is a keyword callee no
     // identifier path matches.
+    const webAssembly = lowerWebAssemblyCall(this, expr);
+    if (webAssembly !== null) return webAssembly;
     refuseWebAssemblyUse(this, expr.expression);
     return (
       lowerLifetimeRegionCall(this, expr) ??
@@ -12175,6 +12420,8 @@ export class Lowerer {
   }
 
   lowerNew(expr: ts.NewExpression): IrExpr {
+    const webAssembly = lowerWebAssemblyNew(this, expr);
+    if (webAssembly !== null) return webAssembly;
     refuseWebAssemblyUse(this, expr.expression, "new ");
     const builtin =
       lowerLifetimeRegionNew(this, expr) ??
@@ -12587,6 +12834,12 @@ export class Lowerer {
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
+    // `stream.Readable` as a JavaScript value: the runtime's untyped
+    // constructor, the base a constructor function inherits.
+    if (isJsSourceFile(expr.getSourceFile())) {
+      const classKind = builtinMemberClassKind(bi.module, bi.member);
+      if (classKind !== null) return builtinClassValue(classKind, loc);
+    }
     if (builtinModuleFnOf(this, bi.module, bi.member)) {
       this.unsupported(
         "SC1090",
@@ -13134,6 +13387,31 @@ export class Lowerer {
   ): IrExpr | null {
     return lowerStdlibMethodCall(this, call, access);
   }
+}
+
+/** Whether some read of a binding (identified by `isRead`) in `fn` takes
+ * its `.length`. */
+function readsLength(fn: ts.Node, isRead: (id: ts.Identifier) => boolean): boolean {
+  let found = false;
+  ts.walkPreorder(fn, (n) => {
+    if (found) return "stop";
+    if (!ts.isIdentifier(n) || !isRead(n)) return undefined;
+    let top: ts.Node = n;
+    while (
+      top.parent &&
+      (ts.isParenthesizedExpression(top.parent) ||
+        ts.isAsExpression(top.parent) ||
+        ts.isTypeAssertion(top.parent) ||
+        ts.isSatisfiesExpression(top.parent) ||
+        ts.isNonNullExpression(top.parent))
+    )
+      top = top.parent;
+    const p = top.parent;
+    if (p && ts.isPropertyAccessExpression(p) && p.expression === top && p.name.text === "length")
+      found = true;
+    return undefined;
+  });
+  return found;
 }
 
 /** A union of record layouts flowing into one record slot: a function
