@@ -1058,6 +1058,7 @@ export class ClassDynamicDispatch {
         // a fresh object stands in, so an identity comparison or an
         // instanceof walk (through Object.prototype to null) answers false
         // instead of reaching the reflection refusal.
+        const standIn: IrExpr = { kind: "dynObjLit", fields: [], type: DYN, loc };
         const prototype = hasClassPrototypeData(info)
           ? classPrototypeData(lowerer, info, loc, {
               kind: "dynCheck",
@@ -1065,7 +1066,7 @@ export class ClassDynamicDispatch {
               type,
               loc,
             })
-          : ({ kind: "dynObjLit", fields: [], type: DYN, loc } satisfies IrExpr);
+          : standIn;
         if (prototype)
           this.prototypeIdentityHelper.body.unshift({
             kind: "if",
