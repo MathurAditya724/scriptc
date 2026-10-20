@@ -6,17 +6,27 @@ type ErrorClassLink = Pick<ClassInfo, "decl" | "ctor" | "paramProps"> & {
   base: ErrorClassLink | null;
 };
 
-/** Whether `node` is an assignment to `this.<name>`, and the name. */
+/** The property key a member or element-access name spells statically:
+ * an identifier, a quoted string, a number in its canonical spelling, or a
+ * computed string literal. Null for other keys. */
+function staticKeyText(name: ts.Node): string | null {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return String(Number(name.text));
+  if (ts.isComputedPropertyName(name)) return staticKeyText(name.expression);
+  return null;
+}
+
+/** Whether `node` is an assignment to `this.<name>` or `this["<name>"]`,
+ * and the name. */
 function thisAssignmentName(node: ts.Node): string | null {
   if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
     return null;
   const target = node.left;
-  if (
-    !ts.isPropertyAccessExpression(target) ||
-    target.expression.kind !== ts.SyntaxKind.ThisKeyword
-  )
-    return null;
-  return ts.isIdentifier(target.name) ? target.name.text : null;
+  if (ts.isPropertyAccessExpression(target) && target.expression.kind === ts.SyntaxKind.ThisKeyword)
+    return ts.isIdentifier(target.name) ? target.name.text : null;
+  if (ts.isElementAccessExpression(target) && target.expression.kind === ts.SyntaxKind.ThisKeyword)
+    return staticKeyText(target.argumentExpression);
+  return null;
 }
 
 /** Where an Error subclass instance's own `name` sits among its fields when
@@ -45,15 +55,17 @@ export function errorNameAfterField(
   for (const link of chain) {
     for (const property of link.paramProps ?? []) create(property.name);
     for (const member of link.decl!.members.nodes) {
-      if (!ts.isPropertyDeclaration(member) || !ts.isIdentifier(member.name)) continue;
+      if (!ts.isPropertyDeclaration(member)) continue;
+      const key = staticKeyText(member.name);
+      if (key === null) continue;
       if (
         member.modifiers?.nodes.some(
           (m) => m.kind === ts.SyntaxKind.StaticKeyword || m.kind === ts.SyntaxKind.DeclareKeyword,
         )
       )
         continue;
-      if (member.name.text === "name") return last;
-      create(member.name.text);
+      if (key === "name") return last;
+      create(key);
     }
     const body = link.ctor?.body;
     if (!body) continue;

@@ -57,6 +57,11 @@ class NamedChild extends FieldBase {
   }
 }
 
+class QuotedName extends Error {
+  override "name" = "QuotedName";
+  "quoted-extra" = 1;
+}
+
 class Unnamed extends Error {
   extra = 1;
 }
@@ -83,6 +88,7 @@ show("later field", new LaterNameField("c"));
 show("code then name", new CodeThenName("d"));
 show("child of named", new ChildOfNamed("e"));
 show("named child", new NamedChild("f"));
+show("quoted name field", new QuotedName("q"));
 
 const late = new Unnamed("g");
 late.name = "Late";

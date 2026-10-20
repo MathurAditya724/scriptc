@@ -49,6 +49,15 @@ class Derived extends Base {
   }
 }
 
+class ElementName extends Error {
+  constructor(message) {
+    super(message);
+    this.first = 1;
+    this["name"] = "ElementName";
+    this.second = 2;
+  }
+}
+
 class Unnamed extends Error {
   constructor(message) {
     super(message);
@@ -73,6 +82,7 @@ show("first", new AssignedFirst("b"));
 show("declared field", new DeclaredField("c"));
 show("name field", new NameField("d"));
 show("derived", new Derived("e"));
+show("element name", new ElementName("g"));
 
 const late = new Unnamed("f");
 late.name = "Late";
