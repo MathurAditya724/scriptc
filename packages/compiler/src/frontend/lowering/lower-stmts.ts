@@ -139,6 +139,7 @@ import {
 } from "./generic-functions.js";
 import {
   bindingNeverReassigned,
+  bindingSettledBefore,
   deadUnmappableBinding,
   nullishExprUnitOf,
   nullishGenericBindingUnitOf,
@@ -6577,11 +6578,16 @@ function lowerCjsExportStatement(
   // through to the declaration) — EXACT for const/function bindings, a
   // live-binding lie for `let`: Node copies the VALUE into the table at
   // this statement, so later reassignments are invisible to importers.
-  // Mutable bindings fence instead of diverging from Node.
+  // Mutable bindings fence instead of diverging from Node, unless the
+  // value is settled before this statement and never written again.
+  const exportStmt = cjs.expr.parent;
   const fenceMutable = (nameNode: ts.Identifier): void => {
     const sym = lowerer.resolveValueSymbol(nameNode);
     const g = sym ? lowerer.globalsBySymbol.get(sym) : undefined;
-    if (g?.mutable) {
+    if (
+      g?.mutable &&
+      !(ts.isExpressionStatement(exportStmt) && bindingSettledBefore(lowerer, sym!, exportStmt))
+    ) {
       lowerer.unsupported(
         "SC1090",
         nameNode,
@@ -6721,7 +6727,12 @@ function lowerCjsSingleValueExport(
     }
     const g = lowerer.globalsBySymbol.get(sym);
     if (g) {
-      if (g.mutable) {
+      // A binding settled before this statement and never written again
+      // holds the value Node copies here (esbuild's hoisted `var`).
+      const exportStmt = expr.parent;
+      const settled =
+        ts.isExpressionStatement(exportStmt) && bindingSettledBefore(lowerer, sym, exportStmt);
+      if (g.mutable && !settled) {
         lowerer.unsupported(
           "SC1090",
           rhs,

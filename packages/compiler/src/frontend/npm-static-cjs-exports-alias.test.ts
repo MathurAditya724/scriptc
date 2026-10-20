@@ -79,3 +79,40 @@ console.log(Object.keys(holder).join(","), holder.exports === Version, holder.ex
 ${report}`);
   expect(rewritten).toContain("{ exports: Version }");
 });
+
+test("a var or const bound to a function is a function export too", () => {
+  // esbuild's hoisted spelling of a bundled module's top-level const,
+  // below the bundle's require bindings.
+  const viaVar = expectSameBehavior(`"use strict";
+var path = require("path");
+var Version = (v) => ({ v, base: path.basename(v) });
+module.exports = Version;
+module.exports.default = Version;
+module.exports.object = (v) => ({ value: v });
+console.log(module.exports.object(1).value, module.exports.default === Version);
+${report}`);
+  expect(viaVar).toContain("Version.object = ");
+  const viaConst = expectSameBehavior(`const Version = function (v) { return { v }; };
+module.exports = Version;
+module.exports.tag = "t";
+${report}`);
+  expect(viaConst).toContain('Version.tag = "t"');
+});
+
+test.each([
+  ["a let binding", `let Version = () => 1;\nmodule.exports = Version;\nmodule.exports.x = 1;\n`],
+  [
+    "a reassigned var",
+    `var Version = () => 1;\nmodule.exports = Version;\nmodule.exports.x = 1;\nVersion = () => 2;\n`,
+  ],
+  [
+    "a var below the export",
+    `module.exports = Version;\nmodule.exports.x = 1;\nvar Version = () => 1;\n`,
+  ],
+  [
+    "a call above the export",
+    `var Version = () => 1;\nconsole.log("early");\nmodule.exports = Version;\nmodule.exports.x = 1;\n`,
+  ],
+])("%s keeps the module as it is", (_, source) => {
+  expect(rewrite(source)).toBeNull();
+});

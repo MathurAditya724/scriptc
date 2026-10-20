@@ -61,6 +61,73 @@ export function bindingNeverReassigned(lowerer: Lowerer, sym: ts.Symbol, decl: t
   return !written;
 }
 
+/** True when a module-scope variable's value is settled before the
+ * top-level statement `at` runs, and stays that way: its declaration is a
+ * top-level statement above `at`, and every write (the initializer
+ * included) sits in top-level code above `at`, outside any function or
+ * class body. A CommonJS export of the binding at `at` then copies the
+ * value the binding keeps forever, so reading the binding itself is
+ * exact (esbuild hoists a bundled module's top-level `const` to such a
+ * `var`). */
+export function bindingSettledBefore(lowerer: Lowerer, sym: ts.Symbol, at: ts.Statement): boolean {
+  const sf = at.getSourceFile();
+  if (at.parent !== sf) return false;
+  const decls = sym.declarations;
+  if (decls.length !== 1) return false;
+  const decl = decls[0]!;
+  if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return false;
+  const stmt = decl.parent?.parent;
+  if (stmt === undefined || !ts.isVariableStatement(stmt) || stmt.parent !== sf) return false;
+  const limit = at.getStart(sf);
+  if (stmt.getEnd() > limit) return false;
+  const symText = sym.name;
+  const namesSym = (e: ts.Node): boolean =>
+    ts.isIdentifier(e) && e.text === symText && lowerer.resolveValueSymbol(e) === sym;
+  let settled = true;
+  // `nested`: inside a function or class body, where code can run later.
+  const scanTarget = (t: ts.Expression, nested: boolean): void => {
+    let e: ts.Expression = t;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    let hit = namesSym(e);
+    if (!hit && (ts.isArrayLiteralExpression(e) || ts.isObjectLiteralExpression(e))) {
+      const walk = (n: ts.Node): void => {
+        if (namesSym(n)) hit = true;
+        else n.forEachChild(walk);
+      };
+      walk(e);
+    }
+    if (hit && (nested || t.getEnd() > limit)) settled = false;
+  };
+  const visit = (n: ts.Node, nested: boolean): void => {
+    if (!settled) return;
+    const inner =
+      nested ||
+      ts.isFunctionLike(n) ||
+      ts.isClassDeclaration(n) ||
+      ts.isClassExpression(n) ||
+      ts.isClassStaticBlockDeclaration(n);
+    if (ts.isBinaryExpression(n)) {
+      const k = n.operatorToken.kind;
+      if (k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment) {
+        scanTarget(n.left, nested);
+      }
+    } else if (
+      (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+      (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)
+    ) {
+      scanTarget(n.operand as ts.Expression, nested);
+    } else if (
+      (ts.isForOfStatement(n) || ts.isForInStatement(n)) &&
+      !ts.isVariableDeclarationList(n.initializer)
+    ) {
+      scanTarget(n.initializer as ts.Expression, nested);
+    }
+    n.forEachChild((c) => visit(c, inner));
+  };
+  sf.forEachChild((c) => visit(c, false));
+  return settled;
+}
+
 /** Strips the value-preserving wrappers off an expression: parens,
  * non-null assertions, `as`/`satisfies`/angle-bracket casts. What
  * remains is the expression that actually evaluates. */

@@ -11,6 +11,11 @@
  * (members on a function declaration), and drops the `exports =`
  * rebinding the static export protocol has no storage for.
  *
+ * The function may also be a `var` or `const` bound to a function
+ * expression or arrow above the statement (esbuild hoists a bundled
+ * module's top-level `const` to such a `var`): members on it are the same
+ * expando form.
+ *
  * Exact only while nothing can observe the module before the statement
  * runs and nothing replaces the export object again: the statement is a
  * top-level statement preceded only by inert declarations, it is the
@@ -41,11 +46,38 @@ function isModuleExports(e: ts.Expression): e is ts.PropertyAccessExpression {
   );
 }
 
+/** `require("x")`, or esbuild's interop wrapper around one
+ * (`__toESM(require("x"))`, `__toESM(require("x"), 1)`). */
+function isRequireValue(expr: ts.Expression): boolean {
+  const e = unparen(expr);
+  if (!ts.isCallExpression(e) || !ts.isIdentifier(e.expression)) return false;
+  const args = e.arguments.nodes;
+  if (e.expression.text === "require")
+    return (
+      args.length === 1 &&
+      (ts.isStringLiteral(args[0]!) || ts.isNoSubstitutionTemplateLiteral(args[0]!))
+    );
+  if (e.expression.text === "__toESM")
+    return (args.length === 1 || args.length === 2) && isRequireValue(args[0]!);
+  return false;
+}
+
 /** True for a statement whose evaluation runs no code that could observe
  * the export object: declarations and member writes (`F.prototype.m =
- * function …`) without calls, and directives. */
+ * function …`) without calls, directives, and bindings of required
+ * modules (`var x = require("x")`: another module can reach this one's
+ * export object only through a require cycle, which preflight's cycle
+ * rules already judge). */
 function inert(stmt: ts.Statement): boolean {
   if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) return true;
+  if (
+    ts.isVariableStatement(stmt) &&
+    stmt.declarationList.declarations.nodes.every(
+      (d) =>
+        ts.isIdentifier(d.name) && d.initializer !== undefined && isRequireValue(d.initializer),
+    )
+  )
+    return true;
   if (ts.isExpressionStatement(stmt) && ts.isStringLiteral(stmt.expression)) return true;
   if (ts.isExpressionStatement(stmt)) {
     const e = unparen(stmt.expression);
@@ -104,8 +136,11 @@ export function normalizeCjsFunctionExports(sf: ts.SourceFile): string | null {
   }
   if (whole === null) return null;
   const fnName = whole.fn;
+  const wholeAt = stmts.indexOf(whole.stmt);
   const fnDecls = stmts.filter(
-    (st) => ts.isFunctionDeclaration(st) && st.name?.text === fnName && st.body !== undefined,
+    (st, i) =>
+      (ts.isFunctionDeclaration(st) && st.name?.text === fnName && st.body !== undefined) ||
+      (i < wholeAt && functionValuedVar(st, fnName)),
   );
   // The respelled reads name the function from wherever they sit, so no
   // other binding of its name (a parameter, a local, a nested function)
@@ -181,6 +216,19 @@ export function normalizeCjsFunctionExports(sf: ts.SourceFile): string | null {
   }
   if (edits.length === 0) return null;
   return applyEdits(source, 0, source.length, edits);
+}
+
+/** `var name = function …` / `const name = (…) => …`: one declarator
+ * whose initializer is a function expression or arrow. */
+function functionValuedVar(stmt: ts.Statement, name: string): boolean {
+  if (!ts.isVariableStatement(stmt)) return false;
+  if ((stmt.declarationList.flags & ts.NodeFlags.Let) !== 0) return false;
+  const decls = stmt.declarationList.declarations.nodes;
+  if (decls.length !== 1) return false;
+  const d = decls[0]!;
+  if (!ts.isIdentifier(d.name) || d.name.text !== name || d.initializer === undefined) return false;
+  const init = unparen(d.initializer);
+  return ts.isFunctionExpression(init) || ts.isArrowFunction(init);
 }
 
 function insideFunction(node: ts.Node): boolean {
