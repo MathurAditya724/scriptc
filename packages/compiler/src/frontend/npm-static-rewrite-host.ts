@@ -181,10 +181,12 @@ export function rewriteBundlerCjsWithParser(
   source: string,
   filePath: string,
   liveExportTable?: (filePath: string) => void,
+  lexerVisibleNames?: (filePath: string, names: readonly string[]) => void,
 ): string | { degrade: string } | null {
   if (!isBundlerCjsCandidate(source)) return null;
   return rewriteBundlerCjsSyntax(parser.parse(filePath, source, "js"), filePath, {
     liveExportTable,
+    lexerVisibleNames,
     requireOnly: isVirtualSource,
     requireTargetEsModuleStamped: (from, spec) => requireTargetEsModuleStamped(parser, from, spec),
     starTargetNames: (from, spec) => {

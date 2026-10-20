@@ -2507,6 +2507,10 @@ export class Lowerer {
    * lifted lazily as module-level functions and interned per accessor
    * declaration: member reads call the getter (lower-exprs). */
   readonly cjsAccessorFns = new Map<ts.Node, { fnName: string; type: IrType & { kind: "func" } }>();
+  /** Accessor exports' link-time values for ES-module importers, and the
+   * per-module flag that the copy already ran (cjsAccessorSnapshotStores). */
+  readonly cjsAccessorSnapshots = new Map<ts.Node, { id: string; type: IrType }>();
+  readonly cjsSnapshotReady = new Map<ts.SourceFile, string>();
   /** Interned `%iter.drain.<n>` helpers (classIteratorDrainCall): one per
    * receiver class — the eager drain of a class iterable's protocol into
    * a fresh element array, behind array/call spreads. */
@@ -8474,6 +8478,17 @@ export class Lowerer {
    * else (including a DIFFERENT union) is left for requireExactShape, which
    * rejects union mismatches with SC2003. */
   coerceToExpected(expr: IrExpr, expected: IrType): IrExpr {
+    // A comma expression ending in a unit literal (`return log(), null`):
+    // its effects run first, unchanged, and the unit value takes the
+    // destination's representation (a bare unit literal has none).
+    if (
+      expr.kind === "seqExpr" &&
+      expr.result.kind === "unitLit" &&
+      !typeEquals(expr.type, expected)
+    ) {
+      const result = this.coerceToExpected(expr.result, expected);
+      return { ...expr, result, type: result.type };
+    }
     // A destination that holds undefined takes an unassigned deferred-init
     // field's slot as is (Node passes the undefined along).
     if (expected.kind === "union" && this.armTag(expected.unionId, UNDEFINED_T) >= 0) {
@@ -9901,6 +9916,15 @@ export class Lowerer {
         e = this.returnedPromiseAwait(e);
       }
       if (e.kind === "unitLit") return { kind: "return", value: null, loc };
+      // `return c ? f() : g()` over void calls: a void conditional has no
+      // value representation, so its branch selection becomes control flow.
+      if (e.kind === "ternary" && e.type.kind === "void") {
+        const branch = (x: IrExpr): IrStmt =>
+          x.kind === "ternary" && x.type.kind === "void"
+            ? { kind: "if", cond: x.cond, then: [branch(x.then)], else_: [branch(x.else_)], loc }
+            : { kind: "exprStmt", expr: x, loc };
+        return { kind: "block", body: [branch(e), { kind: "return", value: null, loc }], loc };
+      }
       if (e.type.kind === "void") return { kind: "return", value: e, loc };
       return {
         kind: "block",

@@ -152,6 +152,38 @@ test("minified initializers sharing a var statement lower the same way", () => {
   );
 });
 
+test("memoized lazy loaders sharing a var statement lower together", () => {
+  const lowered = expectSameBehavior(`${helpers}var a_exports = {};
+__export(a_exports, { v: () => v });
+var v, init_a = __esm({ "a.ts"() { console.log("a init"); v = 1; } });
+var b_exports = {};
+__export(b_exports, { default: () => w });
+var w, init_b = __esm({ "b.ts"() { console.log("b init"); w = 2; } });
+var nsA, loadA = () => nsA ??= (init_a(), __toCommonJS(a_exports)), nsB, loadB = () => nsB ??= __toESM((init_b(), __toCommonJS(b_exports)));
+console.log(loadA().v, loadB().default, loadA().v);
+`);
+  expect(lowered).not.toContain("loadA");
+  expect(lowered).not.toContain("loadB");
+});
+
+test("calls through a memoized lazy loader keep the receiver rule", () => {
+  const source = (use: string): string => `${helpers}var w_exports = {};
+__export(w_exports, { who: () => who, plain: () => plain });
+function who() { return this.__esModule; }
+function plain(x) { return "plain " + x; }
+var init_w = __esm({ "w.ts"() {} });
+var ns, load = () => ns ??= (init_w(), __toCommonJS(w_exports));
+console.log(${use});
+`;
+  expect(lower(source("load().who()"))).toEqual({
+    degrade: expect.stringContaining(
+      "calls only of exported functions that do not read 'this'",
+    ) as string,
+  });
+  const lowered = expectSameBehavior(source("load().plain(1), (load().plain)(2)"));
+  expect(lowered).not.toContain("load()");
+});
+
 test.each([
   ["is asynchronous", `var init_a = __esm({ async "a.ts"() { await 0; } });\ninit_a();`],
   [
@@ -163,7 +195,7 @@ test.each([
     `var init_a = __esm({ "a.ts"() { console.log(this); } });\ninit_a();`,
   ],
   [
-    "stores the namespace of a bundled ES module ('a_exports') in a variable",
+    "memoized lazy loader 'load' returns the namespace of a bundled ES module as a value",
     `var a_exports = {};\n__export(a_exports, { v: () => v });\nvar v, init_a = __esm({ "a.ts"() { v = 1; } });\nvar ns, load = () => ns ??= __toESM((init_a(), __toCommonJS(a_exports)));\nload();`,
   ],
   [

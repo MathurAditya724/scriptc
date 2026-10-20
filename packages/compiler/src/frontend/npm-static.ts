@@ -43,6 +43,14 @@ export function npmStaticLiveExportTable(path: string): boolean {
   return liveExportFiles.has(path.split("\\").join("/"));
 }
 
+/** Names Node's lexer detects in a rewritten file's original text that
+ * its rewrite spells only as accessors (the lexer skips those). */
+const lexerNames = new Map<string, readonly string[]>();
+
+export function npmStaticLexerVisibleNames(path: string): readonly string[] {
+  return lexerNames.get(path.split("\\").join("/")) ?? [];
+}
+
 export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): void {
   activePackages = new Set(packages);
   declarationOverloads = new Map();
@@ -51,9 +59,11 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   fileDegrades.clear();
   rewriteCache.clear();
   liveExportFiles.clear();
+  lexerNames.clear();
   clearVirtualSources();
   untypedPkgCache.clear();
   realpathProbed.clear();
+  aliasNames.clear();
 }
 
 export function setNpmStaticDeclarationOverloads(
@@ -168,7 +178,30 @@ function shadowTargetOf(path: string): { pkg: string; viaTypes: boolean } | null
       if (mangledTypesName(pkg) === mangled) return { pkg, viaTypes: true };
     }
   }
+  // An npm alias (`"x-updated": "npm:x@6.3.0"`) installs the package under
+  // another directory name: its own manifest names the package.
+  const aliased = aliasedPackageName(`${norm.slice(0, idx)}/node_modules/${dirName}`);
+  if (aliased !== null && aliased !== dirName && activePackages.has(aliased))
+    return { pkg: aliased, viaTypes: false };
   return null;
+}
+
+/** The "name" a node_modules directory's own package.json declares, or
+ * null (cached per load). */
+const aliasNames = new Map<string, string | null>();
+function aliasedPackageName(pkgDir: string): string | null {
+  const hit = aliasNames.get(pkgDir);
+  if (hit !== undefined) return hit;
+  let name: string | null = null;
+  try {
+    const text = trackedReadFile(`${pkgDir}/package.json`);
+    const declared = text === null ? undefined : (JSON.parse(text) as { name?: unknown }).name;
+    if (typeof declared === "string") name = declared;
+  } catch {
+    name = null;
+  }
+  aliasNames.set(pkgDir, name);
+  return name;
 }
 
 /** The opted-in package.json transform, applied identically in BOTH
@@ -439,6 +472,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 source,
               path,
               (live) => liveExportFiles.add(live.split("\\").join("/")),
+              (file, names) => lexerNames.set(file.split("\\").join("/"), names),
             );
             if (answer !== null && typeof answer === "object") {
               reportFileDegrade(path, target.pkg, answer.degrade);

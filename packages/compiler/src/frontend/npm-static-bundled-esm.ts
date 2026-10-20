@@ -449,7 +449,6 @@ export function lowerBundledEsmInits(
       }
     }
   }
-  edits.push(...removeDeclarators(sf, deadDeclarators));
 
   /* Namespaces of lazily initialized modules read through members. */
   let mainTarget: string | null = null;
@@ -481,9 +480,169 @@ export function lowerBundledEsmInits(
     }
   }
   const lowered = new Set<string>();
+  /** Some binding between the use site and the top level rebinds a name
+   * the table's getters read. */
+  const shadowed = (site: ts.Node, entries: readonly [string, ts.Expression][]): boolean => {
+    const read = new Set<string>();
+    for (const [, value] of entries) for (const x of references(value)) read.add(x.text);
+    for (let a = site.parent; a !== undefined && !ts.isSourceFile(a); a = a.parent) {
+      if (
+        ts.isFunctionLike(a) ||
+        ts.isBlock(a) ||
+        ts.isClassDeclaration(a) ||
+        ts.isClassExpression(a)
+      ) {
+        for (const n of declaredNames(a)) if (read.has(n)) return true;
+      }
+    }
+    return false;
+  };
+  const getterText = (value: ts.Expression): string =>
+    applyEdits(source, value.getStart(sf), value.getEnd(), edits);
+  /** A call through the namespace (`ns.fn()`, `L().fn()`) passes the object
+   * the read came from as `this`; the lowered object differs from Node's
+   * module object (`__esModule`, property attributes), so it must stay
+   * unobservable: the callee is a top-level function that never reads
+   * `this`. */
+  const receiverHidden = (values: ReadonlyMap<string, ts.Expression>, name: string): boolean => {
+    const value = values.get(name);
+    if (value === undefined || !ts.isIdentifier(value) || !stable(value.text)) return false;
+    const decl = top.get(value.text)?.node;
+    return decl !== undefined && ts.isFunctionDeclaration(decl) && !readsThis(decl);
+  };
+
+  /* Memoized lazy loaders of those namespaces, `L = () => M ??= NS` (a
+   * bundle plugin's lazy re-exports): every `L().name` becomes the
+   * initializer call followed by the export's live read, so the first
+   * access still initializes the module, once, and later accesses read
+   * the binding. */
+  const loaderSpans: { start: number; end: number }[] = [];
+  for (const [name, t] of top) {
+    const d = t.node;
+    if (!ts.isVariableDeclaration(d) || d.initializer === undefined) continue;
+    const fn = unparen(d.initializer);
+    if (!ts.isArrowFunction(fn) || fn.parameters.nodes.length !== 0 || ts.isBlock(fn.body))
+      continue;
+    const memoize = unparen(fn.body);
+    if (
+      !ts.isBinaryExpression(memoize) ||
+      (memoize.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionEqualsToken &&
+        memoize.operatorToken.kind !== ts.SyntaxKind.BarBarEqualsToken) ||
+      !ts.isIdentifier(memoize.left)
+    )
+      continue;
+    let w = unparen(memoize.right);
+    let interop = false;
+    let nodeMode = false;
+    if (
+      ts.isCallExpression(w) &&
+      ts.isIdentifier(w.expression) &&
+      helperBase(w.expression.text) === "__toESM"
+    ) {
+      const [arg, mode] = w.arguments.nodes;
+      if (!arg || w.arguments.nodes.length > 2) continue;
+      if (mode !== undefined) {
+        if (ts.isNumericLiteral(mode)) nodeMode = Number(mode.text) !== 0;
+        else if (mode.kind === ts.SyntaxKind.TrueKeyword) nodeMode = true;
+        else if (mode.kind !== ts.SyntaxKind.FalseKeyword) continue;
+      }
+      interop = true;
+      w = unparen(arg);
+    }
+    let initCall: ts.CallExpression | null = null;
+    if (ts.isBinaryExpression(w) && w.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      const left = unparen(w.left);
+      if (
+        !ts.isCallExpression(left) ||
+        !ts.isIdentifier(left.expression) ||
+        !inits.has(left.expression.text) ||
+        left.arguments.nodes.length !== 0
+      )
+        continue;
+      initCall = left;
+      w = unparen(w.right);
+    }
+    if (
+      !ts.isCallExpression(w) ||
+      !ts.isIdentifier(w.expression) ||
+      helperBase(w.expression.text) !== "__toCommonJS" ||
+      w.arguments.nodes.length !== 1 ||
+      !ts.isIdentifier(w.arguments.nodes[0]!)
+    )
+      continue;
+    const target = (w.arguments.nodes[0] as ts.Identifier).text;
+    const table = tables.get(target);
+    if (table === undefined) continue;
+    const loaderWhy = {
+      degrade: `its memoized lazy loader '${name}' returns the namespace of a bundled ES module as a value, a module object the static rewrite cannot represent (only member reads of its result compile, and calls only of exported functions that do not read 'this')`,
+    };
+    const memo = memoize.left.text;
+    const memoDecl = top.get(memo)?.node;
+    if (
+      memoDecl === undefined ||
+      !ts.isVariableDeclaration(memoDecl) ||
+      memoDecl.initializer !== undefined ||
+      writes.get(memo) !== 1 ||
+      countDeclarations(sf, memo) !== 1 ||
+      (refsByName.get(memo) ?? []).some((x) => x !== memoize.left) ||
+      writes.has(name) ||
+      countDeclarations(sf, name) !== 1
+    )
+      return loaderWhy;
+    const entries = new Map(table.entries);
+    for (const ref of refsByName.get(name) ?? []) {
+      const call = ref.parent;
+      if (
+        call === undefined ||
+        !ts.isCallExpression(call) ||
+        call.expression !== ref ||
+        call.arguments.nodes.length !== 0
+      )
+        return loaderWhy;
+      let access: ts.Node | undefined = call.parent;
+      if (
+        access === undefined ||
+        !ts.isPropertyAccessExpression(access) ||
+        access.expression !== call ||
+        !plainRead(access)
+      )
+        return loaderWhy;
+      // Node mode binds `default` to the namespace object itself.
+      if (interop && nodeMode && access.name.text === "default") {
+        const outer: ts.Node | undefined = access.parent;
+        if (
+          outer === undefined ||
+          !ts.isPropertyAccessExpression(outer) ||
+          outer.expression !== access ||
+          !plainRead(outer)
+        )
+          return loaderWhy;
+        access = outer;
+      }
+      const member = (access as ts.PropertyAccessExpression).name.text;
+      const value = entries.get(member);
+      if (value === undefined || shadowed(access, table.entries)) return loaderWhy;
+      // The rewrite reads the export without the namespace object, so a
+      // call through it (`L().fn()`) loses its receiver.
+      if (calledWithReceiver(access as ts.Expression) && !receiverHidden(entries, member))
+        return loaderWhy;
+      const init = initCall === null ? "" : `${initCall.getText(sf)}, `;
+      edits.push({
+        start: access.getStart(sf),
+        end: access.getEnd(),
+        text: `(${init}${getterText(value)})`,
+      });
+    }
+    deadDeclarators.add(d).add(memoDecl);
+    loaderSpans.push({ start: d.getStart(sf), end: d.getEnd() });
+    lowered.add(target);
+  }
+
   for (const r of allRefs) {
     const table = tables.get(r.text);
     if (table === undefined) continue;
+    if (loaderSpans.some((span) => r.getStart(sf) >= span.start && r.getEnd() <= span.end))
+      continue;
     const p = r.parent;
     // The table's own declaration and __export call are handled below.
     if (p !== undefined && ts.isVariableDeclaration(p) && p.name === r) continue;
@@ -519,25 +678,49 @@ export function lowerBundledEsmInits(
       else break;
     }
     const values = new Map(table.entries);
-    // A call through the namespace (`ns.fn()`) passes the object the read
-    // came from as `this`; the lowered object differs from Node's module
-    // object (`__esModule`, property attributes), so it must stay
-    // unobservable: the callee is a top-level function that never reads
-    // `this`.
-    const receiverHidden = (name: string): boolean => {
-      const value = values.get(name);
-      if (value === undefined || !ts.isIdentifier(value) || !stable(value.text)) return false;
-      const decl = top.get(value.text)?.node;
-      return decl !== undefined && ts.isFunctionDeclaration(decl) && !readsThis(decl);
-    };
     const memberRead = (access: ts.Node | undefined, of: ts.Node): boolean =>
       access !== undefined &&
       ts.isPropertyAccessExpression(access) &&
       access.expression === of &&
       values.has(access.name.text) &&
       plainRead(access) &&
-      (!calledWithReceiver(access) || receiverHidden(access.name.text));
+      (!calledWithReceiver(access) || receiverHidden(values, access.name.text));
     const holder = ns.parent;
+    // `__reExport(main, ns, module.exports)`: a star re-export of the
+    // module into the bundle's own exports (`export * from` in its entry).
+    // The initializer runs at the statement; the names become live getter
+    // entries of the export table, after its explicit ones (first wins)
+    // and without `default`, exactly the names __reExport copies.
+    if (
+      holder !== undefined &&
+      ts.isCallExpression(holder) &&
+      ts.isIdentifier(holder.expression) &&
+      helperBase(holder.expression.text) === "__reExport" &&
+      holder.arguments.nodes[1] === ns &&
+      holder.arguments.nodes.length <= 3 &&
+      ts.isExpressionStatement(holder.parent) &&
+      mainTarget !== null &&
+      ts.isIdentifier(holder.arguments.nodes[0]!) &&
+      (holder.arguments.nodes[0] as ts.Identifier).text === mainTarget
+    ) {
+      const inner = unparen(ns);
+      const init =
+        ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.CommaToken
+          ? `${unparen(inner.left).getText(sf)}; `
+          : "";
+      if (shadowed(holder, table.entries)) return { degrade: `its shipped JS ${why}` };
+      const entries = table.entries
+        .filter(([n]) => n !== "default")
+        .map(([n, value]) => `${JSON.stringify(n)}: () => ${getterText(value)}`)
+        .join(", ");
+      edits.push({
+        start: holder.parent.getStart(sf),
+        end: holder.parent.getEnd(),
+        text: `${init}__export(${mainTarget}, { ${entries} });`,
+      });
+      lowered.add(r.text);
+      continue;
+    }
     let readable = memberRead(holder, ns);
     if (
       !readable &&
@@ -578,28 +761,26 @@ export function lowerBundledEsmInits(
     }
     // The getters read top-level bindings: nothing between the use site
     // and the top level may rebind one of their names.
-    const read = new Set<string>();
-    for (const [, value] of table.entries) for (const x of references(value)) read.add(x.text);
-    for (let a = p.parent; a !== undefined && !ts.isSourceFile(a); a = a.parent) {
-      if (
-        ts.isFunctionLike(a) ||
-        ts.isBlock(a) ||
-        ts.isClassDeclaration(a) ||
-        ts.isClassExpression(a)
-      ) {
-        for (const n of declaredNames(a)) {
-          if (read.has(n)) return { degrade: `its shipped JS ${why}` };
-        }
-      }
-    }
+    if (shadowed(p, table.entries)) return { degrade: `its shipped JS ${why}` };
     const getters = table.entries
       .map(
         ([n, value]) =>
-          `get ${/^[A-Za-z_$][\w$]*$/.test(n) ? n : JSON.stringify(n)}() { return ${applyEdits(source, value.getStart(sf), value.getEnd(), edits)}; }`,
+          `get ${/^[A-Za-z_$][\w$]*$/.test(n) ? n : JSON.stringify(n)}() { return ${getterText(value)}; }`,
       )
       .join(", ");
     edits.push({ start: p.getStart(sf), end: p.getEnd(), text: `{ ${getters} }` });
     lowered.add(r.text);
+  }
+  // A table nothing reads (its module is never required) goes too: its
+  // names are no exports of the bundle.
+  for (const [target, table] of tables) {
+    if (lowered.has(target)) continue;
+    const live = (refsByName.get(target) ?? []).some((x) => {
+      const p = x.parent;
+      if (p !== undefined && ts.isVariableDeclaration(p) && p.name === x) return false;
+      return !(x.getStart(sf) >= table.stmt.getStart(sf) && x.getEnd() <= table.stmt.getEnd());
+    });
+    if (!live) lowered.add(target);
   }
   for (const target of lowered) {
     const table = tables.get(target)!;
@@ -614,8 +795,12 @@ export function lowerBundledEsmInits(
     )
       return { degrade: ESM_SHAPE_DEGRADE };
     edits.push({ start: table.stmt.getStart(sf), end: table.stmt.getEnd(), text: "" });
-    edits.push(...removeDeclarators(sf, new Set([decl])));
+    deadDeclarators.add(decl);
   }
+  // Every removed declarator in one pass: declarators of one statement
+  // removed separately would leave overlapping edits, and applyEdits keeps
+  // only the first of them.
+  edits.push(...removeDeclarators(sf, deadDeclarators));
 
   /* The run-once closures. */
   for (const init of inits.values()) {
