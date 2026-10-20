@@ -6,6 +6,7 @@ import type { IrRecordShape, IrType, IrUnionDef, IrUnionDiscriminant } from "../
 import {
   BYTES_ELEMENT_NAME,
   arrayOf,
+  isDynTypedRefType,
   BOOL,
   bytesOf,
   canConvertToDyn,
@@ -1590,6 +1591,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     contextResolutions++;
     return DYN;
   }
+  // Readonly<C> over a program class (Object.freeze's result type) is the
+  // same instance.
+  const readonlyClass = readonlyClassType(type, ctx);
+  if (readonlyClass !== null) return readonlyClass;
   if (resolveTypeParam && type.flags & ts.TypeFlags.TypeParameter) {
     const bound = resolveTypeParam(type);
     if (bound) {
@@ -5104,6 +5109,19 @@ function mentionsMappedParams(
   if (type.isUnionType() || type.isIntersectionType())
     return ts.constituentTypes(type).some((part) => mentionsMappedParams(part, keys, aliases));
   return false;
+}
+
+function readonlyClassType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const alias = type.getAliasSymbol();
+  if (alias?.name !== "Readonly") return null;
+  const args = type.getAliasTypeArguments();
+  if (args.length !== 1 || !args[0]) return null;
+  const isLibAlias = alias.declarations.some(
+    (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+  );
+  if (!isLibAlias) return null;
+  const mapped = mapType(args[0], ctx);
+  return mapped !== null && isDynTypedRefType(mapped) ? mapped : null;
 }
 
 function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {

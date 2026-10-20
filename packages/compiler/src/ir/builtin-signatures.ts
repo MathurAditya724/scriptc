@@ -206,6 +206,23 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.in": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.freeze": { argTypes: [DYN], result: DYN },
   "dyn.isFrozen": { argTypes: [DYN], result: BOOL },
+  /** Object.defineProperty on a declared class field (scr_json.c): the
+   * field's current value (borrowed), its FIELD_* attribute word, the
+   * instance's CLASS_* integrity word, the field name and the descriptor.
+   * Validates as Node does (TypeError "Cannot redefine property: f") and
+   * answers a one-property holder of the defined value and attributes (+1),
+   * read back with class.definedBits and class.definedValue. */
+  "class.defineField": { argTypes: [DYN, F64, F64, STRING, DYN], result: DYN },
+  "class.definedBits": { argTypes: [DYN, STRING], result: F64 },
+  "class.definedValue": { argTypes: [DYN, STRING], result: DYN },
+  /** Whether a property descriptor has a `value` member. */
+  "class.descriptorHasValue": { argTypes: [DYN], result: BOOL },
+  /** Throws Node's TypeError for a write to a read-only class field: the
+   * field name and the instance's class name. */
+  "class.throwReadOnly": { argTypes: [STRING, STRING], result: VOID },
+  /** Throws Node's TypeError for a class field initializer on a
+   * non-extensible instance: the field name. */
+  "class.throwNotExtensible": { argTypes: [STRING], result: VOID },
   "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
   "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
