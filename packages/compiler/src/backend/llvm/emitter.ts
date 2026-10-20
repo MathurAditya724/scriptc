@@ -5882,6 +5882,9 @@ export class LlEmitter {
       // for stdin. They remain JavaScript objects in boolean contexts.
       case "procStream":
         return "true";
+      // A module namespace (a required builtin module object) is an object.
+      case "moduleNs":
+        return "true";
       case "array":
       case "record":
       case "object":
