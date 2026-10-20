@@ -4,7 +4,7 @@ import { InternalCompilerError } from "../../errors.js";
  * literals — records/arrays/unions included, subject to comptimeBakeable. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import { type IrExpr, type IrType } from "../../ir/ir.js";
+import { isUnitType, type IrExpr, type IrType } from "../../ir/ir.js";
 import { comptimeFailedDiag } from "../../diagnostics/diagnostic.js";
 import { locOf } from "../program.js";
 import { PoisonError } from "./lowerer.js";
@@ -110,8 +110,9 @@ function comptimeFailureDetail(error: unknown): string {
 
 /** True when a comptime result of this type can be written as a literal
  * expression: number/string/boolean, arrays and record shapes of those,
- * nested. Closures, class instances, unions, promises, dyn, and void
- * cannot be baked. */
+ * and unions of those with null or undefined (the mixed rows of a JSON
+ * table: `(string | number)[][]`), nested. Closures, class instances,
+ * promises, dyn, and void cannot be baked. */
 export function comptimeBakeable(lowerer: Lowerer, t: IrType): boolean {
   switch (t.kind) {
     case "f64":
@@ -124,6 +125,52 @@ export function comptimeBakeable(lowerer: Lowerer, t: IrType): boolean {
       const shape = lowerer.shapes.get(t.shapeId);
       return !!shape && shape.fields.every((f) => lowerer.comptimeBakeable(f.type));
     }
+    case "union": {
+      const arms = lowerer.unions.get(t.unionId)?.arms;
+      return (
+        arms !== undefined &&
+        arms.every(
+          (arm) => isUnitType(arm) || (arm.kind !== "union" && comptimeBakeable(lowerer, arm)),
+        )
+      );
+    }
+    default:
+      return false;
+  }
+}
+
+/** Whether `value` bakes into the bakeable type `t` without a mismatch:
+ * the arm choice of a union literal. Records are exact, as in
+ * comptimeValueToIr; an absent field reads as undefined. */
+function comptimeFits(lowerer: Lowerer, value: unknown, t: IrType): boolean {
+  switch (t.kind) {
+    case "f64":
+      return typeof value === "number" && Number.isFinite(value);
+    case "string":
+      return typeof value === "string";
+    case "bool":
+      return typeof value === "boolean";
+    case "nullT":
+      return value === null;
+    case "undefinedT":
+      return value === undefined;
+    case "array":
+      return Array.isArray(value) && value.every((el) => comptimeFits(lowerer, el, t.elem));
+    case "record": {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (!shape) return false;
+      const obj = value as Record<string, unknown>;
+      const declared = new Set(shape.fields.map((f) => f.name));
+      return (
+        Object.keys(obj).every((key) => declared.has(key)) &&
+        shape.fields.every((f) => comptimeFits(lowerer, obj[f.name], f.type))
+      );
+    }
+    case "union":
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).some((arm) =>
+        comptimeFits(lowerer, value, arm),
+      );
     default:
       return false;
   }
@@ -264,6 +311,26 @@ export function comptimeValueToIr(
         value: lowerer.comptimeValueToIr(obj[f.name], f.type, `${path}.${f.name}`, blame),
       }));
       return { kind: "recordLit", fields, type: expected, loc };
+    }
+    case "union": {
+      // The first arm the value fits, in the union's arm order: a JSON
+      // value fits exactly one scalar arm, and array or record arms are
+      // told apart by their contents.
+      const arms = lowerer.unions.get(expected.unionId)!.arms; // bakeable-checked
+      const tag = arms.findIndex((arm) => comptimeFits(lowerer, value, arm));
+      if (tag < 0) fail(describeComptimeValue(value));
+      const arm = arms[tag]!;
+      const payload: IrExpr = isUnitType(arm)
+        ? { kind: "unitLit", unit: arm.kind === "nullT" ? "null" : "undefined", type: arm, loc }
+        : lowerer.comptimeValueToIr(value, arm, path, blame);
+      return {
+        kind: "unionWrap",
+        unionId: expected.unionId,
+        tag,
+        value: payload,
+        type: expected,
+        loc,
+      };
     }
     default:
       // comptimeBakeable already fenced these off.

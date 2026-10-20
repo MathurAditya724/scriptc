@@ -2379,20 +2379,26 @@ export function lowerBindingPattern(
     lowerer.fenceStaticHeadersIteration(pattern);
     if (
       srcType.kind === "union" &&
-      lowerer.unions.get(srcType.unionId)?.arms.every((arm) => arm.kind === "array")
+      lowerer.unions
+        .get(srcType.unionId)
+        ?.arms.every(
+          (arm) =>
+            arm.kind === "array" ||
+            (arm.kind === "record" && lowerer.shapes.get(arm.shapeId)?.tuple === true),
+        )
     ) {
       for (let i = 0; i < pattern.elements.nodes.length; i++) {
         const el = pattern.elements.nodes[i]!;
         if (ts.isOmittedExpression(el) || el.name === undefined) continue;
         if (el.dotDotDotToken)
-          lowerer.unsupported("SC1031", el, "rest elements over a union of array layouts");
+          lowerer.unsupported("SC1031", el, "rest elements over a union of array or tuple layouts");
         const loc = locOf(el);
         let value = unionArrayValueRead(lowerer, srcRef(), numLit(i, loc), loc);
         if (!value)
           lowerer.unsupported(
             "SC1031",
             el,
-            "array union elements without a common native representation",
+            "array or tuple union elements without a common native representation",
           );
         if (el.initializer) value = applyBindingDefault(lowerer, el, value);
         lowerer.bindPatternTarget(el.name, value, isLet, out);
