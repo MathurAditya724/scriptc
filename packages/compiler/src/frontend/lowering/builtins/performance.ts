@@ -18,6 +18,7 @@ import {
 } from "../../../ir/ir.js";
 import { PERF_ENTRY_FIELDS, PERF_ENTRY_MARKER, perfEntryJsonShape } from "../../type-mapper.js";
 import { builtinImportOf } from "./module-bindings.js";
+import { lowerOptionalArgument } from "../optional-arguments.js";
 import { checkedIterableSpread } from "../checked-iterable-spread.js";
 
 /** True for any spelling of node:perf_hooks' `performance` object — the
@@ -663,21 +664,11 @@ export function lowerHistogramMethodCall(
   );
 }
 
-/** `monitorEventLoopDelay(options?)` from node:perf_hooks (a named import
- * or a namespace member): a new sampling histogram handle. The resolution
- * must be a literal-free number expression or an object literal option. */
-export function lowerMonitorEventLoopDelayCall(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-): IrExpr | null {
-  const callee = expr.expression;
-  const bi = ts.isIdentifier(callee)
-    ? builtinImportOf(lowerer, callee)
-    : ts.isPropertyAccessExpression(callee) && !callee.questionDotToken
-      ? lowerer.builtinMemberOf(callee)
-      : null;
-  if (bi === null || bi.module !== "perf_hooks" || bi.member !== "monitorEventLoopDelay")
-    return null;
+/** `monitorEventLoopDelay(options?)` from node:perf_hooks, in any import
+ * spelling (`lowerBuiltinCall`): a new sampling histogram handle. The
+ * options are an inline object literal; the runtime validates the
+ * resolution as Node does (an integer of at least 1). */
+export function lowerMonitorEventLoopDelayCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
   const args = expr.arguments.nodes;
   let resolution: IrExpr = numLit(10, loc);
@@ -698,8 +689,9 @@ export function lowerMonitorEventLoopDelayCall(
       );
     }
     for (const property of options.properties.nodes) {
+      const shorthand = ts.isShorthandPropertyAssignment(property);
       if (
-        !ts.isPropertyAssignment(property) ||
+        (!shorthand && !ts.isPropertyAssignment(property)) ||
         !ts.isIdentifier(property.name) ||
         property.name.text !== "resolution"
       ) {
@@ -709,7 +701,13 @@ export function lowerMonitorEventLoopDelayCall(
           "resolution is the one option",
         );
       }
-      resolution = lowerer.lowerExprExpecting(property.initializer, F64);
+      // An undefined resolution takes the default, as Node's destructuring.
+      resolution = lowerOptionalArgument(
+        lowerer,
+        shorthand ? property.name : property.initializer,
+        F64,
+        numLit(10, loc),
+      );
     }
   }
   return { kind: "libCall", fn: "perf.eldNew", args: [resolution], type: F64, loc };

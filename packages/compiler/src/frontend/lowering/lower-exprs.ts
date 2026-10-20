@@ -13835,6 +13835,24 @@ const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
  * idiom over multiple shapes), index-signature keys, class instances,
  * and dyn/unknown stay fenced. Keys are literal strings — a computed key
  * over a shape would need the runtime key table. */
+/** Keys built-in errors carry outside their class fields: Node's system
+ * error properties, and AggregateError's, SuppressedError's and
+ * AssertionError's own members. */
+const BUILTIN_ERROR_SLOT_KEYS: ReadonlySet<string> = new Set([
+  "errno",
+  "syscall",
+  "path",
+  "dest",
+  "info",
+  "errors",
+  "error",
+  "suppressed",
+  "actual",
+  "expected",
+  "operator",
+  "generatedMessage",
+]);
+
 function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
   if (
     lowerer.isStdlibGlobal(expr.right, "process") &&
@@ -14018,9 +14036,10 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
   // predicate's `err instanceof Error && "code" in err` shape): `code`
   // answers from the runtime error's code slot (stamped by fs/system/
   // event/spawn errors, absent on plain constructions — exactly Node's
-  // own-property answer), and the always-declared members fold true.
-  // Everything else fences: the runtime object carries no other dynamic
-  // properties to ask (`stack` would be a lie — Node has one, we don't).
+  // own-property answer), and the always-present members (message, name,
+  // stack, Object.prototype's keys, members the static class declares)
+  // fold true. Other keys test the declaring subclasses and the error's
+  // own runtime properties; keys of built-in errors' extra slots fence.
   if (recv.type.kind === "object") {
     // %DOMException first: `'cause' in e` answers the options form's
     // own-property record (the runtime slot), and code/name/message are
@@ -14076,6 +14095,9 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
               loc,
             };
       if (key === "message" || key === "name") return always();
+      // Every Error has its own `stack`, and Error.prototype's `toString`
+      // and `constructor` are among Object.prototype's keys.
+      if (key === "stack" || OBJECT_PROTOTYPE_KEYS.has(key)) return always();
       // A member the static class declares is always present.
       const declares = (c: ClassInfo): boolean =>
         c.fields.has(key) ||
@@ -14084,12 +14106,12 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
         lowerer.findMethodOn(c, `set:${key}`) !== null;
       const staticInfo = lowerer.classes.get(recv.type.className);
       if (staticInfo && declares(staticInfo)) return always();
-      // Any other key: a descendant class that declares it (instanceof),
+      // Any other key: a descendant class that declares it (instanceof), or
       // an own property set at runtime (a throw site's extra fields,
-      // Object.assign, writes through a dynamic view), or an
-      // Object.prototype member. `stack` stays fenced: Node has one, a
-      // compiled error has none.
-      if (key !== "stack") {
+      // Object.assign, writes through a dynamic view). Keys built-in errors
+      // keep outside their class fields depend on the runtime error and
+      // stay fenced.
+      if (!BUILTIN_ERROR_SLOT_KEYS.has(key)) {
         const stable = recv.kind === "varRef" || recv.kind === "caughtNarrow";
         const slot = stable ? null : lowerer.declareHiddenLocal("%inRecv", recv.type);
         const ref = (): IrExpr => (slot ? varRef(slot.id, recv.type, loc) : recv);

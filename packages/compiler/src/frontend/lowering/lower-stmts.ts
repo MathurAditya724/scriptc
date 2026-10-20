@@ -1350,7 +1350,8 @@ function lowerLabeled(lowerer: Lowerer, stmt: ts.LabeledStatement): IrStmt | IrS
 }
 
 export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt[] | null {
-  if (ownPrototypeResetStatement(lowerer, stmt)) return { kind: "block", body: [], loc: locOf(stmt) };
+  if (ownPrototypeResetStatement(lowerer, stmt))
+    return { kind: "block", body: [], loc: locOf(stmt) };
   if (ts.isClassDeclaration(stmt)) {
     if (!stmt.name) lowerer.unsupported("SC1090", stmt, "anonymous local class declarations");
     const info = lowerer.lowerClassExpressionInfo(stmt);
@@ -10924,7 +10925,13 @@ function resetTarget(lowerer: Lowerer, expr: ts.Expression): ts.Expression | nul
 function enclosingConstructor(node: ts.Node): ts.ConstructorDeclaration | null {
   for (let cur = node.parent; cur !== undefined; cur = cur.parent) {
     if (ts.isConstructorDeclaration(cur)) return cur;
-    if (ts.isFunctionLike(cur) || (ts.isClassDeclaration(cur) || ts.isClassExpression(cur)) || ts.isSourceFile(cur)) return null;
+    if (
+      ts.isFunctionLike(cur) ||
+      ts.isClassDeclaration(cur) ||
+      ts.isClassExpression(cur) ||
+      ts.isSourceFile(cur)
+    )
+      return null;
   }
   return null;
 }
@@ -10947,7 +10954,8 @@ function ownPrototypeRef(
     )
       return true;
     const cls = ctor.parent;
-    if (!ts.isIdentifier(base) || !(ts.isClassDeclaration(cls) || ts.isClassExpression(cls))) return false;
+    if (!ts.isIdentifier(base) || !(ts.isClassDeclaration(cls) || ts.isClassExpression(cls)))
+      return false;
     const symbol = lowerer.resolveValueSymbol(base);
     const info = symbol ? lowerer.classBySymbol.get(symbol) : undefined;
     if (!info || lowerer.checker.valueDeclarationOf(symbol!) !== cls) return false;

@@ -322,7 +322,9 @@ export function funcCoerceAdapter(
         ),
       ];
     } else if (checkedRet) {
-      body = [{ kind: "return", value: { kind: "dynCheck", value: call, type: toT.ret, loc }, loc }];
+      body = [
+        { kind: "return", value: { kind: "dynCheck", value: call, type: toT.ret, loc }, loc },
+      ];
     } else {
       const result = lowerer.coerceToExpected(call, toT.ret);
       if (!typeEquals(result.type, toT.ret))

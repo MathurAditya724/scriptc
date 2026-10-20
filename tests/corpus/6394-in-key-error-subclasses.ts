@@ -23,3 +23,9 @@ function retryable(err: Error): boolean {
 }
 console.log(retryable(new Error("x")), retryable(new HttpError("a", 500)), retryable(new Timeout("t", 504)));
 console.log(describe(new Timeout("t", 504)));
+// Keys every Error has: its own stack, and Error.prototype's and
+// Object.prototype's members.
+function inherent(err: Error): boolean[] {
+  return ["stack" in err, "toString" in err, "constructor" in err, "hasOwnProperty" in err];
+}
+console.log(inherent(new Error("s")), inherent(new HttpError("h", 400)), inherent(new TypeError("t")));

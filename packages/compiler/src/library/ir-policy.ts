@@ -53,6 +53,11 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["crypto.cipherNew", "crypto.createCipheriv and createDecipheriv"],
   ["fs.watch", "fs.watch"],
   ["watcher.", "fs.watch"],
+  // The event-loop metrics sample the loop and its timers (scr_perf_loop.c),
+  // which library links exclude.
+  ["perf.loopStart", "performance.eventLoopUtilization"],
+  ["perf.idleTime", "performance.eventLoopUtilization"],
+  ["perf.eld", "perf_hooks.monitorEventLoopDelay"],
   ["test.", "the node:test surface"],
   ["readable.", "the node:stream surface"],
   ["writable.", "the node:stream surface"],
@@ -157,6 +162,7 @@ export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: Sr
     [features.nodeTest, "the node:test surface"],
     [features.dynAsync, "the checked-dynamic async surface"],
     [features.dc, "the diagnostics_channel surface"],
+    [features.perfLoop, "the perf_hooks event-loop metrics"],
   ];
   for (const [on, surface] of coarse) {
     if (on) return { surface, loc: entryLoc };
