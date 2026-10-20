@@ -3,8 +3,8 @@
 // (`[Bailable [Error]: m]`), followed by the own properties — on one line
 // or broken across lines by the same width rule as any object, and as
 // `[Name]` beyond the depth budget. A `cause` follows the fields: `cause:`
-// when assigned, `[cause]:` from the constructor's options. (The stack is
-// cleared: compiled errors carry none.)
+// when assigned, `[cause]:` from the constructor's options, and a cause
+// prints its own cause. (The stack is cleared: compiled errors carry none.)
 import * as util from "node:util";
 class Bailable extends Error {
   bail = false;
@@ -48,3 +48,8 @@ show(clean(new Retried("with an undefined cause")));
 const assigned = clean(new Bailable("assigned"));
 assigned.cause = { code: 1 };
 show(assigned);
+const root = new Error("root");
+root.stack = "";
+const middle: Error = new TypeError("middle", { cause: root });
+middle.stack = "";
+show(clean(new Retried("nested causes", middle)));

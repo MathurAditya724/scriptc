@@ -3,9 +3,10 @@
 // `[FetchFailedError: m]` when the constructor name already contains the
 // error's name; runtime error classes keep their own header. Own `cause`
 // properties (declared, assigned in the constructor or later) and a
-// declared `name` follow Node's rendering, and beyond the depth limit an
-// instance with own properties renders as `[Constructor]`. (The stack is
-// cleared: compiled errors carry none.)
+// declared `name` follow Node's rendering, as does a cause's own
+// `[cause]` and an AggregateError cause's `[errors]`, and beyond the depth
+// limit an instance with own properties renders as `[Constructor]`. (The
+// stack is cleared: compiled errors carry none.)
 import * as util from "node:util";
 
 class Plain extends Error {}
@@ -64,3 +65,16 @@ const multiline = clean(new Plain("first\nsecond"));
 console.log(util.inspect({ multiline }));
 const deep = [clean(new Assigned("beyond depth")), clean(new Assigned()), clean(new Plain())];
 for (const error of deep) console.log(util.inspect({ a: { b: error } }, { depth: 1 }));
+const inner = new Error("inner", { cause: "deep" });
+inner.stack = "";
+console.log(util.inspect(inner));
+const wrapped = clean(new Plain("outer"));
+wrapped.cause = inner;
+console.log(util.inspect(wrapped));
+const first = new Error("first");
+first.stack = "";
+const aggregate: Error = new AggregateError([first], "all failed", { cause: "why" });
+aggregate.stack = "";
+const holder = clean(new Plain("holder"));
+holder.cause = aggregate;
+console.log(util.inspect(holder, { depth: 4 }));
