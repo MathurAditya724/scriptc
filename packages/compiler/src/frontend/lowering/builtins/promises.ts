@@ -225,7 +225,7 @@ export function lowerPromiseStaticCall(
     const neverEntry = (el: ts.Expression): boolean => {
       const t = lowerer.typeOf(el);
       const arg =
-        t.getSymbol()?.name === "Promise"
+        ts.symbolNameOf(t.getSymbol()) === "Promise"
           ? lowerer.checker.getTypeArguments(t as ts.TypeReference)[0]
           : undefined;
       return arg !== undefined && (arg.flags & ts.TypeFlags.Never) !== 0;
@@ -349,12 +349,12 @@ export function lowerPromiseStaticCall(
         return { kind: "intrinsic", name: "promise.all", args: [entriesArr], type: resultT, loc };
       }
 
-      if (!isJsSourceFile(call.getSourceFile())) {
+      if (!isJsSourceFile(ts.getSourceFileOfNode(call))) {
         const tuple = lowerTuplePromiseAll(lowerer, call, elems);
         if (tuple) return tuple;
       }
       if (
-        isJsSourceFile(call.getSourceFile()) &&
+        isJsSourceFile(ts.getSourceFileOfNode(call)) &&
         elems.every((entry) => lowerer.dynConvertible(entry.type))
       ) {
         return checkedPromiseAll(
@@ -375,7 +375,7 @@ export function lowerPromiseStaticCall(
       );
     }
     const entries = lowerer.lowerExpr(argNode);
-    if (isJsSourceFile(call.getSourceFile()) && entries.type.kind === "dyn")
+    if (isJsSourceFile(ts.getSourceFileOfNode(call)) && entries.type.kind === "dyn")
       return checkedPromiseAll(lowerer, entries, loc);
 
     // loadPlugin(p)))` — the loadPlugins shape, where the checker
@@ -434,7 +434,7 @@ export function lowerPromiseStaticCall(
         `one iterable of promises is the supported form: Promise.${member}(ps)`,
       );
     }
-    if (isJsSourceFile(call.getSourceFile())) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(call))) {
       // JavaScript entries are checked-dynamic: any iterable, thenables
       // and plain values included, exactly like Promise.all.
       if (
@@ -706,7 +706,7 @@ export function lowerPromiseStaticCall(
     // Promise.resolve answers THAT promise — the same object, adopted —
     // and wraps every other value.
     if (
-      isJsSourceFile(call.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       value.type.kind === "dyn" &&
       resultT.inner.kind === "dyn"
     ) {

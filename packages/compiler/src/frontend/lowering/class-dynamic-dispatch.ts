@@ -1158,7 +1158,7 @@ export class ClassDynamicDispatch {
       if (this.bagClasses.has(plan.key)) continue;
       this.bagClasses.add(plan.key);
       this.ensurePropertyBag(info);
-      if (info.decl && isJsSourceFile(info.decl.getSourceFile())) {
+      if (info.decl && isJsSourceFile(ts.getSourceFileOfNode(info.decl))) {
         let root = info;
         while (root.base && !root.base.def.runtime) root = root.base;
         const track = (current: ClassInfo): void => {
@@ -3246,7 +3246,7 @@ export class ClassDynamicDispatch {
       for (const name of this.boxedConstructors) {
         if (this.staticBagClasses.has(name)) continue;
         const info = lowerer.classes.get(name);
-        if (!info?.decl || !isJsSourceFile(info.decl.getSourceFile())) continue;
+        if (!info?.decl || !isJsSourceFile(ts.getSourceFileOfNode(info.decl))) continue;
         const loc = this.staticPropertyBag.loc;
         const bag = classStaticData(lowerer, info, loc);
         if (!bag) continue;

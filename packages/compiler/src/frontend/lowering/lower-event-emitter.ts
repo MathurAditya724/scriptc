@@ -414,7 +414,11 @@ function isErrorMonitorRef(lowerer: Lowerer, arg: ts.Expression): boolean {
   const isMonitorType = (t: ts.Type): boolean => {
     if (!(t.flags & ts.TypeFlags.UniqueESSymbol)) return false;
     const symbol = t.getSymbol();
-    return symbol?.name === "errorMonitor" && lowerer.isStdlibSymbol(symbol);
+    return (
+      symbol !== undefined &&
+      ts.symbolName(symbol) === "errorMonitor" &&
+      lowerer.isStdlibSymbol(symbol)
+    );
   };
   // The unique symbol TYPE names its declaration through any alias.
   if (isMonitorType(lowerer.typeOf(arg))) return true;
@@ -1697,7 +1701,7 @@ export function emitOverrideShapeReason(
     const p0T = lowerer.mapTypeOf(lowerer.typeOf(p0.name));
     const jsUnannotated =
       p0.type === undefined &&
-      isJsSourceFile(member.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(member)) &&
       (p0T === null || p0T.kind === "dyn");
     if (p0T?.kind !== "string" && !jsUnannotated) {
       return "the event parameter must be typed 'string' (symbol event names have no lowering)";
@@ -1731,9 +1735,9 @@ export function emitOverrideShapeReason(
           "the event parameter cannot be reassigned (the forward's event name must stay pinned)";
       }
     }
-    n.forEachChild(visit);
+    ts.forEachChild(n, visit);
   };
-  member.body.forEachChild(visit);
+  ts.forEachChild(member.body, visit);
   return reason;
 }
 
