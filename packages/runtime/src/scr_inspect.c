@@ -974,6 +974,16 @@ static ScrDyn *insp_assertion_ellipsis(ScrDyn *value) {
  * scr_insp_error: the stackless bracket form `[Name: message]`, then the
  * remaining enumerable own properties (code, errno, syscall, ...) in
  * Node's `{ ... }` tail. */
+/* An own non-enumerable entry of the error encoding, NULL when absent or
+ * enumerable (an enumerable one prints with the other own keys). */
+static const ScrDynEntry *insp_error_hidden_entry(const ScrDyn *d, const char *key, size_t len) {
+  for (size_t i = 0; i < d->v.obj.len; i++) {
+    const ScrDynEntry *ent = &d->v.obj.entries[i];
+    if (ent->key_len == len && memcmp(ent->key, key, len) == 0) return ent->enumerable ? NULL : ent;
+  }
+  return NULL;
+}
+
 static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
   /* An error already on the traversal stack (a spawnSync error's own
    * `error`): Node's [Circular *N], and <ref *N> on the outer rendering. */
@@ -994,6 +1004,12 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
       continue;
     extra++;
   }
+  /* formatError shows a non-enumerable `cause`, and an AggregateError's
+   * `errors` array, after the enumerable keys: `[cause]`, `[errors]`. */
+  const ScrDynEntry *cause = insp_error_hidden_entry(d, "cause", 5);
+  const ScrDynEntry *errors = insp_error_hidden_entry(d, "errors", 6);
+  if (errors && errors->value->kind != SCR_DYN_ARR) errors = NULL;
+  extra += (cause != NULL) + (errors != NULL);
   InspBuf base = {0};
   ib_char(&base, '[');
   if (name != NULL) ib_str(&base, name->v.str);
@@ -1030,6 +1046,20 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
     InspBuf eb = {0};
     insp_key_into(&eb, ent->key, ent->key_len);
     ib_cstr(&eb, ": ");
+    ib_bytes(&eb, val->data, val->len);
+    scr_str_release(val);
+    ScrStr *entry = ib_take(&eb);
+    scr_insp_entry(entry, false);
+    scr_str_release(entry);
+  }
+  const ScrDynEntry *hidden[] = {cause, errors};
+  for (size_t i = 0; i < 2; i++) {
+    if (!hidden[i]) continue;
+    ScrStr *val = scr_insp_dyn(hidden[i]->value, recurse + 1, value_depth);
+    InspBuf eb = {0};
+    ib_char(&eb, '[');
+    ib_bytes(&eb, hidden[i]->key, hidden[i]->key_len);
+    ib_cstr(&eb, "]: ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(val);
     ScrStr *entry = ib_take(&eb);
