@@ -905,6 +905,8 @@ export function lowerGenericInstance(
     : lowerer.bodyReturnType(isAsync, inst.returnType);
   const fnCtx = newFnCtx(false, null, null, bodyReturn);
   fnCtx.isAsync = isAsync;
+  // Instances lower on demand, on top of whichever caller reached them.
+  fnCtx.thisBoundary = true;
   // Implicit-any instances whose declared return did not map lower in
   // return-INFERENCE mode: `return` statements record here bare, and the
   // post-pass (resolveInferredReturn) settles the type and wraps them.

@@ -4285,6 +4285,14 @@ function lowerCaughtPredicateCall(
   const paramSymbol = lowerer.checker.getSymbolAtLocation(param.name);
   if (!paramSymbol) return null;
   const ret = decl.body.statements.nodes.length === 1 ? decl.body.statements.nodes[0] : undefined;
+  // A longer guard whose parameter is `unknown` (or `any`) takes the caught
+  // value as an ordinary checked-dynamic argument: the call path converts
+  // the binding, and the narrowed binding reads through the same value.
+  if (
+    (!ret || !ts.isReturnStatement(ret) || !ret.expression) &&
+    lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(paramSymbol))?.kind === "dyn"
+  )
+    return null;
   if (!ret || !ts.isReturnStatement(ret) || !ret.expression) {
     lowerer.unsupported(
       "SC1090",
@@ -7258,6 +7266,8 @@ function lowerObjectStaticCall(
         };
       }
     }
+    const onError = lowerObjectAssignOntoError(lowerer, call);
+    if (onError) return onError;
     const hybrid = lowerObjectAssignHybrid(lowerer, call);
     if (hybrid) return hybrid;
     // `Object.assign({}, lit)` — an EMPTY fresh-literal target and one
@@ -9388,6 +9398,30 @@ export function lowerObjectMethodCall(
       `calls of the abstract method '${method}' with no concrete implementation below the receiver's static class`,
     );
   }
+  // The static receiver's nearest declaration is an override adapted to
+  // the inherited ABI, and nothing below overrides it: call its body
+  // directly under its declared signature (exact parameters and result).
+  // The slot function stays reachable; it lifts the body.
+  const adapted = found.declarer.returnAdapters?.get(method);
+  // A TypeScript override's own entry answers its declared result. A
+  // JavaScript body's result is inferred, so its callers keep the slot.
+  const declarerDecl = found.declarer.decl;
+  if (
+    adapted &&
+    !(declarerDecl && isJsSourceFile(declarerDecl.getSourceFile())) &&
+    !lowerer.overrideBelow(info, method)
+  ) {
+    lowerer.noteEdge(`%${found.declarer.def.name}.${method}`);
+    const receiver = lowerReceiver();
+    const args = lowerer.completeArgs(call.arguments.nodes, adapted.params, locOf(call), call);
+    return {
+      kind: "call",
+      callee: `%${found.declarer.def.name}.${method}$own`,
+      args: [lowerer.upcastTo(receiver, found.declarer.def.name), ...args],
+      type: adapted.ret,
+      loc: locOf(call),
+    };
+  }
   if (lowerer.overrideBelow(info, method)) lowerer.noteVirtualEdge(info, method);
   else lowerer.noteEdge(`%${found.declarer.def.name}.${method}`);
   const receiver = lowerReceiver();
@@ -9944,4 +9978,61 @@ function maybePromiseHandlerResult(
     );
   }
   return stmt;
+}
+
+/** `Object.assign(err, ...sources)` in TypeScript onto an error-hierarchy
+ * target (`Object.assign(new Error(message), details)`): the sources'
+ * own members land on the error — the runtime copy over its
+ * checked-dynamic node, whose name, message, stack, cause and code feed
+ * back into the typed slots — and the call answers the error itself.
+ * Null for every other target. */
+function lowerObjectAssignOntoError(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const argNodes = call.arguments.nodes;
+  if (
+    isJsSourceFile(call.getSourceFile()) ||
+    argNodes.length < 2 ||
+    argNodes.some((a) => ts.isSpreadElement(a))
+  )
+    return null;
+  const probe = tryLowerExpression(lowerer, argNodes[0]!);
+  if (probe?.type.kind !== "object" || !lowerer.isErrorRootedClass(probe.type.className))
+    return null;
+  const loc = locOf(call);
+  const target = lowerer.lowerExpr(argNodes[0]!);
+  const slot = lowerer.declareHiddenLocal("%assignErr", target.type);
+  const sources: IrExpr[] = [];
+  for (const node of argNodes.slice(1)) {
+    const raw = lowerer.lowerExpr(node);
+    fenceSymbolFieldCopy(lowerer, node, raw.type);
+    const source = lowerer.coerceToExpected(raw, DYN);
+    if (source.type.kind !== "dyn") {
+      lowerer.unsupported(
+        "SC1090",
+        node,
+        `Object.assign onto an Error from a '${lowerer.fmt(raw.type)}' source (sources enter the error's dynamic properties)`,
+      );
+    }
+    sources.push(source);
+  }
+  const ref = (): IrExpr => ({ kind: "varRef", localId: slot.id, type: target.type, loc });
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: slot.id, init: target, loc },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "error.assign",
+          args: [ref(), { kind: "dynArrLit", elems: sources, type: DYN, loc }],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: ref(),
+    type: target.type,
+    loc,
+  };
 }

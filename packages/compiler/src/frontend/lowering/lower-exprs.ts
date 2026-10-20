@@ -1724,7 +1724,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // Only arrows can see an enclosing method's `this` (JS lexical-this);
     // `this` in plain nested functions is already a tsc error under
     // noImplicitThis, so the generic scope walk here is preflight-safe.
-    const local = lowerer.resolveThis();
+    const local = lowerer.resolveThis(expr);
     if (local) {
       const value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
       const initialized = lowerer.ctx.superInitialized;
@@ -2766,6 +2766,25 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           t,
           loc,
         );
+      }
+    }
+    // A stdlib-declared member (`message` of an interface extending Error)
+    // on a catch binding narrowed to a structural type: the binding reads
+    // as its checked-dynamic value, so the member does too.
+    if (!expr.questionDotToken && lowerer.caughtLocalOf(expr.expression)) {
+      const recv = lowerer.lowerExpr(expr.expression);
+      if (recv.kind === "caughtToDyn") {
+        const read: IrExpr = {
+          kind: "dynKeyGet",
+          key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+          value: recv,
+          type: DYN,
+          loc,
+        };
+        const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+        return declared && declared.kind !== "void"
+          ? lowerer.coerceToExpected(read, declared)
+          : read;
       }
     }
     // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
@@ -9433,12 +9452,14 @@ export function lowerAsExpression(
     // the requested shape; an assertion does not bypass runtime checks.
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
     const bridged =
-      narrowed &&
-      (narrowed.kind === "f64" ||
-        narrowed.kind === "bool" ||
-        narrowed.kind === "string" ||
-        narrowed.kind === "object" ||
-        narrowed.kind === "dyn");
+      (narrowed &&
+        (narrowed.kind === "f64" ||
+          narrowed.kind === "bool" ||
+          narrowed.kind === "string" ||
+          narrowed.kind === "object" ||
+          narrowed.kind === "dyn")) ||
+      // `catch (e: any)`: the binding reads as its checked-dynamic value.
+      (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
   const inner = lowerer.lowerExpr(expr.expression);
@@ -12708,7 +12729,11 @@ export function caughtRead(
   // Unnarrowed reads cross into unknown. The caught-value dispatch pass
   // retains known native class payloads through live identity capsules;
   // other payload kinds use the runtime's ordinary conversion.
-  if (narrowed?.kind === "dyn") {
+  // `catch (e: any)` (or useUnknownInCatchVariables off) reads the same way.
+  if (
+    narrowed?.kind === "dyn" ||
+    (narrowed === null && (lowerer.typeOf(node).flags & ts.TypeFlags.Any) !== 0)
+  ) {
     return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   }
   // A binding a user type predicate (or an assertion) narrowed to a
@@ -14030,41 +14055,68 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
           loc,
         };
       }
-      if (
-        (key === "message" || key === "name") &&
-        (recv.kind === "varRef" || recv.kind === "caughtNarrow")
-      ) {
-        return { kind: "boolLit", value: true, type: BOOL, loc };
-      }
-      // Any other key: a member a program class declares. The receiver's
-      // runtime class is its static class or a descendant; the key is
-      // present exactly when that class (or an ancestor) declares it.
-      if (recv.kind === "varRef" || recv.kind === "caughtNarrow") {
-        const declares = (c: ClassInfo): boolean =>
-          c.fields.has(key) ||
-          lowerer.findMethodOn(c, key) !== null ||
-          lowerer.findMethodOn(c, `get:${key}`) !== null ||
-          lowerer.findMethodOn(c, `set:${key}`) !== null;
-        const staticName = recv.type.className;
-        const staticInfo = lowerer.classes.get(staticName);
-        if (staticInfo && declares(staticInfo))
-          return { kind: "boolLit", value: true, type: BOOL, loc };
+      // The receiver evaluates for its effects when the answer is static.
+      const always = (): IrExpr =>
+        recv.kind === "varRef" || recv.kind === "caughtNarrow"
+          ? { kind: "boolLit", value: true, type: BOOL, loc }
+          : {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: recv, loc }],
+              result: { kind: "boolLit", value: true, type: BOOL, loc },
+              type: BOOL,
+              loc,
+            };
+      if (key === "message" || key === "name") return always();
+      // A member the static class declares is always present.
+      const declares = (c: ClassInfo): boolean =>
+        c.fields.has(key) ||
+        lowerer.findMethodOn(c, key) !== null ||
+        lowerer.findMethodOn(c, `get:${key}`) !== null ||
+        lowerer.findMethodOn(c, `set:${key}`) !== null;
+      const staticInfo = lowerer.classes.get(recv.type.className);
+      if (staticInfo && declares(staticInfo)) return always();
+      // Any other key: a descendant class that declares it (instanceof),
+      // an own property set at runtime (a throw site's extra fields,
+      // Object.assign, writes through a dynamic view), or an
+      // Object.prototype member. `stack` stays fenced: Node has one, a
+      // compiled error has none.
+      if (key !== "stack") {
+        const stable = recv.kind === "varRef" || recv.kind === "caughtNarrow";
+        const slot = stable ? null : lowerer.declareHiddenLocal("%inRecv", recv.type);
+        const ref = (): IrExpr => (slot ? varRef(slot.id, recv.type, loc) : recv);
         const tests: IrExpr[] = [];
+        const staticName = recv.type.className;
         for (const c of lowerer.classes.values()) {
           const name = c.def.name;
           if (name === staticName || !lowerer.isSubclassOf(name, staticName) || !declares(c))
             continue;
           // A declaring ancestor below the static class already covers it.
           if (c.base && c.base.def.name !== staticName && declares(c.base)) continue;
-          tests.push({ kind: "instanceOf", value: recv, className: name, type: BOOL, loc });
+          tests.push({ kind: "instanceOf", value: ref(), className: name, type: BOOL, loc });
         }
-        return tests.reduce<IrExpr>(
-          (acc, test) =>
-            acc.kind === "boolLit"
-              ? test
-              : { kind: "logical", op: "||", left: acc, right: test, type: BOOL, loc },
-          { kind: "boolLit", value: false, type: BOOL, loc },
-        );
+        tests.push({
+          kind: "libCall",
+          fn: "error.hasKey",
+          args: [ref(), { kind: "strLit", value: key, type: STRING, loc }],
+          type: BOOL,
+          loc,
+        });
+        const answer = tests.reduce((acc, test) => ({
+          kind: "logical",
+          op: "||",
+          left: acc,
+          right: test,
+          type: BOOL,
+          loc,
+        }));
+        if (!slot) return answer;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: slot.id, init: recv, loc }],
+          result: answer,
+          type: BOOL,
+          loc,
+        };
       }
       lowerer.unsupported(
         "SC1090",

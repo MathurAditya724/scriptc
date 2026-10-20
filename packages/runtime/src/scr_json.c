@@ -14092,3 +14092,67 @@ ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell) {
 bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
   return scr_dyn_sync_generator(value);
 }
+
+/* The program's writes onto compiled errors (scr_error.h). Kept at the end
+ * of the file, after every function they call, so the rest of the unit
+ * emits in its existing order. */
+
+/* `err.code = s` from the program (an Error asserted to carry `code`):
+ * the same slot every coded throw stamps, so reads and `'code' in err`
+ * observe the write. Borrows both. */
+void scr_error_set_code_value(ScrError *e, ScrStr *code) {
+  scr_str_release(e->code);
+  e->code = scr_str_retain(code);
+  /* An error that already crossed into the checked-dynamic tree renders
+   * and reads through that node, so the write lands there too. */
+  ScrDyn *view = scr_errdyn_view_of(e);
+  if (view != NULL && view->kind == SCR_DYN_OBJ) scr_dyn_obj_set(view, "code", 4, scr_dyn_new_str(code));
+}
+
+void scr_error_set_code_dyn(ScrError *e, ScrDyn *value) {
+  if (value != NULL && value->kind == SCR_DYN_STR) {
+    scr_error_set_code_value(e, value->v.str);
+    return;
+  }
+  scr_str_release(e->code);
+  e->code = NULL;
+  ScrDyn *view = scr_dyn_from_error(e);
+  ScrStr *key = scr_str_new("code", 4);
+  scr_dyn_key_set(view, key, value);
+  scr_str_release(key);
+  scr_dyn_release(view);
+}
+
+/* Object.assign(err, ...sources) onto a compiled error: each source's own
+ * members land on the error's checked-dynamic node, then the slots that
+ * typed reads use (name, message, stack, cause, code) take the result.
+ * Borrows both; throws what the copy throws (a nullish source is skipped,
+ * as in JS). */
+void scr_error_assign_dyn(ScrError *e, const ScrDyn *sources) {
+  ScrDyn *view = scr_dyn_from_error(e);
+  ScrDyn *r = scr_dyn_assign_all(view, sources);
+  if (r != NULL) {
+    scr_dyn_release(r);
+    if (view->kind == SCR_DYN_OBJ) {
+      scr_error_commit_dyn(e, view);
+      if (!scr_exc_pending()) {
+        ScrDyn *code = scr_dyn_obj_get(view, "code", 4);
+        ScrStr *next = code != NULL && code->kind == SCR_DYN_STR ? scr_str_retain(code->v.str) : NULL;
+        scr_str_release(e->code);
+        e->code = next;
+      }
+    }
+  }
+  scr_dyn_release(view);
+}
+
+/* `key in err` for a key no compiled class of the receiver declares: an own
+ * property set at runtime, which lives on the error's checked-dynamic node
+ * (that node exists once anything reflected or wrote through it), or a
+ * member of Object.prototype. Borrows both; never throws. */
+bool scr_error_has_key(ScrError *e, const ScrStr *key) {
+  const ScrDyn *view = scr_errdyn_view_of(e);
+  if (view != NULL && view->kind == SCR_DYN_OBJ && scr_dyn_find_entry(view, key->data, key->len) != NULL)
+    return true;
+  return scr_dyn_object_proto_name(key);
+}

@@ -389,6 +389,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "error.stack",
   "error.cause",
   "error.setCause",
+  "error.assign",
   "error.deleteCause",
   "dyn.objectTag",
   // Numeric coercion runs user valueOf/toString — throws propagate.

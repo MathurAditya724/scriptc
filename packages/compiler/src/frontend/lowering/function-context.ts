@@ -48,6 +48,10 @@ export interface FnCtx {
   argumentsLocal?: IrLocal | null;
   /** Arrows inherit the nearest ordinary function's arguments binding. */
   inheritsArguments?: boolean;
+  /** A function lowered on demand on top of an unrelated caller's frames
+   * (a generic instance): lexical `this` resolution stops here, so the
+   * body sees what it sees when lowered alone. */
+  thisBoundary?: true;
   /** Tuple bindings of this function that are only forwarded
    * (typed-arguments.ts onlyForwarded): binding local id → the native
    * slots forwarding reads. Such a binding is never materialized. Local ids
@@ -161,7 +165,16 @@ export function captureContextBinding(
     throw new InternalCompilerError("lowerer bug: no active function context");
   const direct = bindingInContext(current, symbol);
   if (direct !== null) return { local: direct, origin: direct, error: null };
-  for (let depth = stack.length - 2; depth >= 0; depth--) {
+  let floor = 0;
+  if (symbol === undefined) {
+    for (let depth = stack.length - 1; depth >= 0; depth--) {
+      if (stack[depth]!.thisBoundary) {
+        floor = depth;
+        break;
+      }
+    }
+  }
+  for (let depth = stack.length - 2; depth >= floor; depth--) {
     const origin = bindingInContext(stack[depth]!, symbol);
     if (origin === null) continue;
 

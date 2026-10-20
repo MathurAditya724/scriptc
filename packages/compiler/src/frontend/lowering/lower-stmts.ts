@@ -7124,6 +7124,34 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
               loc,
             };
           }
+          // `err.code = v` on an Error value (`err as Error & { code?:
+          // string }`): typed reads come from the runtime error's code
+          // slot, so the write lands there. A value that is not statically
+          // a string checks at runtime: strings take the slot, anything
+          // else clears it and stays a dynamic own property. The
+          // system-error members (errno, syscall, path, dest) read
+          // through the checked-dynamic node and keep the dynamic write, as
+          // do JavaScript files, whose reads use that node too.
+          if (
+            !isJsSourceFile(expr.getSourceFile()) &&
+            recv?.type.kind === "object" &&
+            lowerer.isErrorRootedClass(recv.type.className) &&
+            expr.left.name.text === "code"
+          ) {
+            const loc = locOf(expr);
+            const stringValue = isStringTyped(lowerer.typeOf(expr.right));
+            return {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: stringValue ? "error.setCode" : "error.setCodeDyn",
+                args: [recv, lowerer.lowerExprExpecting(expr.right, stringValue ? STRING : DYN)],
+                type: VOID,
+                loc,
+              },
+              loc,
+            };
+          }
           if (recv?.type.kind === "object" && recv.type.className === "%Error") {
             const loc = locOf(expr);
             return {
@@ -10814,4 +10842,10 @@ export function lowerForStatement(lowerer: Lowerer, stmt: ts.ForStatement): IrSt
   } finally {
     lowerer.scopes.pop();
   }
+}
+
+/** A checker type that is a string or string literal (or a union of them). */
+function isStringTyped(t: ts.Type): boolean {
+  if (t.isUnionType()) return ts.constituentTypes(t).every(isStringTyped);
+  return (t.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral)) !== 0;
 }

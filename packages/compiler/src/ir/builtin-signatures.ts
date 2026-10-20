@@ -3101,6 +3101,22 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "error.hasCause": { argTypes: [null], result: BOOL },
   /** Assignment borrows both operands and retains the new cause. */
   "error.setCause": { argTypes: [null, DYN], result: VOID },
+  /** `err.code = s` on an error-hierarchy receiver: the code slot that
+   * error.code reads and coded throws stamp. Borrows both; never throws. */
+  "error.setCode": { argTypes: [null, STRING], result: VOID },
+  /** `err.code = v` with a value that is not statically a string: strings
+   * take the code slot, anything else clears it and sets the dynamic own
+   * property. Borrows both; never throws. */
+  "error.setCodeDyn": { argTypes: [null, DYN], result: VOID },
+  /** `Object.assign(err, ...sources)` onto an error-hierarchy receiver
+   * (args: the error, a dyn array of the sources): the own-member copy
+   * onto its checked-dynamic node, then the typed slots (name, message,
+   * stack, cause, code) re-read from it. Throws what the copy throws. */
+  "error.assign": { argTypes: [null, DYN], result: VOID },
+  /** `key in err` for a key no compiled class of the receiver declares
+   * (args: the error, the key): a runtime-set own property (Object.assign,
+   * throw-site fields, dynamic writes) or an Object.prototype member. */
+  "error.hasKey": { argTypes: [null, STRING], result: BOOL },
   "error.defineCause": { argTypes: [null, DYN], result: VOID },
   "error.deleteCause": { argTypes: [null], result: VOID },
   /** The compiler-resolved Node-parity throw for always-throwing lowered
