@@ -6340,6 +6340,10 @@ function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
       return true;
     case "record":
     case "array":
+    // `T | Promise<T>` with T bound to `unknown`: the checked-dynamic value
+    // holds a promise by reference, so `unknown` absorbs the promise arm
+    // exactly as the checker's own union reduction does.
+    case "promise":
       return canConvertToDyn(
         arm,
         (id) => ctx.shapes.get(id),
