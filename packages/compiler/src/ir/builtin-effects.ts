@@ -769,6 +769,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromBytes",
   "buffer.poolFromArray",
   "buffer.poolFromDyn",
+  "buffer.poolFromDynRef",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",

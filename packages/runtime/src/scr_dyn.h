@@ -1134,6 +1134,10 @@ bool scr_dyn_strict_eq(const ScrDyn *a, const ScrDyn *b);
  * result owned (+1). MAY THROW (NULL with the exception pending). */
 ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method);
 ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* scr_dyn_invoke_prepared for the fixed-width Buffer read/write method names
+ * (scr_bytes_dyn.c): a Buffer receiver runs the method, any other takes the
+ * ordinary dispatch. */
+ScrDyn *scr_dyn_invoke_buffer_num(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
 /* Keyed read on a FUNC node: the own-property table first (defineProperties
  * writes land there), then "name" (the box's best-effort static name; ""

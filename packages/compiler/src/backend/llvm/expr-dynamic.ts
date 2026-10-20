@@ -28,6 +28,7 @@ import { elemAccess, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { emitUnionWiden } from "./expr-records.js";
+import { DYN_BUFFER_NUM_METHODS } from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
   host: LlvmEmitterContext,
@@ -226,9 +227,12 @@ export function emitDynamicExpr(
         });
         argsPtr = arr;
       }
-      host.declare(
-        `declare ptr @scr_dyn_invoke_prepared(ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`,
-      );
+      // Fixed-width Buffer method names take scr_bytes_dyn.c's entry, which
+      // runs them on Buffer receivers and dispatches any other receiver.
+      const invoke = DYN_BUFFER_NUM_METHODS.has(e.method)
+        ? "scr_dyn_invoke_buffer_num"
+        : "scr_dyn_invoke_prepared";
+      host.declare(`declare ptr @${invoke}(ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`);
       let name = host.cstr(e.calleeName);
       if (e.calleeNameValue !== undefined) {
         const value = emitBorrowedInput(host, e.calleeNameValue);
@@ -237,7 +241,7 @@ export function emitDynamicExpr(
       }
       const t = B.tmp();
       B.line(
-        `${t} = call ptr @scr_dyn_invoke_prepared(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name})`,
+        `${t} = call ptr @${invoke}(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name})`,
       );
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck();

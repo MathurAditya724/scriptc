@@ -5917,11 +5917,44 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
     writes = indexed;
     lowerer.jsBindingWritesByOwner.set(owner, writes);
   }
-  return (writes.get(decl.name.text) ?? []).some(
-    (node) =>
-      lowerer.resolveValueSymbol(node.left as ts.Identifier) === symbol &&
-      (lowerer.typeOf(node.right).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+  const candidates = (writes.get(decl.name.text) ?? []).filter(
+    (node) => lowerer.resolveValueSymbol(node.left as ts.Identifier) === symbol,
   );
+  if (
+    candidates.some(
+      (node) =>
+        (lowerer.typeOf(node.right).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+    )
+  )
+    return true;
+  // A plain JavaScript write of a value the declared type cannot hold (the
+  // checker does not report it): buffer-crc32 replaces its number[] table
+  // with `new Int32Array(table)`. Only a different representation counts;
+  // writes that coerce into the declared type keep it.
+  // A write whose checker type is the declaration's own maps to the same
+  // representation; the declared type is mapped only for the others.
+  const declaredType = lowerer.typeOf(decl.name);
+  const differing = candidates.filter(
+    (node) =>
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      lowerer.typeOf(node.right) !== declaredType,
+  );
+  if (differing.length === 0) return false;
+  const declared = lowerer.mapTypeOf(declaredType);
+  if (declared === null || declared.kind === "dyn" || declared.kind === "union") return false;
+  return differing.some((node) => {
+    const written = lowerer.mapTypeOf(lowerer.typeOf(node.right));
+    return (
+      written !== null &&
+      written.kind !== "dyn" &&
+      written.kind !== "union" &&
+      !isUnitType(written) &&
+      lowerer.dynConvertible(written) &&
+      lowerer.dynConvertible(declared) &&
+      !typeEquals(written, declared) &&
+      (written.kind !== declared.kind || written.kind === "bytes")
+    );
+  });
 }
 
 function immediatelyGuardedAbsenceProbe(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {

@@ -8,6 +8,7 @@ import { InternalCompilerError } from "../../errors.js";
  * seeds), npm/JSON import collection, per-file %init functions, %main, and
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
+import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
 import { dirname as dirnamePath, resolve as resolvePath } from "node:path";
@@ -246,8 +247,12 @@ export function splitFiles(lowerer: Lowerer): FileParts[] {
   const files = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
   return files.map((sf) => {
     const fp: FileParts = { sf, fnDecls: [], classDecls: [], topStmts: [] };
+    const rebindable = collectRebindableFunctions(lowerer, sf);
     for (const stmt of sf.statements.nodes) {
-      if (ts.isFunctionDeclaration(stmt)) fp.fnDecls.push(stmt);
+      // A reassigned JavaScript declaration lives in a module global that
+      // the init body assigns first (rebindable-functions.ts).
+      if (ts.isFunctionDeclaration(stmt) && rebindable.has(stmt)) fp.topStmts.push(stmt);
+      else if (ts.isFunctionDeclaration(stmt)) fp.fnDecls.push(stmt);
       else if (ts.isClassDeclaration(stmt)) fp.classDecls.push(stmt);
       // Namespaces: ambient/type-only ones are zero-runtime and skip;
       // instantiated bodies FLATTEN into this file's parts (functions/
@@ -1274,6 +1279,21 @@ export function collectGlobals(
   // collected earlier in this pass must resolve them (lower-expando.ts).
   collectExpandoMembers(lowerer, sf);
   for (const stmt of topStmts) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name && isRebindableFunction(lowerer, stmt)) {
+      const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
+      if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+        const g: IrGlobal = {
+          id: `%g.${tag}${stmt.name.text}`,
+          name: stmt.name.text,
+          type: DYN,
+          mutable: true,
+        };
+        lowerer.globalsBySymbol.set(symbol, g);
+        lowerer.globalsByDeclNode.set(stmt, g);
+        lowerer.globalsList.push(g);
+      }
+      continue;
+    }
     // `export default <expr>`: the module's `default` binding is a const
     // module global (registered under the checker's default-export
     // symbol — the symbol a default IMPORT's alias chain terminates at,
@@ -2835,6 +2855,23 @@ export function lowerFileInit(
         value: { kind: "dynObjLit", fields: [], type: DYN, loc: loc0 },
         loc: loc0,
       });
+    }
+    // Reassigned function declarations are initialized when the module
+    // starts, as declarations are hoisted: before its dependencies run, so
+    // a module of an import cycle can call one while it initializes. Their
+    // statements then lower to nothing (rebindable-functions.ts).
+    for (const stmt of stmts) {
+      if (!ts.isFunctionDeclaration(stmt) || !stmt.name || !isRebindableFunction(lowerer, stmt))
+        continue;
+      const g = lowerer.globalsByDeclNode.get(stmt);
+      if (!g) continue;
+      header.push({
+        kind: "assign",
+        localId: g.id,
+        value: lowerer.coerceToExpected(lowerer.lowerLambda(stmt), DYN),
+        loc: locOf(stmt),
+      });
+      ctx.hoistedFnDecls.add(stmt);
     }
     for (const { stmt, dep } of orderedImportsOf(lowerer.program, sf)) {
       const npm = lowerer.npmInitActions.get(sf)?.get(stmt);
