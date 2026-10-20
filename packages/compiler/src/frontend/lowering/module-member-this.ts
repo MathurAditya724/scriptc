@@ -106,29 +106,83 @@ function functionOfName(
   return { fn: null };
 }
 
-/** Whether `fn` (with its nested functions) assigns the binding `symbol`. */
-function assigns(lowerer: Lowerer, fn: ts.Node, symbol: ts.Symbol): boolean {
+/**
+ * Whether `fn` (with its nested functions) may change what its parameter
+ * `param` holds: an assignment, update, destructuring or for-in/for-of
+ * target that writes it, a declaration of the same name, a write to an
+ * element of `arguments` (which aliases parameters outside strict mode), or
+ * a call of `eval`.
+ */
+function mayRebind(lowerer: Lowerer, fn: ts.Node, param: ts.Identifier): boolean {
+  const symbol = lowerer.checker.getSymbolAtLocation(param);
+  const refersTo = (node: ts.Node): boolean =>
+    ts.isIdentifier(node) &&
+    (node.text === param.text || lowerer.checker.getSymbolAtLocation(node) === symbol);
+  // Whether writing `target` writes the parameter: the name itself, or the
+  // name inside a destructuring pattern.
+  const writes = (target: ts.Node): boolean => {
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (refersTo(target)) return true;
+    if (
+      ts.isElementAccessExpression(target) &&
+      ts.isIdentifier(target.expression) &&
+      target.expression.text === "arguments"
+    )
+      return true;
+    if (ts.isArrayLiteralExpression(target)) return target.elements.nodes.some(writes);
+    if (ts.isObjectLiteralExpression(target))
+      return target.properties.nodes.some((p) =>
+        ts.isShorthandPropertyAssignment(p)
+          ? refersTo(p.name)
+          : ts.isPropertyAssignment(p)
+            ? writes(p.initializer)
+            : ts.isSpreadAssignment(p) && writes(p.expression),
+      );
+    if (ts.isSpreadElement(target)) return writes(target.expression);
+    // A default in a pattern: `[body = other] = values`.
+    if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+      return writes(target.left);
+    return false;
+  };
+  const declaresName = (node: ts.Node): boolean => {
+    const name = (node as { name?: ts.Node }).name;
+    return name !== undefined && ts.isIdentifier(name) && name.text === param.text;
+  };
   let found = false;
-  const isTarget = (node: ts.Node): boolean =>
-    ts.isIdentifier(node) && lowerer.checker.getSymbolAtLocation(node) === symbol;
   const visit = (node: ts.Node): void => {
     if (found) return;
     if (
       (ts.isBinaryExpression(node) &&
         node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
         node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-        isTarget(node.left)) ||
+        writes(node.left)) ||
       ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
         (node.operator === ts.SyntaxKind.PlusPlusToken ||
           node.operator === ts.SyntaxKind.MinusMinusToken) &&
-        isTarget(node.operand))
+        writes(node.operand)) ||
+      ((ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+        !ts.isVariableDeclarationList(node.initializer) &&
+        writes(node.initializer)) ||
+      ((ts.isVariableDeclaration(node) ||
+        ts.isBindingElement(node) ||
+        ts.isParameter(node) ||
+        ts.isFunctionDeclaration(node) ||
+        ts.isClassDeclaration(node)) &&
+        declaresName(node)) ||
+      (ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "eval")
     ) {
       found = true;
       return;
     }
     node.forEachChild(visit);
   };
-  fn.forEachChild(visit);
+  // The function's own parameters declare the name; their defaults can write it.
+  const params = (fn as { parameters?: ts.NodeArray<ts.ParameterDeclaration> }).parameters;
+  for (const p of params?.nodes ?? []) if (p.initializer) visit(p.initializer);
+  const body = (fn as { body?: ts.Node }).body;
+  if (body !== undefined) visit(body);
   return found;
 }
 
@@ -178,7 +232,7 @@ function ignoresThis(
       const symbol = lowerer.checker.getSymbolAtLocation(param.name);
       if (arg === undefined || ts.isSpreadElement(arg) || symbol === undefined) return false;
       // The parameter holds the argument for as long as the function runs.
-      if (assigns(lowerer, fn, symbol)) return false;
+      if (mayRebind(lowerer, fn, param.name)) return false;
       inner.set(symbol, { expr: arg, bindings });
     }
     const returned = returnedExpressions(fn);

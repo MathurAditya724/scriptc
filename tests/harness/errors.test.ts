@@ -1267,6 +1267,72 @@ export function plain(x) { return x + 1; }
       3,
     ],
     [
+      "a namespace import's export that passes this on through a factory that replaces its parameter as a destructuring",
+      "namespace-member-forwards-destructured",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  [body] = [function (s) { return this.tag + s; }];
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory that replaces its parameter as a object destructuring",
+      "namespace-member-forwards-object-destructured",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  ({ body } = { body: function (s) { return this.tag + s; } });
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory that replaces its parameter as a for-of target",
+      "namespace-member-forwards-for-of",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  for (body of [function (s) { return this.tag + s; }]);
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
       "a require binding's export that passes this on to a function that reads it",
       "require-member-forwards-to-reader",
       "cjs",
