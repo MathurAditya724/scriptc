@@ -59,8 +59,9 @@
  *            order that differs from insertion order where the program
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
- *            to a cast to an unrelated class (SC6004), and Date strings the native parser does not
- *            accept (SC6005)
+ *            to a cast to an unrelated class (SC6004); SC6005 (Date strings
+ *            outside the native parser's grammar) is retired — the runtime
+ *            parses date strings with V8's grammar
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
@@ -197,18 +198,6 @@ export function unrelatedClassCastDivergenceDiag(
     message: `this '${source}' reaches a cast to the unrelated class '${target}' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally`,
     loc,
     hint: `narrow with 'instanceof ${target}' before casting, or cast to a base class or interface both classes share`,
-  };
-}
-
-/** SC6005 — a Date string literal outside the grammar the native parser
- * accepts (ISO 8601 with an explicit offset, date-only forms, and the
- * certificate-time shape): Node parses many more forms. */
-export function dateLiteralDivergenceDiag(text: string, loc: SrcLoc): ScrDiagnostic {
-  return {
-    code: "SC6005",
-    message: `the date string '${text}' parses to an invalid date (NaN) natively, while Node accepts it (the native parser takes ISO 8601 date-times with an explicit offset, such as '2024-01-02T03:04:05Z', and date-only forms)`,
-    loc,
-    hint: "write the date in ISO 8601 with an explicit offset ('Z' or '+HH:MM'), or build it from numbers with Date.UTC",
   };
 }
 

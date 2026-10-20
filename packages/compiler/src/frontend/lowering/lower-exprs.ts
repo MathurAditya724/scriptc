@@ -91,6 +91,8 @@ import { lowerElementCompoundParts } from "./expressions/element-access.js";
 export {
   DEFERRED_READ_MESSAGE,
   abstractPropertyDeclOf,
+  builtinFunctionValue,
+  builtinGlobalValue,
   fieldGetExpr,
   fieldTarget,
   isMatchSliceType,
@@ -99,6 +101,7 @@ export {
   lowerIntrinsicProperty,
   lowerUnionProperty,
   matchResultNamedGroupsOf,
+  primitiveConstructorOr,
 } from "./expressions/property-access.js";
 export {
   lowerAsExpression,

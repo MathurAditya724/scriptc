@@ -741,6 +741,12 @@ export function lowerPropertyAccessExpr(
     lowerStreamObjectProperty(lowerer, expr) ??
     lowerEventObjectProperty(lowerer, expr) ??
     lowerer.lowerUnionProperty(expr) ??
+    // A builtin constructor reached through another binding (`const D =
+    // Date; D.prototype`) holds its interned function value, which
+    // models only name, length and constructor: a static member or the
+    // prototype that no lowering above claimed keeps the SC2020 fence
+    // rather than reading undefined through the field and dynamic reads.
+    fenceBuiltinConstructorStaticRead(lowerer, expr) ??
     lowerer.lowerFieldRead(expr);
   // A union-typed field read narrows like an identifier when the
   // checker has narrowed this use to one arm.
@@ -787,7 +793,14 @@ export function lowerPropertyAccessExpr(
           type: DYN,
           loc,
         };
-      return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
+      return (
+        builtinGlobalValueAt(lowerer, expr, canonical, loc, true) ?? {
+          kind: "strLit",
+          value: `[builtin ${canonical}]`,
+          type: STRING,
+          loc,
+        }
+      );
     }
   }
   // A JS receiver whose CHECKER type has no mapping (`mustCallChecks
@@ -861,6 +874,43 @@ export function lowerPropertyAccessExpr(
         kind: "dynKeyGet",
         value: lowerer.coerceToExpected(receiver, DYN),
         key: { kind: "strLit", value: "constructor", type: STRING, loc },
+        type: DYN,
+        loc,
+      };
+    }
+  }
+  // A plain record's inherited Object.prototype members READ as values
+  // (`o.constructor`, `o.valueOf`, `({}).toString`, the isPlainObject and
+  // deep-equal idioms): the record boxes into its dynamic view, whose
+  // read answers the interned Object constructor and Object.prototype
+  // methods — the same values `Object` and `Object.prototype.valueOf`
+  // read, so identity comparisons are exact. Calls keep their own
+  // lowerings; a record declaring the name reads its field.
+  if (
+    OBJECT_PROTOTYPE_VALUE_READS.has(expr.name.text) &&
+    !isCalleeOf(expr) &&
+    // `X.prototype.toString` keeps the builtin prototype-method lowering.
+    !(ts.isPropertyAccessExpression(expr.expression) && expr.expression.name.text === "prototype")
+  ) {
+    const receiver = tryLowerExpression(lowerer, expr.expression);
+    const name = expr.name.text;
+    const shape =
+      receiver?.type.kind === "record" ? lowerer.shapes.get(receiver.type.shapeId) : undefined;
+    const info =
+      receiver?.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : undefined;
+    const inherits =
+      receiver?.type.kind === "dyn" ||
+      (shape !== undefined && !shape.tuple && !shape.fields.some((field) => field.name === name)) ||
+      (info !== undefined &&
+        name !== "constructor" &&
+        !info.fields.has(name) &&
+        !lowerer.findMethodOn(info, name) &&
+        !lowerer.findMethodOn(info, `get:${name}`));
+    if (receiver !== null && receiver !== undefined && inherits) {
+      return {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(receiver, DYN),
+        key: { kind: "strLit", value: name, type: STRING, loc },
         type: DYN,
         loc,
       };
@@ -1305,6 +1355,13 @@ export function lowerIntrinsicProperty(
     return { kind: "dynFrom", value, fnName: "ownKeys", type: DYN, loc: locOf(expr) };
   }
   if (lowerer.chainBlocked(expr)) return null;
+  // Object.prototype.constructor: the Object constructor value.
+  if (
+    expr.name.text === "constructor" &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    lowerer.stdlibGlobalMember(expr.expression, "Object") === "prototype"
+  )
+    return builtinGlobalValue("Object", locOf(expr));
   const builtinPrototype = builtinPrototypeMethod(lowerer, expr);
   if (builtinPrototype)
     return {
@@ -3555,6 +3612,223 @@ function lowerStreamObjectProperty(
     if (member) return member;
   }
   return lowerStreamProperty(lowerer, expr, info);
+}
+
+/** The builtin constructors JavaScript sources read as real function
+ * values rather than identity tokens: the runtime interns one function per
+ * constructor, and dynamic values answer `.constructor` with the same one,
+ * so `o.constructor === Object` is an exact identity test. */
+const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
+  "Object",
+  "Function",
+  "Date",
+  "RegExp",
+  "Map",
+  "Set",
+  "Promise",
+  "WeakMap",
+  "WeakSet",
+]);
+
+/** The builtin global functions JavaScript sources read as interned
+ * function values (the `cond ? setImmediate : process.nextTick` feature
+ * probe of bcryptjs and async libraries): typeof answers "function",
+ * identity holds across spellings, and calls run the timer APIs. */
+const GLOBAL_FUNCTION_VALUES: ReadonlySet<string> = new Set([
+  "setTimeout",
+  "setInterval",
+  "setImmediate",
+  "clearTimeout",
+  "clearInterval",
+  "clearImmediate",
+  "queueMicrotask",
+]);
+
+/** A builtin function value: one interned runtime function per name. */
+export function builtinFunctionValue(name: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.builtinFunction",
+    args: [{ kind: "strLit", value: name, type: STRING, loc }],
+    type: DYN,
+    loc,
+  };
+}
+
+/** The value a source reads for the stdlib global `canonical` (builtin
+ * constructors in both languages, builtin functions in JavaScript), or
+ * null when it stays an identity token (JavaScript) or fenced. */
+export function builtinGlobalValue(canonical: string, loc: SrcLoc, js = false): IrExpr | null {
+  if (js && GLOBAL_FUNCTION_VALUES.has(canonical)) return builtinFunctionValue(canonical, loc);
+  if (GLOBAL_CONSTRUCTOR_VALUES.has(canonical)) {
+    return {
+      kind: "libCall",
+      fn: "dyn.globalConstructor",
+      args: [{ kind: "strLit", value: canonical, type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
+  }
+  return null;
+}
+
+/** The members the interned builtin function values model (the runtime
+ * answers each one as Node does); any other member read through them would
+ * answer undefined, so it keeps its static lowering or its fence. */
+const BUILTIN_VALUE_MEMBERS: ReadonlySet<string> = new Set(["name", "length", "constructor"]);
+
+/** The Object statics whose answers for an interned builtin function value
+ * match Node's (identity, and the empty enumerable own-key lists). */
+const BUILTIN_VALUE_REFLECTION: ReadonlySet<string> = new Set(["is", "keys", "values", "entries"]);
+
+/** The value `builtinGlobalValue` gives the stdlib global `expr` read at its
+ * use site: null when the use reads the global's members (they keep their
+ * lowerings and fences), and SC2020 when it is the target of reflection or
+ * redefinition (`Object.hasOwn(Object, "hasOwn")`,
+ * `Object.defineProperty(Promise, ...)`, `hasOwnProperty.call(Map, ...)`),
+ * which would observe or change members the interned value does not
+ * model. */
+export function builtinGlobalValueAt(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  canonical: string,
+  loc: SrcLoc,
+  js: boolean,
+): IrExpr | null {
+  if (readsBuiltinGlobalMembers(expr)) return null;
+  const value = builtinGlobalValue(canonical, loc, js);
+  if (value === null) return null;
+  let node: ts.Node = expr;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const call = node.parent;
+  if (
+    call !== undefined &&
+    ts.isCallExpression(call) &&
+    call.expression !== node &&
+    ts.isPropertyAccessExpression(call.expression)
+  ) {
+    const callee = call.expression;
+    const owner = stdlibGlobalNameOf(lowerer, callee.expression);
+    const reflects =
+      owner === "Reflect" ||
+      (owner === "Object" && !BUILTIN_VALUE_REFLECTION.has(callee.name.text)) ||
+      ((callee.name.text === "call" || callee.name.text === "apply") &&
+        call.arguments.nodes[0] === node &&
+        lowerer.isStdlibSymbol(
+          lowerer.checker.getSymbolAtLocation(
+            ts.isPropertyAccessExpression(callee.expression)
+              ? callee.expression.name
+              : callee.expression,
+          ),
+        ));
+    if (reflects) {
+      const name =
+        owner !== null ? `${owner}.${callee.name.text}` : callee.getText().replace(/\s+/g, "");
+      lowerer.noLowering(
+        `${name}(${canonical}, ...)`,
+        expr,
+        "builtin constructor and function values model only name, length and constructor, so reflecting on or redefining their members has no lowering",
+      );
+    }
+  }
+  return value;
+}
+
+/** Whether the stdlib global `expr` is read for its members (`Map.prototype`,
+ * `Date["UTC"]`, `"prototype" in Map`) rather than as a value. Those reads
+ * keep the global's member lowerings and fences: its interned function value
+ * models only BUILTIN_VALUE_MEMBERS. */
+function readsBuiltinGlobalMembers(expr: ts.Expression): boolean {
+  let node: ts.Node = expr;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (parent === undefined) return false;
+  if (ts.isPropertyAccessExpression(parent) && parent.expression === node)
+    return !BUILTIN_VALUE_MEMBERS.has(parent.name.text);
+  if (ts.isElementAccessExpression(parent) && parent.expression === node) return true;
+  return (
+    ts.isBinaryExpression(parent) &&
+    parent.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+    parent.right === node
+  );
+}
+
+/** Reports SC2020 when `access` reads a stdlib static member or the
+ * prototype of a builtin constructor with an interned function value through
+ * a receiver the checker types as the constructor's static side
+ * (`MapConstructor`); null otherwise. Calls that lower statically never
+ * reach the member read. */
+function fenceBuiltinConstructorStaticRead(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): null {
+  if (BUILTIN_VALUE_MEMBERS.has(access.name.text)) return null;
+  const symbol = lowerer.typeOf(access.expression).getSymbol();
+  if (
+    symbol !== undefined &&
+    symbol.name.endsWith("Constructor") &&
+    GLOBAL_CONSTRUCTOR_VALUES.has(symbol.name.slice(0, -"Constructor".length)) &&
+    lowerer.isStdlibSymbol(symbol)
+  )
+    lowerer.stdlibMemberFence(access);
+  return null;
+}
+
+/** Object.prototype members a plain record inherits, read as values. */
+const OBJECT_PROTOTYPE_VALUE_READS: ReadonlySet<string> = new Set([
+  "constructor",
+  "valueOf",
+  "toString",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+]);
+
+/** Whether `expr` is the callee of a call (`o.toString()`), which keeps its
+ * call lowering rather than reading the member as a value. */
+function isCalleeOf(expr: ts.PropertyAccessExpression): boolean {
+  let node: ts.Node = expr;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  return (
+    parent !== undefined &&
+    (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+    parent.expression === node
+  );
+}
+
+/** The constructor a primitive dynamic value answers for `.constructor`:
+ * the same interned closure the `Number`/`String`/`Boolean`/`BigInt`
+ * identifiers read (dequal's `(ctor = foo.constructor) === bar.constructor`
+ * over numbers), or `otherwise` for non-primitives. `value` must be safe to
+ * read repeatedly. */
+export function primitiveConstructorOr(
+  lowerer: Lowerer,
+  value: IrExpr,
+  otherwise: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  let result = otherwise;
+  for (const [test, name] of [
+    ["bigint", "BigInt"],
+    ["boolean", "Boolean"],
+    ["string", "String"],
+    ["number", "Number"],
+  ] as const) {
+    result = {
+      kind: "ternary",
+      cond: { kind: "dynTest", test, value, type: BOOL, loc },
+      then: {
+        kind: "dynFrom",
+        value: primitiveCtorClosure(lowerer, name, loc, true),
+        type: DYN,
+        loc,
+      },
+      else_: result,
+      type: DYN,
+      loc,
+    };
+  }
+  return result;
 }
 
 /** True when `access` reads a member that JavaScript sources attach to a

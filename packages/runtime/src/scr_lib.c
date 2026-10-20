@@ -10938,9 +10938,10 @@ ScrStr *scr_date_to_utc_string(double ms) {
 
 /* ── new Date(dateString).getTime() ──────────────────────────────────────
  *
- * The BOUNDED date-string parse (documented divergence — V8's parser
- * accepts far more): two grammars answer a time value, everything else is
- * NaN (Node's invalid-date getTime).
+ * The BOUNDED date-string parse, the fast path: two grammars answer a time
+ * value directly; scr_date_parse falls back to V8's full parser
+ * (scr_date_parse_v8 below), which also answers everything they accept,
+ * for the strings they reject.
  *
  *   1. The ASN1_TIME_print shape X509Certificate.validFrom/validTo answer
  *      ("Jul  1 00:00:00 2026 GMT", "Jul 17 17:52:11 2026 GMT") — the
@@ -10949,8 +10950,8 @@ ScrStr *scr_date_to_utc_string(double ms) {
  *   2. ECMA's own date-time string format with an EXPLICIT offset:
  *      YYYY[-MM[-DD]] date-only forms (UTC, per the spec) and full
  *      date-times YYYY-MM-DDTHH:mm[:ss[.sss]] ending in Z or ±HH:MM.
- *      Offset-less date-times are LOCAL time in JS; that arm answers NaN
- *      here rather than guessing a zone (the divergence note).
+ *      Offset-less date-times are LOCAL time in JS; they take the
+ *      fallback, which converts them in the host zone.
  */
 
 /* Howard Hinnant's days_from_civil (the to_iso walk inverted). */
@@ -11082,6 +11083,16 @@ double scr_date_parse_get_time(ScrStr *s) {
     double t = scr_date_make_ms(yy, mo, d, hh, mi, ss, ms);
     return scr_date_new_ms(t - off);
   }
+}
+
+static double scr_date_parse_v8(ScrStr *s);
+
+/* Date.parse and new Date(string): the bounded grammars answer first; only
+ * a string they reject reaches V8's full parser, so the timestamps they
+ * accept cost nothing more. */
+double scr_date_parse(ScrStr *s) {
+  double t = scr_date_parse_get_time(s);
+  return isnan(t) ? scr_date_parse_v8(s) : t;
 }
 
 /* Date.UTC(year, month, date, hours, minutes, seconds, ms) — the spec's
@@ -11290,6 +11301,657 @@ double scr_date_get_milliseconds(double ms) {
 double scr_date_get_timezone_offset(double ms) {
   ScrDateParts p;
   return scr_date_local_parts(ms, &p) ? p.timezone_offset : NAN;
+}
+
+/* ── Local time to UTC, and the year/month field constructor ───────────
+ * The spec's UTC(t) over the host zone: t is a local wall-clock time
+ * value. The offset in effect a day before and a day after t brackets any
+ * transition (none come closer together than that in tzdata). A time in
+ * a DST overlap has two instants and answers the earlier; a time in a gap
+ * has none and is read with the offset BEFORE the transition, exactly
+ * V8's ICU getOffsetFromLocal(FORMER, FORMER). Offsets come from the same
+ * localtime/surrogate-year walk as the local getters, so a Date built
+ * from local fields reads those fields back. */
+
+/* The host zone's offset (local - UTC) in ms at UTC instant `ms` (an
+ * integral time value within about ±8.65e15). */
+static bool scr_date_offset_at(double ms, double *out) {
+  long long cms = (long long)ms;
+  double secd = (double)(cms / 1000 - (cms % 1000 < 0));
+  struct tm tmv;
+  double basis_secd = secd;
+  if (!scr_date_localtime(basis_secd, &tmv)) {
+    ScrDateParts utc;
+    scr_date_utc_parts_unchecked(ms, &utc);
+    long long cycle_year = (utc.year - 2000) % 400;
+    if (cycle_year < 0) cycle_year += 400;
+    basis_secd =
+      scr_days_from_civil(2000 + cycle_year, utc.month + 1, utc.date) * 86400.0 +
+      utc.hours * 3600.0 + utc.minutes * 60.0 + utc.seconds;
+    if (!scr_date_localtime(basis_secd, &tmv)) return false;
+  }
+  double local_as_utc =
+    scr_days_from_civil((long long)tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday) * 86400.0 +
+    tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
+  *out = (local_as_utc - basis_secd) * 1000.0;
+  return true;
+}
+
+static volatile const double scr_date_day_ms = 86400000.0;
+
+static double scr_date_local_to_utc(double t) {
+  double before, after, at_first, at_second, day = scr_date_day_ms;
+  if (!scr_date_offset_at(t - day, &before) || !scr_date_offset_at(t + day, &after)) {
+    return NAN;
+  }
+  double first = t - before;
+  if (!scr_date_offset_at(first, &at_first)) return NAN;
+  if (before == after) {
+    if (at_first == before) return first;
+    /* Two transitions inside the window: settle on the instant's own offset. */
+    double again = t - at_first, at_again;
+    if (scr_date_offset_at(again, &at_again) && at_again == at_first) return again;
+    return first;
+  }
+  double second = t - after;
+  if (!scr_date_offset_at(second, &at_second)) return NAN;
+  bool first_ok = at_first == before, second_ok = at_second == after;
+  if (first_ok && second_ok) return first < second ? first : second; /* overlap */
+  if (second_ok && !first_ok) return second;
+  return first; /* the earlier offset's instant, or a gap */
+}
+
+/* V8's MakeDay (date.cc): bounds the UNtruncated year and month, then
+ * truncates (FastD2I) and normalizes the month into the year. */
+static double scr_date_v8_make_day(double year, double month, double date) {
+  if (!(fabs(year) <= 1000000.0 && fabs(month) <= 10000000.0 && isfinite(date))) return NAN;
+  int y = (int)year, m = (int)month;
+  y += m / 12;
+  m %= 12;
+  if (m < 0) {
+    m += 12;
+    y -= 1;
+  }
+  static const int year_delta = 399999;
+  static const int base_day = 365 * (1970 + year_delta) + (1970 + year_delta) / 4 -
+                              (1970 + year_delta) / 100 + (1970 + year_delta) / 400;
+  int day_from_year = 365 * (y + year_delta) + (y + year_delta) / 4 -
+                      (y + year_delta) / 100 + (y + year_delta) / 400 - base_day;
+  static const int common[12] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+  static const int leap[12] = {0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335};
+  bool is_leap = !((y % 4 != 0) || (y % 100 == 0 && y % 400 != 0));
+  day_from_year += is_leap ? leap[m] : common[m];
+  return (double)(day_from_year - 1) + trunc(date);
+}
+
+static double scr_date_v8_make_time(double h, double m, double s, double ms) {
+  if (!isfinite(h) || !isfinite(m) || !isfinite(s) || !isfinite(ms)) return NAN;
+  return trunc(h) * 3600000.0 + trunc(m) * 60000.0 + trunc(s) * 1000.0 + trunc(ms);
+}
+
+/* V8's bound on a local time value before UTC(t): TimeClip's range plus
+ * ten days. Read from memory so the value stays in its own section instead
+ * of this unit's shared constant pool, which every program linking the
+ * unit carries. */
+static volatile const double scr_date_local_limit = 8640000864000000.0;
+
+/* MakeDate over local fields, then UTC(t) and TimeClip. V8 refuses a local
+ * time value more than ten days past TimeClip's range before converting. */
+static double scr_date_from_local(double day, double time) {
+  if (!isfinite(day) || !isfinite(time)) return NAN;
+  double t = time + day * 86400000.0;
+  if (!(fabs(t) <= scr_date_local_limit)) return NAN;
+  return scr_date_new_ms(scr_date_local_to_utc(trunc(t)));
+}
+
+/* new Date(year, monthIndex[, date[, hours[, minutes[, seconds[, ms]]]]])
+ * over already-number arguments (the frontend completes omitted trailing
+ * arguments with date 1 and time parts 0): years 0–99 map to 1900+year,
+ * fields roll over through MakeDay/MakeTime, and the local time converts
+ * to UTC in the host zone. Never throws. */
+double scr_date_new_local(double y, double mo, double d,
+                          double h, double mi, double s, double ms) {
+  if (!isnan(y)) {
+    double yi = trunc(y);
+    if (yi >= 0 && yi <= 99) y = 1900 + yi;
+  }
+  return scr_date_from_local(scr_date_v8_make_day(y, mo, d), scr_date_v8_make_time(h, mi, s, ms));
+}
+
+/* ── V8's date-string parser, the fallback ─────────────────────────────
+ * scr_date_parse answers the bounded grammars directly and asks
+ * this parser only when they produce NaN. It follows V8's DateParser
+ * (dateparser.cc, dateparser-inl.h) step for step: the ES5 date-time
+ * format first, then the Safari-compatible legacy grammar for whatever
+ * is left (RFC 1123/2822 HTTP dates, Date#toString output, "Jan 2, 2024",
+ * "2024/01/02 10:00", ...). Strings are read as UTF-16 code units, and a
+ * NUL unit ends the input, as in V8. A date without a zone is local time. */
+
+enum {
+  SCR_DT_INVALID = -6, SCR_DT_UNKNOWN = -5, SCR_DT_SPACE = -4,
+  SCR_DT_NUMBER = -3, SCR_DT_SYMBOL = -2, SCR_DT_END = -1,
+  /* keyword tags are their keyword type (>= 0) */
+  SCR_DK_WORD = 0, SCR_DK_MONTH = 1, SCR_DK_ZONE = 2, SCR_DK_T = 3, SCR_DK_AMPM = 4,
+};
+#define SCR_DT_NONE INT_MAX
+
+typedef struct {
+  int tag, length, value;
+} ScrDateTok;
+
+typedef struct {
+  const unsigned char *p, *end;
+  uint32_t ch, low;
+  ScrDateTok next;
+} ScrDateScan;
+
+static void scr_date_scan_advance(ScrDateScan *in) {
+  if (in->low) {
+    in->ch = in->low;
+    in->low = 0;
+    return;
+  }
+  if (in->p >= in->end) {
+    in->ch = 0;
+    return;
+  }
+  const unsigned char *p = in->p;
+  size_t left = (size_t)(in->end - p);
+  uint32_t cp = p[0];
+  size_t n = 1;
+  if (cp >= 0xF0 && left >= 4) {
+    cp = ((cp & 0x07u) << 18) | ((p[1] & 0x3Fu) << 12) | ((p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu);
+    n = 4;
+  } else if (cp >= 0xE0 && left >= 3) {
+    cp = ((cp & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+    n = 3;
+  } else if (cp >= 0xC0 && left >= 2) {
+    cp = ((cp & 0x1Fu) << 6) | (p[1] & 0x3Fu);
+    n = 2;
+  } else if (cp >= 0x80) {
+    cp = 0xFFFD;
+  }
+  in->p += n;
+  if (cp > 0xFFFF) {
+    cp -= 0x10000;
+    in->ch = 0xD800 + (cp >> 10);
+    in->low = 0xDC00 + (cp & 0x3FF);
+  } else {
+    in->ch = cp;
+  }
+}
+
+/* ECMAScript WhiteSpace, and WhiteSpace or LineTerminator. */
+static bool scr_date_is_space(uint32_t c) {
+  return c == 0x09 || c == 0x0B || c == 0x0C || c == 0x20 || c == 0xA0 || c == 0xFEFF ||
+         c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x202F || c == 0x205F ||
+         c == 0x3000;
+}
+
+static bool scr_date_is_space_or_newline(uint32_t c) {
+  return scr_date_is_space(c) || c == 0x0A || c == 0x0D || c == 0x2028 || c == 0x2029;
+}
+
+static const struct {
+  char prefix[3];
+  signed char type, value;
+} scr_date_keywords[] = {
+  {{'j', 'a', 'n'}, SCR_DK_MONTH, 1}, {{'f', 'e', 'b'}, SCR_DK_MONTH, 2},
+  {{'m', 'a', 'r'}, SCR_DK_MONTH, 3}, {{'a', 'p', 'r'}, SCR_DK_MONTH, 4},
+  {{'m', 'a', 'y'}, SCR_DK_MONTH, 5}, {{'j', 'u', 'n'}, SCR_DK_MONTH, 6},
+  {{'j', 'u', 'l'}, SCR_DK_MONTH, 7}, {{'a', 'u', 'g'}, SCR_DK_MONTH, 8},
+  {{'s', 'e', 'p'}, SCR_DK_MONTH, 9}, {{'o', 'c', 't'}, SCR_DK_MONTH, 10},
+  {{'n', 'o', 'v'}, SCR_DK_MONTH, 11}, {{'d', 'e', 'c'}, SCR_DK_MONTH, 12},
+  {{'a', 'm', 0}, SCR_DK_AMPM, 0}, {{'p', 'm', 0}, SCR_DK_AMPM, 12},
+  {{'u', 't', 0}, SCR_DK_ZONE, 0}, {{'u', 't', 'c'}, SCR_DK_ZONE, 0},
+  {{'z', 0, 0}, SCR_DK_ZONE, 0}, {{'g', 'm', 't'}, SCR_DK_ZONE, 0},
+  {{'c', 'd', 't'}, SCR_DK_ZONE, -5}, {{'c', 's', 't'}, SCR_DK_ZONE, -6},
+  {{'e', 'd', 't'}, SCR_DK_ZONE, -4}, {{'e', 's', 't'}, SCR_DK_ZONE, -5},
+  {{'m', 'd', 't'}, SCR_DK_ZONE, -6}, {{'m', 's', 't'}, SCR_DK_ZONE, -7},
+  {{'p', 'd', 't'}, SCR_DK_ZONE, -7}, {{'p', 's', 't'}, SCR_DK_ZONE, -8},
+  {{'t', 0, 0}, SCR_DK_T, 0},
+};
+
+static ScrDateTok scr_date_scan_token(ScrDateScan *in) {
+  ScrDateTok t;
+  t.tag = SCR_DT_UNKNOWN;
+  t.length = 1;
+  t.value = -1;
+  uint32_t c = in->ch;
+  if (c == 0) {
+    t.tag = SCR_DT_END;
+    return t;
+  }
+  if (c >= '0' && c <= '9') {
+    /* Leading zeros count toward the length; past nine significant
+     * digits the value stops growing but the digits are consumed. */
+    int n = 0, digits = 0, length = 0;
+    while (in->ch == '0') {
+      scr_date_scan_advance(in);
+      length++;
+    }
+    while (in->ch >= '0' && in->ch <= '9') {
+      if (digits < 9) n = n * 10 + (int)(in->ch - '0');
+      digits++;
+      length++;
+      scr_date_scan_advance(in);
+    }
+    t.tag = SCR_DT_NUMBER;
+    t.value = n;
+    t.length = length;
+    return t;
+  }
+  if (c == ':' || c == '-' || c == '+' || c == '.' || c == ')') {
+    scr_date_scan_advance(in);
+    t.tag = SCR_DT_SYMBOL;
+    t.value = (int)c;
+    return t;
+  }
+  if (c >= 'A' && !scr_date_is_space(c)) {
+    uint32_t prefix[3];
+    prefix[0] = prefix[1] = prefix[2] = 0;
+    int length = 0;
+    while (in->ch >= 'A' && !scr_date_is_space(in->ch)) {
+      if (length < 3) prefix[length] = in->ch | 0x20;
+      length++;
+      scr_date_scan_advance(in);
+    }
+    t.tag = SCR_DK_WORD;
+    t.value = 0;
+    t.length = length;
+    for (size_t i = 0; i < sizeof scr_date_keywords / sizeof scr_date_keywords[0]; i++) {
+      const char *k = scr_date_keywords[i].prefix;
+      if (prefix[0] == (uint32_t)(unsigned char)k[0] && prefix[1] == (uint32_t)(unsigned char)k[1] &&
+          prefix[2] == (uint32_t)(unsigned char)k[2] &&
+          (length <= 3 || scr_date_keywords[i].type == SCR_DK_MONTH)) {
+        t.tag = scr_date_keywords[i].type;
+        t.value = scr_date_keywords[i].value;
+        break;
+      }
+    }
+    return t;
+  }
+  if (scr_date_is_space_or_newline(c)) {
+    scr_date_scan_advance(in);
+    t.tag = SCR_DT_SPACE;
+    return t;
+  }
+  if (c == '(') {
+    int balance = 0;
+    do {
+      if (in->ch == ')') balance--;
+      else if (in->ch == '(') balance++;
+      scr_date_scan_advance(in);
+    } while (balance > 0 && in->ch);
+    return t;
+  }
+  scr_date_scan_advance(in);
+  return t;
+}
+
+static ScrDateTok scr_date_next(ScrDateScan *in) {
+  ScrDateTok t = in->next;
+  in->next = scr_date_scan_token(in);
+  return t;
+}
+
+static bool scr_date_tok_symbol(ScrDateTok t, int c) {
+  return t.tag == SCR_DT_SYMBOL && t.value == c;
+}
+
+static bool scr_date_skip(ScrDateScan *in, int c) {
+  if (!scr_date_tok_symbol(in->next, c)) return false;
+  in->next = scr_date_scan_token(in);
+  return true;
+}
+
+static bool scr_date_tok_sign(ScrDateTok t) {
+  return t.tag == SCR_DT_SYMBOL && (t.value == '-' || t.value == '+');
+}
+
+static bool scr_date_tok_fixed(ScrDateTok t, int length) {
+  return t.tag == SCR_DT_NUMBER && t.length == length;
+}
+
+static bool scr_date_tok_z(ScrDateTok t) {
+  return t.tag == SCR_DK_ZONE && t.length == 1 && t.value == 0;
+}
+
+static bool scr_date_between(int x, int lo, int hi) { return x >= lo && x <= hi; }
+
+typedef struct {
+  int comp[3], index, named_month;
+  bool iso;
+} ScrDateDay;
+
+typedef struct {
+  int comp[4], index, hour_offset;
+} ScrDateTime;
+
+typedef struct {
+  int sign, hour, minute;
+} ScrDateZone;
+
+static bool scr_date_day_add(ScrDateDay *d, int n) {
+  if (d->index >= 3) return false;
+  d->comp[d->index++] = n;
+  return true;
+}
+
+static bool scr_date_time_add(ScrDateTime *t, int n) {
+  if (t->index >= 4) return false;
+  t->comp[t->index++] = n;
+  return true;
+}
+
+static bool scr_date_time_add_final(ScrDateTime *t, int n) {
+  if (!scr_date_time_add(t, n)) return false;
+  while (t->index < 4) t->comp[t->index++] = 0;
+  return true;
+}
+
+static bool scr_date_time_expecting(const ScrDateTime *t, int n) {
+  return (t->index == 1 && scr_date_between(n, 0, 59)) ||
+         (t->index == 2 && scr_date_between(n, 0, 59)) ||
+         (t->index == 3 && scr_date_between(n, 0, 999));
+}
+
+static void scr_date_zone_set(ScrDateZone *z, int hours) {
+  z->sign = hours < 0 ? -1 : 1;
+  z->hour = hours * z->sign;
+  z->minute = 0;
+}
+
+static bool scr_date_zone_expecting(const ScrDateZone *z, int n) {
+  return z->hour != SCR_DT_NONE && z->minute == SCR_DT_NONE && scr_date_between(n, 0, 59);
+}
+
+/* ReadMilliseconds: the first three significant digits of the numeral. */
+static int scr_date_millis(ScrDateTok t) {
+  int number = t.value, length = t.length;
+  if (length == 1) number *= 100;
+  else if (length == 2) number *= 10;
+  else if (length > 3) {
+    static const int factors[] = {10, 100, 1000, 10000, 100000, 1000000};
+    if (length > 9) length = 9;
+    number /= factors[length - 4];
+  }
+  return number;
+}
+
+/* ParseES5DateTime: answers the first token it could not place (the
+ * legacy grammar resumes there), END after a complete ES5 string, or
+ * INVALID for a malformed ES5 time part. */
+static ScrDateTok scr_date_parse_es5(ScrDateScan *in, ScrDateDay *day, ScrDateTime *time,
+                                     ScrDateZone *tz) {
+  ScrDateTok invalid;
+  invalid.tag = SCR_DT_INVALID;
+  invalid.length = 0;
+  invalid.value = -1;
+  if (scr_date_tok_sign(in->next)) {
+    ScrDateTok sign = scr_date_next(in);
+    if (!scr_date_tok_fixed(in->next, 6)) return sign;
+    int s = 44 - sign.value;
+    int year = scr_date_next(in).value;
+    if (s < 0 && year == 0) return sign;
+    scr_date_day_add(day, s * year);
+  } else if (scr_date_tok_fixed(in->next, 4)) {
+    scr_date_day_add(day, scr_date_next(in).value);
+  } else {
+    return scr_date_next(in);
+  }
+  if (scr_date_skip(in, '-')) {
+    if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 1, 12)) {
+      return scr_date_next(in);
+    }
+    scr_date_day_add(day, scr_date_next(in).value);
+    if (scr_date_skip(in, '-')) {
+      if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 1, 31)) {
+        return scr_date_next(in);
+      }
+      scr_date_day_add(day, scr_date_next(in).value);
+    }
+  }
+  if (in->next.tag != SCR_DK_T) {
+    if (in->next.tag != SCR_DT_END) return scr_date_next(in);
+  } else {
+    scr_date_next(in);
+    if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 0, 24)) return invalid;
+    bool hour_is_24 = in->next.value == 24;
+    scr_date_time_add(time, scr_date_next(in).value);
+    if (!scr_date_skip(in, ':')) return invalid;
+    if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 0, 59) ||
+        (hour_is_24 && in->next.value > 0)) {
+      return invalid;
+    }
+    scr_date_time_add(time, scr_date_next(in).value);
+    if (scr_date_skip(in, ':')) {
+      if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 0, 59) ||
+          (hour_is_24 && in->next.value > 0)) {
+        return invalid;
+      }
+      scr_date_time_add(time, scr_date_next(in).value);
+      if (scr_date_skip(in, '.')) {
+        if (in->next.tag != SCR_DT_NUMBER || (hour_is_24 && in->next.value > 0)) return invalid;
+        scr_date_time_add(time, scr_date_millis(scr_date_next(in)));
+      }
+    }
+    if (scr_date_tok_z(in->next)) {
+      scr_date_next(in);
+      scr_date_zone_set(tz, 0);
+    } else if (scr_date_tok_sign(in->next)) {
+      tz->sign = scr_date_next(in).value == '+' ? 1 : -1;
+      if (scr_date_tok_fixed(in->next, 4)) {
+        int hourmin = scr_date_next(in).value;
+        int hour = hourmin / 100, minute = hourmin % 100;
+        if (!scr_date_between(hour, 0, 23) || !scr_date_between(minute, 0, 59)) return invalid;
+        tz->hour = hour;
+        tz->minute = minute;
+      } else {
+        if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 0, 23)) {
+          return invalid;
+        }
+        tz->hour = scr_date_next(in).value;
+        if (!scr_date_skip(in, ':')) return invalid;
+        if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 0, 59)) {
+          return invalid;
+        }
+        tz->minute = scr_date_next(in).value;
+      }
+    }
+    if (in->next.tag != SCR_DT_END) return invalid;
+  }
+  /* Date-only forms without a zone are UTC; date-times are local. */
+  if (tz->hour == SCR_DT_NONE && time->index == 0) scr_date_zone_set(tz, 0);
+  day->iso = true;
+  ScrDateTok end;
+  end.tag = SCR_DT_END;
+  end.length = 0;
+  end.value = -1;
+  return end;
+}
+
+static bool scr_date_day_write(ScrDateDay *d, double *year_out, double *month_out, double *day_out) {
+  if (d->index < 1) return false;
+  while (d->index < 3) d->comp[d->index++] = 1;
+  int year = 0, month, day;
+  if (d->named_month == SCR_DT_NONE) {
+    if (d->iso || !scr_date_between(d->comp[0], 1, 31)) {
+      year = d->comp[0];
+      month = d->comp[1];
+      day = d->comp[2];
+    } else {
+      month = d->comp[0];
+      day = d->comp[1];
+      year = d->comp[2];
+    }
+  } else {
+    month = d->named_month;
+    /* V8 pads to three components before choosing an order, so a lone
+     * day after a month name reads the padding 1 as the year (2001). */
+    if (!scr_date_between(d->comp[0], 1, 31)) {
+      year = d->comp[0];
+      day = d->comp[1];
+    } else {
+      day = d->comp[0];
+      year = d->comp[1];
+    }
+  }
+  if (!d->iso) {
+    if (scr_date_between(year, 0, 49)) year += 2000;
+    else if (scr_date_between(year, 50, 99)) year += 1900;
+  }
+  if (!scr_date_between(month, 1, 12) || !scr_date_between(day, 1, 31)) return false;
+  *year_out = year;
+  *month_out = month - 1;
+  *day_out = day;
+  return true;
+}
+
+static bool scr_date_time_write(ScrDateTime *t, double out[4]) {
+  while (t->index < 4) t->comp[t->index++] = 0;
+  int hour = t->comp[0], minute = t->comp[1], second = t->comp[2], millisecond = t->comp[3];
+  if (t->hour_offset != SCR_DT_NONE) {
+    if (!scr_date_between(hour, 0, 12)) return false;
+    hour %= 12;
+    hour += t->hour_offset;
+  }
+  if (!scr_date_between(hour, 0, 23) || !scr_date_between(minute, 0, 59) ||
+      !scr_date_between(second, 0, 59) || !scr_date_between(millisecond, 0, 999)) {
+    if (hour != 24 || minute != 0 || second != 0 || millisecond != 0) return false;
+  }
+  out[0] = hour;
+  out[1] = minute;
+  out[2] = second;
+  out[3] = millisecond;
+  return true;
+}
+
+static bool scr_date_zone_write(ScrDateZone *z, double *offset_ms) {
+  if (z->sign == SCR_DT_NONE) {
+    *offset_ms = NAN;
+    return true;
+  }
+  if (z->hour == SCR_DT_NONE) z->hour = 0;
+  if (z->minute == SCR_DT_NONE) z->minute = 0;
+  unsigned total = (unsigned)z->hour * 3600u + (unsigned)z->minute * 60u;
+  if (total > (unsigned)INT_MAX) return false;
+  long long ms = (long long)total * 1000;
+  *offset_ms = (double)(z->sign < 0 ? -ms : ms);
+  return true;
+}
+
+static double scr_date_parse_v8(ScrStr *s) {
+  /* Field-by-field initialization keeps vector constants out of the
+   * unit's shared constant pool (see scr_date_local_limit). */
+  ScrDateScan in;
+  in.p = (const unsigned char *)s->data;
+  in.end = in.p + s->len;
+  in.ch = 0;
+  in.low = 0;
+  scr_date_scan_advance(&in);
+  in.next = scr_date_scan_token(&in);
+  ScrDateDay day;
+  day.index = 0;
+  day.named_month = SCR_DT_NONE;
+  day.iso = false;
+  ScrDateTime time;
+  time.index = 0;
+  time.hour_offset = SCR_DT_NONE;
+  ScrDateZone tz;
+  tz.sign = SCR_DT_NONE;
+  tz.hour = SCR_DT_NONE;
+  tz.minute = SCR_DT_NONE;
+  ScrDateTok token = scr_date_parse_es5(&in, &day, &time, &tz);
+  if (token.tag == SCR_DT_INVALID) return NAN;
+  bool has_read_number = day.index != 0;
+  for (; token.tag != SCR_DT_END; token = scr_date_next(&in)) {
+    if (token.tag == SCR_DT_NUMBER) {
+      has_read_number = true;
+      int n = token.value;
+      if (scr_date_skip(&in, ':')) {
+        if (scr_date_skip(&in, ':')) {
+          /* n:: */
+          if (time.index != 0) return NAN;
+          scr_date_time_add(&time, n);
+          scr_date_time_add(&time, 0);
+        } else {
+          if (!scr_date_time_add(&time, n)) return NAN;
+          if (scr_date_tok_symbol(in.next, '.')) scr_date_next(&in);
+        }
+      } else if (scr_date_skip(&in, '.') && scr_date_time_expecting(&time, n)) {
+        scr_date_time_add(&time, n);
+        if (in.next.tag != SCR_DT_NUMBER) return NAN;
+        int ms = scr_date_millis(scr_date_next(&in));
+        if (ms < 0) return NAN;
+        scr_date_time_add_final(&time, ms);
+      } else if (scr_date_zone_expecting(&tz, n)) {
+        tz.minute = n;
+      } else if (scr_date_time_expecting(&time, n)) {
+        scr_date_time_add_final(&time, n);
+        ScrDateTok peek = in.next;
+        if (peek.tag != SCR_DT_END && peek.tag != SCR_DT_SPACE && !scr_date_tok_z(peek) &&
+            !scr_date_tok_sign(peek)) {
+          return NAN;
+        }
+      } else {
+        if (!scr_date_day_add(&day, n)) return NAN;
+        scr_date_skip(&in, '-');
+      }
+    } else if (token.tag >= 0) {
+      if (token.tag == SCR_DK_AMPM && time.index != 0) {
+        time.hour_offset = token.value;
+      } else if (token.tag == SCR_DK_MONTH) {
+        day.named_month = token.value;
+        scr_date_skip(&in, '-');
+      } else if (token.tag == SCR_DK_ZONE && has_read_number) {
+        scr_date_zone_set(&tz, token.value);
+      } else {
+        /* Garbage words are illegal once a number has been read, and the
+         * first number must be separated from them. */
+        if (has_read_number) return NAN;
+        if (in.next.tag == SCR_DT_NUMBER) return NAN;
+      }
+    } else if (scr_date_tok_sign(token) &&
+               ((tz.hour == 0 && tz.minute == 0) || time.index != 0)) {
+      /* A UTC offset, only after UTC or a time. */
+      tz.sign = token.value == '-' ? -1 : 1;
+      int n = 0, length = 0;
+      if (in.next.tag == SCR_DT_NUMBER) {
+        ScrDateTok number = scr_date_next(&in);
+        length = number.length;
+        n = number.value;
+      }
+      has_read_number = true;
+      if (scr_date_tok_symbol(in.next, ':')) {
+        tz.hour = n;
+        tz.minute = SCR_DT_NONE;
+      } else if (length == 2 || length == 1) {
+        tz.hour = n;
+        tz.minute = 0;
+      } else if (length == 4 || length == 3) {
+        tz.hour = n / 100;
+        tz.minute = n % 100;
+      } else {
+        return NAN;
+      }
+    } else if ((scr_date_tok_sign(token) || scr_date_tok_symbol(token, ')')) && has_read_number) {
+      return NAN;
+    }
+    /* Anything else (whitespace, unknown characters) is ignored. */
+  }
+  double year, month, date, hms[4], offset;
+  if (!scr_date_day_write(&day, &year, &month, &date) || !scr_date_time_write(&time, hms) ||
+      !scr_date_zone_write(&tz, &offset)) {
+    return NAN;
+  }
+  double dayv = scr_date_v8_make_day(year, month, date);
+  double timev = scr_date_v8_make_time(hms[0], hms[1], hms[2], hms[3]);
+  if (isnan(offset)) return scr_date_from_local(dayv, timev);
+  if (!isfinite(dayv) || !isfinite(timev)) return NAN;
+  double t = timev + dayv * 86400000.0 - offset;
+  if (!(fabs(t) <= 8640000000000000.0)) return NAN;
+  return scr_date_new_ms(t);
 }
 
 /* ── Date time zone names ───────────────────────────────────────────────
@@ -12179,6 +12841,29 @@ ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
     ms = scr_date_new_ms(ms);
   }
   return scr_dyn_native_date_from_ms(ms);
+}
+
+/* new Date(value) in JavaScript: a string parses with the full parser;
+ * every other value takes scr_dyn_native_date_new. */
+ScrDyn *scr_dyn_native_date_new_value(const ScrDyn *arguments) {
+  if (arguments->v.arr.len == 1 && arguments->v.arr.items[0]->kind == SCR_DYN_STR)
+    return scr_dyn_native_date_from_ms(scr_date_new_ms(scr_date_parse(arguments->v.arr.items[0]->v.str)));
+  return scr_dyn_native_date_new(arguments);
+}
+
+/* new Date(year, monthIndex, ...) in JavaScript: ToNumber over the first
+ * seven arguments in order (a throwing conversion stops there), the
+ * spec's defaults for the rest, then the local-time field constructor. */
+ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments) {
+  double fields[7];
+  fields[0] = fields[1] = fields[3] = fields[4] = fields[5] = fields[6] = 0;
+  fields[2] = 1;
+  size_t n = arguments->v.arr.len < 7 ? arguments->v.arr.len : 7;
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_dyn_number_coerce_js(arguments->v.arr.items[i], &fields[i])) return NULL;
+  }
+  return scr_dyn_native_date_from_ms(
+    scr_date_new_local(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]));
 }
 
 /* The Date.prototype methods scr_native_date_invoke answers. */
