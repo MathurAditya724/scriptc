@@ -148,6 +148,13 @@
       ]
     },
     {
+      "name": "channel-messages",
+      "entry": "workloads/channel-messages.ts",
+      "args": [
+        "200000"
+      ]
+    },
+    {
       "name": "atomics-contended",
       "entry": "workloads/atomics-contended.ts",
       "args": [
