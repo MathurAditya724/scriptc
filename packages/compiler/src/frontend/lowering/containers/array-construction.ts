@@ -296,7 +296,7 @@ export function lowerArrayConstructor(
   // reference. Known element forms retain native arrays, including their
   // existing sparse storage and indexed property contracts.
   if (
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     (result?.kind !== "array" || result.elem.kind === "dyn")
   ) {
     return {
@@ -321,7 +321,7 @@ export function lowerArrayConstructor(
       : null;
     if (elem !== null && isSupportedArrayElem(elem)) result = arrayOf(elem);
   }
-  if (isJsSourceFile(expr.getSourceFile()) && (result === null || result.kind === "dyn"))
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && (result === null || result.kind === "dyn"))
     result = arrayOf(DYN);
   if (result?.kind !== "array" || !isSupportedArrayElem(result.elem)) {
     lowerer.badType(expr, lowerer.typeOf(expr));
@@ -823,7 +823,7 @@ export function lowerArrayFromCall(
   const loc = locOf(call);
   const args = call.arguments.nodes;
   if (
-    isJsSourceFile(call.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
     args.length >= 1 &&
     args.length <= 3 &&
     !args.some(ts.isSpreadElement)

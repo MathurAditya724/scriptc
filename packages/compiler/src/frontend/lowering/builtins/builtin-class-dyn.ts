@@ -140,7 +140,7 @@ export function lowerBuiltinClassCall(lowerer: Lowerer, call: ts.CallExpression)
     kind: "dynInvoke",
     recv: receiver,
     method,
-    calleeName: callee.getText(),
+    calleeName: ts.getTextOfNode(callee),
     args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc,
