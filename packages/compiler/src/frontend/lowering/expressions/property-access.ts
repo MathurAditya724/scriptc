@@ -1730,6 +1730,19 @@ export function lowerIntrinsicProperty(
   if (kind === "stats") {
     if (name === "size") {
       const receiver = lowerer.lowerExpr(expr.expression);
+      // A Stats value held as unknown is the runtime's Stats object.
+      if (receiver.type.kind === "dyn") {
+        return lowerer.coerceToExpected(
+          {
+            kind: "dynKeyGet",
+            value: receiver,
+            key: strLit(name, locOf(expr)),
+            type: DYN,
+            loc: locOf(expr),
+          },
+          F64,
+        );
+      }
       return { kind: "libCall", fn: "stats.size", args: [receiver], type: F64, loc: locOf(expr) };
     }
     if (Object.hasOwn(STATS_TYPE_TESTS, name)) {

@@ -4169,6 +4169,9 @@ export function canConvertToDyn(
   if (isDynTypedRefType(t)) return true;
   if (t.kind === "generator") return true;
   if (t.kind === "classval") return true;
+  // fs.Stats converts to the runtime's Stats object (scr_stats_dyn), the
+  // value an fs callback delivers: a snapshot, like Node's plain object.
+  if (t.kind === "stats") return true;
   if (t.kind === "func") return canBoxFuncIntoDyn(t, getRecord, getUnion, visiting);
   if (DYN_HANDLE_KINDS.has(t.kind)) return true;
   // Promises box by REFERENCE (SCR_DYN_PROMISE): promise<dyn> carries its

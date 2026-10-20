@@ -1098,6 +1098,22 @@ export function lowerStatsMethodCall(
   const fn = Object.hasOwn(STATS_TYPE_TESTS, name) ? STATS_TYPE_TESTS[name] : undefined;
   if (fn && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExpr(access.expression);
+    // A Stats value held as unknown (an fs callback's result, a JavaScript
+    // binding) is the runtime's Stats object: its prototype answers the test.
+    if (receiver.type.kind === "dyn") {
+      return lowerer.coerceToExpected(
+        {
+          kind: "dynInvoke",
+          recv: receiver,
+          method: name,
+          calleeName: access.getText(),
+          args: [],
+          type: DYN,
+          loc: locOf(call),
+        },
+        BOOL,
+      );
+    }
     return { kind: "libCall", fn, args: [receiver], type: BOOL, loc: locOf(call) };
   }
   lowerer.noLowering(

@@ -1323,6 +1323,9 @@ export function dynFallbackType(lowerer: Lowerer, node: ts.Node, t: ts.Type): Ir
         0
     )
       return DYN;
+    // The untyped `Function` interface: a callable of any shape, called
+    // through the checked-dynamic function boundary like an `any` value.
+    if (symbol?.name === "Function" && lowerer.isStdlibSymbol(symbol)) return DYN;
     // TS single-call-signature function types: per-piece fallback, but
     // ONLY `any` pieces fall to dyn — any other unmappable piece keeps
     // the whole type's own fence.

@@ -2461,6 +2461,15 @@ export class LlDyn {
         B.terminate(`ret ptr ${r}`);
         break;
       }
+      case "stats": {
+        // Node's Stats object: the snapshot's fields as own properties and
+        // the type tests and dates on the shared Stats prototype.
+        host.declare(`declare ptr @scr_stats_dyn(ptr, i1 zeroext)`);
+        const r = B.tmp();
+        B.line(`${r} = call ptr @scr_stats_dyn(ptr %v, i1 zeroext false)`);
+        B.terminate(`ret ptr ${r}`);
+        break;
+      }
       case "url":
       case "searchParams": {
         const native = t.kind === "url" ? "url" : "search_params";

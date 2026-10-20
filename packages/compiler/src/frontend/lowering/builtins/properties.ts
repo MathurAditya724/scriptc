@@ -10,6 +10,7 @@ import {
   CHILDWRITER_T,
   DATE_T,
   DIR_T,
+  DYN,
   F64,
   FILEHANDLE_T,
   type IrExpr,
@@ -246,6 +247,14 @@ export function lowerBuiltinExtraProperty(
     const fn = STATS_FIELDS[name]!;
     // The Date fields are the *Ms values rounded, as Node's dateFromMs builds them.
     const type = DATE_FIELDS.has(name) ? DATE_T : F64;
+    // A Stats value held as unknown is the runtime's Stats object, whose
+    // own properties and date accessors answer the same reads.
+    if (receiver.type.kind === "dyn") {
+      return lowerer.coerceToExpected(
+        { kind: "dynKeyGet", value: receiver, key: strLit(name, loc), type: DYN, loc },
+        type,
+      );
+    }
     return { kind: "libCall", fn, args: [receiver], type, loc };
   }
   if (kind === "spawnRes" && name === "signal") {

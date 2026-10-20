@@ -3925,6 +3925,8 @@ const DYN_DISPATCH_METHODS = new Set([
   "every",
   "find",
   "findIndex",
+  "reduce",
+  "reduceRight",
   // The native-handle receiver surface (SCR_DYN_HANDLE — req/res/socket
   // boxed through the checked-dynamic boundary): these names dispatch on
   // the runtime kind so a boxed IncomingMessage/ServerResponse/Socket
@@ -6135,6 +6137,10 @@ export function lowerPromiseMethodCall(
   let handlerNode: ts.Expression = call.arguments.nodes[0]!;
   while (ts.isParenthesizedExpression(handlerNode)) handlerNode = handlerNode.expression;
   if (!ts.isArrowFunction(handlerNode) && !ts.isFunctionExpression(handlerNode)) {
+    const referenced = lowerReferencedCatchHandler(lowerer, call, receiver, promT, inner, loc);
+    if (referenced) return referenced;
+  }
+  if (!ts.isArrowFunction(handlerNode) && !ts.isFunctionExpression(handlerNode)) {
     lowerer.unsupported(
       "SC1090",
       call.arguments.nodes[0]!,
@@ -6265,6 +6271,123 @@ export function lowerPromiseMethodCall(
       loc,
     };
     return { kind: "callValue", callee: closure, args: [receiver], type: resultT, loc };
+  } finally {
+    lowerer.fnStack.pop();
+  }
+}
+
+/** `p.catch(onError)` with a function value rather than an inline literal:
+ * a lifted async helper awaits p and, on rejection, calls the handler with
+ * the caught value as `unknown`, the inline handler's catch binding reached
+ * through a call. The handler takes at most one parameter, typed `unknown`
+ * or `any`, and returns no promise; other handlers keep the inline fence.
+ * Null when the value does not fit. */
+function lowerReferencedCatchHandler(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  receiver: IrExpr,
+  promT: IrType & { kind: "promise" },
+  inner: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  const handlerNode = call.arguments.nodes[0]!;
+  const handlerT = lowerer.mapTypeOf(lowerer.typeOf(handlerNode));
+  if (handlerT?.kind !== "func" || handlerT.params.length > 1) return null;
+  if (handlerT.params.length === 1 && handlerT.params[0]!.kind !== "dyn") return null;
+  if (handlerT.ret.kind === "promise") return null;
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (resultT?.kind !== "promise") return null;
+  const R = resultT.inner;
+  const undefinedTag =
+    R.kind === "union"
+      ? (lowerer.unions.get(R.unionId)?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1)
+      : -1;
+  if (handlerT.ret.kind === "void" && R.kind !== "void" && undefinedTag < 0) return null;
+  const cb = lowerer.coerceInto(handlerNode, lowerer.lowerExpr(handlerNode), handlerT);
+  const fnName = `%fn${lowerer.lambdaCounter++}_catchref`;
+  const funcType: IrType & { kind: "func" } = {
+    kind: "func",
+    params: [promT, handlerT],
+    ret: resultT,
+  };
+  const fnCtx = newFnCtx(true, null, funcType, R);
+  fnCtx.isAsync = true;
+  lowerer.fnStack.push(fnCtx);
+  try {
+    const pLocal = lowerer.declareHiddenLocal("p", promT);
+    const cbLocal = lowerer.declareHiddenLocal("cb", handlerT);
+    const eLocal = lowerer.declareHiddenLocal("e", CAUGHT);
+    const awaitE: IrExpr = {
+      kind: "awaitExpr",
+      value: varRef(pLocal.id, promT, loc),
+      type: inner,
+      loc,
+    };
+    const tryBody: IrStmt[] =
+      R.kind === "void"
+        ? [
+            { kind: "exprStmt", expr: awaitE, loc },
+            { kind: "return", value: null, loc },
+          ]
+        : [{ kind: "return", value: lowerer.coerceInto(call, awaitE, R), loc }];
+    const handled: IrExpr = {
+      kind: "callValue",
+      callee: varRef(cbLocal.id, handlerT, loc),
+      args:
+        handlerT.params.length === 1
+          ? [{ kind: "caughtToDyn", value: varRef(eLocal.id, CAUGHT, loc), type: DYN, loc }]
+          : [],
+      type: handlerT.ret,
+      loc,
+    };
+    const catchBody: IrStmt[] = [];
+    if (handlerT.ret.kind === "void") {
+      catchBody.push({ kind: "exprStmt", expr: handled, loc });
+      catchBody.push({
+        kind: "return",
+        value:
+          R.kind === "void"
+            ? null
+            : {
+                kind: "unionWrap",
+                unionId: (R as IrType & { kind: "union" }).unionId,
+                tag: undefinedTag,
+                value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+                type: R,
+                loc,
+              },
+        loc,
+      });
+    } else if (R.kind === "void") {
+      catchBody.push({ kind: "exprStmt", expr: handled, loc });
+      catchBody.push({ kind: "return", value: null, loc });
+    } else {
+      catchBody.push({ kind: "return", value: lowerer.coerceInto(handlerNode, handled, R), loc });
+    }
+    const ctx = lowerer.ctx;
+    lowerer.liftedFns.push({
+      name: fnName,
+      params: [
+        { localId: pLocal.id, name: pLocal.name, type: promT },
+        { localId: cbLocal.id, name: cbLocal.name, type: handlerT },
+      ],
+      returnType: R,
+      locals: ctx.locals,
+      captures: ctx.captures!,
+      body: [
+        { kind: "tryCatch", tryBody, catchBody, catchLocalId: eLocal.id, finallyBody: null, loc },
+      ],
+      loc,
+      async: true,
+    });
+    const closure: IrExpr = {
+      kind: "closure",
+      fnName,
+      captures: ctx.captureSources,
+      type: funcType,
+      loc,
+    };
+    return { kind: "callValue", callee: closure, args: [receiver, cb], type: resultT, loc };
   } finally {
     lowerer.fnStack.pop();
   }

@@ -137,6 +137,25 @@ export function isTruthinessOnlyRead(lowerer: Lowerer, node: ts.Expression): boo
   return false;
 }
 
+/** True when `node` is the value argument of node:assert's `assert(value)`
+ * or `assert.ok(value)`, which consumes it as a truthiness test. */
+function isAssertOkValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  let child: ts.Node = node;
+  let parent = node.parent;
+  while (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+    child = parent;
+    parent = parent.parent;
+  }
+  if (parent === undefined || !ts.isCallExpression(parent)) return false;
+  if (parent.questionDotToken || parent.arguments.nodes[0] !== child) return false;
+  let callee = parent.expression;
+  if (ts.isPropertyAccessExpression(callee) && callee.name.text === "ok")
+    callee = callee.expression;
+  if (!ts.isIdentifier(callee)) return false;
+  const module = lowerer.builtinNamespaceModuleOf(callee);
+  return module === "assert" || module === "assert/strict";
+}
+
 /** Whether a program source reads process.exitCode. Such a program
  * records its exit-code assignments (process.setExitCodeTracked), so a
  * read can tell an unset code from 0; other programs keep the untracked
@@ -524,6 +543,22 @@ export function lowerProcessProperty(
     isTruthinessOnlyRead(lowerer, expr)
   ) {
     return processHasIpc(lowerer, loc);
+  }
+  // `assert(process.send)` tests the same presence. Without a channel the
+  // AssertionError reports undefined as its actual value, as Node does.
+  if (
+    (member === "send" || member === "disconnect") &&
+    !expr.questionDotToken &&
+    isAssertOkValue(lowerer, expr)
+  ) {
+    return {
+      kind: "ternary",
+      cond: processHasIpc(lowerer, loc),
+      then: { kind: "dynFrom", value: boolLit(true, loc), type: DYN, loc },
+      else_: dynUndefinedExpr(loc),
+      type: DYN,
+      loc,
+    };
   }
   if (member === "versions") {
     return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
