@@ -97,7 +97,7 @@ function expandoFnSymbolOf(lowerer: Lowerer, recv: ts.Expression): ts.Symbol | n
   // existing member paths stay put.
   const sym = lowerer.resolveValueSymbol(recv);
   if (!sym) return null;
-  const decl = lowerer.checker.valueDeclarationOf(sym);
+  const decl = sym.valueDeclaration;
   if (!decl || decl.getSourceFile().isDeclarationFile) return null;
   if (isJsSourceFile(decl.getSourceFile())) return null;
   if (ts.isFunctionDeclaration(decl)) {
@@ -202,7 +202,7 @@ export function collectExpandoMembers(lowerer: Lowerer, sf: ts.SourceFile): void
           const memberName =
             typeof w.key === "string"
               ? w.key
-              : `sym%${w.key.name}%${lowerer.checker.declarationsOf(w.key)[0]?.getStart() ?? 0}`;
+              : `sym%${w.key.name}%${w.key.declarations[0]?.getStart() ?? 0}`;
           const g: IrGlobal = {
             id: `%g.${tag}${fnName}%.${memberName}`,
             name: `${fnName}.${memberName}`,
@@ -239,7 +239,7 @@ function nsOwnedMember(
   const nameNode = ts.isPropertyAccessExpression(access) ? access.name : access.argumentExpression;
   const sym = lowerer.checker.getSymbolAtLocation(nameNode);
   if (!sym) return false;
-  for (const d of lowerer.checker.declarationsOf(sym)) {
+  for (const d of sym.declarations) {
     for (
       let p: ts.Node | undefined = d.parent;
       p !== undefined && !ts.isSourceFile(p);
@@ -247,7 +247,7 @@ function nsOwnedMember(
     ) {
       if (ts.isModuleDeclaration(p)) {
         return !(
-          p.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword) ||
+          p.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword) ||
           p.getSourceFile().isDeclarationFile
         );
       }

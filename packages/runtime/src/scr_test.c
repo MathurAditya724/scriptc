@@ -126,6 +126,7 @@ struct ScrTestCtx {
   bool passed; /* t.passed: set when the body passes, as Node's pass() does */
   bool listed; /* a suite listed in the failing section (a failing root before) */
   double start_ms; /* when the test started running; NaN before */
+  size_t serial; /* index in scr_test_nodes, getTestContext()'s handle */
 };
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
@@ -168,6 +169,17 @@ static SCR_TL size_t scr_test_nfibers = 0, scr_test_fibers_cap = 0;
 /* The module's `mock` tracker: the restore closure of each mock it made. */
 static SCR_TL ScrTestHooks scr_test_mocks = {0};
 
+/* getTestContext(): the test, suite or hook owner whose code is running
+ * rides the AsyncLocalStorage snapshot under a reserved store id
+ * (AsyncLocalStorage ids are positive), so it follows a body across its
+ * awaits and into the async functions it calls, as Node's async context
+ * does. The entry holds the node's serial, an index in scr_test_nodes
+ * (borrowed pointers, cleared when a node is freed), so a snapshot that
+ * outlives its node answers undefined instead of a freed node. */
+#define SCR_TEST_SCOPE_ID (-1.0)
+static SCR_TL ScrTestCtx **scr_test_nodes = NULL;
+static SCR_TL size_t scr_test_nnodes = 0, scr_test_nodes_cap = 0, scr_test_nodes_live = 0;
+
 #ifdef SCR_RC_AUDIT
 static SCR_TL long scr_testctx_live = 0;
 long scr_testctx_live_count(void) { return scr_testctx_live; }
@@ -204,6 +216,12 @@ void scr_testctx_release(ScrTestCtx *t) {
   free(t->children);
   for (int k = 0; k < 4; k++) scr_test_hooks_free(&t->hooks[k]);
   scr_test_hooks_free(&t->mocks);
+  scr_test_nodes[t->serial] = NULL;
+  if (--scr_test_nodes_live == 0) {
+    free(scr_test_nodes);
+    scr_test_nodes = NULL;
+    scr_test_nnodes = scr_test_nodes_cap = 0;
+  }
 #ifdef SCR_RC_AUDIT
   scr_testctx_live--;
 #endif
@@ -232,11 +250,42 @@ static ScrTestCtx *scr_test_node_new(ScrStr *name /*borrowed*/, int mode,
   t->timeout = INFINITY;
   t->concurrency = 1;
   t->start_ms = NAN;
+  if (scr_test_nnodes == scr_test_nodes_cap) {
+    scr_test_nodes_cap = scr_test_nodes_cap ? scr_test_nodes_cap * 2 : 16;
+    scr_test_nodes = realloc(scr_test_nodes, scr_test_nodes_cap * sizeof *scr_test_nodes);
+    if (!scr_test_nodes) scr_test_oom();
+  }
+  t->serial = scr_test_nnodes;
+  scr_test_nodes[scr_test_nnodes++] = t;
+  scr_test_nodes_live++;
 #ifdef SCR_RC_AUDIT
   scr_testctx_live++;
 #endif
   return t;
 }
+
+/* Makes `t` the node getTestContext() answers, until the matching
+ * scr_test_scope_leave. Returns the previous snapshot. */
+static ScrAlsCtx *scr_test_scope_enter(ScrTestCtx *t) {
+  ScrDyn *serial = scr_dyn_new_num((double)t->serial);
+  ScrAlsCtx *prev = scr_als_enter(SCR_TEST_SCOPE_ID, serial);
+  scr_dyn_release(serial);
+  return prev;
+}
+
+static void scr_test_scope_leave(ScrAlsCtx *prev /*moves*/) { scr_als_restore(prev); }
+
+/* The node getTestContext() answers (borrowed), or NULL. */
+static ScrTestCtx *scr_test_scope_node(void) {
+  ScrDyn *serial = scr_als_peek(SCR_TEST_SCOPE_ID);
+  if (!serial || serial->kind != SCR_DYN_NUM) return NULL;
+  size_t i = (size_t)serial->v.num;
+  return i < scr_test_nnodes ? scr_test_nodes[i] : NULL;
+}
+
+bool scr_test_has_context(void) { return scr_test_scope_node() != NULL; }
+
+ScrTestCtx *scr_test_context(void) { return scr_testctx_retain(scr_test_scope_node()); }
 
 static void scr_test_child_add(ScrTestCtx *parent, ScrTestCtx *child /*moves*/) {
   if (parent->nchildren == parent->ccap) {
@@ -393,9 +442,12 @@ static void scr_test_await_timeout(ScrPromise *p, ScrTestCtx *t) {
 
 /* Call one stored closure by its lowering-pinned shape; async shapes are
  * awaited (the runner is a fiber). `ctx` is passed +1 when the body takes
- * the TestContext. Returns with the fiber's exception cell holding any
- * failure. `timed` is the test whose { timeout } bounds an async body. */
-static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx *timed) {
+ * the TestContext, and `scope` is what getTestContext() answers while it
+ * runs. Returns with the fiber's exception cell holding any failure.
+ * `timed` is the test whose { timeout } bounds an async body. */
+static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx *scope,
+                          ScrTestCtx *timed) {
+  ScrAlsCtx *outer = scr_test_scope_enter(scope);
   bool takes_ctx = (flags & SCR_TEST_F_CTX) != 0;
   if (flags & SCR_TEST_F_ASYNC) {
     ScrPromise *p =
@@ -412,6 +464,7 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
   } else {
     ((void (*)(ScrClosure *))cb->fn)(cb);
   }
+  scr_test_scope_leave(outer);
 }
 
 /* A mock tracker's restoreAll: each mock's restore, in creation order.
@@ -434,7 +487,7 @@ static ScrTestHook *scr_test_run_hooks_of(ScrTestCtx *owner, int which, ScrTestC
   if (scr_exc_pending()) return NULL; /* an earlier hook in the chain threw */
   for (size_t i = 0; i < owner->hooks[which].n; i++) {
     ScrTestHook *h = &owner->hooks[which].v[i];
-    scr_test_call(h->cb, h->flags, ctx, NULL);
+    scr_test_call(h->cb, h->flags, ctx, owner, NULL);
     if (scr_exc_pending()) return h; /* the hook that threw */
   }
   return NULL;
@@ -608,6 +661,7 @@ static void scr_test_cancel_unrun(ScrTestCtx *c) {
 typedef struct {
   ScrTestCtx *test;      /* owned ref */
   ScrTestHooks each;     /* the afterEach chain, innermost first; owned closures */
+  ScrTestCtx **owners;   /* owned refs: each afterEach hook's suite or test */
 } ScrTestCancelled;
 
 static void scr_test_cancelled_hooks_entry(ScrFiber *self, void *arg) {
@@ -616,11 +670,13 @@ static void scr_test_cancelled_hooks_entry(ScrFiber *self, void *arg) {
   ScrTestCtx *c = job->test;
   scr_await_hop(); /* the spawn runs the fiber at once; start at the next turn */
   for (size_t i = 0; i < job->each.n && !scr_exc_pending(); i++)
-    scr_test_call(job->each.v[i].cb, job->each.v[i].flags, c, NULL);
+    scr_test_call(job->each.v[i].cb, job->each.v[i].flags, c, job->owners[i], NULL);
   if (scr_exc_pending()) scr_exc_clear();
   scr_test_run_hooks_of(c, SCR_HOOK_AFTER, c);
   if (scr_exc_pending()) scr_exc_clear();
   for (int k = 0; k < 4; k++) scr_test_hooks_free(&c->hooks[k]);
+  for (size_t i = 0; i < job->each.n; i++) scr_testctx_release(job->owners[i]);
+  free(job->owners);
   scr_test_hooks_free(&job->each);
   scr_testctx_release(c);
   free(job);
@@ -636,8 +692,10 @@ static void scr_test_cancelled_hooks(ScrTestCtx *c) {
       if (job->each.n == job->each.cap) {
         job->each.cap = job->each.cap ? job->each.cap * 2 : 4;
         job->each.v = realloc(job->each.v, job->each.cap * sizeof *job->each.v);
-        if (!job->each.v) scr_test_oom();
+        job->owners = realloc(job->owners, job->each.cap * sizeof *job->owners);
+        if (!job->each.v || !job->owners) scr_test_oom();
       }
+      job->owners[job->each.n] = scr_testctx_retain(p);
       job->each.v[job->each.n].cb = scr_closure_retain(h->v[i].cb);
       job->each.v[job->each.n].flags = h->v[i].flags;
       job->each.v[job->each.n].at = NULL;
@@ -775,7 +833,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     t->err = scr_exc_take();
     failed = true;
   } else if (t->cb) {
-    scr_test_call(t->cb, t->flags, t, t);
+    scr_test_call(t->cb, t->flags, t, t, t);
     if (t->state != SCR_TS_PENDING) {
       /* Its parent timed out and cancelled it while the body ran: the
        * result is reported, its cleanup ran at the cancellation
@@ -925,9 +983,23 @@ static void scr_test_print_failure(ScrTestCtx *t) {
   }
   fputc('\n', stdout);
   if (t->err) {
-    /* Node prints the failure inspected: a thrown string is quoted. */
-    ScrStr *msg = t->err->kind == SCR_EXC_STR ? scr_insp_str(t->err->payload)
-                                              : scr_caught_to_string(t->err);
+    /* Node prints the failure inspected: a thrown string is quoted, and
+     * numbers, booleans and checked-dynamic values (thrown records, arrays,
+     * null and undefined) print as util.inspect renders them. Errors and
+     * other payloads print their string form. */
+    const ScrCaught *err = t->err;
+    ScrStr *msg;
+    if (err->kind == SCR_EXC_STR) {
+      msg = scr_insp_str(err->payload);
+    } else if (err->kind == SCR_EXC_F64 || err->kind == SCR_EXC_BOOL ||
+               ((err->kind == SCR_EXC_REF || err->kind == SCR_EXC_PRIMITIVE_REF) &&
+                err->retain_fn == scr_dyn_retain_v)) {
+      ScrDyn *value = scr_caught_to_dyn(err);
+      msg = scr_insp_dyn(value, 0, 2);
+      scr_dyn_release(value);
+    } else {
+      msg = scr_caught_to_string(err);
+    }
     if (msg) {
       const char *p = msg->data;
       const char *end = msg->data + msg->len;
@@ -1703,11 +1775,13 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
   if (cb && (int)mode != SCR_TEST_SKIP) {
     ScrTestCtx *prev = scr_test_parent_get();
     scr_test_parent_set(t);
+    ScrAlsCtx *outer = scr_test_scope_enter(t);
     /* flag 2: the body takes its SuiteContext (+1, as test bodies do). */
     if ((int)flags & SCR_TEST_F_CTX)
       ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(t));
     else
       ((void (*)(ScrClosure *))cb->fn)(cb);
+    scr_test_scope_leave(outer);
     scr_test_parent_set(prev);
   }
   scr_closure_release(cb);
@@ -1720,6 +1794,7 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
  * top-level tests and suites (scr_test_fail_unrun). */
 static void scr_test_root_before_now(ScrTestCtx *root, ScrClosure *cb, int flags) {
   bool takes_ctx = (flags & SCR_TEST_F_CTX) != 0;
+  ScrAlsCtx *outer = scr_test_scope_enter(root);
   if (flags & SCR_TEST_F_ASYNC) {
     ScrPromise *p =
         takes_ctx
@@ -1736,6 +1811,7 @@ static void scr_test_root_before_now(ScrTestCtx *root, ScrClosure *cb, int flags
        * unhandled rejection. */
       scr_promise_mark_handled(p);
       scr_test_root_pending[scr_test_root_npending++] = p;
+      scr_test_scope_leave(outer);
       return;
     }
     scr_promise_release(p);
@@ -1744,6 +1820,7 @@ static void scr_test_root_before_now(ScrTestCtx *root, ScrClosure *cb, int flags
   } else {
     ((void (*)(ScrClosure *))cb->fn)(cb);
   }
+  scr_test_scope_leave(outer);
   scr_test_root_before_failed(root);
 }
 
@@ -1822,7 +1899,7 @@ void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg /*borrowed*/) {
  * each descendant subtest, and after runs once the test finishes. */
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb /*moves*/, double flags) {
   if ((int)which == SCR_HOOK_BEFORE) {
-    scr_test_call(cb, (int)flags, t, NULL);
+    scr_test_call(cb, (int)flags, t, t, NULL);
     scr_closure_release(cb);
     if (scr_exc_pending() && !t->before_err) t->before_err = scr_exc_take();
     else if (scr_exc_pending()) scr_exc_clear();
@@ -2414,8 +2491,6 @@ ScrStr *scr_test_ctx_name(ScrTestCtx *t) {
   return t->name ? scr_str_retain(t->name) : scr_str_new("", 0);
 }
 
-/* t.fullName: the names from the outermost suite or test down to this one,
- * joined with " > ". */
 bool scr_test_ctx_passed(ScrTestCtx *t) { return t->passed; }
 
 /* t.workerId: Number(process.env.NODE_TEST_WORKER_ID) || undefined, with 0
@@ -2429,7 +2504,10 @@ double scr_test_worker_id(void) {
   return isnan(n) ? 0 : n;
 }
 
+/* t.fullName: the names from the outermost suite or test down to this one,
+ * joined with " > "; the root's own name for the root. */
 ScrStr *scr_test_ctx_full_name(ScrTestCtx *t) {
+  if (!t->parent) return scr_test_ctx_name(t);
   const ScrTestCtx *chain[64];
   int n = 0;
   for (const ScrTestCtx *p = t; p && p->parent && n < 64; p = p->parent) chain[n++] = p;

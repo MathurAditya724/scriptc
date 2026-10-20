@@ -27,6 +27,7 @@ import { isStreamUndefCallExpr } from "./lower-server.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
 import { declSymbolOf } from "./lower-modules.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
+import { restPackingAdapterFits } from "./coercions/function-adapters.js";
 import { implicitMonoFile, implicitAnyParamSymbolsOf } from "./generic-functions.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
@@ -46,12 +47,15 @@ export type ParamMode = "required" | "omittable" | "rest" | "dynRest" | "argumen
  * otherwise. `bodyType` is present exactly for DEFAULTED program params:
  * the plain T the body sees after the prologue applies the default (see
  * declareParams). `callDefault` is the compile-time default value for a
- * table-backed builtin's omittable slot. */
+ * table-backed builtin's omittable slot. `entryNarrow` marks a dyn ABI slot
+ * inherited from a JavaScript base method whose TypeScript override declares
+ * a typed parameter: the prologue narrows the checked value to that type. */
 export interface ParamShape {
   type: IrType;
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
+  entryNarrow?: IrType;
 }
 
 export interface FnSig {
@@ -189,7 +193,7 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     executor &&
     (ts.isArrowFunction(executor) || ts.isFunctionExpression(executor)) &&
     ts.isNewExpression(construction) &&
-    construction.arguments?.[0] === executor &&
+    construction.arguments?.nodes[0] === executor &&
     lowerer.isStdlibGlobal(construction.expression, "Promise");
   if (
     !nativeExecutor &&
@@ -408,7 +412,15 @@ export function paramShapes(
       return { type: mapped, mode: "rest" };
     }
     if (declParam.initializer) return defaultParameterShape(lowerer, declParam, mapped);
-    if (declParam.questionToken && !lowerer.bareUndefinedArmedUnion(mapped)) {
+    // A checked-value slot holds undefined directly, so an omitted
+    // argument needs no union arm (paramShape's declared-signature rule;
+    // an erased type parameter and a class-implemented interface view
+    // both map here).
+    if (
+      declParam.questionToken &&
+      !lowerer.bareUndefinedArmedUnion(mapped) &&
+      mapped.kind !== "dyn"
+    ) {
       lowerer.unsupported(
         "SC1090",
         declParam,
@@ -514,6 +526,21 @@ export function requireExactArityValue(
   // optional/defaulted params spell their `T | undefined` slots (mapType's
   // completed-signature contract), so omitted trailing args complete with
   // the undefined arm like any direct call.
+  // A nested function declaration whose only non-required parameter is a
+  // typed rest: its value carries the typed-rest ABI its own type spells,
+  // and every use converts it at its slot (same signature, or the rest
+  // packing adapter for fixed parameters).
+  if (
+    contextual === null &&
+    ts.isFunctionDeclaration(blame) &&
+    blame.name !== undefined &&
+    funcType.kind === "func" &&
+    funcType.restAbi === "typed" &&
+    shapes.every((s) => s.mode === "required" || s.mode === "rest")
+  ) {
+    const own = lowerer.mapTypeOf(lowerer.typeOf(blame.name));
+    if (own && typeEquals(own, funcType)) return;
+  }
   const target = contextual ? lowerer.checker.getContextualType(contextual) : undefined;
   const mapped = target
     ? lowerer.mapTypeOf(target)
@@ -571,6 +598,16 @@ export function requireExactArityValue(
     mappedFn?.kind === "func" &&
     funcType.kind === "func" &&
     lowerer.spawnResFnAdapterPlan(funcType, mappedFn) !== null
+  ) {
+    return;
+  }
+  // A typed-rest function in a slot with fixed parameters (`log(...m:
+  // string[])` into `(m: string) => void`): the slot coercion's packing
+  // adapter collects the slot's arguments into the rest array.
+  if (
+    mappedFn?.kind === "func" &&
+    funcType.kind === "func" &&
+    restPackingAdapterFits(lowerer, funcType, mappedFn)
   ) {
     return;
   }
@@ -634,10 +671,10 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
   // body (run()/discover() skip by the same test). Generic mixins still
   // register their generic signature below: non-mixin-shaped calls
   // degrade to the generic machinery's own per-site fences.
-  if (!decl.typeParameters && mixinFnShapeOf(lowerer, decl)) return;
-  const isAsync = decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+  if (!decl.typeParameters?.nodes && mixinFnShapeOf(lowerer, decl)) return;
+  const isAsync = decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
   const isGenerator = decl.asteriskToken !== undefined;
-  if (decl.typeParameters) {
+  if (decl.typeParameters?.nodes) {
     // Generic async composes: each monomorphized instance is an async
     // IrFunction like any other — its own spawn wrapper, its body
     // returning the resolved promise's inner (lowerGenericInstance).
@@ -669,14 +706,14 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
     }
   }
 
-  const params = lowerer.paramShapes(decl.parameters);
+  const params = lowerer.paramShapes(decl.parameters.nodes);
   // The zero-parameter declaration retains its dynRest ABI; value
   // functions use the full arguments slot even with no named parameters.
   appendArgumentsParameter(
     lowerer,
     decl,
     params,
-    decl.parameters.length > 0 ? "arguments" : "dynRest",
+    decl.parameters.nodes.length > 0 ? "arguments" : "dynRest",
   );
   const nameBlame: ts.Node = decl.name ?? decl;
   const returnType = lowerer.declaredReturnType(decl, nameBlame);
@@ -728,11 +765,15 @@ function appendArgumentsParameter(
     !bodyReadsArguments(node)
   )
     return;
-  if (node.parameters.length > 0 || ts.isMethodDeclaration(node)) {
+  if (node.parameters.nodes.length > 0 || ts.isMethodDeclaration(node)) {
     const classMethod =
       ts.isMethodDeclaration(node) &&
       (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent));
-    if (!classMethod && !isNodeEsmFile(node.getSourceFile(), lowerer.program)) {
+    if (
+      !classMethod &&
+      !isNodeEsmFile(node.getSourceFile(), lowerer.program) &&
+      !unmappedArguments(node)
+    ) {
       lowerer.unsupported(
         "SC1090",
         node,
@@ -741,6 +782,35 @@ function appendArgumentsParameter(
     }
   }
   shapes.push({ type: DYN, mode });
+}
+
+/** Whether `arguments` inside `node` is Node's unmapped object: strict code
+ * (a 'use strict' prologue on the file or an enclosing function, or a class
+ * body) or a non-simple parameter list (defaults, rest, destructuring). Its
+ * elements then never alias the parameters, which is the ES module case. */
+function unmappedArguments(node: ts.SignatureDeclaration): boolean {
+  if (
+    node.parameters.nodes.some(
+      (p) =>
+        p.initializer !== undefined || p.dotDotDotToken !== undefined || !ts.isIdentifier(p.name),
+    )
+  )
+    return true;
+  const useStrict = (statements: readonly ts.Statement[]): boolean => {
+    for (const statement of statements) {
+      if (!ts.isExpressionStatement(statement) || !ts.isStringLiteral(statement.expression))
+        return false;
+      if (statement.expression.text === "use strict") return true;
+    }
+    return false;
+  };
+  for (let n: ts.Node | undefined = node; n; n = n.parent) {
+    if (ts.isClassDeclaration(n) || ts.isClassExpression(n)) return true;
+    if (ts.isFunctionLike(n) && n.body && ts.isBlock(n.body) && useStrict(n.body.statements.nodes))
+      return true;
+    if (ts.isSourceFile(n)) return useStrict(n.statements.nodes);
+  }
+  return false;
 }
 
 /** Signature checks + param shapes + IR func type for any lambda-like
@@ -765,7 +835,9 @@ export function lambdaSignature(
     isJsSourceFile(node.getSourceFile()) &&
     !node.type &&
     (ts.isFunctionExpression(node) || ts.isArrowFunction(node)) &&
-    node.parameters.every((param) => !param.type && !param.dotDotDotToken && !param.initializer) &&
+    node.parameters.nodes.every(
+      (param) => !param.type && !param.dotDotDotToken && !param.initializer,
+    ) &&
     ts.isBinaryExpression(node.parent) &&
     node.parent.right === node &&
     node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -775,11 +847,14 @@ export function lambdaSignature(
   ) {
     const receiver = lowerer.lowerExpr(node.parent.left.expression);
     if (receiver.type.kind === "dyn") {
-      const shapes: ParamShape[] = node.parameters.map(() => ({ type: DYN, mode: "required" }));
+      const shapes: ParamShape[] = node.parameters.nodes.map(() => ({
+        type: DYN,
+        mode: "required",
+      }));
       return { shapes, funcType: funcTypeFromParamShapes(shapes, DYN) };
     }
   }
-  if (node.typeParameters && !lowerer.erasingLambdas.has(node)) {
+  if (node.typeParameters?.nodes && !lowerer.erasingLambdas.has(node)) {
     // Generic function-like forms monomorphize only where a static home
     // exists: top-level generic function declarations, generic methods
     // (class and object-literal), and module-scope never-reassigned
@@ -797,14 +872,14 @@ export function lambdaSignature(
           : "generic arrow/function expressions outside a never-reassigned module-scope binding (only `const f = <T>(x: T) => ...` bindings and top-level generic function declarations monomorphize)",
     );
   }
-  const shapes = lowerer.paramShapes(node.parameters);
+  const shapes = lowerer.paramShapes(node.parameters.nodes);
   // Error-first callbacks captured by native filesystem adapters receive
   // the selected runtime overload. Ambient contextual inference can pick
   // the string overload even when options request a Buffer.
   if (
     (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
     ts.isCallExpression(node.parent) &&
-    node.parent.arguments.at(-1) === node
+    node.parent.arguments.nodes.at(-1) === node
   ) {
     const builtin = ts.isPropertyAccessExpression(node.parent.expression)
       ? lowerer.builtinMemberOf(node.parent.expression)
@@ -817,7 +892,7 @@ export function lambdaSignature(
       builtinModuleFnOf(lowerer, builtin.module, builtin.member)?.fn === "fs.callbackCall"
     ) {
       for (let index = 0; index < shapes.length; index++) {
-        if (!node.parameters[index]?.type) {
+        if (!node.parameters.nodes[index]?.type) {
           shapes[index]!.type = DYN;
           if (shapes[index]!.bodyType) shapes[index]!.bodyType = DYN;
         }
@@ -854,7 +929,7 @@ export function lambdaSignature(
   // that recursive layout instead of first inferring narrower arrays.
   const isAsyncLike =
     !ts.isMethodDeclaration(node) &&
-    node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+    node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
   const innerRet = isAsyncLike && ret.kind === "promise" ? ret.inner : ret;
   // Union-inferred returns adopt too (a mixed-return body inferring a
   // SUB-union of the slot's union — adopting is a no-op when the two
@@ -873,8 +948,7 @@ export function lambdaSignature(
     const ctxSigs = ctxType
       ? lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType))
       : [];
-    const ctxDecl =
-      ctxSigs.length === 1 ? lowerer.checker.signatureDeclaration(ctxSigs[0]!) : undefined;
+    const ctxDecl = ctxSigs.length === 1 ? ctxSigs[0]!.declaration : undefined;
     const ctxRetRaw =
       ctxDecl && !ctxDecl.getSourceFile().isDeclarationFile
         ? lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!))

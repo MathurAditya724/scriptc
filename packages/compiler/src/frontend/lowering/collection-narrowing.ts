@@ -13,12 +13,7 @@ export function concreteCollectionNarrow(
   const symbol = narrowed.getSymbol();
   const name = symbol?.name;
   if (name !== "Map" && name !== "Set") return null;
-  if (
-    !symbol ||
-    !lowerer.checker
-      .declarationsOf(symbol)
-      .some((decl) => lowerer.isStdlibFile(decl.getSourceFile()))
-  )
+  if (!symbol || !symbol.declarations.some((decl) => lowerer.isStdlibFile(decl.getSourceFile())))
     return null;
   const args = lowerer.checker.getTypeArguments(narrowed as ts.TypeReference);
   if (args.length === 0 || !args.every((arg) => (arg.flags & ts.TypeFlags.Any) !== 0)) return null;

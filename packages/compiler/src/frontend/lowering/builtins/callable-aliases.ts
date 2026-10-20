@@ -1,11 +1,12 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
-import { isJsSourceFile } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import { builtinModuleFnOf } from "../surfaces.js";
 import { registerHttpClientFnBinding } from "../lower-server.js";
 import { isPromisifiedZlibMember } from "./compression.js";
 import { isPromisifiedCryptoMember } from "./crypto.js";
 import { isPromisifiedDnsMember } from "../lower-dgram.js";
+import { callbackPromisifyShape } from "./promisify-callback.js";
 
 /** Compile-time util.promisify projections. The immutable result binding
  * owns no runtime slot: calls rewrite to the target's promise lowering,
@@ -126,7 +127,7 @@ export function registerPromisifiedBuiltinDecl(
   if (registerHttpClientFnBinding(lowerer, nameNode, init)) return true;
   const e = isPromisifyCall(lowerer, init);
   if (!e) return false;
-  const argNode = e.arguments.length === 1 ? e.arguments[0]! : null;
+  const argNode = e.arguments.nodes.length === 1 ? e.arguments.nodes[0]! : null;
   // `promisify(exec)` over a named import, or `promisify(cp.exec)` over a
   // namespace import.
   const target = !argNode
@@ -164,11 +165,14 @@ export function registerPromisifiedBuiltinDecl(
                   : target?.module === "dns" && isPromisifiedDnsMember(target.member)
                     ? { kind: "promisified-dns" as const, member: target.member }
                     : null;
+  // A typed callback-last function value: the call lowers to a native
+  // promisified function, and the binding holds it like any closure.
+  if (!projection && callbackPromisifyShape(lowerer, e, locOf(e)) !== null) return false;
   if (!projection) {
     lowerer.noLowering(
       "util.promisify of this target",
       argNode ?? e,
-      "child_process.exec, child_process.execFile, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions (randomBytes, pbkdf2, scrypt, hkdf, randomFill, randomInt, generateKey), dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart are the supported targets",
+      "child_process.exec, child_process.execFile, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions (randomBytes, pbkdf2, scrypt, hkdf, randomFill, randomInt, generateKey), dns.lookup, dns.lookupService, the fs callback functions with an fs/promises counterpart, and typed callback-last functions whose callback takes (error?: Error | null, value?) are the supported targets",
     );
   }
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);

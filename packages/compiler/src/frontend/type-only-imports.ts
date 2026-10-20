@@ -30,8 +30,8 @@ export function typeOnlyNamedImport(stmt: ts.ImportDeclaration): boolean {
     clause.name === undefined &&
     clause.namedBindings !== undefined &&
     ts.isNamedImports(clause.namedBindings) &&
-    clause.namedBindings.elements.length > 0 &&
-    clause.namedBindings.elements.every((e) => e.isTypeOnly)
+    clause.namedBindings.elements.nodes.length > 0 &&
+    clause.namedBindings.elements.nodes.every((e) => e.isTypeOnly)
   );
 }
 
@@ -45,7 +45,7 @@ interface ModuleReference {
 
 function declarationReferencesOf(sf: ts.SourceFile): ModuleReference[] {
   const refs: ModuleReference[] = [];
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     if (ts.isImportDeclaration(stmt)) {
       if (ts.isStringLiteral(stmt.moduleSpecifier))
         refs.push({ spec: stmt.moduleSpecifier.text, erased: erasedTypeOnlyImport(stmt) });
@@ -73,7 +73,7 @@ function declarationReferencesOf(sf: ts.SourceFile): ModuleReference[] {
 function callReferencesOf(program: ts.Program, sf: ts.SourceFile): ModuleReference[] {
   const refs: ModuleReference[] = [];
   for (const node of moduleSourceCandidates(program, sf).calls) {
-    const arg = node.arguments[0];
+    const arg = node.arguments.nodes[0];
     if (arg === undefined || !ts.isStringLiteralLike(arg)) continue;
     refs.push({
       spec: arg.text,

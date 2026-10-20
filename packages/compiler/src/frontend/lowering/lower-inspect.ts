@@ -10,6 +10,7 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrFunction,
   type IrStmt,
   type IrType,
   RUNTIME_ERROR_CLASSES,
@@ -20,6 +21,7 @@ import {
   type SrcLoc,
   canConvertToDyn,
   canDynCheckTo,
+  CLASS_FIELD_ATTRIBUTES_PREFIX,
   classDynViewSupported,
   DYN_CLASS_PROPERTIES,
   isClassOwnEnumerableFieldName,
@@ -499,12 +501,16 @@ function classInspectsThroughView(lowerer: Lowerer, info: ClassInfo | undefined)
   );
 }
 
-/** Whether a class holds properties added outside its declared layout, which
- * only its checked-dynamic view can list. Decided after lowering, when the
+/** Whether a class holds properties added outside its declared layout, or
+ * fields Object.defineProperty can make non-enumerable, which only its
+ * checked-dynamic view lists as Node does. Decided after lowering, when the
  * class has its final fields. */
 function classInspectsAddedProperties(lowerer: Lowerer, info: ClassInfo): boolean {
   return (
-    info.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES) &&
+    info.def.fields.some(
+      (field) =>
+        field.name === DYN_CLASS_PROPERTIES || field.name.startsWith(CLASS_FIELD_ATTRIBUTES_PREFIX),
+    ) &&
     classDynViewSupported(
       info.def.fields,
       (id) => lowerer.shapes.get(id),
@@ -992,6 +998,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       // Object.keys' declared order (SEMANTICS.md 36's stance). Retained
       // reachability can settle this shape after the helper is first
       // interned, so rebuild the field walk once metadata is final.
+      lowerer.keyOrder.observe(t);
       rebuildShapeOrderBody = (): void => {
         const current = lowerer.shapes.get(t.shapeId) ?? shape;
         const order = current.declaredOrder ?? current.fields.map((f) => f.name);
@@ -1342,7 +1349,10 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
     prependCycleGuard();
   }
 
-  const fn = {
+  // Typed as the IR function itself: the finalizer below replaces the
+  // body of the very object liftedFns holds (natively, a differently typed
+  // literal would be copied into the list).
+  const fn: IrFunction = {
     name,
     params: [
       { localId: "v.0", name: "v", type: t },
@@ -1608,7 +1618,7 @@ function parseInspectOptions(
       "the options must be an object literal ({ depth, colors: false, ... }) so the knobs resolve at compile time",
     );
   }
-  for (const prop of node.properties) {
+  for (const prop of node.properties.nodes) {
     if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
       lowerer.noLowering(
         `${surface} options in this form`,
@@ -1768,7 +1778,7 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
     const base = cls.base ? ` extends ${cls.base.def.name.replace(/^%/, "")}` : "";
     return strLit(`[class ${cls.def.name}${base}]`, loc);
   }
-  const decl = lowerer.checker.declarationsOf(sym)[0];
+  const decl = sym.declarations[0];
   if (!decl) return null;
   if (ts.isFunctionDeclaration(decl) && decl.name) {
     return strLit(`[Function: ${decl.name.text}]`, loc);
@@ -1789,14 +1799,14 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
 
 /** util.inspect(value[, options]) — the spoke's inspect entry. */
 function lowerInspectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (expr.arguments.length < 1 || expr.arguments.length > 2) {
+  if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 2) {
     lowerer.noLowering(
-      `util.inspect with ${expr.arguments.length} arguments`,
+      `util.inspect with ${expr.arguments.nodes.length} arguments`,
       expr,
       "the supported forms are inspect(value) and inspect(value, options)",
     );
   }
-  return lowerInspectValue(lowerer, expr.arguments[0]!, expr.arguments[1], loc, false);
+  return lowerInspectValue(lowerer, expr.arguments.nodes[0]!, expr.arguments.nodes[1], loc, false);
 }
 
 /** `inspect(value, options)` over one value node: the shared body of
@@ -2006,6 +2016,47 @@ function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
   return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(depth, loc), loc);
 }
 
+/** %d and %i over a checked-dynamic argument, as Node's formatWithOptions
+ * reads it: a bigint prints as `${n}n`, a symbol as NaN, and any other
+ * value as `number` (Number(arg) for %d, parseInt(String(arg)) for %i)
+ * formatted. The argument evaluates once. */
+function formatDynInteger(
+  lowerer: Lowerer,
+  value: IrExpr,
+  number: (held: IrExpr) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const held = lowerer.declareHiddenLocal("%formatArg", DYN);
+  const ref = (): IrExpr => varRef(held.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: held.id, init: value, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "bigint", value: ref(), type: BOOL, loc },
+      then: {
+        kind: "strConcat",
+        left: { kind: "libCall", fn: "dyn.toStringCoerce", args: [ref()], type: STRING, loc },
+        right: strLit("n", loc),
+        type: STRING,
+        loc,
+      },
+      else_: {
+        kind: "ternary",
+        cond: { kind: "dynTest", test: "symbol", value: ref(), type: BOOL, loc },
+        then: strLit("NaN", loc),
+        else_: { kind: "libCall", fn: "insp.f64", args: [number(ref())], type: STRING, loc },
+        type: STRING,
+        loc,
+      },
+      type: STRING,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
+}
+
 /** %d and %i over the argument types Node formats without a number
  * conversion: a bigint prints as `${n}n` (formatBigInt) and a symbol as NaN;
  * null is Number(null) (0) under %d and parseInt("null") (NaN) under %i, and
@@ -2047,10 +2098,10 @@ export function lowerFormatCall(
   argNodesOverride?: readonly ts.Expression[],
   literalPrefix = "",
 ): IrExpr {
-  const argNodes = [...(argNodesOverride ?? expr.arguments)];
+  const argNodes = [...(argNodesOverride ?? expr.arguments.nodes)];
   if (withOptions) {
     const opts = argNodes.shift();
-    if (!opts || !ts.isObjectLiteralExpression(opts) || opts.properties.length > 0) {
+    if (!opts || !ts.isObjectLiteralExpression(opts) || opts.properties.nodes.length > 0) {
       lowerer.noLowering(
         "util.formatWithOptions with a non-empty options literal",
         opts ?? expr,
@@ -2136,19 +2187,20 @@ export function lowerFormatCall(
           };
         }
         // A checked-dynamic argument (`console.log('... actual %d.',
-        // context.actual)` — test/common's exit report): VALIDATE it as a
-        // number (dynCheck) and format. A non-number dyn value throws the
-        // catchable TypeError where Node would print its ToNumber (NaN
-        // for objects) — it throws instead of returning a wrong result
-        // (SEMANTICS.md).
+        // context.actual)` — test/common's exit report): Number(arg).
         if (value.type.kind === "dyn") {
-          return {
-            kind: "libCall",
-            fn: "insp.f64",
-            args: [{ kind: "dynCheck", value, type: F64, loc }],
-            type: STRING,
+          return formatDynInteger(
+            lowerer,
+            value,
+            (held) => ({
+              kind: "libCall",
+              fn: "dyn.numberConstructor",
+              args: [held],
+              type: F64,
+              loc,
+            }),
             loc,
-          };
+          );
         }
         lowerer.noLowering(
           `util.format %d of '${lowerer.fmt(value.type)}' values`,
@@ -2179,6 +2231,24 @@ export function lowerFormatCall(
             loc,
           };
           return { kind: "libCall", fn: "insp.f64", args: [parsed], type: STRING, loc };
+        }
+        // parseInt(String(arg)) over a checked-dynamic argument.
+        if (value.type.kind === "dyn") {
+          return formatDynInteger(
+            lowerer,
+            value,
+            (held) => ({
+              kind: "libCall",
+              fn: "num.parseInt",
+              args: [
+                { kind: "libCall", fn: "dyn.toStringCoerce", args: [held], type: STRING, loc },
+                numLit(0, loc),
+              ],
+              type: F64,
+              loc,
+            }),
+            loc,
+          );
         }
         lowerer.noLowering(`util.format %i of '${lowerer.fmt(value.type)}' values`, node);
         break;
@@ -2394,21 +2464,21 @@ export function lowerUtilModuleCall(
   switch (bi.member) {
     case "styleText":
     case "isDeepStrictEqual": {
-      if (expr.arguments.some(ts.isSpreadElement))
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
         lowerer.noLowering(`util.${bi.member} with spread arguments`, expr);
       const stmts: IrStmt[] = [];
       const args: IrExpr[] = [];
       // Save all inputs before evaluating surplus arguments: comparison may
       // read mutable objects or throw, so it must happen after every argument.
       for (let i = 0; i < 3; i++) {
-        const input: IrExpr = expr.arguments[i]
-          ? lowerer.lowerExprExpecting(expr.arguments[i]!, DYN)
+        const input: IrExpr = expr.arguments.nodes[i]
+          ? lowerer.lowerExprExpecting(expr.arguments.nodes[i]!, DYN)
           : dynUndefinedExpr(loc);
         const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
         stmts.push({ kind: "varDecl", localId: saved.id, init: input, loc });
         args.push(varRef(saved.id, DYN, loc));
       }
-      for (const arg of expr.arguments.slice(3))
+      for (const arg of expr.arguments.nodes.slice(3))
         stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc });
       const type = bi.member === "styleText" ? STRING : BOOL;
       return {
@@ -2426,10 +2496,10 @@ export function lowerUtilModuleCall(
     case "debug":
       return lowerUtilCallableCall(lowerer, expr, bi.member, loc);
     case "getSystemErrorMap": {
-      if (expr.arguments.some(ts.isSpreadElement))
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
         lowerer.noLowering("util.getSystemErrorMap with spread arguments", expr);
       const result = lowerSystemErrorMap(lowerer, loc);
-      const stmts: IrStmt[] = expr.arguments.map((arg) => ({
+      const stmts: IrStmt[] = expr.arguments.nodes.map((arg) => ({
         kind: "exprStmt",
         expr: lowerer.lowerExpr(arg),
         loc,
@@ -2440,24 +2510,24 @@ export function lowerUtilModuleCall(
     case "getSystemErrorMessage":
     case "stripVTControlCharacters":
     case "toUSVString": {
-      if (expr.arguments.some(ts.isSpreadElement))
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
         lowerer.noLowering(`util.${bi.member} with spread arguments`, expr);
-      const input = expr.arguments[0]
-        ? lowerer.lowerExprExpecting(expr.arguments[0], DYN)
+      const input = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
         : {
             kind: "dynFrom" as const,
             value: { kind: "unitLit" as const, unit: "undefined" as const, type: UNDEFINED_T, loc },
             type: DYN,
             loc,
           };
-      if (expr.arguments.length <= 1)
+      if (expr.arguments.nodes.length <= 1)
         return { kind: "libCall", fn: `util.${bi.member}`, args: [input], type: STRING, loc };
       const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
       return {
         kind: "seqExpr",
         stmts: [
           { kind: "varDecl", localId: saved.id, init: input, loc },
-          ...expr.arguments
+          ...expr.arguments.nodes
             .slice(1)
             .map((arg): IrStmt => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
         ],
@@ -2481,11 +2551,11 @@ export function lowerUtilModuleCall(
     case "parseArgs":
       return lowerParseArgsCall(lowerer, expr, loc);
     case "parseEnv": {
-      if (expr.arguments.length > 1 || expr.arguments.some(ts.isSpreadElement)) {
+      if (expr.arguments.nodes.length > 1 || expr.arguments.nodes.some(ts.isSpreadElement)) {
         lowerer.noLowering("util.parseEnv with spread or extra arguments", expr);
       }
-      const input: IrExpr = expr.arguments[0]
-        ? lowerer.lowerExprExpecting(expr.arguments[0], DYN)
+      const input: IrExpr = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
         : dynUndefinedExpr(loc);
       const parsed: IrExpr = {
         kind: "libCall",
@@ -2526,7 +2596,7 @@ function lowerUtilCallableCall(
   member: string,
   loc: SrcLoc,
 ): IrExpr {
-  if (expr.arguments.some(ts.isSpreadElement))
+  if (expr.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`util.${member} with spread arguments`, expr);
   const fn =
     member === "inherits"
@@ -2540,7 +2610,7 @@ function lowerUtilCallableCall(
   // Program classes keep static prototypes: there is no function object
   // whose prototype chain the runtime could relink or wrap.
   const classArgs = member === "inherits" ? 2 : member === "deprecate" ? 1 : 0;
-  for (const arg of expr.arguments.slice(0, classArgs)) {
+  for (const arg of expr.arguments.nodes.slice(0, classArgs)) {
     if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "classval")
       lowerer.noLowering(
         `util.${member} over a class constructor`,
@@ -2559,14 +2629,14 @@ function lowerUtilCallableCall(
   const stmts: IrStmt[] = [];
   const args: IrExpr[] = [];
   for (let i = 0; i < arity; i++) {
-    const input: IrExpr = expr.arguments[i]
-      ? lowerer.lowerExprExpecting(expr.arguments[i]!, DYN)
+    const input: IrExpr = expr.arguments.nodes[i]
+      ? lowerer.lowerExprExpecting(expr.arguments.nodes[i]!, DYN)
       : dynUndefinedExpr(loc);
     const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
     stmts.push({ kind: "varDecl", localId: saved.id, init: input, loc });
     args.push(varRef(saved.id, DYN, loc));
   }
-  for (const arg of expr.arguments.slice(arity))
+  for (const arg of expr.arguments.nodes.slice(arity))
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc });
   const type = fn === "util.inherits" ? VOID : DYN;
   const result: IrExpr = { kind: "libCall", fn, args, type, loc };
@@ -2601,16 +2671,16 @@ function callbackifyErrorExcludesNull(lowerer: Lowerer, expr: ts.CallExpression)
  * variants and a null-prototype values object); statically typed member
  * reads leave that tree through the ordinary dyn checks. */
 function lowerParseArgsCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (expr.arguments.length > 1 || expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.length > 1 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
-      `util.parseArgs with ${expr.arguments.length} arguments`,
+      `util.parseArgs with ${expr.arguments.nodes.length} arguments`,
       expr,
       "the lowered form is parseArgs() or parseArgs(config)",
     );
   }
 
   let config: IrExpr;
-  const configNode = expr.arguments[0];
+  const configNode = expr.arguments.nodes[0];
   if (!configNode) {
     config = { kind: "dynObjLit", fields: [], type: DYN, loc };
   } else {
@@ -2684,7 +2754,7 @@ function lowerGetCallSitesCall(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (expr.arguments.length !== 0) return null;
+  if (expr.arguments.nodes.length !== 0) return null;
   if (!isJsSourceFile(expr.getSourceFile())) return null;
   const frame = (): IrExpr => {
     const field = (name: string, value: IrExpr): { key: IrExpr; value: IrExpr } => ({

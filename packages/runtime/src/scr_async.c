@@ -56,24 +56,6 @@
 #include <unistd.h>
 #endif
 
-#ifdef __wasi__
-/* WASI Preview 1 has no process-spawn capability. The child unit is not
- * linked for this target, but the generic loop keeps its quiescence hooks;
- * their empty implementation makes the absence explicit at link time
- * without weakening async/timer support. */
-bool scr_children_pending(void) { return false; }
-bool scr_children_ready(void) { return false; }
-bool scr_children_reffed_pending(void) { return false; }
-bool scr_children_failed_pending(void) { return false; }
-void scr_children_poll(void) {}
-int scr_children_wake_fd(void) { return -1; }
-bool scr_children_wait(double max_wait_ms) {
-  (void)max_wait_ms;
-  return false;
-}
-void scr_children_teardown(void) {}
-#endif
-
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
 #define SCR_ASAN_FIBERS 1
@@ -665,8 +647,9 @@ struct ScrFiber {
 
 /* The ScrAlsCtx layout and the API over it live in scr_runtime.h /
  * scr_async_dyn.c (gated — the size-class stance); this always-linked
- * core keeps only what the fiber machinery itself touches: the active
- * slot, the snapshot RC pair, and the switch/spawn/destroy wiring. */
+ * core keeps only what the fiber machinery and the test runner touch: the
+ * active slot, the snapshot RC pair, enter/restore, and the
+ * switch/spawn/destroy wiring. */
 static SCR_TL ScrAlsCtx *scr_als_main_slot = NULL;
 #ifdef SCR_WORKERS
 SCR_TL ScrAlsCtx **scr_als_active;
@@ -692,6 +675,56 @@ void scr_als_ctx_release(ScrAlsCtx *c) {
 static inline void *scr_fiber_region_capture(void) {
   const ScrRgnFiberHooks *regions = atomic_load_explicit(&scr_region_fiber_hooks, memory_order_relaxed);
   return regions != NULL ? regions->capture() : NULL;
+}
+
+/* Fresh snapshot storage. */
+ScrAlsCtx *scr_als_ctx_alloc(size_t len) {
+  ScrAlsCtx *c = malloc(sizeof *c + len * sizeof(ScrAlsEntry));
+  if (!c) scr_oom();
+  c->rc = 1;
+  c->len = len;
+  return c;
+}
+
+/* Fresh snapshot with (id → value) replaced-or-appended (value borrowed,
+ * retained in), installed as the active context; the PREVIOUS snapshot
+ * returns (ownership moves out) for scr_als_restore. The test runner
+ * enters its own entry through this too, so it lives in the core. */
+ScrAlsCtx *scr_als_enter(double id, ScrDyn *value) {
+  ScrAlsCtx *prev = *SCR_ALS_SLOT();
+  size_t n = prev ? prev->len : 0;
+  bool have = false;
+  for (size_t i = 0; i < n; i++) {
+    if (prev->entries[i].id == id) { have = true; break; }
+  }
+  ScrAlsCtx *next = scr_als_ctx_alloc(have ? n : n + 1);
+  size_t w = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (prev->entries[i].id == id) continue;
+    next->entries[w].id = prev->entries[i].id;
+    next->entries[w].value = scr_dyn_retain(prev->entries[i].value);
+    w++;
+  }
+  next->entries[w].id = id;
+  next->entries[w].value = scr_dyn_retain(value);
+  *SCR_ALS_SLOT() = next;
+  return prev; /* ownership moves to the caller */
+}
+
+void scr_als_restore(ScrAlsCtx *prev) {
+  scr_als_ctx_release(*SCR_ALS_SLOT());
+  *SCR_ALS_SLOT() = prev; /* ownership moves back in */
+}
+
+/* The value of `id` in the active snapshot (borrowed), or NULL. */
+ScrDyn *scr_als_peek(double id) {
+  const ScrAlsCtx *c = *SCR_ALS_SLOT();
+  if (c) {
+    for (size_t i = 0; i < c->len; i++) {
+      if (c->entries[i].id == id) return c->entries[i].value;
+    }
+  }
+  return NULL;
 }
 
 /* enterWith on the main stack lasts until that code returns to the loop,
@@ -4021,6 +4054,13 @@ void scr_loop_set_watch(bool (*pending)(void), void (*dispatch)(void), int (*pol
   scr_watch_pollfd_fn = pollfd;
 }
 
+/* The child-process hook (scr_child.c, installed with the first spawned
+ * child or IPC channel). Programs that never create one keep it NULL and
+ * do not link the child unit; WASI never links it. */
+static SCR_TL const ScrLoopChildren *scr_loop_children = NULL;
+
+void scr_loop_set_children(const ScrLoopChildren *hooks) { scr_loop_children = hooks; }
+
 /* The foreign-FFI queue hook (scr_ffi.c when a format-5 descriptor exists).
  * Its pending count includes live registrations (reffed by default) and
  * queued deliveries; dispatch runs exactly one callback per loop turn. */
@@ -4275,12 +4315,13 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * death landing before this sweep fired its 'exit' where Node
      * deterministically never does. The teardown below releases the
      * undelivered listeners, so the RC audit stays clean. */
-    if (scr_children_pending()) {
+    if (scr_loop_children != NULL && scr_loop_children->pending()) {
       bool held =
-          scr_reffed_timers > 0 || scr_reffed_immediates > 0 || scr_children_reffed_pending() ||
+          scr_reffed_timers > 0 || scr_reffed_immediates > 0 ||
+          scr_loop_children->reffed_pending() ||
           /* spawn failures settle regardless: their 'error' is a
            * next-tick event, delivered even on an unref'd child */
-          scr_children_failed_pending() ||
+          scr_loop_children->failed_pending() ||
           (scr_events_pending_fn != NULL && scr_events_pending_fn()) ||
           (scr_net_pending_fn != NULL && scr_net_pending_fn()) ||
           (scr_dgram_pending_fn != NULL && scr_dgram_pending_fn()) ||
@@ -4289,7 +4330,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           scr_fs_renames_pending() || scr_crypto_bytes_pending() || scr_loop_deferred_pending() ||
           scr_workers_pending();
       if (held) {
-        scr_children_poll();
+        scr_loop_children->poll();
         if (scr_exc_pending()) return false; /* uncaught throw in a listener */
         if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
       }
@@ -4300,7 +4341,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * nextTicks enqueued by a station listener are the same story. */
     if (scr_stream_pending_fn != NULL && scr_stream_pending_fn()) continue;
     if (scr_nt_head != NULL) continue;
-    bool kids = scr_children_pending();
+    bool kids = scr_loop_children != NULL && scr_loop_children->pending();
+    bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
     bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
     bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
     /* `net` keeps the process alive; `net_io` (unref'd handles too) decides
@@ -4318,7 +4360,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * Children follow the same rule: an unref'd child is still REAPED
      * while the loop runs (kids drives the sweeps and sleeps above) but
      * only reffed ones keep the process alive. */
-    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !scr_children_reffed_pending() && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) break;
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) break;
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -4362,12 +4404,15 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * station has run. Completed sends and disconnects can also become ready
      * during that turn. No fd will wake us for this userspace work: return to
      * dispatch without sleeping, still allowing due timers and immediates. */
-    if (scr_children_ready()) due = now;
+    if (scr_loop_children != NULL && scr_loop_children->ready()) due = now;
 #ifdef SCR_WORKERS
     if (scr_workers_ready_fn && scr_workers_ready_fn()) due = now;
 #endif
 #if !defined(_WIN32) && !defined(__wasi__)
     if (due > now) scr_fiber_stacks_clear();
+#endif
+#ifdef SCR_WORKERS
+    if (due > now) scr_sa_loop_waiting(true);
 #endif
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
@@ -4471,7 +4516,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         }
       }
       if (kids) {
-        int cfd = scr_children_wake_fd();
+        int cfd = scr_loop_children->wake_fd();
         if (cfd >= 0) {
           fds[nfds].fd = cfd;
           fds[nfds].events = POLLIN;
@@ -4502,10 +4547,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
        * unconsumed event keeps the kqueue fd readable and would turn the
        * next poll into a busy spin while other children still run. The
        * WNOHANG sweep at the next turn's top stays the reaper. */
-      if (kids) (void)scr_children_wait(0);
+      if (kids) (void)scr_loop_children->wait(0);
       now = scr_now_ms();
 #endif /* !_WIN32 && !__wasi__ */
-    } else if (kids && scr_children_wait(due > now ? due - now : 0)) {
+    } else if (kids && scr_loop_children->wait(due > now ? due - now : 0)) {
       now = scr_now_ms(); /* woke early on an exit, or hit the deadline */
     } else {
       if (kids && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
@@ -4522,6 +4567,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         now = due;
       }
     }
+#ifdef SCR_WORKERS
+    scr_sa_loop_waiting(false);
+#endif
     while (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) {
       ScrTimer t = scr_timer_pop();
       /* Timer callbacks are plain sync closures, run on the main stack.
@@ -4659,7 +4707,7 @@ bool scr_loop_run(ScrPromise *top_level) {
   /* Unref'd children the loop never reaped: release the
    * registry's references (their listeners never fire — the process is
    * exiting, Node's behavior; the OS reparents the children). */
-  scr_children_teardown();
+  if (scr_loop_children != NULL) scr_loop_children->teardown();
   scr_fibers_abandoned = scr_fibers_live;
   scr_note_abandoned_fibers(scr_fibers_abandoned);
   return rejection_failed;

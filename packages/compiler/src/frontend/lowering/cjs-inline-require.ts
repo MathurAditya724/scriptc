@@ -75,7 +75,7 @@ export function cjsWholeExportValueOf(
   sf: ts.SourceFile,
 ): { assign: ts.BinaryExpression; rhs: ts.Expression } | null {
   let kept: ts.BinaryExpression | null = null;
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     const cjs = cjsExportAssignmentOf(stmt);
     if (cjs?.kind === "table" && cjsExportDiscardReason(stmt) === null) kept = cjs.expr;
   }
@@ -241,7 +241,7 @@ export function requireNestedPatternsOf(decl: ts.VariableDeclaration): ts.Bindin
   const spec = requireSpecOf(decl.initializer);
   if (spec === null || canonicalBuiltinModule(spec) !== null) return [];
   if (!isJsSourceFile(decl.getSourceFile())) return [];
-  return decl.name.elements.filter(
+  return decl.name.elements.nodes.filter(
     (e) =>
       e.name !== undefined &&
       ts.isObjectBindingPattern(e.name) &&
@@ -324,7 +324,7 @@ export function cjsNamespaceDestructureOf(
   const dep = lowerer.cjsModuleBindingDepOf(init);
   if (dep === null) return null;
   const elements: { name: ts.Identifier; key: string }[] = [];
-  for (const e of decl.name.elements) {
+  for (const e of decl.name.elements.nodes) {
     if (e.initializer !== undefined || e.dotDotDotToken !== undefined) return null;
     if (e.name === undefined || !ts.isIdentifier(e.name)) return null;
     const key =
@@ -353,7 +353,7 @@ export function cjsExportValueByName(
   if (sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
   const direct = lowerer.globalsBySymbol.get(sym);
   if (direct) return { kind: "varRef", localId: direct.id, type: direct.type, loc: locOf(blame) };
-  for (const d of lowerer.checker.declarationsOf(sym)) {
+  for (const d of sym.declarations) {
     const byDecl = lowerer.globalsByDeclNode.get(d);
     if (byDecl) return { kind: "varRef", localId: byDecl.id, type: byDecl.type, loc: locOf(blame) };
     // Alias plumbing: a shorthand/identifier table entry or a member

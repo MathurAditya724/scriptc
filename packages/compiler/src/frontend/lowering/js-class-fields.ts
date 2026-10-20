@@ -10,7 +10,7 @@ const PROPERTY_REFLECTION = new Set(["deleteProperty", "freeze", "seal", "preven
 function freshLiteralArgument(callee: ts.PropertyAccessExpression): boolean {
   const call = callee.parent;
   if (!ts.isCallExpression(call) || call.expression !== callee) return false;
-  let argument = call.arguments[0];
+  let argument = call.arguments.nodes[0];
   while (argument && ts.isParenthesizedExpression(argument)) argument = argument.expression;
   return (
     argument !== undefined &&
@@ -101,12 +101,12 @@ export function constructionPrefix(
 ): Construction | null {
   const created = new Set(base?.created ?? []);
   let sealed = base?.sealed ?? true;
-  const ctor = decl.members.find(
+  const ctor = decl.members.nodes.find(
     (member): member is ts.ConstructorDeclaration =>
       ts.isConstructorDeclaration(member) && member.body !== undefined,
   );
-  if (ctor?.parameters.some((parameter) => usesReceiver(parameter))) sealed = false;
-  const statements = ctor?.body?.statements ?? [];
+  if (ctor?.parameters?.nodes.some((parameter) => usesReceiver(parameter))) sealed = false;
+  const statements = ctor?.body?.statements?.nodes ?? [];
   // A derived constructor's statements before super() cannot reach the
   // instance; the field declarations run when super() returns.
   let at = 0;
@@ -119,12 +119,12 @@ export function constructionPrefix(
     );
     if (superAt < 0) return null;
     const call = (statements[superAt] as ts.ExpressionStatement).expression as ts.CallExpression;
-    if (call.arguments.some(usesReceiver)) sealed = false;
+    if (call.arguments.nodes.some(usesReceiver)) sealed = false;
     at = superAt + 1;
   }
-  for (const member of decl.members) {
+  for (const member of decl.members.nodes) {
     if (!ts.isPropertyDeclaration(member) || !ts.isIdentifier(member.name)) continue;
-    if (member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword))
+    if (member.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword))
       continue;
     if (member.initializer && usesReceiver(member.initializer)) sealed = false;
     if (sealed) created.add(member.name.text);

@@ -37,6 +37,12 @@ int scr_decimal_scan(const char *p, size_t n, double *out);
  * the length. */
 size_t scr_f64_to_fixed(double x, int f, char *buf);
 
+/* toPrecision / toExponential(fractionDigits) digits for POSITIVE finite
+ * a and 1 <= p <= 101: the spec's p-digit n (ties to the larger n on the
+ * exact binary value) into digits (NUL-terminated, >= p + 1 bytes) and its
+ * decimal exponent e (value ~ d.ddd x 10^e) into *e_out. Returns p. */
+int scr_f64_precision_digits(double a, int p, char *digits, int *e_out);
+
 /* ToString for template literals / string coercion. Returns +1. */
 ScrStr *scr_f64_to_scrstr(double x);
 ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
@@ -46,6 +52,8 @@ ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
  * adjacent surrogate pairs combine, other surrogates stay lone. Borrowed
  * args; the string result is +1; neither throws. */
 ScrStr *scr_str_from_char_code(ScrArr *codes);
+/* String.fromCharCode over n codes in a caller-owned array (no ScrArr). */
+ScrStr *scr_str_from_char_codes(const double *codes, size_t n);
 /* Single numeric argument; avoids argument packing. Defined in scr_string.c
  * to share its character cache. Same ToUint16 and lone-surrogate behavior. */
 ScrStr *scr_str_from_char_code_one(double code);
@@ -73,6 +81,11 @@ bool scr_num_is_safe_integer(double x);
 ScrStr *scr_num_to_exponential(double x);
 ScrStr *scr_num_to_fixed0(double x);
 ScrStr *scr_num_to_fixed(double x, double fraction_digits);
+/* Number.prototype.toPrecision(precision) and toExponential(fractionDigits)
+ * with the argument already coerced (has_precision false = undefined).
+ * Invalid digit counts throw V8's RangeError (NULL). Result +1. */
+ScrStr *scr_num_to_precision(double x, double precision, bool has_precision);
+ScrStr *scr_num_to_exponential_digits(double x, double fraction_digits);
 ScrStr *scr_num_to_string_radix_f64(double value, double radix);
 
 /* Object.is over two numbers — the spec's SameValue on doubles: NaN
@@ -123,6 +136,15 @@ double scr_date_get_minutes(double ms, bool utc);
 double scr_date_get_seconds(double ms, bool utc);
 double scr_date_get_milliseconds(double ms);
 double scr_date_get_timezone_offset(double ms);
+/* Date.prototype.toString, toDateString and toTimeString with V8's
+ * formats; "Invalid Date" for NaN. +1. */
+ScrStr *scr_date_to_string(double ms);
+ScrStr *scr_date_to_date_string(double ms);
+ScrStr *scr_date_to_time_string(double ms);
+/* The long time zone name Node prints after the GMT offset for the host
+ * zone at time value `ms`; `isdst` is tm_isdst at `ms`, or -1 when not
+ * known. Borrowed; valid until the next call on the same thread. */
+const char *scr_date_zone_name(double ms, int isdst);
 /* One-argument ABI wrappers used by the LLVM lib-call table. */
 double scr_date_get_full_year_local(double ms);
 double scr_date_get_full_year_utc(double ms);

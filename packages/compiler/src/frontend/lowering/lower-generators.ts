@@ -112,7 +112,7 @@ export function lowerGenMethodCall(
   const name = access.name.text;
   if (name !== "next" && name !== "return" && name !== "throw") return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "generator") return null;
-  if (call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.unsupported("SC1090", call, "spread arguments");
   }
   // Iterator helpers and the built-in iterators have no throw method; an
@@ -131,7 +131,7 @@ export function lowerGenMethodCall(
   const genT = gen.type;
   const recT = resultRecordOf(lowerer, genT);
   const resultT: IrType = genT.async ? { kind: "promise", inner: recT } : recT;
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   let arg: IrExpr | null = null;
   if (name === "next") {
     if (argNode === undefined) {
@@ -203,14 +203,12 @@ function isGeneratorMember(lowerer: Lowerer, access: ts.PropertyAccessExpression
   const member = lowerer.checker.getSymbolAtLocation(access.name);
   return (
     member !== undefined &&
-    lowerer.checker
-      .declarationsOf(member)
-      .some(
-        (d) =>
-          ts.isInterfaceDeclaration(d.parent) &&
-          (d.parent.name.text === "Generator" || d.parent.name.text === "AsyncGenerator") &&
-          lowerer.isStdlibFile(d.getSourceFile()),
-      )
+    member.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d.parent) &&
+        (d.parent.name.text === "Generator" || d.parent.name.text === "AsyncGenerator") &&
+        lowerer.isStdlibFile(d.getSourceFile()),
+    )
   );
 }
 
@@ -268,28 +266,24 @@ export function isSettledIteratorValueRead(
   const member = lowerer.checker.getSymbolAtLocation(node.name);
   if (
     !member ||
-    !lowerer.checker
-      .declarationsOf(member)
-      .some(
-        (d) =>
-          ts.isPropertySignature(d) &&
-          ts.isInterfaceDeclaration(d.parent) &&
-          (d.parent.name.text === "IteratorYieldResult" ||
-            d.parent.name.text === "IteratorReturnResult") &&
-          lowerer.isStdlibFile(d.getSourceFile()),
-      )
+    !member.declarations.some(
+      (d) =>
+        ts.isPropertySignature(d) &&
+        ts.isInterfaceDeclaration(d.parent) &&
+        (d.parent.name.text === "IteratorYieldResult" ||
+          d.parent.name.text === "IteratorReturnResult") &&
+        lowerer.isStdlibFile(d.getSourceFile()),
+    )
   )
     return false;
   const receiver = lowerer.typeOf(node.expression);
   const stdlib = (sym: ts.Symbol | undefined): boolean =>
     sym !== undefined &&
-    lowerer.checker
-      .declarationsOf(sym)
-      .some(
-        (d) =>
-          (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) &&
-          lowerer.isStdlibFile(d.getSourceFile()),
-      );
+    sym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) &&
+        lowerer.isStdlibFile(d.getSourceFile()),
+    );
   const alias = receiver.getAliasSymbol();
   const symbol = receiver.getSymbol();
   if (
@@ -379,7 +373,7 @@ export function generatorLoopBinding(
     lowerer.unsupported("SC1090", stmt.initializer, "for-of assignment to this target");
   }
   const list = stmt.initializer;
-  const decl = list.declarations[0]!;
+  const decl = list.declarations.nodes[0]!;
   const isLet = (list.flags & ts.NodeFlags.Let) !== 0;
   // The iterator result uses checked storage when its return channel is
   // unknown. After the done test, restore the declared yield shape for
