@@ -3,20 +3,20 @@
   "nodeVersion": "24.22.0",
   "nodeCommit": "f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93",
   "summary": {
-    "taskCount": 3453,
-    "tierItemCount": 3453,
+    "taskCount": 3454,
+    "tierItemCount": 3454,
     "tiers": {
       "static": {
-        "audit-partial": 1185,
-        "verify-gap": 2140,
-        "replace-refusal": 41,
+        "audit-partial": 1197,
+        "verify-gap": 2130,
+        "replace-refusal": 40,
         "classify": 2,
         "implement": 85
       }
     },
     "priorities": {
       "high": 2287,
-      "normal": 694,
+      "normal": 695,
       "low": 472
     }
   },
@@ -12300,12 +12300,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:dns.dnsPromises.lookup",
+          "tests": [
+            "tests/corpus/dns-promises-lookup.ts",
+            "tests/corpus/dns-promises-untyped.cjs"
+          ]
         }
       }
     },
@@ -12325,12 +12328,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:dns.dnsPromises.lookupService",
+          "tests": [
+            "tests/corpus/dns-promises-lookup.ts",
+            "tests/corpus/dns-promises-untyped.cjs"
+          ]
         }
       }
     },
@@ -12750,12 +12756,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:dns.dnsPromises.getDefaultResultOrder",
+          "tests": [
+            "tests/corpus/dns-promises-lookup.ts",
+            "tests/corpus/dns-promises-untyped.cjs"
+          ]
         }
       }
     },
@@ -12825,12 +12834,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:dns.dns.lookup",
+          "tests": [
+            "tests/corpus/5648-dns-lookup-forms.ts",
+            "tests/corpus/5649-dns-service-servers.ts",
+            "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          ]
         }
       }
     },
@@ -12950,12 +12963,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:dns.dns.getServers",
+          "tests": [
+            "tests/corpus/5648-dns-lookup-forms.ts",
+            "tests/corpus/5649-dns-service-servers.ts",
+            "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          ]
         }
       }
     },
@@ -12975,12 +12992,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:dns.dns.lookup",
+          "tests": [
+            "tests/corpus/5648-dns-lookup-forms.ts",
+            "tests/corpus/5649-dns-service-servers.ts",
+            "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          ]
         }
       }
     },
@@ -13000,12 +13021,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:dns.dns.lookupService",
+          "tests": [
+            "tests/corpus/5648-dns-lookup-forms.ts",
+            "tests/corpus/5649-dns-service-servers.ts",
+            "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          ]
         }
       }
     },
@@ -13400,12 +13425,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:dns.dns.setDefaultResultOrder",
+          "tests": [
+            "tests/corpus/5648-dns-lookup-forms.ts",
+            "tests/corpus/5649-dns-service-servers.ts",
+            "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          ]
         }
       }
     },
@@ -13425,12 +13454,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:dns.dns.getDefaultResultOrder",
+          "tests": [
+            "tests/corpus/5648-dns-lookup-forms.ts",
+            "tests/corpus/5649-dns-service-servers.ts",
+            "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          ]
         }
       }
     },
@@ -34202,12 +34235,21 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:stdlib.webassembly",
-          "tests": []
+          "source": "surface-manifest:stdlib.webassembly",
+          "tests": [
+            "tests/corpus/webassembly-api.mjs",
+            "tests/corpus/webassembly-typed.ts",
+            "tests/corpus/webassembly-worker.ts",
+            "tests/corpus/webassembly-spec-int/main.mjs",
+            "tests/corpus/webassembly-spec-float/main.mjs",
+            "tests/corpus/webassembly-spec-control/main.mjs",
+            "tests/corpus/webassembly-spec-memory/main.mjs",
+            "tests/corpus/webassembly-spec-table/main.mjs"
+          ]
         }
       }
     },
@@ -77832,6 +77874,29 @@
       }
     },
     {
+      "id": "v8:cefde4a8297c",
+      "chapter": "v8",
+      "label": "v8.getHeapStatistics()",
+      "signature": "`v8.getHeapStatistics()`",
+      "apiSymbol": "v8.getHeapStatistics",
+      "docsUrl": "https://nodejs.org/docs/v24.22.0/api/v8.html#v8getheapstatistics",
+      "nodeStability": null,
+      "priority": "normal",
+      "tiers": {
+        "static": {
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.v8.getHeapStatistics",
+          "tests": [
+            "tests/corpus/v8-heap-statistics.ts",
+            "tests/corpus/v8-require-optional.cjs"
+          ]
+        }
+      }
+    },
+    {
       "id": "webcrypto:22408f834c48",
       "chapter": "webcrypto",
       "label": "Algorithm",
@@ -81983,12 +82048,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:webstreams.ReadableStream",
+          "tests": [
+            "tests/corpus/stream-web-readable.ts",
+            "tests/corpus/stream-web-require.cjs",
+            "tests/corpus/2862-web-readable-async-iteration.ts"
+          ]
         }
       }
     },

@@ -26,6 +26,7 @@ import { jsBindingHasOpenWrites } from "../lower-stmts.js";
 import { narrowClassUnion, narrowStoredClassValue, structuralNarrowing } from "../class-unions.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "../class-assertions.js";
 import { isOptionalProcessStreamProperty } from "../builtins/process.js";
+import { requestGeneralStreamSurface } from "../general-streams.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
@@ -1186,6 +1187,56 @@ function classInstanceOrAbsent(lowerer: Lowerer, type: IrType): boolean {
   );
 }
 
+/** `Object.fromEntries(...) as T` with T a declared record (the generic
+ * `transform<T extends Record<string, unknown>>(t: T): T` idiom): the
+ * entries build a pure index-signature record, which has no layout in
+ * common with T's struct. Node keeps the object itself, with exactly the
+ * keys and the order the entries gave it. The result of fromEntries is a
+ * fresh object nothing else references, so the checked-dynamic bridge,
+ * which keeps keys and their order the same way `JSON.parse(text) as T`
+ * does, cannot be told apart from the original object; a value outside
+ * T throws the catchable TypeError of every checked cast. The entries'
+ * values must be scalars or checked-dynamic values, which the bridge
+ * passes by value or by identity; native arrays and records would be
+ * copied. Other sources may be aliased, where a rebuilt object would sever
+ * mutation, so they keep the exact-shape fence. */
+function freshEntriesRecordAssertion(
+  lowerer: Lowerer,
+  expr: ts.AsExpression | ts.TypeAssertion,
+  inner: IrExpr,
+  target: IrType | null,
+): IrExpr | null {
+  if (inner.type.kind !== "record" || target?.kind !== "record") return null;
+  const source = lowerer.shapes.get(inner.type.shapeId);
+  const dest = lowerer.shapes.get(target.shapeId);
+  if (!source?.indexValue || source.tuple || source.fields.length > 0) return null;
+  if (!dest || dest.tuple || dest.indexValue || shapeHasAccessorSlots(dest)) return null;
+  // Native arrays and records in the entries would be copied on the way
+  // through the checked-dynamic bridge, severing their identity: only
+  // slots of scalars or checked-dynamic values pass.
+  if (extractionCopiesReference(lowerer, source.indexValue)) return null;
+  let operand: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (
+    !ts.isCallExpression(operand) ||
+    !ts.isPropertyAccessExpression(operand.expression) ||
+    operand.expression.name.text !== "fromEntries" ||
+    !lowerer.isStdlibGlobal(operand.expression.expression, "Object")
+  )
+    return null;
+  if (!lowerer.dynConvertible(inner.type)) return null;
+  if (
+    !canDynCheckTo(
+      target,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return null;
+  const loc = locOf(expr);
+  return { kind: "dynCheck", value: lowerer.coerceToExpected(inner, DYN), type: target, loc };
+}
+
 /** `e as T` and the old-style assertion `<T>e` — one node shape (both
  * carry `.type` and `.expression`), one lowering. */
 export function lowerAsExpression(
@@ -1325,6 +1376,8 @@ export function lowerAsExpression(
     ) {
       return lowerer.coerceInto(expr, inner, target);
     }
+    const rebuilt = freshEntriesRecordAssertion(lowerer, expr, inner, target);
+    if (rebuilt) return rebuilt;
     // `job as Job & { startedAt: number }` on a record: the asserted
     // record refines the stored one, so the assertion keeps the object
     // (a width copy would sever writes through the asserted view).
@@ -1378,6 +1431,12 @@ export function lowerAsExpression(
     return inner; // erasure, unchanged
   }
 
+  // `value as never` is the escape hatch that makes an unknown value fit
+  // any slot (`tagSuccess(value as never)`). No value has type never, so
+  // checking against its placeholder layout would reject every value.
+  // Erase it instead: the consuming slot applies the same validated
+  // extraction an unknown value gets wherever the checker admits it.
+  if (expr.type.kind === ts.SyntaxKind.NeverKeyword) return inner;
   const targetTs = lowerer.checker.getTypeFromTypeNode(expr.type);
   const target = lowerer.mapTypeOf(targetTs) ?? dynFallbackType(lowerer, expr.type, targetTs);
   if (!target) lowerer.badType(expr.type, targetTs);
@@ -1452,6 +1511,9 @@ export function lowerAsExpression(
     if (DYN_HANDLE_KINDS.has(target.kind)) {
       return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
     }
+    // `value as NodeJS.ReadableStream`: the general stream classes take
+    // the checked cast (general-streams.ts).
+    requestGeneralStreamSurface(lowerer, expr);
     lowerer.unsupported(
       "SC1090",
       expr,

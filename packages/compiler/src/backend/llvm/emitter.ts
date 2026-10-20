@@ -1,3 +1,4 @@
+import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
@@ -181,6 +182,7 @@ import {
   genResultThunkFor,
   childExitThunkFor,
   childExitSignalThunkFor,
+  childDataDynThunkFor,
   childDataThunkFor,
   execFileThunkFor,
   ipcMessageThunkFor,
@@ -413,6 +415,9 @@ export interface LlvmTargetOptions {
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
   detachedExit?: boolean;
+  /** Translated WebAssembly memories check bounds explicitly instead of
+   * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
+  wasmBoundsChecks?: boolean;
 }
 
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
@@ -682,6 +687,7 @@ export class LlEmitter {
   readonly emitLibraryIdentity: boolean;
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
+  readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
   readonly literals = new Map<string, { sym: string; len: number }>();
@@ -1175,6 +1181,13 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
+    this.wasmBoundsChecks =
+      options.wasmBoundsChecks === true ||
+      wasmBoundsChecks({
+        sanitize: false,
+        pointerBits: options.pointerBits ?? 64,
+        targetTriple: options.targetTriple ?? "",
+      });
     this.rcHelpers = options.inlineRc !== undefined ? new Set() : null;
     this.rcMode = options.inlineRc;
     this.rcHelpersNoinline = options.rcHelpersNoinline === true;
@@ -5576,6 +5589,10 @@ export class LlEmitter {
 
   childDataThunkFor(param: IrType): string {
     return childDataThunkFor(this, param);
+  }
+
+  childDataDynThunkFor(chunk: "bytes" | "str"): string {
+    return childDataDynThunkFor(this, chunk);
   }
 
   emitterFixedAdapter(cbT: IrType & { kind: "func" }): { fn: string; shim: string } {

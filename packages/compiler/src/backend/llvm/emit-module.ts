@@ -1,4 +1,5 @@
 /* LlEmitter's module-level output: module parts, helper definitions, library declarations and FFI callback definitions. */
+import { emitWasmModules } from "./wasm-modules.js";
 import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import {
   mangleAsyncSpawn,
@@ -177,6 +178,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // programs additionally stamp the httpReq/httpRes ops — the C main's
   // install lines, gated on the same predicates native/executable.ts links by.
   const usesNet = runtimeFeatures.net;
+  const usesNetLookup = runtimeFeatures.netLookup;
   const usesDgram = runtimeFeatures.dgram;
   const usesHttp2 = runtimeFeatures.http2;
   const usesHttp = runtimeFeatures.http;
@@ -226,6 +228,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesFsWatch) emitter.declare(`declare void @scr_watch_install()`);
   if (emitter.ffiHasForeignCallback) emitter.declare(`declare void @scr_ffi_install()`);
   if (usesStream) emitter.declare(`declare void @scr_stream_install()`);
+  if (usesNetLookup) emitter.declare(`declare void @scr_net_lookup_install()`);
   if (usesNet) {
     emitter.declare(`declare void @scr_net_install()`);
     emitter.declare(`declare void @scr_net_dyn_install()`);
@@ -729,6 +732,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   out.push(fnDefs[0] ?? "");
   for (let i = 1; i < fnDefs.length; i++) out.push("", fnDefs[i]!);
   out.push("");
+  // WebAssembly modules translated into this program, and the registry.
+  for (const line of emitWasmModules(emitter.mod, flushedDecls, emitter.wasmBoundsChecks))
+    out.push(line);
 
   // main(): scr_init, the program-dependent error-vt interval stamps,
   // scr_lib_init(argc, argv), then the entry function. An uncaught
@@ -838,6 +844,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
+    ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),

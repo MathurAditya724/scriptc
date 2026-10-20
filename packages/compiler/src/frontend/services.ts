@@ -1,13 +1,15 @@
 import { Ts7SourceParser, type Ts7SourceKind } from "./ts7/source-parser.js";
 import { Ts7Host, type Ts7ApiFactory, type Ts7HostOptions } from "./ts7/program-host.js";
-import { rewriteBundlerCjsWithParser } from "./npm-static-rewrite-host.js";
+import { lowerEsmInitsWithParser, rewriteBundlerCjsWithParser } from "./npm-static-rewrite-host.js";
 import { isBundlerCjsCandidate } from "./npm-static-rewrite-syntax.js";
+import { normalizeCjsFunctionExports } from "./npm-static-cjs-exports-alias.js";
 import {
   mayBundleChunks,
   splitBundledChunks,
   type BundledChunkSplit,
 } from "./npm-static-bundled-chunks.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
+import { normalizeCjsExportsVar } from "./npm-static-cjs-exports-var.js";
 import type { SourceFile } from "./ts7/ast-types.js";
 
 /** Evaluate an isolated, self-contained TypeScript callback under a finite
@@ -64,10 +66,17 @@ export class FrontendServices {
     source: string,
     path: string,
     liveExportTable?: (path: string) => void,
+    lexerVisibleNames?: (path: string, names: readonly string[]) => void,
   ): string | { degrade: string } | null {
     this.ensureOpen();
     if (!isBundlerCjsCandidate(source)) return null;
-    return rewriteBundlerCjsWithParser(this.sourceParser(), source, path, liveExportTable);
+    return rewriteBundlerCjsWithParser(
+      this.sourceParser(),
+      source,
+      path,
+      liveExportTable,
+      lexerVisibleNames,
+    );
   }
   /** A CommonJS bundle's __commonJS chunks as their own modules (null: no
    * chunks; a degrade reason: chunks the recognizer cannot move). */
@@ -75,6 +84,29 @@ export class FrontendServices {
     this.ensureOpen();
     if (!mayBundleChunks(source)) return null;
     return splitBundledChunks(this.parse(path, source, "js"), path);
+  }
+  /** A CommonJS bundle's lazily initialized ES modules (__esm) lowered to
+   * run-once closures (null: none; a degrade reason: shapes the rewrite
+   * cannot lower). */
+  lowerEsmInits(source: string, path: string): string | { degrade: string } | null {
+    this.ensureOpen();
+    if (!source.includes("__esm")) return null;
+    return lowerEsmInitsWithParser(this.sourceParser(), source, path);
+  }
+  /** A CommonJS module whose export object is one of its functions, with
+   * its member accesses respelled through that function (null: none). */
+  cjsFunctionExports(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!source.includes("module.exports")) return null;
+    return normalizeCjsFunctionExports(this.parse(path, source, "js"));
+  }
+  /** A CommonJS module that names its export object through a variable
+   * (`var ip = exports`), its member accesses respelled through `exports`
+   * (null: none). */
+  cjsExportsVar(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!source.includes("exports")) return null;
+    return normalizeCjsExportsVar(this.parse(path, source, "js"));
   }
   nullableClassFields(path: string, source: string): syntax.NpmStaticOverloadRewrite | null {
     return syntax.applyNpmStaticNullableClassFields(this.parse(path, source, "js"), source);
