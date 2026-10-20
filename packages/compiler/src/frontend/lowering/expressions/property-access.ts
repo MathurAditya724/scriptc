@@ -1255,11 +1255,39 @@ export function lowerPropertyAccessExpr(
     const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
     return mapped && mapped.kind !== "void" ? lowerer.coerceInto(expr, read, mapped) : read;
   }
+  // A checker-`any` receiver whose value is a FRESH typed result of an
+  // earlier step in the chain (`out.split(" ").length`, where split
+  // extracted the string and answered a native string[]): the member read
+  // goes through the boxed checked-dynamic value, as the method-call twin
+  // does. The box copies; a call result has no other holder to observe it.
+  if (
+    (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0 &&
+    isFreshCallResult(expr.expression) &&
+    lowerer.dynConvertible(recvLowered.type)
+  ) {
+    return lowerer.maybeNarrow(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      expr,
+    );
+  }
   lowerer.unsupported(
     "SC1090",
     expr,
     `reading '${expr.name.text}' from a value of type '${lowerer.checker.typeToString(lowerer.typeOf(expr.expression))}'`,
   );
+}
+
+/** A call expression, through parentheses: its value has no other holder. */
+function isFreshCallResult(node: ts.Expression): boolean {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return ts.isCallExpression(e);
 }
 
 function importMetaProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {

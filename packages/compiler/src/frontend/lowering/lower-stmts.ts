@@ -2087,43 +2087,6 @@ export function isParseArgsDynCheckerType(lowerer: Lowerer, type: ts.Type): bool
     .some((p) => p.declarations.some(declarationBelongs));
 }
 
-/** True when an `any` value comes from a JavaScript function's result:
- * a call (possibly awaited) whose callee is declared in a JavaScript file,
- * or a const bound to one. A TypeScript program importing a JavaScript
- * package sees the package's inferred types (`jwtVerify` from jose
- * answers `any`), and its object destructuring reads the members of that
- * checked-dynamic value as JavaScript does — member reads on the same
- * value already compile. Other `any` sources keep the fence. */
-function javaScriptAnyOrigin(lowerer: Lowerer, node: ts.Expression, depth: number): boolean {
-  let expr = node;
-  while (ts.isParenthesizedExpression(expr) || ts.isAwaitExpression(expr)) expr = expr.expression;
-  if (ts.isCallExpression(expr)) {
-    const callee = ts.isPropertyAccessExpression(expr.expression)
-      ? expr.expression.name
-      : expr.expression;
-    if (!ts.isIdentifier(callee)) return false;
-    const symbol = lowerer.resolveValueSymbol(callee);
-    const declarations = symbol ? symbol.declarations : [];
-    return (
-      declarations.length > 0 &&
-      declarations.every((d) => isJsSourceFile(d.getSourceFile()) && ts.isFunctionLike(d))
-    );
-  }
-  if (ts.isIdentifier(expr) && depth === 0) {
-    const symbol = lowerer.resolveValueSymbol(expr);
-    const declaration = symbol ? symbol.valueDeclaration : undefined;
-    return (
-      declaration !== undefined &&
-      ts.isVariableDeclaration(declaration) &&
-      ts.isIdentifier(declaration.name) &&
-      declaration.initializer !== undefined &&
-      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0 &&
-      javaScriptAnyOrigin(lowerer, declaration.initializer, depth + 1)
-    );
-  }
-  return false;
-}
-
 /** Destructuring declarations, desugared as sugar over indexed/field
  * reads: the initializer evaluates ONCE into a hidden temp, then each
  * bound name declares (or assigns its pre-registered module global) from
@@ -2162,18 +2125,18 @@ export function lowerDestructuringDecl(
   const parseArgsDynObject =
     init.type.kind === "dyn" &&
     isParseArgsDynCheckerType(lowerer, lowerer.typeOf(decl.initializer));
-  // An `any`-origin source needs a represented record or array shape for
-  // destructuring. JS files retain their per-site runtime fences.
+  // An `any`-origin source destructures through a represented record or
+  // array shape, or through the checked-dynamic value it lowered to: the
+  // pattern reads members (or iterates) the dyn value exactly as a
+  // JavaScript file's pattern does, with the same per-site runtime fences
+  // (null/undefined sources throw Node's TypeError). Primitive and unit
+  // sources keep their own fences below; other carriers keep this one.
   if (
     lowerer.anyOrigin(decl.initializer) &&
     !isJsSourceFile(decl.getSourceFile()) &&
     init.type.kind !== "record" &&
     init.type.kind !== "array" &&
-    !(
-      init.type.kind === "dyn" &&
-      ts.isObjectBindingPattern(decl.name) &&
-      javaScriptAnyOrigin(lowerer, decl.initializer, 0)
-    )
+    init.type.kind !== "dyn"
   ) {
     lowerer.anyOpFence("destructuring", decl);
   }
@@ -2278,6 +2241,38 @@ export function lowerDestructuringDecl(
   if (groupsSource !== null) init = groupsSource;
   const tmp = lowerer.declareHiddenLocal("%destr", init.type);
   out.push({ kind: "varDecl", localId: tmp.id, init, loc });
+  // A TypeScript `any` source destructured through its checked-dynamic
+  // value: RequireObjectCoercible with V8's own TypeError ("Cannot
+  // destructure property 'a' of 'f(...)' as it is null.") for the source
+  // spellings the assignment form already reproduces. JavaScript files
+  // keep their existing per-read errors.
+  if (
+    init.type.kind === "dyn" &&
+    ts.isObjectBindingPattern(decl.name) &&
+    !isJsSourceFile(decl.getSourceFile()) &&
+    lowerer.anyOrigin(decl.initializer)
+  ) {
+    const spelling = destrSpellingOf(decl.initializer);
+    const first = decl.name.elements.nodes[0];
+    const firstKey =
+      first === undefined || first.dotDotDotToken !== undefined
+        ? undefined
+        : (first.propertyName ?? first.name);
+    if (spelling !== null && (firstKey === undefined || ts.isIdentifier(firstKey))) {
+      out.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "dynDestrCheck",
+          value: { kind: "varRef", localId: tmp.id, type: init.type, loc },
+          spelling,
+          ...(firstKey !== undefined ? { firstProp: firstKey.text } : {}),
+          type: init.type,
+          loc,
+        },
+        loc,
+      });
+    }
+  }
   // V8's destructuring TypeError spells STATIC sources: an identifier
   // source reads "<name> is not iterable", an identifier-callee call
   // "<name> is not a function or its return value is not iterable";
@@ -3099,6 +3094,10 @@ export function lowerBindingPattern(
     lowerArrayPositionObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
     return;
   }
+  if (srcType.kind === "moduleNs" && lowerer.sourceFileOfModuleNamespace(srcType) !== null) {
+    lowerModuleNamespacePattern(lowerer, pattern, isLet, out);
+    return;
+  }
   if (srcType.kind !== "record") {
     lowerer.unsupported(
       "SC1031",
@@ -3354,6 +3353,58 @@ function patternBindingType(lowerer: Lowerer, name: ts.BindingName): IrType | nu
     lowerer.mapTypeOf(type) ??
     (isJsSourceFile(name.getSourceFile()) ? dynFallbackType(lowerer, name, type) : null)
   );
+}
+
+/** `const { a, b: c } = ns` / `const { f } = await import("./m")` over
+ * a program module's namespace: each element reads the export exactly
+ * like `ns.a` does — the member resolves to the exporter's own binding
+ * (nsMemberIdentOf's rule), read once at the pattern's position, so the
+ * bound name holds the export's value at that moment (destructuring
+ * copies; it does not alias the live binding). The namespace value
+ * itself was already evaluated into the pattern's temp, so its side
+ * effects (the dynamic import) keep their order. Rest elements would
+ * materialize the namespace object and keep their fence. */
+function lowerModuleNamespacePattern(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  isLet: boolean,
+  out: IrStmt[],
+): void {
+  const nsType = lowerer.typeOf(pattern);
+  for (const el of pattern.elements.nodes) {
+    if (el.name === undefined) continue;
+    if (el.dotDotDotToken) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings over module namespaces (the namespace object is not materialized — bind the exports you need by name)",
+      );
+    }
+    const prop = el.propertyName ?? el.name;
+    const propName =
+      ts.isIdentifier(prop) ||
+      ts.isComputedPropertyName(prop) ||
+      ts.isStringLiteralLike(prop) ||
+      ts.isNumericLiteral(prop)
+        ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
+        : null;
+    let exported =
+      propName === null ? undefined : lowerer.checker.getPropertyOfType(nsType, propName);
+    if (exported !== undefined && exported.flags & ts.SymbolFlags.Alias) {
+      exported = lowerer.checker.getAliasedSymbol(exported);
+    }
+    const declared = exported?.valueDeclaration?.name as ts.Node | undefined;
+    if (declared === undefined || !ts.isIdentifier(declared)) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "destructuring module namespace members that are not named value exports",
+      );
+    }
+    let value = lowerer.lowerExpr(declared);
+    if (el.initializer) value = applyBindingDefault(lowerer, el, value);
+    lowerer.bindPatternTarget(el.name, value, isLet, out);
+  }
 }
 
 function patternKeyNameOf(lowerer: Lowerer, prop: ts.PropertyName): string | null {

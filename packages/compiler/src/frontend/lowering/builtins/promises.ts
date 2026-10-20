@@ -5,6 +5,7 @@ import { type Lowerer } from "../lowerer.js";
 import { maybePromiseResolve, maybePromiseUnionOf } from "../maybe-promise.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
+  BOOL,
   DYN,
   type IrExpr,
   type IrFunction,
@@ -488,6 +489,32 @@ export function lowerPromiseStaticCall(
       lowerer.noLowering("Promise.resolve at a unit-typed promise", call);
     }
     const value = lowerer.lowerExprExpecting(argNode, resultT.inner);
+    // In JavaScript, a checked-dynamic argument may itself hold a promise
+    // (a TypeScript async callback's result: `Promise.resolve(fn())`):
+    // Promise.resolve answers THAT promise — the same object, adopted —
+    // and wraps every other value.
+    if (
+      isJsSourceFile(call.getSourceFile()) &&
+      value.type.kind === "dyn" &&
+      resultT.inner.kind === "dyn"
+    ) {
+      const local = lowerer.declareHiddenLocal("%resolveValue", DYN);
+      const ref: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+        result: {
+          kind: "ternary",
+          cond: { kind: "dynTest", test: "promise", value: ref, type: BOOL, loc },
+          then: { kind: "dynCheck", value: ref, type: resultT, loc },
+          else_: { kind: "intrinsic", name: "promise.resolve", args: [ref], type: resultT, loc },
+          type: resultT,
+          loc,
+        },
+        type: resultT,
+        loc,
+      };
+    }
     return { kind: "intrinsic", name: "promise.resolve", args: [value], type: resultT, loc };
   }
   return null; // reject lands on lowerPromiseRejectCall / the member fence

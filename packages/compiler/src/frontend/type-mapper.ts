@@ -4309,6 +4309,27 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
       )
     )
       pt = DYN;
+    // A DEFAULTED program-source parameter of a function, arrow or function
+    // expression that the checker types `any` — a default under an
+    // `(...args: any[]) => any` wrapper slot (`wrap((limit = 5) => ...)`),
+    // where the contextual `any` wins over the default's type: its binding
+    // is already the checked-dynamic kind inside the body
+    // (dynFallbackType), so the callable's ABI slot is the same dyn value.
+    // Other `any` parameters keep their existing paths (an object literal
+    // holding such a callback stays a checked-dynamic object).
+    if (
+      pt === null &&
+      !rest &&
+      decl !== undefined &&
+      ts.isParameter(decl) &&
+      decl.initializer !== undefined &&
+      (ts.isArrowFunction(decl.parent) ||
+        ts.isFunctionExpression(decl.parent) ||
+        ts.isFunctionDeclaration(decl.parent)) &&
+      !decl.getSourceFile().isDeclarationFile &&
+      (checker.getTypeOfSymbol(p).flags & ts.TypeFlags.Any) !== 0
+    )
+      pt = DYN;
     if (pt) pt = jsOpenObjectType(decl, pt, ctx.shapes, ctx.unions);
     // Belt and braces for non-strict type worlds: an optional param's
     // ABI slot is always the undefined-armed union (strictNullChecks
