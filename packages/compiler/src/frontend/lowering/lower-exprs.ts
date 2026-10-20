@@ -8,6 +8,7 @@ import { InternalCompilerError } from "../../errors.js";
  * ToBoolean/ToString coercion helpers, and field/element reads and writes
  * (FieldTarget). */
 import * as ts from "../ts7/adapter.js";
+import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
 import { constituentTypes } from "../ts7/checker.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerMaybePromiseAwait, maybePromiseUnionOf } from "./maybe-promise.js";
@@ -461,6 +462,20 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     const local = lowerer.resolveThis();
     if (local) {
       const value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
+      // `this.#x` in a function-local class's prototype method, whose `this`
+      // is the call-site value: the field lives on the native instance of
+      // this evaluation (checkedPrivateReceiver).
+      const access = expr.parent;
+      if (
+        local.type.kind === "dyn" &&
+        ts.isPropertyAccessExpression(access) &&
+        access.expression === expr &&
+        ts.isPrivateIdentifier(access.name)
+      ) {
+        const owner = localPrivateBrandClass(lowerer, access.name);
+        if (owner)
+          return checkedPrivateReceiver(lowerer, owner.info, owner.decl, access, value, loc);
+      }
       const initialized = lowerer.ctx.superInitialized;
       if (initialized)
         return {

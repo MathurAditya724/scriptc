@@ -3372,6 +3372,13 @@ declare module "util" {
     info: import("node:crypto").BinaryLike,
     keylen: number,
   ) => Promise<ArrayBuffer>;
+  /* A callback-only function (`obj.close.bind(obj)`): before the targets
+   * whose leading parameters would otherwise capture it. Builtins that take
+   * arguments before their callback never match these. */
+  export function promisify<TResult>(
+    fn: (callback: (err: any, result: TResult) => void) => void,
+  ): () => Promise<TResult>;
+  export function promisify(fn: (callback: (err?: any) => void) => void): () => Promise<void>;
   export function promisify(
     fn: typeof import("node:crypto").randomFill,
   ): <T extends ArrayBufferView | ArrayBufferLike>(
@@ -4006,7 +4013,10 @@ declare module "readline" {
     meta?: boolean;
     shift?: boolean;
   }
-  export interface Interface extends Disposable {
+  export class Interface implements Disposable {
+    /* createInterface creates interfaces; instanceof tells the two
+     * modules' classes apart. */
+    protected constructor();
     /* terminal says whether the interface edits lines as a terminal;
      * line and cursor are the terminal's (line is '' otherwise). history
      * is the history option itself (or the interface's own empty array);
@@ -4121,7 +4131,10 @@ declare module "readline/promises" {
   /* The readline Interface with the promise question: it resolves with
    * the next line, rejects with an AbortError when options.signal aborts,
    * and with ERR_USE_AFTER_CLOSE after close(). */
-  export interface Interface extends Disposable {
+  export class Interface implements Disposable {
+    /* createInterface creates interfaces; instanceof tells the two
+     * modules' classes apart. */
+    protected constructor();
     /* terminal says whether the interface edits lines as a terminal;
      * line and cursor are the terminal's (line is '' otherwise). history
      * is the history option itself (or the interface's own empty array);
@@ -5238,6 +5251,8 @@ declare module "tls" {
     getProtocol(): string | null;
     /* OpenSSL's suite name, the IANA name and the suite's version */
     getCipher(): CipherNameAndProtocol;
+    /* whether the handshake resumed a cached session */
+    isSessionReused(): boolean;
   }
   export interface CipherNameAndProtocol {
     name: string;

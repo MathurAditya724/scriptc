@@ -22,7 +22,7 @@ import {
   type ClassInfo,
 } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
-import { newFnCtx } from "./lowerer.js";
+import { PoisonError, newFnCtx } from "./lowerer.js";
 import { classMethodValue } from "./class-method-values.js";
 
 /** Data added to a top-level class prototype has shared identity and remains
@@ -376,14 +376,37 @@ export function reflectClassPrototype(
       const method = ts.isMethodDeclaration(member)
         ? name
         : `${ts.isGetAccessor(member) ? "get" : "set"}:${name}`;
-      const value = classMethodValue(lowerer, info.decl, info, method, loc);
+      // A member whose value or key has no lowering refuses the reflection
+      // at run time; its own diagnostic must not escape this walk (the
+      // walk runs from emitReachable, after statement fences are placed).
+      let before = lowerer.diags.length;
+      let value: IrExpr | null;
+      try {
+        value = classMethodValue(lowerer, info.decl, info, method, loc);
+      } catch (error) {
+        if (!(error instanceof PoisonError)) throw error;
+        lowerer.diags.splice(before);
+        return refuse(
+          "prototype reflection with a member that has no lowering is not supported yet",
+        );
+      }
       if (!value || !lowerer.dynConvertible(value.type))
         return refuse(
           "prototype reflection with a member that cannot cross a checked value boundary is not supported yet",
         );
-      const key: IrExpr = ts.isComputedPropertyName(member.name)
-        ? lowerer.lowerExpr(member.name.expression)
-        : { kind: "strLit", value: member.name.text, type: STRING, loc };
+      let key: IrExpr;
+      before = lowerer.diags.length;
+      try {
+        key = ts.isComputedPropertyName(member.name)
+          ? lowerer.lowerExpr(member.name.expression)
+          : { kind: "strLit", value: member.name.text, type: STRING, loc };
+      } catch (error) {
+        if (!(error instanceof PoisonError)) throw error;
+        lowerer.diags.splice(before);
+        return refuse(
+          "prototype reflection with a computed member key that has no lowering is not supported yet",
+        );
+      }
       initialization.then.push(
         define(
           key,
@@ -556,6 +579,15 @@ function prototypeProtectedKeys(
         const entries: [ts.Symbol, string][] = owner.symbolMethods ? [...owner.symbolMethods] : [];
         const entry = entries.find(([, field]) => field === name);
         const declaration = entry ? entry[0].valueDeclaration : undefined;
+        // A CommonJS key-table property holds its key in the table's global.
+        const tableKey =
+          declaration && ts.isPropertyAssignment(declaration)
+            ? lowerer.globalsBySymbol.get(entry![0])
+            : undefined;
+        if (tableKey) {
+          keys.push({ kind: "varRef", localId: tableKey.id, type: tableKey.type, loc });
+          continue;
+        }
         if (
           !declaration ||
           !ts.isVariableDeclaration(declaration) ||
