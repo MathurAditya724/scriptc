@@ -27,6 +27,7 @@ import { isStreamUndefCallExpr } from "./lower-server.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
 import { declSymbolOf } from "./lower-modules.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
+import { restPackingAdapterFits } from "./coercions/function-adapters.js";
 import { implicitMonoFile, implicitAnyParamSymbolsOf } from "./generic-functions.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
@@ -46,12 +47,15 @@ export type ParamMode = "required" | "omittable" | "rest" | "dynRest" | "argumen
  * otherwise. `bodyType` is present exactly for DEFAULTED program params:
  * the plain T the body sees after the prologue applies the default (see
  * declareParams). `callDefault` is the compile-time default value for a
- * table-backed builtin's omittable slot. */
+ * table-backed builtin's omittable slot. `entryNarrow` marks a dyn ABI slot
+ * inherited from a JavaScript base method whose TypeScript override declares
+ * a typed parameter: the prologue narrows the checked value to that type. */
 export interface ParamShape {
   type: IrType;
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
+  entryNarrow?: IrType;
 }
 
 export interface FnSig {
@@ -408,7 +412,15 @@ export function paramShapes(
       return { type: mapped, mode: "rest" };
     }
     if (declParam.initializer) return defaultParameterShape(lowerer, declParam, mapped);
-    if (declParam.questionToken && !lowerer.bareUndefinedArmedUnion(mapped)) {
+    // A checked-value slot holds undefined directly, so an omitted
+    // argument needs no union arm (paramShape's declared-signature rule;
+    // an erased type parameter and a class-implemented interface view
+    // both map here).
+    if (
+      declParam.questionToken &&
+      !lowerer.bareUndefinedArmedUnion(mapped) &&
+      mapped.kind !== "dyn"
+    ) {
       lowerer.unsupported(
         "SC1090",
         declParam,
@@ -514,6 +526,21 @@ export function requireExactArityValue(
   // optional/defaulted params spell their `T | undefined` slots (mapType's
   // completed-signature contract), so omitted trailing args complete with
   // the undefined arm like any direct call.
+  // A nested function declaration whose only non-required parameter is a
+  // typed rest: its value carries the typed-rest ABI its own type spells,
+  // and every use converts it at its slot (same signature, or the rest
+  // packing adapter for fixed parameters).
+  if (
+    contextual === null &&
+    ts.isFunctionDeclaration(blame) &&
+    blame.name !== undefined &&
+    funcType.kind === "func" &&
+    funcType.restAbi === "typed" &&
+    shapes.every((s) => s.mode === "required" || s.mode === "rest")
+  ) {
+    const own = lowerer.mapTypeOf(lowerer.typeOf(blame.name));
+    if (own && typeEquals(own, funcType)) return;
+  }
   const target = contextual ? lowerer.checker.getContextualType(contextual) : undefined;
   const mapped = target
     ? lowerer.mapTypeOf(target)
@@ -571,6 +598,16 @@ export function requireExactArityValue(
     mappedFn?.kind === "func" &&
     funcType.kind === "func" &&
     lowerer.spawnResFnAdapterPlan(funcType, mappedFn) !== null
+  ) {
+    return;
+  }
+  // A typed-rest function in a slot with fixed parameters (`log(...m:
+  // string[])` into `(m: string) => void`): the slot coercion's packing
+  // adapter collects the slot's arguments into the rest array.
+  if (
+    mappedFn?.kind === "func" &&
+    funcType.kind === "func" &&
+    restPackingAdapterFits(lowerer, funcType, mappedFn)
   ) {
     return;
   }
@@ -707,27 +744,6 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
   });
 }
 
-/** True when a "use strict" directive prologue covers the node: its
- * file's or an enclosing function's (strict code's arguments object never
- * aliases the named parameters). */
-function inStrictCode(node: ts.Node): boolean {
-  const strict = (stmts: readonly ts.Statement[]): boolean => {
-    for (const st of stmts) {
-      if (!ts.isExpressionStatement(st) || !ts.isStringLiteral(st.expression)) return false;
-      if (st.expression.text === "use strict") return true;
-    }
-    return false;
-  };
-  for (let n: ts.Node | undefined = node; n !== undefined; n = n.parent) {
-    if (ts.isSourceFile(n)) return strict(n.statements.nodes);
-    if (ts.isFunctionLike(n)) {
-      const body = (n as { body?: ts.Node }).body;
-      if (body !== undefined && ts.isBlock(body) && strict(body.statements.nodes)) return true;
-    }
-  }
-  return false;
-}
-
 /** Arrows inherit arguments. Ordinary JS functions receive a hidden
  * array unless a declared rest parameter already owns that contract.
  * Class methods are strict; other parameterized forms require ES modules
@@ -756,7 +772,7 @@ function appendArgumentsParameter(
     if (
       !classMethod &&
       !isNodeEsmFile(node.getSourceFile(), lowerer.program) &&
-      !inStrictCode(node)
+      !unmappedArguments(node)
     ) {
       lowerer.unsupported(
         "SC1090",
@@ -766,6 +782,35 @@ function appendArgumentsParameter(
     }
   }
   shapes.push({ type: DYN, mode });
+}
+
+/** Whether `arguments` inside `node` is Node's unmapped object: strict code
+ * (a 'use strict' prologue on the file or an enclosing function, or a class
+ * body) or a non-simple parameter list (defaults, rest, destructuring). Its
+ * elements then never alias the parameters, which is the ES module case. */
+function unmappedArguments(node: ts.SignatureDeclaration): boolean {
+  if (
+    node.parameters.nodes.some(
+      (p) =>
+        p.initializer !== undefined || p.dotDotDotToken !== undefined || !ts.isIdentifier(p.name),
+    )
+  )
+    return true;
+  const useStrict = (statements: readonly ts.Statement[]): boolean => {
+    for (const statement of statements) {
+      if (!ts.isExpressionStatement(statement) || !ts.isStringLiteral(statement.expression))
+        return false;
+      if (statement.expression.text === "use strict") return true;
+    }
+    return false;
+  };
+  for (let n: ts.Node | undefined = node; n; n = n.parent) {
+    if (ts.isClassDeclaration(n) || ts.isClassExpression(n)) return true;
+    if (ts.isFunctionLike(n) && n.body && ts.isBlock(n.body) && useStrict(n.body.statements.nodes))
+      return true;
+    if (ts.isSourceFile(n)) return useStrict(n.statements.nodes);
+  }
+  return false;
 }
 
 /** Signature checks + param shapes + IR func type for any lambda-like
@@ -903,8 +948,7 @@ export function lambdaSignature(
     const ctxSigs = ctxType
       ? lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType))
       : [];
-    const ctxDecl =
-      ctxSigs.length === 1 ? lowerer.checker.signatureDeclaration(ctxSigs[0]!) : undefined;
+    const ctxDecl = ctxSigs.length === 1 ? ctxSigs[0]!.declaration : undefined;
     const ctxRetRaw =
       ctxDecl && !ctxDecl.getSourceFile().isDeclarationFile
         ? lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!))

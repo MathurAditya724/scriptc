@@ -13,12 +13,34 @@ import { writesPublished } from "./publication.js";
 /** Lib calls that read a captured stack trace. */
 const STACK_READS: ReadonlySet<string> = new Set(["error.stack"]);
 
-function readsStack(expr: IrExpr): boolean {
-  return expr.kind === "libCall" && STACK_READS.has(expr.fn);
+/** A typed `error.stack` read, or a read on a checked-dynamic value that
+ * can reach an error's own `stack` accessor: the constant key `stack`, or
+ * a computed key when `computedKeys` (the program spells "stack", so a
+ * computed key can name it). A key the program assembles from other
+ * strings or from data it reads keeps the static answer. */
+function readsStack(expr: IrExpr, computedKeys: boolean): boolean {
+  if (expr.kind === "libCall") return STACK_READS.has(expr.fn);
+  if (expr.kind !== "dynKeyGet") return false;
+  if (expr.key.kind === "strLit") return expr.key.value === "stack";
+  return computedKeys;
 }
 
-function containsStackRead(fn: IrFunction): boolean {
-  return !everyStmtList(fn.body, { stmt: () => true, expr: (expr) => !readsStack(expr) });
+/** Whether the module contains the string literal "stack". */
+function spellsStack(mod: IrModule): boolean {
+  return mod.functions.some(
+    (fn) =>
+      !everyStmtList(fn.body, {
+        stmt: () => true,
+        expr: (expr) => !(expr.kind === "strLit" && expr.value === "stack"),
+      }),
+  );
+}
+
+function containsStackRead(fn: IrFunction, computedKeys: boolean): boolean {
+  return !everyStmtList(fn.body, {
+    stmt: () => true,
+    expr: (expr) => !readsStack(expr, computedKeys),
+  });
 }
 
 /** Visit every expression of `body` that execution can reach: statements
@@ -43,7 +65,8 @@ function visitLiveExprs(body: IrStmt[], visit: (expr: IrExpr) => void): void {
  * and those reads must not cost every call of the program a frame.
  * Programs without any stack read answer false without the walk. */
 export function observesStacks(mod: IrModule): boolean {
-  if (!mod.functions.some(containsStackRead)) return false;
+  const computedKeys = spellsStack(mod);
+  if (!mod.functions.some((fn) => containsStackRead(fn, computedKeys))) return false;
   const byName = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const classNames = new Set((mod.classes ?? []).map((cls) => cls.name));
   const pending: string[] = [...moduleFunctionReferences(mod)];
@@ -67,7 +90,7 @@ export function observesStacks(mod: IrModule): boolean {
     const fn = byName.get(name);
     if (fn === undefined) continue;
     visitLiveExprs(fn.body, (expr) => {
-      if (readsStack(expr)) observed = true;
+      if (readsStack(expr, computedKeys)) observed = true;
       if (expr.kind === "call" && !reached.has(expr.callee)) pending.push(expr.callee);
       const referenced = exprFunctionReference(expr);
       if (referenced !== undefined && !reached.has(referenced)) pending.push(referenced);

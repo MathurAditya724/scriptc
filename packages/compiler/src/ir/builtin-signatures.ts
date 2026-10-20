@@ -22,6 +22,7 @@ import {
   HTTPCLIENTREQ_T,
   HTTPREQ_T,
   HTTPRES_T,
+  JSVAL,
   NETSERVER_T,
   NETSOCKET_T,
   PROCSTREAM_T,
@@ -205,6 +206,23 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.in": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.freeze": { argTypes: [DYN], result: DYN },
   "dyn.isFrozen": { argTypes: [DYN], result: BOOL },
+  /** Object.defineProperty on a declared class field (scr_json.c): the
+   * field's current value (borrowed), its FIELD_* attribute word, the
+   * instance's CLASS_* integrity word, the field name and the descriptor.
+   * Validates as Node does (TypeError "Cannot redefine property: f") and
+   * answers a one-property holder of the defined value and attributes (+1),
+   * read back with class.definedBits and class.definedValue. */
+  "class.defineField": { argTypes: [DYN, F64, F64, STRING, DYN], result: DYN },
+  "class.definedBits": { argTypes: [DYN, STRING], result: F64 },
+  "class.definedValue": { argTypes: [DYN, STRING], result: DYN },
+  /** Whether a property descriptor has a `value` member. */
+  "class.descriptorHasValue": { argTypes: [DYN], result: BOOL },
+  /** Throws Node's TypeError for a write to a read-only class field: the
+   * field name and the instance's class name. */
+  "class.throwReadOnly": { argTypes: [STRING, STRING], result: VOID },
+  /** Throws Node's TypeError for a class field initializer on a
+   * non-extensible instance: the field name. */
+  "class.throwNotExtensible": { argTypes: [STRING], result: VOID },
   "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
   "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
@@ -568,6 +586,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** os.constants: the per-thread null-prototype constants object (dlopen,
    * errno, signals, priority, UV_UDP_REUSEADDR). Never throws. */
   "os.constants": { argTypes: [], result: DYN },
+  /** fs.constants: the target's cached null-prototype constants object. */
+  "fs.constants": { argTypes: [], result: DYN },
   /** The deprecated node:constants object (scr_os.c): the os groups and
    * fs.constants merged with the borrowed baked crypto.constants table,
    * frozen, one per thread. */
@@ -695,6 +715,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** `a.localeCompare(b)`: -1/0/1 in Node's root-locale collation for
    * Latin-script text (scr_str_locale_compare). Never throws. */
   "str.localeCompare": { argTypes: [STRING, STRING], result: F64 },
+  /** Annex B substr(start, length) with start ToNumber'd and length's
+   * presence; never throws. */
+  "str.substr": { argTypes: [STRING, F64, F64, BOOL], result: STRING },
+  /** toLocaleLowerCase/toLocaleUpperCase (scr_regex.c): the locales value
+   * as written, upper=true for toLocaleUpperCase. Throws for null and for
+   * locale forms with no native rules. */
+  "str.localeCase": { argTypes: [STRING, DYN, BOOL], result: STRING },
   "str.replaceLiteral": { argTypes: [STRING, STRING, STRING, BOOL], result: STRING },
   // (subject, characters, NUL-separated replacement texts): the fused
   // chain of global one-character replacements.
@@ -759,6 +786,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "num.toExponential": { argTypes: [F64], result: STRING },
   "num.toFixed0": { argTypes: [F64], result: STRING },
   "num.toFixed": { argTypes: [F64, F64], result: STRING },
+  /** toPrecision(precision) with the argument ToNumber'd and its presence
+   * (undefined answers ToString); toExponential with a DEFINED
+   * fractionDigits. Both throw V8's RangeError for out-of-range digits. */
+  "num.toPrecision": { argTypes: [F64, F64, BOOL], result: STRING },
+  "num.toExponentialDigits": { argTypes: [F64, F64], result: STRING },
   "num.toStringRadix": { argTypes: [F64, DYN], result: STRING },
   /** toString(radix) with a number radix (scr_lib.c): truncates it as
    * ToIntegerOrInfinity does, THROWS RangeError outside 2..36. */
@@ -2376,6 +2408,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Rest listeners use the checked function bridge to pack event arguments. */
   "child.onDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
   "process.connected": { argTypes: [], result: BOOL },
+  /** Whether this fork child opened its channel; part of process.send's
+   * presence in programs with fork targets. Never throws. */
+  "process.ipcOpen": { argTypes: [], result: BOOL },
   "process.send": { argTypes: [STRING], result: BOOL },
   "process.sendCb": { argTypes: [STRING, null], result: BOOL },
   "process.disconnect": { argTypes: [], result: VOID },
@@ -2605,6 +2640,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * whether min was given. */
   "crypto.randomFillView": { argTypes: [null, F64, F64], result: BYTES_U8 },
   "crypto.randomFillViewRest": { argTypes: [null, F64], result: BYTES_U8 },
+  /** crypto.getRandomValues: a view returns itself at its own type (the
+   * float/size DOMExceptions are thrown at run time); any other value
+   * takes the checked form. */
+  "crypto.getRandomValues": { argTypes: [null], result: BYTES_U8 },
+  "crypto.getRandomValuesDyn": { argTypes: [DYN], result: DYN },
   "crypto.randomFillSyncDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
   "crypto.randomFillCb": { argTypes: [null, F64, F64, F64, null], result: VOID },
   "crypto.randomFillCbDyn": { argTypes: [DYN, DYN, DYN, F64, null], result: VOID },
@@ -2617,6 +2657,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.generateKeyCb": { argTypes: [DYN, DYN, null], result: VOID },
   "crypto.keyObjectInput": { argTypes: [DYN], result: BYTES_U8 },
   "crypto.isKeyObject": { argTypes: [DYN], result: BOOL },
+  /** WebCrypto (scr_webcrypto.c): each method takes its argument vector as
+   * one dyn array and answers a promise that argument and validation
+   * failures reject. CryptoKey values are native handles. */
+  "webcrypto.importKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.verify": { argTypes: [DYN], result: { kind: "promise", inner: BOOL } },
+  "webcrypto.digest": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.isCryptoKey": { argTypes: [DYN], result: BOOL },
   "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
   "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
   "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
@@ -2655,6 +2703,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "buffer.fromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
   "buffer.fromStrChecked": { argTypes: [STRING, STRING], result: BYTES_U8 },
   "buffer.brand": { argTypes: [BYTES_U8], result: BYTES_U8 },
+  /** Buffer.isBuffer over a typed view: whether the view carries the
+   * Buffer brand (any element kind; only Buffers do). Never throws. */
+  "buffer.isBranded": { argTypes: [null], result: BOOL },
   /** Buffer.from on checked-native strings, bytes, arrays and data-only
    * array-like/Buffer-JSON objects. The encoding is a normalized literal;
    * non-string inputs ignore it. Copies the input and may throw during
@@ -2994,8 +3045,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "process.exit": { argTypes: [F64], result: VOID },
   /** Numeric process.exitCode write (integer validation, implicit exit status). */
   "process.setExitCode": { argTypes: [F64], result: VOID },
+  /** The process.exitCode write of a program that also reads the
+   * property: the same validation, and the code counts as assigned. */
+  "process.setExitCodeTracked": { argTypes: [F64], result: VOID },
   /** The code for process.exit() with no argument, or zero when unset. */
   "process.currentExitCode": { argTypes: [], result: F64 },
+  /** Whether process.exitCode reads a code rather than undefined. Never throws. */
+  "process.hasExitCode": { argTypes: [], result: BOOL },
   "process.cwd": { argTypes: [], result: STRING },
   /** getpid(2) / getuid(2): zero args → f64. POSIX-only target, so both
    * always answer (the checker's `getuid?` optionality covers Windows —
@@ -3119,6 +3175,29 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.compare": { argTypes: [DYN, DYN, STRING], result: BOOL },
   "dyn.bitwise": { argTypes: [DYN, DYN, STRING], result: DYN },
   "dyn.proxyNew": { argTypes: [DYN, DYN], result: DYN },
+  /* Dynamic-tier values (jsval; two-tier design stage S3). The jsval pass
+   * (ir/jsval.ts) introduces these in dynamic-tier functions only; the
+   * runtime is scr_js_value.c. Arguments are borrowed and results owned,
+   * like every libCall. Boundary conversions: js.fromDyn (a cell keeps its
+   * identity), js.toDyn (an immediate is boxed), js.fromF64/fromBool/
+   * fromStr/fromBigInt (the design's toJs: immediates, and strings and
+   * BigInts under a tag without a copy) and js.toF64 (fromJs to number: dynCheck's
+   * number check and TypeError). The operators are the dyn.* operators
+   * over jsvals, with identical JS semantics. */
+  "js.fromDyn": { argTypes: [DYN], result: JSVAL },
+  "js.toDyn": { argTypes: [JSVAL], result: DYN },
+  "js.fromF64": { argTypes: [F64], result: JSVAL },
+  "js.fromBool": { argTypes: [BOOL], result: JSVAL },
+  "js.fromStr": { argTypes: [STRING], result: JSVAL },
+  "js.fromBigInt": { argTypes: [BIGINT_T], result: JSVAL },
+  "js.toF64": { argTypes: [JSVAL], result: F64 },
+  "js.add": { argTypes: [JSVAL, JSVAL], result: JSVAL },
+  "js.arithmetic": { argTypes: [JSVAL, JSVAL, STRING], result: JSVAL },
+  "js.bitwise": { argTypes: [JSVAL, JSVAL, STRING], result: JSVAL },
+  "js.compare": { argTypes: [JSVAL, JSVAL, STRING], result: BOOL },
+  "js.toNumeric": { argTypes: [JSVAL], result: JSVAL },
+  "js.increment": { argTypes: [JSVAL, BOOL], result: JSVAL },
+  "js.toNumberCoerce": { argTypes: [JSVAL], result: F64 },
   // Always throws; the result is the READ's declared type (a typed dummy
   // the unwind abandons) — the libCall case skips the result check.
   /** A read of a `declare`d const NOTHING defines (the bundler-define
@@ -3177,6 +3256,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** SameValue over checked values, including NaN, signed zero and reference identity. */
   "dyn.sameValue": { argTypes: [DYN, DYN], result: BOOL },
   "error.stack": { argTypes: [null], result: STRING },
+  "error.setStack": { argTypes: [null, STRING], result: VOID },
   "error.stackLimitGet": { argTypes: [], result: F64 },
   "error.stackLimitSet": { argTypes: [F64], result: VOID },
   // Receiver (any error-hierarchy object) and the program-dependent
@@ -3445,6 +3525,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * throws err when unhandled. count/countFn/names/listeners/getMax/
    * setMax/setDefaultMax/getDefaultMax are the introspection surface. */
   "emitter.new": { argTypes: [], result: VOID },
+  /** `x.constructor.name` of an emitter or stream (a borrowed object of
+   * EventEmitter's hierarchy): the +1 class name the instance records. */
+  "emitter.className": { argTypes: [null], result: STRING },
   "emitter.ctor": { argTypes: [null], result: VOID },
   "emitter.on": { argTypes: [null, STRING, null, BOOL, BOOL], result: VOID },
   "emitter.off": { argTypes: [null, STRING, null], result: VOID },
@@ -3962,6 +4045,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [F64, STRING, DYN],
     result: { kind: "promise", inner: STRING },
   },
+  /** The question forms with a checked-dynamic query (a JavaScript value
+   * that need not be a string). */
+  "rl.questionDyn": { argTypes: [F64, DYN, null], result: VOID },
+  "rl.questionAsyncDyn": { argTypes: [F64, DYN], result: { kind: "promise", inner: STRING } },
+  "rl.questionAsyncSignalDyn": {
+    argTypes: [F64, DYN, DYN],
+    result: { kind: "promise", inner: STRING },
+  },
   "rl.close": { argTypes: [F64], result: VOID },
   "rl.pause": { argTypes: [F64], result: VOID },
   "rl.resume": { argTypes: [F64], result: VOID },
@@ -3969,6 +4060,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** prompt(preserveCursor): [handle, preserveCursor] */
   "rl.promptWith": { argTypes: [F64, BOOL], result: VOID },
   "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
+  "rl.setPromptDyn": { argTypes: [F64, DYN], result: VOID },
   "rl.getPrompt": { argTypes: [F64], result: STRING },
   "rl.write": { argTypes: [F64, STRING], result: VOID },
   /** write(data, key): [handle, hasData, data, hasKey, hasName, name,
@@ -4001,6 +4093,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "rl.terminal": { argTypes: [F64, F64, BOOL, DYN, BOOL], result: VOID },
   "rl.line": { argTypes: [F64], result: STRING },
   "rl.isTerminal": { argTypes: [F64], result: BOOL },
+  "rl.isPromises": { argTypes: [F64], result: BOOL },
+  /** createInterface's input or output as a checked-dynamic value:
+   * [value, output] — the stream; refused when it is not one. */
+  "rl.inputFromDyn": { argTypes: [DYN, BOOL], result: { kind: "object", className: "%Readable" } },
+  "rl.outputFromDyn": {
+    argTypes: [DYN, BOOL],
+    result: { kind: "object", className: "%Writable" },
+  },
   "rl.cursor": { argTypes: [F64], result: F64 },
   /** readline.cursorTo / moveCursor / clearLine / clearScreenDown: rl.seq
    * [kind (0-3), the first and second numbers, whether the second is
@@ -4154,6 +4254,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * warnings and DeprecationWarning emissions read their truthiness. */
   "process.deprecationFlag": { argTypes: [F64], result: DYN },
   "process.setDeprecationFlag": { argTypes: [F64, DYN], result: VOID },
+  "process.setEmitWarning": { argTypes: [DYN], result: VOID },
   /** AsyncLocalStorage (node:async_hooks — scr_async.c): stores are f64
    * handles; contexts are immutable fiber-carried snapshots (spawned
    * fibers inherit the spawner's — Node's init-time capture). run/exit

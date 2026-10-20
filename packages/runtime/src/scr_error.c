@@ -354,6 +354,12 @@ ScrStr *scr_error_stack(ScrError *e) {
   return scr_str_retain(e->stack);
 }
 
+void scr_error_set_stack(ScrError *e, ScrStr *stack) {
+  ScrStr *replacement = scr_str_retain(stack);
+  scr_str_release(e->stack);
+  e->stack = replacement;
+}
+
 bool scr_error_is(const void *obj) {
   const ScrVt *vt = ((const ScrError *)obj)->vt;
   return scr_error_vts[SCR_ERR_ERROR].pre <= vt->pre &&

@@ -8,7 +8,7 @@ import { moduleSourceCandidates } from "./module-source-candidates.js";
 export function isNodeGlobal(program: ts.Program, expression: ts.Identifier): boolean {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(expression);
-  const declarations = symbol ? checker.declarationsOf(symbol) : [];
+  const declarations = symbol ? symbol.declarations : [];
   return (
     declarations.length > 0 &&
     declarations.every((declaration) => {
@@ -45,7 +45,7 @@ export function isBuiltinMemberImport(
 ): boolean {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(ident);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl !== undefined && ts.isImportSpecifier(decl)) {
     const importDecl = decl.parent?.parent?.parent;
     if (ts.isImportDeclaration(importDecl) && ts.isStringLiteral(importDecl.moduleSpecifier)) {
@@ -60,7 +60,7 @@ export function isBuiltinMemberImport(
   }
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
     const target = checker.getAliasedSymbol(symbol);
-    const targetDecl = checker.declarationsOf(target)[0];
+    const targetDecl = target.declarations[0];
     if (targetDecl !== undefined && targetDecl.getSourceFile().isDeclarationFile) {
       for (
         let parent: ts.Node | undefined = targetDecl.parent;
@@ -88,7 +88,7 @@ export function isBuiltinNamespaceImport(
 ): boolean {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(ident);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   let importDecl: ts.ImportDeclaration | undefined;
   if (decl !== undefined && ts.isNamespaceImport(decl)) {
     const candidate = decl.parent?.parent;
@@ -108,12 +108,9 @@ function constInitializer(program: ts.Program, expr: ts.Expression): ts.Expressi
   if (!ts.isIdentifier(current)) return null;
   const symbol = program.getTypeChecker().getSymbolAtLocation(current);
   const decl = symbol
-    ? program
-        .getTypeChecker()
-        .declarationsOf(symbol)
-        .find((candidate): candidate is ts.VariableDeclaration =>
-          ts.isVariableDeclaration(candidate),
-        )
+    ? symbol.declarations.find((candidate): candidate is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(candidate),
+      )
     : undefined;
   if (
     decl === undefined ||

@@ -7,7 +7,7 @@ const node = { kind: "object" as const, className: "Node" };
 const kids = { kind: "array" as const, elem: node };
 
 const mod: IrModule = {
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: loc.file,
   entry: "main",
   functions: [

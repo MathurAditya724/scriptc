@@ -119,7 +119,7 @@ static void *scr_message_alloc(size_t count, size_t size) {
 
 static size_t scr_message_grow(size_t capacity) {
   if (capacity > SIZE_MAX / 2) scr_trap("scriptc: message too large\n");
-  return capacity ? capacity * 2 : 16;
+  return capacity ? capacity * 2 : 4;
 }
 
 static unsigned char *scr_message_copy(const void *data, size_t length) {
@@ -672,6 +672,15 @@ done:
   free(encoder.identities);
   free(encoder.stack);
   if (scr_exc_pending()) { scr_message_free(message); return NULL; }
+  /* A queued message keeps its nodes until it is received: drop the
+   * growth slack. */
+  if (message->count && message->count < message->capacity) {
+    ScrMessageNode *nodes = realloc(message->nodes, message->count * sizeof(*nodes));
+    if (nodes) {
+      message->nodes = nodes;
+      message->capacity = message->count;
+    }
+  }
   return message;
 }
 
@@ -801,6 +810,12 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
         }
         if (!values[i]->v.arr.properties) values[i]->v.arr.properties = scr_dyn_new_obj();
         scr_dyn_obj_set(values[i]->v.arr.properties, property->key, property->length, value);
+      } else if (node->kind == SCR_MESSAGE_ERROR && property->length == 5 && !memcmp(property->key, "stack", 5)) {
+        /* The new error's own `stack` accessor stores the value. */
+        ScrStr *key = scr_str_new(property->key, property->length);
+        scr_dyn_key_set(values[i], key, value);
+        scr_str_release(key);
+        scr_dyn_release(value);
       } else scr_dyn_obj_set(values[i], property->key, property->length, value);
     }
     if (node->kind == SCR_MESSAGE_ERROR) {
