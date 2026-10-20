@@ -1360,8 +1360,9 @@ export function mapAsyncGeneratorAnnotation(type: ts.Type, ctx: TypeMapperCtx): 
   if (
     !symbol ||
     !["AsyncIterator", "AsyncIterableIterator", "AsyncIterable"].includes(symbol.name) ||
-    !symbol.declarations
-      .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
+    !symbol.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+    )
   )
     return null;
   const args = checker.getTypeArguments(type as ts.TypeReference);
@@ -2513,12 +2514,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     psym &&
     WEBCRYPTO_DYN_TYPES.has(psym.name) &&
-    psym.declarations
-      .some(
-        (d) =>
-          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()),
-      )
+    psym.declarations.some(
+      (d) =>
+        (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()),
+    )
   ) {
     return DYN;
   }
@@ -4184,7 +4184,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // semantics would DEGRADE under the collapse — class instances,
       // Maps/Sets, functions (closure identity, `x === String`
       // narrowing), promises, regexes, generators, handles — keep their
-      // existing union homes and fences below. A pending recursive
+      // existing union homes and fences below. URL is the
+      // exception: its handle boxes by reference and keeps every member,
+      // so it collapses too (dynSubsumableUnionArm). A pending recursive
       // placeholder cannot collapse (back-references already hold the
       // union id); the degenerate recursive spelling keeps its fence.
       if (
@@ -6284,6 +6286,13 @@ function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
     case "bool":
     case "undefinedT":
     case "nullT":
+      return true;
+    // URL boxes BY REFERENCE (its checked-dynamic handle keeps identity,
+    // reads and writes its members through the native accessors, answers
+    // `instanceof URL`, and checks back out to the typed value), so it
+    // rides the collapse beside fetch's Request/Response handles:
+    // `string | URL | Request`, fetch's own input type under @types/node.
+    case "url":
       return true;
     case "record":
     case "array":
