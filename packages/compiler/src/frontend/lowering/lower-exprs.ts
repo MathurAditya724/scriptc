@@ -1,3 +1,5 @@
+import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { fallbackTainted } from "./checked-fallback.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -268,6 +270,25 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // enclosing optChain — read the bind temp instead of re-lowering.
   const chainRecv = lowerer.chainRecvByNode.get(expr);
   if (chainRecv) return { ...chainRecv, loc };
+
+  // A failed checked value in a fallback tail: assertions check nothing
+  // (checked-fallback.ts).
+  if (
+    lowerer.fallbackTaint !== null &&
+    (ts.isAsExpression(expr) ||
+      ts.isTypeAssertion(expr) ||
+      ts.isNonNullExpression(expr) ||
+      ts.isSatisfiesExpression(expr)) &&
+    fallbackTainted(lowerer, expr.expression)
+  )
+    return lowerer.lowerExpr(expr.expression);
+  if (lowerer.fallbackTaint !== null && fallbackTainted(lowerer, expr)) {
+    if (ts.isObjectLiteralExpression(expr)) return lowerDynObjectLiteral(lowerer, expr);
+    if (ts.isArrayLiteralExpression(expr) && !expr.elements.nodes.some(ts.isSpreadElement)) {
+      const elems = expr.elements.nodes.map((el) => lowerer.lowerExprExpecting(el, DYN));
+      return { kind: "dynArrLit", elems, type: DYN, loc };
+    }
+  }
 
   // --external-types supplies CHECKER truth only. A value rooted in one
   // of those declarations has no runtime implementation in scriptc, so
