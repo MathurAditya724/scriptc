@@ -147,3 +147,26 @@ console.log(before('{"x":1}'), rewritten('{"x":1}'), hoisted('{"x":1}'));
   }
   expect(mod.functions.flatMap(checks).some((c) => c.fallback)).toBe(false);
 });
+
+test("sequential casts split the code after them at most twice", async () => {
+  const source = `
+interface P { x: number }
+function sum(a: string, b: string, c: string, d: string): number {
+  const p = JSON.parse(a) as P;
+  const q = JSON.parse(b) as P;
+  const r = JSON.parse(c) as P;
+  const s = JSON.parse(d) as P;
+  return p.x + q.x + r.x + s.x;
+}
+console.log(sum('{"x":1}', '{"x":2}', '{"x":3}', '{"x":4}'));
+`;
+  const fn = fnNamed(await lowerSource(source), "sum");
+  // p splits the code after it, and q splits each copy of that code; r and
+  // s keep the throwing cast instead of doubling the copies again.
+  expect(splits(fn)).toHaveLength(3);
+  const binding = (c: { loc: { start: number } }) =>
+    /const (\w) = [^\n]*$/.exec(source.slice(0, c.loc.start))?.[1];
+  const casts = checks(fn);
+  expect(new Set(casts.filter((c) => c.fallback).map(binding))).toEqual(new Set(["p", "q"]));
+  expect(new Set(casts.filter((c) => !c.fallback).map(binding))).toEqual(new Set(["r", "s"]));
+});

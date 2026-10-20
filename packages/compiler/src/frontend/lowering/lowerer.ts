@@ -2615,10 +2615,12 @@ export class Lowerer {
   suppressStats = false;
   /** Checked-cast fallback (checked-fallback.ts): sites opened by their
    * root's declaration, by root; armed sites whose tails have not split
-   * yet; and the taint of the dynamic tail being lowered. */
+   * yet; the taint of the dynamic tail being lowered; and the number of
+   * splits whose tails are being lowered (each lowers its tail twice). */
   fallbackSites = new Map<ts.Symbol, FallbackSite>();
   fallbackArmed: FallbackSite[] = [];
   fallbackTaint: FallbackTaint | null = null;
+  fallbackSplitDepth = 0;
   /** Comparisons interned by operand representations and equality semantics. */
   readonly equalityHelpers = new Map<string, string>();
   /** Synthetic array-HOF loop functions (map/filter/forEach desugar),

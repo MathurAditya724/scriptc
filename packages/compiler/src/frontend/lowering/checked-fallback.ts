@@ -75,8 +75,10 @@ export interface FallbackTaint {
  * twice. */
 const MAX_TAIL_NODES = 20000;
 
-/** At most this many sites share a split point (2^n lowerings). */
-const MAX_SHARED_SITES = 2;
+/** A site arms only while fewer than this many splits enclose its tail
+ * or share its split point: each one lowers the tail again, so a tail is
+ * lowered at most 2^n times. */
+const MAX_NESTED_SPLITS = 2;
 
 type StatementList = { statements: { nodes: readonly ts.Statement[] } };
 
@@ -485,12 +487,13 @@ function armSite(lowerer: Lowerer, site: FallbackSite, lowered: IrStmt[], id: st
     );
   });
   if (!whole) return false;
-  // Sites sharing a split point multiply the lowerings.
-  let shared = 0;
+  // Splits around this site (sequential casts each split the code after
+  // them) and sites sharing a split point multiply the lowerings.
+  let nested = lowerer.fallbackSplitDepth;
   for (const other of lowerer.fallbackArmed) {
-    for (const a of other.anchors) if (site.anchors.has(a)) shared++;
+    for (const a of other.anchors) if (site.anchors.has(a)) nested++;
   }
-  if (shared >= MAX_SHARED_SITES) return false;
+  if (nested >= MAX_NESTED_SPLITS) return false;
   check.fallback = true;
   const loc = check.loc;
   lowered.splice(
@@ -547,8 +550,15 @@ export function lowerFallbackTail(
   if (rest.length === 0) return [];
   const [site, ...others] = sites as [FallbackSite, ...FallbackSite[]];
   const at = locOf(rest.length > 0 ? rest[0]! : site.boundaryStmt);
-  const statics = scoped(lowerer, () => lowerFallbackTail(lowerer, rest, others));
-  const dynamic = lowerDynamicTail(lowerer, rest, site, others);
+  let statics: IrStmt[];
+  let dynamic: IrStmt[];
+  lowerer.fallbackSplitDepth++;
+  try {
+    statics = scoped(lowerer, () => lowerFallbackTail(lowerer, rest, others));
+    dynamic = lowerDynamicTail(lowerer, rest, site, others);
+  } finally {
+    lowerer.fallbackSplitDepth--;
+  }
   return [
     {
       kind: "if",
