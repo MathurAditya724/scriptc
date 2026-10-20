@@ -12,6 +12,7 @@ import {
   mayRequireBuiltinAlias,
   rewriteBuiltinAliasRequires,
 } from "./npm-static-builtin-aliases.js";
+import { mayHoldEnumIife, rewriteEnumIifes } from "./npm-static-enum-iife.js";
 import { builtinPackageAliasFor } from "./package-shims.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
 import type { SourceFile } from "./ts7/ast-types.js";
@@ -103,6 +104,13 @@ export class FrontendServices {
     this.ensureOpen();
     if (!source.includes("module.exports")) return null;
     return normalizeCjsFunctionExports(this.parse(path, source, "js"));
+  }
+  /** A package module with its literal-valued TypeScript enum IIFEs
+   * respelled as object literals (null: none). */
+  enumIifes(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!mayHoldEnumIife(source)) return null;
+    return rewriteEnumIifes(this.parse(path, source, "js"));
   }
   /** A package module with its requires of builtin-aliased polyfill
    * packages respelled as the builtins (null: none). */
