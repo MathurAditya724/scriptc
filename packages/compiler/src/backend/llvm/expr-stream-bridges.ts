@@ -766,8 +766,13 @@ export function streamTypedRefMaterializeAdapter(
       !meta.def.instancePrototypeHelper &&
       !meta.def.prototypeDataHelper
     ) {
-      host.declare(`declare ptr @scr_stream_dyn_view(ptr)`);
-      B.line(`${out} = call ptr @scr_stream_dyn_view(ptr %p)`);
+      // Programs with constructor-function streams view them through
+      // scr_dyn_builtin_stream.c, which answers their own objects.
+      const view = host.usesDynBuiltinStream
+        ? "scr_dyn_builtin_stream_view"
+        : "scr_stream_dyn_view";
+      host.declare(`declare ptr @${view}(ptr)`);
+      B.line(`${out} = call ptr @${view}(ptr %p)`);
     } else B.line(`${out} = call ptr @scr_dyn_new_obj()`);
     const withAttributes = meta.def.fields.some((field) => field.name === CLASS_ATTRIBUTES);
     if (meta.def.tracksOwnFields) {

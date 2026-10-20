@@ -35,6 +35,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     searchParams: features.searchParams,
     qs: features.qs,
     dynBuiltinClass: features.dynBuiltinClass,
+    dynBuiltinStream: features.dynBuiltinStream,
     parseArgs: features.parseArgs,
     stream: features.stream,
     net: features.net,

@@ -3603,6 +3603,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * Transform (5) and PassThrough (6) as untyped constructor values, one
    * per thread (scr_dyn_builtin_class.c). */
   "dyn.builtinClass": { argTypes: [F64], result: DYN },
+  /** The stream classes (2-6 above) with their stream half: constructor
+   * functions over them get native stream state
+   * (scr_dyn_builtin_stream.c). */
+  "dyn.builtinStreamClass": { argTypes: [F64], result: DYN },
   /** `value instanceof C` for those constructors, over the value's
    * prototype chain. */
   "dyn.builtinInstanceOf": { argTypes: [DYN, F64], result: BOOL },

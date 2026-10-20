@@ -130,6 +130,8 @@ export interface DynHost extends WalkerHost {
   /** The shared adapter record: live array capsules read its `arrayOps`, so a
    * narrower return type would hand the native compiler a copy without it. */
   liveDynRefAdapter(t: IrType): LlStreamTypedRefAdapter;
+  /** See moduleUsesDynBuiltinStream. */
+  usesDynBuiltinStream?(): boolean;
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
@@ -139,6 +141,19 @@ export interface DynHost extends WalkerHost {
 }
 
 const FN_ATTRS = "#0";
+
+/** scr_dyn_builtin_stream_check's kind for a runtime stream class (the
+ * numbering of scr_dyn_builtin_class.c), or null. */
+function builtinStreamKind(className: string): number | null {
+  const kinds: Record<string, number> = {
+    "%Readable": 2,
+    "%Writable": 3,
+    "%Duplex": 4,
+    "%Transform": 5,
+    "%PassThrough": 6,
+  };
+  return kinds[className] ?? null;
+}
 
 export class LlDyn {
   private readonly dynMatchers = new Map<string, string>();
@@ -1491,6 +1506,24 @@ export class LlDyn {
       B.line(`${ref} = call ptr @scr_dyn_typed_ref_unbox(ptr %d)`);
       B.terminate(`ret ptr ${ref}`);
       B.startBlock(lNext);
+      // A constructor-function stream (scr_dyn_builtin_stream.c) carries
+      // its runtime stream.
+      const streamKind = t.kind === "object" ? builtinStreamKind(t.className) : null;
+      if (streamKind !== null && this.host.usesDynBuiltinStream?.() === true) {
+        host.declare(`declare ptr @scr_dyn_builtin_stream_check(ptr, double)`);
+        const own = B.tmp(),
+          hit = B.tmp();
+        B.line(
+          `${own} = call ptr @scr_dyn_builtin_stream_check(ptr %d, double ${f64Lit(streamKind)})`,
+        );
+        B.line(`${hit} = icmp ne ptr ${own}, null`);
+        const lOwn = B.newLabel("dc.ctor"),
+          lNotOwn = B.newLabel("dc.notctor");
+        B.condBr(hit, lOwn, lNotOwn);
+        B.startBlock(lOwn);
+        B.terminate(`ret ptr ${own}`);
+        B.startBlock(lNotOwn);
+      }
       if (t.kind !== "union" && preserveRefs) {
         const kind = this.kindOf(B, "%d");
         const capsule = B.tmp();

@@ -96,6 +96,19 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // through the dyn-invoke unit, inspect unhandled 'error' payloads and
   // create EventEmitter's private symbols.
   ["scr_dyn_builtin_class.c", all("dynBuiltinClass", "inspect", "dynInvoke", "symbol", "emitter")],
+  // Their stream half also references the stream unit.
+  [
+    "scr_dyn_builtin_stream.c",
+    all(
+      "dynBuiltinStream",
+      "dynBuiltinClass",
+      "stream",
+      "inspect",
+      "dynInvoke",
+      "symbol",
+      "emitter",
+    ),
+  ],
   ["scr_stream.c", "stream"],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],

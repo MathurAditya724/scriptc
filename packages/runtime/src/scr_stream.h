@@ -449,6 +449,9 @@ void scr_stream_set_flush(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
  * released when the stream is freed; scr_stream_native answers it
  * (borrowed) when it was set with `release`, else NULL. */
 void scr_stream_set_flush_on_prefinish(ScrStream *s);
+/* `stream.destroyed = value` (scr_dyn_builtin_stream.c): Node's setter
+ * stores the states' flag without destroying the stream. */
+void scr_stream_set_destroyed(ScrStream *s, bool destroyed);
 void scr_stream_set_native(ScrStream *s, void *state, void (*release)(void *));
 void *scr_stream_native(ScrStream *s, void (*release)(void *));
 

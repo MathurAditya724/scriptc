@@ -144,6 +144,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "searchParams",
     "qs",
     "dynBuiltinClass",
+    "dynBuiltinStream",
     "parseArgs",
     "stream",
     "net",

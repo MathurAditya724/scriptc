@@ -56,6 +56,7 @@ export interface NativeLinkFeatures {
   searchParams: boolean;
   qs: boolean;
   dynBuiltinClass: boolean;
+  dynBuiltinStream: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
