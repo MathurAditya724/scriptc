@@ -223,6 +223,7 @@ import { constituentTypes } from "../ts7/checker.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
+import { classGeneratorIterable } from "./class-iterables.js";
 
 interface UsingRegistration {
   acquire: IrStmt[];
@@ -9149,6 +9150,16 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
       );
     }
     if (iterable.type.kind === "object") {
+      // A [Symbol.iterator] generator method: the loop drives the
+      // generator it returns.
+      const generator = classGeneratorIterable(lowerer, iterable);
+      if (generator)
+        return lowerForOfGenerator(
+          lowerer,
+          stmt,
+          generator as IrExpr & { type: IrType & { kind: "generator" } },
+          labels,
+        );
       // Class iterables ([Symbol.iterator]() + next() — classIteratorOf)
       // drive the same protocol with ordinary method calls.
       const cit = lowerer.classIteratorOf(iterable.type);
