@@ -1,6 +1,6 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
 import { type LlEmitter, type LlScopeEntry, adoptingAwaitOf } from "./emitter.js";
-import { CAUGHT, type IrExpr, type IrStmt, STRING, isRefCounted } from "../../ir/ir.js";
+import { CAUGHT, F64, type IrExpr, type IrStmt, STRING, isRefCounted } from "../../ir/ir.js";
 import { emitStringSliceSnapshot } from "./string-slices.js";
 import {
   canDeferSplitPiece,
@@ -1657,6 +1657,8 @@ export function emitTryCatch(emitter: LlEmitter, s: IrStmt & { kind: "tryCatch" 
  * case, refcounted/boxed case-body locals are NULL-reset up front and
  * the scope-exit releases rely on NULL tolerance. */
 export function emitSwitch(emitter: LlEmitter, s: IrStmt & { kind: "switch" }): void {
+  const unitSwitch = charAtUnitSwitch(s);
+  if (unitSwitch !== null) return emitSwitch(emitter, unitSwitch);
   const B = emitter.B;
   const discKind = s.disc.type.kind;
   if (discKind !== "f64" && discKind !== "string" && discKind !== "bool") {
@@ -1680,7 +1682,31 @@ export function emitSwitch(emitter: LlEmitter, s: IrStmt & { kind: "switch" }): 
   const caseLabels = s.cases.map(() => B.newLabel("sw.c"));
   const defaultIdx = s.cases.findIndex((c) => c.test === null);
   const fallback = defaultIdx >= 0 ? caseLabels[defaultIdx]! : end;
-  if (!emitLiteralSwitch(emitter, disc, s.disc, s.cases, caseLabels, fallback)) {
+  const nullableString = nullableStringSwitch(emitter, s);
+  if (nullableString !== null) {
+    // `undefined` matches no string literal; any other value is the
+    // string itself and dispatches as a string switch.
+    const value = emitter.emitExpr(nullableString.value);
+    const present = B.tmp();
+    const dispatch = B.newLabel("sw.string");
+    B.line(`${present} = icmp ne ptr ${value.name}, null`);
+    B.condBr(present, dispatch, fallback);
+    B.startBlock(dispatch);
+    const text: LlValue = { name: value.name, type: STRING };
+    if (!emitLiteralSwitch(emitter, text, undefined, nullableString.cases, caseLabels, fallback)) {
+      nullableString.cases.forEach((c, i) => {
+        if (c.test?.kind !== "strLit") return;
+        const hit = B.tmp();
+        B.line(
+          `${hit} = call zeroext i1 ${emitter.literalEquals(c.test.value)}(ptr ${value.name})`,
+        );
+        const next = B.newLabel("sw.t");
+        B.condBr(hit, caseLabels[i]!, next);
+        B.startBlock(next);
+      });
+      B.br(fallback);
+    }
+  } else if (!emitLiteralSwitch(emitter, disc, s.disc, s.cases, caseLabels, fallback)) {
     s.cases.forEach((c, i) => {
       if (c.test === null) return;
       // Lazy source-order test evaluation (a test after the match never
@@ -1982,4 +2008,75 @@ export function emitStringSelfConcatAssign(
     else B.line(`store ptr ${result.name}, ptr ${b.slot}`);
   }
   return result;
+}
+
+/** `switch (x)` on a `string | undefined` value whose case tests are all
+ * string literals: the frontend's `switch (true)` over `x === "lit"` union
+ * equalities against one switch local. The local and the cases with plain
+ * string literal tests. */
+function nullableStringSwitch(
+  emitter: LlEmitter,
+  s: IrStmt & { kind: "switch" },
+): { value: IrExpr; cases: (IrStmt & { kind: "switch" })["cases"] } | null {
+  if (s.disc.kind !== "boolLit" || !s.disc.value) return null;
+  let value: (IrExpr & { kind: "varRef" }) | null = null;
+  const cases: (IrStmt & { kind: "switch" })["cases"] = [];
+  for (const c of s.cases) {
+    const test = c.test;
+    if (test === null) {
+      cases.push(c);
+      continue;
+    }
+    if (
+      test.kind !== "unionEq" ||
+      test.negated ||
+      test.sameValue ||
+      test.left.kind !== "varRef" ||
+      test.right.kind !== "unionWrap" ||
+      test.right.value.kind !== "strLit"
+    )
+      return null;
+    const nullable = emitter.nullableUnions.get(test.unionId);
+    if (
+      nullable === null ||
+      nullable.repr !== "single" ||
+      nullable.nullTag !== -1 ||
+      nullable.arm.kind !== "string" ||
+      test.right.tag !== nullable.refTag
+    )
+      return null;
+    if (value !== null && value.localId !== test.left.localId) return null;
+    value = test.left;
+    cases.push({ ...c, test: test.right.value });
+  }
+  return value === null ? null : { value, cases };
+}
+
+/** `switch (s.charAt(i))` (or `switch (s[i])`) whose case tests are all
+ * one-unit string literals, as a switch on `s.charCodeAt(i)` with the units
+ * as cases: no character string is built. An index out of range answers
+ * NaN, which matches no case, as "" matches no one-unit literal. */
+function charAtUnitSwitch(s: IrStmt & { kind: "switch" }): (IrStmt & { kind: "switch" }) | null {
+  const disc = s.disc;
+  if (disc.kind !== "strIntrinsic" || disc.method !== "charAt" || disc.args.length !== 1)
+    return null;
+  if (!s.cases.some((c) => c.test !== null)) return null;
+  if (
+    !s.cases.every(
+      (c) => c.test === null || (c.test.kind === "strLit" && c.test.value.length === 1),
+    )
+  )
+    return null;
+  return {
+    ...s,
+    disc: { ...disc, method: "charCodeAt", type: F64 },
+    cases: s.cases.map((c) =>
+      c.test?.kind === "strLit"
+        ? {
+            ...c,
+            test: { kind: "numLit", value: c.test.value.charCodeAt(0), type: F64, loc: c.test.loc },
+          }
+        : c,
+    ),
+  };
 }
