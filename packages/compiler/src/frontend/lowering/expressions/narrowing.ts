@@ -1151,6 +1151,50 @@ export function withRuntimeOptionalNarrowed<T>(
  *   memory);
  * - dyn → anything else (closures, class instances, void) is rejected:
  *   those types cannot be found inside a JSON dyn. */
+/** `Object.fromEntries(...) as T` with T a declared record (the generic
+ * `transform<T extends Record<string, unknown>>(t: T): T` idiom): the
+ * entries build a pure index-signature record, which has no layout in
+ * common with T's struct. Node keeps the object itself, with exactly the
+ * keys and the order the entries gave it. The result of fromEntries is a
+ * fresh object nothing else references, so the checked-dynamic bridge,
+ * which keeps keys and their order the same way `JSON.parse(text) as T`
+ * does, cannot be told apart from the original object; a value outside
+ * T throws the catchable TypeError of every checked cast. Other sources
+ * may be aliased, where a rebuilt object would sever mutation, so they
+ * keep the exact-shape fence. */
+function freshEntriesRecordAssertion(
+  lowerer: Lowerer,
+  expr: ts.AsExpression | ts.TypeAssertion,
+  inner: IrExpr,
+  target: IrType | null,
+): IrExpr | null {
+  if (inner.type.kind !== "record" || target?.kind !== "record") return null;
+  const source = lowerer.shapes.get(inner.type.shapeId);
+  const dest = lowerer.shapes.get(target.shapeId);
+  if (!source?.indexValue || source.tuple || source.fields.length > 0) return null;
+  if (!dest || dest.tuple || dest.indexValue || shapeHasAccessorSlots(dest)) return null;
+  let operand: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (
+    !ts.isCallExpression(operand) ||
+    !ts.isPropertyAccessExpression(operand.expression) ||
+    operand.expression.name.text !== "fromEntries" ||
+    !lowerer.isStdlibGlobal(operand.expression.expression, "Object")
+  )
+    return null;
+  if (!lowerer.dynConvertible(inner.type)) return null;
+  if (
+    !canDynCheckTo(
+      target,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return null;
+  const loc = locOf(expr);
+  return { kind: "dynCheck", value: lowerer.coerceToExpected(inner, DYN), type: target, loc };
+}
+
 /** `e as T` and the old-style assertion `<T>e` — one node shape (both
  * carry `.type` and `.expression`), one lowering. */
 export function lowerAsExpression(
@@ -1286,6 +1330,8 @@ export function lowerAsExpression(
     ) {
       return lowerer.coerceInto(expr, inner, target);
     }
+    const rebuilt = freshEntriesRecordAssertion(lowerer, expr, inner, target);
+    if (rebuilt) return rebuilt;
     // Static assertions normally erase, but record layouts are
     // monomorphic: a consumer selected from the asserted shape must see
     // that shape physically. Reuse the ordinary slot coercion so plain
@@ -1327,6 +1373,12 @@ export function lowerAsExpression(
     return inner; // erasure, unchanged
   }
 
+  // `value as never` is the escape hatch that makes an unknown value fit
+  // any slot (`tagSuccess(value as never)`). No value has type never, so
+  // checking against its placeholder layout would reject every value.
+  // Erase it instead: the consuming slot applies the same validated
+  // extraction an unknown value gets wherever the checker admits it.
+  if (expr.type.kind === ts.SyntaxKind.NeverKeyword) return inner;
   const targetTs = lowerer.checker.getTypeFromTypeNode(expr.type);
   const target = lowerer.mapTypeOf(targetTs) ?? dynFallbackType(lowerer, expr.type, targetTs);
   if (!target) lowerer.badType(expr.type, targetTs);
