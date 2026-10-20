@@ -846,7 +846,9 @@ void scr_process_set_emit_warning(ScrDyn *fn) {
 
 /* A runtime-built warning while a replacement is installed: Node's modules
  * call process.emitWarning(message, type, code), so the replacement sees
- * those arguments; nothing is reported. A throw stays pending. */
+ * those arguments; nothing is reported. A throw stays pending. The call
+ * holds its own reference to the replacement, which may assign a new one
+ * while it runs. */
 static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *code) {
   ScrDyn *args[3];
   size_t argc = 0;
@@ -855,8 +857,10 @@ static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *cod
   args[argc++] = scr_dyn_new_str(type ? type : fallback);
   scr_str_release(fallback);
   if (code) args[argc++] = scr_dyn_new_str(code);
-  ScrDyn *r = scr_dyn_call(scr_emit_warning_override, args, argc, "process.emitWarning");
+  ScrDyn *fn = scr_dyn_retain(scr_emit_warning_override);
+  ScrDyn *r = scr_dyn_call(fn, args, argc, "process.emitWarning");
   scr_dyn_release(r);
+  scr_dyn_release(fn);
   for (size_t i = 0; i < argc; i++) scr_dyn_release(args[i]);
 }
 #endif /* SCR_WARNING_REPLACE */
@@ -1005,8 +1009,11 @@ static void scr_warn_bad_arg(const char *arg, const char *want) {
 void scr_process_emit_warning(ScrDyn *args) {
 #ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
-    ScrDyn *r = scr_dyn_apply(scr_emit_warning_override, args, "process.emitWarning");
+    /* Held for the call, like scr_emit_warning_replaced. */
+    ScrDyn *fn = scr_dyn_retain(scr_emit_warning_override);
+    ScrDyn *r = scr_dyn_apply(fn, args, "process.emitWarning");
     scr_dyn_release(r);
+    scr_dyn_release(fn);
     return;
   }
 #endif
@@ -1437,22 +1444,27 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
  * a thenable gets a fresh promise and its resolve job, anything else a
  * fulfilled promise (a throwing `then` read rejects it). The element
  * joins the combinator right after, so a thenable's job sits between
- * the jobs of the entries around it, exactly Node's iteration. */
-static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, ScrDyn *value, const ScrDyn *reader) {
+ * the jobs of the entries around it, exactly Node's iteration. Without a
+ * combinator (`c` NULL) this is PromiseResolve for one value. */
+static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, const ScrDyn *value, const ScrDyn *reader) {
   if (value->kind == SCR_DYN_PROMISE) return scr_promise_retain(value->v.promise);
   ScrPromise *source = scr_promise_new();
   ScrDyn *then = scr_dyn_then_of(value, reader);
   if (scr_exc_pending()) {
     scr_promise_reject_pending(source);
   } else if (then) {
-    scr_promise_combine_flush(c);
+    if (c) scr_promise_combine_flush(c);
     scr_dyn_thenable_schedule(source, value, then, reader);
   } else {
-    scr_promise_fulfill_ref(source, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v,
-                            scr_dyn_trace_v);
+    scr_promise_fulfill_ref(source, scr_dyn_retain((ScrDyn *)value), scr_dyn_retain_v,
+                            scr_dyn_release_v, scr_dyn_trace_v);
   }
   scr_dyn_release(then);
   return source;
+}
+
+ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader) {
+  return scr_dyn_promise_entry(NULL, value, reader);
 }
 
 static void scr_dyn_settled_store(ScrArr *a, double i, ScrPromise *src) {

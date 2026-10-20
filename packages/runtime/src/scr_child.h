@@ -193,6 +193,9 @@ void scr_child_ipc_on_disconnect(ScrChild *c, ScrClosure *cb /*moves*/,
                                  bool once);
 double scr_process_fork_target(double target_count);
 bool scr_process_ipc_connected(void);
+/* Whether this fork child opened its channel (process.send's presence in
+ * a program with fork targets; disconnecting keeps it). */
+bool scr_process_ipc_open(void);
 bool scr_process_ipc_send(ScrStr *json);
 bool scr_process_ipc_send_cb(ScrStr *json, ScrClosure *cb /*moves*/,
                              ScrIpcSendFn fn);

@@ -21,6 +21,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
+  "dyn.promiseResolve",
   "process.onUncaughtException",
   "process.offUncaughtException",
   "process.onUnhandledRejection",
@@ -130,6 +131,10 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.clientSignal",
+  "http.requestDyn",
+  "http.requestDynCb",
+  "https.requestDyn",
+  "https.requestDynCb",
   "rl.createSignal",
   "rl.questionAsyncSignal",
   "sp.finishedOptsSignal",
@@ -198,12 +203,24 @@ const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "rea
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
   "dyn.arrayPrototype",
+  "dyn.builtinFunction",
   "dyn.builtinMethod",
   "dyn.defineProperty",
   "dyn.defineProps",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
+  "dyn.globalConstructor",
   "dyn.objCreateWithProperties",
+  "dyn.objectTag",
+]);
+
+/** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
+const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "constructor",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+  "toString",
+  "valueOf",
 ]);
 
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
@@ -211,6 +228,7 @@ const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.connected",
   "process.disconnect",
   "process.forkTarget",
+  "process.ipcOpen",
   "process.onDisconnect",
   "process.onMessage",
   "process.send",
@@ -467,6 +485,8 @@ const RUNTIME_FEATURE_RULES = {
   dc: rule({ prefixes: ["dc."] }),
   /** dns.lookup lives in the dgram unit. */
   dgram: rule({ prefixes: ["dgram.", "dns."], types: ["dgramSocket"] }),
+  /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
+  dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
@@ -493,7 +513,13 @@ const RUNTIME_FEATURE_RULES = {
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS],
-    expr: (node, _tables) => node.kind === "dynInvoke",
+    // Constant-key reads of Object.prototype member names answer the
+    // inherited member through scr_dyn_invoke.c.
+    expr: (node, _tables) =>
+      node.kind === "dynInvoke" ||
+      (node.kind === "dynKeyGet" &&
+        node.key.kind === "strLit" &&
+        INHERITED_MEMBER_NAMES.has(node.key.value)),
   }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
@@ -519,6 +545,9 @@ const RUNTIME_FEATURE_RULES = {
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
+  /** A socket 'lookup' listener: the C main installs the net unit's
+   * lookup records (scr_net_lookup_install). */
+  netLookup: rule({ fns: ["net.sockOnLookup"] }),
   http: rule({
     prefixes: ["http.", "tls.", "https.", "http2."],
     types: ["httpReq", "httpRes", "httpClientReq", "secureCtx"],
@@ -636,6 +665,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     copying: false,
     dc: false,
     dgram: false,
+    dnsPromises: false,
     dynAsync: false,
     dynInvoke: false,
     dynTier: false,
@@ -644,6 +674,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsWatch: false,
+    netLookup: false,
     http: false,
     http2: false,
     inspect: false,

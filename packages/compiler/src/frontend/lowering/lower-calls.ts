@@ -227,6 +227,7 @@ import {
 } from "./optional-arguments.js";
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
 import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
+import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
@@ -246,6 +247,8 @@ import {
   objLitGenericFnInfoOf,
   genericCallInstance,
 } from "./generic-functions.js";
+
+import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
@@ -267,6 +270,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const json = lowerJsonRequireCall(lowerer, expr);
   if (json) return json;
 
+  // eval(...) and Function(...): Node's EvalError under
+  // --disallow-code-generation-from-strings (code-generation.ts).
+  {
+    const codeGeneration = codeGenerationCalleeOf(lowerer, expr.expression);
+    if (codeGeneration !== null) return lowerCodeGenerationCall(lowerer, expr, codeGeneration);
+  }
   // Inline require() of a program module (cjs-inline-require.ts): a
   // member call over its export table resolves like a binding's member
   // call after the module's %init at this position; the require itself
@@ -7717,6 +7726,8 @@ function lowerObjectStaticCall(
     if (target && declaredTarget && isDynTypedRefType(declaredTarget))
       target = lowerer.coerceToExpected(target, declaredTarget);
     if (target && member === "defineProperty") {
+      const field = lowerClassFieldDefine(lowerer, call, target);
+      if (field) return field;
       const native = lowerClassDataDescriptor(lowerer, call, member, target);
       if (native) return native;
     }
@@ -7859,6 +7870,19 @@ function lowerObjectStaticCall(
             loc,
           };
     }
+    if (member === "preventExtensions" || member === "seal") {
+      const integrity = lowerClassIntegrity(lowerer, call, member, value);
+      if (integrity) return integrity;
+    } else if (isDynTypedRefType(value.type)) {
+      // The instance's checked view carries its integrity state.
+      return {
+        kind: "libCall",
+        fn: member === "isSealed" ? "dyn.isSealed" : "dyn.isExtensible",
+        args: [lowerer.coerceToExpected(value, DYN)],
+        type: BOOL,
+        loc: locOf(call),
+      };
+    }
     if (value.type.kind === "dyn") {
       const operation = {
         preventExtensions: "dyn.preventExtensions",
@@ -7929,6 +7953,8 @@ function lowerObjectStaticCall(
         )
     )
       return value;
+    const integrity = lowerClassIntegrity(lowerer, call, "freeze", value);
+    if (integrity) return integrity;
     lowerer.noLowering(
       "Object.freeze of a possibly-aliased value",
       call,

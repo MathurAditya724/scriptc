@@ -251,9 +251,9 @@
       "apiEntries": 51,
       "static": {
         "supported": 0,
-        "partial": 0,
+        "partial": 10,
         "refused": 0,
-        "not-implemented": 51,
+        "not-implemented": 41,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -866,10 +866,10 @@
       "apiEntries": 68,
       "static": {
         "supported": 0,
-        "partial": 3,
+        "partial": 4,
         "refused": 0,
         "not-implemented": 0,
-        "by-design": 65,
+        "by-design": 64,
         "unreviewed": 0,
         "not-applicable": 0
       }
@@ -926,9 +926,9 @@
       "apiEntries": 89,
       "static": {
         "supported": 0,
-        "partial": 7,
+        "partial": 8,
         "refused": 1,
-        "not-implemented": 81,
+        "not-implemented": 80,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -30726,8 +30726,15 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-untyped.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -30841,8 +30848,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dnsPromises.lookup",
+        "tests": [
+          "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30864,8 +30875,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dnsPromises.lookupService",
+        "tests": [
+          "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31255,8 +31270,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dnsPromises.getDefaultResultOrder",
+        "tests": [
+          "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31370,8 +31389,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.lookup",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31485,8 +31509,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.getServers",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31508,8 +31537,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.lookup",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31554,8 +31588,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.lookupService",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31922,8 +31961,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.setDefaultResultOrder",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31945,8 +31989,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "partial",
+        "evidence": "compiler-feature:dns.dns.getDefaultResultOrder",
+        "tests": [
+          "tests/corpus/5648-dns-lookup-forms.ts",
+          "tests/corpus/5649-dns-service-servers.ts",
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -79415,6 +79464,11 @@
           "tests/corpus/5210-process-memory-usage.ts",
           "tests/corpus/5211-process-identity.ts",
           "tests/corpus/5809-process-exit-and-rejections.cjs",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts",
+          "tests/corpus/6422-process-exitcode-read.ts",
+          "tests/corpus/6423-process-exitcode-default.ts",
+          "tests/corpus/6424-process-exit-keeps-exitcode.ts",
           "tests/corpus/990-process-basics.ts",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
@@ -79492,7 +79546,9 @@
         "status": "partial",
         "evidence": "compiler-feature:process.'disconnect'",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79531,7 +79587,9 @@
         "status": "partial",
         "evidence": "compiler-feature:process.'message'",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79944,7 +80002,9 @@
         "status": "partial",
         "evidence": "compiler-feature:process.process.disconnect",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -80589,7 +80649,9 @@
         "status": "partial",
         "evidence": "compiler-feature:process.process.send",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -81008,7 +81070,9 @@
         "status": "partial",
         "evidence": "compiler-feature:process.connected",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -81117,7 +81181,10 @@
           "tests/corpus/2941-process-exit-code.ts",
           "tests/corpus/2942-process-exit-code-override.ts",
           "tests/corpus/2943-process-exit-code-invalid.ts",
-          "tests/corpus/2944-process-exit-code-wrap.ts"
+          "tests/corpus/2944-process-exit-code-wrap.ts",
+          "tests/corpus/6422-process-exitcode-read.ts",
+          "tests/corpus/6423-process-exitcode-default.ts",
+          "tests/corpus/6424-process-exit-keeps-exitcode.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -91151,6 +91218,7 @@
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
           "tests/fixtures/node-test/cases/get-test-context.ts",
+          "tests/fixtures/node-test/cases/mock-fn-default.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
@@ -92562,6 +92630,7 @@
         "evidence": "compiler-feature:test.mock.fn",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-fn-default.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -101243,6 +101312,7 @@
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/6428-promisify-callback-functions.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -101269,6 +101339,7 @@
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/deep-equality.ts",
           "tests/fixtures/node-types/env-files.ts",
+          "tests/fixtures/node-types/promisify-callback-functions.ts",
           "tests/fixtures/node-types/promisify-crypto.ts",
           "tests/fixtures/node-types/promisify-dns.ts",
           "tests/fixtures/node-types/promisify-fs.ts",
@@ -102927,6 +102998,8 @@
           "tests/fixtures/node-types/promisify-crypto.ts",
           "tests/corpus/5632-promisify-dns.ts",
           "tests/fixtures/node-types/promisify-dns.ts",
+          "tests/corpus/6428-promisify-callback-functions.ts",
+          "tests/fixtures/node-types/promisify-callback-functions.ts",
           "tests/harness/project-config.test.ts"
         ]
       },
@@ -104459,6 +104532,8 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/v8-heap-statistics.ts",
+          "tests/corpus/v8-require-optional.cjs",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -105581,8 +105656,12 @@
       "anchor": "v8getheapstatistics",
       "nodeStability": null,
       "static": {
-        "status": "by-design",
-        "evidence": "compiler-chapter-policy:v8"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.v8.getHeapStatistics",
+        "tests": [
+          "tests/corpus/v8-heap-statistics.ts",
+          "tests/corpus/v8-require-optional.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111194,6 +111273,8 @@
           "tests/corpus/2630-stream-consumers-errors.ts",
           "tests/corpus/2862-web-readable-async-iteration.ts",
           "tests/corpus/4875-stream-consumers-array-buffer.ts",
+          "tests/corpus/stream-web-readable.ts",
+          "tests/corpus/stream-web-require.cjs",
           "tests/harness/fetch-conformance.test.ts"
         ]
       },
@@ -111462,8 +111543,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.ReadableStream",
+        "tests": [
+          "tests/corpus/stream-web-readable.ts",
+          "tests/corpus/stream-web-require.cjs",
+          "tests/corpus/2862-web-readable-async-iteration.ts"
+        ]
       },
       "anchorSource": "exact"
     },

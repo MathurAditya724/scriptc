@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6490-emit-warning-self-replace.ts"
+ ],
+ "diags": []
+}
