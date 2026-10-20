@@ -762,7 +762,9 @@ export class LlDyn {
       B.terminate(`ret i1 true`);
       B.startBlock(lNext);
     }
-    if (t.kind !== "dyn") {
+    // A union matches a capsule of another type through its arms below: a
+    // class capsule in a `C | undefined` field matches the `C` arm.
+    if (t.kind !== "dyn" && t.kind !== "union") {
       const view = this.viewFn(wrapped);
       this.host.declare(`declare void @scr_dyn_release_v(ptr)`);
       const kind = this.kindOf(B, "%d");
