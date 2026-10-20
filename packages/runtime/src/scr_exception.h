@@ -195,9 +195,10 @@ bool scr_caught_is_object(const ScrCaught *c);
 /* `String(e)` / `${e}` on a catch binding: JS's String() over the snapshot
  * — numbers/booleans/strings by value, Error payloads via
  * scr_error_to_string ("name: message" — String(e) carries no stack in
- * Node either), every other ref payload "[object Object]" (exact for
- * records and toString-less class instances; a documented approximation
- * for thrown arrays/closures/union boxes). Borrows the box; returns +1. */
+ * Node either), checked-dynamic payloads (thrown records, arrays and
+ * unions over them) by String() over the value, every other ref payload
+ * "[object Object]" (exact for toString-less class instances; an
+ * approximation for closures and union boxes). Borrows the box; returns +1. */
 ScrStr *scr_caught_to_string(const ScrCaught *c);
 /* `e as C` on a catch binding (scr_lib.c): an OBJ payload inside C's
  * preorder interval extracts (retained, +1); every other payload THROWS a
