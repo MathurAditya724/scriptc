@@ -55,8 +55,8 @@ void scr_insp_entry(ScrStr *s, bool is_num);
  * FIRST (a value already on the traversal stack answers its circular id,
  * assigned in discovery order — the caller renders scr_insp_circular and
  * descends no further), seen_push after begin, and ref_wrap around end's
- * result (pops the stack; values in the circular map gain the "<ref *N> "
- * prefix). State resets at each top-level value's first frame
+ * result (pops the stack; scr_insp_end gives values in the circular map
+ * the "<ref *N> " prefix). State resets at each top-level value's first frame
  * (scr_insp_begin(1)). ref_wrap BORROWS s and returns +1. */
 double scr_insp_circ_check(const void *v);
 void scr_insp_seen_push(const void *v);

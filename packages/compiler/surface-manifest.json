@@ -619,6 +619,12 @@
       "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
     },
     {
+      "id": "node-builtin.crypto.getRandomValues",
+      "kind": "node-builtin",
+      "name": "crypto.getRandomValues",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.hash",
       "kind": "node-builtin",
       "name": "crypto.hash",
@@ -867,6 +873,13 @@
       "kind": "node-builtin",
       "name": "fs.closeSync",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.constants",
+      "kind": "node-builtin",
+      "name": "fs.constants",
+      "status": "static",
+      "note": "node_constants.cc's fs group under the target libc's macros; members a platform lacks read as undefined"
     },
     {
       "id": "node-builtin.fs.copyFileSync",
@@ -4210,11 +4223,30 @@
       "note": "one date string, using the bounded parser shared with new Date(dateString).getTime()"
     },
     {
+      "id": "stdlib.date.toDateString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toDateString",
+      "status": "static"
+    },
+    {
       "id": "stdlib.date.toISOString",
       "kind": "stdlib",
       "name": "Date.prototype.toISOString",
       "status": "static",
       "note": "UTC ISO formatting over constructed and stored Date values"
+    },
+    {
+      "id": "stdlib.date.toString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toString",
+      "status": "static",
+      "note": "local time with the host zone's long English name; String(date) and template literals use it"
+    },
+    {
+      "id": "stdlib.date.toTimeString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toTimeString",
+      "status": "static"
     },
     {
       "id": "stdlib.date.toUTCString",
@@ -4830,8 +4862,8 @@
       "id": "stdlib.number.toPrecision",
       "kind": "stdlib",
       "name": "number.prototype.toPrecision",
-      "status": "unsupported",
-      "code": "SC2012"
+      "status": "static",
+      "note": "the lowered call form takes 0 to 1 arguments"
     },
     {
       "id": "stdlib.number.toString",
@@ -5643,6 +5675,20 @@
       "status": "unsupported",
       "code": "SC2020",
       "note": "WebAssembly support is planned as translation of each module whose bytes the build can see (an inline literal, or a file read from a path the compiler resolves) into native code; 'scriptc coverage' lists the modules this program would load (https://scriptc.dev/limitations)"
+    },
+    {
+      "id": "stdlib.webcrypto.CryptoKey",
+      "kind": "stdlib",
+      "name": "CryptoKey",
+      "status": "static",
+      "note": "secret HMAC keys with type, extractable, algorithm and usages, and instanceof CryptoKey"
+    },
+    {
+      "id": "stdlib.webcrypto.subtle",
+      "kind": "stdlib",
+      "name": "globalThis.crypto.subtle",
+      "status": "static",
+      "note": "importKey('raw') for HMAC keys, HMAC sign and verify, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused"
     },
     {
       "id": "syntax.async-generators",

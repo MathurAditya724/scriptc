@@ -30,23 +30,23 @@ afterAll(() => program.dispose());
 function childType(type: ts.TypeNode): boolean {
   if (ts.isTypeReferenceNode(type)) return ["IrExpr", "IrStmt"].includes(type.typeName.getText());
   if (ts.isArrayTypeNode(type)) return childType(type.elementType);
-  if (ts.isUnionTypeNode(type)) return type.types.some(childType);
+  if (ts.isUnionTypeNode(type)) return type.types.nodes.some(childType);
   if (ts.isTypeLiteralNode(type))
-    return type.members.some(
+    return type.members.nodes.some(
       (member) => ts.isPropertySignature(member) && member.type && childType(member.type),
     );
   return false;
 }
 
 for (const name of ["IrExpr", "IrStmt"]) {
-  const alias = source.statements.find(
+  const alias = source.statements.nodes.find(
     (node): node is ts.TypeAliasDeclaration =>
       ts.isTypeAliasDeclaration(node) && node.name.text === name,
   )!;
   if (!ts.isUnionTypeNode(alias.type)) throw new Error("IR must be a discriminated union");
-  for (const variant of alias.type.types) {
+  for (const variant of alias.type.types.nodes) {
     if (!ts.isTypeLiteralNode(variant)) throw new Error("IR variants must be records");
-    const members = variant.members.filter(ts.isPropertySignature);
+    const members = variant.members.nodes.filter(ts.isPropertySignature);
     const tag = members.find((member) => member.name.getText() === "kind")!.type!;
     const kind = JSON.parse(tag.getText()) as string;
     test(`${name}.${kind}: every declared child is visited and rewritten, metadata is preserved`, () => {
@@ -61,7 +61,8 @@ for (const name of ["IrExpr", "IrStmt"]) {
             expected.push(node);
             return node;
           }
-          if (ts.isUnionTypeNode(type)) return presence ? value(type.types.find(childType)!) : null;
+          if (ts.isUnionTypeNode(type))
+            return presence ? value(type.types.nodes.find(childType)!) : null;
           if (ts.isArrayTypeNode(type)) return [value(type.elementType), value(type.elementType)];
           if (ts.isTypeLiteralNode(type)) {
             const result: Record<string, unknown> = {
@@ -69,7 +70,7 @@ for (const name of ["IrExpr", "IrStmt"]) {
               drop: true,
               overflow: true,
             };
-            for (const member of type.members) {
+            for (const member of type.members.nodes) {
               if (ts.isPropertySignature(member) && member.type && childType(member.type))
                 result[member.name.getText()] = value(member.type);
             }
@@ -231,7 +232,7 @@ test("module traversal covers every declared type slot", () => {
         };
       if (name === "SrcLoc") return loc;
       if (active.has(name)) throw new Error(`unexpected recursive schema reference: ${name}`);
-      const declaration = source.statements.find(
+      const declaration = source.statements.nodes.find(
         (item) =>
           (ts.isInterfaceDeclaration(item) || ts.isTypeAliasDeclaration(item)) &&
           item.name.text === name,
@@ -239,21 +240,21 @@ test("module traversal covers every declared type slot", () => {
       if (!declaration) return undefined;
       active.add(name);
       const result = ts.isInterfaceDeclaration(declaration)
-        ? fields(declaration.members)
+        ? fields(declaration.members.nodes)
         : ts.isTypeAliasDeclaration(declaration)
           ? slots(declaration.type)
           : undefined;
       active.delete(name);
       return result;
     }
-    if (ts.isTypeLiteralNode(node)) return fields(node.members);
+    if (ts.isTypeLiteralNode(node)) return fields(node.members.nodes);
     if (ts.isArrayTypeNode(node)) return [slots(node.elementType)];
     if (ts.isParenthesizedTypeNode(node)) return slots(node.type);
-    if (ts.isIntersectionTypeNode(node)) return slots(node.types[0]!);
+    if (ts.isIntersectionTypeNode(node)) return slots(node.types.nodes[0]!);
     if (ts.isUnionTypeNode(node)) {
       // Metadata unions can choose any arm: the schema puts executable and
       // typed alternatives first, followed by null/unit alternatives.
-      return slots(node.types[0]!);
+      return slots(node.types.nodes[0]!);
     }
     return undefined;
   }
@@ -271,11 +272,14 @@ test("module traversal covers every declared type slot", () => {
     }
     return result;
   }
-  const declaration = source.statements.find(
+  const declaration = source.statements.nodes.find(
     (item): item is ts.InterfaceDeclaration =>
       ts.isInterfaceDeclaration(item) && item.name.text === "IrModule",
   )!;
-  const module = { ...fields(declaration.members), sourceFile: loc.file } as unknown as IrModule;
+  const module = {
+    ...fields(declaration.members.nodes),
+    sourceFile: loc.file,
+  } as unknown as IrModule;
   const seen: IrType[] = [];
   expect(
     everyModuleNode(module, {
@@ -303,14 +307,14 @@ test("module traversal covers every declared type slot", () => {
 });
 
 test("type traversal visits all structural children and leaves named shapes as references", () => {
-  const alias = source.statements.find(
+  const alias = source.statements.nodes.find(
     (node): node is ts.TypeAliasDeclaration =>
       ts.isTypeAliasDeclaration(node) && node.name.text === "IrType",
   )!;
   if (!ts.isUnionTypeNode(alias.type)) throw new Error("IrType must be a union");
-  for (const variant of alias.type.types) {
+  for (const variant of alias.type.types.nodes) {
     if (!ts.isTypeLiteralNode(variant)) throw new Error("IrType variants must be records");
-    const members = variant.members.filter(ts.isPropertySignature);
+    const members = variant.members.nodes.filter(ts.isPropertySignature);
     const kind = JSON.parse(
       members.find((member) => member.name.getText() === "kind")!.type!.getText(),
     ) as string;

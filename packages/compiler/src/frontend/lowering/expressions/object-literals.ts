@@ -24,6 +24,7 @@ import { PoisonError, neverTaintedJsType } from "../lowerer.js";
 import type { Lowerer } from "../lowerer.js";
 import { lowerIndexMergeHelper } from "../containers/indexed-objects.js";
 import type { IndexMergeContributor } from "../containers/indexed-objects.js";
+import type { KeyOrderSegment } from "../key-order-witness.js";
 import {
   PERF_ENTRY_MARKER,
   isGenericCallableMemberType,
@@ -71,7 +72,7 @@ export function foldedStringKeyOf(lowerer: Lowerer, expr: ts.Expression): string
     // fallback (a template the checker DID type as one literal).
     let out = expr.head.text;
     let folded = true;
-    for (const span of expr.templateSpans) {
+    for (const span of expr.templateSpans.nodes) {
       const part = foldedStringKeyOf(lowerer, span.expression);
       if (part === null) {
         folded = false;
@@ -167,7 +168,7 @@ function pureKeyExpr(lowerer: Lowerer, expr: ts.Expression): boolean {
     );
   }
   if (ts.isTemplateExpression(expr))
-    return expr.templateSpans.every((s) => pureKeyExpr(lowerer, s.expression));
+    return expr.templateSpans.nodes.every((s) => pureKeyExpr(lowerer, s.expression));
   return false;
 }
 
@@ -246,7 +247,7 @@ export function lowerDynObjectLiteral(
         : { kind: "libCall", fn: "dyn.assign", args: [acc, chunk], type: DYN, loc };
     fields = [];
   };
-  for (const prop of expr.properties) {
+  for (const prop of expr.properties.nodes) {
     if (
       ts.isPropertyAssignment(prop) &&
       !ts.isComputedPropertyName(prop.name) &&
@@ -511,7 +512,7 @@ function fenceClosureProbe(
   const fieldType: IrType & { kind: "func" } =
     slotType !== undefined && slotType.kind === "func"
       ? slotType
-      : { kind: "func", params: inner.parameters.map(() => DYN), ret: DYN };
+      : { kind: "func", params: inner.parameters.nodes.map(() => DYN), ret: DYN };
   if (slotType !== undefined && slotType.kind !== "func") return null;
   const diagsBefore = lowerer.diags.length;
   try {
@@ -562,7 +563,7 @@ function literalUnionArmOf(
   if (!tsType.isUnionType()) return null;
   const props: { name: string; type: ts.Type }[] = [];
   let hasSpread = false;
-  for (const p of expr.properties) {
+  for (const p of expr.properties.nodes) {
     if (ts.isPropertyAssignment(p) && !ts.isComputedPropertyName(p.name)) {
       props.push({ name: propNameText(lowerer, p.name), type: lowerer.typeOf(p.initializer) });
     } else if (ts.isShorthandPropertyAssignment(p) && ts.isIdentifier(p.name)) {
@@ -698,11 +699,11 @@ export function lowerObjectLiteral(
   if (
     !expected &&
     isJsSourceFile(expr.getSourceFile()) &&
-    expr.properties.some(
+    expr.properties.nodes.some(
       (prop) =>
         ts.isPropertyAssignment(prop) &&
         ((ts.isArrayLiteralExpression(prop.initializer) &&
-          prop.initializer.elements.length === 0) ||
+          prop.initializer.elements.nodes.length === 0) ||
           neverTaintedJsType(lowerer, prop.initializer, lowerer.typeOf(prop.initializer))),
     )
   ) {
@@ -711,7 +712,7 @@ export function lowerObjectLiteral(
   if (
     !expected &&
     isJsSourceFile(expr.getSourceFile()) &&
-    expr.properties.some(
+    expr.properties.nodes.some(
       (prop) =>
         ts.isPropertyAssignment(prop) &&
         lowerer.mapTypeOf(lowerer.typeOf(prop.initializer))?.kind === "array" &&
@@ -726,7 +727,7 @@ export function lowerObjectLiteral(
   if (
     !expected &&
     isJsSourceFile(expr.getSourceFile()) &&
-    expr.properties.some((prop) => {
+    expr.properties.nodes.some((prop) => {
       let value = ts.isPropertyAssignment(prop)
         ? prop.initializer
         : ts.isShorthandPropertyAssignment(prop)
@@ -754,8 +755,8 @@ export function lowerObjectLiteral(
   // literal in checked native storage instead of erasing its prototype ABI.
   if (
     isJsSourceFile(expr.getSourceFile()) &&
-    (expr.properties.length === 0 ||
-      expr.properties.some(
+    (expr.properties.nodes.length === 0 ||
+      expr.properties.nodes.some(
         (prop) =>
           ts.isMethodDeclaration(prop) ||
           ts.isGetAccessorDeclaration(prop) ||
@@ -782,7 +783,7 @@ export function lowerObjectLiteral(
   if (
     !expected &&
     isJsSourceFile(expr.getSourceFile()) &&
-    expr.properties.some(
+    expr.properties.nodes.some(
       (property) =>
         ts.isSpreadAssignment(property) &&
         (lowerer.builtinNamespaceModuleOf(property.expression)?.startsWith("path") ||
@@ -802,7 +803,7 @@ export function lowerObjectLiteral(
   // only arises in checked-dynamic JS.
   if (
     isJsSourceFile(expr.getSourceFile()) &&
-    expr.properties.some((p) => {
+    expr.properties.nodes.some((p) => {
       const n = ts.isSpreadAssignment(p) ? undefined : p.name;
       return n !== undefined && ts.isComputedPropertyName(n);
     })
@@ -813,7 +814,7 @@ export function lowerObjectLiteral(
   // message even when they also make the literal's type unmappable
   // (a getter or a `this`-returning method would otherwise surface as an
   // opaque type fence on the whole literal).
-  for (const prop of expr.properties) {
+  for (const prop of expr.properties.nodes) {
     if (ts.isSpreadAssignment(prop)) {
       // Supported shapes: FULL spreads of known record shapes read as
       // identifiers or other side-effect-free reads, all BEFORE any
@@ -935,7 +936,7 @@ export function lowerObjectLiteral(
   // preserves keys, evaluation order, and fields overwritten afterwards.
   if (
     mapped?.kind === "dyn" &&
-    expr.properties.some(
+    expr.properties.nodes.some(
       (p) =>
         ts.isSpreadAssignment(p) && lowerer.mapTypeOf(lowerer.typeOf(p.expression))?.kind === "dyn",
     )
@@ -954,7 +955,7 @@ export function lowerObjectLiteral(
   // object): `{}` carries no shape information, so the literal builds as
   // its OWN type, exactly the unmappable-context fallback below. An
   // empty LITERAL keeps the context (the shapes agree).
-  if (mapped?.kind === "record" && expr.properties.length > 0) {
+  if (mapped?.kind === "record" && expr.properties.nodes.length > 0) {
     const ctxShape = lowerer.shapes.get(mapped.shapeId);
     if (ctxShape && ctxShape.fields.length === 0 && !ctxShape.indexValue && !ctxShape.tuple) {
       mapped = lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? mapped;
@@ -970,7 +971,7 @@ export function lowerObjectLiteral(
   // type carries but the shape dropped (settled value/reason,
   // generic-callable members) belongs to the drop paths below, and
   // index-signature contexts keep every key (overflow capture).
-  if (mapped?.kind === "record" && expr.properties.length > 0) {
+  if (mapped?.kind === "record" && expr.properties.nodes.length > 0) {
     const ctxShape = lowerer.shapes.get(mapped.shapeId);
     if (ctxShape && !ctxShape.indexValue && !ctxShape.tuple) {
       const names = new Set(ctxShape.fields.map((f) => f.name));
@@ -979,7 +980,7 @@ export function lowerObjectLiteral(
         return members.some((m) => lowerer.checker.getPropertyOfType(m, name) !== undefined);
       };
       const extraOf = (text: string): boolean => !names.has(text) && !ctxHasProp(text);
-      const extra = expr.properties.some((p) => {
+      const extra = expr.properties.nodes.some((p) => {
         if (ts.isSpreadAssignment(p) || !p.name) return false;
         if (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) return extraOf(p.name.text);
         if (ts.isNumericLiteral(p.name)) return extraOf(String(Number(p.name.text)));
@@ -1036,7 +1037,7 @@ export function lowerObjectLiteral(
           !armShape?.tuple &&
           // `{} | undefined` supplies no layout for a populated options
           // literal, just as a bare empty-record context supplies none.
-          (expr.properties.length === 0 ||
+          (expr.properties.nodes.length === 0 ||
             (armShape && (armShape.fields.length > 0 || armShape.indexValue)))
         ) {
           mapped = recordArms[0]!;
@@ -1062,7 +1063,7 @@ export function lowerObjectLiteral(
         if (
           ownShapeId === null ||
           !recordArms.some((a) => a.shapeId === ownShapeId) ||
-          expr.properties.some(ts.isSpreadAssignment)
+          expr.properties.nodes.some(ts.isSpreadAssignment)
         ) {
           const arm = literalUnionArmOf(lowerer, expr, tsType, recordArms);
           if (arm) mapped = arm;
@@ -1080,13 +1081,13 @@ export function lowerObjectLiteral(
   if (
     isJsSourceFile(expr.getSourceFile()) &&
     (!mapped ||
-      expr.properties.some(
+      expr.properties.nodes.some(
         (p) => ts.isGetAccessorDeclaration(p) || ts.isSetAccessorDeclaration(p),
       )) &&
     isCjsExportTableLiteral(expr)
   ) {
     const fields: { name: string; value: IrExpr }[] = [];
-    for (const prop of expr.properties) {
+    for (const prop of expr.properties.nodes) {
       if (ts.isGetAccessorDeclaration(prop) || ts.isSetAccessorDeclaration(prop)) continue;
       const propName = ts.isSpreadAssignment(prop) ? undefined : prop.name;
       if (!propName || !(ts.isIdentifier(propName) || ts.isStringLiteral(propName))) continue;
@@ -1135,7 +1136,9 @@ export function lowerObjectLiteral(
   if (
     expected &&
     !isJsSourceFile(expr.getSourceFile()) &&
-    expr.properties.every((p) => ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p))
+    expr.properties.nodes.every(
+      (p) => ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p),
+    )
   ) {
     const own = lowerer.shapes.get(type.shapeId)!;
     const target = lowerer.shapes.get(expected.shapeId)!;
@@ -1159,7 +1162,7 @@ export function lowerObjectLiteral(
   // A Date's toJSON() result keeps its null in a field with no declared
   // destination: the lib types say string.
   if (!expected) {
-    for (const property of expr.properties) {
+    for (const property of expr.properties.nodes) {
       const value = ts.isPropertyAssignment(property)
         ? property.initializer
         : ts.isShorthandPropertyAssignment(property)
@@ -1196,7 +1199,7 @@ export function lowerObjectLiteral(
   // accessor names — the documented divergence).
   if (isJsSourceFile(expr.getSourceFile())) {
     const accessorNames = new Set(
-      expr.properties
+      expr.properties.nodes
         .filter((p) => ts.isGetAccessorDeclaration(p) || ts.isSetAccessorDeclaration(p))
         .map((p) =>
           p.name && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) ? p.name.text : "",
@@ -1224,14 +1227,14 @@ export function lowerObjectLiteral(
     expr.parent.initializer === expr &&
     ts.isVariableStatement(expr.parent?.parent?.parent) &&
     ts.isSourceFile(expr.parent?.parent?.parent?.parent);
-  const assignedProperties = expr.properties.filter(
+  const assignedProperties = expr.properties.nodes.filter(
     (prop): prop is ts.PropertyAssignment | ts.ShorthandPropertyAssignment =>
       ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop),
   );
   if (
     topLevelJsDecl &&
     isJsSourceFile(expr.getSourceFile()) &&
-    assignedProperties.length === expr.properties.length
+    assignedProperties.length === expr.properties.nodes.length
   ) {
     const provided = new Set(assignedProperties.map((prop) => propNameText(lowerer, prop.name)));
     if (shape.fields.some((field) => !provided.has(field.name))) {
@@ -1261,11 +1264,11 @@ export function lowerObjectLiteral(
     !shape.indexValue &&
     !shape.tuple &&
     !shapeHasAccessorSlots(shape) &&
-    expr.properties.length >= 2 &&
-    ts.isSpreadAssignment(expr.properties[0]!) &&
-    !conditionalSpreadOf(expr.properties[0]!.expression) &&
-    !andSpreadOf(lowerer, expr.properties[0]!.expression) &&
-    expr.properties
+    expr.properties.nodes.length >= 2 &&
+    ts.isSpreadAssignment(expr.properties.nodes[0]!) &&
+    !conditionalSpreadOf(expr.properties.nodes[0]!.expression) &&
+    !andSpreadOf(lowerer, expr.properties.nodes[0]!.expression) &&
+    expr.properties.nodes
       .slice(1)
       .every(
         (p) =>
@@ -1277,8 +1280,8 @@ export function lowerObjectLiteral(
             (ts.isComputedPropertyName(p.name) && literalComputedKey(lowerer, p.name) !== null)),
       )
   ) {
-    const spread = expr.properties[0]! as ts.SpreadAssignment;
-    const props = expr.properties.slice(1) as (
+    const spread = expr.properties.nodes[0]! as ts.SpreadAssignment;
+    const props = expr.properties.nodes.slice(1) as (
       | ts.PropertyAssignment
       | ts.ShorthandPropertyAssignment
     )[];
@@ -1334,12 +1337,12 @@ export function lowerObjectLiteral(
     shape.indexValue &&
     shape.fields.length === 0 &&
     !shape.tuple &&
-    (expr.properties.some((p) => ts.isSpreadAssignment(p)) ||
-      expr.properties.some(isRuntimeComputedKey))
+    (expr.properties.nodes.some((p) => ts.isSpreadAssignment(p)) ||
+      expr.properties.nodes.some(isRuntimeComputedKey))
   ) {
     const contributors: IndexMergeContributor[] = [];
     let mergeable = true;
-    for (const prop of expr.properties) {
+    for (const prop of expr.properties.nodes) {
       if (ts.isSpreadAssignment(prop)) {
         const cs = conditionalSpreadOf(prop.expression) ?? andSpreadOf(lowerer, prop.expression);
         if (cs === "unsupported" || (cs && cs.props.length !== 1)) {
@@ -1463,7 +1466,7 @@ export function lowerObjectLiteral(
   }
   // Unfoldable computed keys outside the index-signature merge path:
   // no record shape can hold a runtime-decided name.
-  for (const prop of expr.properties) {
+  for (const prop of expr.properties.nodes) {
     if (isRuntimeComputedKey(prop)) {
       lowerer.unsupported(
         "SC1090",
@@ -1481,14 +1484,14 @@ export function lowerObjectLiteral(
     !shape.indexValue &&
     !shape.tuple &&
     shape.fields.length > 0 &&
-    expr.properties.length > 0 &&
-    expr.properties.every(
+    expr.properties.nodes.length > 0 &&
+    expr.properties.nodes.every(
       (p) =>
         ts.isSpreadAssignment(p) &&
         !conditionalSpreadOf(p.expression) &&
         !andSpreadOf(lowerer, p.expression),
     ) &&
-    expr.properties.some((p) => {
+    expr.properties.nodes.some((p) => {
       const t = lowerer.mapTypeOf(lowerer.typeOf((p as ts.SpreadAssignment).expression));
       return (
         t?.kind === "dyn" || (t?.kind === "record" && !!lowerer.shapes.get(t.shapeId)?.indexValue)
@@ -1515,7 +1518,7 @@ export function lowerObjectLiteral(
 
   const fields: { name: string; value: IrExpr; overflow?: true }[] = [];
   const spreadStmts: IrStmt[] = [];
-  const hasSpread = expr.properties.some(ts.isSpreadAssignment);
+  const hasSpread = expr.properties.nodes.some(ts.isSpreadAssignment);
   const captured = new Set<IrExpr>();
   const capture = (value: IrExpr): IrExpr => {
     const local = lowerer.declareHiddenLocal("%spreadValue", value.type);
@@ -1594,7 +1597,9 @@ export function lowerObjectLiteral(
   // Member names DROPPED from the shape (JS deferral — unlowerable pure
   // member reads narrow away; see the catch in the property loop).
   const droppedNames = new Set<string>();
-  for (const prop of expr.properties) {
+  // The order this literal creates its keys in (key-order-witness.ts).
+  const orderSegments: KeyOrderSegment[] = [];
+  for (const prop of expr.properties.nodes) {
     // A later contributor can mutate an earlier source or overwrite a
     // value with effects. Snapshot pending fields at their source position,
     // before evaluating the next contributor, even if they are overwritten.
@@ -1649,6 +1654,7 @@ export function lowerObjectLiteral(
         v = lowerer.coerceInto(valueNode, v, fieldType);
         if (!typeEquals(v.type, fieldType)) lowerer.badType(valueNode, lowerer.typeOf(valueNode));
         conditionalNames.add(name);
+        orderSegments.push({ kind: "key", name, definite: false });
         fields.push({
           name,
           value: {
@@ -1672,7 +1678,7 @@ export function lowerObjectLiteral(
       let srcNode: ts.Expression = prop.expression;
       while (ts.isParenthesizedExpression(srcNode)) srcNode = srcNode.expression;
       const srcLowered = capture(
-        prop === expr.properties[0] && leadingSpreadLowered !== null
+        prop === expr.properties.nodes[0] && leadingSpreadLowered !== null
           ? leadingSpreadLowered
           : lowerer.lowerExpr(srcNode),
       );
@@ -1732,7 +1738,7 @@ export function lowerObjectLiteral(
           );
         }
         const laterNames = new Set<string>();
-        for (const later of expr.properties.slice(expr.properties.indexOf(prop) + 1)) {
+        for (const later of expr.properties.nodes.slice(expr.properties.nodes.indexOf(prop) + 1)) {
           if (ts.isSpreadAssignment(later)) {
             if (conditionalSpreadOf(later.expression) || andSpreadOf(lowerer, later.expression))
               continue;
@@ -1756,6 +1762,7 @@ export function lowerObjectLiteral(
           }
         }
         const srcRef = (): IrExpr => srcLowered ?? lowerer.lowerExpr(srcNode);
+        orderSegments.push({ kind: "spread", shapeId: recArm.shapeId, maybeAbsent: true });
         for (const f of srcShape.fields) {
           if (laterNames.has(f.name)) continue;
           const targetType = fieldTypes.get(f.name);
@@ -1968,7 +1975,7 @@ export function lowerObjectLiteral(
       // exactly like Node does. Conditional spreads don't count (their
       // empty arm defines nothing) — their own collision fences hold.
       const laterNames = new Set<string>();
-      for (const later of expr.properties.slice(expr.properties.indexOf(prop) + 1)) {
+      for (const later of expr.properties.nodes.slice(expr.properties.nodes.indexOf(prop) + 1)) {
         if (ts.isSpreadAssignment(later)) {
           if (conditionalSpreadOf(later.expression) || andSpreadOf(lowerer, later.expression))
             continue;
@@ -1991,6 +1998,12 @@ export function lowerObjectLiteral(
           laterNames.add(propNameText(lowerer, later.name));
         }
       }
+      // A checked-dynamic source's keys are a run-time fact.
+      orderSegments.push(
+        srcLowered.type.kind === "dyn"
+          ? { kind: "opaque" }
+          : { kind: "spread", shapeId: srcType.shapeId, maybeAbsent: false },
+      );
       for (const f of srcShape.fields) {
         if (laterNames.has(f.name)) continue;
         let targetType = fieldTypes.get(f.name);
@@ -2214,7 +2227,7 @@ export function lowerObjectLiteral(
           // reads; the field promotion below adopts that layout.
           (fieldType?.kind === "record" &&
           ts.isObjectLiteralExpression(init) &&
-          init.properties.length > 0
+          init.properties.nodes.length > 0
             ? (() => {
                 const nested = lowerer.lowerObjectLiteral(init, fieldType);
                 return lowerer.isRuntimeOptionalRecordVariant(nested.type, fieldType)
@@ -2305,6 +2318,7 @@ export function lowerObjectLiteral(
     const at = fields.findIndex((x) => x.name === name);
     if (at >= 0) fields.splice(at, 1);
     fields.push({ name, value });
+    orderSegments.push({ kind: "key", name, definite: true });
   }
   // Optional fields may be omitted: the field holds its absent state.
   // tsc rejects omission of required fields before lowering.
@@ -2333,7 +2347,10 @@ export function lowerObjectLiteral(
       fields.push({ name: f.name, value: absent });
     }
   }
-  const result: IrExpr = { kind: "recordLit", fields, type, loc };
+  const result: IrExpr = lowerer.keyOrder.literal(
+    { kind: "recordLit", fields, type, loc },
+    orderSegments,
+  );
   return spreadStmts.length === 0
     ? result
     : { kind: "seqExpr", stmts: spreadStmts, result, type, loc };
@@ -2347,7 +2364,7 @@ export function lowerObjectLiteral(
  * fields needs a different result layout and stays on the ordinary path. */
 function lowerUnionRecordClone(lowerer: Lowerer, expr: ts.ObjectLiteralExpression): IrExpr | null {
   if (isJsSourceFile(expr.getSourceFile())) return null;
-  const spread = expr.properties[0];
+  const spread = expr.properties.nodes[0];
   if (!spread || !ts.isSpreadAssignment(spread)) return null;
   let sourceNode = spread.expression;
   while (ts.isParenthesizedExpression(sourceNode) || ts.isSatisfiesExpression(sourceNode))
@@ -2361,7 +2378,7 @@ function lowerUnionRecordClone(lowerer: Lowerer, expr: ts.ObjectLiteralExpressio
   if (!def || def.arms.length < 2 || !def.arms.every((arm) => arm.kind === "record")) return null;
   const props: (ts.PropertyAssignment | ts.ShorthandPropertyAssignment)[] = [];
   const names: string[] = [];
-  for (const prop of expr.properties.slice(1)) {
+  for (const prop of expr.properties.nodes.slice(1)) {
     if (
       (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) ||
       (!ts.isIdentifier(prop.name) && !ts.isStringLiteral(prop.name))
@@ -2557,9 +2574,9 @@ export function andSpreadOf(
     )
   )
     return null;
-  if (right.properties.length === 0) return "unsupported";
+  if (right.properties.nodes.length === 0) return "unsupported";
   const props: CondSpreadProp[] = [];
-  for (const p of right.properties) {
+  for (const p of right.properties.nodes) {
     if (
       (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
       p.name &&
@@ -2595,12 +2612,14 @@ export function conditionalSpreadOf(
   if (!ts.isObjectLiteralExpression(whenTrue) || !ts.isObjectLiteralExpression(whenFalse)) {
     return "unsupported";
   }
-  const trueCarries = whenFalse.properties.length === 0 && whenTrue.properties.length > 0;
-  const falseCarries = whenTrue.properties.length === 0 && whenFalse.properties.length > 0;
+  const trueCarries =
+    whenFalse.properties.nodes.length === 0 && whenTrue.properties.nodes.length > 0;
+  const falseCarries =
+    whenTrue.properties.nodes.length === 0 && whenFalse.properties.nodes.length > 0;
   if (!trueCarries && !falseCarries) return "unsupported"; // both empty is tsc-unreachable; both non-empty has no single desugar
   const carrier = trueCarries ? whenTrue : whenFalse;
   const props: CondSpreadProp[] = [];
-  for (const p of carrier.properties) {
+  for (const p of carrier.properties.nodes) {
     if (
       (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
       p.name &&
@@ -2643,7 +2662,7 @@ function lowerDeclaredSpreadMerge(
     shape?: IrRecordShape;
   }
   const srcs: Src[] = [];
-  for (const prop of expr.properties) {
+  for (const prop of expr.properties.nodes) {
     const spread = prop as ts.SpreadAssignment; // caller-checked: all spreads
     const value = lowerer.lowerExpr(spread.expression);
     if (value.type.kind === "dyn") {
@@ -3043,7 +3062,7 @@ export function lowerShorthandValue(
       return lowerer.maybeNarrow({ kind: "varRef", localId: g.id, type: g.type, loc }, propName);
     }
     const sig = lowerer.fnSigsBySymbol.get(resolved);
-    const decl = lowerer.checker.declarationsOf(resolved)[0];
+    const decl = resolved.declarations[0];
     if (
       sig &&
       decl &&

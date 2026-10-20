@@ -258,7 +258,7 @@ function dynIteratorAdapter(
       returnType: expected.retT,
       locals,
       body,
-      generator: { yieldT: expected.yieldT, nextT: expected.nextT, resultType },
+      generator: { yieldT: expected.yieldT, nextT: expected.nextT, resultType, tag: "!" },
       loc,
     });
   }
@@ -374,7 +374,12 @@ export function lowerCollectionIteratorValue(
           loc,
         },
       ],
-      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType },
+      generator: {
+        yieldT: type.yieldT,
+        nextT: UNDEFINED_T,
+        resultType,
+        tag: "!",
+      },
       loc,
     });
   }
@@ -484,7 +489,7 @@ export function lowerBytesIteratorValue(
         },
         { kind: "return", value: null, loc },
       ],
-      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType },
+      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType, tag: "Array Iterator" },
       loc,
     });
   }
@@ -590,7 +595,7 @@ export function lowerStringIteratorValue(
         },
         { kind: "return", value: null, loc },
       ],
-      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType },
+      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType, tag: "String Iterator" },
       loc,
     });
   }
@@ -751,7 +756,12 @@ function generatorRetypeAdapter(
           loc,
         },
       ],
-      generator: { yieldT: expected.yieldT, nextT: expected.nextT, resultType: toResult },
+      generator: {
+        yieldT: expected.yieldT,
+        nextT: expected.nextT,
+        resultType: toResult,
+        inheritsTag: true,
+      },
       loc,
     });
   }
@@ -1022,7 +1032,7 @@ export function lowerArrayIteratorValue(
         },
         { kind: "return", value: null, loc },
       ],
-      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType },
+      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType, tag: "Array Iterator" },
       loc,
     });
   }

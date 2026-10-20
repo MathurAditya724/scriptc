@@ -160,6 +160,8 @@ ScrAlsCtx *scr_als_ctx_retain(ScrAlsCtx *c);
 void scr_als_ctx_release(ScrAlsCtx *c);
 /* After an enterWith: on the main stack, queues the tick that ends it. */
 void scr_als_entered_with(void);
+ScrAlsCtx *scr_als_ctx_alloc(size_t len);
+ScrDyn *scr_als_peek(double id); /* borrowed; NULL when unset */
 double scr_als_new(void);
 ScrDyn *scr_als_get(double id); /* +1; the undefined value when unset */
 ScrAlsCtx *scr_als_enter(double id, ScrDyn *value); /* borrows value; prev out (owned) */
@@ -214,6 +216,12 @@ void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
+/* process.emitWarning = fn (borrowed; the runtime keeps its own
+ * reference). Later process.emitWarning(...) calls apply the replacement
+ * to their arguments, and runtime-built warnings (Node's own modules call
+ * process.emitWarning) reach it as (message, type[, code]) instead of the
+ * report and the 'warning' listeners. */
+void scr_process_set_emit_warning(ScrDyn *fn);
 /* node:punycode's first load (scr_async_dyn.c): later calls are module
  * cache hits. The first reports DEP0040 when `report` (false for a require
  * made from node_modules) — at once for a static ES import, which Node

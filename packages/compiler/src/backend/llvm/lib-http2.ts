@@ -170,7 +170,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
           if (tag < 0) throw new InternalCompilerError("SNI callback union lacks its function arm");
           type = arms[tag]!;
           value = host.unwrapNullableClosure(value, tag);
-        } else host.moveTemp(cb);
+        } else host.toHeap(cb);
         if (type.kind !== "func" || type.params[1] === undefined)
           throw new InternalCompilerError("SNI callback lacks its answer function");
         sni = [ptr(value), ptr("@" + sniAnswer(host, type.params[1]))];
@@ -207,7 +207,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     case "http2.streamCloseCb": {
       const stream = e.fn.startsWith("http2.stream"),
         cbIndex = stream ? 2 : 1;
-      if (args[cbIndex] !== undefined) host.moveTemp(args[cbIndex]!);
+      if (args[cbIndex] !== undefined) host.toHeap(args[cbIndex]!);
       return finishRuntimeCall(
         host,
         e,
@@ -310,7 +310,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     default:
       throw new InternalCompilerError(`unhandled HTTP/2 listener ${e.fn}`);
   }
-  if (thunk === null) host.moveTemp(cb);
+  if (thunk === null) host.toHeap(cb);
   const handler = thunk === null ? [a[1]!] : callbackAdapter(host, cb, thunk, params);
   return finishRuntimeCall(host, e, runtime, [a[0]!, ...handler, ...a.slice(2)]);
 }

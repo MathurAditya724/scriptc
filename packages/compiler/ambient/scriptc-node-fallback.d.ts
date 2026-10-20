@@ -511,14 +511,119 @@ declare var DOMException: {
   readonly prototype: DOMException;
 };
 
-/* Capability-gated globals harness code probes behind feature guards
- * (globalThis.crypto under a hasCrypto check, the SQLite-backed storage
- * pair): typed `unknown` — no lowering exists, the guard is expected to
- * be false in a compiled binary, and any reached use fences per site. */
-declare var crypto: unknown;
+/* WebCrypto's HMAC slice (scr_webcrypto.c): crypto.subtle's importKey for
+ * raw HMAC keys, HMAC sign/verify and the SHA-1/SHA-2 digests, typed as
+ * exactly that surface (the declarations mirror @types/node's webcrypto
+ * shapes). Every other SubtleCrypto method and crypto member is absent,
+ * so a use is an honest type error. CryptoKey values are native handles
+ * whose four members read through the handle. */
+declare var crypto: Crypto;
+/* The Crypto and SubtleCrypto constructors (feature probes only) stay
+ * `unknown`; the values keep this declaration order. */
 declare var Crypto: unknown;
-declare var CryptoKey: unknown;
+declare var CryptoKey: {
+  prototype: CryptoKey;
+  new (): CryptoKey;
+};
 declare var SubtleCrypto: unknown;
+type KeyUsage =
+  | "encrypt"
+  | "decrypt"
+  | "sign"
+  | "verify"
+  | "deriveKey"
+  | "deriveBits"
+  | "encapsulateBits"
+  | "decapsulateBits"
+  | "encapsulateKey"
+  | "decapsulateKey"
+  | "wrapKey"
+  | "unwrapKey";
+type KeyType = "private" | "public" | "secret";
+interface Algorithm {
+  name: string;
+}
+type AlgorithmIdentifier = Algorithm | string;
+type HashAlgorithmIdentifier = AlgorithmIdentifier;
+interface HmacImportParams extends Algorithm {
+  hash: HashAlgorithmIdentifier;
+  length?: number;
+}
+interface KeyAlgorithm {
+  name: string;
+}
+interface HmacKeyAlgorithm extends KeyAlgorithm {
+  hash: KeyAlgorithm;
+  length: number;
+}
+interface CryptoKey {
+  readonly algorithm: KeyAlgorithm;
+  readonly extractable: boolean;
+  readonly type: KeyType;
+  readonly usages: KeyUsage[];
+}
+type KeyFormat =
+  | "jwk"
+  | "pkcs8"
+  | "raw"
+  | "raw-private"
+  | "raw-public"
+  | "raw-secret"
+  | "raw-seed"
+  | "spki";
+interface JsonWebKey {
+  alg?: string;
+  crv?: string;
+  d?: string;
+  dp?: string;
+  dq?: string;
+  e?: string;
+  ext?: boolean;
+  k?: string;
+  key_ops?: string[];
+  kty?: string;
+  n?: string;
+  p?: string;
+  q?: string;
+  qi?: string;
+  use?: string;
+  x?: string;
+  y?: string;
+}
+/* The 'jwk' form type-checks like @types/node's; the compiler refuses it
+ * (the JsonWebKey import is not implemented). */
+interface SubtleCrypto {
+  digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
+  importKey(
+    format: "jwk",
+    keyData: JsonWebKey,
+    algorithm: AlgorithmIdentifier | HmacImportParams,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKey>;
+  importKey(
+    format: Exclude<KeyFormat, "jwk">,
+    keyData: BufferSource,
+    algorithm: AlgorithmIdentifier | HmacImportParams,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKey>;
+  sign(algorithm: AlgorithmIdentifier, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer>;
+  verify(
+    algorithm: AlgorithmIdentifier,
+    key: CryptoKey,
+    signature: BufferSource,
+    data: BufferSource,
+  ): Promise<boolean>;
+}
+interface Crypto {
+  readonly subtle: SubtleCrypto;
+}
+
+/* Capability-gated globals harness code probes behind feature guards
+ * (the SQLite-backed storage pair): typed `unknown` — no lowering exists,
+ * the guard is expected to be false in a compiled binary, and any reached
+ * use fences per site. */
 declare var localStorage: unknown;
 declare var sessionStorage: unknown;
 
@@ -1493,6 +1598,51 @@ declare module "node:fs" {
     readonly COPYFILE_EXCL: number;
     readonly COPYFILE_FICLONE: number;
     readonly COPYFILE_FICLONE_FORCE: number;
+    readonly UV_FS_SYMLINK_DIR: number;
+    readonly UV_FS_SYMLINK_JUNCTION: number;
+    readonly UV_DIRENT_UNKNOWN: number;
+    readonly UV_DIRENT_FILE: number;
+    readonly UV_DIRENT_DIR: number;
+    readonly UV_DIRENT_LINK: number;
+    readonly UV_DIRENT_FIFO: number;
+    readonly UV_DIRENT_SOCKET: number;
+    readonly UV_DIRENT_CHAR: number;
+    readonly UV_DIRENT_BLOCK: number;
+    readonly UV_FS_O_FILEMAP: number;
+    readonly UV_FS_O_TEMPORARY: number;
+    readonly UV_FS_O_SHORT_LIVED: number;
+    readonly UV_FS_O_SEQUENTIAL: number;
+    readonly UV_FS_O_RANDOM: number;
+    readonly UV_FS_COPYFILE_EXCL: number;
+    readonly UV_FS_COPYFILE_FICLONE: number;
+    readonly UV_FS_COPYFILE_FICLONE_FORCE: number;
+    readonly S_IFMT: number;
+    readonly S_IFREG: number;
+    readonly S_IFDIR: number;
+    readonly S_IFCHR: number;
+    readonly S_IFBLK: number;
+    readonly S_IFIFO: number;
+    readonly S_IFLNK: number;
+    readonly S_IFSOCK: number;
+    readonly O_NOCTTY: number;
+    readonly O_DIRECTORY: number;
+    readonly O_NOATIME: number;
+    readonly O_SYNC: number;
+    readonly O_DSYNC: number;
+    readonly O_SYMLINK: number;
+    readonly O_DIRECT: number;
+    readonly S_IRWXU: number;
+    readonly S_IRUSR: number;
+    readonly S_IWUSR: number;
+    readonly S_IXUSR: number;
+    readonly S_IRWXG: number;
+    readonly S_IRGRP: number;
+    readonly S_IWGRP: number;
+    readonly S_IXGRP: number;
+    readonly S_IRWXO: number;
+    readonly S_IROTH: number;
+    readonly S_IWOTH: number;
+    readonly S_IXOTH: number;
   };
   /* A stat(2) snapshot (statSync follows symlinks, lstatSync does not —
    * Node's split) — immutable; the supported surface is exactly these
@@ -2557,6 +2707,23 @@ declare module "crypto" {
     a: ArrayBufferView | ArrayBufferLike,
     b: ArrayBufferView | ArrayBufferLike,
   ): boolean;
+  /* WebCrypto's getRandomValues (also the webcrypto object's): integer
+   * typed arrays, filled in place and returned. The crypto GLOBAL stays
+   * unknown in fallback builds. */
+  type RandomValuesArray =
+    | Int8Array
+    | Uint8Array
+    | Uint8ClampedArray
+    | Int16Array
+    | Uint16Array
+    | Int32Array
+    | Uint32Array
+    | BigInt64Array
+    | BigUint64Array;
+  export function getRandomValues<T extends RandomValuesArray>(typedArray: T): T;
+  export const webcrypto: {
+    getRandomValues<T extends RandomValuesArray>(typedArray: T): T;
+  };
   export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,
@@ -3405,8 +3572,10 @@ declare module "node:test" {
     readonly tags: readonly string[];
     readonly assert: TestContextAssert;
     readonly mock: MockTracker;
-    test(name: string, fn?: TestFn): Promise<void>;
-    test(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
+    test(name?: string, fn?: TestFn): Promise<void>;
+    test(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    test(options?: TestOptions, fn?: TestFn): Promise<void>;
+    test(fn?: TestFn): Promise<void>;
     skip(message?: string): void;
     todo(message?: string): void;
     diagnostic(message: string): void;
@@ -3436,23 +3605,44 @@ declare module "node:test" {
     match(value: string, regExp: RegExp, message?: string): void;
     doesNotMatch(value: string, regExp: RegExp, message?: string): void;
   }
-  function test(name: string, fn?: TestFn): Promise<void>;
-  function test(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
+  /* The name, options and function are each optional, as in Node: a test
+   * without a name takes the function's name, or "<anonymous>". */
+  function test(name?: string, fn?: TestFn): Promise<void>;
+  function test(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+  function test(options?: TestOptions, fn?: TestFn): Promise<void>;
+  function test(fn?: TestFn): Promise<void>;
   namespace test {
-    function skip(name: string, fn?: TestFn): Promise<void>;
-    function skip(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
-    function todo(name: string, fn?: TestFn): Promise<void>;
-    function todo(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
-    function only(name: string, fn?: TestFn): Promise<void>;
-    function only(name: string, options: TestOptions, fn?: TestFn): Promise<void>;
+    function skip(name?: string, fn?: TestFn): Promise<void>;
+    function skip(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function skip(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function skip(fn?: TestFn): Promise<void>;
+    function todo(name?: string, fn?: TestFn): Promise<void>;
+    function todo(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function todo(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function todo(fn?: TestFn): Promise<void>;
+    function only(name?: string, fn?: TestFn): Promise<void>;
+    function only(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function only(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function only(fn?: TestFn): Promise<void>;
   }
   const it: typeof test;
-  function describe(name: string, fn?: SuiteFn): void;
-  function describe(name: string, options: TestOptions, fn?: SuiteFn): void;
+  function describe(name?: string, fn?: SuiteFn): void;
+  function describe(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+  function describe(options?: TestOptions, fn?: SuiteFn): void;
+  function describe(fn?: SuiteFn): void;
   namespace describe {
-    function skip(name: string, fn?: SuiteFn): void;
-    function todo(name: string, fn?: SuiteFn): void;
-    function only(name: string, fn?: SuiteFn): void;
+    function skip(name?: string, fn?: SuiteFn): void;
+    function skip(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function skip(options?: TestOptions, fn?: SuiteFn): void;
+    function skip(fn?: SuiteFn): void;
+    function todo(name?: string, fn?: SuiteFn): void;
+    function todo(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function todo(options?: TestOptions, fn?: SuiteFn): void;
+    function todo(fn?: SuiteFn): void;
+    function only(name?: string, fn?: SuiteFn): void;
+    function only(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function only(options?: TestOptions, fn?: SuiteFn): void;
+    function only(fn?: SuiteFn): void;
   }
   const suite: typeof describe;
   function before(fn: HookFn): void;
@@ -3527,6 +3717,9 @@ declare module "node:test" {
     [Symbol.dispose](): void;
   }
   const mock: MockTracker;
+  /* The context of the test, suite or hook running in the current async
+   * context; undefined outside one. */
+  function getTestContext(): TestContext | SuiteContext | undefined;
   /* Declared for typechecking only — every use fences (no lowering).
    * `assert` is the module-level custom-assertion registry (v24's
    * `const { assert } = require('node:test')`), not TestContext.assert. */
@@ -3544,6 +3737,7 @@ declare module "node:test" {
     afterEach,
     mock,
     assert,
+    getTestContext,
     run,
     snapshot,
     TestContext,
@@ -5044,6 +5238,8 @@ declare module "tls" {
     getProtocol(): string | null;
     /* OpenSSL's suite name, the IANA name and the suite's version */
     getCipher(): CipherNameAndProtocol;
+    /* whether the handshake resumed a cached session */
+    isSessionReused(): boolean;
   }
   export interface CipherNameAndProtocol {
     name: string;

@@ -42,7 +42,7 @@ function cjsGlobal(lowerer: Lowerer, node: ts.Expression, name: "module" | "requ
   if (!ts.isIdentifier(node) || node.text !== name) return false;
   if (lowerer.isStdlibGlobal(node, name)) return true;
   const symbol = lowerer.checker.getSymbolAtLocation(node);
-  const decls = symbol ? lowerer.checker.declarationsOf(symbol) : [];
+  const decls = symbol ? symbol.declarations : [];
   const sourceShadow = decls.some(
     (decl) =>
       !decl.getSourceFile().isDeclarationFile &&
@@ -204,16 +204,14 @@ function nodeModuleType(lowerer: Lowerer, node: ts.Expression): boolean {
   if (
     symbol &&
     (symbol.name === "Module" || symbol.name === "ScriptcModule") &&
-    lowerer.checker
-      .declarationsOf(symbol)
-      .some((decl) => lowerer.isStdlibFile(decl.getSourceFile()))
+    symbol.declarations.some((decl) => lowerer.isStdlibFile(decl.getSourceFile()))
   ) {
     return true;
   }
   const property = lowerer.checker.getPropertyOfType(type, "filename");
   const declaredByModule =
     property &&
-    lowerer.checker.declarationsOf(property).some((decl) => {
+    property.declarations.some((decl) => {
       for (let parent: ts.Node | undefined = decl.parent; parent; parent = parent.parent) {
         if (
           (ts.isInterfaceDeclaration(parent) || ts.isClassDeclaration(parent)) &&
@@ -557,10 +555,10 @@ export function lowerRequireCacheKeys(
   call: ts.CallExpression,
   member: string,
 ): IrExpr | null {
-  const argument = call.arguments[0];
+  const argument = call.arguments.nodes[0];
   if (
     member !== "keys" ||
-    call.arguments.length !== 1 ||
+    call.arguments.nodes.length !== 1 ||
     argument === undefined ||
     !isRequireCacheExpr(lowerer, argument)
   )

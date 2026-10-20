@@ -22,6 +22,7 @@ import {
   HTTPCLIENTREQ_T,
   HTTPREQ_T,
   HTTPRES_T,
+  JSVAL,
   NETSERVER_T,
   NETSOCKET_T,
   PROCSTREAM_T,
@@ -176,12 +177,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * not iterable (cannot read property Symbol(Symbol.iterator))"). In the
    * may-throw seed set. */
   "dyn.iterPack": { argTypes: [DYN, STRING], result: DYN },
+  "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
   "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
   "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },
   "dyn.iteratorResult": { argTypes: [DYN], result: DYN },
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
   "dyn.iteratorStepDone": { argTypes: [DYN], result: BOOL },
+  "dyn.setGeneratorMembers": { argTypes: [DYN, DYN], result: VOID },
+  "dyn.iteratorHelperMethod": { argTypes: [STRING], result: DYN },
   "dyn.collectionIteratorIndex": { argTypes: [DYN], result: F64 },
   "dyn.mapSeedEntries": { argTypes: [DYN], result: DYN },
   "dyn.mapSeedEntry": { argTypes: [DYN], result: DYN },
@@ -565,6 +569,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** os.constants: the per-thread null-prototype constants object (dlopen,
    * errno, signals, priority, UV_UDP_REUSEADDR). Never throws. */
   "os.constants": { argTypes: [], result: DYN },
+  /** fs.constants: the target's cached null-prototype constants object. */
+  "fs.constants": { argTypes: [], result: DYN },
   /** The deprecated node:constants object (scr_os.c): the os groups and
    * fs.constants merged with the borrowed baked crypto.constants table,
    * frozen, one per thread. */
@@ -692,6 +698,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** `a.localeCompare(b)`: -1/0/1 in Node's root-locale collation for
    * Latin-script text (scr_str_locale_compare). Never throws. */
   "str.localeCompare": { argTypes: [STRING, STRING], result: F64 },
+  /** Annex B substr(start, length) with start ToNumber'd and length's
+   * presence; never throws. */
+  "str.substr": { argTypes: [STRING, F64, F64, BOOL], result: STRING },
+  /** toLocaleLowerCase/toLocaleUpperCase (scr_regex.c): the locales value
+   * as written, upper=true for toLocaleUpperCase. Throws for null and for
+   * locale forms with no native rules. */
+  "str.localeCase": { argTypes: [STRING, DYN, BOOL], result: STRING },
   "str.replaceLiteral": { argTypes: [STRING, STRING, STRING, BOOL], result: STRING },
   // (subject, characters, NUL-separated replacement texts): the fused
   // chain of global one-character replacements.
@@ -756,6 +769,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "num.toExponential": { argTypes: [F64], result: STRING },
   "num.toFixed0": { argTypes: [F64], result: STRING },
   "num.toFixed": { argTypes: [F64, F64], result: STRING },
+  /** toPrecision(precision) with the argument ToNumber'd and its presence
+   * (undefined answers ToString); toExponential with a DEFINED
+   * fractionDigits. Both throw V8's RangeError for out-of-range digits. */
+  "num.toPrecision": { argTypes: [F64, F64, BOOL], result: STRING },
+  "num.toExponentialDigits": { argTypes: [F64, F64], result: STRING },
   "num.toStringRadix": { argTypes: [F64, DYN], result: STRING },
   /** toString(radix) with a number radix (scr_lib.c): truncates it as
    * ToIntegerOrInfinity does, THROWS RangeError outside 2..36. */
@@ -1479,6 +1497,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // undefined.
   "test.ctxPassed": { argTypes: [TESTCTX_T], result: BOOL },
   "test.workerId": { argTypes: [], result: F64 },
+  // getTestContext(): whether a test, suite or hook is running in the
+  // current async context, and that context.
+  "test.hasContext": { argTypes: [], result: BOOL },
+  "test.context": { argTypes: [], result: TESTCTX_T },
   // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
   // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
   "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
@@ -2610,6 +2632,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * whether min was given. */
   "crypto.randomFillView": { argTypes: [null, F64, F64], result: BYTES_U8 },
   "crypto.randomFillViewRest": { argTypes: [null, F64], result: BYTES_U8 },
+  /** crypto.getRandomValues: a view returns itself at its own type (the
+   * float/size DOMExceptions are thrown at run time); any other value
+   * takes the checked form. */
+  "crypto.getRandomValues": { argTypes: [null], result: BYTES_U8 },
+  "crypto.getRandomValuesDyn": { argTypes: [DYN], result: DYN },
   "crypto.randomFillSyncDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
   "crypto.randomFillCb": { argTypes: [null, F64, F64, F64, null], result: VOID },
   "crypto.randomFillCbDyn": { argTypes: [DYN, DYN, DYN, F64, null], result: VOID },
@@ -2622,6 +2649,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.generateKeyCb": { argTypes: [DYN, DYN, null], result: VOID },
   "crypto.keyObjectInput": { argTypes: [DYN], result: BYTES_U8 },
   "crypto.isKeyObject": { argTypes: [DYN], result: BOOL },
+  /** WebCrypto (scr_webcrypto.c): each method takes its argument vector as
+   * one dyn array and answers a promise that argument and validation
+   * failures reject. CryptoKey values are native handles. */
+  "webcrypto.importKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.verify": { argTypes: [DYN], result: { kind: "promise", inner: BOOL } },
+  "webcrypto.digest": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.isCryptoKey": { argTypes: [DYN], result: BOOL },
   "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
   "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
   "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
@@ -2660,6 +2695,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "buffer.fromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
   "buffer.fromStrChecked": { argTypes: [STRING, STRING], result: BYTES_U8 },
   "buffer.brand": { argTypes: [BYTES_U8], result: BYTES_U8 },
+  /** Buffer.isBuffer over a typed view: whether the view carries the
+   * Buffer brand (any element kind; only Buffers do). Never throws. */
+  "buffer.isBranded": { argTypes: [null], result: BOOL },
   /** Buffer.from on checked-native strings, bytes, arrays and data-only
    * array-like/Buffer-JSON objects. The encoding is a normalized literal;
    * non-string inputs ignore it. Copies the input and may throw during
@@ -3124,6 +3162,29 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.compare": { argTypes: [DYN, DYN, STRING], result: BOOL },
   "dyn.bitwise": { argTypes: [DYN, DYN, STRING], result: DYN },
   "dyn.proxyNew": { argTypes: [DYN, DYN], result: DYN },
+  /* Dynamic-tier values (jsval; two-tier design stage S3). The jsval pass
+   * (ir/jsval.ts) introduces these in dynamic-tier functions only; the
+   * runtime is scr_js_value.c. Arguments are borrowed and results owned,
+   * like every libCall. Boundary conversions: js.fromDyn (a cell keeps its
+   * identity), js.toDyn (an immediate is boxed), js.fromF64/fromBool/
+   * fromStr/fromBigInt (the design's toJs: immediates, and strings and
+   * BigInts under a tag without a copy) and js.toF64 (fromJs to number: dynCheck's
+   * number check and TypeError). The operators are the dyn.* operators
+   * over jsvals, with identical JS semantics. */
+  "js.fromDyn": { argTypes: [DYN], result: JSVAL },
+  "js.toDyn": { argTypes: [JSVAL], result: DYN },
+  "js.fromF64": { argTypes: [F64], result: JSVAL },
+  "js.fromBool": { argTypes: [BOOL], result: JSVAL },
+  "js.fromStr": { argTypes: [STRING], result: JSVAL },
+  "js.fromBigInt": { argTypes: [BIGINT_T], result: JSVAL },
+  "js.toF64": { argTypes: [JSVAL], result: F64 },
+  "js.add": { argTypes: [JSVAL, JSVAL], result: JSVAL },
+  "js.arithmetic": { argTypes: [JSVAL, JSVAL, STRING], result: JSVAL },
+  "js.bitwise": { argTypes: [JSVAL, JSVAL, STRING], result: JSVAL },
+  "js.compare": { argTypes: [JSVAL, JSVAL, STRING], result: BOOL },
+  "js.toNumeric": { argTypes: [JSVAL], result: JSVAL },
+  "js.increment": { argTypes: [JSVAL, BOOL], result: JSVAL },
+  "js.toNumberCoerce": { argTypes: [JSVAL], result: F64 },
   // Always throws; the result is the READ's declared type (a typed dummy
   // the unwind abandons) — the libCall case skips the result check.
   /** A read of a `declare`d const NOTHING defines (the bundler-define
@@ -3422,6 +3483,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "regex.groupEquals": { argTypes: [arrayOf(STRING), F64, STRING], result: BOOL },
   "regex.groupNumber": { argTypes: [arrayOf(STRING), F64], result: F64 },
   "regex.groupParseInt": { argTypes: [arrayOf(STRING), F64, F64], result: F64 },
+  // `.index` / `.input` (args[1]) of a match result. Borrowed; never throws.
+  "regex.resultProp": { argTypes: [arrayOf(STRING), STRING], result: DYN },
   // node:events EventEmitter: receivers are emitter-hierarchy objects and
   // the chaining forms (on/off/removeAll/setMax) return the receiver's
   // own class — program-dependent object types, checked in the libCall
@@ -3900,7 +3963,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /* Circular references over cycle-capable composites (recursive record/
    * class types): circCheck answers a value's circular id when it is
    * already on the traversal stack (0 otherwise), seenPush/refWrap
-   * bracket the frame (refWrap adds Node's "<ref *N> " prefix to values
+   * bracket the frame (insp.end adds Node's "<ref *N> " prefix to values
    * the walk found circular), circular renders "[Circular *N]". */
   "insp.circCheck": { argTypes: [null], result: F64 },
   "insp.seenPush": { argTypes: [null], result: VOID },
@@ -4157,6 +4220,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * warnings and DeprecationWarning emissions read their truthiness. */
   "process.deprecationFlag": { argTypes: [F64], result: DYN },
   "process.setDeprecationFlag": { argTypes: [F64, DYN], result: VOID },
+  "process.setEmitWarning": { argTypes: [DYN], result: VOID },
   /** AsyncLocalStorage (node:async_hooks — scr_async.c): stores are f64
    * handles; contexts are immutable fiber-carried snapshots (spawned
    * fibers inherit the spawner's — Node's init-time capture). run/exit
@@ -4234,6 +4298,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.getMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getUTCMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getTimezoneOffset": { argTypes: [DATE_T], result: F64 },
+  /** Date.prototype.toString / toDateString / toTimeString and String(date):
+   * V8's local-time formats with the host zone's long name, "Invalid Date"
+   * for an invalid date. Owned (+1) string; never throws. */
+  "date.toString": { argTypes: [DATE_T], result: STRING },
+  "date.toDateString": { argTypes: [DATE_T], result: STRING },
+  "date.toTimeString": { argTypes: [DATE_T], result: STRING },
   /** The composed `new Date(dateString).getTime()` read: one borrowed
    * string, f64 milliseconds since epoch. The parsed grammar is BOUNDED
    * (documented divergence — V8's parser accepts far more): the ASN.1

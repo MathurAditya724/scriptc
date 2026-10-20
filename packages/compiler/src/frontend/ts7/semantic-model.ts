@@ -294,8 +294,12 @@ export class SemanticSymbol {
   readonly name: string;
   readonly flags: number;
   readonly checkFlags: number;
-  readonly declarations: SemanticNodeHandle[];
-  readonly valueDeclaration: SemanticNodeHandle | undefined;
+  /** The declarations' node handles, as the server sends them. */
+  readonly declarationHandles: SemanticNodeHandle[];
+  readonly valueDeclarationHandle: SemanticNodeHandle | undefined;
+  private declarationNodes: readonly AstNode[] | undefined;
+  private valueDeclarationNode: AstNode | undefined;
+  private valueDeclarationResolved = false;
   private readonly parent: number | undefined;
   private readonly exportSymbol: number | undefined;
   private membersCache: Map<string, SemanticSymbol> | undefined;
@@ -310,14 +314,38 @@ export class SemanticSymbol {
     this.name = data.name.startsWith("___") ? data.name.slice(1) : data.name;
     this.flags = data.flags;
     this.checkFlags = data.checkFlags;
-    this.declarations = (data.declarations ?? []).map(
+    this.declarationHandles = (data.declarations ?? []).map(
       (handle) => new SemanticNodeHandle(handle, canonicalProject),
     );
-    this.valueDeclaration = data.valueDeclaration
+    this.valueDeclarationHandle = data.valueDeclaration
       ? new SemanticNodeHandle(data.valueDeclaration, canonicalProject)
       : undefined;
     this.parent = data.parent;
     this.exportSymbol = data.exportSymbol;
+  }
+
+  /** The declaration nodes, resolved in the symbol's project. A handle whose
+   * file the project doesn't have resolves to nothing and is left out. */
+  get declarations(): readonly AstNode[] {
+    this.canonicalProject.ensureActive();
+    if (this.declarationNodes === undefined) {
+      const nodes: AstNode[] = [];
+      for (const handle of this.declarationHandles) {
+        const node = handle.resolve();
+        if (node !== undefined) nodes.push(node);
+      }
+      this.declarationNodes = nodes;
+    }
+    return this.declarationNodes;
+  }
+
+  get valueDeclaration(): AstNode | undefined {
+    this.canonicalProject.ensureActive();
+    if (!this.valueDeclarationResolved) {
+      this.valueDeclarationNode = this.valueDeclarationHandle?.resolve();
+      this.valueDeclarationResolved = true;
+    }
+    return this.valueDeclarationNode;
   }
 
   getParent(): SemanticSymbol | undefined {
@@ -603,7 +631,10 @@ export class SemanticType {
 export class SemanticSignature {
   readonly id: number;
   readonly flags: number;
-  readonly declaration: SemanticNodeHandle | undefined;
+  /** The declaration's node handle, as the server sends it. */
+  readonly declarationHandle: SemanticNodeHandle | undefined;
+  private declarationNode: AstNode | undefined;
+  private declarationResolved = false;
 
   constructor(
     private readonly data: SignatureResponse,
@@ -611,9 +642,20 @@ export class SemanticSignature {
   ) {
     this.id = data.id;
     this.flags = data.flags;
-    this.declaration = data.declaration
+    this.declarationHandle = data.declaration
       ? new SemanticNodeHandle(data.declaration, project)
       : undefined;
+  }
+
+  /** The declaration node, resolved in the signature's project; undefined
+   * for a signature the checker synthesized. */
+  get declaration(): AstNode | undefined {
+    this.project.ensureActive();
+    if (!this.declarationResolved) {
+      this.declarationNode = this.declarationHandle?.resolve();
+      this.declarationResolved = true;
+    }
+    return this.declarationNode;
   }
 
   getTypeParameters(): SemanticType[] {

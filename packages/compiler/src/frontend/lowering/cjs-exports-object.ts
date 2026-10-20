@@ -37,7 +37,7 @@ export function isCjsExportsIdentifier(lowerer: Lowerer, node: ts.Expression): b
   if (!ts.isIdentifier(node) || node.text !== "exports") return false;
   if (!isCjsJsFile(node.getSourceFile(), lowerer.program)) return false;
   const symbol = lowerer.checker.getSymbolAtLocation(node);
-  const decls = symbol ? lowerer.checker.declarationsOf(symbol) : [];
+  const decls = symbol ? symbol.declarations : [];
   return !decls.some(
     (d) =>
       !d.getSourceFile().isDeclarationFile &&
@@ -287,12 +287,12 @@ export function isFreshExportsReset(lowerer: Lowerer, stmt: ts.ExpressionStateme
     targets.push(e.left);
     e = e.right;
   }
-  if (!ts.isObjectLiteralExpression(e) || e.properties.length !== 0) return false;
+  if (!ts.isObjectLiteralExpression(e) || e.properties.nodes.length !== 0) return false;
   if (targets.length !== 2) return false;
   const hasExports = targets.some((t) => isCjsExportsIdentifier(lowerer, t));
   const hasModuleExports = targets.some((t) => isCjsModuleExports(lowerer, t));
   if (!hasExports || !hasModuleExports) return false;
-  for (const prior of sf.statements) {
+  for (const prior of sf.statements.nodes) {
     if (prior === stmt) break;
     if (ts.isFunctionDeclaration(prior) || isRequireStatement(prior)) continue;
     if (ts.isExpressionStatement(prior) && ts.isStringLiteral(prior.expression)) continue;
@@ -349,7 +349,7 @@ function functionUsesThis(fn: ts.FunctionLikeDeclaration): boolean {
 /** A function declaration, or a variable initialized with a function or
  * arrow expression, that never reads `this`. */
 function symbolIsThisFreeFunction(lowerer: Lowerer, sym: ts.Symbol | undefined): boolean {
-  const decls = sym ? lowerer.checker.declarationsOf(sym) : [];
+  const decls = sym ? sym.declarations : [];
   const fn = decls.find(ts.isFunctionDeclaration);
   if (fn !== undefined) return !functionUsesThis(fn);
   const v = decls.find(ts.isVariableDeclaration);
@@ -391,11 +391,11 @@ export function cjsExportCallIgnoresThis(
   // literal the statement names).
   let methodEntry: ts.MethodDeclaration | null = null;
   let shorthandOnly = false;
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     const cjs = cjsExportAssignmentOf(stmt);
     if (cjs?.kind !== "table") continue;
     const table = cjs.obj ?? cjsExportTargetLiteral(cjs.expr.right, sf);
-    for (const prop of table?.properties ?? []) {
+    for (const prop of table?.properties?.nodes ?? []) {
       if (prop.name === undefined || !ts.isIdentifier(prop.name) || prop.name.text !== name)
         continue;
       if (ts.isPropertyAssignment(prop)) values.push(prop.initializer);

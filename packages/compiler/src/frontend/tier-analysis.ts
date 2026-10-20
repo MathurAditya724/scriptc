@@ -360,9 +360,9 @@ function subjectOf(node: ts.Node): ts.Node {
       ts.isPropertyAccessExpression(callee) &&
       ts.isIdentifier(callee.expression) &&
       REFLECTION_NAMESPACES.has(callee.expression.text) &&
-      current.arguments.length > 0
+      current.arguments.nodes.length > 0
     ) {
-      return current.arguments[0]!;
+      return current.arguments.nodes[0]!;
     }
     return callee;
   }
@@ -474,7 +474,7 @@ class UnitResolver {
     let symbol = this.checker.getSymbolAtLocation(root);
     if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
       symbol = this.checker.getAliasedSymbol(symbol);
-    const decls = symbol === undefined ? [] : this.checker.declarationsOf(symbol);
+    const decls = symbol === undefined ? [] : symbol.declarations;
     const decl = decls.find((d) => !d.getSourceFile().isDeclarationFile);
     if (decl === undefined) {
       // CommonJS `exports`/`module` as values: the module object.

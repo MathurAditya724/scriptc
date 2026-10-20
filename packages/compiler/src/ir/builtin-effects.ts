@@ -137,6 +137,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.streamNew",
   "fetch.streamFrom",
   "num.toFixed",
+  "num.toPrecision",
+  "num.toExponentialDigits",
+  "str.localeCase",
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
@@ -380,6 +383,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyKey",
   "dyn.toNumeric",
   "dyn.increment",
+  // The dynamic-tier operators run the same coercions (scr_js_value.c), and
+  // js.toF64 throws dynCheck's TypeError for a non-number.
+  "js.toF64",
+  "js.add",
+  "js.arithmetic",
+  "js.bitwise",
+  "js.compare",
+  "js.toNumeric",
+  "js.increment",
+  "js.toNumberCoerce",
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",
   "error.ctorOptions",
@@ -576,6 +589,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
   "dyn.iterPack",
+  "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",
   "dyn.iteratorResult",
@@ -684,6 +698,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.randomIntMax",
   "crypto.randomFillView",
   "crypto.randomFillViewRest",
+  "crypto.getRandomValues",
+  "crypto.getRandomValuesDyn",
   "crypto.randomFillSyncDyn",
   "crypto.randomFillCb",
   "crypto.randomFillCbDyn",

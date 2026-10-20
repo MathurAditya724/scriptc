@@ -1,6 +1,6 @@
-local-class-type-query-brand.ts:4:3 - error SC1090: function-local classes with private brands are not supported yet
+local-class-type-query-brand.ts:5:3 - error SC1090: function-local classes with private brands are not supported yet
 
-  3 | function make() {
-  4 |   class Box {
+  4 | function make() {
+  5 |   class Box {
     |   ^~~~~~~~~~~
-  5 |     #v = 1;
+  6 |     #v = 1;

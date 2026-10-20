@@ -57,10 +57,11 @@ function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
  * no heritage, decorators or other members, a constructor body that
  * returns a value at its own level and never mentions `this`/`super`. */
 export function isValueReturningConstructorClass(decl: ts.ClassDeclaration): boolean {
-  if (decl.heritageClauses !== undefined && decl.heritageClauses.length > 0) return false;
-  if (decl.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.Decorator)) return false;
+  if (decl.heritageClauses !== undefined && decl.heritageClauses.nodes.length > 0) return false;
+  if (decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.Decorator))
+    return false;
   let ctor: ts.ConstructorDeclaration | undefined;
-  for (const member of decl.members) {
+  for (const member of decl.members.nodes) {
     if (ts.isSemicolonClassElement(member)) continue;
     if (!ts.isConstructorDeclaration(member) || ctor !== undefined) return false;
     ctor = member;
@@ -83,7 +84,7 @@ export function isValueReturningConstructorClass(decl: ts.ClassDeclaration): boo
     node.forEachChild(visit);
   };
   ctor.body.forEachChild(visit);
-  for (const parameter of ctor.parameters) parameter.forEachChild(visit);
+  for (const parameter of ctor.parameters.nodes) parameter.forEachChild(visit);
   return returnsValue && !observesThis;
 }
 
@@ -97,7 +98,7 @@ function insideArrow(node: ts.Node, ctor: ts.ConstructorDeclaration): boolean {
 function markNested(literal: ts.ObjectLiteralExpression, out: Set<ts.Node>): void {
   if (out.has(literal)) return;
   out.add(literal);
-  for (const property of literal.properties) {
+  for (const property of literal.properties.nodes) {
     if (!ts.isPropertyAssignment(property)) continue;
     const value = unparenthesized(property.initializer);
     if (ts.isObjectLiteralExpression(value)) markNested(value, out);
@@ -128,7 +129,7 @@ export function jsDynamicDeclarations(
           const init = unparenthesized(node.initializer);
           // An empty literal's binding is already checked-dynamic
           // (jsOpenObjectType), and its type describes no layout.
-          if (!ts.isObjectLiteralExpression(init) || init.properties.length === 0) return;
+          if (!ts.isObjectLiteralExpression(init) || init.properties.nodes.length === 0) return;
           const symbol = checker.getSymbolAtLocation(node.name);
           if (symbol !== undefined) literals.set(symbol, init);
           return;
@@ -158,7 +159,7 @@ export function jsDynamicDeclarations(
             callee.expression.text === "Object" &&
             (callee.name.text === "defineProperty" || callee.name.text === "defineProperties")
           )
-            receiver(node.arguments[0]);
+            receiver(node.arguments.nodes[0]);
         }
       },
       SCANNED_KINDS,
@@ -189,14 +190,14 @@ export function lowerValueReturningConstructorNew(
   if (symbol !== null && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
     symbol = lowerer.checker.getAliasedSymbol(symbol);
   const decl = symbol
-    ? lowerer.checker
-        .declarationsOf(symbol)
-        .find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && isDynamic(node))
+    ? symbol.declarations.find(
+        (node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && isDynamic(node),
+      )
     : undefined;
   if (decl === undefined) return null;
   const loc = locOf(expr);
-  const ctor = decl.members.find(ts.isConstructorDeclaration)!;
-  const simple = ctor.parameters.every(
+  const ctor = decl.members.nodes.find(ts.isConstructorDeclaration)!;
+  const simple = ctor.parameters.nodes.every(
     (p) => ts.isIdentifier(p.name) && p.dotDotDotToken === undefined && p.initializer === undefined,
   );
   if (!simple || !ts.isSourceFile(decl.parent)) {
@@ -206,7 +207,7 @@ export function lowerValueReturningConstructorNew(
       "constructing a class whose constructor returns a value, with parameter defaults, rest or patterns, or declared inside a function",
     );
   }
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   if (args.some(ts.isSpreadElement)) {
     lowerer.unsupported(
       "SC1090",
@@ -223,11 +224,14 @@ export function lowerValueReturningConstructorNew(
     lowerer.currentClass = null;
     lowerer.fnStack.push(newFnCtx(false, null, null, DYN));
     try {
-      const shapes: ParamShape[] = ctor.parameters.map(() => ({ type: DYN, mode: "required" }));
-      const declared = lowerer.declareParams(ctor.parameters, shapes);
+      const shapes: ParamShape[] = ctor.parameters.nodes.map(() => ({
+        type: DYN,
+        mode: "required",
+      }));
+      const declared = lowerer.declareParams(ctor.parameters.nodes, shapes);
       const body: IrStmt[] = [
         ...declared.prologue,
-        ...lowerer.lowerStmts(ctor.body!.statements),
+        ...lowerer.lowerStmts(ctor.body!.statements.nodes),
         {
           kind: "runtimeFence",
           code: "SC1090",
@@ -248,12 +252,12 @@ export function lowerValueReturningConstructorNew(
       lowerer.currentClass = savedClass;
     }
   }
-  const lowered = ctor.parameters.map((_, i) =>
+  const lowered = ctor.parameters.nodes.map((_, i) =>
     args[i] !== undefined ? lowerer.lowerExprExpecting(args[i]!, DYN) : dynUndefinedExpr(loc),
   );
   // Surplus arguments still evaluate, left to right, after the others.
   const surplus: IrStmt[] = args
-    .slice(ctor.parameters.length)
+    .slice(ctor.parameters.nodes.length)
     .map((arg) => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc: locOf(arg) }));
   const result = lowerer.declareHiddenLocal("%constructed", DYN);
   const value: IrExpr = { kind: "varRef", localId: result.id, type: DYN, loc };

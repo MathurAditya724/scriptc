@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { constructedValue } from "./constructor-returns.js";
 import {
   BOOL,
   DYN,
@@ -389,13 +390,13 @@ export class ClassConstructionDispatch {
         if (!args) continue;
         const type: IrType = { kind: "classval", className: name };
         const callee = varRef("p.0", DYN, loc);
-        const value: IrExpr = {
+        const value = constructedValue(lowerer, info, {
           kind: "newValue",
           callee: { kind: "dynCheck", value: callee, type, loc },
           args,
           type: { kind: "object", className: name },
           loc,
-        };
+        });
         const body: IrStmt[] = [
           { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
         ];

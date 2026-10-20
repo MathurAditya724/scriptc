@@ -24,7 +24,7 @@ export function lowerAddAbortListener(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`addAbortListener with this argument list`, expr);
   }

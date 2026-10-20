@@ -123,6 +123,8 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const features = value as Record<string, unknown>;
   if (features["workers"] !== undefined && typeof features["workers"] !== "boolean") return false;
+  if (features["youngNursery"] !== undefined && typeof features["youngNursery"] !== "boolean")
+    return false;
   return [
     "regex",
     "copying",
@@ -153,6 +155,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "tls",
     "tlsCa",
     "cipher",
+    "webcrypto",
   ].every((name) => typeof features[name] === "boolean");
 }
 

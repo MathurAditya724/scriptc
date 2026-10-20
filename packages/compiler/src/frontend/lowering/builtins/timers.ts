@@ -64,18 +64,18 @@ export function lowerTimersPromisesSetInterval(
   loc: SrcLoc,
 ): IrExpr | null {
   if (bi.module !== "timers/promises" || bi.member !== "setInterval") return null;
-  if (expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.unsupported("SC1090", expr, "spread arguments");
   }
-  if (expr.arguments.length !== 2) {
+  if (expr.arguments.nodes.length !== 2) {
     lowerer.noLowering(
-      `timers/promises.setInterval with ${expr.arguments.length} arguments`,
+      `timers/promises.setInterval with ${expr.arguments.nodes.length} arguments`,
       expr,
       "the lowered form is setInterval(delay, value) with an explicit yielded value; AbortSignal options are not supported yet",
     );
   }
-  const delayNode = expr.arguments[0]!;
-  const valueNode = expr.arguments[1]!;
+  const delayNode = expr.arguments.nodes[0]!;
+  const valueNode = expr.arguments.nodes[1]!;
   const delay = lowerer.lowerExpr(delayNode);
   const ms =
     delay.kind === "unitLit"
@@ -155,9 +155,9 @@ function isTimerHandleTyped(
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getAliasSymbol() ?? t.getSymbol();
   if (sym?.name !== name) return false;
-  return lowerer.checker
-    .declarationsOf(sym)
-    .some((d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()));
+  return sym.declarations.some(
+    (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+  );
 }
 function isTimeoutTyped(lowerer: Lowerer, node: ts.Expression): boolean {
   return isTimerHandleTyped(lowerer, node, "Timeout");
@@ -184,7 +184,7 @@ export function lowerTimeoutMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  if ((name === "unref" || name === "ref") && call.arguments.length === 0) {
+  if ((name === "unref" || name === "ref") && call.arguments.nodes.length === 0) {
     const handle = lowerer.lowerExprExpecting(access.expression, F64);
     const fn = isImmediate
       ? name === "unref"
@@ -197,12 +197,12 @@ export function lowerTimeoutMethodCall(
     // returns the Timeout/Immediate); the libCall yields the f64 back.
     return { kind: "libCall", fn, args: [handle], type: F64, loc };
   }
-  if (name === "hasRef" && call.arguments.length === 0) {
+  if (name === "hasRef" && call.arguments.nodes.length === 0) {
     const handle = lowerer.lowerExprExpecting(access.expression, F64);
     const fn = isImmediate ? "timers.immediateHasRef" : "timers.hasRef";
     return { kind: "libCall", fn, args: [handle], type: BOOL, loc };
   }
-  if (name === "refresh" && call.arguments.length === 0 && !isImmediate) {
+  if (name === "refresh" && call.arguments.nodes.length === 0 && !isImmediate) {
     // Re-arms to now + the original delay; yields the handle back for
     // chaining, like unref/ref.
     const handle = lowerer.lowerExprExpecting(access.expression, F64);
@@ -237,11 +237,11 @@ export function lowerTimersPromisesCall(
     return lowerSchedulerCall(lowerer, expr, bi.member, loc);
   if (bi.member !== "setTimeout" && bi.member !== "setImmediate") return null;
   const timeout = bi.member === "setTimeout";
-  const [valueNode, optionsNode] = timeout ? expr.arguments.slice(1) : expr.arguments;
+  const [valueNode, optionsNode] = timeout ? expr.arguments.nodes.slice(1) : expr.arguments.nodes;
   const ms: IrExpr | null = !timeout
     ? null
-    : expr.arguments[0]
-      ? lowerer.lowerExprExpecting(expr.arguments[0], F64)
+    : expr.arguments.nodes[0]
+      ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], F64)
       : { kind: "numLit", value: 1, type: F64, loc };
   if (valueNode === undefined) {
     return timeout
@@ -311,7 +311,7 @@ function lowerSchedulerCall(
   // The scheduler.wait libCalls emit timers/promises setTimeout's runtime
   // calls; mock.timers mocks scheduler.wait and leaves setTimeout's named
   // and namespace imports real. An omitted delay is NaN, Node's undefined.
-  const [delayNode, optionsNode] = expr.arguments;
+  const [delayNode, optionsNode] = expr.arguments.nodes;
   const ms: IrExpr = delayNode
     ? lowerer.lowerExprExpecting(delayNode, F64)
     : { kind: "numLit", value: NaN, type: F64, loc };
@@ -355,7 +355,7 @@ function timersPromisesOptions(
   }
   let ref: IrExpr = absent;
   let signal: IrExpr | null = null;
-  for (const prop of optionsNode.properties) {
+  for (const prop of optionsNode.properties.nodes) {
     const name = prop.name && ts.isIdentifier(prop.name) ? prop.name.text : null;
     if (
       name === "signal" &&

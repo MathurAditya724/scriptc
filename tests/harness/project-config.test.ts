@@ -200,6 +200,27 @@ test("node-types: socket.address and resetAndDestroy under @types/node", async (
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: TLSSocket.isSessionReused and keyed ??= timings under @types/node", async () => {
+  const outDir = outDirFor("tls-session-timings");
+  const entry = join(nodeTypesDir, "tls-session-timings.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32" ? "tls-session-timings.exe" : "tls-session-timings",
+    ),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: net.SocketAddress and net.BlockList under @types/node", async () => {
   const outDir = outDirFor("net-blocklist");
   const entry = join(nodeTypesDir, "net-blocklist.ts");
@@ -829,6 +850,42 @@ test("node-types: Cipheriv and Decipheriv match Node under @types/node", async (
   const outDir = outDirFor("node-cipher");
   const entry = join(nodeTypesDir, "cipher.ts");
   const result = await compile(entry, { outPath: join(outDir, "cipher"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: WebCrypto HMAC matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-webcrypto-hmac");
+  const entry = join(nodeTypesDir, "webcrypto-hmac.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "webcrypto-hmac"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: the navigator global's runtime probe matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-navigator");
+  const entry = join(nodeTypesDir, "navigator.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "navigator"),
+    outDir,
+    sanitize,
+  });
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
   if (!result.ok) return;
   const [native, node] = await Promise.all([
