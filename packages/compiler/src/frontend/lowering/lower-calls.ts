@@ -35,6 +35,7 @@ import {
 import { cjsExportCallIgnoresThis, cjsInFileExportGlobalOf } from "./cjs-exports-object.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
+import { lowerReadlineDisposeCall } from "./builtins/readline.js";
 import { errorToStringCall } from "./error-methods.js";
 import { lowerClassPrototypeAssign, lowerClassPrototypeDescriptors } from "./class-prototypes.js";
 import {
@@ -1683,6 +1684,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (timersDispose) return timersDispose;
     const symbolMethod = lowerClassSymbolMethodCall(lowerer, expr);
     if (symbolMethod) return symbolMethod;
+    const readlineDispose = lowerReadlineDisposeCall(lowerer, expr);
+    if (readlineDispose) return readlineDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
     lowerer.fenceStaticResponseMember(expr.expression, "call");
     lowerer.fenceStaticHeadersMember(expr.expression, "call");
@@ -6769,6 +6772,99 @@ function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): str
   return helper;
 }
 
+/** Whether `Object.assign(instance, record)` can copy every field of the
+ * record shape into a field the class declares with the same type: a plain
+ * record (no tuple, index signature or accessor slots) and a compiled
+ * class whose chain has no builtin or runtime-provided storage and no
+ * accessor for the written names. */
+function classAssignPlan(lowerer: Lowerer, className: string, srcShapeId: string): boolean {
+  const info = lowerer.classes.get(className);
+  const shape = lowerer.shapes.get(srcShapeId);
+  if (!info || !shape || shape.tuple || shape.indexValue || shapeHasAccessorSlots(shape))
+    return false;
+  for (let c: ClassInfo | null = info; c; c = c.base) {
+    if (c.builtinError || c.builtinEmitter || c.builtinStream !== undefined || c.def.runtime)
+      return false;
+  }
+  return shape.fields.every((f) => {
+    const declared = info.fields.get(f.name);
+    return (
+      declared !== undefined &&
+      (typeEquals(declared, f.type) || lowerer.widthLiftPlan(f.type, declared) !== null) &&
+      !lowerer.findMethodOn(info, f.name) &&
+      !lowerer.findMethodOn(info, `get:${f.name}`) &&
+      !lowerer.findMethodOn(info, `set:${f.name}`)
+    );
+  });
+}
+
+/** Interned `%obj.assignClass.<n>(o, s)` — Object.assign's per-field
+ * write of a record into a class instance (classAssignPlan's gate):
+ * optional source fields write only when present, and the instance
+ * returns. */
+function classAssignHelper(
+  lowerer: Lowerer,
+  className: string,
+  srcShapeId: string,
+  loc: SrcLoc,
+): string | null {
+  if (!classAssignPlan(lowerer, className, srcShapeId)) return null;
+  const key = `obj.assignClass:${className}:${srcShapeId}`;
+  const existing = lowerer.arrHofHelpers.get(key);
+  if (existing) return existing;
+  const helper = `%obj.assignClass.${lowerer.arrHofHelpers.size}`;
+  lowerer.arrHofHelpers.set(key, helper);
+  const sShape = lowerer.shapes.get(srcShapeId)!;
+  const oT: IrType = { kind: "object", className };
+  const sT: IrType = { kind: "record", shapeId: srcShapeId };
+  const oRef: IrExpr = { kind: "varRef", localId: "o.0", type: oT, loc };
+  const sRef: IrExpr = { kind: "varRef", localId: "s.0", type: sT, loc };
+  const body: IrStmt[] = [];
+  const info = lowerer.classes.get(className)!;
+  for (const f of sShape.fields) {
+    const declared = info.fields.get(f.name)!;
+    const read: IrExpr = {
+      kind: "recordGet",
+      obj: sRef,
+      shapeId: srcShapeId,
+      field: f.name,
+      type: f.type,
+      loc,
+    };
+    const lift = typeEquals(declared, f.type) ? null : lowerer.widthLiftPlan(f.type, declared);
+    const set: IrStmt = {
+      kind: "fieldSet",
+      obj: oRef,
+      className,
+      field: f.name,
+      value: lift === null ? read : lowerer.applyWidthLift(lift, read, declared, loc),
+      loc,
+    };
+    const present = lowerer.recordFieldPresent(sRef, srcShapeId, f.name, loc);
+    body.push(
+      present.kind === "recordHas"
+        ? { kind: "if", cond: present, then: [set], else_: null, loc }
+        : set,
+    );
+  }
+  body.push({ kind: "return", value: oRef, loc });
+  lowerer.liftedFns.push({
+    name: helper,
+    params: [
+      { localId: "o.0", name: "o", type: oT },
+      { localId: "s.0", name: "s", type: sT },
+    ],
+    returnType: oT,
+    locals: [
+      { id: "o.0", name: "o", type: oT, mutable: true },
+      { id: "s.0", name: "s", type: sT, mutable: true },
+    ],
+    body,
+    loc,
+  });
+  return helper;
+}
+
 /** Interned `%obj.assign.<n>(t, s)` — Object.assign's per-field copy
  * over signature-free records (every source field lands on a same-named,
  * same-typed target field — the caller's gate): optional source fields
@@ -7410,6 +7506,28 @@ function lowerObjectStaticCall(
           return { kind: "libCall", fn: "dyn.assign", args: [target, source], type: DYN, loc };
         }
       }
+      // A CLASS-INSTANCE target and a plain record source whose fields are
+      // all fields the class declares with the same types
+      // (`Object.assign(this, { retries: 3 })`): the per-field write into
+      // the instance, returning it — the instance mutates in place.
+      if (tProbe?.type.kind === "object" && sProbe?.type.kind === "record") {
+        const helper = classAssignPlan(lowerer, tProbe.type.className, sProbe.type.shapeId);
+        if (helper) {
+          const loc = locOf(call);
+          const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
+          const source = lowerer.lowerExpr(call.arguments.nodes[1]!);
+          if (target.type.kind === "object" && source.type.kind === "record") {
+            const name = classAssignHelper(
+              lowerer,
+              target.type.className,
+              source.type.shapeId,
+              loc,
+            );
+            if (name)
+              return { kind: "call", callee: name, args: [target, source], type: target.type, loc };
+          }
+        }
+      }
       if (tProbe?.type.kind === "record" && sProbe?.type.kind === "record") {
         const tShape = lowerer.shapes.get(tProbe.type.shapeId);
         const sShape = lowerer.shapes.get(sProbe.type.shapeId);
@@ -7500,6 +7618,25 @@ function lowerObjectStaticCall(
             const srcNode = spread ? argNode.expression : argNode;
             const rawSource = lowerer.lowerExpr(srcNode);
             fenceSymbolFieldCopy(lowerer, srcNode, rawSource.type, spread);
+            // A class instance copied into a fresh object
+            // (`Object.assign({}, instance)`): the result is a plain
+            // object holding the instance's own fields, never an
+            // instance, so a result the checker types as the class has
+            // no representation (the checked cast would throw).
+            if (
+              rawSource.type.kind === "object" &&
+              freshLiteralTarget &&
+              !ts.isExpressionStatement(call.parent)
+            ) {
+              const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+              if (resultT !== null && resultT.kind === "object") {
+                lowerer.unsupported(
+                  "SC1090",
+                  srcNode,
+                  `Object.assign copying a '${lowerer.fmt(rawSource.type)}' instance into a fresh object typed as the class (the copy is a plain object holding the instance's own fields, not an instance — build the object literal from the fields you need)`,
+                );
+              }
+            }
             const src = lowerer.coerceToExpected(rawSource, DYN);
             if (src.type.kind !== "dyn") {
               ok = false;

@@ -325,7 +325,7 @@ export class ShapeRegistry {
     ) {
       return;
     }
-    shape.declaredOrder = declaredOrder;
+    shape.declaredOrder = this.withExtendedNames(shape.id, declaredOrder);
     this.declaredOrderPriority.set(shape.id, this.currentDeclaredOrderPriority);
   }
 
@@ -341,7 +341,7 @@ export class ShapeRegistry {
       }
       const shape = this.byId.get(shapeId);
       if (!shape) continue;
-      shape.declaredOrder = best.order;
+      shape.declaredOrder = this.withExtendedNames(shapeId, best.order);
       this.declaredOrderPriority.set(shapeId, best.priority);
     }
     for (const finalize of this.derivedDeclaredOrderFinalizers) finalize();
@@ -374,7 +374,7 @@ export class ShapeRegistry {
       // still obeys first-writer-wins.
       if (shape?.declaredOrder !== originalOrder) return;
       const next = order();
-      if (next !== undefined) shape.declaredOrder = next;
+      if (next !== undefined) shape.declaredOrder = this.withExtendedNames(shape.id, next);
     };
   }
 
@@ -481,6 +481,53 @@ export class ShapeRegistry {
 
   get(shapeId: string): IrRecordShape | undefined {
     return this.byId.get(shapeId);
+  }
+
+  /** Names extendShape added to a shape, which every key-order table the
+   * shape adopts lists after its declared names. */
+  private readonly extendedNames = new Map<string, string[]>();
+
+  /** The members extendShape attached to a shape (empty for most). */
+  attachedNames(shapeId: string): readonly string[] {
+    return this.extendedNames.get(shapeId) ?? [];
+  }
+
+  private withExtendedNames(shapeId: string, order: string[]): string[] {
+    const extra = this.extendedNames.get(shapeId);
+    if (!extra) return order;
+    const missing = extra.filter((name) => !order.includes(name));
+    return missing.length === 0 ? order : [...order, ...missing];
+  }
+
+  /** Adds optional fields to an interned shape in place: members a type
+   * assertion attaches to the shape's values (`r as R & { tag: string }`
+   * followed by `view.tag = ...`; see assertion-members.ts). Every value
+   * of the shape holds them absent until a write through such a view, so
+   * the shape keeps its id, both structural keys resolve to it, and its
+   * key-order table lists the new names after the declared ones. Runs
+   * before any body lowers; existing layouts change, so the revision
+   * advances like a closing recursive placeholder. */
+  extendShape(shapeId: string, extra: readonly { name: string; type: IrType }[]): void {
+    const shape = this.byId.get(shapeId);
+    if (!shape || shape.tuple || extra.length === 0) return;
+    const fresh = extra.filter((f) => !shape.fields.some((x) => x.name === f.name));
+    if (fresh.length === 0) return;
+    shape.fields = [...shape.fields, ...fresh].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    );
+    this.extendedNames.set(shapeId, [
+      ...(this.extendedNames.get(shapeId) ?? []),
+      ...fresh.map((f) => f.name),
+    ]);
+    if (shape.declaredOrder)
+      shape.declaredOrder = this.withExtendedNames(shapeId, shape.declaredOrder);
+    const candidates = this.declaredOrderCandidates.get(shapeId);
+    if (candidates) {
+      for (const c of candidates) c.order = this.withExtendedNames(shapeId, c.order);
+    }
+    this.revision++;
+    const key = this.keyOf(shape.fields, false, shape.indexValue);
+    if (!this.byKey.has(key)) this.byKey.set(key, shapeId);
   }
 }
 
@@ -2038,12 +2085,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // {}` — classNamer spells them "%anon" (unique per file), the same
     // name their collection registered.
     !classDecl.getSourceFile().isDeclarationFile &&
-    checker.getConstructSignatures(widened).length === 0
+    checker.getConstructSignatures(widened).length === 0 &&
+    // A TypeScript class declared OUTSIDE the lowered program (reached
+    // through `import type` alone) never registers, and the program can
+    // hold no instance of it: its instance type maps below as the
+    // structural type it describes, like an interface.
+    (ctx.isProgramFile(classDecl.getSourceFile()) || isJsSourceFile(classDecl.getSourceFile()))
   ) {
-    // Declared OUTSIDE the lowered program (reached through the type world
-    // alone — jsdoc `typeof import()` over a never-required module): the
-    // class will never register, so the instance type is unmappable, not
-    // an object type naming a struct that cannot exist.
+    // A JavaScript class outside the lowered program (jsdoc `typeof
+    // import()` over a never-required module) stays unmappable: JSDoc
+    // types are not checked, so its slots fall back to the dynamic value.
     if (!ctx.isProgramFile(classDecl.getSourceFile())) return null;
     // The class inside a MIXIN function: per-call-site instantiations
     // share this one node — the CURRENT instantiation (collecting or
@@ -5903,8 +5954,8 @@ function coveredOptionalFieldsShape(
   const memberArms = unions.get(optionalSlot.unionId)?.arms ?? [];
   const slotArms =
     slot.kind === "union" ? (unions.get(slot.unionId)?.arms ?? []) : isUnitType(slot) ? [] : [slot];
-  const definedArms = memberArms.filter((arm) => arm.kind !== "undefinedT");
-  const slotDefined = slotArms.filter((arm) => arm.kind !== "undefinedT");
+  const definedArms = memberArms.filter((arm): boolean => arm.kind !== "undefinedT");
+  const slotDefined = slotArms.filter((arm): boolean => arm.kind !== "undefinedT");
   if (
     definedArms.length === 0 ||
     definedArms.length !== slotDefined.length ||

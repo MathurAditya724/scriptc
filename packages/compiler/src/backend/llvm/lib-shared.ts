@@ -994,6 +994,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // family have non-generic shapes (adapter/variadic) — special-cased in
   // emitLibCall.
   "emitter.new": "scr_emitter_new",
+  "emitter.className": "scr_emitter_class_name",
   "emitter.ctor": "scr_emitter_init",
   "emitter.off": "scr_emitter_off",
   "emitter.offDyn": "scr_emitter_off_dyn",
@@ -1039,6 +1040,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "rl.prompt": "scr_rl_prompt",
   "rl.promptWith": "scr_rl_prompt_with",
   "rl.setPrompt": "scr_rl_set_prompt",
+  "rl.setPromptDyn": "scr_rl_set_prompt_dyn",
   "rl.getPrompt": "scr_rl_get_prompt",
   "rl.write": "scr_rl_write",
   "rl.writeKey": "scr_rl_write_key",
@@ -1054,6 +1056,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "rl.terminal": "scr_rl_terminal",
   "rl.line": "scr_rl_line",
   "rl.isTerminal": "scr_rl_is_terminal",
+  "rl.isPromises": "scr_rl_is_promises",
+  "rl.inputFromDyn": "scr_stream_rl_from_dyn",
+  "rl.outputFromDyn": "scr_stream_rl_from_dyn",
   "rl.cursor": "scr_rl_cursor",
   "rl.seq": "scr_rl_seq",
   "rl.moves": "scr_rl_moves",
