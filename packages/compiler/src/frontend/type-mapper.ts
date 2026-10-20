@@ -4184,7 +4184,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const emptyTuple = (part: ts.Type): boolean =>
         checker.isTupleType(part) &&
         checker.getTypeArguments(part as ts.TypeReference).length === 0;
-      const hasArrayPart = parts.some((part) => checker.isArrayType(part));
+      // The match-result fallback `s.match(re) || []` (and `?? []`) widens
+      // to `RegExpMatchArray | []`: the empty tuple is one of the match
+      // array's own values too.
+      const matchArray = (part: ts.Type): boolean => {
+        const name = part.getSymbol()?.name;
+        return (
+          (name === "RegExpMatchArray" || name === "RegExpExecArray") &&
+          (part.getSymbol()?.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile())) ?? false)
+        );
+      };
+      const hasArrayPart = parts.some((part) => checker.isArrayType(part) || matchArray(part));
       for (const part of parts) {
         if (hasArrayPart && emptyTuple(part)) continue;
         // TypeScript's client can retain impossible intersections in a
