@@ -240,7 +240,11 @@ static bool scr_exec_limit_chunk(uint8_t *data, size_t *len, size_t chunk_start,
   double before = *text_len;
   *text_len = before + chunk_len;
   if (!(*text_len > max_buffer)) return false;
-  double keep = max_buffer - before;
+  /* Node slices the chunk at `maxBuffer - previous total`, and a slice end
+   * is truncated to an integer: a fractional limit keeps only whole units.
+   * The previous total was within the limit, so `keep` is not negative and
+   * below the chunk's length. */
+  double keep = floor(max_buffer - before);
   double units = 0;
   size_t at = text_start;
   while (at < text_end && units < keep) {
@@ -253,14 +257,16 @@ static bool scr_exec_limit_chunk(uint8_t *data, size_t *len, size_t chunk_start,
       units += u;
       continue;
     }
-    /* One unit left inside an astral character: Node's slice keeps the
-     * lone high surrogate. */
+    /* Exactly one unit left inside a complete astral character: Node's
+     * slice keeps the lone high surrogate. */
+    if (n != 4 || keep - units != 1) break;
     uint32_t cp = ((uint32_t)(b & 0x07) << 18) | ((uint32_t)(data[at + 1] & 0x3F) << 12) |
                   ((uint32_t)(data[at + 2] & 0x3F) << 6) | (uint32_t)(data[at + 3] & 0x3F);
     uint32_t hi = 0xD800 + ((cp - 0x10000) >> 10);
     data[at] = 0xED;
     data[at + 1] = (uint8_t)(0xA0 | ((hi >> 6) & 0x0F));
     data[at + 2] = (uint8_t)(0x80 | (hi & 0x3F));
+    scr_wtf8_note();
     at += 3;
     break;
   }
