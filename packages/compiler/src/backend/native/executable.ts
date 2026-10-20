@@ -268,6 +268,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Checked-dynamic stream slots test values and call JavaScript stream
   // members through the dyn-invoke unit.
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
+  // for await over checked-dynamic values.
+  unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,

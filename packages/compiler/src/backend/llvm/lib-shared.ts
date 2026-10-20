@@ -941,6 +941,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.iterPack": "scr_dyn_iter_pack",
   "dyn.destructureRest": "scr_dyn_destructure_rest",
   "dyn.iterator": "scr_dyn_iterator",
+  "dyn.asyncIteratorOpen": "scr_dyn_async_iterator_open",
+  "dyn.asyncIteratorWasSync": "scr_dyn_async_iterator_was_sync",
   "dyn.arrayFromIterator": "scr_dyn_array_from_iterator",
   "dyn.iteratorResult": "scr_dyn_iterator_result",
   "dyn.iteratorCanStep": "scr_dyn_iterator_can_step",

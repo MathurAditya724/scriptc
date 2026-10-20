@@ -9086,6 +9086,14 @@ function lowerArrayAssignInto(
  * specific diagnostics; other iterables fail on their types. The loop
  * variable is a fresh const binding per iteration (its own scope, like a
  * loop body). */
+/** Whether a `for await` head is untyped: the checker answers any or
+ * unknown, or a type that maps to a checked-dynamic value. */
+function isUntypedIterable(lowerer: Lowerer, node: ts.Expression): boolean {
+  const type = lowerer.typeOf(node);
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+  return lowerer.mapTypeOf(type)?.kind === "dyn";
+}
+
 export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   // Labels consume HERE (nested statements must never see them). The
   // plain array/string paths carry them; the container/matchAll/stdin
@@ -9147,6 +9155,32 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     if (dynStream) return dynStream;
     const builtin = lowerForAwaitBuiltin(lowerer, stmt);
     if (builtin) return builtin;
+    // An untyped value (a JavaScript async generator whose recursive
+    // return the checker types `any`): a compiled async generator steps
+    // natively; any other value takes the checked-dynamic async protocol.
+    // A synchronous generator, and in JavaScript any other head that
+    // reaches here, takes the same protocol: values of a synchronous
+    // iterator are awaited as the async-from-sync iterator awaits them, and
+    // a value that is not iterable throws Node's TypeError.
+    const headT = lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
+    const syncGenerator =
+      (headT?.kind === "generator" && headT.async !== true) || isJsSourceFile(stmt.getSourceFile());
+    if (lowerer.ctx.isAsync && (syncGenerator || isUntypedIterable(lowerer, stmt.expression))) {
+      const iterable = lowerer.lowerExpr(stmt.expression);
+      if (iterable.type.kind === "generator" && iterable.type.async)
+        return lowerForAwaitGenerator(
+          lowerer,
+          stmt,
+          iterable as IrExpr & { type: GenType },
+          labels,
+        );
+      if (iterable.type.kind === "dyn") return lowerForOfDyn(lowerer, stmt, iterable, labels, true);
+      if (
+        (iterable.type.kind === "generator" || isJsSourceFile(stmt.getSourceFile())) &&
+        lowerer.dynConvertible(iterable.type)
+      )
+        return lowerForOfDyn(lowerer, stmt, lowerer.coerceToExpected(iterable, DYN), labels, true);
+    }
     // A NodeJS.ReadableStream iterates as the general Readable.
     requestGeneralStreamSurface(lowerer, stmt.expression);
     lowerer.unsupported(
@@ -10442,6 +10476,7 @@ function lowerForOfDyn(
   stmt: ts.ForOfStatement,
   iterable: IrExpr,
   labels?: string[],
+  asyncLoop = false,
 ): IrStmt {
   const loc = locOf(stmt);
   const headText = (e: ts.Expression): string | null => {
@@ -10454,11 +10489,12 @@ function lowerForOfDyn(
   };
   const name = headText(stmt.expression);
   const callee = ts.isCallExpression(stmt.expression) ? headText(stmt.expression.expression) : null;
+  const iterableWord = asyncLoop ? "async iterable" : "iterable";
   const spell =
     name !== null
-      ? `${name} is not iterable`
+      ? `${name} is not ${iterableWord}`
       : callee !== null
-        ? `${callee} is not a function or its return value is not iterable`
+        ? `${callee} is not a function or its return value is not ${iterableWord}`
         : "";
   const iterator = lowerer.declareHiddenLocal("%dofIterator", DYN);
   const next = lowerer.declareHiddenLocal("%dofNext", DYN);
@@ -10470,6 +10506,14 @@ function lowerForOfDyn(
   const needsClose = lowerer.declareHiddenLocal("%dofNeedsClose", BOOL);
   needsClose.mutable = true;
   const error = lowerer.declareHiddenLocal("%dofError", CAUGHT);
+  const syncIterator = asyncLoop ? lowerer.declareHiddenLocal("%dofSync", BOOL) : null;
+  const awaitDyn = (value: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "async.awaitDyn",
+    args: [value],
+    type: DYN,
+    loc,
+  });
   const get = (source: IrExpr, key: string): IrExpr => ({
     kind: "dynKeyGet",
     value: source,
@@ -10522,7 +10566,23 @@ function lowerForOfDyn(
         type: BOOL,
         loc,
       },
-      then: [{ kind: "exprStmt", expr: call(varRef(returned.id, DYN, loc)), loc }],
+      then: [
+        {
+          kind: "exprStmt",
+          expr: asyncLoop
+            ? awaitDyn({
+                kind: "dynCall",
+                callee: varRef(returned.id, DYN, loc),
+                receiver: varRef(iterator.id, DYN, loc),
+                calleeName: "iterator method",
+                args: [],
+                type: DYN,
+                loc,
+              })
+            : call(varRef(returned.id, DYN, loc)),
+          loc,
+        },
+      ],
       else_: null,
       loc,
     },
@@ -10615,15 +10675,24 @@ function lowerForOfDyn(
         {
           kind: "varDecl",
           localId: value.id,
-          init: iteratorValue(
-            lowerer,
-            varRef(iterator.id, DYN, loc),
-            varRef(next.id, DYN, loc),
-            varRef(fast.id, BOOL, loc),
-            done,
-            loc,
-            "iterator method",
-          ),
+          init: syncIterator
+            ? asyncIteratorValue(
+                lowerer,
+                varRef(iterator.id, DYN, loc),
+                varRef(next.id, DYN, loc),
+                varRef(syncIterator.id, BOOL, loc),
+                done,
+                loc,
+              )
+            : iteratorValue(
+                lowerer,
+                varRef(iterator.id, DYN, loc),
+                varRef(next.id, DYN, loc),
+                varRef(fast.id, BOOL, loc),
+                done,
+                loc,
+                "iterator method",
+              ),
           loc,
         },
         {
@@ -10648,13 +10717,29 @@ function lowerForOfDyn(
           localId: iterator.id,
           init: check({
             kind: "libCall",
-            fn: "dyn.iterator",
+            fn: asyncLoop ? "dyn.asyncIteratorOpen" : "dyn.iterator",
             args: [iterable, { kind: "strLit", value: spell, type: STRING, loc }],
             type: DYN,
             loc,
           }),
           loc,
         },
+        ...(syncIterator
+          ? [
+              {
+                kind: "varDecl",
+                localId: syncIterator.id,
+                init: {
+                  kind: "libCall",
+                  fn: "dyn.asyncIteratorWasSync",
+                  args: [],
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              } satisfies IrStmt,
+            ]
+          : []),
         {
           kind: "varDecl",
           localId: next.id,
@@ -10664,7 +10749,9 @@ function lowerForOfDyn(
         {
           kind: "varDecl",
           localId: fast.id,
-          init: iteratorCanStep(varRef(iterator.id, DYN, loc), varRef(next.id, DYN, loc), loc),
+          init: asyncLoop
+            ? { kind: "boolLit", value: false, type: BOOL, loc }
+            : iteratorCanStep(varRef(iterator.id, DYN, loc), varRef(next.id, DYN, loc), loc),
           loc,
         },
         {
@@ -10714,6 +10801,84 @@ function lowerForOfDyn(
   } finally {
     lowerer.scopes.pop();
   }
+}
+
+/** One step of `for await` over a checked-dynamic iterator: await next()'s
+ * result, read done before value, and await the value of a synchronous
+ * iterator, as the async-from-sync iterator does. */
+function asyncIteratorValue(
+  lowerer: Lowerer,
+  iterator: IrExpr,
+  next: IrExpr,
+  sync: IrExpr,
+  done: IrLocal,
+  loc: SrcLoc,
+): IrExpr {
+  const result = lowerer.declareHiddenLocal("%asyncIteratorResult", DYN);
+  const get = (key: string): IrExpr => ({
+    kind: "dynKeyGet",
+    value: varRef(result.id, DYN, loc),
+    key: { kind: "strLit", value: key, type: STRING, loc },
+    type: DYN,
+    loc,
+  });
+  const awaitDyn = (value: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "async.awaitDyn",
+    args: [value],
+    type: DYN,
+    loc,
+  });
+  return {
+    kind: "seqExpr",
+    type: DYN,
+    loc,
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: result.id,
+        init: {
+          kind: "libCall",
+          fn: "dyn.iteratorResult",
+          args: [
+            awaitDyn({
+              kind: "dynCall",
+              callee: next,
+              receiver: iterator,
+              calleeName: "iterator method",
+              args: [],
+              type: DYN,
+              loc,
+            }),
+          ],
+          type: DYN,
+          loc,
+        },
+        loc,
+      },
+      {
+        kind: "assign",
+        localId: done.id,
+        value: { kind: "dynTest", test: "truthy", value: get("done"), type: BOOL, loc },
+        loc,
+      },
+    ],
+    result: {
+      kind: "ternary",
+      cond: varRef(done.id, BOOL, loc),
+      then: dynUndefinedExpr(loc),
+      else_: {
+        kind: "ternary",
+        cond: sync,
+        then: awaitDyn(get("value")),
+        else_: get("value"),
+        type: DYN,
+        loc,
+      },
+      type: DYN,
+      loc,
+    },
+  };
 }
 
 function lowerForOfString(

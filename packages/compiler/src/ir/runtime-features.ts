@@ -573,6 +573,8 @@ const RUNTIME_FEATURE_RULES = {
   streamDyn: rule({
     fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
   }),
+  /** for await over checked-dynamic values (scr_dyn_for_await.c). */
+  dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
   /** The stream unit emits through the emitter unit, also when the
    * program constructs no stream (a pipeline of functions). */
   emitter: rule({
@@ -756,6 +758,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdioExtended: false,
     stream: false,
     streamDyn: false,
+    dynForAwait: false,
     symbol: false,
     tls: false,
     tlsCa: false,
