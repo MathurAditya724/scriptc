@@ -63,3 +63,15 @@ test("declarations without requires, nested ones and single declarators stay", (
     rewrite(`function f() { var a = require("x"), b = a.y; return b; }\nmodule.exports = f;\n`),
   ).toBeNull();
 });
+
+test("a declarator that also stores an export becomes the declaration and the export", () => {
+  // semver 6's spelling, merged by a minifier.
+  const out = expectSameBehavior(`"use strict";
+var re = exports.re = [], t = module.exports.tokens = {}, R = 0;
+function tok(n) { t[n] = R++; }
+tok("A"); tok("B");
+re[t.B] = "b";
+console.log(JSON.stringify(exports.tokens), exports.re.length, t === exports.tokens);
+`);
+  expect(out).toContain("var re = []; exports.re = re; var t = {}; module.exports.tokens = t; var R = 0;");
+});

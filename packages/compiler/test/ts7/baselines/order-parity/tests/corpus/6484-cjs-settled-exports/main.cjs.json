@@ -1,0 +1,10 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6484-cjs-settled-exports/lib.cjs",
+  "<repo>/tests/corpus/6484-cjs-settled-exports/table.cjs",
+  "<repo>/tests/corpus/6484-cjs-settled-exports/class.cjs",
+  "<repo>/tests/corpus/6484-cjs-settled-exports/sema.cjs",
+  "<repo>/tests/corpus/6484-cjs-settled-exports/main.cjs"
+ ],
+ "diags": []
+}

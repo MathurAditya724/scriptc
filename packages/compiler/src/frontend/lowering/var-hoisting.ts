@@ -240,7 +240,20 @@ class ScopeAnalysis {
     if (deferred !== null && ts.isFunctionDeclaration(deferred) && deferred.name !== undefined)
       return this.functionSettles(scope, settle, deferred);
     const index = statements.indexOf(top as ts.Statement);
-    return index > settle || (index === settle && settlesWithin(top, ref));
+    if (index > settle || (index === settle && settlesWithin(top, ref))) return true;
+    // A function stored as a CommonJS export (`module.exports = F`), or
+    // given members (`F.x = …`), runs through that reference only when
+    // code re-enters the module before the binding settles: a require
+    // cycle, a call into user code, or a read of the module's exports.
+    // Top-level code up to the settling statement that does none of these
+    // leaves F uncalled until then.
+    return (
+      !read &&
+      deferred === null &&
+      ts.isSourceFile(scope) &&
+      nonInvokingReference(ref) &&
+      statements.slice(index + 1, settle + 1).every(cannotReenter)
+    );
   }
 
   private functionSettles(scope: Scope, settle: number, fn: ts.FunctionDeclaration): boolean {
@@ -269,6 +282,109 @@ class ScopeAnalysis {
     this.functionRefs.set(fn, refs);
     return refs;
   }
+}
+
+/** True when `ref` only stores or extends the function: the value stored
+ * by `module.exports = ref`, `exports = module.exports = ref` or
+ * `exports.name = ref`, or the object of a member store `ref.name = …`. */
+function nonInvokingReference(ref: ts.Identifier): boolean {
+  const member = ref.parent;
+  if (
+    member !== undefined &&
+    ts.isPropertyAccessExpression(member) &&
+    member.expression === ref &&
+    member.parent !== undefined &&
+    ts.isBinaryExpression(member.parent) &&
+    member.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    member.parent.left === member
+  )
+    return true;
+  let node: ts.Node = ref;
+  for (;;) {
+    const parent = node.parent;
+    if (
+      parent === undefined ||
+      !ts.isBinaryExpression(parent) ||
+      parent.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      parent.right !== node
+    )
+      return node !== ref && ts.isExpressionStatement(node.parent!);
+    if (!isExportsTarget(parent.left)) return false;
+    node = parent;
+  }
+}
+
+function isModuleExports(e: ts.Expression): boolean {
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    ts.isIdentifier(e.expression) &&
+    e.expression.text === "module" &&
+    e.name.text === "exports"
+  );
+}
+
+function isExportsTarget(e: ts.Expression): boolean {
+  if (ts.isIdentifier(e)) return e.text === "exports";
+  if (isModuleExports(e)) return true;
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    ((ts.isIdentifier(e.expression) && e.expression.text === "exports") ||
+      isModuleExports(e.expression))
+  );
+}
+
+const PURE_GLOBALS = new Set(["Object", "Array", "Number", "String", "Math", "JSON", "Symbol"]);
+
+/** A call whose callee is a builtin method of a literal or a standard
+ * global: it cannot run user code. */
+function builtinCall(callee: ts.Expression): boolean {
+  if (!ts.isPropertyAccessExpression(callee)) return false;
+  let root: ts.Expression = callee.expression;
+  while (ts.isPropertyAccessExpression(root)) root = root.expression;
+  return (
+    ts.isRegularExpressionLiteral(root) ||
+    ts.isStringLiteral(root) ||
+    ts.isNumericLiteral(root) ||
+    (ts.isIdentifier(root) && PURE_GLOBALS.has(root.text))
+  );
+}
+
+/** True when evaluating `stmt` cannot re-enter the module: no call into
+ * user code, no construction, no require, no read of `module`/`exports`
+ * beyond stores into them. Function and class bodies do not run here. */
+function cannotReenter(stmt: ts.Statement): boolean {
+  if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) return true;
+  let quiet = true;
+  ts.walkPreorder(stmt, (n) => {
+    if (!quiet) return "stop";
+    if (
+      ts.isFunctionLike(n) ||
+      ts.isClassDeclaration(n) ||
+      ts.isClassExpression(n) ||
+      ts.isClassStaticBlockDeclaration(n)
+    )
+      return "skip";
+    if (ts.isCallExpression(n)) {
+      if (!builtinCall(n.expression)) quiet = false;
+    } else if (ts.isNewExpression(n) || ts.isTaggedTemplateExpression(n)) {
+      quiet = false;
+    } else if (ts.isIdentifier(n) && (n.text === "module" || n.text === "exports")) {
+      // Only as the root of a store target.
+      let target: ts.Node = n;
+      while (target.parent !== undefined && ts.isPropertyAccessExpression(target.parent) && target.parent.expression === target)
+        target = target.parent;
+      const assign = target.parent;
+      if (
+        assign === undefined ||
+        !ts.isBinaryExpression(assign) ||
+        assign.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+        assign.left !== target
+      )
+        quiet = false;
+    }
+    return undefined;
+  });
+  return quiet;
 }
 
 /** A loop statement that settles the binding settles the references in
