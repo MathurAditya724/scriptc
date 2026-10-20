@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2563, 2567)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
@@ -1501,6 +1501,61 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       "gtsubpath",
     ]);
   }, 180_000);
+
+  // 2566: the same early read through esbuild's `(0, binding.fn)()` call
+  // spelling also keeps SC1016.
+  test("a CommonJS cycle that calls an export during initialization stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2566-cjs-cycle-indirect-call/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcyclecall"] });
+    expect(coverage.npmStatic).toEqual([
+      {
+        package: "gtcyclecall",
+        status: "refused",
+        detail: expect.stringMatching(
+          /circular imports .*can use its binding 'import_index' of a module of the cycle/,
+        ) as string,
+      },
+    ]);
+  }, 120_000);
+
+  // 2571: the partner stores the export (in a const, or in an object
+  // literal) and calls it while the cycle initializes; both keep SC1016.
+  test("a CommonJS cycle that stores an export and calls it stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2571-cjs-cycle-stored-function/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcyclealias", "gtcyclebox"] });
+    for (const pkg of ["gtcyclealias", "gtcyclebox"])
+      expect(coverage.npmStatic).toContainEqual({
+        package: pkg,
+        status: "refused",
+        detail: expect.stringMatching(
+          /circular imports .*can use its binding 'import_index' of a module of the cycle/,
+        ) as string,
+      });
+  }, 120_000);
+
+  // 2564: a chunk reads a top-level function whose name a nested scope of
+  // the chunk also declares; the function still travels with the chunk.
+  test("a chunk carries a top-level function its nested scopes shadow", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2564-chunk-helper-shadowing/main.ts"), [
+      "gtchunkshadow",
+    ]);
+  }, 180_000);
+
+  // 2565: Node shares one function between the chunks that export it; a
+  // per-chunk copy would not, so the package stays refused.
+  test("chunks that export a shared top-level function stay refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2565-chunk-shared-function/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtchunkshared"] });
+    expect(coverage.npmStatic).toEqual([
+      {
+        package: "gtchunkshared",
+        status: "refused",
+        detail: expect.stringMatching(
+          /uses the bundle's top-level function 'tally' as a value, which its chunks cannot share/,
+        ) as string,
+      },
+    ]);
+  }, 120_000);
 
   test("published type-only declarations coexist with a static runtime bundle", async () => {
     const entry = join(fixturesRoot, "npm/cases/2469-bundle-offender/main.ts");
