@@ -164,15 +164,53 @@ function fieldedErrorClasses(info: ClassInfo): ClassInfo[] {
 }
 
 /** Why a fielded error class's own properties have no static rendering,
- * or null when every field renders. */
-function fieldedErrorReason(lowerer: Lowerer, info: ClassInfo): string | null {
-  for (const f of ownErrorFields(info)) {
-    if (ERROR_SPECIAL_KEYS.has(f.name))
-      return `its field '${f.name}' is one Node's error inspector treats specially`;
-    const why = inspectSupport(lowerer, f.type, new Set(), { recursive: false });
-    if (why !== null) return `its field '${f.name}': ${why}`;
+ * or null when every field renders. `visiting` and `out` are the caller's
+ * inspectSupport walk: a field typed as the class itself (`next?: Chain`)
+ * is a recursive shape, not a new walk. */
+function fieldedErrorReason(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  visiting: Set<string> = new Set(),
+  out: { recursive: boolean } = { recursive: false },
+): string | null {
+  const key = `error:${info.def.name}`;
+  if (visiting.has(key)) {
+    out.recursive = true;
+    return null;
   }
-  return null;
+  visiting.add(key);
+  try {
+    for (const f of ownErrorFields(info)) {
+      if (ERROR_SPECIAL_KEYS.has(f.name))
+        return `its field '${f.name}' is one Node's error inspector treats specially`;
+      const why = inspectSupport(lowerer, f.type, visiting, out);
+      if (why !== null) return `its field '${f.name}': ${why}`;
+    }
+    return null;
+  } finally {
+    visiting.delete(key);
+  }
+}
+
+/** True when an instance of `c` can contain itself: its fields reach `c`
+ * or one of its bases, whose slots can hold a `c` (`next: Chain` in a
+ * subclass of Chain, a field typed as Error). */
+function errorInstanceReachesItself(lowerer: Lowerer, c: ClassInfo): boolean {
+  const holders = new Set<string>();
+  for (let a: ClassInfo | null = c; a; a = a.base) holders.add(a.def.name);
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    for (const x of typeConstituents(lowerer, u)) {
+      if (x.kind === "object" && holders.has(x.className)) return true;
+      const k = typeKey(x);
+      if (!seen.has(k)) {
+        seen.add(k);
+        if (walk(x)) return true;
+      }
+    }
+    return false;
+  };
+  return walk({ kind: "object", className: c.def.name });
 }
 
 /** An error value whose runtime class may declare fields
@@ -263,7 +301,50 @@ function fieldedErrorInspectHelper(
     }
     const instance: IrExpr =
       c.def.name === t.className ? v() : { kind: "downcast", value: v(), type: cls, loc };
+    // A class whose fields can hold the instance itself (`next: Chain`)
+    // runs Node's circular machinery, as other cycle-capable objects do:
+    // an instance already on the traversal stack renders [Circular *N],
+    // before the depth answer, and the frame's text gets the <ref *N>
+    // prefix when the walk found it circular.
+    const onCycle = errorInstanceReachesItself(lowerer, c);
+    const circular = (): IrExpr => varRef("cc.0", F64, loc);
     const arm: IrStmt[] = [
+      ...(onCycle
+        ? ([
+            {
+              kind: "varDecl",
+              localId: "cc.0",
+              init: { kind: "libCall", fn: "insp.circCheck", args: [v()], type: F64, loc },
+              loc,
+            },
+            {
+              kind: "if",
+              cond: {
+                kind: "bin",
+                op: ">",
+                left: circular(),
+                right: numLit(0, loc),
+                type: BOOL,
+                loc,
+              },
+              then: [
+                {
+                  kind: "return",
+                  value: {
+                    kind: "libCall",
+                    fn: "insp.circular",
+                    args: [circular()],
+                    type: STRING,
+                    loc,
+                  },
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            },
+          ] satisfies IrStmt[])
+        : []),
       {
         kind: "if",
         cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
@@ -282,6 +363,15 @@ function fieldedErrorInspectHelper(
         expr: { kind: "libCall", fn: "insp.begin", args: [rPlus1()], type: VOID, loc },
         loc,
       },
+      ...(onCycle
+        ? ([
+            {
+              kind: "exprStmt",
+              expr: { kind: "libCall", fn: "insp.seenPush", args: [v()], type: VOID, loc },
+              loc,
+            },
+          ] satisfies IrStmt[])
+        : []),
     ];
     for (const f of ownErrorFields(c)) {
       const read: IrExpr = {
@@ -313,22 +403,25 @@ function fieldedErrorInspectHelper(
         loc,
       });
     }
+    const ended: IrExpr = {
+      kind: "libCall",
+      fn: "insp.end",
+      args: [
+        varRef("base.0", STRING, loc),
+        strLit("{", loc),
+        strLit("}", loc),
+        rPlus1(),
+        boolLit(false, loc),
+        boolLit(false, loc),
+      ],
+      type: STRING,
+      loc,
+    };
     arm.push({
       kind: "return",
-      value: {
-        kind: "libCall",
-        fn: "insp.end",
-        args: [
-          varRef("base.0", STRING, loc),
-          strLit("{", loc),
-          strLit("}", loc),
-          rPlus1(),
-          boolLit(false, loc),
-          boolLit(false, loc),
-        ],
-        type: STRING,
-        loc,
-      },
+      value: onCycle
+        ? { kind: "libCall", fn: "insp.refWrap", args: [v(), ended], type: STRING, loc }
+        : ended,
       loc,
     });
     body.push(
@@ -359,6 +452,7 @@ function fieldedErrorInspectHelper(
       { id: "r.0", name: "r", type: F64, mutable: false },
       { id: "d.0", name: "d", type: F64, mutable: false },
       { id: "base.0", name: "base", type: STRING, mutable: false },
+      { id: "cc.0", name: "cc", type: F64, mutable: false },
       { id: "name.0", name: "name", type: STRING, mutable: true },
       { id: "raw.0", name: "raw", type: STRING, mutable: true },
     ],
@@ -656,7 +750,7 @@ function inspectSupport(
         // render; a subclass whose fields cannot is a runtime refusal on
         // its own instances only (see fieldedErrorInspectHelper).
         const own = fieldedErrorClasses(info).find((c) => c === info);
-        const ownWhy = own ? fieldedErrorReason(lowerer, own) : null;
+        const ownWhy = own ? fieldedErrorReason(lowerer, own, visiting, out) : null;
         if (ownWhy !== null)
           return `'${t.className.replace(/^%(m\d+\.)?/, "")}' error values (${ownWhy})`;
         return null;
