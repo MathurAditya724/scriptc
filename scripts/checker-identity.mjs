@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Compiles every corpus program to LLVM IR with each TypeScript 7 API server (tsc-ts, the default, and tsgo with
-// SCRIPTC_CHECKER=tsgo) and fails unless both give the same IR and the same diagnostics.
+// SCRIPTC_CHECKER=tsgo) and fails unless both give the same IR and the same diagnostics. The text of a checker panic
+// is the checker's own (Go's runtime error for tsgo, tsc-ts's for tsc-ts), so it is compared as `panic: …`.
 //
 // Usage: node scripts/checker-identity.mjs [--jobs <n>] [--optimization release|dev] [--filter <substring>]
 //
@@ -73,11 +74,11 @@ async function main() {
       const [a, b] = checkers.map((checker) => results.get(checker).get(file));
       const name = file.slice(corpusDir.length + 1);
       if (a === undefined || b === undefined) differences.push(`${name}: not compiled`);
-      else if (a.ok !== b.ok || a.diagnostics !== b.diagnostics)
+      else if (a.ok !== b.ok || withoutPanicText(a.diagnostics) !== withoutPanicText(b.diagnostics))
         differences.push(
           `${name}: tsgo ${a.ok ? "compiles" : a.diagnostics}; tsc-ts ${b.ok ? "compiles" : b.diagnostics}`,
         );
-      else if (a.ok && !readFileSync(a.llvm).equals(readFileSync(b.llvm)))
+      else if (a.ok && irWithoutPanicText(a.llvm) !== irWithoutPanicText(b.llvm))
         differences.push(`${name}: LLVM IR differs`);
     }
     if (differences.length > 0) {
@@ -94,6 +95,31 @@ async function main() {
   } finally {
     rmSync(outRoot, { recursive: true, force: true });
   }
+}
+
+/** A diagnostic list with each SC0004 checker panic's text replaced by `…`. */
+function withoutPanicText(diagnostics) {
+  return diagnostics?.replace(/(SC0004: [^;]*?: panic: )[^;]*/g, "$1…");
+}
+
+/** A module's LLVM IR with each SC0004 checker panic's text replaced by `…`. A fence statement keeps the
+ * diagnostic's message in a string constant named for a hash of its contents, and passes its length. */
+function irWithoutPanicText(llvm) {
+  let ir = readFileSync(llvm, "utf8");
+  const constant =
+    /^(@sc_cs_\d+) = internal constant \[\d+ x i8\] c"(the TypeScript checker crashed answering a query here [^"]*?: panic: )[^"]*?( \[SC0004 at [^"]*)"$/gm;
+  const names = [];
+  ir = ir.replace(constant, (_, name, head, tail) => {
+    names.push(name);
+    return `@checker_panic_${names.length} = internal constant c"${head}…${tail}"`;
+  });
+  names.forEach((name, index) => {
+    ir = ir.replace(
+      new RegExp(`${name}\\b(, i64 \\d+)?`, "g"),
+      (_, length) => `@checker_panic_${index + 1}${length === undefined ? "" : ", i64 …"}`,
+    );
+  });
+  return ir;
 }
 
 async function worker([outDir, optimization, ...files]) {
