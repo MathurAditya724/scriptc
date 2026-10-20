@@ -1419,8 +1419,17 @@ export function collectGlobals(
           // common/tls's `exports.check = function (certs) {...}` —
           // keep func-ness with dyn pieces; everything else is dyn).
           const strict = lowerer.checker.getTypeOfSymbol(symbol);
-          const t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, nameNode, strict);
+          let t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, nameNode, strict);
           if (!t || t.kind === "void") lowerer.badType(typeNode, strict);
+          // An export typed as the empty object literal (tsc's enum output
+          // `exports.E || (exports.E = {})` after its `exports.E = void 0`
+          // preamble): TS's `{}` admits any later non-nullish value and the
+          // export is undefined until then, so it rides checked-dynamic
+          // storage like the same-shaped var binding (varBindingType).
+          if (t.kind === "record" && isJsSourceFile(sf)) {
+            const shape = lowerer.shapes.get(t.shapeId);
+            if (shape && shape.fields.length === 0 && !shape.indexValue && !shape.tuple) t = DYN;
+          }
           // An immutable export source shares its live storage and native
           // callable ABI. Mutable sources need a separate snapshot slot:
           // later writes to the binding do not change the exported value.
