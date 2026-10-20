@@ -295,7 +295,7 @@ export function isOptionalProcessVersionsRead(lowerer: Lowerer, node: ts.Node): 
   if (!programMentionsVersions(lowerer)) return false;
   const symbol = lowerer.typeOf(node.expression).getSymbol();
   return (
-    symbol?.name === "ProcessVersions" &&
+    symbol !== undefined && ts.symbolName(symbol) === "ProcessVersions" &&
     symbol.declarations.some(
       (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
     ) &&
