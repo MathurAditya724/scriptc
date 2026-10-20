@@ -46,6 +46,7 @@ export interface NativeLinkFeatures {
   bigint: boolean;
   searchParams: boolean;
   qs: boolean;
+  utilPromisify: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;

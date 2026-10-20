@@ -88,6 +88,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_util_compare.c", all("parseArgs", "symbol")],
   ["scr_util_style.c", all("parseArgs", "inspect", "dynAsync")],
   ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
+  // util.promisify over an untyped function creates dyn promises and calls.
+  ["scr_util_promisify.c", all("utilPromisify", "dynAsync", "dynInvoke")],
   ["scr_stream.c", "stream"],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],

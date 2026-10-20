@@ -82,6 +82,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.inherits": "scr_util_inherits",
   "util.deprecate": "scr_util_deprecate",
   "util.callbackify": "scr_util_callbackify",
+  "util.promisifyDyn": "scr_util_promisify",
   "util.debuglog": "scr_util_debuglog",
   "util.typeIs": "scr_dyn_util_type_is",
   "util.typeValue": "scr_dyn_util_type_value",
@@ -1497,6 +1498,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
   "util.callbackify",
+  "util.promisifyDyn",
   "util.debuglog",
   "worker.new",
   "worker.parentPort",

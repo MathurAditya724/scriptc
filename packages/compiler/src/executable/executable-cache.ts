@@ -71,6 +71,7 @@ export interface EarlyExecutableNativeFeatures {
   bigint: boolean;
   searchParams: boolean;
   qs: boolean;
+  utilPromisify: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -185,6 +186,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "bigint",
   "searchParams",
   "qs",
+  "utilPromisify",
   "parseArgs",
   "stream",
   "net",

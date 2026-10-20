@@ -30,6 +30,7 @@ const features: NativeLinkFeatures = {
   bigint: false,
   searchParams: false,
   qs: false,
+  utilPromisify: false,
   parseArgs: false,
   stream: false,
   net: false,

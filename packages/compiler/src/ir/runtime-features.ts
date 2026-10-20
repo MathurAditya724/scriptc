@@ -61,6 +61,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.inherits",
   "util.deprecate",
   "util.callbackify",
+  "util.promisifyDyn",
   "util.debuglog",
   "als.new",
   "als.get",
@@ -493,7 +494,7 @@ const RUNTIME_FEATURE_RULES = {
   }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
-    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS],
+    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS, "util.promisifyDyn"],
     expr: (node, _tables) => node.kind === "dynInvoke",
   }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
@@ -610,6 +611,10 @@ const RUNTIME_FEATURE_RULES = {
   }),
   tls: rule({ prefixes: ["tls.", "https.", "http2."], types: ["secureCtx"] }),
   tlsCa: rule({ prefixes: ["tlsca."] }),
+  /** util.promisify over an untyped function (scr_util_promisify.c): its
+   * promises go through the dyn-async unit and its calls through the
+   * dyn-invoke unit. */
+  utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -662,6 +667,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     symbol: false,
     tls: false,
     tlsCa: false,
+    utilPromisify: false,
     warningReplace: false,
     webcrypto: false,
     zlib: false,

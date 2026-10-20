@@ -150,6 +150,10 @@ export interface CcOptions {
    * line (escape-only programs ride the always-linked component encoder
    * and never flip this). */
   qs?: boolean;
+  /** The program promisifies an untyped function (util.promisify over
+   * `any`): compiles scr_util_promisify.c, which also references the
+   * dyn-async and dyn-invoke units. */
+  utilPromisify?: boolean;
   /** The program uses native util parsing, comparison, or styling. Optional
    * utility units also require their symbol, inspection, and warning features. */
   parseArgs?: boolean;
