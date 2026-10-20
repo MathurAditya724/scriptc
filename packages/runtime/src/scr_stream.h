@@ -136,6 +136,13 @@ ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end);
 /* A boxed native stream out of a checked-dynamic pipeline stage (+1), or
  * NULL with `message` thrown as the not-supported Error. */
 ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *message);
+/* Checked-dynamic stream slots (scr_stream_dyn.c): the native stream a
+ * value boxes with the requested side (1 readable, 2 writable; +1, or
+ * NULL), and readable.pipe()/unpipe() for a destination that is not a
+ * native stream. */
+ScrStream *scr_stream_dyn_native(const struct ScrDyn *value, double side);
+void scr_stream_pipe_dyn(ScrStream *src, struct ScrDyn *src_box, struct ScrDyn *dest, bool end);
+void scr_stream_unpipe_dyn(ScrStream *src, struct ScrDyn *dest);
 ScrStream *scr_stream_new_duplex_dyn(struct ScrDyn *opts);
 ScrStream *scr_stream_new_transform_dyn(struct ScrDyn *opts);
 ScrStream *scr_stream_new_passthrough_dyn(struct ScrDyn *opts);
