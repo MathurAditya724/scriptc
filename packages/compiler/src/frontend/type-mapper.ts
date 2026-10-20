@@ -1360,8 +1360,7 @@ export function mapAsyncGeneratorAnnotation(type: ts.Type, ctx: TypeMapperCtx): 
   if (
     !symbol ||
     !["AsyncIterator", "AsyncIterableIterator", "AsyncIterable"].includes(symbol.name) ||
-    !checker
-      .declarationsOf(symbol)
+    !symbol.declarations
       .some((d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()))
   )
     return null;
@@ -2505,8 +2504,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     psym &&
     WEBCRYPTO_DYN_TYPES.has(psym.name) &&
-    checker
-      .declarationsOf(psym)
+    psym.declarations
       .some(
         (d) =>
           (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&

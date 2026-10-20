@@ -52,7 +52,7 @@ export function refuseModuleMemberThis(
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
     symbol = lowerer.checker.getAliasedSymbol(symbol);
   if (symbol === undefined) return;
-  for (const decl of lowerer.checker.declarationsOf(symbol)) {
+  for (const decl of symbol.declarations) {
     const fn = exportedFunction(decl);
     if (fn === null || !readsOwnThis(fn)) continue;
     lowerer.unsupported(
