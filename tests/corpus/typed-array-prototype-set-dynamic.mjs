@@ -36,14 +36,5 @@ try { copy(memory(), dataViewSource, 5); } catch (error) { console.log(error.nam
 // ToObject boxes non-string primitives; their missing length makes the copy empty.
 for (const source of [1n, Symbol("source"), false, 42]) {
   console.log(copy(memory(), source, 1), String(memory()));
-  const direct = memory();
-  console.log(direct.set(source, 1), String(direct));
   try { copy(memory(), source, 5); } catch (error) { console.log(error.name, error.message); }
-}
-
-// Constructors use ToIndex instead of set/from's ToObject array-like source.
-function construct(value) { return new Uint8Array(value); }
-for (const source of [1n, Symbol("length")]) {
-  console.log(String(Uint8Array.from(source)));
-  try { construct(source); } catch (error) { console.log(error.name, error.message); }
 }

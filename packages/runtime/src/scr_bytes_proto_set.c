@@ -13,8 +13,9 @@ ScrDyn *scr_dyn_typed_array_proto_set(ScrDyn *target, ScrDyn *source, ScrDyn *of
   double index;
   if (!scr_dyn_number_coerce_js(offset, &index)) return NULL;
   index = isnan(index) ? 0 : trunc(index);
-  /* DataView is array-like with no length, rather than a TypedArray source. */
-  if (source->kind == SCR_DYN_BYTES && source->v.bytes->is_data_view) {
+  /* DataView and boxed non-string primitives have no array-like length. */
+  if ((source->kind == SCR_DYN_BYTES && source->v.bytes->is_data_view) ||
+      source->kind == SCR_DYN_BIGINT || source->kind == SCR_DYN_SYMBOL) {
     if (!(index >= 0) || index > (double)target->v.bytes->len) {
       static const char msg[] = "offset is out of bounds";
       scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
