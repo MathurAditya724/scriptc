@@ -185,6 +185,44 @@ function plainRead(access: ts.Expression): boolean {
   return true;
 }
 
+/** True when a member read is the callee of a call or a tag, which receives
+ * the object it was read from as `this`. */
+function calledWithReceiver(access: ts.Expression): boolean {
+  let callee: ts.Node = access;
+  while (callee.parent !== undefined && ts.isParenthesizedExpression(callee.parent))
+    callee = callee.parent;
+  const p = callee.parent;
+  return (
+    p !== undefined &&
+    ((ts.isCallExpression(p) && p.expression === callee) ||
+      (ts.isTaggedTemplateExpression(p) && p.tag === callee))
+  );
+}
+
+/** True when a function reads its own `this`: in its body, or in an arrow
+ * function inside it. */
+function readsThis(fn: ts.FunctionDeclaration): boolean {
+  let found = false;
+  if (fn.body === undefined) return false;
+  ts.walkPreorder(fn.body, (n) => {
+    if (found) return "stop";
+    if (
+      ts.isFunctionDeclaration(n) ||
+      ts.isFunctionExpression(n) ||
+      ts.isMethodDeclaration(n) ||
+      ts.isGetAccessorDeclaration(n) ||
+      ts.isSetAccessorDeclaration(n) ||
+      ts.isConstructorDeclaration(n) ||
+      ts.isClassDeclaration(n) ||
+      ts.isClassExpression(n)
+    )
+      return "skip";
+    if (n.kind === ts.SyntaxKind.ThisKeyword) found = true;
+    return undefined;
+  });
+  return found;
+}
+
 /** The `__export(T, { name: () => value, … })` getter table of T, or null. */
 function exportTableOf(
   call: ts.CallExpression,
@@ -602,7 +640,7 @@ export function lowerBundledEsmInits(
       p.parent === table.stmt
     )
       continue;
-    const why = `reads the namespace of a bundled ES module ('${r.text}') in a way the static rewrite cannot follow (only member reads of its exports compile)`;
+    const why = `reads the namespace of a bundled ES module ('${r.text}') in a way the static rewrite cannot follow (only member reads of its exports compile, and calls only of exported functions that do not read 'this')`;
     if (
       p === undefined ||
       !ts.isCallExpression(p) ||
@@ -625,13 +663,25 @@ export function lowerBundledEsmInits(
         ns = up;
       else break;
     }
-    const names = new Set(table.entries.map(([n]) => n));
+    const values = new Map(table.entries);
+    // A call through the namespace (`ns.fn()`) passes the object the read
+    // came from as `this`; the lowered object differs from Node's module
+    // object (`__esModule`, property attributes), so it must stay
+    // unobservable: the callee is a top-level function that never reads
+    // `this`.
+    const receiverHidden = (name: string): boolean => {
+      const value = values.get(name);
+      if (value === undefined || !ts.isIdentifier(value) || !stable(value.text)) return false;
+      const decl = top.get(value.text)?.node;
+      return decl !== undefined && ts.isFunctionDeclaration(decl) && !readsThis(decl);
+    };
     const memberRead = (access: ts.Node | undefined, of: ts.Node): boolean =>
       access !== undefined &&
       ts.isPropertyAccessExpression(access) &&
       access.expression === of &&
-      names.has(access.name.text) &&
-      plainRead(access);
+      values.has(access.name.text) &&
+      plainRead(access) &&
+      (!calledWithReceiver(access) || receiverHidden(access.name.text));
     const holder = ns.parent;
     // `__reExport(main, ns, module.exports)`: a star re-export of the
     // module into the bundle's own exports (`export * from` in its entry).

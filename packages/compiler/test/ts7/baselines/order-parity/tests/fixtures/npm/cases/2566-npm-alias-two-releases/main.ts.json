@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/fixtures/npm/cases/2566-npm-alias-two-releases/main.ts"
- ],
- "diags": []
-}
