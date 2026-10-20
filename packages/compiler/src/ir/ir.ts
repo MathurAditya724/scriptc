@@ -4214,6 +4214,10 @@ export function canConvertToDyn(
         (a) =>
           a.kind === "undefinedT" ||
           isJsonSafeType(a, getRecord, getUnion) ||
+          // Composite arms (records holding dyn, Map or Set members) box
+          // through the walker beside the promise arm: a method answering
+          // either its result or a promise of it.
+          canBoxDynComposite(a, getRecord, getUnion, visiting) ||
           isDynTypedRefType(a) ||
           a.kind === "classval" ||
           DYN_HANDLE_KINDS.has(a.kind) ||
