@@ -11478,7 +11478,20 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
     scr_dyn_release(table);
     return out;
   }
-  if (value->kind == SCR_DYN_OBJ) return scr_dyn_obj_own_keys(value);
+  if (value->kind == SCR_DYN_OBJ) {
+    ScrDyn *keys = scr_dyn_obj_own_keys(value);
+    if (!scr_dyn_obj_get(value, "%error", 6)) return keys;
+    /* The checked-dynamic tree's error marker is not a property. */
+    ScrDyn *names = scr_dyn_new_arr();
+    scr_dyn_arr_reserve(names, keys->v.arr.len);
+    for (size_t i = 0; i < keys->v.arr.len; i++) {
+      const ScrStr *key = keys->v.arr.items[i]->v.str;
+      if (key->len == 6 && memcmp(key->data, "%error", 6) == 0) continue;
+      scr_dyn_arr_push(names, scr_dyn_retain(keys->v.arr.items[i]));
+    }
+    scr_dyn_release(keys);
+    return names;
+  }
   if (value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES) {
     ScrDyn *keys = scr_dyn_new_arr();
     size_t length = value->kind == SCR_DYN_ARR ? value->v.arr.len :
