@@ -850,7 +850,6 @@ export function lowerBundledEsmInits(
 const RUN_ONCE_TAIL =
   "return function () { if (__scriptc_done) return; __scriptc_done = true; __scriptc_init(); }; })()";
 
-
 /* Classes an initializer defines into a module binding,
  *
  *   var Multi;
