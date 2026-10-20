@@ -1378,9 +1378,10 @@ export function lowerInExpression(
   // predicate's `err instanceof Error && "code" in err` shape): `code`
   // answers from the runtime error's code slot (stamped by fs/system/
   // event/spawn errors, absent on plain constructions — exactly Node's
-  // own-property answer), and the always-declared members fold true.
-  // Everything else fences: the runtime object carries no other dynamic
-  // properties to ask (`stack` would be a lie — Node has one, we don't).
+  // own-property answer), and the always-present members (message, name,
+  // stack, Object.prototype's keys, members the static class declares)
+  // fold true. Other keys test the declaring subclasses and the error's
+  // own runtime properties; keys of built-in errors' extra slots fence.
   if (recv.type.kind === "object") {
     // %DOMException first: `'cause' in e` answers the options form's
     // own-property record (the runtime slot), and code/name/message are
@@ -1402,27 +1403,10 @@ export function lowerInExpression(
       if (key === "cause") {
         return { kind: "libCall", fn: "error.hasCause", args: [recv], type: BOOL, loc };
       }
+      // The code slot, or an own `code` with another value
+      // (`err.code = undefined` is present).
       if (key === "code") {
-        const codeType = lowerer.envValueType();
-        if (codeType.kind !== "union")
-          throw new InternalCompilerError("lowerer bug: error code type is not a union");
-        const undefTag = lowerer.armTag(codeType.unionId, UNDEFINED_T);
-        const read: IrExpr = {
-          kind: "libCall",
-          fn: "error.code",
-          args: [recv],
-          type: codeType,
-          loc,
-        };
-        return {
-          kind: "unionIsTag",
-          unionId: codeType.unionId,
-          tag: undefTag,
-          negated: true,
-          value: read,
-          type: BOOL,
-          loc,
-        };
+        return { kind: "libCall", fn: "error.hasCode", args: [recv], type: BOOL, loc };
       }
       // The receiver evaluates for its effects when the answer is static.
       const always = (): IrExpr =>

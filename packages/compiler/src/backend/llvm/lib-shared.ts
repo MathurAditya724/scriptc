@@ -131,6 +131,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "error.setCodeDyn": "scr_error_set_code_dyn",
   "error.assign": "scr_error_assign_dyn",
   "error.hasKey": "scr_error_has_key",
+  "error.hasCode": "scr_error_has_code",
   "error.defineCause": "scr_error_define_cause",
   "error.deleteCause": "scr_error_delete_cause",
   "error.hasCause": "scr_error_has_cause",
