@@ -151,7 +151,6 @@ import {
   fencePerfEntryKeyWalk,
   isPerfEntryType,
   lowerHistogramMethodCall,
-  lowerMonitorEventLoopDelayCall,
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
@@ -254,16 +253,6 @@ const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "cl
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
-  // node:perf_hooks monitorEventLoopDelay (named import or namespace member).
-  if (
-    (ts.isIdentifier(expr.expression) && expr.expression.text === "monitorEventLoopDelay") ||
-    (ts.isPropertyAccessExpression(expr.expression) &&
-      expr.expression.name.text === "monitorEventLoopDelay")
-  ) {
-    const histogram = lowerMonitorEventLoopDelayCall(lowerer, expr);
-    if (histogram) return histogram;
-  }
-
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
   if (

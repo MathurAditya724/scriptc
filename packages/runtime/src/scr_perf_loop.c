@@ -21,7 +21,9 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #ifdef _WIN32
 #include <windows.h>
@@ -212,7 +214,27 @@ static void scr_eld_cleanup(void) {
   scr_elds_len = 0;
 }
 
+/* Node's validateInteger(resolution, 'options.resolution', 1): a catchable
+ * RangeError (ERR_OUT_OF_RANGE) for a non-integer or a value out of range,
+ * with the value as util.inspect renders it ("-0" included). */
+static bool scr_eld_resolution_ok(double resolution) {
+  bool integer = isfinite(resolution) && trunc(resolution) == resolution;
+  if (integer && resolution >= 1 && resolution <= 9007199254740991.0) return true;
+  char received[48];
+  if (resolution == 0 && signbit(resolution))
+    memcpy(received, "-0", 3);
+  else
+    scr_num_received(resolution, received);
+  char msg[192];
+  int len = snprintf(msg, sizeof msg,
+                     "The value of \"options.resolution\" is out of range. It must be %s. Received %s",
+                     integer ? ">= 1 && <= 9007199254740991" : "an integer", received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
 double scr_eld_new(double resolution) {
+  if (!scr_eld_resolution_ok(resolution)) return 0;
   if (scr_elds_len == 0 && scr_elds == NULL) scr_atexit(scr_eld_cleanup);
   ScrEld *h = calloc(1, sizeof(ScrEld));
   ScrEld **grown = realloc(scr_elds, (scr_elds_len + 1) * sizeof(ScrEld *));
@@ -223,7 +245,7 @@ double scr_eld_new(double resolution) {
   }
   scr_elds = grown;
   h->min_value = INT64_MAX;
-  h->resolution = resolution >= 1 ? resolution : 10;
+  h->resolution = resolution;
   h->tick = scr_closure_new((void *)scr_eld_tick, 0);
   scr_elds[scr_elds_len++] = h;
   return (double)scr_elds_len;

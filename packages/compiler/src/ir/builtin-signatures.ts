@@ -365,7 +365,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** perf_hooks event-loop metrics (scr_perf_loop.c): loopStart is the
    * loop's start in performance.now() ms (0 before it), idleTime the idle
    * ms since. eldNew(resolution ms) creates a monitorEventLoopDelay
-   * histogram handle; enable/disable answer whether the state changed;
+   * histogram handle (MAY THROW Node's resolution RangeError); enable/disable answer whether the state changed;
    * eldPercentile expects Node's validated range; eldStat(which) reads
    * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. */
   "perf.loopStart": { argTypes: [], result: F64 },

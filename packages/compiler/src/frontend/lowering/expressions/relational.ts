@@ -1144,6 +1144,24 @@ function lowerPrivateIn(
 }
 
 /** The string keys every record inherits from Object.prototype. */
+/** Keys built-in errors carry outside their class fields: Node's system
+ * error properties, and AggregateError's, SuppressedError's and
+ * AssertionError's own members. */
+const BUILTIN_ERROR_SLOT_KEYS: ReadonlySet<string> = new Set([
+  "errno",
+  "syscall",
+  "path",
+  "dest",
+  "info",
+  "errors",
+  "error",
+  "suppressed",
+  "actual",
+  "expected",
+  "operator",
+  "generatedMessage",
+]);
+
 const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
   "constructor",
   "__defineGetter__",
@@ -1418,6 +1436,9 @@ export function lowerInExpression(
               loc,
             };
       if (key === "message" || key === "name") return always();
+      // Every Error has its own `stack`, and Error.prototype's `toString`
+      // and `constructor` are among Object.prototype's keys.
+      if (key === "stack" || OBJECT_PROTOTYPE_KEYS.has(key)) return always();
       // A member the static class declares is always present.
       const declares = (c: ClassInfo): boolean =>
         c.fields.has(key) ||
@@ -1426,12 +1447,12 @@ export function lowerInExpression(
         lowerer.findMethodOn(c, `set:${key}`) !== null;
       const staticInfo = lowerer.classes.get(recv.type.className);
       if (staticInfo && declares(staticInfo)) return always();
-      // Any other key: a descendant class that declares it (instanceof),
+      // Any other key: a descendant class that declares it (instanceof), or
       // an own property set at runtime (a throw site's extra fields,
-      // Object.assign, writes through a dynamic view), or an
-      // Object.prototype member. `stack` stays fenced: Node has one, a
-      // compiled error has none.
-      if (key !== "stack") {
+      // Object.assign, writes through a dynamic view). Keys built-in errors
+      // keep outside their class fields depend on the runtime error and
+      // stay fenced.
+      if (!BUILTIN_ERROR_SLOT_KEYS.has(key)) {
         const stable = recv.kind === "varRef" || recv.kind === "caughtNarrow";
         const slot = stable ? null : lowerer.declareHiddenLocal("%inRecv", recv.type);
         const ref = (): IrExpr => (slot ? varRef(slot.id, recv.type, loc) : recv);
