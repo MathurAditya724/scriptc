@@ -499,6 +499,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "json.stringifyReplacer",
   "json.stringifyValue",
   "date.nativeNew",
+  "date.nativeNewFields",
+  "date.nativeNewValue",
   "date.checkedValue",
   "util.parseArgs",
   "util.parseEnv",
@@ -800,6 +802,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's argument checks (ERR_INVALID_ARG_TYPE/VALUE, ERR_SOCKET_BAD_PORT).
   "dns.lookupDyn",
   "dns.lookupService",
+  "dns.promisesLookup",
+  "dns.promisesLookupService",
   "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",

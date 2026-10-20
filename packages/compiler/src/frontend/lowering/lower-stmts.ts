@@ -1,3 +1,4 @@
+import { declaredMemberOf } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
 import {
   matchAllRowsReadByElements,
@@ -32,6 +33,7 @@ import {
 import {
   cjsExportMemberWriteGlobalOf,
   isCjsExportsIdentifier,
+  isCjsModuleExports,
   isFreshExportsReset,
 } from "./cjs-exports-object.js";
 import { isDeadTscHelperDecl, tscInteropBindingOfDecl } from "./cjs-tsc-interop.js";
@@ -195,6 +197,7 @@ import {
 import { globalSymbolKey } from "./expressions/global-symbols.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
 import {
+  builtinGlobalValue,
   jsHoldsDynObject,
   lowerEnvironmentKey,
   lowerNativeFunctionAssignment,
@@ -223,6 +226,7 @@ import { constituentTypes } from "../ts7/checker.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
+import { classGeneratorIterable } from "./class-iterables.js";
 
 interface UsingRegistration {
   acquire: IrStmt[];
@@ -3773,6 +3777,9 @@ function stdlibGlobalTokenDestructure(
       const canonical = member.name === "global" ? "globalThis" : member.name;
       token = `[builtin ${canonical}]`;
       alias = canonical;
+      // Builtin constructors read as their interned function values, the
+      // same values the bare and `globalThis.X` spellings read.
+      value = builtinGlobalValue(canonical, locOf(el), true);
     } else if (globalName === "console" && !CONSOLE_CALL_MEMBERS.has(propName)) {
       token = `[builtin console.${propName}]`;
     } else if (TOKEN_OPAQUE_GLOBALS.has(globalName)) {
@@ -3816,6 +3823,10 @@ function stdlibGlobalTokenDestructure(
   const out: IrStmt[] = [];
   for (const b of binds) {
     const loc = locOf(b.name);
+    if (b.value !== undefined && b.alias !== null) {
+      const symbol = lowerer.checker.getSymbolAtLocation(b.name);
+      if (symbol) lowerer.stdlibGlobalAliases.set(symbol, b.alias);
+    }
     if (b.value !== undefined) {
       if (b.g !== undefined) {
         out.push({
@@ -6910,6 +6921,25 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       "require() outside the module's top level (move it to the top of the file)",
     );
   }
+  // Replacing the export object (or rebinding `exports`) anywhere but a
+  // top-level statement makes the module's exports depend on which path
+  // ran (`cond ? module.exports = a : module.exports = b`, an
+  // environment-dependent branch); the static export table has one shape.
+  if (
+    !topLevelJs &&
+    isJsSourceFile(expr.getSourceFile()) &&
+    ts.isBinaryExpression(expr) &&
+    expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    (isCjsModuleExports(lowerer, expr.left) || isCjsExportsIdentifier(lowerer, expr.left))
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      expr.left,
+      isCjsModuleExports(lowerer, expr.left)
+        ? "replacing module.exports outside a top-level statement (a conditional or environment-dependent export object)"
+        : "rebinding 'exports' outside a top-level statement (a conditional or environment-dependent export object)",
+    );
+  }
   if (topLevelJs && ts.isExpressionStatement(stmtNode)) {
     if (isFreshExportsReset(lowerer, stmtNode))
       return { kind: "block", body: [], loc: locOf(expr) };
@@ -7475,6 +7505,31 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         const recvIr = lowerer.mapTypeOf(lowerer.typeOf(expr.left.expression));
         if (recvIr?.kind === "record") {
           const shape = lowerer.shapes.get(recvIr.shapeId);
+          if (
+            shape?.indexValue &&
+            shape.fields.length === 0 &&
+            declaredMemberOf(lowerer, expr.left.expression, expr.left.name.text)
+          ) {
+            // A declared member of a literal stored as a pure index-signature
+            // record (dictSpreadLiteralShape): a keyed write of that key.
+            const loc = locOf(expr);
+            const obj = lowerer.lowerExpr(expr.left.expression);
+            if (obj.type.kind === "record") {
+              const value = lowerer.intoIndexValueSlot(
+                lowerer.lowerExprExpecting(expr.right, shape.indexValue),
+                shape.indexValue,
+                expr.right,
+              );
+              return {
+                kind: "recordKeySet",
+                obj,
+                shapeId: obj.type.shapeId,
+                key: { kind: "strLit", value: expr.left.name.text, type: STRING, loc },
+                value,
+                loc,
+              };
+            }
+          }
           if (
             shape?.indexValue &&
             !shape.fields.some(
@@ -9149,6 +9204,16 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
       );
     }
     if (iterable.type.kind === "object") {
+      // A [Symbol.iterator] generator method: the loop drives the
+      // generator it returns.
+      const generator = classGeneratorIterable(lowerer, iterable);
+      if (generator)
+        return lowerForOfGenerator(
+          lowerer,
+          stmt,
+          generator as IrExpr & { type: IrType & { kind: "generator" } },
+          labels,
+        );
       // Class iterables ([Symbol.iterator]() + next() — classIteratorOf)
       // drive the same protocol with ordinary method calls.
       const cit = lowerer.classIteratorOf(iterable.type);

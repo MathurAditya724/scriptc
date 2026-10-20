@@ -646,6 +646,9 @@ ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);
 bool scr_dyn_native_search_params_is(const ScrDyn *value);
 bool scr_dyn_native_date_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments);
+ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments);
+ScrDyn *scr_dyn_native_date_new_value(const ScrDyn *arguments);
+ScrStr *scr_dyn_object_tag_of(const ScrDyn *d);
 ScrDyn *scr_dyn_native_date_from_ms(double ms);
 double scr_dyn_native_date_value(const ScrDyn *value);
 ScrDyn *scr_dyn_native_regex(ScrRegex *value);
@@ -697,6 +700,19 @@ ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*r
 ScrDyn *scr_dyn_new_str(ScrStr *s);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
+/* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
+ * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
+ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+/* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
+ * as an interned dynamic function value: +1. */
+ScrDyn *scr_dyn_builtin_function(const ScrStr *name);
+/* A constant-key read of an Object.prototype member name: takes the
+ * ordinary read's +1 result and answers the inherited member in place of
+ * an undefined one (scr_dyn_invoke.c). */
+ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read);
+/* The member `key` read on Object.prototype itself, or NULL for any other
+ * receiver (scr_dyn_invoke.c). */
+ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key);
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);
@@ -1076,6 +1092,12 @@ extern SCR_TL size_t scr_uncloneable_count;
 ScrDyn *scr_dyn_from_error(const ScrError *e);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
+void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len);
+/* An accessor property of a fresh object: enumerable and configurable,
+ * with the given getter and setter (either may be NULL). Moves both. */
+void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter);
+/* The getter or setter of an own accessor property, +1 (undefined when none). */
+ScrDyn *scr_dyn_obj_accessor_fn(const ScrDyn *obj, const char *key, size_t key_len, bool setter);
 void scr_error_commit_dyn(ScrError *e, const ScrDyn *view);
 /* The reverse extraction, riding the same identity cache: a dyn error
  * that came from a runtime ScrError answers THAT instance (+1;
@@ -1319,6 +1341,10 @@ extern SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len);
 ScrPromise *scr_dyn_promise_all(const ScrDyn *entries, const ScrDyn *reader);
 ScrPromise *scr_dyn_promise_all_settled(const ScrDyn *entries, const ScrDyn *reader);
 ScrPromise *scr_dyn_promise_any(const ScrDyn *entries, const ScrDyn *reader);
+/* PromiseResolve over one dyn value (borrowed): a native promise is
+ * itself, a thenable adopts through its resolve job, a throwing `then`
+ * read rejects, and any other value fulfills. +1. */
+ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader);
 
 /* Native predicates for typed reference capsules and boxed errors. */
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name);

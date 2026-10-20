@@ -443,6 +443,25 @@ test("node-types: util.promisify over typed callback-last functions settles like
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: lookup-option unions and narrowed header-record entries under @types/node", async () => {
+  const outDir = outDirFor("lookup-and-header-entries");
+  const entry = join(nodeTypesDir, "lookup-and-header-entries.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "lookup-and-header-entries"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const native = await execFileAsync(result.binaryPath);
+  const node = await execFileAsync(process.execPath, [
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    entry,
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: http.request over a Unix socket with RequestOptions read at run time", async () => {
   const outDir = outDirFor("http-socket-path");
   const entry = join(nodeTypesDir, "http-socket-path.ts");
