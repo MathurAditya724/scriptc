@@ -1,7 +1,8 @@
 // Untyped async methods of a package, reached through the package's own
 // untyped callers and prototype reflection, and overridden by a typed
-// subclass.
-import { Pool, Schema, limiter, prototypeNames, validateAll } from "token-pool";
+// subclass. An async generator method called from the package answers its
+// generator object.
+import { Pool, Schema, limiter, listIssues, prototypeNames, validateAll } from "token-pool";
 
 class CountingPool extends Pool {
   acquired = 0;
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
   console.log(await Promise.all([run(async () => 1), run(async () => 2)]));
   const schema = new Schema((value) => typeof value === "number");
   console.log(await validateAll(schema, [1, "x", 3]));
+  console.log(await listIssues(schema, ["p", 5, "q"]));
   console.log(await schema.parseAsync(4));
   try {
     await schema.parseAsync("y");

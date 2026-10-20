@@ -5246,9 +5246,12 @@ export class ClassDynamicDispatch {
       owner = methodInfo.declarer;
       params = methodInfo.sig.params;
       // An untyped async method's `dyn` result is its promise's payload; the
-      // call answers the promise.
+      // call answers the promise. An async generator method answers its
+      // generator object, which its signature already returns.
       result =
-        methodInfo.sig.async === true && methodInfo.sig.ret.kind !== "promise"
+        methodInfo.sig.async === true &&
+        !methodInfo.sig.gen &&
+        methodInfo.sig.ret.kind !== "promise"
           ? { kind: "promise", inner: methodInfo.sig.ret }
           : methodInfo.sig.ret;
       callee = `%${owner.def.name}.${method}`;
