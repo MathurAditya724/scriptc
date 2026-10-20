@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2563)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2563, 2567)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
@@ -1477,6 +1477,21 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       "gtcore",
     ]);
   }, 180_000);
+
+  // 2567: an export that reads `this`, called through its namespace, sees
+  // Node's module object; the lowered namespace would differ, so the
+  // package stays refused.
+  test("a namespace call to an export that reads `this` stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2567-esm-namespace-this/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtesmthis", "gtcore"] });
+    expect(coverage.npmStatic).toContainEqual({
+      package: "gtesmthis",
+      status: "refused",
+      detail: expect.stringMatching(
+        /calls only of exported functions that do not read 'this'/,
+      ) as string,
+    });
+  }, 120_000);
 
   // 2562: a file with unverifiable interop that no compiled code can load
   // (the program imports a leaf data module and only a type from the
