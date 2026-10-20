@@ -2008,16 +2008,20 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         loc,
       });
       // The tag test reads an operand twice: when either side needs it,
-      // both sides evaluate once into temporaries, in source order.
+      // both sides evaluate once into temporaries, in source order. A left
+      // operand that is safe to repeat still takes a temporary when the
+      // right one does: the right operand runs first in the prefix, and it
+      // can assign what the left operand reads.
       const stash = optionalBoolTag(arithmeticLeft) >= 0 || optionalBoolTag(arithmeticRight) >= 0;
-      const stable = (e: IrExpr): IrExpr => {
-        if (!stash || isSafeToRepeat(e)) return e;
+      const rightTemp = stash && !isSafeToRepeat(arithmeticRight);
+      const stable = (e: IrExpr, beforeTemp: boolean): IrExpr => {
+        if (!stash || (isSafeToRepeat(e) && !beforeTemp)) return e;
         const tmp = lowerer.declareHiddenLocal("%bits", e.type);
         bitPrefix.push({ kind: "varDecl", localId: tmp.id, init: e, loc });
         return varRef(tmp.id, e.type, loc);
       };
-      const bitOperand = (operand: IrExpr): IrExpr => {
-        const e = stable(operand);
+      const bitOperand = (operand: IrExpr, beforeTemp: boolean): IrExpr => {
+        const e = stable(operand, beforeTemp);
         if (e.type.kind === "bool") return oneOrZero(e);
         const tag = optionalBoolTag(e);
         if (tag < 0 || e.type.kind !== "union") return e;
@@ -2046,8 +2050,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       const bits: IrExpr = {
         kind: "bin",
         op: bitOp,
-        left: bitOperand(arithmeticLeft),
-        right: bitOperand(arithmeticRight),
+        left: bitOperand(arithmeticLeft, rightTemp),
+        right: bitOperand(arithmeticRight, false),
         type: F64,
         loc,
       };
