@@ -874,7 +874,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",
@@ -983,7 +983,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",
@@ -1115,7 +1115,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       const read: IrExpr = {
         kind: "dynKeyGet",
         key,
@@ -1210,7 +1210,7 @@ export function lowerPropertyAccessExpr(
       type: STRING,
       loc: locOf(expr.name),
     };
-    const opt = hasOptionalChainGuard(expr.expression);
+    const opt = hasOptionalChainGuard(expr.expression, lowerer);
     return lowerer.maybeNarrow(
       {
         kind: "dynKeyGet",
@@ -2829,7 +2829,7 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
           kind: "dynKeyGet",
           value,
           key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
-          ...(expr.questionDotToken || hasOptionalChainGuard(expr.expression)
+          ...(expr.questionDotToken || hasOptionalChainGuard(expr.expression, lowerer)
             ? { optional: true as const }
             : {}),
           type: DYN,
@@ -3185,7 +3185,7 @@ export function lowerUnionProperty(
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(value, DYN),
       key,
-      ...(hasOptionalChainGuard(expr.expression) ? { optional: true as const } : {}),
+      ...(hasOptionalChainGuard(expr.expression, lowerer) ? { optional: true as const } : {}),
       type: DYN,
       loc: locOf(expr),
     };
