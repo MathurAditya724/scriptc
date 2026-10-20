@@ -25,6 +25,9 @@ export interface NativeLinkFeatures {
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
+  /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
+   * without it keep their link identity. */
+  wasm?: boolean;
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
@@ -46,6 +49,7 @@ export interface NativeLinkFeatures {
   bigint: boolean;
   searchParams: boolean;
   qs: boolean;
+  dynBuiltinClass: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -61,6 +65,8 @@ export interface NativeLinkFeatures {
   /** crypto.createCipheriv/createDecipheriv: scr_cipher.c plus the mbedTLS
    * archive. */
   cipher: boolean;
+  /** perf_hooks event-loop metrics: scr_perf_loop.c. */
+  perfLoop: boolean;
   tlsCa: boolean;
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey values:
    * scr_webcrypto.c. */

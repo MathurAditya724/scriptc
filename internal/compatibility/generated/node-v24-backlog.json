@@ -7,9 +7,9 @@
     "tierItemCount": 3454,
     "tiers": {
       "static": {
-        "audit-partial": 1191,
-        "verify-gap": 2135,
-        "replace-refusal": 41,
+        "audit-partial": 1198,
+        "verify-gap": 2129,
+        "replace-refusal": 40,
         "classify": 2,
         "implement": 85
       }
@@ -34238,12 +34238,25 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:stdlib.webassembly",
-          "tests": []
+          "source": "surface-manifest:stdlib.webassembly",
+          "tests": [
+            "tests/corpus/webassembly-api.mjs",
+            "tests/corpus/webassembly-typed.ts",
+            "tests/corpus/webassembly-worker.ts",
+            "tests/corpus/webassembly-spec-int/main.mjs",
+            "tests/corpus/webassembly-spec-float/main.mjs",
+            "tests/corpus/webassembly-spec-control/main.mjs",
+            "tests/corpus/webassembly-spec-memory/main.mjs",
+            "tests/corpus/webassembly-spec-table/main.mjs",
+            "tests/corpus/webassembly-spec-imports/main.mjs",
+            "tests/corpus/webassembly-jsapi.mjs",
+            "tests/corpus/webassembly-wpt-jsapi.mjs",
+            "tests/corpus/webassembly-dylink/main.mjs"
+          ]
         }
       }
     },
@@ -54267,12 +54280,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:perf_hooks",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:perf_hooks.histogram.percentile",
+          "tests": [
+            "tests/corpus/6397-event-loop-metrics.ts",
+            "tests/fixtures/node-types/event-loop-metrics.ts"
+          ]
         }
       }
     },
@@ -54392,12 +54408,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:perf_hooks",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:perf_hooks.histogram.reset",
+          "tests": [
+            "tests/corpus/6397-event-loop-metrics.ts",
+            "tests/fixtures/node-types/event-loop-metrics.ts"
+          ]
         }
       }
     },
@@ -54917,12 +54936,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:perf_hooks",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:perf_hooks.histogram.disable",
+          "tests": [
+            "tests/corpus/6397-event-loop-metrics.ts",
+            "tests/fixtures/node-types/event-loop-metrics.ts"
+          ]
         }
       }
     },
@@ -54942,12 +54964,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:perf_hooks",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:perf_hooks.histogram.enable",
+          "tests": [
+            "tests/corpus/6397-event-loop-metrics.ts",
+            "tests/fixtures/node-types/event-loop-metrics.ts"
+          ]
         }
       }
     },
@@ -55342,12 +55367,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:perf_hooks",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.perf_hooks.monitorEventLoopDelay",
+          "tests": [
+            "tests/corpus/6397-event-loop-metrics.ts",
+            "tests/fixtures/node-types/event-loop-metrics.ts"
+          ]
         }
       }
     },
@@ -55502,12 +55530,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:perf_hooks",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:perf_hooks.performance.eventLoopUtilization",
+          "tests": [
+            "tests/corpus/6397-event-loop-metrics.ts",
+            "tests/fixtures/node-types/event-loop-metrics.ts"
+          ]
         }
       }
     },

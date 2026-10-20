@@ -52,6 +52,32 @@ test("node-types: filesystem capacity supports typed number and BigInt results u
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+for (const [name, title] of [
+  [
+    "event-loop-metrics",
+    "eventLoopUtilization and monitorEventLoopDelay follow @types/node's types",
+  ],
+  ["timeout-type", "NodeJS.Timeout fields, ref/unref/hasRef and clearInterval under @types/node"],
+] as const) {
+  test(`node-types: ${title}`, async () => {
+    const outDir = outDirFor(name);
+    const entry = join(nodeTypesDir, `${name}.ts`);
+    const result = await compile(entry, {
+      outPath: join(outDir, process.platform === "win32" ? `${name}.exe` : name),
+      outDir,
+      sanitize,
+    });
+    expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+    if (!result.ok) return;
+    const [native, node] = await Promise.all([
+      execFileAsync(result.binaryPath),
+      execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+    ]);
+    expect(native.stdout).toBe(node.stdout);
+    expect(comparableStderr(native.stderr)).toBe(node.stderr);
+  });
+}
+
 test("node-types: http header arrays and server.address() follow @types/node's types", async () => {
   const outDir = outDirFor("http-headers-address");
   const entry = join(nodeTypesDir, "http-headers-address.ts");
@@ -518,6 +544,42 @@ test("node-types: stream subclasses extend the @types/node stream classes", asyn
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: NodeJS stream interfaces and stream.Readable/Writable take every stream producer", async () => {
+  const outDir = outDirFor("node-stream-interfaces");
+  const entry = join(nodeTypesDir, "node-stream-interfaces.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "node-stream-interfaces"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: streams construct and child listeners take @types/node's parameter types", async () => {
+  const outDir = outDirFor("stream-construction");
+  const entry = join(nodeTypesDir, "stream-construction.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "stream-construction"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: promisified setTimeout and setImmediate lower as timers/promises", async () => {
   const outDir = outDirFor("promisify-timers");
   const entry = join(nodeTypesDir, "promisify-timers.ts");
@@ -590,26 +652,22 @@ test("node-types: promisified dns lookups settle with the lookup objects", async
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
-test("node-types: unsupported child stdin forms remain named fences", async () => {
-  const dir = outDirFor("node-child-stdin-fences");
-  const entry = join(nodeTypesDir, "child-stdin-fences.ts");
+test("node-types: child stdin forms beyond write(string) compile through the general stream representation", async () => {
+  const dir = outDirFor("node-child-stdin-streams");
+  const entry = join(nodeTypesDir, "child-stdin-streams.ts");
   const result = await compile(entry, {
-    outPath: join(dir, "child-stdin-fences"),
+    outPath: join(dir, "child-stdin-streams"),
     outDir: dir,
     sanitize,
   });
-  expect(result.ok).toBe(false);
-  if (result.ok) return;
-  expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-    "SC2020",
-    "SC2020",
-    "SC2020",
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
   ]);
-  expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
-    expect.stringContaining("child stdin write with 2 arguments"),
-    expect.stringContaining("Writable.end"),
-    expect.stringContaining("Writable.destroy"),
-  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
 test("node-types: callback exec uses the typed ExecException overloads", async () => {

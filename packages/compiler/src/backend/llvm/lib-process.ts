@@ -308,6 +308,28 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.line(`${raw} = call ptr @${get}(ptr ${recv.name}) ; +1 or NULL`);
     return host.wrapNullable(raw, raw, def!.arms[streamTag]!, streamTag, e.type, nullTag);
   }
+  if (e.fn === "child.stdioStream") {
+    // The general stream representation's stdio read: the child's bridged
+    // runtime stream (+1) or NULL for an unpiped slot.
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const streamTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
+    const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
+    const fd = e.args[1];
+    if (streamTag < 0 || nullTag < 0 || fd?.kind !== "numLit")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} lacks its arms or slot`);
+    const recv = host.emitExpr(e.args[0]!);
+    const key = fd.value === 0 ? "stdin" : fd.value === 1 ? "stdout" : "stderr";
+    host.declare(`declare ptr @scr_stream_child_stdio(ptr, ptr, ${host.sizeType})`);
+    const raw = B.tmp();
+    B.line(
+      `${raw} = call ptr @scr_stream_child_stdio(ptr ${recv.name}, ptr ${host.cstr(key)}, ${host.sizeType} ${key.length}) ; +1 or NULL`,
+    );
+    const out = host.wrapNullable(raw, raw, def!.arms[streamTag]!, streamTag, e.type, nullTag);
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "writer.writeString" || e.fn === "writer.writeBytes") {
     const writer = host.emitExpr(e.args[0]!);
     const data = host.emitExpr(e.args[1]!);

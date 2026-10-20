@@ -535,6 +535,7 @@ async function compileExecutableNative(
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
+    ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     zlib: features.zlib,
@@ -550,6 +551,7 @@ async function compileExecutableNative(
     bigint: features.bigint,
     searchParams: features.searchParams,
     qs: features.qs,
+    dynBuiltinClass: features.dynBuiltinClass,
     parseArgs: features.parseArgs,
     stream: features.stream,
     net: features.net,
@@ -566,6 +568,7 @@ async function compileExecutableNative(
     tlsCa: features.tlsCa,
     cipher: features.cipher,
     webcrypto: features.webcrypto,
+    perfLoop: features.perfLoop,
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
     ...(ffi === null
       ? {}
@@ -730,6 +733,7 @@ async function prepareExecutableInput(
         wasi: buildPlatform === "wasi",
         runtimeAbiMarker: outputKind === "obj",
         objectAudit: opts.sanitize === true,
+        ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
         ...inlineRcOption(opts.optimization, opts.sanitize === true),
       });
     } catch (err) {
@@ -795,6 +799,7 @@ async function prepareExecutableInput(
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
       objectAudit: opts.sanitize === true,
+      ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
     });
