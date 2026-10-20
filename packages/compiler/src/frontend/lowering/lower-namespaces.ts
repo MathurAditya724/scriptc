@@ -37,6 +37,7 @@
  * statement is not modeled — same as top-level const reads through early
  * calls). */
 import * as ts from "../ts7/adapter.js";
+import { packageShimFor } from "../package-shims.js";
 import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
 import type { FileParts } from "./lower-modules.js";
@@ -252,6 +253,10 @@ function moduleNsSourceFileOf(lowerer: Lowerer, e: ts.Expression): ts.SourceFile
     sym = lowerer.checker.getSymbolAtLocation(e.name);
   }
   if (!sym) return null;
+  // The import binding's own declaration stays in view: a package scriptc
+  // implements itself (package-shims.ts) types through a declaration
+  // file the alias resolves to, while the import compiles the shim.
+  const bindingDecls = sym.declarations;
   if (sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
   for (const d of sym.declarations) {
     if (
@@ -278,6 +283,20 @@ function moduleNsSourceFileOf(lowerer: Lowerer, e: ts.Expression): ts.SourceFile
         if (dep && !dep.isDeclarationFile && lowerer.fileTag.has(dep)) return dep;
       }
     }
+  }
+  for (const d of bindingDecls) {
+    if (!ts.isNamespaceImport(d)) continue;
+    const stmt = d.parent?.parent;
+    if (
+      stmt === undefined ||
+      !ts.isImportDeclaration(stmt) ||
+      !ts.isStringLiteral(stmt.moduleSpecifier)
+    )
+      continue;
+    const from = d.getSourceFile();
+    if (packageShimFor(from.fileName, stmt.moduleSpecifier.text) === null) continue;
+    const dep = resolveImport(lowerer.program, from, stmt.moduleSpecifier.text);
+    if (dep && !dep.isDeclarationFile && lowerer.fileTag.has(dep)) return dep;
   }
   return null;
 }

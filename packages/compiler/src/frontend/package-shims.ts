@@ -55,9 +55,25 @@ interface ImplementationShim {
   /** Supported major versions and their entry modules, relative to the
    * shim root. */
   versions: ReadonlyMap<number, string>;
+  /** The entry has a default export (a CommonJS package's whole export
+   * object, which a default import reads). */
+  defaultExport?: boolean;
 }
 
 const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
+  [
+    "fs-extra",
+    {
+      name: "fs-extra",
+      defaultExport: true,
+      versions: new Map([
+        [8, "fs-extra/index.ts"],
+        [9, "fs-extra/index.ts"],
+        [10, "fs-extra/index.ts"],
+        [11, "fs-extra/index.ts"],
+      ]),
+    },
+  ],
   [
     "undici",
     {
@@ -210,11 +226,23 @@ export function packageShimDeclarationText(path: string): string | undefined {
   if (!path.endsWith("/index.d.ts")) return undefined;
   const pkgDir = dirname(path);
   const name = pkgDir.slice(pkgDir.lastIndexOf("/") + 1);
-  if (!IMPLEMENTATION_SHIMS.has(name)) return undefined;
-  const entry = shimEntryForPackageDir(pkgDir, name);
+  const shim = IMPLEMENTATION_SHIMS.get(name);
+  if (shim === undefined) return undefined;
+  // A DefinitelyTyped twin (`@types/fs-extra`) types a package that ships no
+  // declarations. Nothing at its path names the installed runtime version,
+  // so it reads as the shim only when every supported version shares one
+  // module.
+  const viaTypes = dirname(pkgDir).endsWith("/@types");
+  const entries = new Set(shim.versions.values());
+  const entry = viaTypes
+    ? entries.size === 1
+      ? join(packageShimRoot(), [...entries][0]!)
+      : null
+    : shimEntryForPackageDir(pkgDir, name);
   if (entry === null) return undefined;
   const target = JSON.stringify(tsgoPath(entry));
-  return `// scriptc: this package compiles from its built-in implementation.\nexport * from ${target};\n`;
+  const defaultLine = shim.defaultExport === true ? `export { default } from ${target};\n` : "";
+  return `// scriptc: this package compiles from its built-in implementation.\nexport * from ${target};\n${defaultLine}`;
 }
 
 /** True for a file of the shipped package shims. They are compiler-owned
