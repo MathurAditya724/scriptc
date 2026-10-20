@@ -48,6 +48,9 @@ export interface RuntimeFeatures {
   qs: boolean;
   parseArgs: boolean;
   fsWatch: boolean;
+  /** The program listens for a socket's 'lookup' event: the C main
+   * installs the net unit's lookup records. */
+  netLookup: boolean;
   nodeTest: boolean;
   /** The program calls mock.timers members: its timer calls go through
    * scr_test.c's mock-aware entry points. */
@@ -183,6 +186,10 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.clientSignal",
+  "http.requestDyn",
+  "http.requestDynCb",
+  "https.requestDyn",
+  "https.requestDynCb",
   "rl.createSignal",
   "rl.questionAsyncSignal",
   "sp.finishedOptsSignal",
@@ -438,6 +445,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     qs: false,
     parseArgs: false,
     fsWatch: false,
+    netLookup: false,
     nodeTest: false,
     mockTimers: false,
     dgram: false,
@@ -540,6 +548,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         features.regex = true;
       }
       if (fn.startsWith("fs.watch") || fn.startsWith("watcher.")) features.fsWatch = true;
+      if (fn === "net.sockOnLookup") features.netLookup = true;
       // scr_test.c renders thrown strings in the failing-tests section with
       // the inspect unit's string formatting.
       if (fn.startsWith("test.")) {

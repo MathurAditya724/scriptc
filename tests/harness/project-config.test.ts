@@ -422,6 +422,44 @@ test("node-types: util.promisify over typed callback-last functions settles like
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: http.request over a Unix socket with RequestOptions read at run time", async () => {
+  const outDir = outDirFor("http-socket-path");
+  const entry = join(nodeTypesDir, "http-socket-path.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "http-socket-path"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const native = await execFileAsync(result.binaryPath);
+  const node = await execFileAsync(process.execPath, [
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    entry,
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: RequestInit-derived options carry BodyInit and HeadersInit into fetch", async () => {
+  const outDir = outDirFor("fetch-init-members");
+  const entry = join(nodeTypesDir, "fetch-init-members.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "fetch-init-members"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const native = await execFileAsync(result.binaryPath);
+  const node = await execFileAsync(process.execPath, [
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    entry,
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: stream subclasses extend the @types/node stream classes", async () => {
   const outDir = outDirFor("stream-subclass-hooks");
   const entry = join(nodeTypesDir, "stream-subclass-hooks.ts");

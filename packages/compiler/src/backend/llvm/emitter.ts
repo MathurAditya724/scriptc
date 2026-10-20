@@ -2154,6 +2154,7 @@ export class LlEmitter {
     // programs additionally stamp the httpReq/httpRes ops — the C main's
     // install lines, gated on the same predicates native/executable.ts links by.
     const usesNet = runtimeFeatures.net;
+    const usesNetLookup = runtimeFeatures.netLookup;
     const usesDgram = runtimeFeatures.dgram;
     const usesHttp2 = runtimeFeatures.http2;
     const usesHttp = runtimeFeatures.http;
@@ -2207,6 +2208,7 @@ export class LlEmitter {
       this.declare(`declare void @scr_net_install()`);
       this.declare(`declare void @scr_net_dyn_install()`);
     }
+    if (usesNetLookup) this.declare(`declare void @scr_net_lookup_install()`);
     if (usesDgram) this.declare(`declare void @scr_dgram_install()`);
     if (usesHttp2) this.declare(`declare void @scr_http2_dyn_install()`);
     if (usesHttp) this.declare(`declare void @scr_http_dyn_install()`);
@@ -2811,6 +2813,7 @@ export class LlEmitter {
       ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
       ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
       ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
+      ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
       ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
       ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),
       ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),

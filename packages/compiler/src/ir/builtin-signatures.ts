@@ -1241,6 +1241,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "net.createServer": { argTypes: [], result: NETSERVER_T },
   "net.createServerCb": { argTypes: [null], result: NETSERVER_T },
   "net.listen": { argTypes: [NETSERVER_T, F64], result: VOID },
+  /** listen(path[, cb]): a Unix-socket server; the socket file is removed
+   * when the server closes. Failures are the async 'error'. */
+  "net.listenPath": { argTypes: [NETSERVER_T, STRING], result: VOID },
+  "net.listenPathCb": {
+    argTypes: [NETSERVER_T, STRING, { kind: "func", params: [], ret: VOID }],
+    result: VOID,
+  },
   "net.listenCb": {
     argTypes: [NETSERVER_T, F64, { kind: "func", params: [], ret: VOID }],
     result: VOID,
@@ -1283,6 +1290,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * answers null (the serverPort stance). */
   "net.serverAddress": { argTypes: [NETSERVER_T], result: VOID },
   "net.serverClose": { argTypes: [NETSERVER_T], result: VOID },
+  /** server.close((err) => ...): the callback (a dyn function) gets
+   * undefined once the server closes, or Node's ERR_SERVER_NOT_RUNNING
+   * when it was not listening. */
+  "net.serverCloseDyn": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "net.serverCloseCb": {
     argTypes: [NETSERVER_T, { kind: "func", params: [], ret: VOID }],
     result: VOID,
@@ -1865,6 +1876,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * non-http scheme. */
   "http.requestUrl": { argTypes: [STRING, STRING, BOOL], result: HTTPCLIENTREQ_T },
   "http.requestUrlCb": { argTypes: [STRING, STRING, BOOL, null], result: HTTPCLIENTREQ_T },
+  /** request/get with a runtime options record: a RequestOptions
+   * variable, or a literal that spreads one or sets socketPath. Args
+   * (options, autoEnd[, cb]). The runtime reads the record in the
+   * ClientRequest constructor's order (host/port or socketPath, path,
+   * method, headers, timeout, agent, signal, maxHeaderSize) with Node's
+   * errors, and documented options it does not implement throw the
+   * runtime fence. The "https." pair adds the TLS options. MAY THROW. */
+  "http.requestDyn": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
+  "http.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+  "https.requestDyn": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
+  "https.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
   /** The paused-mode demux surface (portless's first-byte TLS peek:
    * once('readable') + read(1) + unshift + emit('connection')).
    * sockOnReadable registers a zero-param listener (a consumer: arrived
@@ -1910,6 +1932,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Listeners with a parameter, as dyn functions: close(hadError),
    * write's cb(err) and end's cb. */
   "net.sockOnCloseDyn": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
+  /** socket.on/once('lookup', listener): the listener (a dyn function)
+   * gets (err, address, family, host) once per resolved address, or once
+   * with the lookup error, before the connect. */
+  "net.sockOnLookup": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
   "net.sockOnWriteFlush": {
     argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }],
     result: VOID,

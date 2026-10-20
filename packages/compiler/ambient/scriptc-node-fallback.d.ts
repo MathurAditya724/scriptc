@@ -4681,6 +4681,11 @@ declare module "net" {
     on(event: "close", listener: (hadError: boolean) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(event: "session", listener: (session: Buffer) => void): void;
+    /* The host name's resolution, before the connect. */
+    on(
+      event: "lookup",
+      listener: (err: Error | null, address: string, family: number, host: string) => void,
+    ): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "data", listener: (chunk: Buffer) => void): void;
     /* After setEncoding the chunk is a string. */
@@ -4692,6 +4697,11 @@ declare module "net" {
     addListener(event: "close", listener: (hadError: boolean) => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(event: "session", listener: (session: Buffer) => void): void;
+    /* The host name's resolution, before the connect. */
+    addListener(
+      event: "lookup",
+      listener: (err: Error | null, address: string, family: number, host: string) => void,
+    ): void;
     once(event: "data", listener: (chunk: Buffer) => void): void;
     /* After setEncoding the chunk is a string. */
     once(event: "data", listener: (chunk: string) => void): void;
@@ -4702,6 +4712,11 @@ declare module "net" {
     once(event: "close", listener: (hadError: boolean) => void): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "session", listener: (session: Buffer) => void): void;
+    /* The host name's resolution, before the connect. */
+    once(
+      event: "lookup",
+      listener: (err: Error | null, address: string, family: number, host: string) => void,
+    ): void;
   }
   export interface Server {
     /* Whether the server keeps the event loop alive (ref'd by default). */
@@ -4720,6 +4735,8 @@ declare module "net" {
     /* The positional bind address (the options form's host in argument
      * spelling). */
     listen(port: number, host: string, callback?: () => void): Server;
+    /* A Unix-socket server; the socket file is removed when it closes. */
+    listen(path: string, callback?: () => void): Server;
     /* The explicit-interface bind: host is an IP literal (absent = the
      * host-less dual-stack any); ipv6Only sets IPV6_V6ONLY and reusePort
      * requests kernel connection distribution where Node supports it. */
@@ -5043,10 +5060,11 @@ declare module "http" {
    * callback receives the response as an IncomingMessage (statusCode,
    * headers, body via on("data"/"end")). */
   export interface RequestOptions {
-    hostname?: string;
-    host?: string;
-    port?: number;
-    path?: string;
+    hostname?: string | null;
+    host?: string | null;
+    /* A string port (a URL's .port) is accepted, as by Node. */
+    port?: number | string | null;
+    path?: string | null;
     method?: string;
     timeout?: number;
     headers?: OutgoingHttpHeaders;
@@ -5060,6 +5078,8 @@ declare module "http" {
     agent?: Agent | boolean | null;
     /* Aborting destroys the request with an AbortError. */
     signal?: AbortSignal;
+    /* HTTP over the Unix socket at this path instead of host:port. */
+    socketPath?: string;
     /* The options-record stance: Node ignores an options record's
      * unknown keys, so every key typechecks here — the option WALK in
      * the lowering decides per key (lower, fence by name, or drop
@@ -5333,6 +5353,7 @@ declare module "https" {
     agent?: Agent | boolean | null;
     /* Aborting destroys the request with an AbortError. */
     signal?: AbortSignal;
+    socketPath?: string;
     /* The options-record stance (see http.RequestOptions). */
     [option: string]: unknown;
   }
