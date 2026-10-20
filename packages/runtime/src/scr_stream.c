@@ -4315,13 +4315,29 @@ ScrPromise *scr_sp_pipeline_opts(double n, ScrStream **streams, bool end, ScrDyn
  * or ERR_STREAM_PREMATURE_CLOSE on an early close — and marks lifecycle
  * errors handled, exactly like the iterator's eos registration. Both
  * closures share the cap layout: caps[0] the pending promise, caps[1]
- * the chunk list (Buffer entries). */
+ * the chunk list (Buffer entries). blob collects its chunks the way Node's
+ * async iterator reads them instead (scr_sc_read_parts), because each
+ * chunk becomes one Blob part, and settles through the same watcher. */
 
-enum { SCR_SC_TEXT = 0, SCR_SC_JSON = 1, SCR_SC_BUFFER = 2, SCR_SC_ARRAY_BUFFER = 3 };
+enum { SCR_SC_TEXT = 0, SCR_SC_JSON = 1, SCR_SC_BUFFER = 2, SCR_SC_ARRAY_BUFFER = 3, SCR_SC_BLOB = 4 };
+
+/* blob()'s Blob over the chunk list (+1, or NULL with the exception
+ * pending). The Blob unit supplies it through scr_sc_blob_with, so this
+ * unit references no Blob symbol. */
+static SCR_TL ScrDyn *(*scr_sc_blob_make)(ScrArr *chunks);
 
 static void scr_sc_settle_ok(ScrClosure *cb, int kind) {
   ScrPromise *p = scr_box_get_ref(cb->caps[0]);  /* +1 */
   ScrArr *chunks = scr_box_get_ref(cb->caps[1]); /* +1 */
+  if (kind == SCR_SC_BLOB) {
+    /* Node's blob() is new Blob(chunks): one part per chunk. */
+    ScrDyn *blob = scr_sc_blob_make(chunks);
+    scr_arr_release(chunks);
+    if (blob == NULL) scr_promise_reject_pending(p);
+    else scr_promise_fulfill_ref(p, blob, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+    scr_promise_release(p);
+    return;
+  }
   ScrBytes *all = scr_bytes_concat(chunks);
   scr_arr_release(chunks);
   if (kind == SCR_SC_BUFFER) {
@@ -4400,6 +4416,43 @@ static void scr_sc_fin_array_buffer(ScrClosure *cb, ScrStream *s, ScrError *err)
   (void)s;
   scr_sc_fin(cb, err, SCR_SC_ARRAY_BUFFER);
 }
+static void scr_sc_fin_blob(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  /* The iterator's cleanup removes its 'readable' listener. */
+  ScrStr *rn = scr_str_new("readable", 8);
+  scr_emitter_release(scr_emitter_off((ScrEmitter *)s, rn, scr_box_get_ref(cb->caps[2])));
+  scr_str_release(rn);
+  scr_sc_fin(cb, err, SCR_SC_BLOB);
+}
+
+/* Boxes that hold a pointer without owning it: blob()'s reader runs only
+ * while its stream's emitter holds it, and the finished watcher removes
+ * the reader before it settles. */
+static void *scr_sc_borrow_v(void *p) { return p; }
+static void scr_sc_unborrow_v(void *p) { (void)p; }
+
+/* blob()'s reads. Node's blob() for-awaits the stream, and the iterator
+ * calls read() when the loop starts and on every 'readable': read()
+ * answers the whole buffer (one entry in object mode), and each answer is
+ * one chunk, so one Blob part. Strings (an encoded stream) contribute
+ * their utf8 bytes. */
+static void scr_sc_read_parts(ScrClosure *cb) {
+  ScrStream *s = scr_box_get_ref(cb->caps[2]);
+  ScrArr *chunks = scr_box_get_ref(cb->caps[1]); /* +1 */
+  for (;;) {
+    bool is_str;
+    void *chunk = scr_stream_read_n_kind(s, -1, &is_str);
+    if (!chunk) break;
+    if (is_str) {
+      ScrStr *enc = scr_str_new("utf8", 4);
+      scr_arr_push_ref(chunks, scr_bytes_from_str((ScrStr *)chunk, enc));
+      scr_str_release(enc);
+      scr_str_release((ScrStr *)chunk);
+    } else {
+      scr_arr_push_ref(chunks, chunk); /* moves */
+    }
+  }
+  scr_arr_release(chunks);
+}
 
 static ScrClosure *scr_sc_closure(void *fn, ScrPromise *p, ScrArr *chunks) {
   ScrClosure *c = scr_closure_new(fn, 2);
@@ -4407,6 +4460,18 @@ static ScrClosure *scr_sc_closure(void *fn, ScrPromise *p, ScrArr *chunks) {
   scr_box_set_ref(c->caps[0], scr_promise_retain(p));
   c->caps[1] = scr_box_new_obj(scr_arr_retain_v, scr_arr_release_v, NULL);
   scr_box_set_ref(c->caps[1], scr_arr_retain(chunks));
+  return c;
+}
+
+/* scr_sc_closure plus caps[2], a box over `ptr` that does not own it. */
+static ScrClosure *scr_sc_closure_borrowing(void *fn, ScrPromise *p, ScrArr *chunks, void *ptr) {
+  ScrClosure *c = scr_closure_new(fn, 3);
+  c->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+  scr_box_set_ref(c->caps[0], scr_promise_retain(p));
+  c->caps[1] = scr_box_new_obj(scr_arr_retain_v, scr_arr_release_v, NULL);
+  scr_box_set_ref(c->caps[1], scr_arr_retain(chunks));
+  c->caps[2] = scr_box_new_obj(scr_sc_borrow_v, scr_sc_unborrow_v, NULL);
+  scr_box_set_ref(c->caps[2], ptr);
   return c;
 }
 
@@ -4425,9 +4490,24 @@ static ScrPromise *scr_sc_consume(ScrStream *s, int kind) {
   ScrStreamErrInv fin_inv = kind == SCR_SC_TEXT    ? &scr_sc_fin_text
                             : kind == SCR_SC_JSON  ? &scr_sc_fin_json
                             : kind == SCR_SC_BUFFER ? &scr_sc_fin_buffer
+                            : kind == SCR_SC_BLOB   ? &scr_sc_fin_blob
                                                     : &scr_sc_fin_array_buffer;
   /* The terminal watcher first (it marks lifecycle errors handled); the
    * promise form exposes no unhook — the cleanup closure drops. */
+  if (kind == SCR_SC_BLOB) {
+    ScrClosure *reader = scr_sc_closure_borrowing((void *)&scr_sc_read_parts, p, chunks, s);
+    ScrClosure *fin = scr_sc_closure_borrowing((void *)fin_inv, p, chunks, reader);
+    scr_closure_release(scr_stream_finished(s, fin, fin_inv));
+    ScrStr *rn = scr_str_new("readable", 8);
+    scr_emitter_release(scr_emitter_on((ScrEmitter *)s, rn, scr_closure_retain(reader),
+                                       scr_ee_inv_fixed0, false, false));
+    scr_str_release(rn);
+    scr_stream_readable_listen(s);
+    scr_sc_read_parts(reader);
+    scr_closure_release(reader);
+    scr_arr_release(chunks);
+    return p;
+  }
   ScrClosure *cleanup = scr_stream_finished(s, scr_sc_closure((void *)fin_inv, p, chunks), fin_inv);
   scr_closure_release(cleanup);
   ScrStr *dn = scr_str_new("data", 4);
@@ -4446,6 +4526,10 @@ ScrPromise *scr_sc_text(ScrStream *s) { return scr_sc_consume(s, SCR_SC_TEXT); }
 ScrPromise *scr_sc_json(ScrStream *s) { return scr_sc_consume(s, SCR_SC_JSON); }
 ScrPromise *scr_sc_buffer(ScrStream *s) { return scr_sc_consume(s, SCR_SC_BUFFER); }
 ScrPromise *scr_sc_array_buffer(ScrStream *s) { return scr_sc_consume(s, SCR_SC_ARRAY_BUFFER); }
+ScrPromise *scr_sc_blob_with(ScrStream *s, ScrDyn *(*make)(ScrArr *chunks)) {
+  scr_sc_blob_make = make;
+  return scr_sc_consume(s, SCR_SC_BLOB);
+}
 
 /* ── stream.addAbortSignal and the constructors' signal option ─────────
  * lib/internal/streams/add-abort-signal.js: the signal must be an object

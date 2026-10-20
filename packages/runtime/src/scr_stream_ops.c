@@ -2526,3 +2526,20 @@ ScrPromise *scr_stream_op_every(ScrStream *s, ScrDyn *fn, ScrDyn *options) {
   op_unref(outer);
   return p;
 }
+
+/* stream/consumers' blob(stream): Node's `new Blob(chunks)` over the
+ * chunks the stream yielded, through the Blob constructor, so each chunk
+ * is one part and the Blob's readers settle on Node's turn. Lives in this
+ * unit because it references both the stream and the Blob units. */
+static ScrDyn *scr_sc_blob_of(ScrArr *chunks) {
+  ScrDyn *parts = scr_dyn_new_arr();
+  for (size_t i = 0; i < chunks->len; i++)
+    scr_dyn_arr_push(parts, scr_dyn_new_bytes(scr_arr_peek_ref(chunks, (double)i)));
+  ScrDyn *args = scr_dyn_new_arr();
+  scr_dyn_arr_push(args, parts);
+  ScrDyn *blob = scr_blob_new(args);
+  scr_dyn_release(args);
+  return blob;
+}
+
+ScrPromise *scr_sc_blob(ScrStream *s) { return scr_sc_blob_with(s, scr_sc_blob_of); }

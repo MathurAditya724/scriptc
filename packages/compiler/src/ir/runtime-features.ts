@@ -176,6 +176,8 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.stdioWritable",
   "stream.unboxDyn",
   "stream.workerStdio",
+  // stream/consumers' blob() builds its Blob in the Blob unit.
+  "sc.blob",
 ]);
 
 /** libCall name prefixes that link the stream unit. */

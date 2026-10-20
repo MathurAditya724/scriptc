@@ -2475,19 +2475,19 @@ export function lowerStreamModuleCall(
   }
   if (bi.module === "stream/consumers") {
     const args = call.arguments.nodes;
-    // text/json/buffer/arrayBuffer(stream) → a pending promise the
+    // text/json/buffer/arrayBuffer/blob(stream) → a pending promise the
     // accumulate-and-settle machinery resolves at the terminal point (the
     // utf8 decode / the parsed JSON dyn tree / the concatenated bytes / an
-    // ArrayBuffer dyn over them) or rejects — with the stream's error,
-    // ERR_STREAM_PREMATURE_CLOSE on an early close, or json's SyntaxError
-    // on malformed text, Node's own rejection set. blob returns null here,
-    // so the module-qualified fence (with the pointed hint in
-    // BUILTIN_MODULE_FENCE_HINTS) speaks.
+    // ArrayBuffer dyn over them / a Blob dyn with one part per chunk) or
+    // rejects — with the stream's error, ERR_STREAM_PREMATURE_CLOSE on an
+    // early close, or json's SyntaxError on malformed text, Node's own
+    // rejection set.
     if (
       bi.member === "text" ||
       bi.member === "json" ||
       bi.member === "buffer" ||
-      bi.member === "arrayBuffer"
+      bi.member === "arrayBuffer" ||
+      bi.member === "blob"
     ) {
       if (args.length !== 1) {
         lowerer.noLowering(

@@ -327,6 +327,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "sc.json",
   "sc.buffer",
   "sc.arrayBuffer",
+  "sc.blob",
   "readable.newDyn",
   "writable.newDyn",
   "duplex.newDyn",

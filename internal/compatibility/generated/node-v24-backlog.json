@@ -7,9 +7,9 @@
     "tierItemCount": 3454,
     "tiers": {
       "static": {
-        "audit-partial": 1197,
+        "audit-partial": 1198,
         "verify-gap": 2130,
-        "replace-refusal": 40,
+        "replace-refusal": 39,
         "classify": 2,
         "implement": 85
       }
@@ -81918,12 +81918,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.stream.consumers.blob",
-          "tests": []
+          "source": "compiler-feature:webstreams.streamConsumers.blob",
+          "tests": [
+            "tests/corpus/6720-stream-consumers-blob.ts"
+          ]
         }
       }
     },

@@ -3881,12 +3881,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * with the accumulated result (sc.text: the utf8 decode, sc.json: the
    * parsed dyn — malformed input rejects with the parse's SyntaxError,
    * sc.buffer: the concatenated bytes, sc.arrayBuffer: an ArrayBuffer
-   * dyn over them) or rejected with the stream's
-   * error / ERR_STREAM_PREMATURE_CLOSE. */
+   * dyn over them, sc.blob: a Blob dyn with one part per chunk) or
+   * rejected with the stream's error / ERR_STREAM_PREMATURE_CLOSE. */
   "sc.text": { argTypes: [null], result: { kind: "promise", inner: STRING } },
   "sc.json": { argTypes: [null], result: { kind: "promise", inner: DYN } },
   "sc.buffer": { argTypes: [null], result: { kind: "promise", inner: BYTES_U8 } },
   "sc.arrayBuffer": { argTypes: [null], result: { kind: "promise", inner: DYN } },
+  "sc.blob": { argTypes: [null], result: { kind: "promise", inner: DYN } },
   "readable.newDyn": { argTypes: [DYN], result: VOID },
   "writable.newDyn": { argTypes: [DYN], result: VOID },
   "duplex.newDyn": { argTypes: [DYN], result: VOID },

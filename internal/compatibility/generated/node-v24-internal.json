@@ -926,8 +926,8 @@
       "apiEntries": 89,
       "static": {
         "supported": 0,
-        "partial": 8,
-        "refused": 1,
+        "partial": 9,
+        "refused": 0,
         "not-implemented": 80,
         "by-design": 0,
         "unreviewed": 0,
@@ -111319,6 +111319,7 @@
           "tests/corpus/2630-stream-consumers-errors.ts",
           "tests/corpus/2862-web-readable-async-iteration.ts",
           "tests/corpus/4875-stream-consumers-array-buffer.ts",
+          "tests/corpus/6720-stream-consumers-blob.ts",
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
           "tests/harness/fetch-conformance.test.ts"
@@ -111462,8 +111463,11 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.stream.consumers.blob"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.streamConsumers.blob",
+        "tests": [
+          "tests/corpus/6720-stream-consumers-blob.ts"
+        ]
       },
       "anchorSource": "exact"
     },

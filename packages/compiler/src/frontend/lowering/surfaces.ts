@@ -1938,8 +1938,7 @@ export const BUILTIN_MODULE_FNS: Record<
   // exists so unlowered members fence module-qualified.
   "stream/promises": {},
   // node:stream/consumers rides the stream spoke as well (text/json/
-  // buffer/arrayBuffer special-case their stream argument); blob fences
-  // module-qualified with the pointed hint below.
+  // buffer/arrayBuffer/blob special-case their stream argument).
   "stream/consumers": {},
   // node:timers/promises — the delay-only setTimeout and bare setImmediate
   // (void promises the shared timer heap settles), and scheduler.wait /
@@ -3016,11 +3015,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   util: {
     promisify:
       "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly",
-  },
-  "stream/consumers": {
-    blob:
-      "collecting a stream into a Blob is not supported yet — " +
-      "buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text",
   },
   module: {
     createRequire:

@@ -301,6 +301,11 @@ ScrPromise *scr_sc_text(ScrStream *s);
 ScrPromise *scr_sc_json(ScrStream *s);
 ScrPromise *scr_sc_buffer(ScrStream *s);
 ScrPromise *scr_sc_array_buffer(ScrStream *s);
+/* blob(): settles with make(chunks), the Blob over the chunk list (Buffer
+ * entries, borrowed); scr_sc_blob (scr_stream_ops.c) passes the Blob
+ * unit's constructor. */
+ScrPromise *scr_sc_blob_with(ScrStream *s, ScrDyn *(*make)(ScrArr *chunks));
+ScrPromise *scr_sc_blob(ScrStream *s);
 /* Readable.from over a typed source: arr holds the string or Buffer
  * elements (one element under SCR_FROM_SINGLE, from.js's string/Buffer
  * case). Elements push lazily, one _read at a time, as whole entries

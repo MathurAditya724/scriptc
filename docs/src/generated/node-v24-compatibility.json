@@ -869,8 +869,8 @@
       "apiEntries": 89,
       "static": {
         "supported": 0,
-        "partial": 8,
-        "refused": 1,
+        "partial": 9,
+        "refused": 0,
         "not-implemented": 80,
         "by-design": 0,
         "unreviewed": 0,
@@ -80896,9 +80896,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "partial",
+        "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
+        "verification": "test-backed"
       }
     },
     {
