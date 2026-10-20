@@ -851,7 +851,7 @@ class FunctionTranslator {
   /** The offset of a memarg over memory 0 (the only memory a translatable
    * module has). */
   memargOffset(c: WasmCursor): number {
-    const flags = readMemargFlags(c);
+    const flags = readMemargFlags(() => c.u32());
     if (flags.align < 0 || flags.memory !== 0)
       throw new WasmTranslateError(`memarg of memory ${flags.memory} is not supported`);
     return c.u32();

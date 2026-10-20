@@ -1245,7 +1245,7 @@ class FunctionValidator {
   /** A memarg. A memory other than 0 stops typing (multi-memory). */
   memarg(naturalAlign: number): void {
     const r = this.r;
-    const { align, memory } = readMemargFlags(r);
+    const { align, memory } = readMemargFlags(() => r.u32());
     if (align < 0) r.malformed("malformed memop flags");
     if (memory !== 0) this.otherMemory(memory);
     if (this.m.memory64) r.u64();
@@ -1831,7 +1831,7 @@ class FunctionValidator {
 
   scanMemarg(): void {
     const r = this.r;
-    const { align, memory } = readMemargFlags(r);
+    const { align, memory } = readMemargFlags(() => r.u32());
     if (align < 0) r.malformed("malformed memop flags");
     if (memory !== 0) this.m.feature("multi-memory");
     if (this.m.memory64) r.u64();

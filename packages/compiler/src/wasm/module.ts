@@ -289,11 +289,12 @@ function decodeUtf8(bytes: Uint8Array, start: number, end: number): string {
  * 0; flags of 128 or more are malformed and answer align -1 without
  * reading further. The offset follows. Validation (binary.ts), translation
  * and skipImmediates all read memargs through this function, so they agree
- * on where each instruction ends. */
-export function readMemargFlags(r: { u32(): number }): { align: number; memory: number } {
-  const flags = r.u32();
+ * on where each instruction ends; `u32` reads the next u32 immediate of
+ * their own reader. */
+export function readMemargFlags(u32: () => number): { align: number; memory: number } {
+  const flags = u32();
   if (flags >= 128) return { align: -1, memory: 0 };
-  if (flags >= 64) return { align: flags - 64, memory: r.u32() };
+  if (flags >= 64) return { align: flags - 64, memory: u32() };
   return { align: flags, memory: 0 };
 }
 
@@ -386,7 +387,7 @@ export function skipImmediates(c: WasmCursor, op: number): void {
     }
     default:
       if (op >= 0x28 && op <= 0x3e) {
-        const flags = readMemargFlags(c);
+        const flags = readMemargFlags(() => c.u32());
         if (flags.align < 0 || flags.memory !== 0)
           throw new Error(`wasm: memarg of memory ${flags.memory} is not supported`);
         c.u32();
