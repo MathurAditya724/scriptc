@@ -1362,20 +1362,35 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_STR:
       return scr_insp_str(d->v.str);
     case SCR_DYN_ARR: {
-      if (d->v.arr.len == 0) return scr_str_new("[]", 2);
+      size_t len = d->v.arr.len;
+      if (len == 0) return scr_str_new("[]", 2);
       if (recurse > depth) return scr_str_new("[Array]", 7);
       scr_insp_begin(recurse + 1);
-      size_t shown = d->v.arr.len < 100 ? d->v.arr.len : 100;
-      for (size_t i = 0; i < shown; i++) {
-        ScrDyn *item = d->v.arr.items[i];
+      /* Node's maxArrayLength (100) counts output entries; a run of holes
+       * is one `<n empty items>` entry (formatSpecialArray). */
+      const unsigned char *presence = d->v.arr.presence;
+      size_t i = 0;
+      for (size_t shown = 0; i < len && shown < 100; shown++) {
+        if (presence && !presence[i]) {
+          size_t next = i + 1;
+          while (next < len && !presence[next]) next++;
+          char hole[48];
+          int hn = snprintf(hole, sizeof hole, "<%zu empty item%s>", next - i, next - i == 1 ? "" : "s");
+          ScrStr *s = scr_str_new(hole, (size_t)hn);
+          scr_insp_entry(s, false);
+          scr_str_release(s);
+          i = next;
+          continue;
+        }
+        ScrDyn *item = d->v.arr.items[i++];
         ScrStr *s = scr_insp_dyn(item, recurse + 1, depth);
         scr_insp_entry(s, item->kind == SCR_DYN_NUM);
         scr_str_release(s);
       }
-      bool more = d->v.arr.len > 100;
+      bool more = i < len;
       if (more) {
-        ScrStr *m = scr_insp_more_items((double)(d->v.arr.len - 100));
-        scr_insp_entry(m, d->v.arr.items[100]->kind == SCR_DYN_NUM);
+        ScrStr *m = scr_insp_more_items((double)(len - i));
+        scr_insp_entry(m, d->v.arr.items[i]->kind == SCR_DYN_NUM);
         scr_str_release(m);
       }
       ScrStr *base = scr_str_new("", 0);

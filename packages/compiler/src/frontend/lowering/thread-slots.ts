@@ -22,6 +22,7 @@ import {
   threadSlotsMemberOf,
 } from "../experimental-import.js";
 import * as ts from "../ts7/adapter.js";
+import { withUndefinedArm } from "../type-mapper.js";
 import type { ClassInfo } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
@@ -238,10 +239,16 @@ export function lowerThreadSlotsCall(lowerer: Lowerer, expr: ts.CallExpression):
   const args = [name, receiver, key];
   switch (member) {
     case "get": {
+      // The slots hold values in the layout of the type the constructor registered (`family.value`,
+      // which `set` stores with). The receiver's annotation can name a structurally wider value
+      // type, so the value read is converted to the call's type like any value flowing into it.
       const resultTs = lowerer.typeOf(expr);
       const result = lowerer.mapTypeOf(resultTs);
       if (result === null) lowerer.badType(expr, resultTs);
-      return { kind: "intrinsic", name: "slots.get", args, type: result!, loc };
+      const stored = withUndefinedArm(family.value, lowerer.unions);
+      if (stored === null) lowerer.badType(expr, resultTs);
+      const read: IrExpr = { kind: "intrinsic", name: "slots.get", args, type: stored!, loc };
+      return typeKey(stored!) === typeKey(result!) ? read : lowerer.coerceInto(expr, read, result!);
     }
     case "has":
     case "delete":

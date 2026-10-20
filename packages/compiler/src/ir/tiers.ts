@@ -24,6 +24,11 @@
  * - calls of non-`dyn.*` builtins whose signatures take or return `dyn`
  *   (typed APIs implemented through dyn, leak L6 of the design). They stay
  *   boundaries until stage S1 gives them typed signatures.
+ * - the jsval conversions (stage S3): `js.fromF64`, `js.fromBool`,
+ *   `js.fromStr` and `js.fromBigInt` (static to jsval), `js.toF64` (jsval to number), and
+ *   `js.fromDyn`/`js.toDyn`, which move a value between the two dynamic
+ *   representations. Every other `js.*` builtin (the jsval operators) is a
+ *   dynamic operation.
  *
  * Classification of existing code. The `dyn` vocabulary is today's
  * dynamic tier (`ScrDyn`): `any`, untyped JavaScript, unschematized
@@ -34,10 +39,9 @@
  * do not follow from a body; until then the classification is exact, and
  * the validator guards it against later passes and hand-written IR.
  *
- * Serialization. Stage S2 must not change any artifact, so serialized IR
- * omits `tier` (serialize.ts) and loaders derive it again with the same
- * classification. The next IR version serializes the field. */
-import type { IrExpr, IrFunction, IrModule, SrcLoc } from "./ir.js";
+ * Serialization. Since IR version 17 (stage S3) serialized IR carries
+ * `tier` like any other function field. */
+import type { IrExpr, IrFunction, SrcLoc } from "./ir.js";
 import { everyStmtList, type IrVisitor } from "./traverse.js";
 
 export type IrTier = "static" | "dynamic";
@@ -45,6 +49,18 @@ export type IrTier = "static" | "dynamic";
 export function functionTier(fn: IrFunction): IrTier {
   return fn.tier === "dynamic" ? "dynamic" : "static";
 }
+
+/** `js.*` builtins that convert at the boundary instead of operating on a
+ * dynamic value. */
+const JS_BOUNDARY: ReadonlySet<string> = new Set([
+  "js.fromDyn",
+  "js.toDyn",
+  "js.fromF64",
+  "js.fromBool",
+  "js.fromStr",
+  "js.fromBigInt",
+  "js.toF64",
+]);
 
 /** `dyn.*` builtins that only inspect a dynamic value's kind: the tag test
  * half of a dynamic-to-static conversion. */
@@ -87,6 +103,7 @@ export function dynamicOperationOf(e: IrExpr): string | null {
       // `a || b` over dyn operands applies ToBoolean to a dynamic value.
       return e.type.kind === "dyn" ? "logical" : null;
     case "libCall":
+      if (e.fn.startsWith("js.")) return JS_BOUNDARY.has(e.fn) ? null : e.fn;
       return e.fn.startsWith("dyn.") && !DYN_KIND_TESTS.has(e.fn) ? e.fn : null;
     case "call":
       // Generated `%dyn.*` helpers are dynamic operations lowered out of
@@ -147,11 +164,4 @@ export function assignLegacyTiers(functions: readonly IrFunction[]): DynamicFunc
     dynamic.push({ name: fn.name, loc: fn.loc, operation: site.operation, operationLoc: site.loc });
   }
   return dynamic;
-}
-
-/** Loaders call this on deserialized modules (stage S2 serializes no
- * tiers). */
-export function deriveModuleTiers(mod: IrModule): IrModule {
-  assignLegacyTiers(mod.functions);
-  return mod;
 }

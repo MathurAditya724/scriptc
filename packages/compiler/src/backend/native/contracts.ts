@@ -109,6 +109,10 @@ export interface CcOptions {
    * reactions, AsyncLocalStorage, the unhandledRejection/warning
    * process events. */
   dynAsync?: boolean;
+  /** The program has dynamic-tier jsval operations (moduleUsesDynTier on
+   * the IR): compiles the scr_js_* units (two-tier design I3). Programs
+   * without them link no scr_js_ symbol. */
+  dynTier?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
@@ -273,6 +277,8 @@ export interface LibArchiveOptions {
   threadInstances?: boolean;
   /** IR-detected link gates (the compileC precedent, refusal-narrowed). */
   dynInvoke?: boolean;
+  /** See CompileOptions.dynTier: the scr_js_* units. */
+  dynTier?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;

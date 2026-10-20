@@ -120,6 +120,7 @@ export class LifetimeRegions {
       // Closures capture anything, and dyn values box class instances.
       case "func":
       case "dyn":
+      case "jsval":
         return true;
       default:
         return false;
