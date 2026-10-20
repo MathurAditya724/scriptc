@@ -3401,6 +3401,13 @@ declare module "util" {
     info: import("node:crypto").BinaryLike,
     keylen: number,
   ) => Promise<ArrayBuffer>;
+  /* A callback-only function (`obj.close.bind(obj)`): before the targets
+   * whose leading parameters would otherwise capture it. Builtins that take
+   * arguments before their callback never match these. */
+  export function promisify<TResult>(
+    fn: (callback: (err: any, result: TResult) => void) => void,
+  ): () => Promise<TResult>;
+  export function promisify(fn: (callback: (err?: any) => void) => void): () => Promise<void>;
   export function promisify(
     fn: typeof import("node:crypto").randomFill,
   ): <T extends ArrayBufferView | ArrayBufferLike>(

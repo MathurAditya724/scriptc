@@ -112,12 +112,15 @@ export function coercibleValue(lowerer: Lowerer, src: IrType, dst: IrType): bool
 }
 
 /** Whether all parameters and the result adapt without a trap-only path.
- * Rest signatures are excluded; extra destination parameters are ignored. */
+ * Rest signatures are excluded, except a typed-rest source in a slot with
+ * fixed parameters (the rest packing adapter); extra destination
+ * parameters are ignored. */
 export function cleanFuncAdaptable(
   lowerer: Lowerer,
   src: IrType & { kind: "func" },
   dst: IrType & { kind: "func" },
 ): boolean {
+  if (restPackingAdapterFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
   if (src.params.length > dst.params.length) return false;
   for (let i = 0; i < src.params.length; i++) {
@@ -128,15 +131,145 @@ export function cleanFuncAdaptable(
   return src.ret.kind === "void" && dst.ret.kind === "dyn";
 }
 
+/** Whether a typed-rest function (`(...m: T[]) => R`) can serve a slot
+ * with fixed parameters (`(m: T) => void`): the slot's parameters convert
+ * to the function's fixed parameters, then to the rest element type. */
+export function restPackingAdapterFits(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+): boolean {
+  if (fromT.rest !== true || fromT.restAbi !== "typed" || toT.rest === true) return false;
+  const fixed = fromT.params.length - 1;
+  const restT = fromT.params[fixed];
+  if (restT?.kind !== "array" || toT.params.length < fixed) return false;
+  for (let i = 0; i < toT.params.length; i++) {
+    if (!lowerer.coercibleValue(toT.params[i]!, i < fixed ? fromT.params[i]! : restT.elem))
+      return false;
+  }
+  return toT.ret.kind === "void" || lowerer.coercibleValue(fromT.ret, toT.ret);
+}
+
+/** The adapter for restPackingAdapterFits: forwards the fixed arguments and
+ * packs the remaining ones into the rest array, as a JavaScript call of the
+ * function with those arguments does. */
+function restPackingAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string {
+  const key = `fnrestadapt:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = `%fn.adapt.${lowerer.coercions.retags.size}`;
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const fixed = fromT.params.length - 1;
+  const restT = fromT.params[fixed] as IrType & { kind: "array" };
+  const params: IrParam[] = toT.params.map((t, i) => ({
+    localId: `a.${i}`,
+    name: `a${i}`,
+    type: t,
+  }));
+  const arg = (i: number, want: IrType): IrExpr =>
+    lowerer.coerceToExpected(
+      { kind: "varRef", localId: `a.${i}`, type: toT.params[i]!, loc },
+      want,
+    );
+  const args: IrExpr[] = [];
+  for (let i = 0; i < fixed; i++) args.push(arg(i, fromT.params[i]!));
+  const packed: IrExpr[] = [];
+  for (let i = fixed; i < toT.params.length; i++) packed.push(arg(i, restT.elem));
+  args.push({ kind: "arrayLit", elems: packed, type: restT, loc });
+  const call: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args,
+    type: fromT.ret,
+    loc,
+  };
+  const body: IrStmt[] =
+    toT.ret.kind === "void"
+      ? [
+          { kind: "exprStmt", expr: call, loc },
+          { kind: "return", value: null, loc },
+        ]
+      : [{ kind: "return", value: lowerer.coerceToExpected(call, toT.ret), loc }];
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  return name;
+}
+
+/** Adapt a fixed-parameter function to a checked-dynamic rest signature
+ * without fixed parameters (`() => {}` into mock.fn()'s `(...args: any[])
+ * => undefined`): the adapter receives the hidden argument array and
+ * passes its element i as parameter i, undefined when the caller passed
+ * fewer arguments, as JS does. Null unless every parameter is
+ * checked-dynamic, which holds a missing argument as undefined, and the
+ * result is discarded or converts. */
+function funcIntoDynRestAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string | null {
+  if (fromT.rest === true || fromT.params.some((p) => p.kind !== "dyn")) return null;
+  if (toT.ret.kind !== "void" && !lowerer.coercibleValue(fromT.ret, toT.ret)) return null;
+  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = `%fn.adapt.${lowerer.coercions.retags.size}`;
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const params: IrParam[] = [{ localId: "rest.0", name: "args", type: DYN }];
+  const call: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args: fromT.params.map((_, i): IrExpr => ({
+      kind: "dynKeyGet",
+      value: { kind: "varRef", localId: "rest.0", type: DYN, loc },
+      key: { kind: "strLit", value: String(i), type: STRING, loc },
+      type: DYN,
+      loc,
+    })),
+    type: fromT.ret,
+    loc,
+  };
+  let body: IrStmt[];
+  if (toT.ret.kind === "void") {
+    body = [
+      { kind: "exprStmt", expr: call, loc },
+      { kind: "return", value: null, loc },
+    ];
+  } else {
+    const result = lowerer.coerceToExpected(call, toT.ret);
+    if (!typeEquals(result.type, toT.ret))
+      throw new InternalCompilerError("lowerer bug: probed fn-adapter return stopped coercing");
+    body = [{ kind: "return", value: result, loc }];
+  }
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  return name;
+}
+
 /** Adapt a function value to a destination signature, forwarding and
  * converting its arguments and result. Unsupported parameter/result pairs
- * produce checked traps when called; rest signatures remain refused. */
+ * produce checked traps when called. Rest signatures are refused, except a
+ * typed-rest source in a slot with fixed parameters, which the rest
+ * packing adapter serves, and a fixed-parameter function into a
+ * checked-dynamic rest signature without fixed parameters
+ * (funcIntoDynRestAdapter). */
 export function funcCoerceAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
   toT: IrType & { kind: "func" },
   loc: SrcLoc,
 ): string | null {
+  if (restPackingAdapterFits(lowerer, fromT, toT))
+    return restPackingAdapter(lowerer, fromT, toT, loc);
+  if (toT.rest === true && toT.restAbi === undefined && toT.params.length === 0)
+    return funcIntoDynRestAdapter(lowerer, fromT, toT, loc);
   if (fromT.rest === true || toT.rest === true) return null;
   if (fromT.params.length > toT.params.length) return null;
   // Piece dispositions beyond coercibleValue, all CHECKER-APPROVED

@@ -3,7 +3,8 @@
   Class instances, builtin objects, and object literals whose methods use `this` throw `SC2020`.
   Calls through the object record it as `this`, including calls of a method read off the object and called on its own, where Node records `undefined`.
   `object.method === mock` is `false`, because the field holds a wrapper of the mock.
-  `mock.fn()` without an original, `mock.getter`, `mock.setter`, `mock.property`, `mock.module` and mock options throw `SC2020`.
+  `mock.fn()` without an original returns `undefined` and records the arguments of each call, as in Node; with a function type whose return type does not include `undefined`, such as `mock.fn<() => number>()`, it throws `SC2020`.
+  `mock.getter`, `mock.setter`, `mock.property`, `mock.module` and mock options throw `SC2020`.
 - **Mock timers:** `mock.timers.enable`, `tick`, `runAll`, `reset`, `setTime` and `[Symbol.dispose]()` compile, on the module's `mock` and on `t.mock`, for the `setTimeout`, `setInterval`, `setImmediate`, `Date`, `scheduler.wait` and `AbortSignal.timeout` APIs.
   `enable()` takes no options or an object literal whose `apis`, when given, is an array literal.
   Options and `apis` lists that are not literals, and the `MockTimers` object used as a value, throw `SC2020`.
