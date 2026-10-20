@@ -1,7 +1,8 @@
 // Promise.all over an array literal of DIFFERENT promise types (the
 // checker's tuple overload): destructuring with holes and nested
 // patterns, void entries, plain values, `any` entries that may or may not
-// hold a promise, entry identity, and rejection —
+// hold a promise or a thenable, tuples of more than ten entries, entry
+// identity, and rejection —
 // the first rejection in settlement order wins, later ones count as
 // handled.
 interface Version {
@@ -48,6 +49,18 @@ function untypedRecord(): any {
   return Promise.resolve({ label: "from a promise" });
 }
 
+// A thenable that is not a native promise: Promise.all adopts its
+// settlement, calling `then` one microtask after the call.
+class Deferred {
+  then(resolve: (value: string) => void): void {
+    console.log("then called");
+    resolve("adopted");
+  }
+}
+function untypedThenable(): any {
+  return new Deferred();
+}
+
 async function main(): Promise<void> {
   const [runtime, { tool: kind, schema: level }] = await Promise.all([version(), scan()]);
   console.log(runtime.major, kind, level, runtime === shared);
@@ -63,6 +76,14 @@ async function main(): Promise<void> {
 
   const [count, { label }, plain] = await Promise.all([untypedCount(), untypedRecord(), "p"]);
   console.log(count + 1, label, plain);
+
+  const pending = Promise.all([untypedThenable(), version()]);
+  console.log("after the call");
+  const [adopted, latest] = await pending;
+  console.log(adopted, latest.major);
+
+  const many = await Promise.all([version(), 1, 2, 3, 4, 5, 6, 7, 8, 9, "ten", scan()]);
+  console.log(many[0].major, many[2], many[9], many[10], many[11].tool);
 
   try {
     await Promise.all([delay(20, 1, "slow failure"), delay(5, "s", "fast failure"), delay(1, true)]);

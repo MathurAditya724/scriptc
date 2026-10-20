@@ -1309,6 +1309,10 @@ extern SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len);
 ScrPromise *scr_dyn_promise_all(const ScrDyn *entries, const ScrDyn *reader);
 ScrPromise *scr_dyn_promise_all_settled(const ScrDyn *entries, const ScrDyn *reader);
 ScrPromise *scr_dyn_promise_any(const ScrDyn *entries, const ScrDyn *reader);
+/* PromiseResolve over one dyn value (borrowed): a native promise is
+ * itself, a thenable adopts through its resolve job, a throwing `then`
+ * read rejects, and any other value fulfills. +1. */
+ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader);
 
 /* Native predicates for typed reference capsules and boxed errors. */
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name);

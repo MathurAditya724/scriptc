@@ -922,6 +922,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.promiseAll": "scr_dyn_promise_all",
   "dyn.promiseAllSettled": "scr_dyn_promise_all_settled",
   "dyn.promiseAny": "scr_dyn_promise_any",
+  "dyn.promiseResolve": "scr_dyn_promise_resolve",
   "dyn.typeof": "scr_dyn_typeof",
   "dyn.objectTag": "scr_dyn_object_tag",
   "dyn.freeze": "scr_dyn_freeze",

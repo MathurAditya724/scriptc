@@ -239,6 +239,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.promiseAll": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "dyn.promiseAllSettled": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "dyn.promiseAny": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  /** PromiseResolve over one checked-dynamic value: the promise it holds,
+   * a promise that adopts a thenable's settlement, or a promise fulfilled
+   * with the value. The second argument reads `then` as above. */
+  "dyn.promiseResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   /** Bare `typeof v` on a dyn value AS A STRING (arg: the dyn value,
    * borrowed; result: an owned string) — the dyn kind's JS answer:
    * undefined→"undefined", null/object/array/bytes→"object" (JS's oldest

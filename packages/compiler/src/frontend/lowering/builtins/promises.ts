@@ -1,4 +1,4 @@
-import { checkedPromiseAll } from "../checked-promise-all.js";
+import { checkedPromiseAll, thenReader } from "../checked-promise-all.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { newFnCtx, type Lowerer } from "../lowerer.js";
@@ -6,7 +6,6 @@ import { varRef } from "../../../ir/build.js";
 import { maybePromiseResolve, maybePromiseUnionOf } from "../maybe-promise.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
-  BOOL,
   DYN,
   type IrExpr,
   type IrFunction,
@@ -31,7 +30,8 @@ import {
  * checked-dynamic tree. Non-promise entries (numbers, strings, booleans,
  * unit values — never thenable) pass straight into their slot; a
  * checked-dynamic entry (a JavaScript function's result) joins through
- * the promise it holds, or a promise fulfilled with its plain value. The tuple
+ * PromiseResolve: the promise it holds, a promise that adopts a thenable,
+ * or a promise fulfilled with its plain value. The tuple
  * fulfills one microtask turn after the combinator does. Null when the
  * result type or an entry has no typed home here. */
 function lowerTuplePromiseAll(
@@ -68,8 +68,9 @@ function lowerTuplePromiseAll(
       const ref = (i: number): IrExpr => varRef(`entry.${i}`, elems[i]!.type, loc);
       const dynPromise: IrType = { kind: "promise", inner: DYN };
       const body: IrStmt[] = [];
-      // Each dyn entry's promise view: the promise it holds, or a promise
-      // fulfilled with the plain value (Promise.resolve's rule).
+      // Each dyn entry's promise view, in entry order: the promise it
+      // holds, a promise that adopts a thenable's settlement, or a promise
+      // fulfilled with the plain value (PromiseResolve's rule).
       const views = new Map<number, IrExpr>();
       elems.forEach((e, i) => {
         if (e.type.kind !== "dyn") return;
@@ -78,16 +79,9 @@ function lowerTuplePromiseAll(
           kind: "varDecl",
           localId: view.id,
           init: {
-            kind: "ternary",
-            cond: { kind: "dynTest", test: "promise", value: ref(i), type: BOOL, loc },
-            then: { kind: "dynCheck", value: ref(i), type: dynPromise, loc },
-            else_: {
-              kind: "intrinsic",
-              name: "promise.resolve",
-              args: [ref(i)],
-              type: dynPromise,
-              loc,
-            },
+            kind: "libCall",
+            fn: "dyn.promiseResolve",
+            args: [ref(i), thenReader(lowerer, loc)],
             type: dynPromise,
             loc,
           },
@@ -138,7 +132,10 @@ function lowerTuplePromiseAll(
         type: VOID,
         loc,
       };
-      const fields = shape.fields.map((field, i) => {
+      // Shape fields are sorted by name ("10" before "2"); a tuple field's
+      // name is its position.
+      const fields = shape.fields.map((field) => {
+        const i = Number(field.name);
         const entry = elems[i]!;
         let value: IrExpr;
         const view = views.get(i);
