@@ -71,6 +71,8 @@ All notable changes to scriptc will be documented in this file.
 - **Diagnostic code frames window long source lines.**
 - **npm crashes, internal errors and false TDZ errors** found while compiling popular packages are fixed.
 
+<!-- release:end -->
+
 ## 0.3.6
 
 ### Features
@@ -102,8 +104,6 @@ All notable changes to scriptc will be documented in this file.
 - **fs paths with a null byte are refused as Node does.**
 - **`Object.setPrototypeOf` returns primitive receivers,** and `createHmac` without a key throws Node's error.
 - **Boxed records that hold an async function link the dynamic promise unit.**
-
-<!-- release:end -->
 
 ## 0.3.5
 
