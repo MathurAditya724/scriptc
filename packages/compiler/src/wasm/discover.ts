@@ -6,7 +6,9 @@
  * 1. path: a `.wasm` path the compiler resolves from the source text
  *    (`require.resolve`, `createRequire(...).resolve`, `import.meta.resolve`,
  *    `new URL("./x.wasm", import.meta.url)`, and `path.join(__dirname, ...)`
- *    or `__dirname + "/x.wasm"`);
+ *    or `__dirname + "/x.wasm"`), or a `.so` path spelled the same ways
+ *    whose file is a module (WebAssembly shared libraries, such as
+ *    quickjs-wasi's extensions);
  * 2. inline: a string literal that decodes as base64 to a module, or an
  *    array literal of its bytes;
  * 3. package: every `.wasm` file shipped by a reached npm package whose
@@ -78,6 +80,9 @@ const BASE64_MAGIC = "AGFzbQ";
 const BYTES_MAGIC = /\[\s*(?:0|0x0+)\s*,\s*(?:97|0x61)\s*,\s*(?:115|0x73)\s*,\s*(?:109|0x6d)\s*,/i;
 /** Package directories deeper than this are not searched for modules. */
 const PACKAGE_SCAN_DEPTH = 6;
+/** A `.so` path in a string literal: the cheap test before a file with no
+ * `.wasm` mention is walked for shared-library paths. */
+const SHARED_LIBRARY_PATH = /\.so["'`]/;
 /** Larger files are reported by size but not read. */
 const MAX_MODULE_BYTES = 256 * 1024 * 1024;
 
@@ -139,6 +144,8 @@ class Discovery {
       return;
     }
     if (bytes.length > MAX_MODULE_BYTES) return;
+    // A shared-library path names a module only when the file is one.
+    if (source.kind === "path" && !path.endsWith(".wasm") && !isWasmHeader(bytes)) return;
     this.byPath.set(path, this.addBytes(bytes, path, source));
   }
 
@@ -146,7 +153,7 @@ class Discovery {
 
   scanFile(sf: ts.SourceFile): void {
     const text = sf.text;
-    const paths = text.includes(".wasm");
+    const paths = text.includes(".wasm") || SHARED_LIBRARY_PATH.test(text);
     const base64 = text.includes(BASE64_MAGIC);
     const bytes = BYTES_MAGIC.test(text);
     if (!paths && !base64 && !bytes) return;
@@ -184,7 +191,8 @@ class Discovery {
     );
   }
 
-  /** The module path a resolution expression names, when it ends in .wasm. */
+  /** The module path a resolution expression names, when it ends in .wasm
+   * (or .so). */
   resolvedPath(sf: ts.SourceFile, node: ts.Node): string | null {
     const dir = dirname(sf.fileName);
     if (ts.isCallExpression(node)) {
@@ -245,7 +253,7 @@ class Discovery {
       if (!ts.isStringLiteral(arg) && !ts.isNoSubstitutionTemplateLiteral(arg)) return null;
       parts.push(arg.text);
     }
-    if (!parts[parts.length - 1]!.endsWith(".wasm")) return null;
+    if (!isModulePath(parts[parts.length - 1]!)) return null;
     let path = parts[0]!;
     for (let i = 1; i < parts.length; i++) path = resolve(path, parts[i]!);
     return path;
@@ -314,9 +322,15 @@ function addSource(report: WasmModuleReport, source: WasmSource): void {
   report.sources.push(source);
 }
 
+/** A path that may name a module: `.wasm`, or `.so` for WebAssembly shared
+ * libraries (addFile keeps those only when the file is a module). */
+function isModulePath(text: string): boolean {
+  return text.endsWith(".wasm") || text.endsWith(".so");
+}
+
 function wasmLiteral(node: ts.Expression): string | null {
   if (!ts.isStringLiteral(node) && !ts.isNoSubstitutionTemplateLiteral(node)) return null;
-  return node.text.endsWith(".wasm") ? node.text : null;
+  return isModulePath(node.text) ? node.text : null;
 }
 
 function isDirname(node: ts.Expression): boolean {

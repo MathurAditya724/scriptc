@@ -122,6 +122,24 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "wasm.instanceNew": { argTypes: [DYN, DYN], result: DYN },
   "wasm.is": { argTypes: [DYN, F64], result: BOOL },
   "wasm.errorNew": { argTypes: [F64, DYN, DYN], result: DYN },
+  /** new WebAssembly.Memory(descriptor), Table(descriptor, value) and
+   * Global(descriptor, value) (an undefined value is the type's default);
+   * `wasm.withoutNew` throws the TypeError for Module, Instance, Memory,
+   * Table or Global (kinds 0-4) called without new, after its arguments
+   * evaluate. */
+  "wasm.memoryNew": { argTypes: [DYN], result: DYN },
+  "wasm.tableNew": { argTypes: [DYN, DYN], result: DYN },
+  "wasm.globalNew": { argTypes: [DYN, DYN], result: DYN },
+  "wasm.withoutNew": { argTypes: [F64, DYN, DYN], result: DYN },
+  /** WebAssembly.Module.imports(module), exports(module) and
+   * customSections(module, name): checked-dynamic arrays of descriptor
+   * objects and ArrayBuffers. */
+  "wasm.moduleImports": { argTypes: [DYN], result: DYN },
+  "wasm.moduleExports": { argTypes: [DYN], result: DYN },
+  "wasm.moduleCustomSections": { argTypes: [DYN, DYN], result: DYN },
+  /** `v.valueOf()` on a WebAssembly-typed receiver: a Global's value,
+   * dyn.valueOf's answer for anything else. */
+  "wasm.valueOf": { argTypes: [DYN], result: DYN },
   /** WebAssembly.compile (0), instantiate (1) and validate (2) as function
    * values, and the namespace object holding them. */
   "wasm.function": { argTypes: [F64], result: DYN },

@@ -741,18 +741,19 @@ export function noLoweringDiag(
 }
 
 /** A REACHED use of a part of the WebAssembly API scriptc does not
- * implement yet (SC2020): the Memory, Table and Global constructors,
- * Module.imports/exports/customSections, the streaming functions, the
- * classes as values. compile, instantiate, validate, Module, Instance and
- * the error classes lower (builtins/webassembly.ts). `surface` names what
- * was used ('new WebAssembly.Memory', 'WebAssembly.Module.imports'). */
+ * implement yet (SC2020): the streaming functions, Tag and Exception, the
+ * classes as values. compile, instantiate, validate, the Module, Instance,
+ * Memory, Table and Global constructors, Module.imports/exports/
+ * customSections and the error classes lower (builtins/webassembly.ts).
+ * `surface` names what was used ('WebAssembly.compileStreaming',
+ * 'WebAssembly.Memory'). */
 export function webAssemblyDiag(surface: string, loc: SrcLoc): ScrDiagnostic {
   return {
     code: "SC2020",
-    message: `'${surface}' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, Module, Instance and the error classes over modules translated at build time, but not this part of the API`,
+    message: `'${surface}' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, and the error classes over modules translated at build time, but not this part of the API`,
     loc,
     milestone: "later",
-    hint: "the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)",
+    hint: "the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)",
   };
 }
 

@@ -454,7 +454,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
       kind: "stdlib",
       name: "globalThis.WebAssembly",
       status: "static",
-      note: `compile, instantiate, validate, Module, Instance, instanceof, the error classes, exports, memories, tables, globals and Module transfer to workers, over the modules translated at build time; the rest refuses with ${refusal.code} (${refusal.hint ?? ""})`,
+      note: `compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, instanceof, the error classes, exports, imports and Module transfer to workers, over the modules translated at build time; the rest refuses with ${refusal.code} (${refusal.hint ?? ""})`,
     });
   }
 

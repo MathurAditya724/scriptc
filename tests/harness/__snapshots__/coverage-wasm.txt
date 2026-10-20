@@ -1,8 +1,8 @@
 scriptc coverage tests/coverage-fixtures/wasm/main.ts
 
-  statements analyzed   8
-  compile statically    8  (100%)
-    in dynamic tier     2  (operate on values typed only at runtime; --explain-dynamic lists them)
+  statements analyzed   9
+  compile statically    9  (100%)
+    in dynamic tier     4  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     wasm-fixture-pkg  static
@@ -14,6 +14,9 @@ scriptc coverage tests/coverage-fixtures/wasm/main.ts
     tests/coverage-fixtures/wasm/add.wasm  41 bytes  valid
       1 function, 0 imports, 1 export
       found: path at tests/coverage-fixtures/wasm/glue.js:8
+    tests/coverage-fixtures/wasm/ext.so  36 bytes  valid
+      1 function, 0 imports, 1 export
+      found: path at tests/coverage-fixtures/wasm/glue.js:15
     tests/coverage-fixtures/wasm/node_modules/wasm-fixture-pkg/lib/core.wasm  27 bytes  invalid: type mismatch (at byte 27)
       1 function, 0 imports, 0 exports
       found: shipped by the package at tests/coverage-fixtures/wasm/node_modules/wasm-fixture-pkg

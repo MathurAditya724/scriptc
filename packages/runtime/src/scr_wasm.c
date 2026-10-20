@@ -36,12 +36,16 @@
  * LinkError or RuntimeError (not an own property, as in Node), which is
  * the brand instanceof tests.
  *
- * Gaps (results/opt-wasm-design/DESIGN.md, stages W5-W7): no Memory,
- * Table or Global constructors; Memory.grow does not detach the previous
- * ArrayBuffer (the memory never moves, so old views stay valid with their
- * old length); instances, their imports and exports are never freed (the
- * cycle collector does not trace them yet); funcref values cross to
- * JavaScript only as exported functions. */
+ * The Memory, Table and Global constructors build the same objects an
+ * instance exports, so either kind can be imported; WebAssembly.Module.
+ * imports, exports and customSections read the descriptor.
+ *
+ * Gaps (results/opt-wasm-design/DESIGN.md, stages W6-W9): Memory.grow
+ * does not detach the previous ArrayBuffer (the memory never moves with
+ * guard pages, and explicit-bounds memories keep their previous blocks, so
+ * old views stay valid with their old length); shared memories are not
+ * constructed; instances, their imports and exports are never freed (the
+ * cycle collector does not trace them yet). */
 #if !defined(_GNU_SOURCE) && defined(__linux__)
 #define _GNU_SOURCE /* REG_RIP and friends in <ucontext.h> */
 #endif
@@ -85,6 +89,25 @@
 #if !defined(SCR_WASM_ASAN) && defined(__SANITIZE_ADDRESS__)
 #define SCR_WASM_ASAN 1
 #endif
+
+ScrPromise *scr_wasm_compile(ScrDyn *bytes);
+bool scr_wasm_validate(ScrDyn *bytes);
+ScrPromise *scr_wasm_instantiate(ScrDyn *source, ScrDyn *imports);
+ScrDyn *scr_wasm_module_new(ScrDyn *bytes);
+ScrDyn *scr_wasm_instance_new(ScrDyn *module, ScrDyn *imports);
+bool scr_wasm_is(const ScrDyn *value, double kind);
+ScrDyn *scr_wasm_error_new(double kind, ScrDyn *message, ScrDyn *options);
+ScrDyn *scr_wasm_function(double kind);
+ScrDyn *scr_wasm_namespace(void);
+ScrDyn *scr_wasm_global_view(void);
+ScrDyn *scr_wasm_memory_construct(ScrDyn *descriptor);
+ScrDyn *scr_wasm_table_construct(ScrDyn *descriptor, ScrDyn *value);
+ScrDyn *scr_wasm_global_construct(ScrDyn *descriptor, ScrDyn *value);
+ScrDyn *scr_wasm_construct_without_new(double kind, ScrDyn *arg0, ScrDyn *arg1);
+ScrDyn *scr_wasm_module_imports(ScrDyn *module);
+ScrDyn *scr_wasm_module_exports(ScrDyn *module);
+ScrDyn *scr_wasm_module_custom_sections(ScrDyn *module, ScrDyn *name);
+ScrDyn *scr_wasm_value_of(ScrDyn *value);
 
 /* Entry points of translated code. */
 /* Sanitized builds do not declare it noreturn: AddressSanitizer would
@@ -134,6 +157,12 @@ typedef struct ScrWasmInst {
   bool *data_dropped;
   bool *elem_dropped;
   ScrDyn *exports;
+  /* The Memory, Table and Global objects of the instance, by index: the
+   * imported object itself, or the one created when the module exports it,
+   * so every export of the same index is the same object, as in V8. */
+  ScrDyn *memory_obj;
+  ScrDyn **table_objs;
+  ScrDyn **global_objs;
 } ScrWasmInst;
 
 static ScrWasmInst *scr_wasm_host_of(void *inst) { return ((ScrWasmInst **)inst)[0]; }
@@ -387,9 +416,10 @@ static void scr_wasm_set_stack_limit(void) {
 #endif
 }
 
-/* Calls a thunk with traps caught; answers a SCR_WASM_TRAP_* code. */
-static __attribute__((noinline)) int scr_wasm_enter(ScrWasmThunk fn, void *inst, const uint64_t *args,
-                                                    uint64_t *results) {
+/* Calls a thunk (or `call` on `code`, a function reference's code) with
+ * traps caught; answers a SCR_WASM_TRAP_* code. */
+static __attribute__((noinline)) int scr_wasm_enter_ref(ScrWasmThunk fn, ScrWasmCallThunk call, void *ref_code,
+                                                        void *inst, const uint64_t *args, uint64_t *results) {
 #if SCR_WASM_SIGNALS
   scr_wasm_thread_init();
 #endif
@@ -407,13 +437,18 @@ static __attribute__((noinline)) int scr_wasm_enter(ScrWasmThunk fn, void *inst,
   int code = 0;
   if (SCR_WASM_SETJMP(entry.jmp) == 0) {
     scr_wasm_running = true;
-    fn(inst, args, results);
+    if (call) call(ref_code, inst, args, results);
+    else fn(inst, args, results);
   } else {
     code = scr_wasm_trap_code;
   }
   scr_wasm_running = was_running;
   scr_wasm_top = entry.prev;
   return code;
+}
+
+static int scr_wasm_enter(ScrWasmThunk fn, void *inst, const uint64_t *args, uint64_t *results) {
+  return scr_wasm_enter_ref(fn, NULL, NULL, inst, args, results);
 }
 
 /* Called by each caller of scr_wasm_enter once it has converted the
@@ -686,9 +721,17 @@ static ScrWasmMemory *scr_wasm_memory_retain(ScrWasmMemory *m) {
   return m;
 }
 
-static void scr_wasm_memory_release(ScrWasmMemory *m) {
-  if (!m || --m->rc) return;
-  scr_dyn_release(m->buffer);
+/* True when JavaScript holds none of the memory's ArrayBuffers or views
+ * over them: each byte store's only reference is the memory's own. */
+static bool scr_wasm_memory_unexposed(const ScrWasmMemory *m) {
+  for (size_t i = 0; i < m->exposed_count; i++)
+    if (m->exposed[i]->rc != 1) return false;
+  return true;
+}
+
+static void scr_wasm_memory_free(ScrWasmMemory *m) {
+  for (size_t i = 0; i < m->exposed_count; i++) scr_bytes_release(m->exposed[i]);
+  free(m->exposed);
 #if SCR_WASM_SIGNALS
   if (m->guarded) {
     scr_wasm_range_remove(m->base);
@@ -699,14 +742,46 @@ static void scr_wasm_memory_release(ScrWasmMemory *m) {
   free(m);
 }
 
-/* A memory of `min` pages growing to at most `max` pages; NULL with
- * Node's RangeError pending when the address space or memory is short. */
+/* Released memories whose storage JavaScript still reaches through a
+ * buffer; freed once it no longer does (checked whenever a memory is
+ * created or released). */
+static _Thread_local ScrWasmMemory *scr_wasm_parked;
+
+static void scr_wasm_sweep_parked(void) {
+  for (ScrWasmMemory **p = &scr_wasm_parked; *p;) {
+    ScrWasmMemory *m = *p;
+    if (scr_wasm_memory_unexposed(m)) {
+      *p = m->next_parked;
+      scr_wasm_memory_free(m);
+    } else {
+      p = &m->next_parked;
+    }
+  }
+}
+
+static void scr_wasm_memory_release(ScrWasmMemory *m) {
+  if (!m || --m->rc) return;
+  scr_dyn_release(m->buffer);
+  m->buffer = NULL;
+  scr_wasm_sweep_parked();
+  if (scr_wasm_memory_unexposed(m)) {
+    scr_wasm_memory_free(m);
+  } else {
+    m->next_parked = scr_wasm_parked;
+    scr_wasm_parked = m;
+  }
+}
+
+/* A memory of `min` pages growing to at most `max` pages (UINT64_MAX:
+ * no declared maximum); NULL with Node's RangeError pending when the
+ * address space or memory is short. */
 static ScrWasmMemory *scr_wasm_memory_new(uint64_t min, uint64_t max, bool guarded, const char *what) {
-  if (max > SCR_WASM_MAX_PAGES) max = SCR_WASM_MAX_PAGES;
+  if (scr_wasm_parked) scr_wasm_sweep_parked();
   ScrWasmMemory *m = calloc(1, sizeof *m);
   if (!m) scr_trap("scriptc: out of memory\n");
   m->rc = 1;
-  m->max_pages = max;
+  m->declared_max = max;
+  m->max_pages = max > SCR_WASM_MAX_PAGES ? SCR_WASM_MAX_PAGES : max;
   m->size = min * SCR_WASM_PAGE;
 #if SCR_WASM_SIGNALS
   if (guarded) {
@@ -733,7 +808,7 @@ static ScrWasmMemory *scr_wasm_memory_new(uint64_t min, uint64_t max, bool guard
   (void)guarded;
 #endif
 #if SCR_WASM_STABLE_RESERVE
-  uint64_t reserve = max * SCR_WASM_PAGE;
+  uint64_t reserve = m->max_pages * SCR_WASM_PAGE;
   m->base = reserve ? scr_wasm_reserve(reserve) : NULL;
   if (reserve && (!m->base || !scr_wasm_commit(m->base, 0, m->size))) {
     if (m->base) {
@@ -851,6 +926,7 @@ static ScrWasmTable *scr_wasm_table_new(char elem, uint64_t min, uint64_t max) {
   t->rc = 1;
   t->elem = elem;
   t->size = (uint32_t)min;
+  t->declared_max = max;
   t->max = max > SCR_WASM_MAX_TABLE ? SCR_WASM_MAX_TABLE : (uint32_t)max;
   t->elems = calloc(min ? min : 1, sizeof *t->elems);
   if (!t->elems) scr_trap("scriptc: out of memory\n");
@@ -1100,9 +1176,15 @@ static uint32_t scr_wasm_to_int32(double n) {
 
 static ScrWasmFuncRef *scr_wasm_funcref_of(const ScrDyn *v);
 
+/* V8's message for a value that is neither null nor an exported
+ * WebAssembly function where a funcref is expected (behind a prefix that
+ * names the operation). */
+#define SCR_WASM_FUNCREF_EXPECTED "function-typed object must be null (if nullable) or a Wasm function object"
+
 /* ToWebAssemblyValue: false with an exception pending. References are
- * borrowed from `v`. */
-static bool scr_wasm_from_js(char t, const ScrDyn *v, uint64_t *out) {
+ * borrowed from `v`. A funcref mismatch throws a TypeError with
+ * `funcref_error` (the export-call message when NULL). */
+static bool scr_wasm_from_js_as(char t, const ScrDyn *v, uint64_t *out, const char *funcref_error) {
   if (!v) v = scr_dyn_undefined();
   switch (t) {
     case 'i': {
@@ -1140,7 +1222,7 @@ static bool scr_wasm_from_js(char t, const ScrDyn *v, uint64_t *out) {
       }
       ScrWasmFuncRef *ref = scr_wasm_funcref_of(v);
       if (!ref) {
-        scr_wasm_type_error("type incompatibility when transforming from/to JS");
+        scr_wasm_type_error(funcref_error ? funcref_error : "type incompatibility when transforming from/to JS");
         return false;
       }
       *out = (uint64_t)(uintptr_t)ref;
@@ -1154,6 +1236,14 @@ static bool scr_wasm_from_js(char t, const ScrDyn *v, uint64_t *out) {
       *out = (uint64_t)(uintptr_t)v;
       return true;
   }
+}
+
+static bool scr_wasm_from_js(char t, const ScrDyn *v, uint64_t *out) { return scr_wasm_from_js_as(t, v, out, NULL); }
+
+/* DefaultValue(type): what a missing initial value of a constructed
+ * global or table, or a missing table.grow/set value, stands for. */
+static uint64_t scr_wasm_default_value(char t) {
+  return t == 'x' ? (uint64_t)(uintptr_t)scr_dyn_undefined() : 0;
 }
 
 static size_t scr_wasm_params(const char *sig) {
@@ -1193,7 +1283,11 @@ static ScrDyn *scr_wasm_export_call(ScrClosure *clo, ScrDyn *const *args, size_t
   bool ok = true;
   for (size_t i = 0; i < np && ok; i++) ok = scr_wasm_from_js(sig[i], i < argc ? args[i] : NULL, &a[i]);
   if (ok) {
-    int trap = scr_wasm_enter(thunk, host->inst, a, r);
+    /* A function the module does not export runs through its signature's
+     * call thunk, on the code its reference record names. */
+    int trap = thunk ? scr_wasm_enter(thunk, host->inst, a, r)
+                     : scr_wasm_enter_ref(NULL, host->desc->func_call_thunks[func], host->funcrefs[func].code,
+                                          host->inst, a, r);
     if (trap) {
       scr_wasm_throw_trap(trap);
     } else if (nr == 0) {
@@ -1212,18 +1306,20 @@ static ScrDyn *scr_wasm_export_call(ScrClosure *clo, ScrDyn *const *args, size_t
   return result;
 }
 
-/* The function value of exported function `func` (+1), created once per
- * instance and function; NULL with a TypeError pending for a function the
- * module does not export (funcref values of other functions are stage W5). */
+/* The function value of function `func` (+1), created once per instance
+ * and function: exported functions call through their export thunk, other
+ * referenced functions through their signature's call thunk. */
 static ScrDyn *scr_wasm_function_value(ScrWasmInst *host, uint32_t func) {
   if (host->export_fns[func]) return scr_dyn_retain(host->export_fns[func]);
-  bool exported = false;
-  for (uint64_t i = 0; i < host->desc->export_count; i++) {
+  bool callable = host->desc->func_call_thunks[func] != NULL && host->funcrefs[func].code != NULL;
+  for (uint64_t i = 0; i < host->desc->export_count && !callable; i++) {
     const ScrWasmExportDesc *ex = &host->desc->exports[i];
-    if (ex->kind == SCR_WASM_FUNC && ex->index == func) exported = true;
+    if (ex->kind == SCR_WASM_FUNC && ex->index == func) callable = true;
   }
-  if (!exported) {
-    scr_wasm_type_error("WebAssembly function references to functions a module does not export are not supported yet");
+  if (!callable) {
+    /* Unreachable for valid modules: every function a reference can name
+     * is exported or has a call thunk. */
+    scr_wasm_type_error("type incompatibility when transforming from/to JS");
     return NULL;
   }
   char name[24];
@@ -1313,8 +1409,18 @@ static ScrDyn *scr_wasm_memory_buffer(ScrWasmMemory *m) {
     m->buffer_exposed = true;
     m->buffer_size = m->size;
     ScrBytes *bytes = scr_bytes_from_external(m->base, (size_t)m->size);
+    /* Earlier buffers JavaScript no longer holds need no tracking. */
+    size_t kept = 0;
+    for (size_t i = 0; i < m->exposed_count; i++) {
+      if (m->exposed[i]->rc == 1) scr_bytes_release(m->exposed[i]);
+      else m->exposed[kept++] = m->exposed[i];
+    }
+    m->exposed_count = kept;
+    ScrBytes **grown = realloc(m->exposed, (m->exposed_count + 1) * sizeof *grown);
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    m->exposed = grown;
+    m->exposed[m->exposed_count++] = bytes; /* the memory's reference */
     m->buffer = scr_array_buffer_from_bytes(bytes);
-    scr_bytes_release(bytes);
   }
   return scr_dyn_retain(m->buffer);
 }
@@ -1347,7 +1453,8 @@ static bool scr_wasm_global_assign(ScrWasmGlobal *g, const ScrDyn *value) {
     return false;
   }
   uint64_t v;
-  if (!scr_wasm_from_js(g->type, value, &v)) return false;
+  if (!scr_wasm_from_js_as(g->type, value, &v, "set WebAssembly.Global.value): " SCR_WASM_FUNCREF_EXPECTED))
+    return false;
   if (g->type == 'x') scr_wasm_global_set_ref(g, (void *)(uintptr_t)v);
   else g->value = v;
   return true;
@@ -1362,12 +1469,20 @@ static bool scr_wasm_set(void *h, const char *key, size_t len, const ScrDyn *val
   return false;
 }
 
+/* V8's EnforceUint32: ToNumber (its own TypeError for symbols and
+ * BigInts), then finite, non-negative and at most 2^32-1, truncated.
+ * `what` names the value ("WebAssembly.Memory.grow(): Argument 0",
+ * "WebAssembly.Memory(): Property 'initial'"). */
 static bool scr_wasm_u32_arg(const ScrDyn *v, const char *what, uint32_t *out) {
   double n;
   if (!scr_dyn_number_coerce_js(v ? v : scr_dyn_undefined(), &n)) return false;
-  if (!isfinite(n) || n < 0 || trunc(n) > 4294967295.0) {
+  const char *problem = !isfinite(n)              ? "must be convertible to a valid number"
+                        : n < 0                   ? "must be non-negative"
+                        : trunc(n) > 4294967295.0 ? "must be in the unsigned long range"
+                                                  : NULL;
+  if (problem) {
     char msg[200];
-    snprintf(msg, sizeof msg, "%s must be convertible to a valid number", what);
+    snprintf(msg, sizeof msg, "%s %s", what, problem);
     scr_wasm_type_error(msg);
     return false;
   }
@@ -1388,7 +1503,7 @@ static ScrDyn *scr_wasm_invoke(void *h, ScrDyn *self, const char *method, ScrDyn
       return NULL;
     }
     if (o->inst && o->inst->memory == o->memory) o->inst->inst[1] = o->memory->base;
-    /* The previous buffer keeps its length (no detachment yet, W5). */
+    /* The previous buffer keeps its length (no detachment). */
     scr_dyn_release(o->memory->buffer);
     o->memory->buffer = NULL;
     return scr_dyn_new_num((double)old);
@@ -1417,15 +1532,26 @@ static ScrDyn *scr_wasm_invoke(void *h, ScrDyn *self, const char *method, ScrDyn
         scr_wasm_range_error(msg);
         return NULL;
       }
-      const ScrDyn *v = argc > 1 ? args[1] : (t->elem == 'x' ? scr_dyn_undefined() : scr_dyn_new_null());
-      if (!scr_wasm_from_js(t->elem, v, &value)) return NULL;
+      if (argc > 1) {
+        if (!scr_wasm_from_js_as(t->elem, args[1], &value,
+                                 "WebAssembly.Table.set(): Argument 1 is invalid for table: " SCR_WASM_FUNCREF_EXPECTED))
+          return NULL;
+      } else {
+        value = scr_wasm_default_value(t->elem);
+      }
       scr_wasm_table_store(t, index, (void *)(uintptr_t)value);
       return scr_dyn_retain(scr_dyn_undefined());
     }
     if (!strcmp(method, "grow")) {
       uint32_t delta;
       if (!scr_wasm_u32_arg(argc ? args[0] : NULL, "WebAssembly.Table.grow(): Argument 0", &delta)) return NULL;
-      if (argc > 1 && !scr_wasm_from_js(t->elem, args[1], &value)) return NULL;
+      if (argc > 1) {
+        if (!scr_wasm_from_js_as(t->elem, args[1], &value,
+                                 "WebAssembly.Table.grow(): Argument 1 is invalid: " SCR_WASM_FUNCREF_EXPECTED))
+          return NULL;
+      } else {
+        value = scr_wasm_default_value(t->elem);
+      }
       int64_t old = scr_wasm_table_grow_by(t, delta, (void *)(uintptr_t)value);
       if (old < 0) {
         char msg[160];
@@ -1648,10 +1774,30 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
   }
   for (uint64_t i = 0; ok && i < n; i++) {
     const ScrWasmImportDesc *im = &desc->imports[i];
-    if (im->kind == SCR_WASM_MEMORY && !scr_wasm_unbox(values[i], SCR_WASM_K_MEMORY)) {
+    if (im->kind != SCR_WASM_MEMORY) continue;
+    ScrWasmObj *mo = scr_wasm_unbox(values[i], SCR_WASM_K_MEMORY);
+    if (!mo) {
       scr_wasm_link_error(what, i, im, "memory import must be a WebAssembly.Memory object");
       ok = false;
+      break;
     }
+    /* V8's limit checks, with its messages (a missing maximum prints as
+     * the unsigned -1). */
+    char reason[200];
+    uint64_t pages = mo->memory->size / SCR_WASM_PAGE;
+    if (pages < desc->memory_min) {
+      snprintf(reason, sizeof reason, "memory import has %llu pages which is smaller than the declared initial of %llu",
+               (unsigned long long)pages, (unsigned long long)desc->memory_min);
+    } else if (desc->memory_max != UINT64_MAX && mo->memory->declared_max == UINT64_MAX) {
+      snprintf(reason, sizeof reason, "memory import has no maximum limit, expected at most 4294967295");
+    } else if (desc->memory_max != UINT64_MAX && mo->memory->declared_max > desc->memory_max) {
+      snprintf(reason, sizeof reason, "memory import has a larger maximum size %llu than the module's declared maximum %llu",
+               (unsigned long long)mo->memory->declared_max, (unsigned long long)desc->memory_max);
+    } else {
+      continue;
+    }
+    scr_wasm_link_error(what, i, im, reason);
+    ok = false;
   }
   for (uint64_t i = 0; ok && i < n; i++) {
     const ScrWasmImportDesc *im = &desc->imports[i];
@@ -1666,8 +1812,25 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
       ok = false;
     } else if (im->kind == SCR_WASM_TABLE) {
       ScrWasmObj *t = scr_wasm_unbox(v, SCR_WASM_K_TABLE);
+      const ScrWasmTableDesc *td = &desc->tables[im->index];
       if (!t) {
         scr_wasm_link_error(what, i, im, "table import requires a WebAssembly.Table");
+        ok = false;
+      } else if (t->table->size < td->min || (td->max != UINT64_MAX && t->table->declared_max > td->max)) {
+        /* V8's size checks name the import by number only; the imported
+         * maximum prints in hexadecimal. */
+        char msg[300];
+        if (t->table->size < td->min)
+          snprintf(msg, sizeof msg, "%s: table import %llu is smaller than initial %llu, got %u", what,
+                   (unsigned long long)i, (unsigned long long)td->min, t->table->size);
+        else if (t->table->declared_max == UINT64_MAX)
+          snprintf(msg, sizeof msg, "%s: table import %llu has no maximum length; required: %llu", what,
+                   (unsigned long long)i, (unsigned long long)td->max);
+        else
+          snprintf(msg, sizeof msg, "%s: table import %llu has a larger maximum size %llx than the module's declared maximum %llu",
+                   what, (unsigned long long)i, (unsigned long long)t->table->declared_max,
+                   (unsigned long long)td->max);
+        scr_wasm_throw_kind(SCR_WASM_LINK_ERROR, msg);
         ok = false;
       } else if (t->table->elem != im->type[0]) {
         scr_wasm_link_error(what, i, im, "imported table does not match the expected type");
@@ -1678,16 +1841,24 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
       bool mutable_ = desc->globals[im->index].mutable_ != 0;
       char type = im->type[0];
       if (g) {
-        if (g->global->type != type || g->global->mutable_ != mutable_) {
+        if (g->global->mutable_ != mutable_) {
+          scr_wasm_link_error(what, i, im, "imported global does not match the expected mutability");
+          ok = false;
+        } else if (g->global->type != type) {
           scr_wasm_link_error(what, i, im, "imported global does not match the expected type");
           ok = false;
         }
       } else if (mutable_) {
         scr_wasm_link_error(what, i, im, "imported mutable global must be a WebAssembly.Global object");
         ok = false;
+      } else if (type == 'r') {
+        if (!v || (v->kind != SCR_DYN_NULL && !scr_wasm_funcref_of(v))) {
+          scr_wasm_link_error(what, i, im, SCR_WASM_FUNCREF_EXPECTED);
+          ok = false;
+        }
       } else if (type == 'I' ? !(v && v->kind == SCR_DYN_BIGINT)
-                 : type == 'x' || type == 'r' ? false
-                                             : !(v && v->kind == SCR_DYN_NUM)) {
+                 : type == 'x' ? false
+                               : !(v && v->kind == SCR_DYN_NUM)) {
         scr_wasm_link_error(what, i, im,
                             "global import must be a number, valid Wasm reference, or WebAssembly.Global object");
         ok = false;
@@ -1715,8 +1886,11 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
   host->globals = calloc(desc->global_count ? desc->global_count : 1, sizeof *host->globals);
   host->data_dropped = calloc(desc->data_count ? desc->data_count : 1, 1);
   host->elem_dropped = calloc(desc->elem_count ? desc->elem_count : 1, 1);
+  host->table_objs = calloc(desc->table_count ? desc->table_count : 1, sizeof *host->table_objs);
+  host->global_objs = calloc(desc->global_count ? desc->global_count : 1, sizeof *host->global_objs);
   if (!host->inst || !host->funcs || !host->funcrefs || !host->export_fns || !host->export_names ||
-      !host->tables || !host->globals || !host->data_dropped || !host->elem_dropped)
+      !host->tables || !host->globals || !host->data_dropped || !host->elem_dropped || !host->table_objs ||
+      !host->global_objs)
     scr_trap("scriptc: out of memory\n");
   void **inst = host->inst;
   inst[0] = host;
@@ -1739,14 +1913,20 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
         break;
       case SCR_WASM_MEMORY:
         host->memory = scr_wasm_memory_retain(scr_wasm_unbox(v, SCR_WASM_K_MEMORY)->memory);
+        host->memory_obj = v;
+        values[i] = NULL;
         break;
       case SCR_WASM_TABLE:
         host->tables[im->index] = scr_wasm_table_retain(scr_wasm_unbox(v, SCR_WASM_K_TABLE)->table);
+        host->table_objs[im->index] = v;
+        values[i] = NULL;
         break;
       default: {
         ScrWasmObj *g = scr_wasm_unbox(v, SCR_WASM_K_GLOBAL);
         if (g) {
           host->globals[im->index] = scr_wasm_global_retain(g->global);
+          host->global_objs[im->index] = v;
+          values[i] = NULL;
         } else {
           char type = im->type[0];
           ScrWasmGlobal *cell = scr_wasm_global_new(type, false);
@@ -1763,9 +1943,7 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
   }
   free(values);
   if (desc->memory_count && !host->memory) {
-    host->memory = scr_wasm_memory_new(desc->memory_min, desc->memory_max == UINT64_MAX ? SCR_WASM_MAX_PAGES
-                                                                                         : desc->memory_max,
-                                       scr_wasm_guarded(desc), what);
+    host->memory = scr_wasm_memory_new(desc->memory_min, desc->memory_max, scr_wasm_guarded(desc), what);
     if (!host->memory) return NULL;
   }
   if (host->memory) {
@@ -1824,12 +2002,22 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
       int kind = ex->kind == SCR_WASM_MEMORY  ? SCR_WASM_K_MEMORY
                  : ex->kind == SCR_WASM_TABLE ? SCR_WASM_K_TABLE
                                               : SCR_WASM_K_GLOBAL;
-      ScrWasmObj *o = scr_wasm_obj_new(kind);
-      o->inst = scr_wasm_inst_retain(host);
-      if (kind == SCR_WASM_K_MEMORY) o->memory = scr_wasm_memory_retain(host->memory);
-      else if (kind == SCR_WASM_K_TABLE) o->table = scr_wasm_table_retain(host->tables[ex->index]);
-      else o->global = scr_wasm_global_retain(host->globals[ex->index]);
-      value = scr_wasm_box(o);
+      /* V8 exports an imported object itself, and one object per memory
+       * and table; a defined global gets a new object per export. */
+      ScrDyn **slot = kind == SCR_WASM_K_MEMORY  ? &host->memory_obj
+                      : kind == SCR_WASM_K_TABLE ? &host->table_objs[ex->index]
+                                                 : &host->global_objs[ex->index];
+      if (*slot) {
+        value = scr_dyn_retain(*slot);
+      } else {
+        ScrWasmObj *o = scr_wasm_obj_new(kind);
+        o->inst = scr_wasm_inst_retain(host);
+        if (kind == SCR_WASM_K_MEMORY) o->memory = scr_wasm_memory_retain(host->memory);
+        else if (kind == SCR_WASM_K_TABLE) o->table = scr_wasm_table_retain(host->tables[ex->index]);
+        else o->global = scr_wasm_global_retain(host->globals[ex->index]);
+        value = scr_wasm_box(o);
+        if (kind != SCR_WASM_K_GLOBAL) *slot = scr_dyn_retain(value);
+      }
     }
     scr_dyn_obj_set(exports, ex->name, (size_t)ex->name_len, value);
   }
@@ -1849,6 +2037,273 @@ ScrDyn *scr_wasm_instance_new(ScrDyn *module, ScrDyn *imports) {
     return NULL;
   }
   return scr_wasm_instance_from(m->desc, imports, "WebAssembly.Instance()");
+}
+
+/* ── constructors and Module's static functions ────────────────────── */
+
+/* Memories the program constructs are guarded exactly when the translated
+ * modules are (every module of a build shares the mode), so any of them
+ * can import one. */
+static bool scr_wasm_build_guarded(void) {
+#if SCR_WASM_SIGNALS
+  return scr_wasm_registry.count > 0 && !(scr_wasm_registry.modules[0]->flags & SCR_WASM_DESC_BOUNDS_CHECKS);
+#else
+  return false;
+#endif
+}
+
+/* V8's GetOptionalIntegerProperty: the descriptor's `name` property as an
+ * unsigned 32-bit integer within [lower, upper]. An absent or undefined
+ * property leaves *out unchanged, or throws "is required" when
+ * `required`. False with an exception pending. */
+static bool scr_wasm_limit(const ScrDyn *descriptor, const char *name, bool required, const char *what,
+                           uint64_t lower, uint64_t upper, uint64_t *out) {
+  ScrDyn *v = scr_wasm_member(descriptor, name, strlen(name));
+  if (scr_exc_pending()) return false;
+  char msg[240];
+  if (!v) {
+    if (!required) return true;
+    snprintf(msg, sizeof msg, "%s: Property '%s' is required", what, name);
+    scr_wasm_type_error(msg);
+    return false;
+  }
+  char label[120];
+  snprintf(label, sizeof label, "%s: Property '%s'", what, name);
+  uint32_t n;
+  bool ok = scr_wasm_u32_arg(v, label, &n);
+  scr_dyn_release(v);
+  if (!ok) return false;
+  /* V8 prints the lower bound in hexadecimal. */
+  if (n < lower) {
+    snprintf(msg, sizeof msg, "%s: Property '%s': value %u is below the lower bound %llx", what, name, n,
+             (unsigned long long)lower);
+    scr_wasm_range_error(msg);
+    return false;
+  }
+  if (n > upper) {
+    snprintf(msg, sizeof msg, "%s: Property '%s': value %u is above the upper bound %llu", what, name, n,
+             (unsigned long long)upper);
+    scr_wasm_range_error(msg);
+    return false;
+  }
+  *out = n;
+  return true;
+}
+
+/* ToString of a descriptor's type property (+1; NULL with an exception
+ * pending). An absent property reads as "undefined". */
+static ScrStr *scr_wasm_type_name(const ScrDyn *descriptor, const char *name) {
+  ScrDyn *v = scr_wasm_member(descriptor, name, strlen(name));
+  if (scr_exc_pending()) return NULL;
+  if (!v) return scr_str_new("undefined", 9);
+  ScrStr *s = scr_dyn_string_coerce_js(v);
+  scr_dyn_release(v);
+  return s;
+}
+
+static bool scr_wasm_str_is(const ScrStr *s, const char *text) {
+  size_t n = strlen(text);
+  return s->len == n && !memcmp(s->data, text, n);
+}
+
+/* A descriptor's boolean property (ToBoolean; false when absent). */
+static bool scr_wasm_flag(const ScrDyn *descriptor, const char *name, bool *out) {
+  ScrDyn *v = scr_wasm_member(descriptor, name, strlen(name));
+  if (scr_exc_pending()) return false;
+  *out = v && scr_dyn_truthy(v);
+  scr_dyn_release(v);
+  return true;
+}
+
+static bool scr_wasm_absent(const ScrDyn *v) { return !v || v->kind == SCR_DYN_UNDEF; }
+
+ScrDyn *scr_wasm_memory_construct(ScrDyn *descriptor) {
+  scr_wasm_install();
+  const char *what = "WebAssembly.Memory()";
+  if (!scr_wasm_is_object(descriptor)) {
+    scr_wasm_type_error("WebAssembly.Memory(): Argument 0 must be a memory descriptor");
+    return NULL;
+  }
+  uint64_t initial = 0, maximum = UINT64_MAX;
+  bool shared;
+  if (!scr_wasm_limit(descriptor, "initial", true, what, 0, SCR_WASM_MAX_PAGES, &initial) ||
+      !scr_wasm_limit(descriptor, "maximum", false, what, initial, SCR_WASM_MAX_PAGES, &maximum) ||
+      !scr_wasm_flag(descriptor, "shared", &shared))
+    return NULL;
+  if (shared && maximum == UINT64_MAX) {
+    scr_wasm_type_error("WebAssembly.Memory(): If shared is true, maximum property should be defined.");
+    return NULL;
+  }
+  if (shared) {
+    scr_wasm_type_error("WebAssembly.Memory(): shared memories are not supported yet (scriptc does not translate "
+                        "WebAssembly threads; see https://scriptc.dev/limitations)");
+    return NULL;
+  }
+  ScrWasmMemory *m = scr_wasm_memory_new(initial, maximum, scr_wasm_build_guarded(), what);
+  if (!m) return NULL;
+  ScrWasmObj *o = scr_wasm_obj_new(SCR_WASM_K_MEMORY);
+  o->memory = m;
+  return scr_wasm_box(o);
+}
+
+ScrDyn *scr_wasm_table_construct(ScrDyn *descriptor, ScrDyn *value) {
+  scr_wasm_install();
+  const char *what = "WebAssembly.Table()";
+  if (!scr_wasm_is_object(descriptor)) {
+    scr_wasm_type_error("WebAssembly.Table(): Argument 0 must be a table descriptor");
+    return NULL;
+  }
+  ScrStr *type = scr_wasm_type_name(descriptor, "element");
+  if (!type) return NULL;
+  char elem = scr_wasm_str_is(type, "anyfunc") ? 'r' : scr_wasm_str_is(type, "externref") ? 'x' : 0;
+  scr_str_release(type);
+  if (!elem) {
+    scr_wasm_type_error("WebAssembly.Table(): Descriptor property 'element' must be a WebAssembly reference type");
+    return NULL;
+  }
+  uint64_t initial = 0, maximum = UINT64_MAX;
+  if (!scr_wasm_limit(descriptor, "initial", true, what, 0, SCR_WASM_MAX_TABLE, &initial) ||
+      !scr_wasm_limit(descriptor, "maximum", false, what, initial, 4294967295u, &maximum))
+    return NULL;
+  uint64_t init = scr_wasm_default_value(elem);
+  if (!scr_wasm_absent(value) &&
+      !scr_wasm_from_js_as(elem, value, &init,
+                           "WebAssembly.Table(): Argument 2 must be undefined or a value of type compatible with the "
+                           "type of the new table: " SCR_WASM_FUNCREF_EXPECTED "."))
+    return NULL;
+  ScrWasmTable *t = scr_wasm_table_new(elem, initial, maximum);
+  for (uint32_t i = 0; i < t->size; i++) t->elems[i] = scr_wasm_ref_retain(elem, (void *)(uintptr_t)init);
+  ScrWasmObj *o = scr_wasm_obj_new(SCR_WASM_K_TABLE);
+  o->table = t;
+  return scr_wasm_box(o);
+}
+
+ScrDyn *scr_wasm_global_construct(ScrDyn *descriptor, ScrDyn *value) {
+  scr_wasm_install();
+  if (!scr_wasm_is_object(descriptor)) {
+    scr_wasm_type_error("WebAssembly.Global(): Argument 0 must be a global descriptor");
+    return NULL;
+  }
+  bool mutable_;
+  if (!scr_wasm_flag(descriptor, "mutable", &mutable_)) return NULL;
+  ScrStr *name = scr_wasm_type_name(descriptor, "value");
+  if (!name) return NULL;
+  static const char *const names[] = {"i32", "i64", "f32", "f64", "externref", "anyfunc"};
+  static const char letters[] = {'i', 'I', 'f', 'F', 'x', 'r'};
+  char type = 0;
+  for (size_t i = 0; i < sizeof letters; i++)
+    if (scr_wasm_str_is(name, names[i])) type = letters[i];
+  bool v128 = scr_wasm_str_is(name, "v128");
+  scr_str_release(name);
+  if (v128) {
+    scr_wasm_type_error("WebAssembly.Global(): A global of type 'v128' cannot be created in JavaScript");
+    return NULL;
+  }
+  if (!type) {
+    scr_wasm_type_error("WebAssembly.Global(): Descriptor property 'value' must be a WebAssembly type");
+    return NULL;
+  }
+  uint64_t v = scr_wasm_default_value(type);
+  if (!scr_wasm_absent(value) &&
+      !scr_wasm_from_js_as(type, value, &v, "WebAssembly.Global(): " SCR_WASM_FUNCREF_EXPECTED))
+    return NULL;
+  ScrWasmGlobal *g = scr_wasm_global_new(type, mutable_);
+  if (type == 'x') scr_wasm_global_set_ref(g, (void *)(uintptr_t)v);
+  else g->value = v;
+  ScrWasmObj *o = scr_wasm_obj_new(SCR_WASM_K_GLOBAL);
+  o->global = g;
+  return scr_wasm_box(o);
+}
+
+/* `WebAssembly.Module(...)` and the other classes called without new. */
+ScrDyn *scr_wasm_construct_without_new(double kind, ScrDyn *arg0, ScrDyn *arg1) {
+  (void)arg0;
+  (void)arg1;
+  static const char *const names[] = {"Module", "Instance", "Memory", "Table", "Global"};
+  const char *name = names[(int)kind];
+  char msg[160];
+  snprintf(msg, sizeof msg, "WebAssembly.%s(): WebAssembly.%s must be invoked with 'new'", name, name);
+  scr_wasm_type_error(msg);
+  return NULL;
+}
+
+static const ScrWasmModuleDesc *scr_wasm_module_arg(const ScrDyn *v, const char *what) {
+  ScrWasmObj *m = scr_wasm_unbox(v, SCR_WASM_K_MODULE);
+  if (m) return m->desc;
+  char msg[160];
+  snprintf(msg, sizeof msg, "%s: Argument 0 must be a WebAssembly.Module", what);
+  scr_wasm_type_error(msg);
+  return NULL;
+}
+
+static void scr_wasm_set_text(ScrDyn *obj, const char *key, const char *text, size_t len) {
+  ScrStr *s = scr_str_new(text, len);
+  scr_dyn_obj_set(obj, key, strlen(key), scr_dyn_new_str(s));
+  scr_str_release(s);
+}
+
+static const char *const scr_wasm_kind_names[] = {"function", "table", "memory", "global"};
+
+ScrDyn *scr_wasm_module_imports(ScrDyn *module) {
+  const ScrWasmModuleDesc *desc = scr_wasm_module_arg(module, "WebAssembly.Module.imports()");
+  if (!desc) return NULL;
+  ScrDyn *out = scr_dyn_new_arr();
+  for (uint64_t i = 0; i < desc->import_count; i++) {
+    const ScrWasmImportDesc *im = &desc->imports[i];
+    ScrDyn *row = scr_dyn_new_obj();
+    scr_wasm_set_text(row, "module", im->module, (size_t)im->module_len);
+    scr_wasm_set_text(row, "name", im->name, (size_t)im->name_len);
+    scr_wasm_set_text(row, "kind", scr_wasm_kind_names[im->kind], strlen(scr_wasm_kind_names[im->kind]));
+    scr_dyn_arr_push(out, row);
+  }
+  return out;
+}
+
+ScrDyn *scr_wasm_module_exports(ScrDyn *module) {
+  const ScrWasmModuleDesc *desc = scr_wasm_module_arg(module, "WebAssembly.Module.exports()");
+  if (!desc) return NULL;
+  ScrDyn *out = scr_dyn_new_arr();
+  for (uint64_t i = 0; i < desc->export_count; i++) {
+    const ScrWasmExportDesc *ex = &desc->exports[i];
+    ScrDyn *row = scr_dyn_new_obj();
+    scr_wasm_set_text(row, "name", ex->name, (size_t)ex->name_len);
+    scr_wasm_set_text(row, "kind", scr_wasm_kind_names[ex->kind], strlen(scr_wasm_kind_names[ex->kind]));
+    scr_dyn_arr_push(out, row);
+  }
+  return out;
+}
+
+/* A fresh ArrayBuffer per matching custom section, in module order. */
+ScrDyn *scr_wasm_module_custom_sections(ScrDyn *module, ScrDyn *name) {
+  const ScrWasmModuleDesc *desc = scr_wasm_module_arg(module, "WebAssembly.Module.customSections()");
+  if (!desc) return NULL;
+  if (scr_wasm_absent(name)) {
+    scr_wasm_type_error("WebAssembly.Module.customSections(): Argument 1 is required");
+    return NULL;
+  }
+  ScrStr *wanted = scr_dyn_string_coerce_js(name);
+  if (!wanted) return NULL;
+  ScrDyn *out = scr_dyn_new_arr();
+  for (uint64_t i = 0; i < desc->custom_count; i++) {
+    const ScrWasmCustomDesc *c = &desc->customs[i];
+    if (c->name_len != wanted->len || memcmp(c->name, wanted->data, wanted->len) != 0) continue;
+    ScrBytes *bytes = scr_bytes_from_data(c->data, (size_t)c->len);
+    scr_dyn_arr_push(out, scr_array_buffer_from_bytes(bytes));
+    scr_bytes_release(bytes);
+  }
+  scr_str_release(wanted);
+  return out;
+}
+
+/* `v.valueOf()` on a WebAssembly-typed receiver: a Global's value; any
+ * other value answers what the generic valueOf answers. */
+ScrDyn *scr_wasm_value_of(ScrDyn *value) {
+  ScrWasmObj *g = scr_wasm_unbox(value, SCR_WASM_K_GLOBAL);
+  if (g) return scr_wasm_global_value(g->global);
+  ScrStr *what = scr_str_new("valueOf", 7);
+  ScrDyn *out = scr_dyn_value_of(value, what);
+  scr_str_release(what);
+  return out;
 }
 
 /* ── promises ────────────────────────────────────────────────────────── */
@@ -2039,6 +2494,11 @@ static void scr_wasm_teardown(void) {
     ScrWasmInst *host = scr_wasm_hosts[i];
     const ScrWasmModuleDesc *desc = host->desc;
     scr_dyn_release(host->exports);
+    scr_dyn_release(host->memory_obj);
+    for (uint64_t t = 0; t < desc->table_count; t++) scr_dyn_release(host->table_objs[t]);
+    for (uint64_t g = 0; g < desc->global_count; g++) scr_dyn_release(host->global_objs[g]);
+    free(host->table_objs);
+    free(host->global_objs);
     for (uint64_t f = 0; f < desc->func_count; f++) {
       scr_dyn_release(host->export_fns[f]);
       scr_dyn_release(host->funcs[f]);

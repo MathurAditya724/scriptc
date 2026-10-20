@@ -34248,7 +34248,11 @@
             "tests/corpus/webassembly-spec-float/main.mjs",
             "tests/corpus/webassembly-spec-control/main.mjs",
             "tests/corpus/webassembly-spec-memory/main.mjs",
-            "tests/corpus/webassembly-spec-table/main.mjs"
+            "tests/corpus/webassembly-spec-table/main.mjs",
+            "tests/corpus/webassembly-spec-imports/main.mjs",
+            "tests/corpus/webassembly-jsapi.mjs",
+            "tests/corpus/webassembly-wpt-jsapi.mjs",
+            "tests/corpus/webassembly-dylink/main.mjs"
           ]
         }
       }

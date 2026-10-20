@@ -4,6 +4,7 @@ import { lowerBuiltinClassCall } from "./builtins/builtin-class-dyn.js";
 import { refuseModuleMemberThis } from "./module-member-this.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
+import { lowerWebAssemblyValueOf } from "./builtins/webassembly.js";
 import { lowerResponseStaticJson } from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
@@ -3674,6 +3675,8 @@ function lowerDynReceiverMethodCall(
   // answers each kind's own: primitives and plain objects themselves, a
   // Date its time value, an own or inherited valueOf member its result.
   if (access.name.text === "valueOf" && call.arguments.nodes.length === 0) {
+    const webAssembly = lowerWebAssemblyValueOf(lowerer, access.expression, recv, locOf(call));
+    if (webAssembly !== null) return webAssembly;
     return {
       kind: "libCall",
       fn: "dyn.valueOf",

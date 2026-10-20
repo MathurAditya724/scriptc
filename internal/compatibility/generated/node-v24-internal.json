@@ -52299,13 +52299,17 @@
           "tests/corpus/6331-jose-root-entry/main.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/webassembly-api.mjs",
+          "tests/corpus/webassembly-dylink/main.mjs",
+          "tests/corpus/webassembly-jsapi.mjs",
           "tests/corpus/webassembly-spec-control/main.mjs",
           "tests/corpus/webassembly-spec-float/main.mjs",
+          "tests/corpus/webassembly-spec-imports/main.mjs",
           "tests/corpus/webassembly-spec-int/main.mjs",
           "tests/corpus/webassembly-spec-memory/main.mjs",
           "tests/corpus/webassembly-spec-table/main.mjs",
           "tests/corpus/webassembly-typed.ts",
           "tests/corpus/webassembly-worker.ts",
+          "tests/corpus/webassembly-wpt-jsapi.mjs",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/fetch-conformance.test.ts",
           "tests/harness/project-config.test.ts"
@@ -53667,7 +53671,11 @@
           "tests/corpus/webassembly-spec-float/main.mjs",
           "tests/corpus/webassembly-spec-control/main.mjs",
           "tests/corpus/webassembly-spec-memory/main.mjs",
-          "tests/corpus/webassembly-spec-table/main.mjs"
+          "tests/corpus/webassembly-spec-table/main.mjs",
+          "tests/corpus/webassembly-spec-imports/main.mjs",
+          "tests/corpus/webassembly-jsapi.mjs",
+          "tests/corpus/webassembly-wpt-jsapi.mjs",
+          "tests/corpus/webassembly-dylink/main.mjs"
         ]
       },
       "anchorSource": "exact"
