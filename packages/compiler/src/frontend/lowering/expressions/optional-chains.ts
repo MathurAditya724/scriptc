@@ -1,3 +1,5 @@
+import { isSafeToDiscard } from "./evaluation-safety.js";
+import { completeFuncValueArgs } from "../call-arguments.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { DYN, STRING, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../../ir/ir.js";
@@ -429,7 +431,22 @@ export function lowerOptionalChain(
   if (dotNode === expr && ts.isCallExpression(expr)) {
     if (narrowed.kind !== "func") lowerer.badType(recvNode, lowerer.typeOf(recvNode));
     const params = narrowed.params;
+    // Forwarded fixed tuples (`f?.(...args)`) complete into the slots.
+    if (expr.arguments.nodes.some(ts.isSpreadElement)) {
+      const completed = completeFuncValueArgs(lowerer, expr, narrowed, loc);
+      const call: IrExpr = {
+        kind: "callValue",
+        callee: recvRef,
+        args: completed,
+        type: narrowed.ret,
+        loc,
+      };
+      return lowerer.finishOptionalChain(expr, id, receiver, call, loc);
+    }
     const args = expr.arguments.nodes.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
+    // Effect-free surplus arguments (a dropped `void` slot) are ignored.
+    while (narrowed.rest !== true && args.length > params.length && isSafeToDiscard(args.at(-1)!))
+      args.pop();
     const body: IrExpr = { kind: "callValue", callee: recvRef, args, type: narrowed.ret, loc };
     return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
   }

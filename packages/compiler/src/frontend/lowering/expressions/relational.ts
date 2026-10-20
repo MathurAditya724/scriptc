@@ -1,5 +1,6 @@
 /* instanceof and in, including private-name and runtime-key in. */
 import * as ts from "../../ts7/adapter.js";
+import { builtinClassInstanceOf, builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import {
   checkedPrivateIn,
   localPrivateBrandClass,
@@ -25,7 +26,7 @@ import {
   typeEquals,
   typeKey,
 } from "../../../ir/ir.js";
-import { refuseWebAssemblyUse } from "../builtins/webassembly.js";
+import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/webassembly.js";
 import { lowerSocketInstanceOf } from "../lower-server.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
@@ -62,6 +63,8 @@ import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js"
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const webAssembly = lowerWebAssemblyInstanceof(lowerer, expr);
+  if (webAssembly !== null) return webAssembly;
   refuseWebAssemblyUse(lowerer, expr.right);
   // `x instanceof net.Socket` over a union with a netSocket arm — the
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
@@ -471,6 +474,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
       return checkedClassInstanceOf(lowerer, value, constructor, loc);
     }
+    // `this instanceof Glob` in a JavaScript constructor function: the
+    // function's prototype against the value's prototype chain.
+    if (
+      constructor?.type.kind === "func" &&
+      isJsSourceFile(expr.getSourceFile()) &&
+      lowerer.dynConvertible(constructor.type)
+    ) {
+      const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+      return {
+        kind: "libCall",
+        fn: "dyn.functionInstanceOf",
+        args: [value, { kind: "dynFrom", value: constructor, type: DYN, loc }],
+        type: BOOL,
+        loc,
+      };
+    }
     lowerer.unsupported(
       "SC1090",
       expr.right,
@@ -578,6 +597,14 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       type: BOOL,
       loc,
     };
+  }
+  // `u instanceof EventEmitter` (or a stream class): an untyped object
+  // built by a constructor function inherits the untyped constructor's
+  // prototype (builtin-class-dyn.ts). Compiled emitters and streams have
+  // no untyped form, so the prototype chain answers for every value.
+  const builtinKind = builtinClassKind(target.def.name);
+  if (left.type.kind === "dyn" && builtinKind !== null) {
+    return builtinClassInstanceOf(left, builtinKind, loc);
   }
   if (left.type.kind === "dyn") {
     lowerer.unsupported(
@@ -1144,6 +1171,24 @@ function lowerPrivateIn(
 }
 
 /** The string keys every record inherits from Object.prototype. */
+/** Keys built-in errors carry outside their class fields: Node's system
+ * error properties, and AggregateError's, SuppressedError's and
+ * AssertionError's own members. */
+const BUILTIN_ERROR_SLOT_KEYS: ReadonlySet<string> = new Set([
+  "errno",
+  "syscall",
+  "path",
+  "dest",
+  "info",
+  "errors",
+  "error",
+  "suppressed",
+  "actual",
+  "expected",
+  "operator",
+  "generatedMessage",
+]);
+
 const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
   "constructor",
   "__defineGetter__",
@@ -1411,6 +1456,50 @@ export function lowerInExpression(
         (recv.kind === "varRef" || recv.kind === "caughtNarrow")
       ) {
         return { kind: "boolLit", value: true, type: BOOL, loc };
+      }
+      // Every Error has its own `stack`, and Error.prototype's `toString`
+      // and `constructor` are among Object.prototype's keys.
+      if (
+        (key === "stack" || OBJECT_PROTOTYPE_KEYS.has(key)) &&
+        (recv.kind === "varRef" || recv.kind === "caughtNarrow")
+      ) {
+        return { kind: "boolLit", value: true, type: BOOL, loc };
+      }
+      // Any other key: a member a program class declares. The receiver's
+      // runtime class is its static class or a descendant; the key is
+      // present exactly when that class (or an ancestor) declares it. Keys
+      // built-in errors keep outside their class fields depend on the
+      // runtime error and stay fenced, as do keys no program class declares.
+      const declares = (c: ClassInfo): boolean =>
+        c.fields.has(key) ||
+        lowerer.findMethodOn(c, key) !== null ||
+        lowerer.findMethodOn(c, `get:${key}`) !== null ||
+        lowerer.findMethodOn(c, `set:${key}`) !== null;
+      if (
+        (recv.kind === "varRef" || recv.kind === "caughtNarrow") &&
+        !BUILTIN_ERROR_SLOT_KEYS.has(key) &&
+        [...lowerer.classes.values()].some((c) => c.builtinError !== true && declares(c))
+      ) {
+        const staticName = recv.type.className;
+        const staticInfo = lowerer.classes.get(staticName);
+        if (staticInfo && declares(staticInfo))
+          return { kind: "boolLit", value: true, type: BOOL, loc };
+        const tests: IrExpr[] = [];
+        for (const c of lowerer.classes.values()) {
+          const name = c.def.name;
+          if (name === staticName || !lowerer.isSubclassOf(name, staticName) || !declares(c))
+            continue;
+          // A declaring ancestor below the static class already covers it.
+          if (c.base && c.base.def.name !== staticName && declares(c.base)) continue;
+          tests.push({ kind: "instanceOf", value: recv, className: name, type: BOOL, loc });
+        }
+        return tests.reduce<IrExpr>(
+          (acc, test) =>
+            acc.kind === "boolLit"
+              ? test
+              : { kind: "logical", op: "||", left: acc, right: test, type: BOOL, loc },
+          { kind: "boolLit", value: false, type: BOOL, loc },
+        );
       }
       lowerer.unsupported(
         "SC1090",

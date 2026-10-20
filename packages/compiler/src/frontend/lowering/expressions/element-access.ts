@@ -63,6 +63,8 @@ import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
+import { isKeyedFieldAccess } from "./keyed-field-targets.js";
+import { lowerFieldCompoundValue } from "./updates.js";
 
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
@@ -1417,6 +1419,11 @@ export function lowerElementCompoundParts(
   const target = expr.left as ts.ElementAccessExpression;
   fenceNodeModuleMutation(lowerer, target, "assignment");
   const loc = locOf(expr);
+  // A record through a computed key (`totals[side] += n` with a literal
+  // union key, `counts[name] += 1` on an index-signature record): the
+  // member compound's receiver, key, old value, rhs, write sequence.
+  if (isKeyedFieldAccess(lowerer, target))
+    return { expr: lowerFieldCompoundValue(lowerer, target, op, expr.right, loc), stmts: null };
   const checked = lowerer.lowerExpr(target.expression);
   if (checked?.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile())) {
     const stmts: IrStmt[] = [];

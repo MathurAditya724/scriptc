@@ -4427,7 +4427,9 @@ function validateFunction(
       e.fn === "http.clientOnResponse" ||
       e.fn === "http.requestAgentCb" ||
       e.fn === "https.requestAgentCb" ||
-      e.fn === "https.requestUrlCb"
+      e.fn === "https.requestUrlCb" ||
+      e.fn === "http.requestDynCb" ||
+      e.fn === "https.requestDynCb"
     ) {
       // The response listener: void, no params or exactly (res: httpReq).
       const cbT =
@@ -4438,11 +4440,13 @@ function validateFunction(
               ? 9
               : e.fn === "http.requestUrlCb" || e.fn === "https.requestUrlCb"
                 ? 3
-                : e.fn === "http.requestAgentCb"
-                  ? 8
-                  : e.fn === "https.requestAgentCb"
-                    ? 10
-                    : 1
+                : e.fn === "http.requestDynCb" || e.fn === "https.requestDynCb"
+                  ? 2
+                  : e.fn === "http.requestAgentCb"
+                    ? 8
+                    : e.fn === "https.requestAgentCb"
+                      ? 10
+                      : 1
         ]?.type;
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 1;
       if (ok && cbT?.kind === "func" && cbT.params.length === 1) {
@@ -5224,6 +5228,20 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "child.stdioStream") {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const slot = e.args[1];
+      const className =
+        slot?.kind === "numLit" ? (slot.value === 0 ? "%Writable" : "%Readable") : null;
+      const ok =
+        def &&
+        className !== null &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "object" && a.className === className) &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) err(`libCall ${e.fn} must return the stream class of its stdio slot or null`, e.loc);
+      return true;
+    }
     if (e.fn === "child.stdin" || e.fn === "child.stdout" || e.fn === "child.stderr") {
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const handleKind = e.fn === "child.stdin" ? "childWriter" : "childStream";
@@ -5715,9 +5733,9 @@ function validateFunction(
         }
         return true;
       }
-      if (e.fn === "readable.pipe") {
+      if (e.fn === "readable.pipe" || e.fn === "readable.pipeGeneral") {
         if (!isStreamObject(e.args[1]?.type) || !typeEquals(e.type, e.args[1]!.type)) {
-          err(`libCall readable.pipe must return its destination's type`, e.loc);
+          err(`libCall ${e.fn} must return its destination's type`, e.loc);
         }
         return true;
       }

@@ -1868,6 +1868,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
+      "kind": "node-builtin",
+      "name": "perf_hooks.monitorEventLoopDelay",
+      "status": "static",
+      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported"
+    },
+    {
       "id": "node-builtin.perf_hooks.performance.clearMarks",
       "kind": "node-builtin",
       "name": "perf_hooks.performance.clearMarks",
@@ -1878,6 +1885,13 @@
       "kind": "node-builtin",
       "name": "perf_hooks.performance.clearMeasures",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.perf_hooks.performance.eventLoopUtilization",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.eventLoopUtilization",
+      "status": "static",
+      "note": "active time is the main thread's CPU time since the loop started; the one- and two-argument difference forms are supported"
     },
     {
       "id": "node-builtin.perf_hooks.performance.getEntries",
@@ -5699,9 +5713,8 @@
       "id": "stdlib.webassembly",
       "kind": "stdlib",
       "name": "globalThis.WebAssembly",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "WebAssembly support is planned as translation of each module whose bytes the build can see (an inline literal, or a file read from a path the compiler resolves) into native code; 'scriptc coverage' lists the modules this program would load (https://scriptc.dev/limitations)"
+      "status": "static",
+      "note": "compile, instantiate, validate, Module, Instance, instanceof, the error classes, exports, memories, tables, globals and Module transfer to workers, over the modules translated at build time; the rest refuses with SC2020 (the Memory, Table and Global constructors, Module.imports, exports and customSections, and the streaming functions are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations))"
     },
     {
       "id": "stdlib.webcrypto.CryptoKey",

@@ -1,5 +1,9 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import * as ts from "../../ts7/adapter.js";
+import { lowerHistogramProperty } from "../builtins/performance.js";
+import { staticFunctionNameRead } from "../static-function-names.js";
+import { typedArgumentsArity } from "../typed-arguments.js";
+import { isThisParameter } from "../call-signatures.js";
 import { localPrivateBrandClass } from "../private-brands.js";
 import { type Lowerer, PoisonError, jsFuncNameOf, neverTaintedJsType, own } from "../lowerer.js";
 import {
@@ -155,6 +159,7 @@ import { errorPropertyRead } from "../error-methods.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/compression.js";
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
+import { keyedFieldRead } from "./keyed-field-targets.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -254,6 +259,23 @@ export function lowerPropertyAccessExpr(
   if (!expr.questionDotToken) {
     const navigator = lowerNavigatorMember(lowerer, expr, NODE_COMPAT_VERSION);
     if (navigator) return navigator;
+  }
+  // `fn.name` on a function parameter of a generic instance keyed by
+  // its argument's static name (call-site specialization).
+  {
+    const staticName = staticFunctionNameRead(lowerer, expr);
+    if (staticName !== null) return { kind: "strLit", value: staticName, type: STRING, loc };
+  }
+  // An IntervalHistogram's readings (min, max, mean, stddev, count, exceeds).
+  {
+    const reading = lowerHistogramProperty(lowerer, expr);
+    if (reading) return reading;
+  }
+  // `.length` of a forwarded fixed tuple (a typed `arguments`, a tuple
+  // rest parameter, an alias of either): the signature's arity.
+  if (expr.name.text === "length" && !expr.questionDotToken) {
+    const arity = typedArgumentsArity(lowerer, expr.expression);
+    if (arity !== null) return { kind: "numLit", value: arity, type: F64, loc };
   }
   // `require("./x").member` over a program module's export table: the
   // module's %init at this position, then the member read exactly like
@@ -570,9 +592,12 @@ export function lowerPropertyAccessExpr(
           p.dotDotDotToken === undefined,
       );
       if (fixedArity) {
+        // A `this` parameter is type-only: callers never pass it.
         return {
           kind: "numLit",
-          value: (fn as ts.FunctionLikeDeclaration).parameters.nodes.length,
+          value: (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
+            (p) => !isThisParameter(p),
+          ).length,
           type: F64,
           loc,
         };
@@ -3508,6 +3533,7 @@ export function fieldGetExpr(
     );
     if (checked) target = { ...target, obj: checked };
   }
+  if (target.container === "recordKeyed") return keyedFieldRead(lowerer, target, loc);
   if (target.container === "dynamic")
     return lowerer.coerceInto(
       blame,

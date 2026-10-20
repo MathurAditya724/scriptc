@@ -48,6 +48,12 @@ export interface FnCtx {
   argumentsLocal?: IrLocal | null;
   /** Arrows inherit the nearest ordinary function's arguments binding. */
   inheritsArguments?: boolean;
+  /** Tuple bindings of this function that are only forwarded
+   * (typed-arguments.ts onlyForwarded): binding local id → the native
+   * slots forwarding reads. Such a binding is never materialized. Local ids
+   * are unique within one function only, and nested functions never read
+   * these bindings (a read there needs the tuple). */
+  pureTuples: Map<string, IrLocal[]>;
   /** Declared return type — lets `return` detect record-shape mismatches
    * (SC2002) before the validator would ICE on them. */
   returnType: IrType;
@@ -81,6 +87,7 @@ export function newFnCtx(
     captures: lifted ? [] : null,
     captureSources: [],
     captureBySymbol: new Map(),
+    pureTuples: new Map(),
     selfSymbol,
     selfType,
     returnType,

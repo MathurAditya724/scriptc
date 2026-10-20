@@ -1044,6 +1044,20 @@ export interface IrModule {
    * write in the program (ir/contract-check.ts). Backends may rely on them
    * unconditionally. Absent when the program writes no contract. */
   contracts?: IrContracts;
+  /** The WebAssembly modules translated into this program (wasm/
+   * translate.ts), present exactly when the program uses the WebAssembly
+   * API (possibly empty). The backend appends each module's translation
+   * and emits the registry the runtime looks modules up in. */
+  wasmModules?: IrWasmModule[];
+}
+
+/** A WebAssembly module whose bytes the build saw, validated within the
+ * translatable feature level. */
+export interface IrWasmModule {
+  /** Hex SHA-256 of the bytes. */
+  sha256: string;
+  /** The bytes, base64. */
+  bytes: string;
 }
 
 /** Verified contract facts, keyed by IR names. */

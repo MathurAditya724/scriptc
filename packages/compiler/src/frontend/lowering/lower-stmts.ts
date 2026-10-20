@@ -1,5 +1,7 @@
+import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import { declaredMemberOf } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
+import { requestGeneralStreamSurface } from "./general-streams.js";
 import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
@@ -2402,20 +2404,30 @@ export function lowerBindingPattern(
     lowerer.fenceStaticHeadersIteration(pattern);
     if (
       srcType.kind === "union" &&
-      lowerer.unions.get(srcType.unionId)?.arms.every((arm) => arm.kind === "array")
+      lowerer.unions
+        .get(srcType.unionId)
+        ?.arms.every(
+          (arm) =>
+            arm.kind === "array" ||
+            arm.kind === "string" ||
+            (arm.kind === "record" && lowerer.shapes.get(arm.shapeId)?.tuple === true),
+        ) &&
+      lowerer.unions.get(srcType.unionId)!.arms.some((arm) => arm.kind !== "string")
     ) {
       for (let i = 0; i < pattern.elements.nodes.length; i++) {
         const el = pattern.elements.nodes[i]!;
         if (ts.isOmittedExpression(el) || el.name === undefined) continue;
         if (el.dotDotDotToken)
-          lowerer.unsupported("SC1031", el, "rest elements over a union of array layouts");
+          lowerer.unsupported("SC1031", el, "rest elements over a union of array or tuple layouts");
         const loc = locOf(el);
-        let value = unionArrayValueRead(lowerer, srcRef(), numLit(i, loc), loc);
+        let value = unionArrayValueRead(lowerer, srcRef(), numLit(i, loc), loc, (text) =>
+          strCharsCall(lowerer, text, loc),
+        );
         if (!value)
           lowerer.unsupported(
             "SC1031",
             el,
-            "array union elements without a common native representation",
+            "array or tuple union elements without a common native representation",
           );
         if (el.initializer) value = applyBindingDefault(lowerer, el, value);
         lowerer.bindPatternTarget(el.name, value, isLet, out);
@@ -4736,6 +4748,10 @@ export function lowerVarDecl(
     }
   }
   if (!ts.isIdentifier(decl.name)) lowerer.unsupported("SC1031", decl.name);
+  {
+    const alias = lowerTupleAliasDecl(lowerer, decl);
+    if (alias) return alias;
+  }
 
   // A NULLISH generic binding (`const i: I<A & B> = null as any` — the
   // declared type has no mapping, the value is provably null/undefined
@@ -5154,6 +5170,16 @@ export function lowerVarDecl(
     !decl.type &&
     !hasJsTypeAnnotation(decl) &&
     init.type.kind === "func"
+  )
+    type = init.type;
+  // A typed-arguments function expression (typed-arguments.ts): the
+  // checker types the binding variadic, but its value has the fixed
+  // signature every use asserts.
+  if (
+    !decl.type &&
+    init.type.kind === "func" &&
+    (lowerer.typedArgumentsLambdas.has(stripTypeWrappers(decl.initializer)) ||
+      lowerer.nullishFuncResults.has(stripTypeWrappers(decl.initializer)))
   )
     type = init.type;
   // A TypeScript lambda whose closure returns the runtime result (a missing
@@ -8971,6 +8997,8 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     }
     const builtin = lowerForAwaitBuiltin(lowerer, stmt);
     if (builtin) return builtin;
+    // A NodeJS.ReadableStream iterates as the general Readable.
+    requestGeneralStreamSurface(lowerer, stmt.expression);
     lowerer.unsupported(
       "SC1070",
       stmt,
