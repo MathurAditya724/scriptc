@@ -76,7 +76,7 @@ export function lowerComptime(lowerer: Lowerer, expr: ts.CallExpression): IrExpr
       "SC1090",
       expr,
       `baking comptime results of type '${lowerer.fmt(target)}' into the binary ` +
-        `(number, string, boolean, and arrays, records and unions of those lower to literals; a record type reachable from its own fields does not)`,
+        `(number, string, boolean, and arrays, records and unions of those lower to literals; a record or union type reachable from itself does not)`,
     );
   }
   // 5. The host executes the extracted callback under a finite budget.
@@ -112,13 +112,14 @@ function comptimeFailureDetail(error: unknown): string {
  * expression: number/string/boolean, arrays and record shapes of those,
  * and unions of those with null or undefined (the mixed rows of a JSON
  * table: `(string | number)[][]`), nested. Closures, class instances,
- * promises, dyn, void, and recursive record types (a record reachable
- * from its own fields) cannot be baked. */
+ * promises, dyn, void, and recursive types (a record or union reachable
+ * from itself, directly or through arrays) cannot be baked. */
 export function comptimeBakeable(lowerer: Lowerer, t: IrType): boolean {
   return bakeableWithin(lowerer, t, new Set());
 }
 
-/** comptimeBakeable below the records in `open`, whose fields are being
+/** comptimeBakeable below the records and unions in `open` (keyed
+ * `record:<shapeId>` and `union:<unionId>`), whose members are being
  * checked: reaching one of them again means the type is recursive. */
 function bakeableWithin(lowerer: Lowerer, t: IrType, open: Set<string>): boolean {
   switch (t.kind) {
@@ -130,20 +131,23 @@ function bakeableWithin(lowerer: Lowerer, t: IrType, open: Set<string>): boolean
       return bakeableWithin(lowerer, t.elem, open);
     case "record": {
       const shape = lowerer.shapes.get(t.shapeId);
-      if (!shape || open.has(t.shapeId)) return false;
-      open.add(t.shapeId);
+      const key = `record:${t.shapeId}`;
+      if (!shape || open.has(key)) return false;
+      open.add(key);
       const bakeable = shape.fields.every((f) => bakeableWithin(lowerer, f.type, open));
-      open.delete(t.shapeId);
+      open.delete(key);
       return bakeable;
     }
     case "union": {
       const arms = lowerer.unions.get(t.unionId)?.arms;
-      return (
-        arms !== undefined &&
-        arms.every(
-          (arm) => isUnitType(arm) || (arm.kind !== "union" && bakeableWithin(lowerer, arm, open)),
-        )
+      const key = `union:${t.unionId}`;
+      if (arms === undefined || open.has(key)) return false;
+      open.add(key);
+      const bakeable = arms.every(
+        (arm) => isUnitType(arm) || (arm.kind !== "union" && bakeableWithin(lowerer, arm, open)),
       );
+      open.delete(key);
+      return bakeable;
     }
     default:
       return false;
