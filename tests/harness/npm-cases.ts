@@ -24,7 +24,9 @@ export function npmCases(fixturesRoot: string): NpmCase[] {
       // consumers exercise the static rewrite's surface (lexer-visible
       // names the shipped .d.ts never declares, the __toESM interop
       // family), so they stay out of the flagless island lane by design.
-      .filter((entry) => !/\/(246[5-9]|255[6-9]|256[0-7]|2571|258[0-2])-[^/]+\/main\.ts$/.test(entry))
+      .filter(
+        (entry) => !/\/(246[5-9]|255[6-9]|256[0-7]|2571|258[0-2])-[^/]+\/main\.ts$/.test(entry),
+      )
       .map((entry) => ({
         name: entry.split("/").at(-2)!,
         entry,
