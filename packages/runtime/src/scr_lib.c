@@ -10788,9 +10788,27 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   out->isdst = false;
 }
 
+/* The thread's last UTC decomposition: reading several UTC fields of one
+ * Date (getUTCFullYear, getUTCMonth, ...) decomposes it once. */
+typedef struct {
+  bool valid;
+  double ms;
+  ScrDateParts parts;
+} ScrDateUtcCache;
+static SCR_TL ScrDateUtcCache scr_date_utc_cache;
+
 static bool scr_date_utc_parts(double ms, ScrDateParts *out) {
   if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
-  scr_date_utc_parts_unchecked(trunc(ms), out);
+  double clipped = trunc(ms);
+  ScrDateUtcCache *c = &scr_date_utc_cache;
+  if (c->valid && c->ms == clipped) {
+    *out = c->parts;
+    return true;
+  }
+  scr_date_utc_parts_unchecked(clipped, out);
+  c->valid = true;
+  c->ms = clipped;
+  c->parts = *out;
   return true;
 }
 
@@ -10817,6 +10835,53 @@ static SCR_TL ScrDateLocalCache scr_date_local_cache;
 
 static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out);
 
+/* The local zone's offset over an interval of instants. When the offset and
+ * DST flag at an instant equal those 19 days later, every instant between
+ * has them too: zones do not change offset twice within 19 days (Node's V8
+ * date cache relies on the same span, kDefaultDSTDeltaInSec). Consecutive
+ * Dates then convert without a localtime call each. */
+#define SCR_DATE_ZONE_SPAN (19.0 * 86400000.0)
+typedef struct {
+  bool valid;
+  bool isdst;
+  unsigned generation;
+  double start, end; /* clipped instants, ms */
+  double offset;     /* local minus UTC, seconds */
+} ScrDateZoneCache;
+static SCR_TL ScrDateZoneCache scr_date_zone_cache;
+
+static bool scr_date_zone_offset(double clipped, double *offset, bool *isdst);
+
+static bool scr_date_zone_lookup(double clipped, double *offset, bool *isdst) {
+  ScrDateZoneCache *z = &scr_date_zone_cache;
+  unsigned generation = scr_date_tz_generation;
+  bool current = z->valid && z->generation == generation;
+  if (current && clipped >= z->start && clipped <= z->end) {
+    *offset = z->offset;
+    *isdst = z->isdst;
+    return true;
+  }
+  if (!scr_date_zone_offset(clipped, offset, isdst)) return false;
+  bool same = current && *offset == z->offset && *isdst == z->isdst;
+  if (same && clipped > z->end && clipped - z->start <= SCR_DATE_ZONE_SPAN) {
+    z->end = clipped;
+  } else if (same && clipped < z->start && z->end - clipped <= SCR_DATE_ZONE_SPAN) {
+    z->start = clipped;
+  } else {
+    z->valid = true;
+    z->generation = generation;
+    z->start = z->end = clipped;
+    z->offset = *offset;
+    z->isdst = *isdst;
+    double ahead = clipped + SCR_DATE_ZONE_SPAN, ahead_offset;
+    bool ahead_dst;
+    if (ahead <= 8640000000000000.0 && scr_date_zone_offset(ahead, &ahead_offset, &ahead_dst) &&
+        ahead_offset == *offset && ahead_dst == *isdst)
+      z->end = ahead;
+  }
+  return true;
+}
+
 static bool scr_date_local_parts(double ms, ScrDateParts *out) {
   if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
   double clipped = trunc(ms);
@@ -10835,6 +10900,19 @@ static bool scr_date_local_parts(double ms, ScrDateParts *out) {
 }
 
 static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out) {
+  double local_offset;
+  bool isdst;
+  if (!scr_date_zone_lookup(clipped, &local_offset, &isdst)) return false;
+  scr_date_utc_parts_unchecked(clipped + local_offset * 1000.0, out);
+  double timezone_offset = trunc(-local_offset / 60.0);
+  out->timezone_offset = timezone_offset == 0 ? 0 : timezone_offset;
+  out->isdst = isdst;
+  return true;
+}
+
+/* The local zone's offset (local minus UTC, in seconds) and DST flag at a
+ * clipped instant, from the host's localtime. */
+static bool scr_date_zone_offset(double clipped, double *offset, bool *isdst) {
   long long cms = (long long)clipped;
   double secd = (double)(cms / 1000 - (cms % 1000 < 0));
   struct tm tmv;
@@ -10865,11 +10943,8 @@ static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out) {
   double local_as_utc =
     scr_days_from_civil((long long)tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday) * 86400.0 +
     tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
-  double local_offset = local_as_utc - basis_secd;
-  scr_date_utc_parts_unchecked(clipped + local_offset * 1000.0, out);
-  double timezone_offset = trunc(-local_offset / 60.0);
-  out->timezone_offset = timezone_offset == 0 ? 0 : timezone_offset;
-  out->isdst = tmv.tm_isdst > 0;
+  *offset = local_as_utc - basis_secd;
+  *isdst = tmv.tm_isdst > 0;
   return true;
 }
 
