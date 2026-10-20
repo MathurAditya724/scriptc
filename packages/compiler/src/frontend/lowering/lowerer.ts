@@ -1846,6 +1846,9 @@ export class Lowerer {
    * NaN, which lower to plain doubles (see nan-coded-reads.ts). Settled by
    * analyzeRuntimeOptionalArrayReads before any body lowers. */
   nanCodedReads: NanCodedReads | null = null;
+  /** Whether any implementation source spells `versions`
+   * (programMentionsVersions in builtins/process.ts). */
+  mentionsProcessVersions: boolean | undefined = undefined;
   private stringIndexBoundsCache: StringIndexBounds | null = null;
   /** Proofs that a string element read names an existing code unit. The
    * indexed-read analysis and expression lowering share one instance, so a
