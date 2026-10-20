@@ -1607,43 +1607,9 @@ export function collectGlobals(
         )
       )
     ) {
-      if (ts.isVariableStatement(stmt) && (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0) {
-        for (const decl of stmt.declarationList.declarations.nodes) {
-          stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer);
-        }
-      }
-      // `const { codes: { ERR_X } } = require("./errors")`: the outer
-      // keys stay alias plumbing, but a nested pattern destructures the
-      // export's value at the require, so its bindings own storage like
-      // any destructured declaration (lowerVarDeclarator assigns them).
-      if (ts.isVariableStatement(stmt)) {
-        const isLetList =
-          (stmt.declarationList.flags & ts.NodeFlags.Let) !== 0 ||
-          (stmt.declarationList.flags & ts.NodeFlags.BlockScoped) === 0;
-        for (const decl of stmt.declarationList.declarations.nodes) {
-          for (const element of requireNestedPatternsOf(decl)) {
-            for (const nameNode of boundIdentifiersOf(element.name!)) {
-              const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
-              if (!symbol || lowerer.globalsBySymbol.has(symbol)) continue;
-              const mapped = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
-              const type = mapped && mapped.kind !== "void" ? mapped : DYN;
-              const g: IrGlobal = {
-                id: `%g.${tag}${nameNode.text}`,
-                name: nameNode.text,
-                type,
-                mutable: isLetList,
-                source: bindingSource(nameNode),
-                ...((type.kind === "func" || type.kind === "dyn") && !isVarDeclared(decl)
-                  ? { tdz: true as const }
-                  : {}),
-              };
-              lowerer.globalsBySymbol.set(symbol, g);
-              lowerer.globalsList.push(g);
-              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
-            }
-          }
-        }
-      }
+      if (ts.isVariableStatement(stmt))
+        for (const decl of stmt.declarationList.declarations.nodes)
+          registerRequireDeclBindings(lowerer, sf, stmt.declarationList, decl, tag);
       continue;
     }
     // `declare const __VERSION__: string` — AMBIENT: no storage exists
@@ -1677,6 +1643,16 @@ export function collectGlobals(
       // probes below would otherwise claim the call-initializer shape
       // and put its fences on the build.
       if (provenanceElidedConstDecl(lowerer, decl)) continue;
+      // A require declarator beside other declarators (`var EventEmitter =
+      // require("events"), R = class extends EventEmitter {}`): the
+      // statement lowering treats it as the alias plumbing of a whole
+      // require statement (lowerVarDeclarator), so it owns no storage
+      // either. A global here would never be assigned, and a read through
+      // it would see null.
+      if (requireAliasDecl(lowerer, decl)) {
+        registerRequireDeclBindings(lowerer, sf, list, decl, tag);
+        continue;
+      }
       // A stored built-in numeric value iterator has no first-class
       // global representation. Its same-%init for-of uses are backed by
       // hidden source/cursor/done locals registered when the declaration
@@ -2595,6 +2571,61 @@ function noteVarGlobalEntryInit(lowerer: Lowerer, sf: ts.SourceFile, g: IrGlobal
   lowerer.varGlobalEntryInits.set(sf, inits);
 }
 
+/** A JavaScript require declaration the statement lowering treats as alias
+ * plumbing (lowerVarDeclarator): no storage, the reads resolve through to
+ * the module. JSON documents and native FFI requires keep their storage. */
+function requireAliasDecl(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  return (
+    decl.initializer !== undefined &&
+    requireSpecOf(decl.initializer) !== null &&
+    !isNativeFfiRequire(lowerer, decl.initializer) &&
+    !isJsonRequireDecl(lowerer, decl) &&
+    isJsSourceFile(decl.getSourceFile())
+  );
+}
+
+/** The registrations a top-level require declaration does make. `const
+ * process = require('node:process')` aliases the global process
+ * (stdlibGlobalAliasDecl's require form) so reads through the binding
+ * lower via the process surface. In `const { codes: { ERR_X } } =
+ * require("./errors")` the outer keys stay alias plumbing, but a nested
+ * pattern destructures the export's value at the require, so its bindings
+ * own storage like any destructured declaration (lowerVarDeclarator
+ * assigns them). */
+function registerRequireDeclBindings(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  list: ts.VariableDeclarationList,
+  decl: ts.VariableDeclaration,
+  tag: string,
+): void {
+  if ((list.flags & ts.NodeFlags.Const) !== 0)
+    stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer);
+  const isLetList =
+    (list.flags & ts.NodeFlags.Let) !== 0 || (list.flags & ts.NodeFlags.BlockScoped) === 0;
+  for (const element of requireNestedPatternsOf(decl)) {
+    for (const nameNode of boundIdentifiersOf(element.name!)) {
+      const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+      if (!symbol || lowerer.globalsBySymbol.has(symbol)) continue;
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
+      const type = mapped && mapped.kind !== "void" ? mapped : DYN;
+      const g: IrGlobal = {
+        id: `%g.${tag}${nameNode.text}`,
+        name: nameNode.text,
+        type,
+        mutable: isLetList,
+        source: bindingSource(nameNode),
+        ...((type.kind === "func" || type.kind === "dyn") && !isVarDeclared(decl)
+          ? { tdz: true as const }
+          : {}),
+      };
+      lowerer.globalsBySymbol.set(symbol, g);
+      lowerer.globalsList.push(g);
+      if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+    }
+  }
+}
+
 /** The nested half of module-scope `var` hoisting: a `var` inside a
  * top-level BLOCK (an if arm, a loop body, a try) is module-scoped in
  * JS — other functions in the file read the same binding — so it must
@@ -2639,6 +2670,14 @@ function collectNestedVarGlobals(
   });
   for (const list of lists) {
     for (const decl of list.declarations.nodes) {
+      // A nested builtin require (`if (c) { var fs = require("fs"); }`)
+      // lowers to nothing: its bindings are alias plumbing wherever the
+      // statement sits (lowerVarDeclarator), so they own no storage.
+      if (
+        requireAliasDecl(lowerer, decl) &&
+        canonicalBuiltinModule(requireSpecOf(decl.initializer!)!) !== null
+      )
+        continue;
       for (const nameNode of boundIdentifiersOf(decl.name)) {
         const diagsBefore = lowerer.diags.length;
         try {
