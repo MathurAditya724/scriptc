@@ -3309,6 +3309,8 @@ function lowerDynReceiverMethodCall(
   // any-elemented array). Typed receivers keep their own lowerings.
   const recvTs = lowerer.typeOf(access.expression);
   if (lowerer.classImplementedProtocol(recvTs)) {
+    const viewed = pickViewGenericMethodCall(lowerer, call, access, recvTs);
+    if (viewed) return viewed;
     const property = lowerer.checker.getPropertyOfType(recvTs, access.name.text);
     if (
       property &&
@@ -10091,4 +10093,36 @@ function maybePromiseHandlerResult(
     );
   }
   return stmt;
+}
+
+/** `view.m(args)` where `view` is a `Pick<C, K>` / `Omit<C, K>` view of a
+ * program class C and `m` is one of C's GENERIC methods (its overloads
+ * included): generic methods have no dispatchable method value, so the
+ * view's live receiver is extracted as the C instance it holds (a checked
+ * extraction — a value of another class throws Node-style TypeError
+ * text naming C) and the call monomorphizes statically against C, the
+ * same lowering a C-typed receiver gets. Null for other receivers. */
+function pickViewGenericMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  recvTs: ts.Type,
+): IrExpr | null {
+  const alias = recvTs.getAliasSymbol();
+  if (alias === undefined || (alias.name !== "Pick" && alias.name !== "Omit")) return null;
+  if (!alias.declarations.every((d) => d.getSourceFile().isDeclarationFile)) return null;
+  const source = recvTs.getAliasTypeArguments()[0];
+  const symbol = source?.getSymbol();
+  const info = symbol ? lowerer.classBySymbol.get(symbol) : undefined;
+  if (!info || call.questionDotToken || access.questionDotToken) return null;
+  const found = findGenericMethodOn(lowerer, info, access.name.text);
+  if (!found) return null;
+  const loc = locOf(access.expression);
+  const lowered = lowerer.lowerExpr(access.expression);
+  const instance: IrType = { kind: "object", className: info.def.name };
+  const receiver: IrExpr =
+    lowered.type.kind === "object"
+      ? lowered
+      : { kind: "dynCheck", value: lowerer.coerceToExpected(lowered, DYN), type: instance, loc };
+  return lowerClassGenericMethodCall(lowerer, call, access, info, found, receiver);
 }
