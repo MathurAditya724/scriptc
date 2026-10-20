@@ -4153,13 +4153,19 @@ bool scr_loop_has_ready(void) { return scr_ready_len > 0 || scr_nt_head != NULL;
  * drains the poller at most once between check phases. I/O that becomes
  * ready while this iteration's callbacks run (a loopback connect started
  * by one of them) waits for the next iteration, so immediates queued in
- * the meantime fire first — Node's poll → check order. */
+ * the meantime fire first — Node's poll → check order. A full batch polls
+ * again without waiting, at most SCR_LOOP_IO_BATCHES times per phase (the
+ * count libuv's uv__io_poll uses); later events wait for the next
+ * iteration, so timers and immediates still run while sockets stay busy. */
+enum { SCR_LOOP_IO_BATCHES = 48 };
 static SCR_TL bool scr_loop_io_open = true;
+static SCR_TL int scr_loop_io_batches = 0;
 bool scr_loop_io_take(void) {
   bool open = scr_loop_io_open;
   scr_loop_io_open = false;
   return open;
 }
+bool scr_loop_io_more(void) { return ++scr_loop_io_batches < SCR_LOOP_IO_BATCHES; }
 void scr_loop_io_reopen(void) { scr_loop_io_open = true; }
 
 /* The process.nextTick queue to exhaustion, ticks queued meanwhile
@@ -4668,7 +4674,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * had nothing to run). A check phase deferred for pending microtasks
      * keeps it closed, so the next iteration reaches the check phase
      * before polling again. */
-    if (check_ran || scr_pending_immediates == 0) scr_loop_io_open = true;
+    if (check_ran || scr_pending_immediates == 0) {
+      scr_loop_io_open = true;
+      scr_loop_io_batches = 0;
+    }
   }
   return rejection_failed;
 }

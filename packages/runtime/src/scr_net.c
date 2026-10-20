@@ -4909,6 +4909,7 @@ static int scr_net_pollfd(void) {
 }
 
 bool scr_loop_io_take(void);
+bool scr_loop_io_more(void);
 void scr_loop_io_reopen(void);
 
 static void scr_net_dispatch(void) {
@@ -4917,8 +4918,9 @@ static void scr_net_dispatch(void) {
     return;
   }
   /* One poller drain per loop iteration (scr_loop_io_take); a full batch
-   * keeps draining, like libuv's poll phase. Deferred emits (the sweep)
-   * still run on every call. */
+   * keeps draining within the phase's batch budget (scr_loop_io_more), like
+   * libuv's poll phase. Deferred emits (the sweep) still run on every
+   * call. */
   bool may_drain = scr_loop_io_take();
   for (;;) {
     scr_net_sweep();
@@ -4928,7 +4930,7 @@ static void scr_net_dispatch(void) {
     int n = 0;
     if (may_drain) {
       n = scrp_drain(scr_net_poller, evs, 64);
-      may_drain = n == 64;
+      may_drain = n == 64 && scr_loop_io_more();
     }
     for (int i = 0; i < n; i++) {
       void *udata = evs[i].udata;
