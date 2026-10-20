@@ -109,11 +109,19 @@ export interface CcOptions {
    * reactions, AsyncLocalStorage, the unhandledRejection/warning
    * process events. */
   dynAsync?: boolean;
+  /** The program has dynamic-tier jsval operations (moduleUsesDynTier on
+   * the IR): compiles the scr_js_* units (two-tier design I3). Programs
+   * without them link no scr_js_ symbol. */
+  dynTier?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
    * scr_event_target.c. */
   eventTarget?: boolean;
+  /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
+  warningReplace?: boolean;
+  /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
+  stdioExtended?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -204,6 +212,8 @@ export interface CcOptions {
   /** crypto.createCipheriv/createDecipheriv: compiles scr_cipher.c and links
    * the mbedTLS archive (shared with tls). */
   cipher?: boolean;
+  /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
+  webcrypto?: boolean;
   /** Internal compiler hook: called only after a strict native artifact hit
    * or a successful stable build has installed `outPath`. The executable
    * frontend cache uses it to publish its stamp after native dependencies
@@ -272,6 +282,8 @@ export interface LibArchiveOptions {
   threadInstances?: boolean;
   /** IR-detected link gates (the compileC precedent, refusal-narrowed). */
   dynInvoke?: boolean;
+  /** See CompileOptions.dynTier: the scr_js_* units. */
+  dynTier?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;

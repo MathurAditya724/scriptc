@@ -190,10 +190,10 @@
       "entries": 179,
       "apiEntries": 152,
       "static": {
-        "supported": 5,
+        "supported": 6,
         "partial": 39,
         "refused": 21,
-        "not-implemented": 87,
+        "not-implemented": 86,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -326,9 +326,9 @@
       "apiEntries": 280,
       "static": {
         "supported": 7,
-        "partial": 198,
+        "partial": 200,
         "refused": 0,
-        "not-implemented": 75,
+        "not-implemented": 73,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -340,10 +340,10 @@
       "entries": 94,
       "apiEntries": 92,
       "static": {
-        "supported": 0,
-        "partial": 12,
+        "supported": 1,
+        "partial": 15,
         "refused": 1,
-        "not-implemented": 79,
+        "not-implemented": 75,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -910,10 +910,10 @@
       "entries": 176,
       "apiEntries": 156,
       "static": {
-        "supported": 1,
-        "partial": 10,
+        "supported": 2,
+        "partial": 21,
         "refused": 0,
-        "not-implemented": 145,
+        "not-implemented": 133,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -19872,6 +19872,8 @@
           "tests/corpus/5762-crypto-hash-stream.cjs",
           "tests/corpus/5768-crypto-hash-unknown.ts",
           "tests/corpus/5769-crypto-hash-unknown.cjs",
+          "tests/corpus/6204-crypto-get-random-values.ts",
+          "tests/corpus/6205-crypto-get-random-values.js",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -21028,8 +21030,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.getRandomValues",
+        "tests": [
+          "tests/corpus/6204-crypto-get-random-values.ts",
+          "tests/corpus/6205-crypto-get-random-values.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44187,6 +44193,8 @@
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
           "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/6207-fs-constants-object.ts",
+          "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
@@ -45974,8 +45982,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.constants",
+        "tests": [
+          "tests/corpus/6207-fs-constants-object.ts",
+          "tests/corpus/6208-fs-constants-require.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -51846,8 +51858,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.constants",
+        "tests": [
+          "tests/corpus/6207-fs-constants-object.ts",
+          "tests/corpus/6208-fs-constants-require.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -52275,8 +52291,16 @@
           "tests/corpus/5288-blob-validation.js",
           "tests/corpus/5290-blob-dynamic.js",
           "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/corpus/6331-jose-root-entry/main.ts",
           "tests/corpus/text-codec-values/main.ts",
-          "tests/harness/fetch-conformance.test.ts"
+          "tests/fixtures/node-types/navigator.ts",
+          "tests/harness/fetch-conformance.test.ts",
+          "tests/harness/project-config.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -52697,8 +52721,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.CryptoKey",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53371,8 +53402,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.SubtleCrypto",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -54277,8 +54315,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.navigator",
+        "tests": [
+          "tests/fixtures/node-types/navigator.ts",
+          "tests/harness/project-config.test.ts",
+          "tests/corpus/6331-jose-root-entry/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -54415,8 +54458,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.userAgent",
+        "tests": [
+          "tests/fixtures/node-types/navigator.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -79411,6 +79458,11 @@
           "tests/corpus/5210-process-memory-usage.ts",
           "tests/corpus/5211-process-identity.ts",
           "tests/corpus/5809-process-exit-and-rejections.cjs",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts",
+          "tests/corpus/6422-process-exitcode-read.ts",
+          "tests/corpus/6423-process-exitcode-default.ts",
+          "tests/corpus/6424-process-exit-keeps-exitcode.ts",
           "tests/corpus/990-process-basics.ts",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
@@ -79488,7 +79540,9 @@
         "status": "partial",
         "evidence": "compiler-feature:process.'disconnect'",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79527,7 +79581,9 @@
         "status": "partial",
         "evidence": "compiler-feature:process.'message'",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79940,7 +79996,9 @@
         "status": "partial",
         "evidence": "compiler-feature:process.process.disconnect",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -80585,7 +80643,9 @@
         "status": "partial",
         "evidence": "compiler-feature:process.process.send",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -81004,7 +81064,9 @@
         "status": "partial",
         "evidence": "compiler-feature:process.connected",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/6420-process-send-presence.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -81113,7 +81175,10 @@
           "tests/corpus/2941-process-exit-code.ts",
           "tests/corpus/2942-process-exit-code-override.ts",
           "tests/corpus/2943-process-exit-code-invalid.ts",
-          "tests/corpus/2944-process-exit-code-wrap.ts"
+          "tests/corpus/2944-process-exit-code-wrap.ts",
+          "tests/corpus/6422-process-exitcode-read.ts",
+          "tests/corpus/6423-process-exitcode-default.ts",
+          "tests/corpus/6424-process-exit-keeps-exitcode.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -82494,7 +82559,10 @@
           "tests/corpus/5791-readline-keypress-interfaces.cjs",
           "tests/corpus/5792-readline-keypress-listeners.ts",
           "tests/corpus/5872-readline-positional-create-interface.mjs",
-          "tests/corpus/5873-readline-promises-namespace.cjs"
+          "tests/corpus/5873-readline-promises-namespace.cjs",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/5878-readline-dynamic-streams.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -82548,7 +82616,9 @@
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5872-readline-positional-create-interface.mjs",
-          "tests/corpus/5873-readline-promises-namespace.cjs"
+          "tests/corpus/5873-readline-promises-namespace.cjs",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82579,7 +82649,9 @@
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5872-readline-positional-create-interface.mjs",
-          "tests/corpus/5873-readline-promises-namespace.cjs"
+          "tests/corpus/5873-readline-promises-namespace.cjs",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82799,7 +82871,9 @@
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5872-readline-positional-create-interface.mjs",
-          "tests/corpus/5873-readline-promises-namespace.cjs"
+          "tests/corpus/5873-readline-promises-namespace.cjs",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82881,7 +82955,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82912,7 +82988,9 @@
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5872-readline-positional-create-interface.mjs",
-          "tests/corpus/5873-readline-promises-namespace.cjs"
+          "tests/corpus/5873-readline-promises-namespace.cjs",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -82992,7 +83070,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:readline.createInterface",
         "tests": [
-          "tests/corpus/1475-readline-closed-stdin.ts"
+          "tests/corpus/1475-readline-closed-stdin.ts",
+          "tests/corpus/5878-readline-dynamic-streams.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -83148,7 +83227,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:rl.close",
         "tests": [
-          "tests/corpus/1475-readline-closed-stdin.ts"
+          "tests/corpus/1475-readline-closed-stdin.ts",
+          "tests/corpus/5878-readline-dynamic-streams.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -83177,7 +83257,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83206,7 +83288,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83235,7 +83319,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83264,7 +83350,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83293,7 +83381,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83322,7 +83412,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83351,7 +83443,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83380,7 +83474,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83496,7 +83592,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83525,7 +83623,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83554,7 +83654,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83610,7 +83712,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83639,7 +83743,9 @@
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
-          "tests/corpus/5299-readline-stdin.ts"
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5876-readline-dispose-instanceof.ts",
+          "tests/corpus/5877-readline-question-query.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -91106,6 +91212,7 @@
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
           "tests/fixtures/node-test/cases/get-test-context.ts",
+          "tests/fixtures/node-test/cases/mock-fn-default.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
@@ -92517,6 +92624,7 @@
         "evidence": "compiler-feature:test.mock.fn",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-fn-default.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -101198,6 +101306,7 @@
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/6428-promisify-callback-functions.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -101224,6 +101333,7 @@
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/deep-equality.ts",
           "tests/fixtures/node-types/env-files.ts",
+          "tests/fixtures/node-types/promisify-callback-functions.ts",
           "tests/fixtures/node-types/promisify-crypto.ts",
           "tests/fixtures/node-types/promisify-dns.ts",
           "tests/fixtures/node-types/promisify-fs.ts",
@@ -102882,6 +102992,8 @@
           "tests/fixtures/node-types/promisify-crypto.ts",
           "tests/corpus/5632-promisify-dns.ts",
           "tests/fixtures/node-types/promisify-dns.ts",
+          "tests/corpus/6428-promisify-callback-functions.ts",
+          "tests/fixtures/node-types/promisify-callback-functions.ts",
           "tests/harness/project-config.test.ts"
         ]
       },
@@ -106909,10 +107021,18 @@
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
+          "tests/corpus/6204-crypto-get-random-values.ts",
+          "tests/corpus/6205-crypto-get-random-values.js",
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
+          "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -110393,8 +110513,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.getRandomValues",
+        "tests": [
+          "tests/corpus/6204-crypto-get-random-values.ts",
+          "tests/corpus/6205-crypto-get-random-values.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110444,8 +110568,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110467,8 +110598,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.CryptoKey",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110490,8 +110626,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.cryptoKey.algorithm",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110513,8 +110654,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.extractable",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110536,8 +110682,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.type",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110559,8 +110710,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.usages",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110651,8 +110807,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.SubtleCrypto",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110789,8 +110952,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.digest",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110950,8 +111121,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.importKey",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110973,8 +111152,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.sign",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111019,8 +111206,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.verify",
+        "tests": [
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },

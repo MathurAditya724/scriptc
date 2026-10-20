@@ -132,7 +132,7 @@ export function tscInteropBindingOf(
 ): TscInteropBinding | null {
   if (!ts.isIdentifier(expr)) return null;
   const sym = lowerer.checker.getSymbolAtLocation(expr);
-  const decl = sym ? lowerer.checker.declarationsOf(sym).find(ts.isVariableDeclaration) : undefined;
+  const decl = sym ? sym.declarations.find(ts.isVariableDeclaration) : undefined;
   return decl ? tscInteropBindingOfDecl(lowerer, decl) : null;
 }
 

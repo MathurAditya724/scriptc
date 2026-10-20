@@ -25,15 +25,13 @@ export function inferredJsDiagnosticSuppressed(
       const symbol = checker.getSymbolAtLocation(node.name);
       if (
         symbol &&
-        checker
-          .declarationsOf(symbol)
-          .some(
-            (decl) =>
-              ts.isPropertyDeclaration(decl) &&
-              !decl.type &&
-              !decl.initializer &&
-              !/@type\b/.test(file.text.slice(decl.pos, decl.getStart(file))),
-          )
+        symbol.declarations.some(
+          (decl) =>
+            ts.isPropertyDeclaration(decl) &&
+            !decl.type &&
+            !decl.initializer &&
+            !/@type\b/.test(file.text.slice(decl.pos, decl.getStart(file))),
+        )
       ) {
         // Bare JS fields exist with value undefined before the first write;
         // native storage includes that arm even when inference omits it.
@@ -43,7 +41,7 @@ export function inferredJsDiagnosticSuppressed(
     }
     if (diagnostic.code === 2554 && ts.isCallExpression(node)) {
       const signature = checker.getResolvedSignature(node);
-      const declaration = signature && checker.signatureDeclaration(signature);
+      const declaration = signature && signature.declaration;
       if (
         declaration &&
         isJsSourceFileName(declaration.getSourceFile().fileName) &&
@@ -83,9 +81,7 @@ export function inferredJsDiagnosticSuppressed(
         checker.getTypeOfSymbolAtLocation(throwMethod, node.expression),
       );
       const declaration =
-        throwSignatures.length === 1
-          ? checker.signatureDeclaration(throwSignatures[0]!)
-          : undefined;
+        throwSignatures.length === 1 ? throwSignatures[0]!.declaration : undefined;
       // A sole throw cannot return an invalid IteratorResult. Avoid inferring
       // termination through arbitrary control flow or explicit return types.
       if (

@@ -62,6 +62,7 @@ export async function warmNativeCaches(
         nodeTest: false,
         tls: false,
         cipher: false,
+        webcrypto: false,
         tlsCa: false,
       },
     });
