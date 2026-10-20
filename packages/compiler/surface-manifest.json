@@ -1988,7 +1988,7 @@
       "kind": "node-builtin",
       "name": "process.exitCode",
       "status": "static",
-      "note": "numeric writes in statement position set the implicit exit status; process.exit() reads it"
+      "note": "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it"
     },
     {
       "id": "node-builtin.process.getBuiltinModule",
@@ -2532,7 +2532,7 @@
       "name": "util.promisify",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart; call the bound function directly"
+      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",
@@ -4097,7 +4097,7 @@
       "kind": "stdlib",
       "name": "Date constructor",
       "status": "static",
-      "note": "zero arguments, or one milliseconds/date-string argument; values are the read-only TimeClip scalar slice"
+      "note": "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice"
     },
     {
       "id": "stdlib.date.getDate",
@@ -4220,7 +4220,7 @@
       "kind": "stdlib",
       "name": "Date.parse",
       "status": "static",
-      "note": "one date string, using the bounded parser shared with new Date(dateString).getTime()"
+      "note": "one date string, using V8's date parser shared with new Date(dateString)"
     },
     {
       "id": "stdlib.date.toDateString",

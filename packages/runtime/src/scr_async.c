@@ -4411,6 +4411,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #if !defined(_WIN32) && !defined(__wasi__)
     if (due > now) scr_fiber_stacks_clear();
 #endif
+#ifdef SCR_WORKERS
+    if (due > now) scr_sa_loop_waiting(true);
+#endif
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
     if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
@@ -4564,6 +4567,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         now = due;
       }
     }
+#ifdef SCR_WORKERS
+    scr_sa_loop_waiting(false);
+#endif
     while (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) {
       ScrTimer t = scr_timer_pop();
       /* Timer callbacks are plain sync closures, run on the main stack.

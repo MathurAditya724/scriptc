@@ -1,3 +1,4 @@
+import { primitiveConstructorOr } from "./lower-exprs.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { constructedValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
@@ -2070,6 +2071,49 @@ export class ClassDynamicDispatch {
               // A read compares the bag with the receiver and then reads it:
               // evaluate it once, so each read retains the receiver once.
               const bagRead = varRef("bag.0", DYN, loc);
+              const bagGet: IrExpr | null = read
+                ? {
+                    kind: "libCall",
+                    fn: "dyn.bagGet",
+                    args: [bagRead, read.key, varRef("p.0", DYN, loc)],
+                    type: DYN,
+                    loc,
+                  }
+                : null;
+              // A class instance whose class chain declares no member of an
+              // Object.prototype method's name (classes that do answer in
+              // their own branches) inherits it unless an own property
+              // shadows it; a class constructor's static bag reads as before.
+              const instanceRead: IrExpr | null =
+                read && INHERITED_OBJECT_METHODS.has(name)
+                  ? {
+                      kind: "ternary",
+                      cond: {
+                        kind: "dynTest",
+                        test: "function",
+                        value: varRef("p.0", DYN, loc),
+                        type: BOOL,
+                        loc,
+                      },
+                      then: bagGet!,
+                      else_: {
+                        kind: "ternary",
+                        cond: this.readBagHas(lowerer, "dyn.hasKey", bagRead, read.key, loc),
+                        then: bagGet!,
+                        else_: {
+                          kind: "libCall",
+                          fn: "dyn.builtinMethod",
+                          args: [{ kind: "strLit", value: "Object", type: STRING, loc }, read.key],
+                          type: DYN,
+                          loc,
+                        },
+                        type: DYN,
+                        loc,
+                      },
+                      type: DYN,
+                      loc,
+                    }
+                  : bagGet;
               const fallback: IrExpr = read
                 ? {
                     kind: "ternary",
@@ -2081,13 +2125,7 @@ export class ClassDynamicDispatch {
                       loc,
                     },
                     then: { ...read, value: bagRead },
-                    else_: {
-                      kind: "libCall",
-                      fn: "dyn.bagGet",
-                      args: [bagRead, read.key, varRef("p.0", DYN, loc)],
-                      type: DYN,
-                      loc,
-                    },
+                    else_: instanceRead!,
                     type: DYN,
                     loc,
                   }
@@ -2112,7 +2150,20 @@ export class ClassDynamicDispatch {
                     ]
                   : [
                       { kind: "varDecl", localId: "bag.0", init: bag, loc },
-                      { kind: "return", value: fallback, loc },
+                      {
+                        kind: "return",
+                        // Primitives answer their wrapper constructors.
+                        value:
+                          name === "constructor"
+                            ? primitiveConstructorOr(
+                                lowerer,
+                                varRef("p.0", DYN, loc),
+                                fallback,
+                                loc,
+                              )
+                            : fallback,
+                        loc,
+                      },
                     ],
                 loc,
               };
@@ -2695,6 +2746,7 @@ export class ClassDynamicDispatch {
             !findGenericMethodOn(lowerer, info, dispatch.name) &&
             dispatch.name !== "constructor" &&
             !info.fields.has(dispatch.name) &&
+            !(dispatch.name === "stack" && lowerer.isSubclassOf(info.def.name, "%Error")) &&
             !findMethodOn(lowerer, info, `get:${dispatch.name}`) &&
             !findMethodOn(lowerer, info, `set:${dispatch.name}`))
         )
@@ -4525,6 +4577,110 @@ export class ClassDynamicDispatch {
         },
       ];
     }
+    // An Error's own `stack`: a string is the native error's stack, which
+    // typed reads share; any other value is kept with the instance's own
+    // properties, which a read checks first. A class whose chain declares
+    // a `stack` accessor answers through it (the accessor code below).
+    if (
+      name === "stack" &&
+      !info.fields.has(name) &&
+      lowerer.isSubclassOf(info.def.name, "%Error") &&
+      !findMethodOn(lowerer, info, "get:stack") &&
+      !findMethodOn(lowerer, info, "set:stack")
+    ) {
+      const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+      const error = lowerer.upcastTo(receiver, "%Error");
+      if (write) {
+        const helper = classPropertiesHelper(lowerer, loc);
+        this.generated.add(helper);
+        const store: IrStmt = {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySet",
+            args: [
+              {
+                kind: "call",
+                callee: helper.name,
+                args: [lowerer.coerceToExpected(receiver, DYN)],
+                type: DYN,
+                loc,
+              },
+              key,
+              varRef("p.1", DYN, loc),
+            ],
+            type: VOID,
+            loc,
+          },
+          loc,
+        };
+        return [
+          {
+            kind: "if",
+            cond: {
+              kind: "dynTest",
+              test: "string",
+              value: varRef("p.1", DYN, loc),
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "error.setStack",
+                  args: [error, lowerer.coerceToExpected(varRef("p.1", DYN, loc), STRING)],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "if",
+                cond: this.readBagHas(
+                  lowerer,
+                  "dyn.hasKey",
+                  this.readPropertyBag(lowerer, receiver, loc),
+                  key,
+                  loc,
+                ),
+                then: [store],
+                else_: null,
+                loc,
+              },
+            ],
+            else_: [store],
+            loc,
+          },
+          { kind: "return", value: null, loc },
+        ];
+      }
+      const bag = this.readPropertyBag(lowerer, receiver, loc);
+      return [
+        {
+          kind: "return",
+          value: {
+            kind: "ternary",
+            cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
+            then: {
+              kind: "libCall",
+              fn: "dyn.bagGet",
+              args: [bag, key, lowerer.coerceToExpected(receiver, DYN)],
+              type: DYN,
+              loc,
+            },
+            else_: lowerer.coerceToExpected(
+              { kind: "libCall", fn: "error.stack", args: [error], type: STRING, loc },
+              DYN,
+            ),
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ];
+    }
     if ((name === "message" || name === "name") && lowerer.isSubclassOf(info.def.name, "%Error"))
       return write
         ? [
@@ -4715,19 +4871,40 @@ export class ClassDynamicDispatch {
       if (!field && !accessor) {
         const instance = lowerer.coerceToExpected(receiver, DYN);
         const bag = this.readPropertyBagOrEmpty(lowerer, instance, loc);
-        return [
-          {
-            kind: "return",
-            value: {
-              kind: "libCall",
-              fn: "dyn.bagGet",
-              args: [bag, { kind: "strLit", value: name, type: STRING, loc }, instance],
-              type: DYN,
+        const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+        const own: IrExpr = {
+          kind: "libCall",
+          fn: "dyn.bagGet",
+          args: [bag, key, instance],
+          type: DYN,
+          loc,
+        };
+        // An Object.prototype method no class in the chain declares: an
+        // own property shadows it, otherwise the read answers the same
+        // interned value `Object.prototype.<name>` reads.
+        if (INHERITED_OBJECT_METHODS.has(name) && !findMethodOn(lowerer, info, name)) {
+          return [
+            {
+              kind: "return",
+              value: {
+                kind: "ternary",
+                cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
+                then: own,
+                else_: {
+                  kind: "libCall",
+                  fn: "dyn.builtinMethod",
+                  args: [{ kind: "strLit", value: "Object", type: STRING, loc }, key],
+                  type: DYN,
+                  loc,
+                },
+                type: DYN,
+                loc,
+              },
               loc,
             },
-            loc,
-          },
-        ];
+          ];
+        }
+        return [{ kind: "return", value: own, loc }];
       }
       const type = field ?? accessor!.sig.ret;
       if (!canConvertToDyn(type, getRecord, getUnion)) return fence();
@@ -5250,3 +5427,12 @@ export class ClassDynamicDispatch {
     return body;
   }
 }
+
+/** Object.prototype methods every class instance inherits unless its class
+ * chain declares them. */
+const INHERITED_OBJECT_METHODS: ReadonlySet<string> = new Set([
+  "valueOf",
+  "toString",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+]);

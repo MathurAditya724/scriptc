@@ -50,14 +50,14 @@ stdlib-fence.ts:20:13 - error SC2020: 'new Intl.NumberFormat' is part of the sta
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-stdlib-fence.ts:23:11 - error SC2020: 'new Date with 2 arguments' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:23:11 - error SC2020: 'new Date with spread arguments' is part of the standard library types but has no scriptc lowering yet
 
   22 | // Constructors.
-  23 | const d = new Date(2024, 0); // the local-time year/month field constructor stays fenced
-     |           ^~~~~~~~~~~~~~~~~
+  23 | const d = new Date(...([2024, 0] as const)); // spread field arguments stay fenced
+     |           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   24 | const mutableDate = new Date(0);
 
-  hint: new Date(), new Date(milliseconds), and new Date(dateString) are supported; the local-time year/month field constructor has no lowering
+  hint: new Date(), new Date(milliseconds), new Date(dateString), and new Date(year, monthIndex, ...) with listed arguments are supported
 
 stdlib-fence.ts:25:1 - error SC2020: 'Date.prototype.setUTCFullYear with arguments' is part of the standard library types but has no scriptc lowering yet
 

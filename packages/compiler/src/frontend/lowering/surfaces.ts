@@ -2221,14 +2221,22 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "stdlib",
     name: "Date.parse",
     fns: ["date.parse"],
-    note: "one date string, using the bounded parser shared with new Date(dateString).getTime()",
+    note: "one date string, using V8's date parser shared with new Date(dateString)",
   },
   {
     id: "stdlib.date.constructor",
     kind: "stdlib",
     name: "Date constructor",
-    fns: ["date.newNow", "date.newMs", "date.newString", "date.nativeNew"],
-    note: "zero arguments, or one milliseconds/date-string argument; values are the read-only TimeClip scalar slice",
+    fns: [
+      "date.newNow",
+      "date.newMs",
+      "date.newString",
+      "date.nativeNew",
+      "date.newLocal",
+      "date.nativeNewFields",
+      "date.nativeNewValue",
+    ],
+    note: "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice",
   },
   {
     id: "stdlib.date.UTC",
@@ -2656,8 +2664,8 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     id: "node-builtin.process.exitCode",
     kind: "node-builtin",
     name: "process.exitCode",
-    fns: ["process.setExitCode"],
-    note: "numeric writes in statement position set the implicit exit status; process.exit() reads it",
+    fns: ["process.setExitCode", "process.setExitCodeTracked", "process.hasExitCode"],
+    note: "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it",
   },
   // ── the tls CA store (lowerTlsCaCall / lowerTlsRootCertificates): the
   // host's trust anchors, read and replaced. Dedicated paths, and
@@ -2969,7 +2977,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   util: {
     promisify:
-      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart; call the bound function directly",
+      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly",
   },
   "stream/consumers": {
     blob:

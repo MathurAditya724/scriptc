@@ -290,8 +290,17 @@ function lowerDnsModuleCall(
   loc: SrcLoc,
 ): IrExpr {
   const args = expr.arguments.nodes;
-  const dyn = (node: ts.Expression): IrExpr =>
-    lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+  const dyn = (node: ts.Expression): IrExpr => {
+    // `opts as dns.LookupOneOptions` over a checked-dynamic value (the
+    // overload-satisfying cast of a pass-through lookup): the cast changes
+    // no value, so the options reach the runtime as they are.
+    let inner = node;
+    while (ts.isAsExpression(inner) || ts.isParenthesizedExpression(inner))
+      inner = inner.expression;
+    if (inner !== node && lowerer.mapTypeOf(lowerer.typeOf(inner))?.kind === "dyn")
+      return lowerer.lowerExpr(inner);
+    return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+  };
   // A callback whose second parameter is typed (string, LookupAddress[])
   // cannot take the undefined Node passes after an error.
   const typedResult = (node: ts.Expression): IrExpr => {
