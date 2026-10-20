@@ -6916,7 +6916,8 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     if (
       ts.isBinaryExpression(expr) &&
       expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      isCjsExportsIdentifier(lowerer, expr.left)
+      isCjsExportsIdentifier(lowerer, expr.left) &&
+      cjsExportAssignmentOf(stmtNode)?.kind !== "table"
     ) {
       lowerer.unsupported(
         "SC1090",

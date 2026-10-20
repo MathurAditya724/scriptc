@@ -22,12 +22,16 @@ import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   cjsExportAssignmentOf,
+  cjsExportDiscardReason,
   cjsExportTargetLiteral,
   isCjsJsFile,
   isModuleExportsAccess,
   isRequireStatement,
   locOf,
+  npmStaticDepSf7,
+  resolveImport,
 } from "../program.js";
+import { cjsWholeExportValueOf, inlineProgramRequireOf } from "./cjs-inline-require.js";
 import { isCjsModuleGlobal } from "./lower-node-module.js";
 import { DYN, type IrExpr, type IrGlobal } from "../../ir/ir.js";
 
@@ -427,4 +431,93 @@ export function cjsExportCallIgnoresThis(
     }
     return false;
   });
+}
+
+/** The value behind a binding of a CommonJS member export (an `import {
+ * name }` or a top-level `const { name } = require(...)`) written once as
+ * `module.exports.<name> = <value>` or `exports.<name> = <value>`, when the
+ * module exports a value whole and the member is a property added to it
+ * (`exports = module.exports = Client; exports.StatsD = Client`). The
+ * checker gives such a binding a synthesized property symbol, so the
+ * module's statements answer. The value is a binding of the exporting
+ * module or a primitive literal, which the use site reads again. Follows
+ * `module.exports = require("./x")` re-exports. Null for any other binding. */
+export function cjsMemberAliasValueOf(lowerer: Lowerer, ref: ts.Identifier): ts.Expression | null {
+  const sym = lowerer.checker.getSymbolAtLocation(ref);
+  if (!sym) return null;
+  const decls = sym.declarations;
+  // `import { StatsD } from "pkg"`
+  const specifier = sym.flags & ts.SymbolFlags.Alias ? decls.find(ts.isImportSpecifier) : undefined;
+  if (specifier !== undefined) {
+    const importDecl = specifier.parent?.parent?.parent;
+    if (
+      importDecl === undefined ||
+      !ts.isImportDeclaration(importDecl) ||
+      !ts.isStringLiteral(importDecl.moduleSpecifier)
+    )
+      return null;
+    const spec = importDecl.moduleSpecifier.text;
+    const from = importDecl.getSourceFile();
+    const dep =
+      resolveImport(lowerer.program, from, spec, "import") ??
+      npmStaticDepSf7(lowerer.program, from, spec, "import");
+    if (dep === null) return null;
+    return memberAliasIn(lowerer, dep, (specifier.propertyName ?? specifier.name).text, 0);
+  }
+  // `const { shout } = require("./lib")` at a module's top level
+  const element = decls.find(ts.isBindingElement);
+  if (element === undefined || element.dotDotDotToken || !ts.isIdentifier(element.name))
+    return null;
+  const pattern = element.parent;
+  const declaration = pattern?.parent;
+  if (
+    pattern === undefined ||
+    !ts.isObjectBindingPattern(pattern) ||
+    declaration === undefined ||
+    !ts.isVariableDeclaration(declaration) ||
+    declaration.initializer === undefined ||
+    (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  const key = element.propertyName ?? element.name;
+  if (!ts.isIdentifier(key)) return null;
+  const req = inlineProgramRequireOf(lowerer, declaration.initializer);
+  if (req === null) return null;
+  return memberAliasIn(lowerer, req.dep, key.text, 0);
+}
+
+function memberAliasIn(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  name: string,
+  depth: number,
+): ts.Expression | null {
+  if (depth > 32 || sf.isDeclarationFile || !isCjsJsFile(sf, lowerer.program)) return null;
+  const whole = cjsWholeExportValueOf(sf);
+  if (whole === null) return null;
+  const inner = inlineProgramRequireOf(lowerer, whole.rhs);
+  if (inner !== null) return memberAliasIn(lowerer, inner.dep, name, depth + 1);
+  let found: ts.Expression | null = null;
+  let writes = 0;
+  for (const stmt of sf.statements.nodes) {
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs?.kind !== "member" || !ts.isIdentifier(cjs.name) || cjs.name.text !== name) continue;
+    writes++;
+    if (cjsExportDiscardReason(stmt) !== null) return null;
+    let value: ts.Expression = cjs.value;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    // A binding of the module, or a primitive literal: reading either
+    // again at the use site observes the member's value.
+    if (
+      ts.isIdentifier(value) ||
+      ts.isStringLiteral(value) ||
+      ts.isNumericLiteral(value) ||
+      ts.isNoSubstitutionTemplateLiteral(value) ||
+      value.kind === ts.SyntaxKind.TrueKeyword ||
+      value.kind === ts.SyntaxKind.FalseKeyword
+    )
+      found = value;
+  }
+  // One write: a member written again would be a runtime slot.
+  return writes === 1 ? found : null;
 }
