@@ -1,6 +1,7 @@
 // Variadic wrappers whose bodies declare the same local names: one only
 // forwards its `arguments` (or its alias of them), the other also reads an
-// element, so its tuple exists. Each wrapper forwards its own arguments.
+// element, so its tuple exists. Each wrapper forwards its own arguments, also
+// when a block-local alias shadows an outer one in the same function.
 type AnyFn = (...args: any) => any;
 
 function forward<F extends AnyFn>(fn: F): F {
@@ -31,6 +32,18 @@ function logFirstAlias<F extends AnyFn>(fn: F): F {
   } as F;
 }
 
+function shadowed<F extends AnyFn>(fn: F): F {
+  return function (this: unknown) {
+    const args = arguments as any;
+    console.log("outer first:", args[0]);
+    if (args.length > 1) {
+      const args = arguments as any;
+      return fn.apply(this, args);
+    }
+    return fn.apply(this, args);
+  } as F;
+}
+
 function add3(a: number, b: number, c: number): number {
   return a + b + c;
 }
@@ -54,3 +67,9 @@ const hello2 = logFirst(greet);
 console.log(hello2("linus"));
 const sum2 = forward(add3);
 console.log(sum2(7, 8, 9));
+
+// A block-local alias with the same name as the outer one.
+const sumShadowed = shadowed(add3);
+console.log(sumShadowed(10, 20, 30));
+const helloShadowed = shadowed(greet);
+console.log(helloShadowed("ken"));

@@ -1,6 +1,7 @@
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import { declaredMemberOf } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
+import { requestGeneralStreamSurface } from "./general-streams.js";
 import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
@@ -8986,6 +8987,8 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     }
     const builtin = lowerForAwaitBuiltin(lowerer, stmt);
     if (builtin) return builtin;
+    // A NodeJS.ReadableStream iterates as the general Readable.
+    requestGeneralStreamSurface(lowerer, stmt.expression);
     lowerer.unsupported(
       "SC1070",
       stmt,

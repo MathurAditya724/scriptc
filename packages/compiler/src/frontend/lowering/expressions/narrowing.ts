@@ -26,6 +26,7 @@ import { jsBindingHasOpenWrites } from "../lower-stmts.js";
 import { narrowClassUnion, narrowStoredClassValue, structuralNarrowing } from "../class-unions.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "../class-assertions.js";
 import { isOptionalProcessStreamProperty } from "../builtins/process.js";
+import { requestGeneralStreamSurface } from "../general-streams.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
@@ -1450,6 +1451,9 @@ export function lowerAsExpression(
     if (DYN_HANDLE_KINDS.has(target.kind)) {
       return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
     }
+    // `value as NodeJS.ReadableStream`: the general stream classes take
+    // the checked cast (general-streams.ts).
+    requestGeneralStreamSurface(lowerer, expr);
     lowerer.unsupported(
       "SC1090",
       expr,
