@@ -28,7 +28,7 @@ export function lowerOsUserInfoCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (call.arguments.length !== 0) {
+  if (call.arguments.nodes.length !== 0) {
     lowerer.noLowering(
       "userInfo with options",
       call,
@@ -95,9 +95,9 @@ export function lowerOsNetworkInterfacesCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (call.arguments.length !== 0) {
+  if (call.arguments.nodes.length !== 0) {
     lowerer.noLowering(
-      `networkInterfaces with ${call.arguments.length} arguments`,
+      `networkInterfaces with ${call.arguments.nodes.length} arguments`,
       call,
       "networkInterfaces() takes no arguments",
     );
@@ -179,9 +179,9 @@ export function lowerOsNetworkInterfacesCall(
  * record per CPU from the snapshot accessors, in the mapped shapes' own
  * field order. Other result shapes fence. */
 export function lowerOsCpusCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (call.arguments.length !== 0) {
+  if (call.arguments.nodes.length !== 0) {
     lowerer.noLowering(
-      `cpus with ${call.arguments.length} arguments`,
+      `cpus with ${call.arguments.nodes.length} arguments`,
       call,
       "cpus() takes no arguments",
     );
@@ -322,8 +322,8 @@ export function lowerPathParseCall(
   win32: boolean,
   loc: SrcLoc,
 ): IrExpr {
-  const arg = call.arguments[0];
-  if (call.arguments.length !== 1 || !arg || ts.isSpreadElement(arg)) {
+  const arg = call.arguments.nodes[0];
+  if (call.arguments.nodes.length !== 1 || !arg || ts.isSpreadElement(arg)) {
     lowerer.noLowering("path.parse without exactly one path", call, "parse(path) takes one string");
   }
   const result = lowerer.mapTypeOf(lowerer.typeOf(call));
@@ -412,8 +412,8 @@ export function lowerPathFormatCall(
   win32: boolean,
   loc: SrcLoc,
 ): IrExpr {
-  const arg = call.arguments[0];
-  if (call.arguments.length !== 1 || !arg || ts.isSpreadElement(arg)) {
+  const arg = call.arguments.nodes[0];
+  if (call.arguments.nodes.length !== 1 || !arg || ts.isSpreadElement(arg)) {
     lowerer.noLowering(
       "path.format without exactly one object",
       call,
@@ -520,7 +520,7 @@ export function lowerOsSetPriorityCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       "setPriority with these arguments",
@@ -542,8 +542,8 @@ export function lowerOsGetPriorityCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const arg = call.arguments[0];
-  if (call.arguments.length > 1 || (arg && ts.isSpreadElement(arg))) {
+  const arg = call.arguments.nodes[0];
+  if (call.arguments.nodes.length > 1 || (arg && ts.isSpreadElement(arg))) {
     lowerer.noLowering(
       "getPriority with these arguments",
       call,

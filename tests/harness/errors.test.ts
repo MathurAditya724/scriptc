@@ -1051,6 +1051,345 @@ console.log(typeof Derived);
   });
 });
 
+describe("constructors returning objects (JS lane)", () => {
+  test("a returned plain object is a named deferred fence", async () => {
+    // Node's `new Box(2)` answers `{ size: 99 }`; a Box instance cannot
+    // hold that object, so the return refuses instead of answering `this`.
+    const r = await compileAndRun(
+      "constructor-returns-object",
+      `'use strict';
+class Box {
+  constructor(size) {
+    this.size = size;
+    if (size > 1) return { size: 99 };
+  }
+}
+console.log(new Box(1).size);
+console.log(new Box(2));
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("1\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: returning an object other than an instance of the class from a constructor \(Node's 'new Box\(\)' answers the returned object, .*\) is not supported yet \[SC1090 at .*constructor-returns-object\.cjs:5\]\n$/,
+    );
+  });
+
+  test("an untyped returned value fences only when it holds a foreign object", async () => {
+    // Primitive results answer the constructed instance, as in Node; an
+    // object that is not a Wrap instance refuses.
+    const r = await compileAndRun(
+      "constructor-returns-untyped",
+      `'use strict';
+class Wrap {
+  constructor(value) {
+    this.value = value;
+    return value;
+  }
+}
+console.log(new Wrap(1).value, new Wrap('s').value, new Wrap(null).value);
+const w = new Wrap(0);
+console.log(new Wrap(w) === w);
+console.log(new Wrap({ a: 1 }));
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("1 s null\ntrue\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: returning an object other than an instance of the class from a constructor .* is not supported yet \[SC1090 at .*constructor-returns-untyped\.cjs:5\]\n$/,
+    );
+  });
+});
+
+describe("module exports that read this, called through the module binding (JS lane)", () => {
+  test("a require binding's member call is a named deferred fence", async () => {
+    // Node passes the exports object as `this` to `m.hello()`; the direct
+    // call has none to pass, so it refuses instead of reading another one.
+    const r = await compileAndRun(
+      "require-member-this",
+      `'use strict';
+const m = require('./lib.cjs');
+console.log(m.plain(21));
+console.log(m.hello());
+`,
+      "cjs",
+      {
+        "lib.cjs": `'use strict';
+exports.name = 'lib';
+exports.hello = function () { return 'hi from ' + this.name; };
+exports.plain = function (x) { return x * 2; };
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("42\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('hello': .*\) is not supported yet \[SC1090 at .*require-member-this\.cjs:4\]\n$/,
+    );
+  });
+
+  test("a namespace import's member call is a named deferred fence", async () => {
+    const r = await compileAndRun(
+      "namespace-member-this",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.who());
+`,
+      "mjs",
+      {
+        "lib.mjs": `export function who() { return typeof this; }
+export function plain(x) { return x + 1; }
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('who': .*\) is not supported yet \[SC1090 at .*namespace-member-this\.mjs:3\]\n$/,
+    );
+  });
+
+  test("a namespace import's export that passes this on with apply or call compiles", async () => {
+    // Effect 4's provideService: `dual(...).apply(this, arguments)` hands the
+    // receiver to a function that `dual` returns, which reads it only to
+    // pass it on to an arrow, as here.
+    const r = await compileAndRun(
+      "namespace-member-forwards-this",
+      `import * as ns from './lib.mjs';
+export const added = ns.provide(1, 2, 3);
+console.log(added, ns.sum(3, 4));
+`,
+      "mjs",
+      {
+        "lib.mjs": `const dual = function (arity, body) {
+  switch (arity) {
+    case 2:
+      return function (a, b) { return arguments.length >= 2 ? body(a, b) : (self) => body(self, a); };
+    default:
+      return function () { return body.apply(this, arguments); };
+  }
+};
+export const provide = function () { return dual(3, (a, b, c) => a + b + c).apply(this, arguments); };
+const twice = function (a, b) { return (a + b) * 2; };
+export const sum = function (a, b) { return twice.call(this, a, b); };
+`,
+      },
+    );
+    expect(r).toEqual({ stdout: "6 14\n", stderr: "", exitCode: 0 });
+  });
+
+  test("a require binding's export that passes this on with apply compiles", async () => {
+    const r = await compileAndRun(
+      "require-member-forwards-this",
+      `'use strict';
+const m = require('./lib.cjs');
+console.log(m.scale(5));
+`,
+      "cjs",
+      {
+        "lib.cjs": `'use strict';
+const triple = function (x) { return x * 3; };
+exports.scale = function () { return triple.apply(this, arguments); };
+`,
+      },
+    );
+    expect(r).toEqual({ stdout: "15\n", stderr: "", exitCode: 0 });
+  });
+
+  test.each([
+    [
+      "a namespace import's export that passes this on to a function that reads it",
+      "namespace-member-forwards-to-reader",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaCall('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+function read(suffix) { return this.tag + suffix; }
+export function viaCall(suffix) { return read.call(this, suffix); }
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaCall",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory to a function that reads it",
+      "namespace-member-forwards-through-factory",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaDual('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const dual = function (arity, body) {
+  switch (arity) {
+    case 2:
+      return function (a, b) { return arguments.length >= 2 ? body(a, b) : (self) => body(self, a); };
+    default:
+      return function () { return body.apply(this, arguments); };
+  }
+};
+export const viaDual = function () { return dual(9, function (s) { return this.tag + s; }).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaDual",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory that reassigns its parameter",
+      "namespace-member-forwards-reassigned",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  body = function (s) { return this.tag + s; };
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory that replaces its parameter as a destructuring",
+      "namespace-member-forwards-destructured",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  [body] = [function (s) { return this.tag + s; }];
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory that replaces its parameter as a object destructuring",
+      "namespace-member-forwards-object-destructured",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  ({ body } = { body: function (s) { return this.tag + s; } });
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
+      "a namespace import's export that passes this on through a factory that replaces its parameter as a for-of target",
+      "namespace-member-forwards-for-of",
+      "mjs",
+      `import * as ns from './lib.mjs';
+console.log(ns.plain(1));
+console.log(ns.viaWrap('?'));
+`,
+      {
+        "lib.mjs": `export const tag = 'ns';
+const wrap = function (body) {
+  for (body of [function (s) { return this.tag + s; }]);
+  return function () { return body.apply(this, arguments); };
+};
+export const viaWrap = function () { return wrap((s) => s).apply(this, arguments); };
+export function plain(x) { return x + 1; }
+`,
+      },
+      "2\n",
+      "viaWrap",
+      3,
+    ],
+    [
+      "a require binding's export that passes this on to a function that reads it",
+      "require-member-forwards-to-reader",
+      "cjs",
+      `'use strict';
+const m = require('./lib.cjs');
+console.log(m.plain(21));
+console.log(m.viaApply('!'));
+`,
+      {
+        "lib.cjs": `'use strict';
+exports.name = 'lib';
+const read = function (suffix) { return this.name + suffix; };
+exports.viaApply = function () { return read.apply(this, arguments); };
+exports.plain = function (x) { return x * 2; };
+`,
+      },
+      "42\n",
+      "viaApply",
+      4,
+    ],
+  ] as const)(
+    "%s is a named deferred fence",
+    async (_, name, ext, source, files, stdout, member, line) => {
+      // Node passes the module object on to `read`, which reads it; the
+      // direct call has none to pass.
+      const r = await compileAndRun(name, source, ext, files);
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe(stdout);
+      expect(r.stderr).toMatch(
+        new RegExp(
+          `^Uncaught Error: calling a module export that reads 'this' through its module binding \\('${member}': .*\\) is not supported yet \\[SC1090 at .*${name}\\.${ext}:${line}\\]\\n$`,
+        ),
+      );
+    },
+  );
+
+  test("an export that also reads this beside passing it on is a named deferred fence", async () => {
+    const r = await compileAndRun(
+      "namespace-member-forwards-and-reads-this",
+      `import * as ns from './lib.mjs';
+console.log(ns.tag('x'));
+`,
+      "mjs",
+      {
+        "lib.mjs": `const join = function (a, b) { return a + ':' + b; };
+export function tag(x) { return join.call(this, x, typeof this); }
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('tag': .*\) is not supported yet \[SC1090 at .*namespace-member-forwards-and-reads-this\.mjs:2\]\n$/,
+    );
+  });
+});
+
 // CommonJS forms around the module's exports that keep a refusal name the
 // construct itself (they used to report an unlowerable `require` value, a
 // "binding form with no lowering", or the ES-module `module` message).
@@ -1073,7 +1412,7 @@ console.log(keys(exports));
     [
       "exports-rebinding",
       `console.log("before");
-exports = module.exports = function hash(x) {
+exports = function hash(x) {
   return x;
 };
 exports.extra = 1;
@@ -1081,7 +1420,7 @@ exports.extra = 1;
       {},
       "before\n",
       2,
-      "rebinding 'exports' \\(exports = module\\.exports = value\\)",
+      "rebinding 'exports' without module\\.exports \\(exports = value\\)",
     ],
     [
       "require-computed",
@@ -1127,6 +1466,68 @@ console.log(count(require("./lib.cjs")));
     expect(r.stdout).toBe(stdout);
     expect(r.stderr).toMatch(
       new RegExp(`^Uncaught Error: ${message}.*\\[SC1090 at .*${name}\\.cjs:${line}\\]\\n$`),
+    );
+  });
+});
+
+// WebCrypto's native slice is HMAC importKey('raw'), sign and verify, and
+// the SHA-1/SHA-2 digests. Algorithms Node recognizes outside that slice
+// reject with a coded SC2020 Error instead of a Node-shaped success, and a
+// JavaScript call with the 'jwk' format meets its named fence when it runs.
+// Node's own rejections (unknown names, bad usages) are corpus-pinned
+// (6292, 6294); these refusals have no Node twin, so they live here.
+describe("WebCrypto refusals (JS lane)", () => {
+  test("recognized algorithms outside the HMAC slice reject with SC2020", async () => {
+    const r = await compileAndRun(
+      "webcrypto-unsupported-algorithms",
+      `const bytes = new TextEncoder().encode("secret");
+async function attempt(label, run) {
+  try {
+    await run();
+    console.log(label, "resolved");
+  } catch (e) {
+    console.log(label, e.name, e.code, e.message);
+  }
+}
+await attempt("rsa", () =>
+  crypto.subtle.importKey("raw", bytes, { name: "RSA-PSS", hash: "SHA-256" }, false, ["verify"]),
+);
+const key = await crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+await attempt("ecdsa", () => crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, bytes));
+await attempt("sha3", () => crypto.subtle.digest("SHA3-256", bytes));
+await attempt("sha3 hmac", () =>
+  crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA3-256" }, false, ["sign"]),
+);
+const format = JSON.parse('"jwk"');
+await attempt("computed jwk", () =>
+  crypto.subtle.importKey(format, { kty: "oct", k: "c2VjcmV0" }, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
+);
+`,
+      "mjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "rsa Error SC2020 crypto.subtle.importKey with the RSA-PSS algorithm is not supported yet\n" +
+        "ecdsa Error SC2020 crypto.subtle.sign with the ECDSA algorithm is not supported yet\n" +
+        "sha3 Error SC2020 crypto.subtle.digest with the SHA3-256 algorithm is not supported yet\n" +
+        "sha3 hmac Error SC2020 crypto.subtle.importKey with the SHA3-256 algorithm is not supported yet\n" +
+        "computed jwk Error SC2020 crypto.subtle.importKey with the 'jwk' key format is not supported yet\n",
+    );
+  });
+
+  test("a literal 'jwk' import is a named fence where it runs", async () => {
+    const r = await compileAndRun(
+      "webcrypto-jwk-literal",
+      `console.log("before");
+await crypto.subtle.importKey("jwk", { kty: "oct", k: "c2VjcmV0" }, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+`,
+      "mjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("before\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'crypto\.subtle\.importKey with the 'jwk' key format' is part of the standard library types but has no scriptc lowering yet.*\n$/,
     );
   });
 });

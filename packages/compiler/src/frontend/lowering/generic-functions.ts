@@ -187,9 +187,9 @@ function requireStableGenericBinding(
   name: string,
 ): void {
   const isConst = (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0;
-  const redeclared = lowerer.checker
-    .declarationsOf(symbol)
-    .some((d) => d !== decl && ts.isVariableDeclaration(d) && d.initializer !== undefined);
+  const redeclared = symbol.declarations.some(
+    (d) => d !== decl && ts.isVariableDeclaration(d) && d.initializer !== undefined,
+  );
   if (!isConst && (redeclared || !bindingNeverReassigned(lowerer, symbol, decl))) {
     lowerer.unsupported(
       "SC1090",
@@ -207,11 +207,11 @@ function requireStableGenericBinding(
 export function collectGenericSignature(lowerer: Lowerer, decl: ts.FunctionDeclaration): void {
   const typeParams = declaredTypeParameterSymbols(
     lowerer,
-    decl.typeParameters!,
+    decl.typeParameters!.nodes,
     decl,
     "this function form",
   );
-  checkGenericParameterNames(lowerer, decl.parameters, true);
+  checkGenericParameterNames(lowerer, decl.parameters.nodes, true);
   const nameText = decl.name?.text ?? "%default"; // nameless = the default export (checked by collectSignatureInner)
   const symbol = declSymbolOf(lowerer, decl);
   if (!symbol) lowerer.unsupported("SC1090", decl, "this function form");
@@ -245,7 +245,7 @@ export function lowerGenericCall(
   const instance = info.implicitParams
     ? implicitCallInstance(lowerer, expr, info)
     : genericCallInstance(lowerer, expr, info);
-  const args = lowerer.completeArgs(expr.arguments, instance.params, loc, expr);
+  const args = lowerer.completeArgs(expr.arguments.nodes, instance.params, loc, expr);
   return { kind: "call", callee: instance.name, args, type: instance.returnType, loc };
 }
 
@@ -266,7 +266,7 @@ export function genericCallInstance(
   // honest story (monomorphize per implementation signature with the
   // reconcile bridge, like the non-generic path).
   {
-    const rdecl = rsig ? lowerer.checker.signatureDeclaration(rsig) : undefined;
+    const rdecl = rsig ? rsig.declaration : undefined;
     if (
       rdecl &&
       (ts.isFunctionDeclaration(rdecl) || ts.isMethodDeclaration(rdecl)) &&
@@ -279,7 +279,7 @@ export function genericCallInstance(
       );
     }
   }
-  if (!rsig || rsig.getParameters().length !== info.decl.parameters.length) {
+  if (!rsig || rsig.getParameters().length !== info.decl.parameters.nodes.length) {
     lowerer.unsupported("SC1090", expr, "this call form");
   }
   // Per-param shapes from the RESOLVED signature (types substituted) plus
@@ -288,9 +288,9 @@ export function genericCallInstance(
   // paramShape rules, applied to post-substitution types.
   const params = paramShapes(
     lowerer,
-    info.decl.parameters,
+    info.decl.parameters.nodes,
     rsig,
-    (_param, i) => expr.arguments[i] ?? expr,
+    (_param, i) => expr.arguments.nodes[i] ?? expr,
   );
   const retTs = lowerer.checker.getReturnTypeOfSignature(rsig);
   const local = localClassResultInstance(lowerer, expr, info, rsig, params, retTs);
@@ -438,7 +438,7 @@ export function genericLocalClassBinding(lowerer: Lowerer, node: ts.Node): IrTyp
 /** Whether `node` is declared inside a function with type parameters. */
 function insideGenericFunction(node: ts.Node): boolean {
   for (let parent = node.parent; parent && !ts.isSourceFile(parent); parent = parent.parent)
-    if (ts.isFunctionLike(parent) && (parent.typeParameters?.length ?? 0) > 0) return true;
+    if (ts.isFunctionLike(parent) && (parent.typeParameters?.nodes.length ?? 0) > 0) return true;
   return false;
 }
 
@@ -451,7 +451,7 @@ function localClassOfResult(
 ): ts.ClassLikeDeclaration | null {
   const symbol = type.getSymbol();
   if (!symbol || !(symbol.flags & ts.SymbolFlags.Class)) return null;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (!decl || !(ts.isClassExpression(decl) || ts.isClassDeclaration(decl))) return null;
   for (let parent = decl.parent; parent && !ts.isSourceFile(parent); parent = parent.parent)
     if (parent === info.decl) return decl;
@@ -556,7 +556,7 @@ function internGenericInstance(
 function keyofConstrainedTypeParams(info: GenericFnInfo): Set<ts.Symbol> {
   if (info.keyofTps) return info.keyofTps;
   const out = new Set<ts.Symbol>();
-  info.decl.typeParameters?.forEach((tpDecl, i) => {
+  info.decl.typeParameters?.nodes.forEach((tpDecl, i) => {
     const sym = info.typeParams[i];
     if (!sym || tpDecl.constraint === undefined) return;
     if (
@@ -586,7 +586,7 @@ export function inferTypeParamBindings(
   tsBindings?: Map<ts.Symbol, ts.Type>,
 ): Map<ts.Symbol, IrType> {
   const bindings = new Map<ts.Symbol, IrType>();
-  expr.typeArguments?.forEach((ta, i) => {
+  expr.typeArguments?.nodes.forEach((ta, i) => {
     const tp = info.typeParams[i];
     if (!tp) return;
     const taT = lowerer.checker.getTypeFromTypeNode(ta);
@@ -597,7 +597,13 @@ export function inferTypeParamBindings(
     }
   });
   unifySignatureBindings(lowerer, info, rsig, bindings, tsBindings);
-  bindDefaultTypeParams(lowerer, info.typeParams, info.decl.typeParameters, bindings, tsBindings);
+  bindDefaultTypeParams(
+    lowerer,
+    info.typeParams,
+    info.decl.typeParameters?.nodes,
+    bindings,
+    tsBindings,
+  );
   return bindings;
 }
 
@@ -847,7 +853,7 @@ export function lowerGenericInstance(
   // body returns the resolved promise's INNER type, calls enter through
   // the instance's own spawn wrapper (the emitter routes by fn.async),
   // and awaits park this instance's fibers.
-  const isAsync = decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+  const isAsync = decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
   const nameBlame: ts.Node = (ts.isArrowFunction(decl) ? undefined : decl.name) ?? decl;
   const isGenerator = decl.asteriskToken !== undefined;
   if (isAsync && !isGenerator && inst.returnType.kind !== "promise") {
@@ -909,12 +915,12 @@ export function lowerGenericInstance(
     }
     // Default-param initializers lower per instance, with the bindings
     // threaded — a default mentioning T resolves like any body expression.
-    const declared = lowerer.declareParams(decl.parameters, inst.params);
+    const declared = lowerer.declareParams(decl.parameters.nodes, inst.params);
     params.push(...declared.params);
     const body = [...receiverInit, ...declared.prologue];
     const bodyBlock = blockBodyOf(decl);
     if (bodyBlock) {
-      body.push(...lowerer.lowerStmts(bodyBlock.statements));
+      body.push(...lowerer.lowerStmts(bodyBlock.statements.nodes));
       if (fnCtx.inferReturn) {
         bodyReturn = resolveInferredReturn(lowerer, inst, fnCtx.inferReturn, body, decl);
         inst.returnType = bodyReturn;
@@ -1053,7 +1059,7 @@ export function lowerGenericFnValue(
   unifySignatureBindings(lowerer, info, target, bindings);
   const hofBinding = runtimeOptionalHofGenericBinding(lowerer, ref, info);
   if (hofBinding) bindings.set(hofBinding.typeParam, hofBinding.type);
-  bindDefaultTypeParams(lowerer, info.typeParams, info.decl.typeParameters, bindings);
+  bindDefaultTypeParams(lowerer, info.typeParams, info.decl.typeParameters?.nodes, bindings);
   // A pinning signature that itself keeps type parameters (`let g: <T>(x:
   // T) => T = identity` — storing the generic signature as such) binds
   // nothing: mapType answers null for an unsubstituted parameter.
@@ -1076,13 +1082,13 @@ function runtimeOptionalHofGenericBinding(
   while (argument.parent && ts.isParenthesizedExpression(argument.parent))
     argument = argument.parent;
   const call = argument.parent;
-  if (!ts.isCallExpression(call) || call.arguments[0] !== argument) return null;
+  if (!ts.isCallExpression(call) || call.arguments.nodes[0] !== argument) return null;
   if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "map")
     return null;
   if (!lowerer.isStdlibMember(call.expression)) return null;
   const receiver = lowerer.mapTypeOf(lowerer.typeOf(call.expression.expression));
   if (receiver?.kind !== "array") return null;
-  const parameter = info.decl.parameters[0];
+  const parameter = info.decl.parameters.nodes[0];
   if (!parameter || !ts.isIdentifier(parameter.name)) return null;
   const parameterType = lowerer.typeOf(parameter.name);
   if ((parameterType.flags & ts.TypeFlags.TypeParameter) === 0) return null;
@@ -1138,7 +1144,7 @@ function genericValueInstance(
   try {
     const declSig = lowerer.checker.getSignatureFromDeclaration(info.decl);
     if (!declSig) lowerer.unsupported("SC1090", ref, "this function form");
-    const params = paramShapes(lowerer, info.decl.parameters, declSig);
+    const params = paramShapes(lowerer, info.decl.parameters.nodes, declSig);
     const retTs = lowerer.checker.getReturnTypeOfSignature(declSig);
     const returnType = lowerer.mapTypeOf(retTs);
     if (!returnType) {
@@ -1300,11 +1306,11 @@ export function implicitPatternsOf(
   lowerer: Lowerer,
   decl: ts.FunctionDeclaration | ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction,
 ): (ImplicitPattern | null)[] {
-  return decl.parameters.map((param): ImplicitPattern | null => {
+  return decl.parameters.nodes.map((param): ImplicitPattern | null => {
     if (!ts.isObjectBindingPattern(param.name) || !decl.body) return null;
     if (param.dotDotDotToken || param.questionToken || param.initializer) return null;
     const elements: ImplicitPattern["elements"] = [];
-    for (const element of param.name.elements) {
+    for (const element of param.name.elements.nodes) {
       if (element.dotDotDotToken || element.initializer || !ts.isIdentifier(element.name))
         return null;
       const key = element.propertyName ?? element.name;
@@ -1341,7 +1347,7 @@ function implicitPatternBinding(
     const values = new Map<string, ts.Expression>();
     /** Shorthand properties name the binding they read. */
     const shorthand = new Map<string, ts.Symbol>();
-    for (const property of literal.properties) {
+    for (const property of literal.properties.nodes) {
       if (ts.isShorthandPropertyAssignment(property) && ts.isIdentifier(property.name)) {
         values.set(property.name.text, property.name);
         const read = lowerer.checker.getShorthandAssignmentValueSymbol(property);
@@ -1407,13 +1413,13 @@ export function implicitAnyParamSymbolsOf(
 ): (ts.Symbol | null)[] | null {
   if (!decl.body) return null;
   if (decl.asteriskToken) return null;
-  if (decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return null;
+  if (decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return null;
   if (decl.typeParameters !== undefined) return null; // real generics own the machinery
-  if (decl.parameters.length === 0) return null;
+  if (decl.parameters.nodes.length === 0) return null;
   // The variadic-`arguments` form keeps its dynRest story whole.
   if (bodyReadsArguments(decl)) return null;
   let hasImplicitParams = false;
-  const out = decl.parameters.map((param): ts.Symbol | null => {
+  const out = decl.parameters.nodes.map((param): ts.Symbol | null => {
     if (!ts.isIdentifier(param.name)) return null;
     if (param.dotDotDotToken || param.questionToken || param.initializer) return null;
     if (param.name.text === "this") return null;
@@ -1456,7 +1462,7 @@ function implicitDeclaredReturn(lowerer: Lowerer, info: GenericFnInfo): IrType |
     // Infer their result from the specialized body as well.
     if (
       info.member?.kind === "static" &&
-      info.decl.parameters.some(
+      info.decl.parameters.nodes.some(
         (param, index) =>
           info.implicitParams?.[index] &&
           lowerer.mapTypeOf(lowerer.typeOf(param.name))?.kind === "object",
@@ -1464,7 +1470,7 @@ function implicitDeclaredReturn(lowerer: Lowerer, info: GenericFnInfo): IrType |
     )
       return null;
     const broadCallbackSymbols = new Set(
-      info.decl.parameters.flatMap((param, index) => {
+      info.decl.parameters.nodes.flatMap((param, index) => {
         const symbol = info.implicitParams?.[index];
         return symbol !== null &&
           symbol !== undefined &&
@@ -1507,7 +1513,7 @@ function implicitDeclaredReturn(lowerer: Lowerer, info: GenericFnInfo): IrType |
       // container instead of checking every element against that guess.
       if (!hasExplicitJsDocReturn(info.decl)) return null;
       if (
-        info.decl.parameters.some(
+        info.decl.parameters.nodes.some(
           (param, index) =>
             info.implicitParams?.[index] &&
             lowerer.mapTypeOf(lowerer.typeOf(param.name))?.kind === "array",
@@ -1543,9 +1549,9 @@ function implicitDeclaredReturn(lowerer: Lowerer, info: GenericFnInfo): IrType |
         const symbol = lowerer.resolveValueSymbol(node.expression);
         if (
           symbol &&
-          lowerer.checker
-            .declarationsOf(symbol)
-            .some((decl) => ts.isVariableDeclaration(decl) && jsBindingHasOpenWrites(lowerer, decl))
+          symbol.declarations.some(
+            (decl) => ts.isVariableDeclaration(decl) && jsBindingHasOpenWrites(lowerer, decl),
+          )
         )
           openReturn = true;
         return undefined;
@@ -1661,8 +1667,8 @@ function storedImplicitArgumentType(lowerer: Lowerer, arg: ts.Expression): IrTyp
   if (
     ts.isObjectLiteralExpression(arg) &&
     isJsSourceFile(arg.getSourceFile()) &&
-    (arg.properties.length === 0 ||
-      arg.properties.some(
+    (arg.properties.nodes.length === 0 ||
+      arg.properties.nodes.some(
         (property) =>
           ts.isMethodDeclaration(property) ||
           ts.isAccessor(property) ||
@@ -1726,9 +1732,9 @@ export function implicitCallInstance(
   /** The destructured names' bound types, which the object's own
    * representation does not always carry. */
   const patternKey: string[] = [];
-  info.decl.parameters.forEach((param, i) => {
+  info.decl.parameters.nodes.forEach((param, i) => {
     const pattern = patterns[i];
-    const patternArg = call.arguments[i];
+    const patternArg = call.arguments.nodes[i];
     if (pattern && patternArg && !ts.isSpreadElement(patternArg)) {
       // The argument's object type binds each destructured name, so a
       // class passed as `{ Base }` keeps its static class type.
@@ -1751,7 +1757,7 @@ export function implicitCallInstance(
     let bound: IrType = DYN;
     const declared = lowerer.paramShape(param);
     if ((lowerer.typeOf(param.name).flags & ts.TypeFlags.Any) === 0) bound = declared.type;
-    const arg = call.arguments[i];
+    const arg = call.arguments.nodes[i];
     if (arg && !ts.isSpreadElement(arg)) {
       const stored = storedImplicitArgumentType(lowerer, arg);
       if (stored?.kind === "dyn") {
@@ -1891,15 +1897,15 @@ export function implicitDefaultInstance(
   blame: ts.Node,
   info: GenericFnInfo,
 ): GenericInstance {
-  const shapes: ParamShape[] = info.decl.parameters.map((param, i) =>
+  const shapes: ParamShape[] = info.decl.parameters.nodes.map((param, i) =>
     info.implicitParams![i] ? { type: DYN, mode: "required" as const } : lowerer.paramShape(param),
   );
   const argTypes = new Map<ts.Symbol, ts.Type>();
   // Newly bindable nominal class parameters must not retain their JSDoc
   // receiver type in the checked fallback. Keep existing broad JS inference.
-  for (let i = 0; i < info.decl.parameters.length; i++) {
+  for (let i = 0; i < info.decl.parameters.nodes.length; i++) {
     const symbol = info.implicitParams?.[i];
-    const kind = lowerer.mapTypeOf(lowerer.typeOf(info.decl.parameters[i]!.name))?.kind;
+    const kind = lowerer.mapTypeOf(lowerer.typeOf(info.decl.parameters.nodes[i]!.name))?.kind;
     if (symbol && (kind === "object" || kind === "array")) {
       argTypes.set(symbol, lowerer.checker.getUnknownType());
     }
@@ -1935,7 +1941,7 @@ function internImplicitInstance(
     );
   }
   const rendered = shapes.map((s) => lowerer.fmt(s.type)).join(", ");
-  const dynamicBroadPromise = info.decl.parameters.some(
+  const dynamicBroadPromise = info.decl.parameters.nodes.some(
     (param, index) =>
       info.implicitParams?.[index] !== null &&
       info.implicitParams?.[index] !== undefined &&
@@ -1976,7 +1982,9 @@ function internImplicitInstance(
     // this exact committed instance body here; repeated instantiations of
     // the same declaration find the facade memos warm.
     lowerer.checker.prefetchRoots([
-      ...info.decl.parameters.flatMap((param) => (param.initializer ? [param.initializer] : [])),
+      ...info.decl.parameters.nodes.flatMap((param) =>
+        param.initializer ? [param.initializer] : [],
+      ),
       ...(info.decl.body ? [info.decl.body] : []),
     ]);
     const fn = lowerer.lowerGenericInstance(info, inst);
@@ -2033,9 +2041,9 @@ export function implicitLocalFnNodeOf(
     const sym = lowerer.checker.getSymbolAtLocation(decl.name);
     if (!sym) return null;
     const isConst = (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0;
-    const redeclared = lowerer.checker
-      .declarationsOf(sym)
-      .some((d) => d !== decl && ts.isVariableDeclaration(d) && d.initializer !== undefined);
+    const redeclared = sym.declarations.some(
+      (d) => d !== decl && ts.isVariableDeclaration(d) && d.initializer !== undefined,
+    );
     if (redeclared) return null;
     if (!isConst && !bindingNeverReassigned(lowerer, sym, decl)) return null;
     // The capture scan: instances are module functions with no frame.
@@ -2051,7 +2059,7 @@ export function implicitLocalFnNodeOf(
       }
       if (ts.isIdentifier(n)) {
         const s = lowerer.checker.getSymbolAtLocation(n);
-        const d = s ? lowerer.checker.valueDeclarationOf(s) : undefined;
+        const d = s ? s.valueDeclaration : undefined;
         if (
           d &&
           d.getSourceFile() === decl.getSourceFile() &&
@@ -2138,7 +2146,7 @@ export function objLitGenericFnNodeOf(
   fnNode: ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction;
   literal: ts.ObjectLiteralExpression;
 } | null {
-  const decl = lowerer.checker.valueDeclarationOf(propSym);
+  const decl = propSym.valueDeclaration;
   if (!decl) return null;
   if (ts.isMethodDeclaration(decl) && ts.isObjectLiteralExpression(decl.parent)) {
     return decl.typeParameters !== undefined && decl.body !== undefined
@@ -2179,7 +2187,7 @@ export function objLitGenericFnInfoOf(
   const existing = lowerer.objLitGenericFns.get(fnNode);
   if (existing) return existing;
   if (fnNode.asteriskToken) lowerer.unsupported("SC1071", blame);
-  if (fnNode.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+  if (fnNode.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
     lowerer.unsupported("SC1090", blame, "async object-literal generic methods");
   }
   // `this` is the receiver object — records don't model it (the
@@ -2198,11 +2206,11 @@ export function objLitGenericFnInfoOf(
   }
   const typeParams = declaredTypeParameterSymbols(
     lowerer,
-    fnNode.typeParameters!,
+    fnNode.typeParameters!.nodes,
     blame,
     "this method form",
   );
-  checkGenericParameterNames(lowerer, fnNode.parameters, false);
+  checkGenericParameterNames(lowerer, fnNode.parameters.nodes, false);
   const info: GenericFnInfo = {
     decl: fnNode,
     baseName: name,
@@ -2312,7 +2320,12 @@ export function bindingGenericFnInfoOf(
   const typeParams: ts.Symbol[] = [];
   if (fnNode.typeParameters !== undefined) {
     typeParams.push(
-      ...declaredTypeParameterSymbols(lowerer, fnNode.typeParameters, fnNode, "this function form"),
+      ...declaredTypeParameterSymbols(
+        lowerer,
+        fnNode.typeParameters.nodes,
+        fnNode,
+        "this function form",
+      ),
     );
   } else {
     // The CONTEXTUAL shape (bindingContextualGenericFnNodeOf): the type
@@ -2328,7 +2341,7 @@ export function bindingGenericFnInfoOf(
       typeParams.push(tpSym);
     }
   }
-  checkGenericParameterNames(lowerer, fnNode.parameters, true);
+  checkGenericParameterNames(lowerer, fnNode.parameters.nodes, true);
   const stmt = decl.parent?.parent; // declarator → list → statement (nsPathPrefix wants the statement)
   const info: GenericFnInfo = {
     decl: fnNode,
@@ -2407,7 +2420,7 @@ export function requireObjLitGenericReceiver(
     );
   if (!ts.isIdentifier(recv)) fenceReceiver();
   const recvSym = lowerer.resolveValueSymbol(recv);
-  const recvDecl = recvSym ? lowerer.checker.valueDeclarationOf(recvSym) : undefined;
+  const recvDecl = recvSym ? recvSym.valueDeclaration : undefined;
   if (
     !recvDecl ||
     !ts.isVariableDeclaration(recvDecl) ||

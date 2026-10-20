@@ -22,6 +22,7 @@ import {
   threadSlotsMemberOf,
 } from "../experimental-import.js";
 import * as ts from "../ts7/adapter.js";
+import { withUndefinedArm } from "../type-mapper.js";
 import type { ClassInfo } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
@@ -83,7 +84,7 @@ function rootOf(info: ClassInfo): ClassInfo {
 function familyOf(lowerer: Lowerer, expr: ts.NewExpression): Family {
   const known = lowerer.threadSlotFamilies.get(expr);
   if (known !== undefined) return known;
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   const arg = args[0];
   if (args.length !== 1 || arg === undefined || ts.isSpreadElement(arg))
     lowerer.noLowering(`new ThreadSlots with ${args.length} arguments`, expr);
@@ -168,7 +169,7 @@ function declaringNew(lowerer: Lowerer, receiver: ts.Expression): ts.NewExpressi
   let symbol = checker.getSymbolAtLocation(ref);
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
     symbol = checker.getAliasedSymbol(symbol);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isVariableDeclaration(decl)) return null;
   const list = decl.parent;
   if (
@@ -211,8 +212,11 @@ export function lowerThreadSlotsCall(lowerer: Lowerer, expr: ts.CallExpression):
   if (callee.questionDotToken !== undefined || expr.questionDotToken !== undefined)
     lowerer.noLowering(`ThreadSlots.${member} through ?.`, expr, `call slots.${member}() directly`);
   const arity = member === "set" ? 2 : 1;
-  if (expr.arguments.length !== arity || expr.arguments.some((a) => ts.isSpreadElement(a)))
-    lowerer.noLowering(`ThreadSlots.${member} with ${expr.arguments.length} arguments`, expr);
+  if (
+    expr.arguments.nodes.length !== arity ||
+    expr.arguments.nodes.some((a) => ts.isSpreadElement(a))
+  )
+    lowerer.noLowering(`ThreadSlots.${member} with ${expr.arguments.nodes.length} arguments`, expr);
   const init = declaringNew(lowerer, callee.expression);
   if (init === null)
     lowerer.unsupported(
@@ -229,22 +233,28 @@ export function lowerThreadSlotsCall(lowerer: Lowerer, expr: ts.CallExpression):
     lowerer.lowerExpr(callee.expression),
     slotsType,
   );
-  const keyNode = expr.arguments[0]!;
+  const keyNode = expr.arguments.nodes[0]!;
   const key = lowerer.coerceInto(keyNode, lowerer.lowerExpr(keyNode), family.key);
   const name: IrExpr = { kind: "strLit", value: family.name, type: STRING, loc };
   const args = [name, receiver, key];
   switch (member) {
     case "get": {
+      // The slots hold values in the layout of the type the constructor registered (`family.value`,
+      // which `set` stores with). The receiver's annotation can name a structurally wider value
+      // type, so the value read is converted to the call's type like any value flowing into it.
       const resultTs = lowerer.typeOf(expr);
       const result = lowerer.mapTypeOf(resultTs);
       if (result === null) lowerer.badType(expr, resultTs);
-      return { kind: "intrinsic", name: "slots.get", args, type: result!, loc };
+      const stored = withUndefinedArm(family.value, lowerer.unions);
+      if (stored === null) lowerer.badType(expr, resultTs);
+      const read: IrExpr = { kind: "intrinsic", name: "slots.get", args, type: stored!, loc };
+      return typeKey(stored!) === typeKey(result!) ? read : lowerer.coerceInto(expr, read, result!);
     }
     case "has":
     case "delete":
       return { kind: "intrinsic", name: `slots.${member}`, args, type: { kind: "bool" }, loc };
     case "set": {
-      const valueNode = expr.arguments[1]!;
+      const valueNode = expr.arguments.nodes[1]!;
       const value = lowerer.coerceInto(valueNode, lowerer.lowerExpr(valueNode), family.value);
       // `set` returns the slots; a statement discards them.
       const type = ts.isExpressionStatement(expr.parent) ? VOID : slotsType;

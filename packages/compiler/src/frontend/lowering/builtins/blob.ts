@@ -70,7 +70,7 @@ function memberNameOf(access: ts.PropertyAccessExpression | ts.ElementAccessExpr
 export function lowerBlobNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   const cls = blobClassOf(lowerer, expr.expression);
   if (cls === null) return null;
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   if (args.some(ts.isSpreadElement)) return null;
   const loc = locOf(expr);
   const values = args.map((arg) =>
@@ -94,10 +94,10 @@ export function lowerStaticBlobCall(lowerer: Lowerer, call: ts.CallExpression): 
   const member = access.name.text;
   if (access.questionDotToken || !BLOB_CALLS.has(member)) return null;
   if (blobReceiverClass(lowerer, access.expression) === null) return null;
-  if (call.arguments.some(ts.isSpreadElement)) return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
   const loc = locOf(call);
   const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
-  const args = call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  const args = call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
   if (member === "slice") {
     return {
       kind: "libCall",

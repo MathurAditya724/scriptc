@@ -20,12 +20,12 @@ export function isStrictCode(node: ts.Node): boolean {
       ts.isFunctionLike(parent) &&
       parent.body &&
       ts.isBlock(parent.body) &&
-      hasUseStrictDirective(parent.body.statements)
+      hasUseStrictDirective(parent.body.statements.nodes)
     )
       return true;
     if (ts.isSourceFile(parent)) {
       return (
-        hasUseStrictDirective(parent.statements) ||
+        hasUseStrictDirective(parent.statements.nodes) ||
         (!isCjsJsFile(parent) && (isNodeEsmFile(parent) || ts.isExternalModule(parent)))
       );
     }

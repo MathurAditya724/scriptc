@@ -137,7 +137,7 @@ function literalAccessorDescriptor(node: ts.Expression): boolean {
   while (ts.isParenthesizedExpression(node)) node = node.expression;
   return (
     ts.isObjectLiteralExpression(node) &&
-    node.properties.some(
+    node.properties.nodes.some(
       (property) =>
         property.name !== undefined &&
         (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
@@ -158,7 +158,7 @@ export function lowerClassFieldDefine(
   target: IrExpr,
 ): IrExpr | null {
   const info = attributeClass(lowerer, target);
-  const key = call.arguments[1]!;
+  const key = call.arguments.nodes[1]!;
   if (!info || !ts.isStringLiteral(key)) return null;
   const field = key.text;
   const fieldType = info.fields.get(field);
@@ -168,7 +168,7 @@ export function lowerClassFieldDefine(
     [...(info.symbolFields?.values() ?? [])].includes(field)
   )
     return null;
-  if (literalAccessorDescriptor(call.arguments[2]!)) {
+  if (literalAccessorDescriptor(call.arguments.nodes[2]!)) {
     lowerer.pushDiag({
       code: "SC2020",
       message: `Object.defineProperty with an accessor descriptor for the declared field '${field}' is not supported yet`,
@@ -217,7 +217,7 @@ export function lowerClassFieldDefine(
       {
         kind: "varDecl",
         localId: descriptorSlot.id,
-        init: lowerer.lowerExprExpecting(call.arguments[2]!, DYN),
+        init: lowerer.lowerExprExpecting(call.arguments.nodes[2]!, DYN),
         loc,
       },
       {

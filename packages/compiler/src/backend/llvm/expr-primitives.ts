@@ -47,11 +47,11 @@ export function emitLiteralExpr(
       return { name: e.value ? "true" : "false", type: e.type };
     case "strLit": {
       const sym = host.internLiteral(e.value);
-      return host.own({ name: host.retainValue(sym, e.type), type: e.type });
+      return host.own({ name: host.retainFrame(sym, e.type), type: e.type });
     }
     case "moduleNsRef": {
       const sym = host.internLiteral(`module:${e.moduleId}`);
-      return host.own({ name: host.retainValue(sym, e.type), type: e.type });
+      return host.own({ name: host.retainFrame(sym, e.type), type: e.type });
     }
     case "unitLit":
       // unitLits are consumed inline by the unionWrap case (a unit arm is
@@ -110,10 +110,10 @@ export function emitLiteralExpr(
         const box = host.loadBox(b.slot);
         if (b.local!.tdz === true) {
           const v = host.tdzBoxRead(box, e.type, b.local!.name);
-          return host.own({ name: v, type: e.type });
+          return host.own({ name: host.adoptHeap(v, e.type), type: e.type });
         }
         const v = host.boxGet(box, e.type);
-        return host.own({ name: v, type: e.type });
+        return host.own({ name: host.adoptHeap(v, e.type), type: e.type });
       }
       const t = B.tmp();
       B.line(`${t} = load ${host.llType(b.type)}, ptr ${b.slot}`);
@@ -131,7 +131,7 @@ export function emitLiteralExpr(
           return host.markImmortal({ name: t, type: e.type });
         // The binding's last read takes over its reference (lastUseRead).
         if (host.takeLastUseMove(e, b.slot, b.type)) return host.own({ name: t, type: e.type });
-        return host.own({ name: host.retainValue(t, e.type), type: e.type });
+        return host.own({ name: host.retainFrame(t, e.type), type: e.type });
       }
       return { name: t, type: e.type };
     }
@@ -379,7 +379,29 @@ export function emitOperatorExpr(
         const fn = libm[e.op];
         if (fn === undefined) throw new LlvmUnsupportedError(`bin:${e.op}`, e.loc);
         host.declare(`declare double @${fn}(double, double)`);
-        B.line(`${t} = call double @${fn}(double ${l.name}, double ${r.name})`);
+        // libm's pow answers 1 for pow(±1, ±Infinity) and pow(1, NaN), where
+        // `**` answers NaN (and LLVM folds pow(1.0, x) to 1.0): an inline
+        // guard selects NaN for a base of ±1 with a non-finite exponent and
+        // keeps the direct pow call. A finite literal exponent, or a literal
+        // base other than ±1, cannot meet those cases and needs no guard.
+        if (fn === "pow" && !libmPowAgrees(e.left, e.right)) {
+          host.declare(`declare double @llvm.fabs.f64(double)`);
+          const power = B.tmp();
+          B.line(`${power} = call double @pow(double ${l.name}, double ${r.name})`);
+          const base = B.tmp();
+          const unit = B.tmp();
+          const magnitude = B.tmp();
+          const finite = B.tmp();
+          const reject = B.tmp();
+          B.line(`${base} = call double @llvm.fabs.f64(double ${l.name})`);
+          B.line(`${unit} = fcmp oeq double ${base}, 1.0`);
+          B.line(`${magnitude} = call double @llvm.fabs.f64(double ${r.name})`);
+          B.line(`${finite} = fcmp olt double ${magnitude}, 0x7FF0000000000000`);
+          B.line(`${reject} = select i1 ${finite}, i1 false, i1 ${unit}`);
+          B.line(`${t} = select i1 ${reject}, double 0x7FF8000000000000, double ${power}`);
+        } else {
+          B.line(`${t} = call double @${fn}(double ${l.name}, double ${r.name})`);
+        }
       }
       return { name: t, type: e.type };
     }
@@ -488,8 +510,11 @@ export function emitOperatorExpr(
       if (isRefCounted(b.type)) {
         const old = B.tmp();
         B.line(`${old} = load ptr, ptr ${b.slot}`);
-        host.releaseValue(old, b.type);
-        B.line(`store ptr ${host.retainValue(v.name, v.type)}, ptr ${b.slot}`);
+        if (b.kind === "global") host.releaseHeap(old, b.type);
+        else host.releaseFrame(old, b.type);
+        B.line(
+          `store ptr ${b.kind === "global" ? host.retainHeap(v.name, v.type) : host.retainFrame(v.name, v.type)}, ptr ${b.slot}`,
+        );
       } else {
         B.line(`store ${host.llType(b.type)} ${v.name}, ptr ${b.slot}`);
         host.storeIntegerView(e.localId, v, e.value);
@@ -599,7 +624,7 @@ export function emitStringExpr(
     }
     case "strCmp": {
       const [l, r] = emitStringInputs(host, [e.left, e.right]);
-      const fn = e.utf16 === true ? "scr_str_cmp_u16" : "scr_str_cmp";
+      const fn = "scr_str_cmp_u16";
       host.declare(`declare i32 @${fn}(ptr, ptr)`);
       const c = B.tmp();
       const t = B.tmp();
@@ -632,12 +657,12 @@ export function emitStringExpr(
             case "undefinedT":
             case "nullT": {
               const lit = host.internLiteral(arm.kind === "undefinedT" ? "undefined" : "null");
-              B.line(`store ptr ${host.retainValue(lit, e.type)}, ptr ${slot}`);
+              B.line(`store ptr ${host.retainFrame(lit, e.type)}, ptr ${slot}`);
               break;
             }
             case "string":
               B.line(
-                `store ptr ${host.retainValue(host.unionPeek(v.name, def.id), e.type)}, ptr ${slot}`,
+                `store ptr ${host.retainFrame(host.unionPeek(v.name, def.id), e.type)}, ptr ${slot}`,
               );
               break;
             case "f64": {
@@ -691,7 +716,7 @@ export function emitStringExpr(
         // String(record) / `${record}`: Object.prototype.toString's
         // constant — the interned literal, retained like a strLit.
         const sym = host.internLiteral("[object Object]");
-        return host.own({ name: host.retainValue(sym, e.type), type: e.type });
+        return host.own({ name: host.retainFrame(sym, e.type), type: e.type });
       }
       if (v.type.kind === "caught") {
         // String(e) / `${e}` on a catch binding: JS's String() over the
@@ -748,7 +773,7 @@ export function emitStringExpr(
         };
         host.templateStringsInstances.set(e.key, inst);
       }
-      return host.own({ name: host.retainValue(`@${inst.sym}`, e.type), type: e.type });
+      return host.own({ name: host.retainFrame(`@${inst.sym}`, e.type), type: e.type });
     }
     case "regexIntrinsic":
       return host.emitRegexIntrinsic(e);
@@ -975,7 +1000,7 @@ export function emitRecordExpr(
       }
       const v = host.loadField(ptr, type, false);
       if (isRefCounted(e.type))
-        return host.own({ name: host.retainValue(v, e.type), type: e.type });
+        return host.own({ name: host.retainFrame(v, e.type), type: e.type });
       return { name: v, type: e.type };
     }
     case "recordGet": {
@@ -984,7 +1009,7 @@ export function emitRecordExpr(
       if (inline) return host.own({ name: host.inlineFieldUnion(ptr, type), type: e.type });
       const v = host.loadRecordField(ptr, type, false);
       if (isRefCounted(e.type))
-        return host.own({ name: host.retainValue(v, e.type), type: e.type });
+        return host.own({ name: host.retainFrame(v, e.type), type: e.type });
       return { name: v, type: e.type };
     }
     case "recordLit": {
@@ -1090,7 +1115,7 @@ export function emitRecordLitFields(
     if (f.overflow) {
       const lit = host.internLiteral(f.name);
       const acc = v.type.kind === "f64" ? "f64" : v.type.kind === "bool" ? "bool" : "ref";
-      if (acc === "ref") host.moveTemp(v);
+      if (acc === "ref") host.toHeap(v);
       const ovf = host.recordOvfPtr(rec, shapeId);
       const argTy = acc === "f64" ? "double" : acc === "bool" ? "i1 zeroext" : "ptr";
       host.declare(`declare void @scr_map_set_str_${acc}(ptr, ptr, ${argTy})`);
@@ -1102,4 +1127,20 @@ export function emitRecordLitFields(
     const { ptr, type, inline } = host.recordFieldPtr(rec, shapeId, f.name);
     host.initField(ptr, type, inline, v);
   }
+}
+
+/** Whether libm pow matches `**` for these operands: every case except a
+ * base of ±1 with a NaN or infinite exponent agrees. */
+function libmPowAgrees(base: IrExpr, exponent: IrExpr): boolean {
+  const power = numericLiteral(exponent);
+  if (power !== null && Number.isFinite(power)) return true;
+  const value = numericLiteral(base);
+  return value !== null && !Number.isNaN(value) && Math.abs(value) !== 1;
+}
+
+function numericLiteral(expr: IrExpr): number | null {
+  if (expr.kind === "numLit") return expr.value;
+  if (expr.kind === "unary" && expr.op === "-" && expr.operand.kind === "numLit")
+    return -expr.operand.value;
+  return null;
 }

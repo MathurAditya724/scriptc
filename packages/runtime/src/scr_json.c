@@ -2162,6 +2162,70 @@ static bool scr_dyn_array_proto_name(const ScrStr *key) {
   return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
 }
 
+/* Own string keys of %TypedArray%.prototype, plus BYTES_PER_ELEMENT from
+ * each typed array's own prototype. */
+static bool scr_dyn_typed_array_proto_name(const ScrStr *key) {
+  static const char *const names[] = {
+    "constructor", "buffer", "byteLength", "byteOffset", "length", "entries", "keys", "values",
+    "at", "copyWithin", "every", "fill", "filter", "find", "findIndex", "findLast",
+    "findLastIndex", "forEach", "includes", "indexOf", "join", "lastIndexOf", "map", "reverse",
+    "reduce", "reduceRight", "set", "slice", "some", "sort", "subarray", "toReversed", "toSorted",
+    "with", "toLocaleString", "toString", "BYTES_PER_ELEMENT"
+  };
+  return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
+}
+
+/* Own string keys of Buffer.prototype that %TypedArray%.prototype lacks. */
+static bool scr_dyn_buffer_proto_name(const ScrStr *key) {
+  static const char *const names[] = {
+    "readBigUInt64LE", "readBigUInt64BE", "readBigUint64LE", "readBigUint64BE", "readBigInt64LE",
+    "readBigInt64BE", "writeBigUInt64LE", "writeBigUInt64BE", "writeBigUint64LE",
+    "writeBigUint64BE", "writeBigInt64LE", "writeBigInt64BE", "readUIntLE", "readUInt32LE",
+    "readUInt16LE", "readUInt8", "readUIntBE", "readUInt32BE", "readUInt16BE", "readUintLE",
+    "readUint32LE", "readUint16LE", "readUint8", "readUintBE", "readUint32BE", "readUint16BE",
+    "readIntLE", "readInt32LE", "readInt16LE", "readInt8", "readIntBE", "readInt32BE",
+    "readInt16BE", "writeUIntLE", "writeUInt32LE", "writeUInt16LE", "writeUInt8", "writeUIntBE",
+    "writeUInt32BE", "writeUInt16BE", "writeUintLE", "writeUint32LE", "writeUint16LE",
+    "writeUint8", "writeUintBE", "writeUint32BE", "writeUint16BE", "writeIntLE", "writeInt32LE",
+    "writeInt16LE", "writeInt8", "writeIntBE", "writeInt32BE", "writeInt16BE", "readFloatLE",
+    "readFloatBE", "readDoubleLE", "readDoubleBE", "writeFloatLE", "writeFloatBE", "writeDoubleLE",
+    "writeDoubleBE", "asciiSlice", "base64Slice", "base64urlSlice", "latin1Slice", "hexSlice",
+    "ucs2Slice", "utf8Slice", "asciiWrite", "base64Write", "base64urlWrite", "latin1Write",
+    "hexWrite", "ucs2Write", "utf8Write", "parent", "offset", "copy", "equals", "inspect",
+    "compare", "write", "toJSON", "swap16", "swap32", "swap64"
+  };
+  return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
+}
+
+/* Own string keys of DataView.prototype. */
+static bool scr_dyn_data_view_proto_name(const ScrStr *key) {
+  static const char *const names[] = {
+    "constructor", "buffer", "byteLength", "byteOffset", "getInt8", "setInt8", "getUint8",
+    "setUint8", "getInt16", "setInt16", "getUint16", "setUint16", "getInt32", "setInt32",
+    "getUint32", "setUint32", "getFloat32", "setFloat32", "getFloat64", "setFloat64",
+    "getBigInt64", "setBigInt64", "getBigUint64", "setBigUint64", "getFloat16", "setFloat16"
+  };
+  return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
+}
+
+/* `in` on a typed array, Buffer or DataView. On a typed array, a canonical
+ * numeric key (one that ToString(ToNumber(key)) reproduces, or "-0")
+ * answers by bounds alone: an integral index, not -0, below the length.
+ * Other keys name members of %TypedArray%.prototype, Buffer.prototype for a
+ * Buffer, or Object.prototype. A DataView has no indexed elements: its keys
+ * name members of DataView.prototype or Object.prototype. */
+static bool scr_dyn_bytes_in(const ScrDyn *v, const ScrStr *key) {
+  if (v->v.bytes->is_data_view) return scr_dyn_data_view_proto_name(key) || scr_dyn_object_proto_name(key);
+  if (key->len == 2 && memcmp(key->data, "-0", 2) == 0) return false;
+  double index = scr_string_to_number(key);
+  ScrStr *canonical = scr_f64_to_scrstr(index);
+  bool numeric = canonical->len == key->len && memcmp(canonical->data, key->data, key->len) == 0;
+  scr_str_release(canonical);
+  if (numeric) return index >= 0 && index == floor(index) && index < (double)v->v.bytes->len;
+  return scr_dyn_typed_array_proto_name(key) || (v->buffer && scr_dyn_buffer_proto_name(key)) ||
+         scr_dyn_object_proto_name(key);
+}
+
 static bool scr_dyn_object_proto_key(const ScrDyn *target, const ScrStr *key) {
   return !target->null_proto && scr_dyn_object_proto_name(key);
 }
@@ -3496,10 +3560,19 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
 /* Shared view metadata and indexed reads for both compiler backends. */
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
   ScrBytes *bytes = value->v.bytes;
-  if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return scr_dyn_new_num(scr_bytes_len(bytes));
   if (key->len == 10 && memcmp(key->data, "byteLength", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_len(bytes));
   if (key->len == 10 && memcmp(key->data, "byteOffset", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_offset(bytes));
   if (key->len == 6 && memcmp(key->data, "buffer", 6) == 0) return scr_array_buffer_from_bytes(bytes);
+  if (bytes->is_data_view) {
+    /* A DataView has no length or indexed elements. */
+    if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
+      static const char message[] = "DataView's constructor through unknown is not supported yet";
+      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+      return NULL;
+    }
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return scr_dyn_new_num(scr_bytes_len(bytes));
   if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
     if (!value->buffer) return scr_bytes_constructor_for(bytes->elem);
     /* Buffer retains its separate builtin identity. */
@@ -4415,6 +4488,60 @@ bool scr_dyn_data_view_is(const ScrDyn *value) {
   return value->kind == SCR_DYN_BYTES && value->v.bytes->is_data_view;
 }
 
+/* util.inspect names an object after the function held by the first own
+ * `constructor` data property on its prototype chain (Node's
+ * getConstructorName). The dyn printer reads runtime class names
+ * (v.obj.class_name, set only on prototypes that stay alive), so a
+ * construction through a plain function stamps that prototype with a copy
+ * of the function's name and keeps it alive. The copy is the stamp's own: a
+ * function's name can live in storage the function owns (a bound
+ * function's "bound <name>"), and the function is released when the
+ * writable `constructor` property is replaced. The stamps are cleared and
+ * their copies freed before release at exit, so freelist reuse never sees
+ * them. */
+typedef struct {
+  ScrDyn *prototype;
+  char *name;
+} ScrDynNamedPrototype;
+static SCR_TL ScrDynNamedPrototype *scr_dyn_named_prototypes;
+static SCR_TL size_t scr_dyn_named_count, scr_dyn_named_cap;
+
+static void scr_dyn_named_prototypes_cleanup(void) {
+  for (size_t i = 0; i < scr_dyn_named_count; i++) {
+    scr_dyn_named_prototypes[i].prototype->v.obj.class_name = NULL;
+    scr_dyn_release(scr_dyn_named_prototypes[i].prototype);
+    free(scr_dyn_named_prototypes[i].name);
+  }
+  free(scr_dyn_named_prototypes);
+  scr_dyn_named_prototypes = NULL;
+  scr_dyn_named_count = scr_dyn_named_cap = 0;
+}
+
+static void scr_dyn_name_prototype_chain(const ScrDyn *object) {
+  for (ScrDyn *p = object->prototype; p; p = p->prototype) {
+    if (p->kind != SCR_DYN_OBJ || p->v.obj.class_name) return;
+    ScrDynEntry *entry = scr_dyn_find_entry(p, "constructor", 11);
+    if (!entry || entry->accessor || !entry->value || entry->value->kind != SCR_DYN_FUNC) continue;
+    const char *name = entry->value->v.fn.name;
+    if (!name || !name[0]) continue;
+    if (scr_dyn_named_count == scr_dyn_named_cap) {
+      if (scr_dyn_named_cap == 0) scr_atexit(scr_dyn_named_prototypes_cleanup);
+      size_t cap = scr_dyn_named_cap ? scr_dyn_named_cap * 2 : 8;
+      ScrDynNamedPrototype *grown = realloc(scr_dyn_named_prototypes, cap * sizeof *grown);
+      if (!grown) scr_json_oom();
+      scr_dyn_named_prototypes = grown;
+      scr_dyn_named_cap = cap;
+    }
+    size_t len = strlen(name);
+    char *copy = malloc(len + 1);
+    if (!copy) scr_json_oom();
+    memcpy(copy, name, len + 1);
+    p->v.obj.class_name = copy;
+    scr_dyn_named_prototypes[scr_dyn_named_count++] = (ScrDynNamedPrototype){ scr_dyn_retain(p), copy };
+    return;
+  }
+}
+
 /* Ordinary native function constructors retain their live prototype table.
  * A constructor may replace the fresh receiver with another object. */
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
@@ -4425,6 +4552,7 @@ ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr
   ScrDyn *receiver = scr_iterator_object(prototype) ? scr_dyn_obj_create(prototype) : scr_dyn_new_obj();
   scr_dyn_release(prototype);
   if (!receiver) return NULL;
+  scr_dyn_name_prototype_chain(receiver);
   scr_dyn_this_push_dyn(receiver);
   ScrDyn *result = scr_dyn_call(callee, args->v.arr.items, args->v.arr.len, what->data);
   scr_dyn_this_pop();
@@ -4763,6 +4891,19 @@ static int scr_ih_method_index(const char *name, size_t len);
 static ScrDyn *scr_iterator_helper_method(ScrDyn *self, int index, ScrDyn *const *args, size_t argc);
 static ScrDyn *scr_ih_method_function(int index);
 
+static bool scr_dyn_sync_generator(const ScrDyn *value);
+extern SCR_TL ScrDyn *(*scr_generator_member_hook)(const ScrDyn *, const char *, size_t);
+
+/* scr_iterator_read of an iterator's own next or return method: a
+ * compiled generator answers through the program's registered getters. */
+static ScrDyn *scr_iterator_member(const ScrDyn *iterator, const char *key, size_t len) {
+  if (scr_generator_member_hook && scr_dyn_sync_generator(iterator)) {
+    ScrDyn *member = scr_generator_member_hook(iterator, key, len);
+    if (member) return member;
+  }
+  return scr_iterator_read(iterator, key, len);
+}
+
 static ScrDyn *scr_native_iterator_get(void *ptr, const char *key, size_t len) {
   if (len != 4 || memcmp(key, "next", 4)) {
     /* The Iterator.prototype helper methods. */
@@ -4952,7 +5093,7 @@ static bool scr_ih_budget(const ScrDyn *limit, double *out) {
  * Node's TypeError. Answers false when an exception is pending after. */
 static bool scr_ih_close(ScrDyn *iterator, bool abrupt) {
   ScrCaught *first = abrupt ? scr_exc_take() : NULL;
-  ScrDyn *method = scr_iterator_read(iterator, "return", 6);
+  ScrDyn *method = scr_iterator_member(iterator, "return", 6);
   bool ok = method != NULL;
   if (ok && method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
     ScrDyn *result = scr_iterator_call(method, iterator, "return");
@@ -5019,7 +5160,7 @@ static ScrDyn *scr_ih_direct(const ScrDyn *self, const char *method) {
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
     return NULL;
   }
-  return scr_iterator_read(self, "next", 4);
+  return scr_iterator_member(self, "next", 4);
 }
 
 static ScrDyn *scr_ih_result(ScrDyn *value, bool done) {
@@ -5076,7 +5217,7 @@ static ScrDyn *scr_ih_flattenable(ScrDyn *value, ScrDyn **next_out) {
   }
   scr_dyn_release(method);
   if (!iterator) return NULL;
-  ScrDyn *next = scr_iterator_read(iterator, "next", 4);
+  ScrDyn *next = scr_iterator_member(iterator, "next", 4);
   if (!next) {
     scr_dyn_release(iterator);
     return NULL;
@@ -6358,7 +6499,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
     ScrJsonBuf b;
     scr_jb_init(&b);
     scr_jb_puts(&b, "[object ");
-    scr_jb_puts(&b, scr_bytes_elem_name(d->v.bytes->elem));
+    scr_jb_puts(&b, d->v.bytes->is_data_view ? "DataView" : scr_bytes_elem_name(d->v.bytes->elem));
     scr_jb_putc(&b, ']');
     return scr_jb_finish(&b);
   }
@@ -7024,6 +7165,15 @@ static bool scr_dyn_error_encoding(const ScrDyn *d) {
   return d->kind == SCR_DYN_OBJ && scr_dyn_obj_get(d, "%error", 6) != NULL;
 }
 
+static bool scr_dyn_is_date(const ScrDyn *d) {
+  return d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_DATE;
+}
+
+/* A Date's valueOf(): its time value as a number. +1. */
+static ScrDyn *scr_dyn_date_value_of(const ScrDyn *d) {
+  return scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "valueOf", NULL, 0, "valueOf");
+}
+
 /* Receiver-kind-dispatched toString() on a checked-dynamic value (the
  * dyn method surface — a stream's 'data'/for-await chunk is the common
  * receiver): bytes decode per the encoding (Node's Buffer.toString,
@@ -7044,6 +7194,8 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     return d->v.symbol.render(d->v.symbol.value);
   case SCR_DYN_BYTES:
     if (d->buffer) return scr_bytes_to_str(d->v.bytes, enc);
+    /* DataView has no toString of its own: Object.prototype.toString. */
+    if (d->v.bytes->is_data_view) return scr_str_new("[object DataView]", 17);
     {
       ScrStr *separator = scr_str_new(",", 1);
       ScrStr *out = scr_bytes_join(d->v.bytes, separator);
@@ -7062,7 +7214,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     if (scr_dyn_error_encoding(d) && !scr_dyn_property_owner(d, "toString", 8)) return scr_dyn_error_string(d);
     return scr_str_new("[object Object]", 15);
   case SCR_DYN_HANDLE:
-    if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL) {
+    if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
       if (!text) return NULL;
       ScrStr *out = scr_str_retain(text->v.str);
@@ -7486,6 +7638,14 @@ bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out) {
     return false;
   }
   default: {
+    /* A Date's valueOf answers its time value. */
+    if (scr_dyn_is_date(d)) {
+      ScrDyn *time = scr_dyn_date_value_of(d);
+      if (!time) return false;
+      *out = time->v.num;
+      scr_dyn_release(time);
+      return true;
+    }
     /* Arrays, byte views, functions, promises, and native handles inherit a
      * valueOf that returns the receiver, then use their existing JS-exact
      * string rendering for the numeric conversion. */
@@ -7506,8 +7666,14 @@ double scr_dyn_number_coerce(const ScrDyn *d) {
 
 static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d);
 
+/* ToPrimitive with the number hint, which differs from the default hint
+ * only for a Date: its time value. */
+static ScrDyn *scr_dyn_number_primitive(const ScrDyn *d) {
+  return scr_dyn_is_date(d) ? scr_dyn_date_value_of(d) : scr_dyn_add_primitive(d);
+}
+
 double scr_dyn_number_constructor(const ScrDyn *d) {
-  ScrDyn *primitive = scr_dyn_add_primitive(d);
+  ScrDyn *primitive = scr_dyn_number_primitive(d);
   if (!primitive) return NAN;
   double result = primitive->kind == SCR_DYN_BIGINT
     ? scr_bigint_to_f64(primitive->v.bigint) : scr_dyn_number_coerce(primitive);
@@ -7516,7 +7682,7 @@ double scr_dyn_number_constructor(const ScrDyn *d) {
 }
 
 static ScrBigInt *scr_dyn_bigint_convert(const ScrDyn *d, bool allow_number) {
-  ScrDyn *primitive = scr_dyn_add_primitive(d);
+  ScrDyn *primitive = scr_dyn_number_primitive(d);
   if (!primitive) return NULL;
   ScrBigInt *result = NULL;
   switch (primitive->kind) {
@@ -7649,7 +7815,7 @@ ScrDyn *scr_dyn_add(const ScrDyn *left, const ScrDyn *right) {
 }
 
 ScrDyn *scr_dyn_to_numeric(const ScrDyn *value) {
-  ScrDyn *primitive = scr_dyn_add_primitive(value);
+  ScrDyn *primitive = scr_dyn_number_primitive(value);
   if (!primitive) return NULL;
   if (primitive->kind == SCR_DYN_BIGINT) return primitive;
   double number;
@@ -7673,9 +7839,9 @@ ScrDyn *scr_dyn_increment(const ScrDyn *value, bool increment) {
 bool scr_dyn_compare(const ScrDyn *left, const ScrDyn *right, const ScrStr *operation) {
   // ToPrimitive is observable and always visits the original left operand
   // first, including the > and <= spellings of relational comparison.
-  ScrDyn *l = scr_dyn_add_primitive(left);
+  ScrDyn *l = scr_dyn_number_primitive(left);
   if (!l) return false;
-  ScrDyn *r = scr_dyn_add_primitive(right);
+  ScrDyn *r = scr_dyn_number_primitive(right);
   if (!r) { scr_dyn_release(l); return false; }
   double order = 2;
   if (l->kind == SCR_DYN_STR && r->kind == SCR_DYN_STR) {
@@ -7882,6 +8048,7 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     return out;
   }
   if (v->kind == SCR_DYN_PROXY) return scr_dyn_proxy_has(v, key);
+  if (v->kind == SCR_DYN_BYTES) return scr_dyn_bytes_in(v, key);
   if (scr_dyn_has_key(v, key)) return true;
   if (scr_exc_pending()) return false;
   if (v->kind == SCR_DYN_OBJ) return scr_dyn_builtin_inherited(v, key);
@@ -8182,7 +8349,7 @@ static const char *scr_dyn_kind_name(const ScrDyn *d) {
   case SCR_DYN_ARR: return "array";
   case SCR_DYN_OBJ: return "object";
   case SCR_DYN_UNDEF: return "undefined";
-  case SCR_DYN_BYTES: return scr_bytes_elem_name(d->v.bytes->elem);
+  case SCR_DYN_BYTES: return d->v.bytes->is_data_view ? "DataView" : scr_bytes_elem_name(d->v.bytes->elem);
   case SCR_DYN_FUNC: return "function";
   case SCR_DYN_HANDLE: return scr_dyn_handle_cls(d); /* "got IncomingMessage" */
   case SCR_DYN_PROMISE: return "Promise"; /* "got Promise" */
@@ -14132,4 +14299,116 @@ void scr_class_throw_not_extensible(ScrStr *field) {
   scr_jb_write(&buffer, field->data, field->len);
   scr_jb_puts(&buffer, ", object is not extensible");
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+}
+
+/* ── compiled generators through untyped values ─────────────────────── */
+
+static SCR_TL ScrDyn *scr_generator_next_getter;
+static SCR_TL ScrDyn *scr_generator_return_getter;
+/* Set with the getters, so only programs that register them link the
+ * iterator helpers through these paths. External, so the compiler keeps
+ * the calls through them indirect. */
+SCR_TL ScrDyn *(*scr_generator_member_hook)(const ScrDyn *, const char *, size_t) = NULL;
+SCR_TL bool (*scr_dyn_generator_helper_hook)(ScrDyn *, const char *, ScrDyn *const *, size_t,
+                                             ScrDyn **) = NULL;
+static ScrDyn *scr_generator_member(const ScrDyn *capsule, const char *key, size_t len);
+static bool scr_generator_helper_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                        size_t argc, ScrDyn **out);
+
+static void scr_generator_members_cleanup(void) {
+  scr_dyn_release(scr_generator_next_getter);
+  scr_dyn_release(scr_generator_return_getter);
+  scr_generator_next_getter = NULL;
+  scr_generator_return_getter = NULL;
+  scr_generator_member_hook = NULL;
+  scr_dyn_generator_helper_hook = NULL;
+}
+
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter) {
+  if (!scr_generator_next_getter) scr_atexit(scr_generator_members_cleanup);
+  scr_dyn_release(scr_generator_next_getter);
+  scr_dyn_release(scr_generator_return_getter);
+  scr_generator_next_getter = scr_dyn_retain(next_getter);
+  scr_generator_return_getter = scr_dyn_retain(return_getter);
+  scr_generator_member_hook = &scr_generator_member;
+  scr_dyn_generator_helper_hook = &scr_generator_helper_invoke;
+}
+
+static bool scr_dyn_sync_generator(const ScrDyn *value) {
+  return scr_dyn_generator(value) && value->v.typed_ref.type_key[0] == 'g';
+}
+
+/* A synchronous generator capsule's next or return method (+1), read
+ * through the program's registered getters. NULL for other keys. */
+static ScrDyn *scr_generator_member(const ScrDyn *capsule, const char *key, size_t len) {
+  ScrDyn *getter = len == 4 && !memcmp(key, "next", 4) ? scr_generator_next_getter
+    : len == 6 && !memcmp(key, "return", 6) ? scr_generator_return_getter : NULL;
+  if (!getter) return NULL;
+  ScrDyn *args[1] = { (ScrDyn *)capsule };
+  return scr_dyn_call(getter, args, 1, "next");
+}
+
+static bool scr_generator_helper_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                        size_t argc, ScrDyn **out) {
+  if (!scr_dyn_sync_generator(recv)) return false;
+  int index = scr_ih_method_index(method, strlen(method));
+  if (index < 0) return false;
+  *out = scr_iterator_helper_method(recv, index, args, argc);
+  return true;
+}
+
+ScrDyn *scr_dyn_iterator_helper_method(const ScrStr *name) {
+  int index = scr_ih_method_index(name->data, name->len);
+  return index >= 0 ? scr_ih_method_function(index) : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* Destructuring over an iterable the pack walk cannot list (a compiled
+ * generator, an iterator or iterator helper, a Map or Set): GetIterator,
+ * then the first `n` values through the iterator protocol, or every value
+ * when `all`, into a fresh array. Positions past the end read undefined,
+ * and an iterator with values left closes. `spell` is the compile-time
+ * not-iterable wording, or NULL. +1, or NULL with the error pending. */
+static ScrDyn *scr_dyn_iter_steps(const ScrDyn *src, const ScrStr *spell, size_t n, bool all) {
+  ScrDyn *iterator = scr_dyn_iterator(src, spell);
+  if (!iterator) return NULL;
+  ScrDyn *next = scr_iterator_member(iterator, "next", 4);
+  if (!next) {
+    scr_dyn_release(iterator);
+    return NULL;
+  }
+  ScrDyn *out = scr_dyn_new_arr();
+  bool done = false;
+  for (size_t i = 0; all ? !done : i < n; i++) {
+    ScrDyn *value = done ? scr_dyn_retain(scr_dyn_undefined()) : scr_ih_step(iterator, next, &done);
+    if (!value) goto fail;
+    if (all && done) scr_dyn_release(value);
+    else scr_dyn_arr_push(out, value);
+  }
+  if (!done && !scr_ih_close(iterator, false)) goto fail;
+  scr_dyn_release(next);
+  scr_dyn_release(iterator);
+  return out;
+fail:
+  scr_dyn_release(out);
+  scr_dyn_release(next);
+  scr_dyn_release(iterator);
+  return NULL;
+}
+
+ScrDyn *scr_dyn_destructure_rest(const ScrDyn *src, const ScrStr *msg) {
+  bool packs = src->kind == SCR_DYN_ARR || src->kind == SCR_DYN_STR || src->kind == SCR_DYN_BYTES ||
+    (src->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(src)->iter_pack) ||
+    (src->kind == SCR_DYN_TYPED_REF && !scr_dyn_iterates_by_protocol(src));
+  return packs ? scr_dyn_iter_pack(src, msg) : scr_dyn_iter_steps(src, msg, 0, true);
+}
+
+ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell) {
+  ScrStr *spelling = spell && *spell ? scr_str_new(spell, strlen(spell)) : NULL;
+  ScrDyn *out = scr_dyn_iter_steps(src, spelling, n, false);
+  scr_str_release(spelling);
+  return out;
+}
+
+bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
+  return scr_dyn_sync_generator(value);
 }

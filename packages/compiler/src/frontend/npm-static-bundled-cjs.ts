@@ -46,8 +46,8 @@ for (const [name, source] of helperSources) {
 
 function declaration(stmt: ts.Statement): ts.VariableDeclaration | ts.FunctionDeclaration | null {
   if (ts.isFunctionDeclaration(stmt)) return stmt;
-  if (ts.isVariableStatement(stmt) && stmt.declarationList.declarations.length === 1) {
-    return stmt.declarationList.declarations[0]!;
+  if (ts.isVariableStatement(stmt) && stmt.declarationList.declarations.nodes.length === 1) {
+    return stmt.declarationList.declarations.nodes[0]!;
   }
   return null;
 }
@@ -109,7 +109,7 @@ export function rewriteBundledFunctionImports(source: string, sf: ts.SourceFile)
     string,
     { stmt: ts.Statement; decl: ts.VariableDeclaration | ts.FunctionDeclaration }
   >();
-  for (const stmt of sf.statements) {
+  for (const stmt of sf.statements.nodes) {
     const decl = declaration(stmt);
     if (!decl?.name || !ts.isIdentifier(decl.name)) continue;
     if (declarations.has(decl.name.text)) return null;
@@ -145,23 +145,27 @@ export function rewriteBundledFunctionImports(source: string, sf: ts.SourceFile)
         ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword))
     )
       return null;
-    if (call.arguments.length !== 1) return null;
-    const factory = call.arguments[0]!;
+    if (call.arguments.nodes.length !== 1) return null;
+    const factory = call.arguments.nodes[0]!;
     if (
       !ts.isFunctionExpression(factory) ||
       factory.name ||
       factory.asteriskToken ||
-      factory.modifiers?.length ||
-      factory.parameters.length !== 2 ||
-      factory.body.statements.length !== 1
+      factory.modifiers?.nodes.length ||
+      factory.parameters.nodes.length !== 2 ||
+      factory.body.statements.nodes.length !== 1
     )
       return null;
     if (
-      factory.parameters.some((p) => !ts.isIdentifier(p.name) || p.initializer || p.dotDotDotToken)
+      factory.parameters.nodes.some(
+        (p) => !ts.isIdentifier(p.name) || p.initializer || p.dotDotDotToken,
+      )
     )
       return null;
-    const [exportsName, moduleName] = factory.parameters.map((p) => (p.name as ts.Identifier).text);
-    const statement = factory.body.statements[0]!;
+    const [exportsName, moduleName] = factory.parameters.nodes.map(
+      (p) => (p.name as ts.Identifier).text,
+    );
+    const statement = factory.body.statements.nodes[0]!;
     if (!ts.isExpressionStatement(statement) || !ts.isBinaryExpression(statement.expression))
       return null;
     const assignment = statement.expression;
@@ -213,13 +217,13 @@ export function rewriteBundledFunctionImports(source: string, sf: ts.SourceFile)
         ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword))
     )
       return null;
-    const [requireCall, mode] = call.arguments;
+    const [requireCall, mode] = call.arguments.nodes;
     if (
-      call.arguments.length !== 2 ||
+      call.arguments.nodes.length !== 2 ||
       !requireCall ||
       !ts.isCallExpression(requireCall) ||
       !ts.isIdentifier(requireCall.expression) ||
-      requireCall.arguments.length !== 0 ||
+      requireCall.arguments.nodes.length !== 0 ||
       !mode ||
       !ts.isNumericLiteral(mode) ||
       Number(mode.text) !== 1

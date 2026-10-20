@@ -52,9 +52,9 @@ function connect(files: Record<string, string>) {
 }
 
 function declaration(root: SourceFile, name: string): AstNode {
-  for (const statement of root.statements) {
+  for (const statement of root.statements.nodes) {
     if (statement.name?.text === name) return statement;
-    for (const node of statement.declarationList?.declarations ?? [])
+    for (const node of statement.declarationList?.declarations?.nodes ?? [])
       if (node.name?.text === name) return node;
   }
   throw new Error(`Missing declaration ${name}`);
@@ -80,7 +80,7 @@ test("unchanged AST identities receive independent semantic answers after a depe
     const oldType = old.getTypeAtLocation(name);
     const oldSymbol = old.getSymbolAtLocation(name)!;
     expect(old.typeToString(oldType)).toBe("number");
-    expect(old.valueDeclarationOf(oldSymbol)).toBe(declaration(root, "result"));
+    expect(oldSymbol.valueDeclaration).toBe(declaration(root, "result"));
 
     h.paths.set(h.path("dependency.ts"), 'export const value: string = "changed";');
     const second = h.session.updateSnapshot({
@@ -165,9 +165,6 @@ test("all public query and prefetch entry points reject a disposed facade before
     facade.typeToString(type);
     facade.prefetchSourceFile(root);
     const calls: Record<string, () => unknown> = {
-      declarationsOf: () => facade.declarationsOf(symbol),
-      valueDeclarationOf: () => facade.valueDeclarationOf(symbol),
-      signatureDeclaration: () => facade.signatureDeclaration(signature),
       getCallSignatures: () => facade.getCallSignatures(type),
       getConstructSignatures: () => facade.getConstructSignatures(type),
       getPropertyOfType: () => facade.getPropertyOfType(type, "missing"),

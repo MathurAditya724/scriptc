@@ -249,14 +249,14 @@ function runtimeProvided(info: ClassInfo): boolean {
 function exportedNames(files: readonly ts.SourceFile[]): ReadonlySet<string> {
   const names = new Set<string>();
   for (const sf of files)
-    for (const statement of sf.statements) {
+    for (const statement of sf.statements.nodes) {
       if (
         ts.isExportDeclaration(statement) &&
         statement.moduleSpecifier === undefined &&
         statement.exportClause &&
         ts.isNamedExports(statement.exportClause)
       ) {
-        for (const element of statement.exportClause.elements)
+        for (const element of statement.exportClause.elements.nodes)
           names.add((element.propertyName ?? element.name).text);
       } else if (ts.isExportAssignment(statement) && ts.isIdentifier(statement.expression)) {
         names.add(statement.expression.text);
