@@ -2068,6 +2068,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     readdirSync: ["fs.readdirTypesSync"],
     // The { throwIfNoEntry } probe form.
     statSync: ["fs.statProbeSync"],
+    // realpathSync and realpathSync.native read as function values.
+    realpathSync: ["fs.realpathValue"],
+    "realpathSync.native": ["fs.realpathValue"],
     lstatSync: ["fs.lstatProbeSync"],
     globSync: ["fs.globTypesSync"],
     // The JS-source validation-ladder variant (lowerFsLadderCall): the

@@ -1,3 +1,10 @@
+import {
+  armFallbackSite,
+  fallbackSplitsAt,
+  fallbackTainted,
+  lowerFallbackTail,
+  openFallbackSite,
+} from "./checked-fallback.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import { declaredMemberOf } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
@@ -686,7 +693,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
   // position — instead of failing the whole build). TypeScript keeps
   // compile fences. ICEs (SC9001) always stay compile errors.
   const sf = stmts.length === 0 ? undefined : ts.getSourceFileOfNode(stmts[0]!);
-  const deferFences = sf !== undefined && isJsSourceFile(sf);
+  // The dynamic lowering of a checked-cast fallback tail fences like
+  // JavaScript: a statement with no `any` lowering throws when a failed
+  // value reaches it (checked-fallback.ts).
+  const deferFences = sf !== undefined && (isJsSourceFile(sf) || lowerer.fallbackTaint !== null);
   // Register this list as open for the forward-capture machinery: a
   // nested function lowering mid-list may pre-declare a LATER const of
   // this list as a TDZ box (predeclareForwardCapture), pushing the
@@ -733,6 +743,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
           lowered = accounting;
           appended = true;
         } else {
+          openFallbackSite(lowerer, stmt, out);
           lowered = lowerer.lowerStmt(stmt);
         }
         // The lib-boundary chokepoint (lib-boundary.ts): checked-dynamic
@@ -747,7 +758,16 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
           else body.push(lowered);
           const rewritten = lowerSurplusCalls(lowerer, body);
           enforceLibBoundary(lowerer, rewritten);
+          armFallbackSite(lowerer, stmt, rewritten);
           if (!appended) out.push(...rewritten);
+        }
+        // A checked-cast fallback site's tail starts after this
+        // statement: the rest of the list lowers statically and
+        // dynamically, selected by the site's flag.
+        const splits = fallbackSplitsAt(lowerer, stmt);
+        if (splits.length > 0) {
+          out.push(...lowerFallbackTail(lowerer, stmts.slice(i + 1), splits));
+          break;
         }
         // A JS statement that lowered CLEAN can still have flushed
         // DEFERRED collection diagnostics (a symbol lookup on an alias
@@ -5917,11 +5937,44 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
     writes = indexed;
     lowerer.jsBindingWritesByOwner.set(owner, writes);
   }
-  return (writes.get(decl.name.text) ?? []).some(
-    (node) =>
-      lowerer.resolveValueSymbol(node.left as ts.Identifier) === symbol &&
-      (lowerer.typeOf(node.right).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+  const candidates = (writes.get(decl.name.text) ?? []).filter(
+    (node) => lowerer.resolveValueSymbol(node.left as ts.Identifier) === symbol,
   );
+  if (
+    candidates.some(
+      (node) =>
+        (lowerer.typeOf(node.right).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+    )
+  )
+    return true;
+  // A plain JavaScript write of a value the declared type cannot hold (the
+  // checker does not report it): buffer-crc32 replaces its number[] table
+  // with `new Int32Array(table)`. Only a different representation counts;
+  // writes that coerce into the declared type keep it.
+  // A write whose checker type is the declaration's own maps to the same
+  // representation; the declared type is mapped only for the others.
+  const declaredType = lowerer.typeOf(decl.name);
+  const differing = candidates.filter(
+    (node) =>
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      lowerer.typeOf(node.right) !== declaredType,
+  );
+  if (differing.length === 0) return false;
+  const declared = lowerer.mapTypeOf(declaredType);
+  if (declared === null || declared.kind === "dyn" || declared.kind === "union") return false;
+  return differing.some((node) => {
+    const written = lowerer.mapTypeOf(lowerer.typeOf(node.right));
+    return (
+      written !== null &&
+      written.kind !== "dyn" &&
+      written.kind !== "union" &&
+      !isUnitType(written) &&
+      lowerer.dynConvertible(written) &&
+      lowerer.dynConvertible(declared) &&
+      !typeEquals(written, declared) &&
+      (written.kind !== declared.kind || written.kind === "bytes")
+    );
+  });
 }
 
 function immediatelyGuardedAbsenceProbe(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
@@ -6890,6 +6943,36 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       () => [lowerExprStatement(lowerer, expr.whenFalse)],
     );
     return { kind: "if", cond, then, else_, loc: locOf(expr) };
+  }
+  // A property write to a failed checked value in a fallback tail writes
+  // the dynamic object (checked-fallback.ts).
+  if (
+    lowerer.fallbackTaint !== null &&
+    ts.isBinaryExpression(expr) &&
+    expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    ts.isPropertyAccessExpression(expr.left) &&
+    !expr.left.questionDotToken &&
+    fallbackTainted(lowerer, expr.left.expression)
+  ) {
+    const loc = locOf(expr);
+    const recv = lowerer.lowerExpr(expr.left.expression);
+    if (recv.type.kind === "dyn") {
+      return {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySet",
+          args: [
+            recv,
+            { kind: "strLit", value: expr.left.name.text, type: STRING, loc },
+            lowerer.lowerExprExpecting(expr.right, DYN),
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      };
+    }
   }
   // Assignment statements over the no-storage binding families:
   //   - `f1 = f2` where the RHS roots at an ambient-undefined name:

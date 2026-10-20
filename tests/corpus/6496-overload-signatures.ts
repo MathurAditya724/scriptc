@@ -1,7 +1,7 @@
-// The overload fences that REMAIN now that overload signatures lower:
-// generic overload calls (the per-instantiation body would be typed
-// against a signature it was never checked under), and the multi-
-// signature type surfacing where a binding needs it spelled.
+// Overload signatures: a generic overload call monomorphizes the
+// implementation under the bindings the overload proves (a parameter the
+// overload omits is optional in the implementation), and an immutable
+// alias of an overloaded declaration projects onto the implementation.
 function twice<T>(x: T): T[];
 function twice<T>(x: T, n: number): T[];
 function twice<T>(x: T, n?: number): T[] {

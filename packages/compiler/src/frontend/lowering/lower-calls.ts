@@ -3367,6 +3367,8 @@ function lowerDynReceiverMethodCall(
       ? lowerer.checker.getNonNullableType(rawRecvTs)
       : rawRecvTs;
   if (lowerer.classImplementedProtocol(recvTs)) {
+    const viewed = pickViewGenericMethodCall(lowerer, call, access, recvTs);
+    if (viewed) return viewed;
     const property = lowerer.checker.getPropertyOfType(recvTs, access.name.text);
     if (
       property &&
@@ -9338,15 +9340,18 @@ function lowerObjLitGenericMethodCall(
       lowerer.checker.getCallSignatures(recvT).length > 0
     ) {
       const value = tryLowerExpression(lowerer, access.expression);
+      // Builtin function values held as checked-dynamic functions
+      // (String.fromCharCode, JSON.stringify) bind the same way.
       if (
-        value?.type.kind === "func" &&
-        lowerer.dynConvertible(value.type) &&
+        value &&
+        (value.type.kind === "dyn" ||
+          (value.type.kind === "func" && lowerer.dynConvertible(value.type))) &&
         !call.arguments.nodes.some(ts.isSpreadElement)
       ) {
         const loc = locOf(call);
         return {
           kind: "dynInvoke",
-          recv: { kind: "dynFrom", value, type: DYN, loc },
+          recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
           method: name,
           calleeName: ts.getTextOfNode(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
@@ -10409,6 +10414,53 @@ function maybePromiseHandlerResult(
     );
   }
   return stmt;
+}
+
+/** `view.m(args)` where `view` is a `Pick<C, K>` / `Omit<C, K>` view of a
+ * program class C and `m` is one of C's GENERIC methods (its overloads
+ * included): generic methods have no dispatchable method value, so the
+ * view's live receiver is extracted as the C instance it holds (a checked
+ * extraction — a value of another class throws Node-style TypeError
+ * text naming C) and the call monomorphizes statically against C, the
+ * same lowering a C-typed receiver gets. Null for other receivers. */
+function pickViewGenericMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  recvTs: ts.Type,
+): IrExpr | null {
+  const alias = recvTs.getAliasSymbol();
+  if (alias === undefined || (ts.symbolName(alias) !== "Pick" && ts.symbolName(alias) !== "Omit"))
+    return null;
+  if (!alias.declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile)) return null;
+  const source = recvTs.getAliasTypeArguments()[0];
+  const symbol = source?.getSymbol();
+  const info = symbol ? lowerer.classBySymbol.get(symbol) : undefined;
+  if (!info || call.questionDotToken || access.questionDotToken) return null;
+  const found = findGenericMethodOn(lowerer, info, access.name.text);
+  if (!found) return null;
+  const loc = locOf(access.expression);
+  const lowered = lowerer.lowerExpr(access.expression);
+  const instance: IrType = { kind: "object", className: info.def.name };
+  // A view that statically holds an instance of another class (a
+  // structurally compatible one) calls that class's method in Node, not
+  // C's: the call is refused rather than extracted as a C instance.
+  if (
+    lowered.type.kind === "object" &&
+    lowered.type.className !== info.def.name &&
+    !lowerer.isSubclassOf(lowered.type.className, info.def.name)
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      access,
+      `calling the generic method '${access.name.text}' through a '${ts.symbolName(alias)}' view of '${info.def.name}' that holds a '${lowerer.fmt(lowered.type)}'`,
+    );
+  }
+  const receiver: IrExpr =
+    lowered.type.kind === "object"
+      ? lowered
+      : { kind: "dynCheck", value: lowerer.coerceToExpected(lowered, DYN), type: instance, loc };
+  return lowerClassGenericMethodCall(lowerer, call, access, info, found, receiver);
 }
 
 /** `Object.assign(err, ...sources)` in TypeScript onto an error-hierarchy

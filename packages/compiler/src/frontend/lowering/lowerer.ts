@@ -32,8 +32,12 @@ import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
-import { isOptionalProcessStreamProperty } from "./builtins/process.js";
+import {
+  isOptionalProcessStreamProperty,
+  isOptionalProcessVersionsRead,
+} from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
+import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
@@ -135,6 +139,7 @@ import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { promoteJsvals } from "../../ir/jsval.js";
+import { fallbackTainted, type FallbackSite, type FallbackTaint } from "./checked-fallback.js";
 import {
   analyzeTiers,
   dynamicStatementCount,
@@ -1848,6 +1853,9 @@ export class Lowerer {
   /** Syntactic writes indexed once per JS scope. Symbol and RHS type
    * checks remain contextual to each binding probe. */
   readonly jsBindingWritesByOwner = new Map<ts.Node, Map<string, ts.BinaryExpression[]>>();
+  /** JavaScript function declarations their own module reassigns
+   * (rebindable-functions.ts). */
+  readonly rebindableFunctions = new Set<ts.FunctionDeclaration>();
   /** TRAP bindings: declarations whose initializer provably throws before
    * producing a value (its chain roots at an ambient-undefined name —
    * ambientUndefVarRootOf). Module init unwinds at the declaration, so no
@@ -2209,6 +2217,10 @@ export class Lowerer {
   runtimeOptionalBindingType(node: ts.Node): IrType | null;
   runtimeOptionalBindingType(node: ts.Node, fallback: IrType): IrType;
   runtimeOptionalBindingType(node: ts.Node, fallback?: IrType): IrType | null {
+    // A binding holding a failed checked value is dynamic: undefined is one
+    // of its values already (checked-fallback.ts).
+    if (this.fallbackTaint !== null && ts.isIdentifier(node) && fallbackTainted(this, node))
+      return fallback ?? null;
     const patternType = this.runtimeOptionalPatternTypes.get(node);
     if (patternType) return patternType;
     const symbol = ts.isIdentifier(node)
@@ -2608,6 +2620,14 @@ export class Lowerer {
   /** True while re-lowering a base function's 2nd+ instance: the same source
    * statements were already counted for the first instance. */
   suppressStats = false;
+  /** Checked-cast fallback (checked-fallback.ts): sites opened by their
+   * root's declaration, by root; armed sites whose tails have not split
+   * yet; the taint of the dynamic tail being lowered; and the number of
+   * splits whose tails are being lowered (each lowers its tail twice). */
+  fallbackSites = new Map<ts.Symbol, FallbackSite>();
+  fallbackArmed: FallbackSite[] = [];
+  fallbackTaint: FallbackTaint | null = null;
+  fallbackSplitDepth = 0;
   /** Comparisons interned by operand representations and equality semantics. */
   readonly equalityHelpers = new Map<string, string>();
   /** Synthetic array-HOF loop functions (map/filter/forEach desugar),
@@ -5085,6 +5105,7 @@ export class Lowerer {
       if (isIndexedRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isRecordIndexPropertyRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
+      if (isOptionalProcessVersionsRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isSettledIteratorValueRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOsConstantsSymbol(symbolOf(e.expression), this))
         return true;
@@ -7918,10 +7939,14 @@ export class Lowerer {
   ): IrStmt & { kind: "runtimeFence" } {
     const loc = locOf(node);
     const code = first?.code ?? fallback?.code ?? "SC1090";
-    const baseMessage =
+    const plainMessage =
       first?.message ??
       fallback?.message ??
       "this statement uses a construct with no static lowering";
+    const baseMessage =
+      this.fallbackTaint !== null
+        ? `a value that failed its checked cast reached code with no dynamic lowering: ${plainMessage}`
+        : plainMessage;
     const messageLoc = first?.loc ?? loc;
     const source = first
       ? (this.program.getSourceFile(messageLoc.file) ?? ts.getSourceFileOfNode(node))
@@ -8229,6 +8254,9 @@ export class Lowerer {
   }
 
   stdlibMemberFence(access: ts.PropertyAccessExpression): void {
+    // A member of a failed checked value reads dynamically, whatever the
+    // static member resolves to (checked-fallback.ts).
+    if (this.fallbackTaint !== null && fallbackTainted(this, access.expression)) return;
     return stdlibMemberFence(this, access);
   }
 
@@ -8278,6 +8306,10 @@ export class Lowerer {
   }
 
   typeOf(node: ts.Node): ts.Type {
+    // The dynamic lowering of a checked-cast fallback tail reads values
+    // derived from the failed value as `any`.
+    if (this.fallbackTaint !== null && fallbackTainted(this, node))
+      return this.checker.getAnyType();
     if (ts.isPropertyAccessExpression(node) && isJsSourceFile(ts.getSourceFileOfNode(node))) {
       const receiver =
         node.expression.kind === ts.SyntaxKind.ThisKeyword && this.fnStack.length > 0
@@ -11683,6 +11715,9 @@ export class Lowerer {
   isSelfReference(ident: ts.Identifier): boolean {
     const ctx = this.ctx;
     if (!ctx.selfSymbol) return false;
+    // A reassigned JavaScript declaration names its module global, which
+    // may hold another function by the time the body runs.
+    if (isRebindableFunctionSymbol(this, ctx.selfSymbol)) return false;
     // The self binding can be shadowed by a scoped local of the same symbol?
     // No — a shadow is a different symbol; symbol identity is exact.
     return this.checker.getSymbolAtLocation(ident) === ctx.selfSymbol;
@@ -11956,6 +11991,7 @@ export class Lowerer {
   }
 
   npmMemberFence(access: ts.PropertyAccessExpression): void {
+    if (this.fallbackTaint !== null && fallbackTainted(this, access.expression)) return;
     return npmMemberFence(this, access);
   }
 
@@ -12945,6 +12981,8 @@ export class Lowerer {
         loc,
       };
     }
+    if (bi.module === "fs" && (bi.member === "realpathSync" || bi.member === "realpathSync.native"))
+      return fsRealpathValue(this, bi.member === "realpathSync.native", loc);
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
   }
@@ -13656,4 +13694,52 @@ function droppedMembers(lowerer: Lowerer, from: IrType, to: IrType, seen: Set<st
     else out.push(...droppedMembers(lowerer, f.type, t.type, seen).map((n) => `${f.name}.${n}`));
   }
   return out;
+}
+
+/** fs.realpathSync and its .native as function values (fs.realpath stores
+ * `var origRealpathSync = fs.realpathSync`): path and options pass through
+ * unchecked to the runtime, which applies Node's argument handling. */
+function fsRealpathValue(lowerer: Lowerer, native: boolean, loc: SrcLoc): IrExpr {
+  const name = native ? "%builtin.fs.realpathSync.native" : "%builtin.fs.realpathSync";
+  if (!lowerer.builtinCallableValueFns.has(name)) {
+    lowerer.builtinCallableValueFns.set(name, name);
+    const params = ["path", "options"].map((id) => ({ localId: id, name: id, type: DYN }));
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: DYN,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: DYN, mutable: false })),
+      loc,
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "libCall",
+            fn: "fs.realpathValue",
+            args: [
+              { kind: "varRef", localId: "path", type: DYN, loc },
+              { kind: "varRef", localId: "options", type: DYN, loc },
+              { kind: "boolLit", value: native, type: BOOL, loc },
+            ],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: {
+      kind: "closure",
+      fnName: name,
+      captures: [],
+      type: { kind: "func", params: [DYN, DYN], ret: DYN },
+      loc,
+    },
+    fnName: native ? "native" : "realpathSync",
+    type: DYN,
+    loc,
+  };
 }

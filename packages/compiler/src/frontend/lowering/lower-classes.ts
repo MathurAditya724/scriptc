@@ -100,7 +100,7 @@ import { isAssertClassNew } from "./assert-instances.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
-import { knownBufEncoding } from "./containers/bytes.js";
+import { knownBufEncoding, lowerNodeModulesBufferConstruct } from "./containers/bytes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
@@ -6770,14 +6770,22 @@ function thunkAsyncSlot(
 ): void {
   if (overridden.sig.async !== true) return;
   const declarer = overridden.declarer;
+  // The slot answers the body's promise: an untyped async method's `dyn`
+  // result is the promise's payload, so the slot's ABI is that promise. An
+  // async generator method's slot keeps its generator object.
+  const ret: IrType =
+    overridden.sig.gen || overridden.sig.ret.kind === "promise"
+      ? overridden.sig.ret
+      : { kind: "promise", inner: overridden.sig.ret };
   declarer.returnAdapters ??= new Map();
   if (!declarer.returnAdapters.has(mName)) {
     declarer.returnAdapters.set(mName, {
       params: [...overridden.sig.params],
-      ret: overridden.sig.ret,
+      ret,
       async: true,
     });
   }
+  overridden.sig.ret = ret;
   delete overridden.sig.async;
 }
 
@@ -9204,6 +9212,11 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // A dependency's deprecated `new Buffer(...)` fallback (containers/bytes.ts).
+  {
+    const buffer = lowerNodeModulesBufferConstruct(lowerer, expr);
+    if (buffer) return buffer;
+  }
   // new Function(...): Node's EvalError under
   // --disallow-code-generation-from-strings (code-generation.ts).
   if (codeGenerationCalleeOf(lowerer, expr.expression) === "Function")
