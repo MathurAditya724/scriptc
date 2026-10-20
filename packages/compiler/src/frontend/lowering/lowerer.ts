@@ -2064,7 +2064,9 @@ export class Lowerer {
   /** A pipeline() function stage's `source` parameter: the IR type of what
    * the pipeline passes it (the previous stage as an async iterable), set
    * while the stage lowers. Parameter typing and `for await` heads read
-   * it before the checker's `AsyncIterable<T>`. */
+   * it before the checker's `AsyncIterable<T>`. A stream option callback's
+   * completion parameter declared with an any-typed `data` is pinned here
+   * too while the callback lowers (pinAnyDataCompletion). */
   readonly stageSourceTypes = new Map<ts.Symbol, IrType>();
   /** Set when a match result lowers to execGroups/matchGroups, the inputs
    * of regex span folding. */

@@ -479,6 +479,24 @@ test("node-types: NodeJS stream interfaces and stream.Readable/Writable take eve
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: streams construct and child listeners take @types/node's parameter types", async () => {
+  const outDir = outDirFor("stream-construction");
+  const entry = join(nodeTypesDir, "stream-construction.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "stream-construction"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: promisified setTimeout and setImmediate lower as timers/promises", async () => {
   const outDir = outDirFor("promisify-timers");
   const entry = join(nodeTypesDir, "promisify-timers.ts");

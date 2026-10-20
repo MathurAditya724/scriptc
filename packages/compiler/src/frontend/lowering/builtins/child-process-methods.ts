@@ -132,8 +132,16 @@ export function lowerChildMethodCall(
     ) {
       for (const param of listenerNode.parameters.nodes) lowerer.checkedCallbackParams.add(param);
     }
-    const cb = lowerer.lowerExpr(call.arguments.nodes[1]!);
+    const narrowed =
+      event === "exit" || event === "close"
+        ? narrowedExitListenerParams(lowerer, listenerNode)
+        : [];
+    const cb =
+      narrowed.length > 0
+        ? lowerWithCheckedParams(lowerer, listenerNode, narrowed)
+        : lowerer.lowerExpr(call.arguments.nodes[1]!);
     if (
+      narrowed.length > 0 ||
       (isJsSourceFile(listenerNode.getSourceFile()) && cb.type.kind === "dyn") ||
       (cb.type.kind === "func" &&
         (cb.type.rest ||
@@ -302,10 +310,12 @@ export function lowerChildMethodCall(
 
 /** Method calls on piped child-output stream receivers (child.stdout /
  * child.stderr — the childStream kind): on/once("data" | "end").
- * 'data' listeners take zero parameters, `(chunk: Buffer)`, or a
- * `Buffer | string`-union chunk (the ngrok appendOutput shape — the
- * runtime only ever fires Buffers; the compiler-emitted adapter wraps
- * the chunk at the union's Buffer arm); 'end' listeners take none.
+ * 'data' listeners take zero parameters, `(chunk: Buffer)`, `(chunk:
+ * string)`, an unknown/any chunk (boxed as a checked-dynamic value; see
+ * childStreamEncodedAt), or a `Buffer | string`-union chunk (the ngrok
+ * appendOutput shape — the runtime only ever fires Buffers; the
+ * compiler-emitted adapter wraps the chunk at the union's Buffer arm);
+ * 'end' listeners take none.
  * Statement position only (Node returns the stream for chaining; here
  * the result is void). Chained receivers (`child.stdout?.on(...)`)
  * ride the optional-chain re-dispatch (chainBlocked). Everything else
@@ -379,18 +389,26 @@ export function lowerChildStreamMethodCall(
     if (
       param !== undefined &&
       param.kind !== "string" &&
+      param.kind !== "dyn" &&
       !(param.kind === "bytes" && param.elem === "u8") &&
       !unionOk(param)
     ) {
       lowerer.unsupported(
         "SC1090",
         call.arguments.nodes[1]!,
-        `data listeners whose parameter is not 'Buffer', 'string', or a Buffer-armed union (got '${lowerer.fmt(param)}')`,
+        `data listeners whose parameter is not 'Buffer', 'string', 'unknown', or a Buffer-armed union (got '${lowerer.fmt(param)}')`,
       );
     }
+    // An unknown/any chunk is a Buffer, or a string once setEncoding ran.
+    // The registration takes whichever the enclosing code establishes; a
+    // later setEncoding that contradicts it throws the runtime's
+    // listener-type TypeError instead of delivering the other kind.
+    const strings =
+      param?.kind === "string" ||
+      (param?.kind === "dyn" && childStreamEncodedAt(lowerer, access.expression, call));
     return {
       kind: "libCall",
-      fn: param?.kind === "string" ? "stream.onDataStr" : "stream.onData",
+      fn: strings ? "stream.onDataStr" : "stream.onData",
       args: [receiver, cb, once],
       type: VOID,
       loc,
@@ -520,4 +538,128 @@ export function lowerChildWriterMethodCall(
     'write(string | Uint8Array), end(), destroy(), and on/once("drain" | "finish" | "error", cb) are supported',
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** A receiver spelled as a plain access path (`child.stdout`, `out`): its
+ * root symbol and member names, or null for other forms. */
+function accessPathOf(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): { root: ts.Symbol; path: string } | null {
+  if (ts.isParenthesizedExpression(expr) || ts.isNonNullExpression(expr)) {
+    return accessPathOf(lowerer, expr.expression);
+  }
+  if (ts.isIdentifier(expr)) {
+    const root = lowerer.checker.getSymbolAtLocation(expr);
+    return root ? { root, path: "" } : null;
+  }
+  if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
+    const base = accessPathOf(lowerer, expr.expression);
+    return base === null ? null : { root: base.root, path: `${base.path}.${expr.name.text}` };
+  }
+  return null;
+}
+
+/** Whether an unknown-typed 'data' listener registered by `call` receives
+ * strings: a `setEncoding` statement on the same receiver path precedes
+ * the registration in its own block or an enclosing block of the same
+ * function. With no setEncoding on that path in the function, chunks are
+ * Buffers. Any other placement leaves the encoding state unclear, which
+ * is reported. */
+function childStreamEncodedAt(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  call: ts.CallExpression,
+): boolean {
+  const key = accessPathOf(lowerer, receiver);
+  const statement: ts.Node = call.parent!;
+  let scope: ts.Node | undefined = statement;
+  while (scope && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope)) scope = scope.parent;
+  const unclear = (): never =>
+    lowerer.unsupported(
+      "SC1090",
+      call.arguments.nodes[1]!,
+      "untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string')",
+    );
+  if (key === null || scope === undefined) return unclear();
+  const preceding = new Set<ts.Node>();
+  for (let node: ts.Node = statement; node !== scope;) {
+    const parent: ts.Node | undefined = node.parent;
+    if (parent === undefined) break;
+    if (ts.isBlock(parent) || ts.isSourceFile(parent)) {
+      for (const sibling of parent.statements.nodes) {
+        if (sibling === node) break;
+        preceding.add(sibling);
+      }
+    }
+    node = parent;
+  }
+  const samePath = (
+    a: { root: ts.Symbol; path: string } | null,
+    b: { root: ts.Symbol; path: string },
+  ): boolean => a !== null && a.root === b.root && a.path === b.path;
+  let before = false;
+  let elsewhere = false;
+  const visit = (node: ts.Node): void => {
+    if (node !== scope && ts.isFunctionLike(node)) return;
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "setEncoding" &&
+      samePath(accessPathOf(lowerer, node.expression.expression), key)
+    ) {
+      if (ts.isExpressionStatement(node.parent) && preceding.has(node.parent)) before = true;
+      else elsewhere = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+  if (elsewhere) return unclear();
+  return before;
+}
+
+/** An inline 'exit'/'close' listener may declare `(code: number, signal:
+ * string)`: TypeScript accepts it through ChildProcess's catch-all `on`
+ * overload, while Node passes `number | null` and `Signals | null`. Those
+ * parameters bind as checked-dynamic values (the socket 'data' listener
+ * precedent), so the body observes the null Node passes; a typed use of a
+ * null value throws the checked conversion's TypeError. Returns the
+ * narrowed parameter symbols, empty when the declared types already
+ * admit null. */
+function narrowedExitListenerParams(lowerer: Lowerer, listener: ts.Expression): ts.Symbol[] {
+  if (!ts.isArrowFunction(listener) && !ts.isFunctionExpression(listener)) return [];
+  if (isJsSourceFile(listener.getSourceFile())) return [];
+  const symbols: ts.Symbol[] = [];
+  const wanted: readonly string[] = ["f64", "string"];
+  listener.parameters.nodes.slice(0, 2).forEach((param, i) => {
+    if (!ts.isIdentifier(param.name) || param.dotDotDotToken || param.initializer) return;
+    if (param.questionToken) return;
+    const symbol = lowerer.checker.getSymbolAtLocation(param.name);
+    if (!symbol || lowerer.runtimeOptionalBindingTypes.has(symbol)) return;
+    if (lowerer.paramShape(param).type.kind !== wanted[i]) return;
+    symbols.push(symbol);
+  });
+  return symbols;
+}
+
+/** Lowers an inline listener with the given parameters bound as
+ * checked-dynamic values typed `unknown` for the body. */
+function lowerWithCheckedParams(
+  lowerer: Lowerer,
+  listener: ts.Expression,
+  symbols: readonly ts.Symbol[],
+): IrExpr {
+  const previousImplicit = lowerer.implicitParamTypes;
+  const implicit = new Map(previousImplicit ?? []);
+  for (const symbol of symbols) {
+    implicit.set(symbol, lowerer.checker.getUnknownType());
+    lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+  }
+  lowerer.implicitParamTypes = implicit;
+  try {
+    return lowerer.lowerExpr(listener);
+  } finally {
+    for (const symbol of symbols) lowerer.runtimeOptionalBindingTypes.delete(symbol);
+    lowerer.implicitParamTypes = previousImplicit;
+  }
 }
