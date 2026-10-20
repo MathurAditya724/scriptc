@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2591)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2592)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
     ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
@@ -1632,6 +1632,14 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test("a bundled var export 2591-bundled-var-export byte-matches Node", async () => {
     await expectNodeParity(join(fixturesRoot, "npm/cases/2591-bundled-var-export/main.ts"), [
       "gtvarexport",
+    ]);
+  }, 180_000);
+
+  // 2592: a minified declaration of requires and the bindings read from
+  // them (glob's `var minimatch = …, Minimatch = minimatch.Minimatch`).
+  test("merged require declarations 2592-bundled-merged-requires byte-match Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2592-bundled-merged-requires/main.ts"), [
+      "gtmergedreq",
     ]);
   }, 180_000);
 

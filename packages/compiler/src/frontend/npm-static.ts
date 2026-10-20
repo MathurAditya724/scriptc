@@ -455,6 +455,11 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // Polyfill packages that ARE a Node builtin compile as the builtin.
           const aliased = original === null ? null : services.builtinAliasRequires(original, path);
           if (aliased !== null) original = aliased;
+          // Minified merged declarations of requires and the bindings read
+          // from them become one declaration per binding.
+          const declSplit =
+            original === null ? null : services.splitRequireDeclarations(original, path);
+          if (declSplit !== null) original = declSplit;
           // A module exporting one of its functions reaches its members
           // through that function.
           const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
@@ -469,6 +474,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           if (exportsVar !== null) original = exportsVar;
           const respelled =
             split !== null ||
+            declSplit !== null ||
             esm !== null ||
             aliased !== null ||
             fnExports !== null ||

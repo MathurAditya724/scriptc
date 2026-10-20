@@ -13,6 +13,10 @@ import {
   rewriteBuiltinAliasRequires,
 } from "./npm-static-builtin-aliases.js";
 import { mayHoldEnumIife, rewriteEnumIifes } from "./npm-static-enum-iife.js";
+import {
+  mayMergeRequireDeclarations,
+  splitRequireDeclarations,
+} from "./npm-static-split-declarations.js";
 import { builtinPackageAliasFor } from "./package-shims.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
 import { normalizeCjsExportsVar } from "./npm-static-cjs-exports-var.js";
@@ -105,6 +109,13 @@ export class FrontendServices {
     this.ensureOpen();
     if (!source.includes("module.exports")) return null;
     return normalizeCjsFunctionExports(this.parse(path, source, "js"));
+  }
+  /** A package module with its top-level declarations that mix require()
+   * initializers with other declarators split per declarator (null: none). */
+  splitRequireDeclarations(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!mayMergeRequireDeclarations(source)) return null;
+    return splitRequireDeclarations(this.parse(path, source, "js"));
   }
   /** A package module with its literal-valued TypeScript enum IIFEs
    * respelled as object literals (null: none). */
