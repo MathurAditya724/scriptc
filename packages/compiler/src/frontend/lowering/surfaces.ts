@@ -24,6 +24,7 @@ import {
 } from "../../ir/ir.js";
 import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
+import { V8_MEMBER_REASON } from "../builtin-modules.js";
 
 /** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
 const ZLIB_STREAM: IrType = { kind: "object", className: "%Transform" };
@@ -1908,6 +1909,18 @@ export const BUILTIN_MODULE_FNS: Record<
   // special-cased); the keys exist for the same reason net/http's do.
   dgram: {},
   dns: {},
+  // node:dns/promises rides the same spoke (lookup's promise form).
+  "dns/promises": {},
+  // node:v8: getHeapStatistics answers allocator-derived figures in
+  // Node's shape (builtins/v8.ts — the entry carries the canonical
+  // shape); every other member fences with the by-design reason
+  // (builtinFenceHintOf).
+  v8: {
+    getHeapStatistics: { fn: "process.memoryUsageTake", params: [], result: VOID },
+  },
+  // node:stream/web re-exports the web stream globals (the same objects);
+  // its members lower through the globals' own paths.
+  "stream/web": {},
   // node:assert lowers ENTIRELY through the assert spoke (lower-assert.ts
   // — every call shape is special-cased: optional messages complete, the
   // comparisons pick per-type libCalls, deep equality synthesizes
@@ -2221,14 +2234,22 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "stdlib",
     name: "Date.parse",
     fns: ["date.parse"],
-    note: "one date string, using the bounded parser shared with new Date(dateString).getTime()",
+    note: "one date string, using V8's date parser shared with new Date(dateString)",
   },
   {
     id: "stdlib.date.constructor",
     kind: "stdlib",
     name: "Date constructor",
-    fns: ["date.newNow", "date.newMs", "date.newString", "date.nativeNew"],
-    note: "zero arguments, or one milliseconds/date-string argument; values are the read-only TimeClip scalar slice",
+    fns: [
+      "date.newNow",
+      "date.newMs",
+      "date.newString",
+      "date.nativeNew",
+      "date.newLocal",
+      "date.nativeNewFields",
+      "date.nativeNewValue",
+    ],
+    note: "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice",
   },
   {
     id: "stdlib.date.UTC",
@@ -2430,6 +2451,27 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "node-builtin",
     name: "perf_hooks.performance.clearMeasures",
     fns: ["perf.clearMeasures"],
+  },
+  {
+    id: "node-builtin.perf_hooks.performance.eventLoopUtilization",
+    kind: "node-builtin",
+    name: "perf_hooks.performance.eventLoopUtilization",
+    fns: ["perf.loopStart", "perf.idleTime"],
+    note: "active time is the main thread's CPU time since the loop started; the one- and two-argument difference forms are supported",
+  },
+  {
+    id: "node-builtin.perf_hooks.monitorEventLoopDelay",
+    kind: "node-builtin",
+    name: "perf_hooks.monitorEventLoopDelay",
+    fns: [
+      "perf.eldNew",
+      "perf.eldEnable",
+      "perf.eldDisable",
+      "perf.eldReset",
+      "perf.eldPercentile",
+      "perf.eldStat",
+    ],
+    note: "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported",
   },
   // ── the process global's ambient reads and authority calls
   // (lowerProcessProperty/lowerProcessMethodCall — process is a
@@ -2656,8 +2698,8 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     id: "node-builtin.process.exitCode",
     kind: "node-builtin",
     name: "process.exitCode",
-    fns: ["process.setExitCode"],
-    note: "numeric writes in statement position set the implicit exit status; process.exit() reads it",
+    fns: ["process.setExitCode", "process.setExitCodeTracked", "process.hasExitCode"],
+    note: "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it",
   },
   // ── the tls CA store (lowerTlsCaCall / lowerTlsRootCertificates): the
   // host's trust anchors, read and replaced. Dedicated paths, and
@@ -2803,7 +2845,11 @@ export const FS_CALLBACK_MEMBERS = new Set([
  * inherited function into the diagnostic text). */
 export function builtinFenceHintOf(module: string, member: string): string | undefined {
   const mod = ownEntry(BUILTIN_MODULE_FENCE_HINTS, module);
-  return mod ? ownEntry(mod, member) : undefined;
+  const hint = mod ? ownEntry(mod, member) : undefined;
+  // node:v8's unlowered members observe the engine itself: the by-design
+  // reason, not a pending-surface hint (kept out of the hint table so the
+  // compatibility rows stay by-design rather than refused).
+  return hint === undefined && module === "v8" ? V8_MEMBER_REASON : hint;
 }
 
 /** BUILTIN_MODULE_CONSTS with the win32-target overrides applied — the
@@ -2969,7 +3015,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   util: {
     promisify:
-      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart; call the bound function directly",
+      "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly",
   },
   "stream/consumers": {
     blob:
@@ -3433,6 +3479,10 @@ export function stdlibGlobalAliasNameOf(
     "Number",
     "String",
     "Boolean",
+    // Code generation from strings throws Node's EvalError at every call
+    // (code-generation.ts); zod 4 probes `const F = Function; new F("")`.
+    "Function",
+    "eval",
   ].includes(name)
     ? name
     : null;

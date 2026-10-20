@@ -1,3 +1,4 @@
+import { declareTypedArguments } from "./typed-arguments.js";
 import { varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
@@ -214,6 +215,19 @@ export function lowerLambda(
       ret: funcType.ret.kind === "promise" ? { ...funcType.ret, inner: DYN } : DYN,
     };
   }
+  // An ASYNC lambda whose signature answered a bare checked-dynamic result
+  // (`retry(async () => loose())` against a library slot typed
+  // `(...) => A | Promise<A>` with A = any — the union collapses to `any`):
+  // calling it still produces a promise, so the value's result is
+  // Promise<unknown>, the payload the dyn the body returns.
+  if (
+    funcType.ret.kind === "dyn" &&
+    !ts.isAccessor(node) &&
+    node.asteriskToken === undefined &&
+    node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true
+  ) {
+    funcType = { ...funcType, ret: { kind: "promise", inner: DYN } };
+  }
   // A lambda IS a value: the completed-ABI rule applies at birth. The
   // contextual (target) type decides — `(x?: number) => void` may flow
   // into a slot annotated `(x: number | undefined) => void` (same ABI
@@ -309,6 +323,8 @@ export function lowerLambda(
         : null;
     const { params, prologue } = lowerer.declareParams(node.parameters.nodes, shapes);
     if (receiver) prologue.unshift(receiver);
+    if (ts.isFunctionExpression(node) && lowerer.typedArgumentsLambdas.has(node))
+      declareTypedArguments(lowerer, node, shapes, params, prologue);
     declareFunctionArguments(
       lowerer,
       node,

@@ -810,6 +810,12 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
         }
         if (!values[i]->v.arr.properties) values[i]->v.arr.properties = scr_dyn_new_obj();
         scr_dyn_obj_set(values[i]->v.arr.properties, property->key, property->length, value);
+      } else if (node->kind == SCR_MESSAGE_ERROR && property->length == 5 && !memcmp(property->key, "stack", 5)) {
+        /* The new error's own `stack` accessor stores the value. */
+        ScrStr *key = scr_str_new(property->key, property->length);
+        scr_dyn_key_set(values[i], key, value);
+        scr_str_release(key);
+        scr_dyn_release(value);
       } else scr_dyn_obj_set(values[i], property->key, property->length, value);
     }
     if (node->kind == SCR_MESSAGE_ERROR) {

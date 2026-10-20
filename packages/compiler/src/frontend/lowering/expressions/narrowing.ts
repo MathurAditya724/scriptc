@@ -26,9 +26,11 @@ import { jsBindingHasOpenWrites } from "../lower-stmts.js";
 import { narrowClassUnion, narrowStoredClassValue, structuralNarrowing } from "../class-unions.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "../class-assertions.js";
 import { isOptionalProcessStreamProperty } from "../builtins/process.js";
+import { requestGeneralStreamSurface } from "../general-streams.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
+import { hostedStorageView, hostsAll } from "./hosted-narrowing.js";
 import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
@@ -659,6 +661,12 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       };
     }
   }
+  // A narrowing that refines record arms with an intersection keeps the
+  // stored layout: view the value as the stored arms that can hold it.
+  if (narrowed?.kind === "union") {
+    const hosted = hostedStorageView(lowerer, expr, narrowed, expr.loc);
+    if (hosted) return hosted;
+  }
   // A checker type narrowed to a UNIT arm (the `=== undefined` branch)
   // also stays union-typed: a unit arm has no payload to extract, and
   // nothing useful reads such a value anyway. (Standalone undefined maps
@@ -668,6 +676,14 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     return expr;
   }
   const tag = lowerer.armTag(expr.type.unionId, narrowed);
+  if (
+    tag < 0 &&
+    narrowed.kind === "record" &&
+    !lowerer.unions.get(expr.type.unionId)?.discriminant
+  ) {
+    const hosted = hostedStorageView(lowerer, expr, narrowed, expr.loc);
+    if (hosted) return hosted;
+  }
   if (tag < 0) {
     // The checker may refine fields inside a discriminated record too.
     // That creates a different mapped shape, but does not change the
@@ -926,6 +942,10 @@ export function runtimeOptionalReceiverRead(
       loc,
     );
     if (!helper) {
+      // Intersection-refined record arms read through their stored
+      // layout (the predicate `r is Route & { path: string }`).
+      const hosted = hostedStorageView(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
+      if (hosted) return hosted;
       lowerer.unsupported(
         "SC1090",
         expr,
@@ -945,6 +965,10 @@ export function runtimeOptionalReceiverRead(
     // Preserve the member-specific missing-value error on the two-arm
     // path below; mixed storage also needs to validate its concrete class.
     if (view && (lowerer.unions.get(local.type.unionId)?.arms.length ?? 0) > 2) return view;
+  }
+  if (narrowed.kind === "record" && lowerer.armTag(local.type.unionId, narrowed) < 0) {
+    const hosted = hostedStorageView(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
+    if (hosted) return hosted;
   }
   const undefTag = lowerer.armTag(local.type.unionId, UNDEFINED_T);
   const def = lowerer.unions.get(local.type.unionId);
@@ -1163,6 +1187,56 @@ function classInstanceOrAbsent(lowerer: Lowerer, type: IrType): boolean {
   );
 }
 
+/** `Object.fromEntries(...) as T` with T a declared record (the generic
+ * `transform<T extends Record<string, unknown>>(t: T): T` idiom): the
+ * entries build a pure index-signature record, which has no layout in
+ * common with T's struct. Node keeps the object itself, with exactly the
+ * keys and the order the entries gave it. The result of fromEntries is a
+ * fresh object nothing else references, so the checked-dynamic bridge,
+ * which keeps keys and their order the same way `JSON.parse(text) as T`
+ * does, cannot be told apart from the original object; a value outside
+ * T throws the catchable TypeError of every checked cast. The entries'
+ * values must be scalars or checked-dynamic values, which the bridge
+ * passes by value or by identity; native arrays and records would be
+ * copied. Other sources may be aliased, where a rebuilt object would sever
+ * mutation, so they keep the exact-shape fence. */
+function freshEntriesRecordAssertion(
+  lowerer: Lowerer,
+  expr: ts.AsExpression | ts.TypeAssertion,
+  inner: IrExpr,
+  target: IrType | null,
+): IrExpr | null {
+  if (inner.type.kind !== "record" || target?.kind !== "record") return null;
+  const source = lowerer.shapes.get(inner.type.shapeId);
+  const dest = lowerer.shapes.get(target.shapeId);
+  if (!source?.indexValue || source.tuple || source.fields.length > 0) return null;
+  if (!dest || dest.tuple || dest.indexValue || shapeHasAccessorSlots(dest)) return null;
+  // Native arrays and records in the entries would be copied on the way
+  // through the checked-dynamic bridge, severing their identity: only
+  // slots of scalars or checked-dynamic values pass.
+  if (extractionCopiesReference(lowerer, source.indexValue)) return null;
+  let operand: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (
+    !ts.isCallExpression(operand) ||
+    !ts.isPropertyAccessExpression(operand.expression) ||
+    operand.expression.name.text !== "fromEntries" ||
+    !lowerer.isStdlibGlobal(operand.expression.expression, "Object")
+  )
+    return null;
+  if (!lowerer.dynConvertible(inner.type)) return null;
+  if (
+    !canDynCheckTo(
+      target,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return null;
+  const loc = locOf(expr);
+  return { kind: "dynCheck", value: lowerer.coerceToExpected(inner, DYN), type: target, loc };
+}
+
 /** `e as T` and the old-style assertion `<T>e` — one node shape (both
  * carry `.type` and `.expression`), one lowering. */
 export function lowerAsExpression(
@@ -1214,12 +1288,14 @@ export function lowerAsExpression(
     // the requested shape; an assertion does not bypass runtime checks.
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
     const bridged =
-      narrowed &&
-      (narrowed.kind === "f64" ||
-        narrowed.kind === "bool" ||
-        narrowed.kind === "string" ||
-        narrowed.kind === "object" ||
-        narrowed.kind === "dyn");
+      (narrowed &&
+        (narrowed.kind === "f64" ||
+          narrowed.kind === "bool" ||
+          narrowed.kind === "string" ||
+          narrowed.kind === "object" ||
+          narrowed.kind === "dyn")) ||
+      // `catch (e: any)`: the binding reads as its checked-dynamic value.
+      (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
   const inner = lowerer.lowerExpr(expr.expression);
@@ -1300,6 +1376,14 @@ export function lowerAsExpression(
     ) {
       return lowerer.coerceInto(expr, inner, target);
     }
+    const rebuilt = freshEntriesRecordAssertion(lowerer, expr, inner, target);
+    if (rebuilt) return rebuilt;
+    // `job as Job & { startedAt: number }` on a record: the asserted
+    // record refines the stored one, so the assertion keeps the object
+    // (a width copy would sever writes through the asserted view).
+    if (inner.type.kind === "record" && target && hostsAll(lowerer, inner.type, target)) {
+      return inner;
+    }
     // Static assertions normally erase, but record layouts are
     // monomorphic: a consumer selected from the asserted shape must see
     // that shape physically. Reuse the ordinary slot coercion so plain
@@ -1326,6 +1410,12 @@ export function lowerAsExpression(
           return lowerer.checkedNarrowCall(helper, inner, target, locOf(expr));
         }
       }
+      // An intersection refining the stored record arms keeps the value
+      // (hosted-narrowing.ts): the stored arms that can hold it.
+      if (target && (target.kind === "union" || target.kind === "record")) {
+        const hosted = hostedStorageView(lowerer, inner, target, locOf(expr));
+        if (hosted) return hosted;
+      }
     }
     // `node.parent as Sub | undefined`: a union target whose class arm is
     // narrower than the stored class gets the same checked class view as
@@ -1341,6 +1431,12 @@ export function lowerAsExpression(
     return inner; // erasure, unchanged
   }
 
+  // `value as never` is the escape hatch that makes an unknown value fit
+  // any slot (`tagSuccess(value as never)`). No value has type never, so
+  // checking against its placeholder layout would reject every value.
+  // Erase it instead: the consuming slot applies the same validated
+  // extraction an unknown value gets wherever the checker admits it.
+  if (expr.type.kind === ts.SyntaxKind.NeverKeyword) return inner;
   const targetTs = lowerer.checker.getTypeFromTypeNode(expr.type);
   const target = lowerer.mapTypeOf(targetTs) ?? dynFallbackType(lowerer, expr.type, targetTs);
   if (!target) lowerer.badType(expr.type, targetTs);
@@ -1415,6 +1511,9 @@ export function lowerAsExpression(
     if (DYN_HANDLE_KINDS.has(target.kind)) {
       return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
     }
+    // `value as NodeJS.ReadableStream`: the general stream classes take
+    // the checked cast (general-streams.ts).
+    requestGeneralStreamSurface(lowerer, expr);
     lowerer.unsupported(
       "SC1090",
       expr,

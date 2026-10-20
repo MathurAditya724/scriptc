@@ -50,7 +50,7 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
     }
     if (binding.kind === "global") emitter.checkGlobalTdz(e.localId);
     const value = emitter.B.tmp();
-    emitter.B.line(`${value} = load ptr, ptr ${binding.slot}`);
+    emitter.B.line(`${value} = load ptr, ptr ${binding.slot}${emitter.slotAlias(e.localId)}`);
     return { name: value, type: e.type };
   }
   if (e.kind === "dynCheck" && e.exact) return emitter.emitExactCapsuleObject(e.value, e.type);

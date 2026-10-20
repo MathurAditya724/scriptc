@@ -1,15 +1,18 @@
-import { checkedPromiseAll } from "../checked-promise-all.js";
+import { checkedPromiseAll, thenReader } from "../checked-promise-all.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
-import { type Lowerer } from "../lowerer.js";
+import { newFnCtx, type Lowerer } from "../lowerer.js";
+import { varRef } from "../../../ir/build.js";
 import { maybePromiseResolve, maybePromiseUnionOf } from "../maybe-promise.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
+  BOOL,
   DYN,
   type IrExpr,
   type IrFunction,
   type IrStmt,
   type IrType,
+  UNDEFINED_T,
   VOID,
   arrayOf,
   isUnitType,
@@ -17,13 +20,179 @@ import {
   typeKey,
 } from "../../../ir/ir.js";
 
+/** `Promise.all([p, q, r])` over DIFFERENT promise types — the checker's
+ * tuple overload, `Promise<[A, B, C]>`. One interned async helper per
+ * entry/result signature takes the entries as arguments, awaits the
+ * runtime combinator over the same promises (each widened to
+ * Promise<void>, a type-only view), so settlement is Node's exactly: the
+ * first rejection in settlement order wins and every later one counts as
+ * handled; then it reads each (now fulfilled) entry and returns the
+ * tuple. Entries keep their identity — no value converts through the
+ * checked-dynamic tree. Non-promise entries (numbers, strings, booleans,
+ * unit values — never thenable) pass straight into their slot; a
+ * checked-dynamic entry (a JavaScript function's result) joins through
+ * PromiseResolve: the promise it holds, a promise that adopts a thenable,
+ * or a promise fulfilled with its plain value. The tuple
+ * fulfills one microtask turn after the combinator does. Null when the
+ * result type or an entry has no typed home here. */
+function lowerTuplePromiseAll(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  elems: IrExpr[],
+): IrExpr | null {
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (resultT?.kind !== "promise" || resultT.inner.kind !== "record") return null;
+  const shape = lowerer.shapes.get(resultT.inner.shapeId);
+  if (!shape?.tuple || shape.fields.length !== elems.length) return null;
+  const plainValue = (t: IrType): boolean =>
+    t.kind === "f64" || t.kind === "string" || t.kind === "bool" || isUnitType(t);
+  // A checked-dynamic entry (a JavaScript function's result) may hold a
+  // promise or a plain value at run time; it joins through its promise view.
+  const settles = (t: IrType): boolean => t.kind === "promise" || t.kind === "dyn";
+  if (!elems.some((e) => settles(e.type))) return null;
+  if (!elems.every((e) => settles(e.type) || plainValue(e.type))) return null;
+  const loc = locOf(call);
+  const key = `${elems.map((e) => typeKey(e.type)).join(",")}->${typeKey(resultT.inner)}`;
+  let name = lowerer.arrHofHelpers.get(`promise.allTuple:${key}`);
+  if (name === undefined) {
+    name = `%promise.allTuple.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(`promise.allTuple:${key}`, name);
+    const ctx = newFnCtx(false, null, null, resultT.inner);
+    ctx.isAsync = true;
+    lowerer.fnStack.push(ctx);
+    try {
+      const params = elems.map((e, i) => ({
+        localId: `entry.${i}`,
+        name: `entry${i}`,
+        type: e.type,
+      }));
+      const ref = (i: number): IrExpr => varRef(`entry.${i}`, elems[i]!.type, loc);
+      const dynPromise: IrType = { kind: "promise", inner: DYN };
+      const body: IrStmt[] = [];
+      // Each dyn entry's promise view, in entry order: the promise it
+      // holds, a promise that adopts a thenable's settlement, or a promise
+      // fulfilled with the plain value (PromiseResolve's rule).
+      const views = new Map<number, IrExpr>();
+      elems.forEach((e, i) => {
+        if (e.type.kind !== "dyn") return;
+        const view = lowerer.declareHiddenLocal("%allEntry", dynPromise);
+        body.push({
+          kind: "varDecl",
+          localId: view.id,
+          init: {
+            kind: "libCall",
+            fn: "dyn.promiseResolve",
+            args: [ref(i), thenReader(lowerer, loc)],
+            type: dynPromise,
+            loc,
+          },
+          loc,
+        });
+        views.set(i, varRef(view.id, dynPromise, loc));
+      });
+      const widened: IrExpr[] = [];
+      elems.forEach((e, i) => {
+        const view = views.get(i);
+        if (view !== undefined) {
+          widened.push({
+            kind: "promiseVoidWiden",
+            value: view,
+            type: { kind: "promise", inner: VOID },
+            loc,
+          });
+          return;
+        }
+        if (e.type.kind !== "promise") return;
+        widened.push(
+          e.type.inner.kind === "void"
+            ? ref(i)
+            : {
+                kind: "promiseVoidWiden",
+                value: ref(i),
+                type: { kind: "promise", inner: VOID },
+                loc,
+              },
+        );
+      });
+      const settled: IrExpr = {
+        kind: "awaitExpr",
+        value: {
+          kind: "intrinsic",
+          name: "promise.all",
+          args: [
+            {
+              kind: "arrayLit",
+              elems: widened,
+              type: arrayOf({ kind: "promise", inner: VOID }),
+              loc,
+            },
+          ],
+          type: { kind: "promise", inner: VOID },
+          loc,
+        },
+        type: VOID,
+        loc,
+      };
+      // Shape fields are sorted by name ("10" before "2"); a tuple field's
+      // name is its position.
+      const fields = shape.fields.map((field) => {
+        const i = Number(field.name);
+        const entry = elems[i]!;
+        let value: IrExpr;
+        const view = views.get(i);
+        if (view !== undefined) {
+          value = { kind: "awaitExpr", value: view, type: DYN, loc };
+        } else if (entry.type.kind === "promise") {
+          value =
+            entry.type.inner.kind === "void"
+              ? { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc }
+              : { kind: "awaitExpr", value: ref(i), type: entry.type.inner, loc };
+        } else {
+          value = ref(i);
+        }
+        return { name: field.name, value: lowerer.coerceToExpected(value, field.type) };
+      });
+      body.push(
+        { kind: "exprStmt", expr: settled, loc },
+        {
+          kind: "return",
+          value: { kind: "recordLit", fields, type: resultT.inner, loc },
+          loc,
+        },
+      );
+      lowerer.liftedFns.push({
+        name,
+        params,
+        returnType: resultT.inner,
+        locals: [
+          ...params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+          ...lowerer.ctx.locals,
+        ],
+        body,
+        async: true,
+        loc,
+      });
+    } catch (e) {
+      lowerer.arrHofHelpers.delete(`promise.allTuple:${key}`);
+      throw e;
+    } finally {
+      lowerer.fnStack.pop();
+    }
+  }
+  return { kind: "call", callee: name, args: elems, type: resultT, loc };
+}
+
 /** `Promise.race([...])` on THE Promise global: the entries lower
  * individually (the array never materializes — promise-element arrays
  * have no representation) into a promise.race intrinsic; the result
  * type is the checker's combined promise, and each entry's inner type
  * must be that inner type, one of its union arms, or a sub-union of it
  * (the backend's interned adapters wrap/re-tag fulfillments; a wider
- * entry would need machinery that doesn't exist and fences).
+ * entry would need machinery that doesn't exist and fences). A
+ * Promise<never> entry fits any result, and an entry whose payload widens
+ * into the result's converts. When the checker's combined type has no
+ * representation, the result takes the type the entries that can fulfill
+ * share, or 'unknown'.
  * Promise.all/allSettled/any fence with the sequential-await hint;
  * resolve/reject and the rest fall to the member fence. Null for
  * non-Promise receivers. */
@@ -50,14 +219,47 @@ export function lowerPromiseStaticCall(
         "a non-empty array LITERAL of promises is the supported form: Promise.race([p, q])",
       );
     }
-    const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
-    if (resultT?.kind !== "promise") {
-      lowerer.noLowering(
-        "Promise.race with this combined result type",
-        call,
-        "the entries' value types must combine into a representable union",
-      );
+    // A Promise<never> entry (the deadline idiom: `new Promise<never>((_,
+    // reject) => setTimeout(reject, ms))`) can only reject, so it races
+    // under any result type; its inner type maps to void.
+    const neverEntry = (el: ts.Expression): boolean => {
+      const t = lowerer.typeOf(el);
+      const arg =
+        t.getSymbol()?.name === "Promise"
+          ? lowerer.checker.getTypeArguments(t as ts.TypeReference)[0]
+          : undefined;
+      return arg !== undefined && (arg.flags & ts.TypeFlags.Never) !== 0;
+    };
+    const elements = argNode.elements.nodes;
+    let combined = lowerer.mapTypeOf(lowerer.typeOf(call));
+    let lowered: IrExpr[] | null = null;
+    if (combined?.kind !== "promise") {
+      // The checker's combined type has no representation (an 'any'
+      // element array such as events.once's any[], or 'void | any[]'): the
+      // result takes the one type the entries that can fulfill share, or
+      // else 'unknown' when each of them widens into it.
+      lowered = elements.map((el) => lowerer.lowerExpr(el));
+      const fulfilling = lowered.filter((_, i) => !neverEntry(elements[i]!));
+      const first = fulfilling[0]?.type;
+      const dynResult: IrType & { kind: "promise" } = { kind: "promise", inner: DYN };
+      if (first?.kind === "promise" && fulfilling.every((e) => typeEquals(e.type, first))) {
+        combined = first;
+      } else if (
+        fulfilling.length > 0 &&
+        fulfilling.every(
+          (e) => e.type.kind === "promise" && lowerer.promisePayloadWidens(e.type, dynResult),
+        )
+      ) {
+        combined = dynResult;
+      } else {
+        lowerer.noLowering(
+          "Promise.race with this combined result type",
+          call,
+          "the entries' value types must combine into a representable union",
+        );
+      }
     }
+    const resultT = combined;
     const resultArms =
       resultT.inner.kind === "union"
         ? (lowerer.unions.get(resultT.inner.unionId)?.arms ?? [])
@@ -65,14 +267,17 @@ export function lowerPromiseStaticCall(
     const compatible = (inner: IrType): boolean => {
       if (typeEquals(inner, resultT.inner)) return true;
       if (!resultArms) return false;
+      // A Promise<void> entry fulfills with undefined, which the result
+      // holds when the checker folded `void` into its undefined arm.
+      if (inner.kind === "void") return resultArms.some((a) => a.kind === "undefinedT");
       if (inner.kind === "union") {
         const arms = lowerer.unions.get(inner.unionId)?.arms ?? [];
         return arms.every((a) => resultArms.some((b) => typeEquals(a, b)));
       }
       return resultArms.some((a) => typeEquals(a, inner));
     };
-    const entries = argNode.elements.nodes.map((el) => {
-      const entry = lowerer.lowerExpr(el);
+    const entries = elements.map((el, i) => {
+      const entry = lowered?.[i] ?? lowerer.lowerExpr(el);
       if (entry.type.kind !== "promise") {
         lowerer.noLowering(
           "Promise.race over non-promise entries",
@@ -80,7 +285,11 @@ export function lowerPromiseStaticCall(
           "JS would resolve plain values — wrap them: new Promise((r) => r(v))",
         );
       }
-      if (!compatible(entry.type.inner)) {
+      if (!compatible(entry.type.inner) && !(entry.type.inner.kind === "void" && neverEntry(el))) {
+        // A payload that widens into the result's (into 'unknown', or a
+        // checked conversion) keeps its promise and settlement turn.
+        if (lowerer.promisePayloadWidens(entry.type, resultT))
+          return lowerer.coerceToExpected(entry, resultT);
         lowerer.unsupported(
           "SC1090",
           el,
@@ -140,6 +349,10 @@ export function lowerPromiseStaticCall(
         return { kind: "intrinsic", name: "promise.all", args: [entriesArr], type: resultT, loc };
       }
 
+      if (!isJsSourceFile(call.getSourceFile())) {
+        const tuple = lowerTuplePromiseAll(lowerer, call, elems);
+        if (tuple) return tuple;
+      }
       if (
         isJsSourceFile(call.getSourceFile()) &&
         elems.every((entry) => lowerer.dynConvertible(entry.type))
@@ -488,6 +701,32 @@ export function lowerPromiseStaticCall(
       lowerer.noLowering("Promise.resolve at a unit-typed promise", call);
     }
     const value = lowerer.lowerExprExpecting(argNode, resultT.inner);
+    // In JavaScript, a checked-dynamic argument may itself hold a promise
+    // (a TypeScript async callback's result: `Promise.resolve(fn())`):
+    // Promise.resolve answers THAT promise — the same object, adopted —
+    // and wraps every other value.
+    if (
+      isJsSourceFile(call.getSourceFile()) &&
+      value.type.kind === "dyn" &&
+      resultT.inner.kind === "dyn"
+    ) {
+      const local = lowerer.declareHiddenLocal("%resolveValue", DYN);
+      const ref: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+        result: {
+          kind: "ternary",
+          cond: { kind: "dynTest", test: "promise", value: ref, type: BOOL, loc },
+          then: { kind: "dynCheck", value: ref, type: resultT, loc },
+          else_: { kind: "intrinsic", name: "promise.resolve", args: [ref], type: resultT, loc },
+          type: resultT,
+          loc,
+        },
+        type: resultT,
+        loc,
+      };
+    }
     return { kind: "intrinsic", name: "promise.resolve", args: [value], type: resultT, loc };
   }
   return null; // reject lands on lowerPromiseRejectCall / the member fence

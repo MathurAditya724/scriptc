@@ -1,12 +1,18 @@
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
+import { isJsSourceFile, locOf } from "../../program.js";
+import { varRef } from "../../../ir/build.js";
+import { typeKey } from "../../type-mapper.js";
 import {
+  BOOL,
   F64,
   type IrExpr,
   type IrType,
+  type SrcLoc,
   UNDEFINED_T,
   funcOf,
   isSupportedArrayElem,
+  isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
 
@@ -44,6 +50,24 @@ export function lowerArrayCallback(
   bindUntyped = false,
   expectedReturn?: IrType,
 ): { fnArg: IrExpr & { type: IrType & { kind: "func" } }; arity: number } {
+  // The ambient `Boolean` as the callback (`flags.every(Boolean)`,
+  // `xs.some(Boolean)`, `xs.map(Boolean)`): Boolean(value) answers the
+  // ToBoolean of its FIRST argument and ignores the rest, so the callback
+  // is the interned one-parameter truthiness closure over the lead slot.
+  // The constructor's own generic signature has no compiled value form.
+  // JavaScript files keep their primitive-constructor closure.
+  if (
+    ts.isIdentifier(argNode) &&
+    argNode.text === "Boolean" &&
+    !isJsSourceFile(argNode.getSourceFile()) &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(argNode) ?? undefined)
+  ) {
+    const valueT = lead[0];
+    if (valueT === undefined || valueT.kind === "void" || isUnitType(valueT))
+      lowerer.badType(argNode, lowerer.typeOf(argNode));
+    if (valueT.kind === "union") lowerer.requireTruthyUnion(valueT.unionId, argNode);
+    return { fnArg: truthyFilterCallback(lowerer, valueT, locOf(argNode)), arity: 1 };
+  }
   const full = [...lead, F64, arrT];
   // A DYN-receiver HOF's callback (`parsed.flatMap((value) => ...)`):
   // the contextual signature types the unannotated param `any` (the
@@ -247,4 +271,40 @@ function runtimeOptionalPairVariant(lowerer: Lowerer, expected: IrType, mapped: 
       ? lowerer.stripUndefinedArm(t)
       : t;
   return lowerer.isRuntimeOptionalRecordVariant(strip(expected), strip(mapped));
+}
+
+/** A native closure for the ambient Boolean callback. Reifying the
+ * JavaScript constructor itself is unnecessary; Array#filter only observes
+ * its one-argument ToBoolean result. */
+export function truthyFilterCallback(
+  lowerer: Lowerer,
+  valueT: IrType,
+  loc: SrcLoc,
+): IrExpr & { type: IrType & { kind: "func" } } {
+  const fnT: IrType & { kind: "func" } = { kind: "func", params: [valueT], ret: BOOL };
+  const key = `filterBoolean:${typeKey(valueT)}`;
+  let name = lowerer.arrHofHelpers.get(key);
+  if (!name) {
+    name = `%arr.filterBoolean.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(key, name);
+    const value = varRef("v.0", valueT, loc);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "v.0", name: "v", type: valueT }],
+      returnType: BOOL,
+      locals: [{ id: "v.0", name: "v", type: valueT, mutable: false }],
+      body: [
+        {
+          kind: "return",
+          value:
+            valueT.kind === "dyn"
+              ? { kind: "dynTest", test: "truthy", value, type: BOOL, loc }
+              : { kind: "toBool", operand: value, type: BOOL, loc },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "closure", fnName: name, captures: [], type: fnT, loc };
 }

@@ -1,5 +1,6 @@
 /* Binary operators: arithmetic, comparisons and equality, logical and nullish pairs, and string conversion for concatenation. */
 import * as ts from "../../ts7/adapter.js";
+import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
 import {
   BIGINT_T,
@@ -479,6 +480,22 @@ export function lowerNullishPair(
         () => lowerer.lowerExprExpecting(expr.right, type),
         (stable) => ({ kind: "call", callee: retag, args: [stable], type, loc }),
       );
+    }
+  }
+  // An optional callback defaulted to a function of another signature
+  // (`o.tags ?? (() => ({}))`, fewer parameters or a narrower result): the
+  // result is the callback's own function type, and the default adapts into
+  // it (JavaScript ignores surplus arguments). The checker's merged union
+  // signature would lose the callback's result shape.
+  if (present?.kind === "func" && present.rest !== true) {
+    const raw = lowerer.lowerExpr(expr.right);
+    if (
+      raw.type.kind === "func" &&
+      (typeEquals(raw.type, present) || cleanFuncAdaptable(lowerer, raw.type, present))
+    ) {
+      const right = lowerer.coerceInto(expr.right, raw, present);
+      lowerer.nullishFuncResults.add(expr);
+      return { kind: "nullish", left, right, type: present, loc };
     }
   }
   lowerer.unsupported(

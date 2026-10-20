@@ -191,6 +191,11 @@ typedef enum {
   X(SHARED_ARRAY_BUFFER, 37) \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(URL, 28) /* native WHATWG URL */ \
+  X(WASM_GLOBAL, 61) /* WebAssembly.Global */ \
+  X(WASM_INSTANCE, 58) /* WebAssembly.Instance */ \
+  X(WASM_MEMORY, 59) /* WebAssembly.Memory */ \
+  X(WASM_MODULE, 57) /* WebAssembly.Module (scr_wasm.c) */ \
+  X(WASM_TABLE, 60) /* WebAssembly.Table */ \
   X(WEAK_MAP, 23) /* native weak-key metadata */ \
   X(WEAK_SET, 24) /* native weak membership */ \
   X(WEB_CONTROLLER, 11) /* native ReadableStreamDefaultController */ \
@@ -646,6 +651,9 @@ ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);
 bool scr_dyn_native_search_params_is(const ScrDyn *value);
 bool scr_dyn_native_date_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments);
+ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments);
+ScrDyn *scr_dyn_native_date_new_value(const ScrDyn *arguments);
+ScrStr *scr_dyn_object_tag_of(const ScrDyn *d);
 ScrDyn *scr_dyn_native_date_from_ms(double ms);
 double scr_dyn_native_date_value(const ScrDyn *value);
 ScrDyn *scr_dyn_native_regex(ScrRegex *value);
@@ -697,6 +705,19 @@ ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*r
 ScrDyn *scr_dyn_new_str(ScrStr *s);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
+/* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
+ * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
+ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+/* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
+ * as an interned dynamic function value: +1. */
+ScrDyn *scr_dyn_builtin_function(const ScrStr *name);
+/* A constant-key read of an Object.prototype member name: takes the
+ * ordinary read's +1 result and answers the inherited member in place of
+ * an undefined one (scr_dyn_invoke.c). */
+ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read);
+/* The member `key` read on Object.prototype itself, or NULL for any other
+ * receiver (scr_dyn_invoke.c). */
+ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key);
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);
@@ -937,7 +958,17 @@ double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);
 void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
+void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
+void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits);
+void scr_dyn_class_view_attributes(ScrDyn *view, double bits);
+ScrDyn *scr_class_define_field(ScrDyn *current, double field_bits, double object_bits, ScrStr *name,
+                               ScrDyn *descriptor);
+double scr_class_defined_bits(ScrDyn *holder, ScrStr *name);
+ScrDyn *scr_class_defined_value(ScrDyn *holder, ScrStr *name);
+bool scr_class_descriptor_has_value(ScrDyn *descriptor);
+void scr_class_throw_read_only(ScrStr *field, ScrStr *owner);
+void scr_class_throw_not_extensible(ScrStr *field);
 ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key);
 ScrDyn *scr_dyn_array_proto_call(ScrDyn *target, ScrStr *method, ScrDyn *args);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
@@ -1066,6 +1097,12 @@ extern SCR_TL size_t scr_uncloneable_count;
 ScrDyn *scr_dyn_from_error(const ScrError *e);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
+void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len);
+/* An accessor property of a fresh object: enumerable and configurable,
+ * with the given getter and setter (either may be NULL). Moves both. */
+void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter);
+/* The getter or setter of an own accessor property, +1 (undefined when none). */
+ScrDyn *scr_dyn_obj_accessor_fn(const ScrDyn *obj, const char *key, size_t key_len, bool setter);
 void scr_error_commit_dyn(ScrError *e, const ScrDyn *view);
 /* The reverse extraction, riding the same identity cache: a dyn error
  * that came from a runtime ScrError answers THAT instance (+1;
@@ -1116,6 +1153,45 @@ ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *pr
  * must be static literals (the box never frees them; name may be NULL). */
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name);
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
+/* EventEmitter and the stream constructors as untyped constructor values,
+ * and instanceof over untyped constructor functions
+ * (scr_dyn_builtin_class.c, linked with the dynBuiltinClass feature). */
+ScrDyn *scr_dyn_builtin_class(double kind);
+bool scr_dyn_builtin_instanceof(ScrDyn *value, double kind);
+bool scr_dyn_function_instanceof(ScrDyn *value, ScrDyn *callee);
+/* The stream half of those constructors (scr_dyn_builtin_stream.c, linked
+ * with the dynBuiltinStream feature), registered with
+ * scr_dyn_builtin_class_streams before the first stream class value is
+ * read: construct runs `Readable.call(this, opts)` and the other stream
+ * kinds (+1 or NULL with an exception pending), prototype installs a stream
+ * kind's methods, and event answers EventEmitter.prototype's methods for a
+ * receiver with stream state (true when it handled the call; *result +1 or
+ * NULL with an exception pending). */
+enum {
+  SCR_EE_M_ON, SCR_EE_M_PREPEND, SCR_EE_M_ONCE, SCR_EE_M_PREPEND_ONCE, SCR_EE_M_OFF,
+  SCR_EE_M_REMOVE_ALL, SCR_EE_M_EMIT, SCR_EE_M_LISTENERS, SCR_EE_M_RAW_LISTENERS,
+  SCR_EE_M_LISTENER_COUNT, SCR_EE_M_EVENT_NAMES, SCR_EE_M_SET_MAX, SCR_EE_M_GET_MAX,
+};
+typedef struct ScrDynStreamOps {
+  ScrDyn *(*construct)(int kind, ScrDyn *self, ScrDyn *const *args, size_t argc);
+  void (*prototype)(int kind, ScrDyn *prototype);
+  bool (*event)(int method, ScrDyn *self, ScrDyn *const *args, size_t argc, ScrDyn **result);
+} ScrDynStreamOps;
+void scr_dyn_builtin_class_streams(const ScrDynStreamOps *ops);
+/* A stream class value with its stream half (scr_dyn_builtin_stream.c),
+ * +1; the stream a JavaScript value stands for (a constructor-function
+ * stream or a boxed runtime stream), +1 or NULL; and the constructor-
+ * function object of a runtime stream, +1 or NULL. */
+ScrDyn *scr_dyn_builtin_stream_class(double kind);
+struct ScrStream *scr_dyn_builtin_stream_of(const ScrDyn *value);
+ScrDyn *scr_dyn_builtin_stream_object(struct ScrStream *s);
+/* The untyped view of a runtime stream in programs that link that unit
+ * (+1), a checked cast to a runtime stream class kind (+1 or NULL), and
+ * the stream.unboxDyn libCall in those programs (scr_stream_unbox_dyn's
+ * contract, also taking constructor-function streams). */
+ScrDyn *scr_dyn_builtin_stream_view(struct ScrStream *s);
+struct ScrStream *scr_dyn_builtin_stream_check(const ScrDyn *value, double kind);
+struct ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr *message);
 bool scr_dyn_class_is_key(const ScrDyn *value, const ScrStr *type_key);
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key);
 /* Calls a dyn value: a non-function kind throws the catchable TypeError
@@ -1249,7 +1325,8 @@ typedef struct ScrDynHandleOps {
    * inspector returns `this`) instead of the bare class name. */
   bool inspect_bracketed_past_depth;
   /* The @@toStringTag when it differs from cls: String() answers
-   * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`. */
+   * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`, or
+   * `<tag> <view>` when the tag ends with "." and cls, as Node does. */
   const char *to_string_tag;
   /* The view has no properties, so util.inspect prints it in full at any
    * depth, as Node prints `{}`. */
@@ -1309,6 +1386,10 @@ extern SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len);
 ScrPromise *scr_dyn_promise_all(const ScrDyn *entries, const ScrDyn *reader);
 ScrPromise *scr_dyn_promise_all_settled(const ScrDyn *entries, const ScrDyn *reader);
 ScrPromise *scr_dyn_promise_any(const ScrDyn *entries, const ScrDyn *reader);
+/* PromiseResolve over one dyn value (borrowed): a native promise is
+ * itself, a thenable adopts through its resolve job, a throwing `then`
+ * read rejects, and any other value fulfills. +1. */
+ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader);
 
 /* Native predicates for typed reference capsules and boxed errors. */
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name);

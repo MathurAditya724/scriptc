@@ -535,6 +535,27 @@ export function emitDynamicExpr(
         e.key.type.kind === "dyn" ? host.dyn.dynComputedKeyGetHelper() : host.dyn.dynKeyGetHelper();
       const t = B.tmp();
       const generic = `call ptr @${helper}(ptr ${d.name}, ptr ${k.name}, i1 ${e.optional ? "true" : "false"})`;
+      const inherited = e.key.kind === "strLit" && INHERITED_OBJECT_MEMBERS.has(e.key.value);
+      // Object.prototype itself answers its own members before the ordinary
+      // read (which fences reflection on the prototype).
+      let prototypeJoin: { member: string; from: string; join: string } | null = null;
+      if (inherited) {
+        host.declare(`declare ptr @scr_dyn_object_prototype_member(ptr, ptr)`);
+        const member = B.tmp();
+        B.line(
+          `${member} = call ptr @scr_dyn_object_prototype_member(ptr ${d.name}, ptr ${k.name})`,
+        );
+        const isMember = B.tmp();
+        B.line(`${isMember} = icmp ne ptr ${member}, null`);
+        const from = B.newLabel("dkg.op");
+        const read = B.newLabel("dkg.rd");
+        const join = B.newLabel("dkg.opj");
+        B.condBr(isMember, from, read);
+        B.startBlock(from);
+        B.br(join);
+        B.startBlock(read);
+        prototypeJoin = { member, from, join };
+      }
       if (e.key.kind === "strLit") {
         // A constant key on an ordinary object reads through the site's
         // cache; every other receiver keeps the shared helper.
@@ -560,7 +581,27 @@ export function emitDynamicExpr(
       } else {
         B.line(`${t} = ${generic}`);
       }
-      const out = host.own({ name: t, type: e.type });
+      let result = t;
+      if (prototypeJoin) {
+        // An undefined read of an Object.prototype member name answers the
+        // member the receiver inherits (scr_dyn_invoke.c; the frontend
+        // links that unit for these reads).
+        host.declare(`declare ptr @scr_dyn_inherited_read(ptr, ptr, ptr)`);
+        const read = B.tmp();
+        B.line(
+          `${read} = call ptr @scr_dyn_inherited_read(ptr ${d.name}, ptr ${k.name}, ptr ${t})`,
+        );
+        const readEnd = B.newLabel("dkg.rde");
+        B.br(readEnd);
+        B.startBlock(readEnd);
+        B.br(prototypeJoin.join);
+        B.startBlock(prototypeJoin.join);
+        result = B.tmp();
+        B.line(
+          `${result} = phi ptr [ ${prototypeJoin.member}, %${prototypeJoin.from} ], [ ${read}, %${readEnd} ]`,
+        );
+      }
+      const out = host.own({ name: result, type: e.type });
       host.emitPendingCheck();
       return out;
     }
@@ -1240,3 +1281,13 @@ function emitUnionEqWrappedScalar(
 function wrappedStringLiteral(e: IrExpr): string | null {
   return e.kind === "unionWrap" && e.value.kind === "strLit" ? e.value.value : null;
 }
+
+/** Object.prototype member names whose constant-key dynamic reads fall back
+ * to the inherited member (runtime-features.ts links the unit). */
+export const INHERITED_OBJECT_MEMBERS: ReadonlySet<string> = new Set([
+  "constructor",
+  "valueOf",
+  "toString",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+]);
