@@ -6238,6 +6238,8 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (inner.indexValue === undefined || inner.indexValue.kind === "dyn")
     )
       return DYN;
+    const covered = coveredOptionalFieldsShape(widened, inner, ctx);
+    if (covered !== null) return { kind: "record", shapeId: covered };
     const merged = dictSpreadLiteralShape(widened, inner, ctx);
     if (merged === "dyn") return DYN;
     if (merged !== null) return { kind: "record", shapeId: merged };
@@ -6249,6 +6251,51 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   } finally {
     shapes.inProgress.delete(widened);
   }
+}
+
+/** An index signature already describes every OPTIONAL declared member
+ * whose type is its slot type: @types/node's `ProcessEnv extends
+ * Dict<string> { TZ?: string }` and every spread of it, or a declared
+ * environment `{ CI?: string } & Dictionary<string>`. At runtime such a
+ * member is just another key, so the shape interns as the pure
+ * index-signature record. Its slot admits undefined, as the optional
+ * members do (`env.CI = undefined` keeps the key). A hybrid layout would
+ * give each member a struct slot, which enumerates before the overflow
+ * keys (Node keeps one insertion order) and makes `delete` and spread
+ * answer differently for declared and undeclared keys. Required members,
+ * and members typed otherwise than the slot (whose reads the slot type
+ * could not give back), keep the hybrid shape. */
+function coveredOptionalFieldsShape(
+  widened: ts.Type,
+  parts: RecordShapeParts,
+  ctx: TypeMapperCtx,
+): string | null {
+  const slot = parts.indexValue;
+  if (!slot || parts.fields.length === 0) return null;
+  const { checker, shapes, unions } = ctx;
+  // The members' common type must be the slot plus undefined. Read it off
+  // the members (already interned) rather than building it: a hybrid that
+  // does not qualify must not intern anything new.
+  const optionalSlot = parts.fields[0]!.type;
+  if (!parts.fields.every((field) => typeEquals(field.type, optionalSlot))) return null;
+  if (optionalSlot.kind !== "union" || unions.armTag(optionalSlot.unionId, UNDEFINED_T) < 0)
+    return null;
+  const memberArms = unions.get(optionalSlot.unionId)?.arms ?? [];
+  const slotArms =
+    slot.kind === "union" ? (unions.get(slot.unionId)?.arms ?? []) : isUnitType(slot) ? [] : [slot];
+  const definedArms = memberArms.filter((arm): boolean => arm.kind !== "undefinedT");
+  const slotDefined = slotArms.filter((arm): boolean => arm.kind !== "undefinedT");
+  if (
+    definedArms.length === 0 ||
+    definedArms.length !== slotDefined.length ||
+    !slotDefined.every((arm) => definedArms.some((other) => typeEquals(arm, other)))
+  )
+    return null;
+  if (!isSupportedIndexValue(optionalSlot)) return null;
+  const props = checker.getPropertiesOfType(widened);
+  if (props.length !== parts.fields.length) return null;
+  if (!props.every((p) => (p.flags & ts.SymbolFlags.Optional) !== 0)) return null;
+  return shapes.intern([], false, optionalSlot, []);
 }
 
 /** The type of an object literal that spreads an index-signature record
