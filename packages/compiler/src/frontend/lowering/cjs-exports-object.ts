@@ -551,7 +551,42 @@ function requiredModuleOfMemberAccess(
     (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
   )
     return null;
-  return inlineProgramRequireOf(lowerer, declaration.initializer)?.dep ?? null;
+  const dep = inlineProgramRequireOf(lowerer, declaration.initializer)?.dep ?? null;
+  if (dep === null || !wholeExportIsFunction(lowerer, dep)) return null;
+  // A member the requirer writes through its binding is a runtime slot.
+  const name = access.name.text;
+  let written = false;
+  ts.walkPreorder(access.getSourceFile(), (n) => {
+    if (written) return "stop";
+    if (
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      ts.isPropertyAccessExpression(n.left) &&
+      ts.isIdentifier(n.left.name) &&
+      n.left.name.text === name &&
+      ts.isIdentifier(n.left.expression) &&
+      lowerer.checker.getSymbolAtLocation(n.left.expression) === sym
+    )
+      written = true;
+    return undefined;
+  });
+  return written ? null : dep;
+}
+
+/** True when the module's whole export names a function: a function
+ * declaration, or a binding of a function expression or arrow. */
+function wholeExportIsFunction(lowerer: Lowerer, sf: ts.SourceFile): boolean {
+  const whole = cjsWholeExportValueOf(sf);
+  if (whole === null || !ts.isIdentifier(whole.rhs)) return false;
+  const sym = lowerer.resolveValueSymbol(whole.rhs);
+  const decl = sym?.declarations.length === 1 ? sym.declarations[0] : undefined;
+  if (decl === undefined) return false;
+  if (ts.isFunctionDeclaration(decl)) return true;
+  if (!ts.isVariableDeclaration(decl) || decl.initializer === undefined) return false;
+  let init: ts.Expression = decl.initializer;
+  while (ts.isParenthesizedExpression(init)) init = init.expression;
+  return ts.isFunctionExpression(init) || ts.isArrowFunction(init);
 }
 
 /** `fmt.shout` where `const fmt = require("./lib")` names a module whose
