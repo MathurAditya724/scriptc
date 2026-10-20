@@ -37,3 +37,19 @@ void run({ client, name: "ctx" }).then(() => {
   finish(client);
   console.log(count(client), client.calls);
 });
+
+// A live view that flows into another structural type keeps the instance:
+// reads through the second view see the instance's later writes.
+interface Counter {
+  calls: number;
+}
+function counted(view: Pick<ApiClient, "request" | "calls">): Counter {
+  void view.request("/z");
+  return view;
+}
+const second = new ApiClient("https://k");
+const counter = counted(second);
+second.calls += 10;
+const holder: { counter: Counter } = { counter: counted(second) };
+second.calls = 100;
+console.log("counter", counter.calls, holder.counter.calls, second.calls);

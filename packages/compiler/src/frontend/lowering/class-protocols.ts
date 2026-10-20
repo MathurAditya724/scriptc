@@ -414,6 +414,11 @@ export class ClassProtocols {
         for (const part of ts.constituentTypes(type)) add(part);
         return;
       }
+      // A Pick or Omit view's values are instances of the class it views.
+      if (this.pickOfProgramClass(type)) {
+        add(type.getAliasTypeArguments()[0]!);
+        return;
+      }
       const symbol = type.getSymbol();
       if (symbol === undefined) return;
       if (this.isProgramClassInstance(type)) {
@@ -603,6 +608,8 @@ export class ClassProtocols {
       return element !== undefined && this.carriesIdentity(element, marked);
     }
     if (this.isProgramClassInstance(type)) return true;
+    // A live Pick or Omit view of a program class holds the instance itself.
+    if (this.pickOfProgramClass(type) && this.usesCheckedIdentity(type)) return true;
     const symbol = type.getSymbol();
     if (symbol === undefined) return false;
     if (marked.has(symbol)) return true;
