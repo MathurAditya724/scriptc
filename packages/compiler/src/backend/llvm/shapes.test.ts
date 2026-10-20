@@ -32,7 +32,7 @@ function declarationHost(
     tracedShapes: new Set(),
     tracedUnions: new Set(),
     nullableUnions: new NullableUnions({
-      irVersion: 16,
+      irVersion: 17,
       sourceFile: "test.ts",
       functions: [],
       entry: "main",
@@ -280,7 +280,7 @@ describe("inline dyn release budget", () => {
 describe("emitted object releases", () => {
   test("a surviving headered record enqueues only when not already buffered", () => {
     const mod: IrModule = {
-      irVersion: 16,
+      irVersion: 17,
       sourceFile: "cycle.ts",
       entry: "main",
       functions: [],
@@ -302,7 +302,7 @@ describe("emitted object releases", () => {
 
 describe("live-object audit notes", () => {
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: "audit.ts",
     entry: "main",
     functions: [],

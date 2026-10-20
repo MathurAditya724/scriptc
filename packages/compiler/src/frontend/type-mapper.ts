@@ -6,6 +6,7 @@ import type { IrRecordShape, IrType, IrUnionDef, IrUnionDiscriminant } from "../
 import {
   BYTES_ELEMENT_NAME,
   arrayOf,
+  isDynTypedRefType,
   BOOL,
   bytesOf,
   canConvertToDyn,
@@ -124,6 +125,14 @@ export function jsOpenObjectType(
     ? DYN
     : type;
 }
+
+/** The modules whose RequestOptions interface maps to the checked dynamic. */
+const HTTP_REQUEST_OPTION_MODULES: ReadonlySet<string> = new Set([
+  "http",
+  "node:http",
+  "https",
+  "node:https",
+]);
 
 /** The WebCrypto interfaces whose values are checked-dynamic: the crypto
  * global, SubtleCrypto, CryptoKey handles and the algorithm dictionaries
@@ -325,7 +334,7 @@ export class ShapeRegistry {
     ) {
       return;
     }
-    shape.declaredOrder = declaredOrder;
+    shape.declaredOrder = this.withExtendedNames(shape.id, declaredOrder);
     this.declaredOrderPriority.set(shape.id, this.currentDeclaredOrderPriority);
   }
 
@@ -341,7 +350,7 @@ export class ShapeRegistry {
       }
       const shape = this.byId.get(shapeId);
       if (!shape) continue;
-      shape.declaredOrder = best.order;
+      shape.declaredOrder = this.withExtendedNames(shapeId, best.order);
       this.declaredOrderPriority.set(shapeId, best.priority);
     }
     for (const finalize of this.derivedDeclaredOrderFinalizers) finalize();
@@ -374,7 +383,7 @@ export class ShapeRegistry {
       // still obeys first-writer-wins.
       if (shape?.declaredOrder !== originalOrder) return;
       const next = order();
-      if (next !== undefined) shape.declaredOrder = next;
+      if (next !== undefined) shape.declaredOrder = this.withExtendedNames(shape.id, next);
     };
   }
 
@@ -481,6 +490,53 @@ export class ShapeRegistry {
 
   get(shapeId: string): IrRecordShape | undefined {
     return this.byId.get(shapeId);
+  }
+
+  /** Names extendShape added to a shape, which every key-order table the
+   * shape adopts lists after its declared names. */
+  private readonly extendedNames = new Map<string, string[]>();
+
+  /** The members extendShape attached to a shape (empty for most). */
+  attachedNames(shapeId: string): readonly string[] {
+    return this.extendedNames.get(shapeId) ?? [];
+  }
+
+  private withExtendedNames(shapeId: string, order: string[]): string[] {
+    const extra = this.extendedNames.get(shapeId);
+    if (!extra) return order;
+    const missing = extra.filter((name) => !order.includes(name));
+    return missing.length === 0 ? order : [...order, ...missing];
+  }
+
+  /** Adds optional fields to an interned shape in place: members a type
+   * assertion attaches to the shape's values (`r as R & { tag: string }`
+   * followed by `view.tag = ...`; see assertion-members.ts). Every value
+   * of the shape holds them absent until a write through such a view, so
+   * the shape keeps its id, both structural keys resolve to it, and its
+   * key-order table lists the new names after the declared ones. Runs
+   * before any body lowers; existing layouts change, so the revision
+   * advances like a closing recursive placeholder. */
+  extendShape(shapeId: string, extra: readonly { name: string; type: IrType }[]): void {
+    const shape = this.byId.get(shapeId);
+    if (!shape || shape.tuple || extra.length === 0) return;
+    const fresh = extra.filter((f) => !shape.fields.some((x) => x.name === f.name));
+    if (fresh.length === 0) return;
+    shape.fields = [...shape.fields, ...fresh].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    );
+    this.extendedNames.set(shapeId, [
+      ...(this.extendedNames.get(shapeId) ?? []),
+      ...fresh.map((f) => f.name),
+    ]);
+    if (shape.declaredOrder)
+      shape.declaredOrder = this.withExtendedNames(shapeId, shape.declaredOrder);
+    const candidates = this.declaredOrderCandidates.get(shapeId);
+    if (candidates) {
+      for (const c of candidates) c.order = this.withExtendedNames(shapeId, c.order);
+    }
+    this.revision++;
+    const key = this.keyOf(shape.fields, false, shape.indexValue);
+    if (!this.byKey.has(key)) this.byKey.set(key, shapeId);
   }
 }
 
@@ -648,6 +704,7 @@ export function formatIrType(
       case "bool":
         return append("boolean");
       case "dyn":
+      case "jsval":
         return append("unknown");
       case "caught":
         // What tsc calls the binding; the fence messages carry the real story.
@@ -1298,6 +1355,136 @@ function isWorkerHandleSymbol(
 
 /** The `{ message: any }` object type (or its union with undefined) that
  * worker_threads declares as receiveMessageOnPort's result. */
+/** A union of dns lookup option bags with numbers and nullish values that
+ * includes LookupAllOptions (whose `all: true` arm has no record form). */
+function isLookupOptionsUnion(type: ts.Type, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  if (!type.isUnionType()) return false;
+  let all = false;
+  for (const member of ts.constituentTypes(type)) {
+    if (member.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.Null | ts.TypeFlags.Undefined))
+      continue;
+    const symbol = member.getSymbol();
+    if (
+      symbol === undefined ||
+      !/^Lookup(One|All)?Options$/.test(symbol.name) ||
+      !symbol.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
+    )
+      return false;
+    if (symbol.name === "LookupAllOptions") all = true;
+  }
+  return all;
+}
+
+/** The binary and stream members of fetch's BodyInit (undici-types):
+ * NodeJS.ArrayBufferView expands to the typed arrays and DataView. */
+const FETCH_BODY_MEMBERS: ReadonlySet<string> = new Set([
+  "ArrayBuffer",
+  "SharedArrayBuffer",
+  "AsyncIterable",
+  "Iterable",
+  "Blob",
+  "FormData",
+  "URLSearchParams",
+  "ReadableStream",
+  "DataView",
+  "Buffer",
+  "Int8Array",
+  "Uint8Array",
+  "Uint8ClampedArray",
+  "Int16Array",
+  "Uint16Array",
+  "Int32Array",
+  "Uint32Array",
+  "Float16Array",
+  "Float32Array",
+  "Float64Array",
+  "BigInt64Array",
+  "BigUint64Array",
+]);
+
+/** fetch's request body type, BodyInit, however TypeScript spells it
+ * (`RequestInit["body"]`, `NonNullable<...>`, an optional member): a
+ * union of strings, the stdlib binary and stream types and nullish
+ * values that includes both FormData and URLSearchParams. Native fetch
+ * reads such a body at run time, so it rides checked-dynamic storage. */
+function isFetchBodyUnion(type: ts.Type, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  if (!type.isUnionType()) return false;
+  let formData = false;
+  let searchParams = false;
+  for (const member of ts.constituentTypes(type)) {
+    if (member.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.Null | ts.TypeFlags.Undefined))
+      continue;
+    const symbol = member.getSymbol();
+    if (
+      symbol === undefined ||
+      !FETCH_BODY_MEMBERS.has(symbol.name) ||
+      !symbol.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
+    )
+      return false;
+    if (symbol.name === "FormData") formData = true;
+    if (symbol.name === "URLSearchParams") searchParams = true;
+  }
+  return formData && searchParams;
+}
+
+/** A mapped object type (Omit, Pick, Partial) whose members all come from
+ * one stdlib interface that maps to the checked dynamic. */
+function isDynInterfaceSubset(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (!(type.flags & ts.TypeFlags.Object) || type.isClassOrInterface()) return false;
+  const alias = type.getAliasSymbol();
+  if (alias === undefined) return false;
+  const props = ctx.checker.getPropertiesOfType(type);
+  if (props.length === 0) return false;
+  let owner: ts.InterfaceDeclaration | undefined;
+  for (const prop of props) {
+    const decl = prop.declarations[0];
+    const parent = decl?.parent;
+    if (
+      parent === undefined ||
+      !ts.isInterfaceDeclaration(parent) ||
+      !ctx.isStdlibFile(parent.getSourceFile()) ||
+      (owner !== undefined && owner !== parent)
+    )
+      return false;
+    owner = parent;
+  }
+  return (
+    owner !== undefined && mapType(ctx.checker.getTypeAtLocation(owner.name), ctx)?.kind === "dyn"
+  );
+}
+
+/** fetch's HeadersInit (undici-types): a union of the stdlib Headers
+ * class with header-pair arrays and/or a header record, plus nullish
+ * values. Native fetch reads it at run time like the init around it. */
+function isFetchHeadersUnion(type: ts.Type, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  if (!type.isUnionType()) return false;
+  let headers = false;
+  let other = false;
+  for (const member of ts.constituentTypes(type)) {
+    if (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) continue;
+    const symbol = member.getSymbol();
+    if (
+      symbol?.name === "Headers" &&
+      symbol.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
+    ) {
+      headers = true;
+      continue;
+    }
+    const alias = member.getAliasSymbol()?.name;
+    if (
+      symbol?.name === "Array" ||
+      symbol?.name === "ReadonlyArray" ||
+      alias === "Record" ||
+      alias === "HeaderRecord"
+    ) {
+      other = true;
+      continue;
+    }
+    return false;
+  }
+  return headers && other;
+}
+
 function isReceiveMessageResult(
   type: ts.Type,
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
@@ -1465,6 +1652,25 @@ function classExprNeedsContext(decl: ts.ClassLikeDeclaration): boolean {
   return false;
 }
 
+/** True for the type of a TypeScript object literal with no contextual
+ * type (`const options = { ...location, path }`) that spreads a value
+ * mapping to the checked dynamic (a stdlib options type such as
+ * http.RequestOptions). A literal with a contextual type is built in that
+ * type's representation instead, and JavaScript literals keep their own
+ * rules. */
+function spreadsCheckedDynamic(symbol: ts.Symbol | undefined, ctx: TypeMapperCtx): boolean {
+  if (symbol === undefined || (symbol.flags & ts.SymbolFlags.ObjectLiteral) === 0) return false;
+  const decl = symbol.declarations[0];
+  if (decl === undefined || !ts.isObjectLiteralExpression(decl)) return false;
+  if (isJsSourceFile(decl.getSourceFile())) return false;
+  if (ctx.checker.getContextualType(decl)) return false;
+  return decl.properties.nodes.some(
+    (prop) =>
+      ts.isSpreadAssignment(prop) &&
+      mapType(ctx.checker.getTypeAtLocation(prop.expression), ctx)?.kind === "dyn",
+  );
+}
+
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
@@ -1485,9 +1691,24 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const moduleId = ctx.moduleNamespaceId?.(type) ?? null;
     if (moduleId !== null) return { kind: "moduleNs", moduleId };
   }
+  // A TypeScript object literal that spreads a checked-dynamic value
+  // (`{ ...requestOptions, path, timeout }`): its keys are the source's
+  // runtime keys, which no record shape holds, so the literal rides
+  // checked-dynamic storage like its source.
+  if (spreadsCheckedDynamic(intrinsic, ctx)) return DYN;
   // worker_threads.receiveMessageOnPort's `{ message: any } | undefined`:
   // the runtime's { message } object, a checked-dynamic value.
   if (isReceiveMessageResult(type, ctx)) return DYN;
+  if (isFetchBodyUnion(type, ctx) || isFetchHeadersUnion(type, ctx)) return DYN;
+  // Omit/Pick/Partial of a stdlib interface that rides checked-dynamic
+  // storage (`Omit<RequestInit, "body" | "headers">`): every member comes
+  // from that interface, so the value is a subset of the same runtime-read
+  // options object and rides the same storage.
+  if (isDynInterfaceSubset(type, ctx)) return DYN;
+  // The lookup-function option union (`LookupOneOptions | LookupAllOptions
+  // | number | undefined`): with a LookupAllOptions arm it is an option bag
+  // dns.lookup reads at run time, so it rides checked-dynamic storage.
+  if (isLookupOptionsUnion(type, ctx)) return DYN;
   // @types/node spells child_process.ExecFileException as an intersection
   // type alias over two Error-derived metadata interfaces. The value is
   // still one ordinary Error; recognize the owned alias before generic
@@ -1542,6 +1763,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     contextResolutions++;
     return DYN;
   }
+  // Readonly<C> over a program class (Object.freeze's result type) is the
+  // same instance.
+  const readonlyClass = readonlyClassType(type, ctx);
+  if (readonlyClass !== null) return readonlyClass;
   if (resolveTypeParam && type.flags & ts.TypeFlags.TypeParameter) {
     const bound = resolveTypeParam(type);
     if (bound) {
@@ -2037,12 +2262,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // {}` — classNamer spells them "%anon" (unique per file), the same
     // name their collection registered.
     !classDecl.getSourceFile().isDeclarationFile &&
-    checker.getConstructSignatures(widened).length === 0
+    checker.getConstructSignatures(widened).length === 0 &&
+    // A TypeScript class declared OUTSIDE the lowered program (reached
+    // through `import type` alone) never registers, and the program can
+    // hold no instance of it: its instance type maps below as the
+    // structural type it describes, like an interface.
+    (ctx.isProgramFile(classDecl.getSourceFile()) || isJsSourceFile(classDecl.getSourceFile()))
   ) {
-    // Declared OUTSIDE the lowered program (reached through the type world
-    // alone — jsdoc `typeof import()` over a never-required module): the
-    // class will never register, so the instance type is unmappable, not
-    // an object type naming a struct that cannot exist.
+    // A JavaScript class outside the lowered program (jsdoc `typeof
+    // import()` over a never-required module) stays unmappable: JSDoc
+    // types are not checked, so its slots fall back to the dynamic value.
     if (!ctx.isProgramFile(classDecl.getSourceFile())) return null;
     // The class inside a MIXIN function: per-call-site instantiations
     // share this one node — the CURRENT instantiation (collecting or
@@ -2455,6 +2684,26 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // dns.LookupAllOptions (`all: true`, the overload whose callback takes
+  // an address list): a lookup option bag dns.lookup reads at run time.
+  // It rides checked-dynamic storage, so the lookup function type that
+  // takes `LookupOneOptions | LookupAllOptions | number` compiles.
+  if (isStdlibInterface("LookupAllOptions")) return DYN;
+  // http.RequestOptions / https.RequestOptions as a declared type: an
+  // option record whose members include functions, agents and signals.
+  // Values ride checked-dynamic storage, like SpawnOptions.
+  if (
+    psym?.name === "RequestOptions" &&
+    psym.declarations.some((d) => {
+      if (!ts.isInterfaceDeclaration(d) || !ctx.isStdlibFile(d.getSourceFile())) return false;
+      for (let p: ts.Node | undefined = d.parent; p !== undefined; p = p.parent) {
+        if (ts.isModuleDeclaration(p) && ts.isStringLiteral(p.name))
+          return HTTP_REQUEST_OPTION_MODULES.has(p.name.text);
+      }
+      return false;
+    })
+  )
+    return DYN;
 
   // exactly like npm-declared types. Static fetch has one deliberately
   // narrower native representation: Response is an opaque checked-
@@ -3773,6 +4022,34 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // v8.getHeapStatistics()'s record, in Node's key order (builtins/v8.ts).
+  if (isStdlibInterface("HeapInfo")) {
+    const names = [
+      "total_heap_size",
+      "total_heap_size_executable",
+      "total_physical_size",
+      "total_available_size",
+      "used_heap_size",
+      "heap_size_limit",
+      "malloced_memory",
+      "peak_malloced_memory",
+      "does_zap_garbage",
+      "number_of_native_contexts",
+      "number_of_detached_contexts",
+      "total_global_handles_size",
+      "used_global_handles_size",
+      "external_memory",
+    ];
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [...names].sort().map((name) => ({ name, type: F64 })),
+        false,
+        undefined,
+        names,
+      ),
+    };
+  }
   // process.cpuUsage()/threadCpuUsage()'s {user, system} microsecond
   // record and resourceUsage()'s getrusage record — stdlib data
   // interfaces interned explicitly (the RemoteInfo pattern; declared
@@ -4328,10 +4605,13 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
     // params). Declaration files keep their existing paths: library
     // callback slots such as String#replace's `(substring, ...args: any[])`
     // have intrinsic lowerings that inspect the unmapped type.
+    // node:test's default mock function type, `(...args: any[]) =>
+    // undefined` (the type parameter default of mock.fn), takes the same
+    // ABI: mock.fn() without an original records whatever its callers pass.
     if (
       rest &&
       decl !== undefined &&
-      !decl.getSourceFile().isDeclarationFile &&
+      (!decl.getSourceFile().isDeclarationFile || isNodeTestDefaultFunctionParam(decl, ctx)) &&
       (pt?.kind === "dyn" || (!pt && isAnyArrayType(checker.getTypeOfSymbol(p), checker)))
     ) {
       dynRest = true;
@@ -5061,6 +5341,19 @@ function mentionsMappedParams(
   if (type.isUnionType() || type.isIntersectionType())
     return ts.constituentTypes(type).some((part) => mentionsMappedParams(part, keys, aliases));
   return false;
+}
+
+function readonlyClassType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const alias = type.getAliasSymbol();
+  if (alias?.name !== "Readonly") return null;
+  const args = type.getAliasTypeArguments();
+  if (args.length !== 1 || !args[0]) return null;
+  const isLibAlias = alias.declarations.some(
+    (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+  );
+  if (!isLibAlias) return null;
+  const mapped = mapType(args[0], ctx);
+  return mapped !== null && isDynTypedRefType(mapped) ? mapped : null;
 }
 
 function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
@@ -5811,6 +6104,7 @@ interface RecordShapeParts {
   fields: { name: string; type: IrType }[];
   indexValue?: IrType;
   declaredOrder?: string[];
+  accessorOrder?: string[];
 }
 
 function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
@@ -5847,15 +6141,14 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // (generic type parameters, mixin instantiations) cannot intern by
       // checker-type identity — fence recursive generic-open shapes.
       if (contextResolutions !== sensitivityAtEntry) return null;
-      return {
-        kind: "record",
-        shapeId: shapes.finalizeRecursive(
-          widened,
-          inner.fields,
-          inner.indexValue,
-          inner.declaredOrder,
-        ),
-      };
+      const recursive = shapes.finalizeRecursive(
+        widened,
+        inner.fields,
+        inner.indexValue,
+        inner.declaredOrder,
+      );
+      adoptAccessorOrder(shapes.get(recursive), inner.accessorOrder);
+      return { kind: "record", shapeId: recursive };
     }
     // A record with no typed payload contract is a view of an existing
     // object, including across parameters and returns. Building a native
@@ -5868,15 +6161,247 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (inner.indexValue === undefined || inner.indexValue.kind === "dyn")
     )
       return DYN;
+    const merged = dictSpreadLiteralShape(widened, inner, ctx);
+    if (merged === "dyn") return DYN;
+    if (merged !== null) return { kind: "record", shapeId: merged };
     const refined = refinedConstituentShape(widened, inner, ctx);
     if (refined !== null) return { kind: "record", shapeId: refined };
-    return {
-      kind: "record",
-      shapeId: shapes.intern(inner.fields, false, inner.indexValue, inner.declaredOrder),
-    };
+    const shapeId = shapes.intern(inner.fields, false, inner.indexValue, inner.declaredOrder);
+    adoptAccessorOrder(shapes.get(shapeId), inner.accessorOrder);
+    return { kind: "record", shapeId };
   } finally {
     shapes.inProgress.delete(widened);
   }
+}
+
+/** The type of an object literal that spreads an index-signature record
+ * (`{ ...tags, bucket: b, status }`, the metric-tags idiom). The checker
+ * drops the signature and types the literal by its explicit members only,
+ * but at run time the object holds every key the spread copied, in one
+ * insertion order. Such a literal maps to the pure index-signature record
+ * whose slot joins the spread slots and the member types, so the merge,
+ * every enumeration and keyed writes see the same keys Node does. A
+ * member read still answers its member type: members written after the
+ * spreads always win, and a member written before a spread must have that
+ * spread's slot type, so an override cannot change its type. The join
+ * covers scalar and unit types only; other literals keep their shape and
+ * the spread fence. */
+function dictSpreadLiteralShape(
+  widened: ts.Type,
+  parts: RecordShapeParts,
+  ctx: TypeMapperCtx,
+): string | "dyn" | null {
+  if (parts.indexValue) return null;
+  const symbol = widened.getSymbol();
+  if (!symbol || (symbol.flags & ts.SymbolFlags.ObjectLiteral) === 0) return null;
+  const literal = symbol.declarations.find((d): d is ts.ObjectLiteralExpression =>
+    ts.isObjectLiteralExpression(d),
+  );
+  if (!literal) return null;
+  const { checker, shapes, unions } = ctx;
+  const props = literal.properties.nodes;
+  if (!props.some((p) => ts.isSpreadAssignment(p))) return null;
+  // Decide on checker types alone before mapping anything: object literals
+  // with ordinary spreads are everywhere, and mapping their sources here
+  // would intern types out of their usual order.
+  // A literal written into a typed index-signature slot already lowers into
+  // it (the merge into the contextual record); its own type keeps its
+  // mapping.
+  const contextualRaw = checker.getContextualType(literal);
+  const contextual = contextualRaw ? checker.getNonNullableType(contextualRaw) : undefined;
+  // A literal written into a declared slot lowers into that slot (a typed
+  // index-signature record merges into it, a declared record converts),
+  // and its own type keeps its mapping. Only a literal with no declared
+  // destination (an unannotated binding, a type parameter, `any` or
+  // `unknown`, an unknown-valued record) is built by its own type.
+  // A generic argument's context is the instantiated parameter: the
+  // literal's own type when the type argument was inferred from it.
+  const ownContext =
+    contextual !== undefined &&
+    (contextual === widened || contextual.getSymbol()?.declarations.includes(literal) === true);
+  if (
+    contextual &&
+    !ownContext &&
+    !(contextual.flags & (ts.TypeFlags.TypeParameter | ts.TypeFlags.Any | ts.TypeFlags.Unknown))
+  ) {
+    const infos = checker.getIndexInfosOfType(contextual);
+    const unknownValued =
+      infos.length > 0 &&
+      infos.every(
+        (info) => (info.valueType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+      );
+    if (!unknownValued) return null;
+  }
+  const kinds = props.map((p) =>
+    ts.isSpreadAssignment(p) ? spreadSourceKindTs(checker, p.expression) : "member",
+  );
+  if (kinds.some((k) => k === null) || !kinds.includes("dict")) return null;
+  const dictSlotOf = (e: ts.Expression): IrType | null => {
+    const t = checker.getNonNullableType(checker.getTypeAtLocation(e));
+    if (checker.getPropertiesOfType(t).length === 0) {
+      const infos = checker.getIndexInfosOfType(t);
+      if (infos.length !== 1 || !(infos[0]!.keyType.flags & ts.TypeFlags.String)) return null;
+      return mapType(infos[0]!.valueType, ctx);
+    }
+    // Another such literal's type (`{ ...tags, repo }` over a binding
+    // initialized by `{ ...base, plan }`) is stored as the same kind of
+    // pure index-signature record.
+    if (t === widened) return null;
+    const mapped = mapType(t, ctx);
+    if (mapped?.kind === "dyn") return DYN;
+    const shape = mapped?.kind === "record" ? shapes.get(mapped.shapeId) : undefined;
+    return shape?.indexValue && shape.fields.length === 0 && !shape.tuple ? shape.indexValue : null;
+  };
+  const arms = new Map<string, IrType>();
+  const addArms = (t: IrType): boolean => {
+    const list = t.kind === "union" ? (unions.get(t.unionId)?.arms ?? []) : [t];
+    for (const arm of list) {
+      if (!OVERLOAD_JOIN_SCALARS.has(arm.kind)) return false;
+      arms.set(typeKey(arm), arm);
+    }
+    return true;
+  };
+  const before: string[] = [];
+  // An unknown-valued spread (`Record<string, unknown>`, or another such
+  // literal) makes the object the checked-dynamic value: it is built like
+  // a JavaScript object literal (copy each spread's own keys in order), and
+  // member reads check their declared types.
+  let unknownValued = false;
+  for (const [i, p] of props.entries()) {
+    // A fixed-shape or conditional spread contributes its own members,
+    // which the checker already types exactly (they are in `parts`).
+    if (kinds[i] === "record") {
+      // Its members may be overwritten by a later dict spread, like members
+      // written before one.
+      before.push(...spreadMemberNamesTs(checker, (p as ts.SpreadAssignment).expression));
+      continue;
+    }
+    if (ts.isSpreadAssignment(p)) {
+      const slot = dictSlotOf(p.expression);
+      if (slot?.kind === "dyn") {
+        unknownValued = true;
+        continue;
+      }
+      if (!slot) return null;
+      if (!addArms(slot)) {
+        // A slot outside the scalar join still has the checked-dynamic
+        // representation when it converts to it.
+        if (
+          !canConvertToDyn(
+            slot,
+            (id) => shapes.get(id),
+            (id) => unions.get(id),
+          )
+        )
+          return null;
+        unknownValued = true;
+      }
+      // A member written before this spread may be overwritten by it: the
+      // typed join keeps member types only where the slot is that type;
+      // otherwise the checked-dynamic object (whose member reads check
+      // their types) holds whatever the spread wrote.
+      for (const name of before) {
+        const field = parts.fields.find((f) => f.name === name);
+        if (!field) return null;
+        if (!typeEquals(field.type, slot)) unknownValued = true;
+      }
+      continue;
+    }
+    if (!(ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p))) return null;
+    const name = p.name;
+    if (!(ts.isIdentifier(name) || ts.isStringLiteral(name))) return null;
+    before.push(name.text);
+  }
+  if (parts.fields.some((f) => f.name.startsWith("%"))) return null;
+  // Members outside the scalar join (an array of labels beside the tags)
+  // make the object the checked-dynamic value too.
+  if (!unknownValued && !parts.fields.every((f) => addArms(f.type))) unknownValued = true;
+  if (unknownValued) {
+    const getRecord = (id: string) => shapes.get(id);
+    const getUnion = (id: string) => unions.get(id);
+    return parts.fields.every(
+      (f) => f.type.kind === "dyn" || canConvertToDyn(f.type, getRecord, getUnion),
+    )
+      ? "dyn"
+      : null;
+  }
+  for (const field of parts.fields) if (!addArms(field.type)) return null;
+  if (![...arms.values()].some((arm) => !isUnitType(arm))) return null;
+  const sorted = [...arms.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const slot: IrType =
+    sorted.length === 1 ? sorted[0]! : { kind: "union", unionId: unions.intern(sorted) };
+  return shapes.intern([], false, slot, []);
+}
+
+/** How a spread source contributes to dictSpreadLiteralShape, judged on
+ * checker types only: "dict" for a pure string index signature or another
+ * literal that spreads one, "record" for a fixed object shape or a
+ * conditional spread (`...(c && { k: v })`), null otherwise. */
+function spreadSourceKindTs(checker: ts.TypeChecker, e: ts.Expression): "dict" | "record" | null {
+  if (dictSpreadSourceTs(checker, e, 0)) return "dict";
+  let inner = e;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (
+    (ts.isBinaryExpression(inner) &&
+      inner.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) ||
+    ts.isConditionalExpression(inner)
+  )
+    return "record";
+  const t = checker.getNonNullableType(checker.getTypeAtLocation(e));
+  if ((t.flags & ts.TypeFlags.Object) === 0 || t.isUnionType()) return null;
+  if (checker.getIndexInfosOfType(t).length > 0) return null;
+  if (checker.getCallSignatures(t).length > 0 || checker.getConstructSignatures(t).length > 0)
+    return null;
+  const symbol = t.getSymbol();
+  if (symbol && (symbol.flags & ts.SymbolFlags.Class) !== 0) return null;
+  return "record";
+}
+
+/** The member names a fixed-shape or conditional spread contributes. */
+function spreadMemberNamesTs(checker: ts.TypeChecker, e: ts.Expression): string[] {
+  let inner = e;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  const literals: ts.Expression[] = [];
+  if (ts.isBinaryExpression(inner)) literals.push(inner.right);
+  else if (ts.isConditionalExpression(inner)) literals.push(inner.whenTrue, inner.whenFalse);
+  else literals.push(inner);
+  const names: string[] = [];
+  for (const l of literals) {
+    const t = checker.getNonNullableType(checker.getTypeAtLocation(l));
+    for (const property of checker.getPropertiesOfType(t)) names.push(property.name);
+  }
+  return names;
+}
+
+/** A spread source the checker types as a pure string index signature,
+ * or as another object literal that spreads one (dictSpreadLiteralShape),
+ * judged on checker types only. */
+function dictSpreadSourceTs(checker: ts.TypeChecker, e: ts.Expression, depth: number): boolean {
+  const t = checker.getNonNullableType(checker.getTypeAtLocation(e));
+  if (checker.getPropertiesOfType(t).length === 0) {
+    const infos = checker.getIndexInfosOfType(t);
+    return infos.length === 1 && (infos[0]!.keyType.flags & ts.TypeFlags.String) !== 0;
+  }
+  if (depth > 4) return false;
+  const symbol = t.getSymbol();
+  if (!symbol || (symbol.flags & ts.SymbolFlags.ObjectLiteral) === 0) return false;
+  const literal = symbol.declarations.find((d): d is ts.ObjectLiteralExpression =>
+    ts.isObjectLiteralExpression(d),
+  );
+  if (!literal) return false;
+  const spreads = literal.properties.nodes.filter((p) => ts.isSpreadAssignment(p));
+  return (
+    spreads.length > 0 &&
+    spreads.every((p) =>
+      dictSpreadSourceTs(checker, (p as ts.SpreadAssignment).expression, depth + 1),
+    )
+  );
+}
+
+/** The first-seen accessor key order of a shape with accessor slots. */
+function adoptAccessorOrder(shape: IrRecordShape | undefined, order: string[] | undefined): void {
+  if (shape !== undefined && order !== undefined && shape.accessorOrder === undefined)
+    shape.accessorOrder = order;
 }
 
 /** A refinement intersection (`Expr & { kind: "mul" }`, which the checker
@@ -6238,8 +6763,18 @@ function mapRecordTypeInner(
     const declaredOrder = esOwnKeyOrder(
       fields.filter((f) => accessorSlotProp(f.name) === null).map((f) => f.name),
     );
+    // With accessors: every own key in that order, an accessor property
+    // named once for its get/set pair (the checked-dynamic copy lists it).
+    const accessorOrder = fields.some((f) => accessorSlotProp(f.name) !== null)
+      ? esOwnKeyOrder([...new Set(fields.map((f) => accessorSlotProp(f.name)?.prop ?? f.name))])
+      : undefined;
     fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    return { fields, ...(indexValue ? { indexValue } : {}), declaredOrder };
+    return {
+      fields,
+      ...(indexValue ? { indexValue } : {}),
+      declaredOrder,
+      ...(accessorOrder ? { accessorOrder } : {}),
+    };
   }
 }
 
@@ -6295,6 +6830,23 @@ function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
     default:
       return false;
   }
+}
+
+/** A parameter of a function type that is the default of a type parameter
+ * declared in node:test's standard-library declarations (MockTracker.fn's
+ * `F extends Function = (...args: any[]) => undefined`). */
+function isNodeTestDefaultFunctionParam(decl: ts.Declaration, ctx: TypeMapperCtx): boolean {
+  const fnType = decl.parent;
+  return (
+    ts.isParameter(decl) &&
+    fnType !== undefined &&
+    ts.isFunctionTypeNode(fnType) &&
+    fnType.parent !== undefined &&
+    ts.isTypeParameterDeclaration(fnType.parent) &&
+    fnType.parent.defaultType === fnType &&
+    ctx.isStdlibFile(decl.getSourceFile()) &&
+    isDeclaredInAmbientModule(decl, "test")
+  );
 }
 
 /** `any[]` (or `readonly any[]`): an array type whose element is `any`. */

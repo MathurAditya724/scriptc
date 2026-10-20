@@ -196,6 +196,7 @@ The docs site is a standalone pnpm workspace under `docs/`. It uses Next.js App 
 - A labeled bullet (`- **Crypto:** ...`) is `docs/content/limitations/<section>/<label>.mdx`, for example `builtin-apis/crypto.mdx`. Edit that file to change the bullet.
 - The other text of a section (paragraphs, code blocks, unlabeled lists) is `docs/content/limitations/<section>.mdx`; text before the first heading is `introduction.mdx`.
 - `<section>` and `<label>` are the heading and label text in lowercase with each run of other characters replaced by `-`.
+- Write one sentence per line; a bullet's continuation lines are indented two spaces. Markdown joins the lines, and edits to different sentences don't conflict.
 - To add a bullet, add its file and an include line at its position in `limitations.mdx`, with a blank line on each side. Consecutive bullet includes render as one list.
 - To add a section, add the heading to `limitations.mdx` and include the section's partial below it.
 

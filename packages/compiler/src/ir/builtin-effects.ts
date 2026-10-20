@@ -263,6 +263,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // ("Invalid URL") or a non-http scheme (ERR_INVALID_PROTOCOL).
   "http.requestUrl",
   "http.requestUrlCb",
+  // The runtime options walk throws Node's validation errors and the
+  // fence for documented options it does not implement.
+  "http.requestDyn",
+  "http.requestDynCb",
+  "https.requestDyn",
+  "https.requestDynCb",
+  // address() of a Unix-socket server read as the AddressInfo record.
+  "net.serverAddressCheck",
   // The h2 client's throwing entries: connect on a bad/non-http
   // authority (ERR_INVALID_URL / ERR_INVALID_PROTOCOL), request on a
   // closed/destroyed session (ERR_HTTP2_INVALID_SESSION), setEncoding on
@@ -346,6 +354,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.kill",
   "process.killNum",
   "process.setExitCode",
+  "process.setExitCodeTracked",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
   "process.emitWarning",
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
@@ -383,6 +392,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyKey",
   "dyn.toNumeric",
   "dyn.increment",
+  // The dynamic-tier operators run the same coercions (scr_js_value.c), and
+  // js.toF64 throws dynCheck's TypeError for a non-number.
+  "js.toF64",
+  "js.add",
+  "js.arithmetic",
+  "js.bitwise",
+  "js.compare",
+  "js.toNumeric",
+  "js.increment",
+  "js.toNumberCoerce",
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",
   "error.ctorOptions",
@@ -438,6 +457,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "https.requestFn",
   "https.requestFnCb",
   "rl.question",
+  "rl.questionDyn",
   "rl.checkOptions",
   "rl.checkCompleter",
   "readable.fromArr",
@@ -460,6 +480,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.resume",
   "rl.prompt",
   "rl.promptWith",
+  "rl.setPromptDyn",
+  "rl.getPrompt",
+  "rl.cursorPos",
+  "rl.inputFromDyn",
+  "rl.outputFromDyn",
   "rl.write",
   "rl.writeKey",
   "rl.cursor",
@@ -474,6 +499,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "json.stringifyReplacer",
   "json.stringifyValue",
   "date.nativeNew",
+  "date.nativeNewFields",
+  "date.nativeNewValue",
   "date.checkedValue",
   "util.parseArgs",
   "util.parseEnv",
@@ -581,6 +608,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.mapSeedEntry",
   "dyn.freeze",
   "dyn.isFrozen",
+  "class.defineField",
+  "class.throwReadOnly",
+  "class.throwNotExtensible",
   "dyn.toString",
   "dyn.valueOf",
   "string.fromCodePoint",
@@ -772,6 +802,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's argument checks (ERR_INVALID_ARG_TYPE/VALUE, ERR_SOCKET_BAD_PORT).
   "dns.lookupDyn",
   "dns.lookupService",
+  "dns.promisesLookup",
+  "dns.promisesLookupService",
   "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",

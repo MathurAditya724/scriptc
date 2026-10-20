@@ -1,1 +1,2 @@
-- **AsyncLocalStorage:** timer, interval, `setImmediate`, `process.nextTick` and `queueMicrotask` callbacks run with the stores that were active when they were scheduled, as in Node. Completion callbacks of callback-style I/O APIs, such as `fs.readFile` and `crypto.randomBytes`, run with no store, where Node runs them with the stores that were active when the operation started.
+- **AsyncLocalStorage:** timer, interval, `setImmediate`, `process.nextTick` and `queueMicrotask` callbacks run with the stores that were active when they were scheduled, as in Node.
+  Completion callbacks of callback-style I/O APIs, such as `fs.readFile` and `crypto.randomBytes`, run with no store, where Node runs them with the stores that were active when the operation started.

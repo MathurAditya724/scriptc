@@ -21,6 +21,7 @@ import {
   type SrcLoc,
   canConvertToDyn,
   canDynCheckTo,
+  CLASS_FIELD_ATTRIBUTES_PREFIX,
   classDynViewSupported,
   DYN_CLASS_PROPERTIES,
   isClassOwnEnumerableFieldName,
@@ -501,12 +502,16 @@ function classInspectsThroughView(lowerer: Lowerer, info: ClassInfo | undefined)
   );
 }
 
-/** Whether a class holds properties added outside its declared layout, which
- * only its checked-dynamic view can list. Decided after lowering, when the
+/** Whether a class holds properties added outside its declared layout, or
+ * fields Object.defineProperty can make non-enumerable, which only its
+ * checked-dynamic view lists as Node does. Decided after lowering, when the
  * class has its final fields. */
 function classInspectsAddedProperties(lowerer: Lowerer, info: ClassInfo): boolean {
   return (
-    info.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES) &&
+    info.def.fields.some(
+      (field) =>
+        field.name === DYN_CLASS_PROPERTIES || field.name.startsWith(CLASS_FIELD_ATTRIBUTES_PREFIX),
+    ) &&
     classDynViewSupported(
       info.def.fields,
       (id) => lowerer.shapes.get(id),
@@ -2012,6 +2017,47 @@ function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
   return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(depth, loc), loc);
 }
 
+/** %d and %i over a checked-dynamic argument, as Node's formatWithOptions
+ * reads it: a bigint prints as `${n}n`, a symbol as NaN, and any other
+ * value as `number` (Number(arg) for %d, parseInt(String(arg)) for %i)
+ * formatted. The argument evaluates once. */
+function formatDynInteger(
+  lowerer: Lowerer,
+  value: IrExpr,
+  number: (held: IrExpr) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const held = lowerer.declareHiddenLocal("%formatArg", DYN);
+  const ref = (): IrExpr => varRef(held.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: held.id, init: value, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "bigint", value: ref(), type: BOOL, loc },
+      then: {
+        kind: "strConcat",
+        left: { kind: "libCall", fn: "dyn.toStringCoerce", args: [ref()], type: STRING, loc },
+        right: strLit("n", loc),
+        type: STRING,
+        loc,
+      },
+      else_: {
+        kind: "ternary",
+        cond: { kind: "dynTest", test: "symbol", value: ref(), type: BOOL, loc },
+        then: strLit("NaN", loc),
+        else_: { kind: "libCall", fn: "insp.f64", args: [number(ref())], type: STRING, loc },
+        type: STRING,
+        loc,
+      },
+      type: STRING,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
+}
+
 /** %d and %i over the argument types Node formats without a number
  * conversion: a bigint prints as `${n}n` (formatBigInt) and a symbol as NaN;
  * null is Number(null) (0) under %d and parseInt("null") (NaN) under %i, and
@@ -2142,19 +2188,20 @@ export function lowerFormatCall(
           };
         }
         // A checked-dynamic argument (`console.log('... actual %d.',
-        // context.actual)` — test/common's exit report): VALIDATE it as a
-        // number (dynCheck) and format. A non-number dyn value throws the
-        // catchable TypeError where Node would print its ToNumber (NaN
-        // for objects) — it throws instead of returning a wrong result
-        // (SEMANTICS.md).
+        // context.actual)` — test/common's exit report): Number(arg).
         if (value.type.kind === "dyn") {
-          return {
-            kind: "libCall",
-            fn: "insp.f64",
-            args: [{ kind: "dynCheck", value, type: F64, loc }],
-            type: STRING,
+          return formatDynInteger(
+            lowerer,
+            value,
+            (held) => ({
+              kind: "libCall",
+              fn: "dyn.numberConstructor",
+              args: [held],
+              type: F64,
+              loc,
+            }),
             loc,
-          };
+          );
         }
         lowerer.noLowering(
           `util.format %d of '${lowerer.fmt(value.type)}' values`,
@@ -2185,6 +2232,24 @@ export function lowerFormatCall(
             loc,
           };
           return { kind: "libCall", fn: "insp.f64", args: [parsed], type: STRING, loc };
+        }
+        // parseInt(String(arg)) over a checked-dynamic argument.
+        if (value.type.kind === "dyn") {
+          return formatDynInteger(
+            lowerer,
+            value,
+            (held) => ({
+              kind: "libCall",
+              fn: "num.parseInt",
+              args: [
+                { kind: "libCall", fn: "dyn.toStringCoerce", args: [held], type: STRING, loc },
+                numLit(0, loc),
+              ],
+              type: F64,
+              loc,
+            }),
+            loc,
+          );
         }
         lowerer.noLowering(`util.format %i of '${lowerer.fmt(value.type)}' values`, node);
         break;

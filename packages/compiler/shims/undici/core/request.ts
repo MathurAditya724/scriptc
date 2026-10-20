@@ -244,7 +244,10 @@ function processHeader(request: Request, key: string, val: string, profile: Prof
       request.contentLength = n;
       return;
     }
-    if (profile.major >= 7) throw new InvalidArgumentError("duplicate content-length header");
+    // The client writes the one Content-Length it validated or computed
+    // from the body; a second field would frame the request twice. Both
+    // profiles reject it with undici 7's error (5.x sends it as given).
+    throw new InvalidArgumentError("duplicate content-length header");
   }
   if (lower === "content-type" && request.contentType === null && !headerCharRegex.test(val)) {
     request.contentType = val;

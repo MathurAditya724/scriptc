@@ -200,6 +200,27 @@ test("node-types: socket.address and resetAndDestroy under @types/node", async (
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: TLSSocket.isSessionReused and keyed ??= timings under @types/node", async () => {
+  const outDir = outDirFor("tls-session-timings");
+  const entry = join(nodeTypesDir, "tls-session-timings.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32" ? "tls-session-timings.exe" : "tls-session-timings",
+    ),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: net.SocketAddress and net.BlockList under @types/node", async () => {
   const outDir = outDirFor("net-blocklist");
   const entry = join(nodeTypesDir, "net-blocklist.ts");
@@ -394,6 +415,99 @@ test("node-types: promisified fs callback functions lower as their fs/promises c
   const outDir = outDirFor("promisify-fs");
   const entry = join(nodeTypesDir, "promisify-fs.ts");
   const result = await compile(entry, { outPath: join(outDir, "promisify-fs"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: util.promisify over typed callback-last functions settles like Node", async () => {
+  const outDir = outDirFor("promisify-callback-functions");
+  const entry = join(nodeTypesDir, "promisify-callback-functions.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "promisify-callback-functions"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: lookup-option unions and narrowed header-record entries under @types/node", async () => {
+  const outDir = outDirFor("lookup-and-header-entries");
+  const entry = join(nodeTypesDir, "lookup-and-header-entries.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "lookup-and-header-entries"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const native = await execFileAsync(result.binaryPath);
+  const node = await execFileAsync(process.execPath, [
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    entry,
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: http.request over a Unix socket with RequestOptions read at run time", async () => {
+  const outDir = outDirFor("http-socket-path");
+  const entry = join(nodeTypesDir, "http-socket-path.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "http-socket-path"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const native = await execFileAsync(result.binaryPath);
+  const node = await execFileAsync(process.execPath, [
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    entry,
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: RequestInit-derived options carry BodyInit and HeadersInit into fetch", async () => {
+  const outDir = outDirFor("fetch-init-members");
+  const entry = join(nodeTypesDir, "fetch-init-members.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "fetch-init-members"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const native = await execFileAsync(result.binaryPath);
+  const node = await execFileAsync(process.execPath, [
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    entry,
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: stream subclasses extend the @types/node stream classes", async () => {
+  const outDir = outDirFor("stream-subclass-hooks");
+  const entry = join(nodeTypesDir, "stream-subclass-hooks.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "stream-subclass-hooks"),
+    outDir,
+    sanitize,
+  });
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
   if (!result.ok) return;
   const [native, node] = await Promise.all([

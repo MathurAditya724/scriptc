@@ -225,12 +225,12 @@ function calledWithReceiver(access: ts.Expression): boolean {
   );
 }
 
-/** True when a function reads its own `this`: in its body, or in an arrow
- * function inside it. */
+/** True when a function reads its own `this`: in its body or a parameter's
+ * default value, or in an arrow function inside them. */
 function readsThis(fn: ts.FunctionDeclaration): boolean {
   let found = false;
   if (fn.body === undefined) return false;
-  ts.walkPreorder(fn.body, (n) => {
+  const visit = (n: ts.Node): "stop" | "skip" | undefined => {
     if (found) return "stop";
     if (
       ts.isFunctionDeclaration(n) ||
@@ -245,7 +245,9 @@ function readsThis(fn: ts.FunctionDeclaration): boolean {
       return "skip";
     if (n.kind === ts.SyntaxKind.ThisKeyword) found = true;
     return undefined;
-  });
+  };
+  for (const parameter of fn.parameters.nodes) ts.walkPreorder(parameter, visit);
+  ts.walkPreorder(fn.body, visit);
   return found;
 }
 

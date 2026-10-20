@@ -109,8 +109,10 @@ import {
 import {
   builtinDefaultImportModule,
   canonicalBuiltinModule,
+  npmBuiltinAliasOf,
   SUPPORTED_NODE_MODULES,
   unsupportedModuleFeatureOf,
+  TEMPORAL_GLOBAL,
 } from "./builtin-modules.js";
 import {
   clearWorkspacePackages,
@@ -726,6 +728,42 @@ function entryPackageProgramRoots7(
   return [...roots].sort();
 }
 
+/** TS 7's ESNext temporal declarations: a lib slice scriptc adds only for
+ * programs whose sources name the global (programNamesTemporal7). */
+const TEMPORAL_LIB = "lib.esnext.temporal.d.ts";
+
+/** True when a program source (user code or compiled npm JavaScript)
+ * contains the temporal global's name as a whole word. A cheap syntactic
+ * scan of the implementation files root discovery already materialized; a
+ * mention in a comment or string also counts, which only adds the lib
+ * slice. */
+function programNamesTemporal7(program: ts.Program): boolean {
+  for (const sf of program.getImplementationSourceFiles()) {
+    const text = sf.text;
+    for (
+      let at = text.indexOf(TEMPORAL_GLOBAL);
+      at >= 0;
+      at = text.indexOf(TEMPORAL_GLOBAL, at + 8)
+    ) {
+      if (!isIdentifierCharAt(text, at - 1) && !isIdentifierCharAt(text, at + 8)) return true;
+    }
+  }
+  return false;
+}
+
+function isIdentifierCharAt(text: string, index: number): boolean {
+  if (index < 0 || index >= text.length) return false;
+  const c = text.charCodeAt(index);
+  return (
+    (c >= 48 && c <= 57) ||
+    (c >= 65 && c <= 90) ||
+    (c >= 97 && c <= 122) ||
+    c === 36 ||
+    c === 95 ||
+    c > 127
+  );
+}
+
 /** "require" for a CommonJS edge (`require("x")`, `import x = require("x")`),
  * "import" for every ESM form — the resolution kind preflight uses. */
 function moduleSpecifierKind7(specifier: ts.StringLiteralLike): "import" | "require" {
@@ -804,6 +842,20 @@ function loadProgram7(
       programRoots.push(...extraRoots);
       program = host.createProgram([...programRoots, overridesDtsPath()], options);
       if (pass === 31) throw new Error("static program-root discovery did not converge");
+    }
+    // Node 24 ships no temporal global, but TS 7 types it in an ESNext
+    // lib slice. Programs that name it (feature probes such as smol-toml's
+    // typeof check) get that slice so they type-check, and lower to Node's
+    // answers (typeof "undefined", ReferenceError on use). Every other
+    // program keeps the identical lib set: the slice would add globals to
+    // the checker's world for everyone.
+    if (programNamesTemporal7(program)) {
+      program.dispose();
+      options = {
+        ...options,
+        lib: [...((options.lib as string[] | undefined) ?? []), TEMPORAL_LIB],
+      };
+      program = host.createProgram([...programRoots, overridesDtsPath()], options);
     }
     const entry = program.getSourceFile(entryPath);
     if (!entry) throw new Error(`could not load ${entryPath}`);
@@ -5257,6 +5309,9 @@ function preflight7(load: LoadResult): {
               continue;
             }
           }
+          // An npm package served as a builtin (graceful-fs as fs) is never
+          // a program-module edge, even when --npm-static names it.
+          if (npmBuiltinAliasOf(req.spec) !== null) continue;
           const isRelative = isRelativeSpecifier(req.spec);
           let dep = resolveImport7(program, sf, req.spec, "require");
           if (dep === null && !isRelative) {
@@ -5320,6 +5375,7 @@ function preflight7(load: LoadResult): {
         if (load.externalTypes.has(spec)) {
           continue;
         }
+        if (npmBuiltinAliasOf(spec) !== null) continue;
         const projectDep = resolveImport7(program, sf, spec, "require");
         if (projectDep !== null) {
           // A bare require of a JSON document only parses it: nothing to
@@ -6096,6 +6152,7 @@ export { ambientDtsPath, fallbackDtsPath, isNodeTypesPath, overridesDtsPath } fr
 export {
   builtinDefaultImportModule,
   canonicalBuiltinModule,
+  npmBuiltinAliasOf,
   SUPPORTED_BUILTIN_MODULES,
 } from "./builtin-modules.js";
 
@@ -6247,10 +6304,15 @@ export function isModuleExportsAccess(expr: ts.Expression): expr is ts.PropertyA
  *   - member: `exports.f = <expr>` / `module.exports.f = <expr>`.
  * Null for everything else. Callers gate on top-level position in a JS
  * module file — these forms anywhere else keep their generic fences. */
-export function cjsExportAssignmentOf(
-  stmt: ts.Statement,
-):
-  | { kind: "table"; obj: ts.ObjectLiteralExpression | null; expr: ts.BinaryExpression }
+export function cjsExportAssignmentOf(stmt: ts.Statement):
+  | {
+      kind: "table";
+      obj: ts.ObjectLiteralExpression | null;
+      expr: ts.BinaryExpression;
+      /** `exports = module.exports = value`: the `exports` binding names
+       * the new value too, so later `exports.f =` members attach to it. */
+      rebindsExports?: true;
+    }
   | { kind: "member"; name: ts.MemberName; value: ts.Expression; expr: ts.BinaryExpression }
   | null {
   if (!ts.isExpressionStatement(stmt)) return null;
@@ -6258,6 +6320,20 @@ export function cjsExportAssignmentOf(
   if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
   if (isModuleExportsAccess(e.left)) {
     return { kind: "table", obj: ts.isObjectLiteralExpression(e.right) ? e.right : null, expr: e };
+  }
+  if (ts.isIdentifier(e.left) && e.left.text === "exports") {
+    let inner: ts.Expression = e.right;
+    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    if (
+      ts.isBinaryExpression(inner) &&
+      inner.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isModuleExportsAccess(inner.left) &&
+      // `exports = module.exports = {}` is the fresh-table reset, which the
+      // export walk handles on its own.
+      !ts.isObjectLiteralExpression(inner.right)
+    ) {
+      return { kind: "table", obj: null, expr: inner, rebindsExports: true };
+    }
   }
   if (ts.isPropertyAccessExpression(e.left) && !e.left.questionDotToken) {
     const recv = e.left.expression;
@@ -6390,6 +6466,8 @@ export function cjsExportDiscardReason(stmt: ts.Statement): string | null {
     return "export members attached before a 'module.exports =' assignment (Node replaces the export object — importers never see this member; attach it to module.exports AFTER the table)";
   }
   const left = mine.expr.left as ts.PropertyAccessExpression;
+  const last = cjsExportAssignmentOf(stmts[lastTable]!);
+  if (last?.kind === "table" && last.rebindsExports === true) return null;
   return ts.isIdentifier(left.expression) && left.expression.text === "exports"
     ? "'exports.f =' after a 'module.exports =' assignment ('exports' still references the replaced object — Node discards this member; write module.exports.f instead)"
     : null;

@@ -144,6 +144,20 @@ console.log(${use.replaceAll("NS", "(init_w(), __toCommonJS(w_exports))")});
   });
 });
 
+test("an export that reads `this` in a parameter's default value keeps the package refused", () => {
+  const result = lower(`${helpers}var p_exports = {};
+__export(p_exports, { who: () => who });
+function who(value = this.__esModule) { return value; }
+var init_p = __esm({ "p.ts"() {} });
+console.log((init_p(), __toCommonJS(p_exports)).who());
+`);
+  expect(result).toEqual({
+    degrade: expect.stringContaining(
+      "calls only of exported functions that do not read 'this'",
+    ) as string,
+  });
+});
+
 test("minified initializers sharing a var statement lower the same way", () => {
   expectSameBehavior(
     helpers +

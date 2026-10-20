@@ -21,6 +21,7 @@ import {
   trackedReadFile,
   trackedRealpath,
 } from "./input-tracker.js";
+import { npmBuiltinAliasOf } from "./builtin-modules.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -53,7 +54,9 @@ export function npmStaticLexerVisibleNames(path: string): readonly string[] {
 }
 
 export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): void {
-  activePackages = new Set(packages);
+  // npm packages served as builtins (graceful-fs as fs) never compile
+  // their JavaScript, even when named.
+  activePackages = new Set([...packages].filter((name) => npmBuiltinAliasOf(name) === null));
   declarationOverloads = new Map();
   declarationProperties = new Map();
   offenders.clear();
@@ -460,12 +463,17 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // literals they build.
           const enums = original === null ? null : services.enumIifes(original, path);
           if (enums !== null) original = enums;
+          // A module that names its export object through a variable reaches
+          // its members through `exports`.
+          const exportsVar = original === null ? null : services.cjsExportsVar(original, path);
+          if (exportsVar !== null) original = exportsVar;
           const respelled =
             split !== null ||
             esm !== null ||
             aliased !== null ||
             fnExports !== null ||
-            enums !== null;
+            enums !== null ||
+            exportsVar !== null;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;

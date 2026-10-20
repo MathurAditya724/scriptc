@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  DYN,
   F64,
   STRING,
   VOID,
@@ -34,7 +35,7 @@ const fn = (name: string, body: IrStmt[]): IrFunction => ({
   body,
 });
 const mod = (functions: IrFunction[], extra: Partial<IrModule> = {}): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: "stack-observations.ts",
   entry: "%main",
   functions,
@@ -47,6 +48,40 @@ const mod = (functions: IrFunction[], extra: Partial<IrModule> = {}): IrModule =
 
 test("a reachable stack read is observed", () => {
   expect(observesStacks(mod([fn("%main", [call("parse")]), fn("parse", [stackRead])]))).toBe(true);
+});
+
+test("a stack read on a checked-dynamic value is observed", () => {
+  const value: IrExpr = { loc, kind: "varRef", localId: "d", type: DYN };
+  const read = (key: string): IrStmt => ({
+    loc,
+    kind: "exprStmt",
+    expr: {
+      loc,
+      kind: "dynKeyGet",
+      value,
+      key: { loc, kind: "strLit", value: key, type: STRING },
+      type: DYN,
+    },
+  });
+  expect(observesStacks(mod([fn("%main", [read("stack")])]))).toBe(true);
+  expect(observesStacks(mod([fn("%main", [read("message")])]))).toBe(false);
+});
+
+test("a computed key reads the stack when the program spells it", () => {
+  const value: IrExpr = { loc, kind: "varRef", localId: "d", type: DYN };
+  const key: IrExpr = { loc, kind: "varRef", localId: "k", type: STRING };
+  const computed: IrStmt = {
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "dynKeyGet", value, key, type: DYN },
+  };
+  const spelled: IrStmt = {
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "strLit", value: "stack", type: STRING },
+  };
+  expect(observesStacks(mod([fn("%main", [computed, spelled])]))).toBe(true);
+  expect(observesStacks(mod([fn("%main", [computed])]))).toBe(false);
 });
 
 test("programs without stack reads are not", () => {

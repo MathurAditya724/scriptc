@@ -782,13 +782,24 @@ function errorCode(err: Error): string {
 
 const CRLF = Buffer.from("\r\n");
 
+/** The value of an ASCII hex digit, or -1. */
+function hexValue(c: number): number {
+  if (c >= 0x30 && c <= 0x39) return c - 0x30;
+  if (c >= 0x41 && c <= 0x46) return c - 0x37;
+  if (c >= 0x61 && c <= 0x66) return c - 0x57;
+  return -1;
+}
+
 /** An incremental HTTP/1.1 response parser (the subset of llhttp undici
  * relies on): status line, raw header pairs, Content-Length, chunked and
  * read-until-close bodies, trailers, and pause/resume back-pressure. */
 class ResponseParser {
   client: Client;
   socket: Socket;
+  /** Unconsumed bytes of the current arrival, then the later arrivals in
+   * order. */
   buf: Buffer;
+  queue: Buffer[];
   state: number;
   paused: boolean;
   statusCode: number;
@@ -805,11 +816,20 @@ class ResponseParser {
   bytesRead: number;
   trailers: Buffer[];
   skipBody: boolean;
+  /** The chunk-size line read so far: its value, its digit count, whether
+   * an extension or whitespace follows the digits, and whether its CR was
+   * read. Extensions are skipped as they arrive, so the line keeps no
+   * bytes. */
+  chunkSize: number;
+  chunkDigits: number;
+  chunkExtension: boolean;
+  chunkCR: boolean;
 
   constructor(client: Client, socket: Socket) {
     this.client = client;
     this.socket = socket;
     this.buf = Buffer.alloc(0);
+    this.queue = [];
     this.state = 0;
     this.paused = false;
     this.statusCode = 0;
@@ -826,6 +846,10 @@ class ResponseParser {
     this.bytesRead = 0;
     this.trailers = [];
     this.skipBody = false;
+    this.chunkSize = 0;
+    this.chunkDigits = 0;
+    this.chunkExtension = false;
+    this.chunkCR = false;
   }
 
   reset(): void {
@@ -845,8 +869,19 @@ class ResponseParser {
   }
 
   execute(data: Buffer): void {
-    this.buf = this.buf.length === 0 ? data : Buffer.concat([this.buf, data]);
+    if (this.buf.length === 0 && this.queue.length === 0) this.buf = data;
+    else this.queue.push(data);
     if (!this.paused) this.run();
+  }
+
+  /** Moves the next queued arrival into `buf`, after the bytes left in it;
+   * false when nothing is queued. Only a partial status, header or trailer
+   * line (bounded by maxHeaderSize) or a partial chunk-data CRLF is copied. */
+  more(): boolean {
+    const next = this.queue.shift();
+    if (next === undefined) return false;
+    this.buf = this.buf.length === 0 ? next : Buffer.concat([this.buf, next]);
+    return true;
   }
 
   resume(): void {
@@ -869,7 +904,14 @@ class ResponseParser {
   }
 
   fail(message: string, code: string): void {
-    this.client.__onParseError(this.socket, new HTTPParserError(message, code, ""));
+    // undici 7.x wraps llhttp's reason and leaves the code unset (its
+    // createError indexes the error-name table with the error number);
+    // 5.x reports the reason and its HPE_ code.
+    const error =
+      this.client.__profile.major >= 7
+        ? new HTTPParserError(`Response does not match the HTTP/1.1 protocol (${message})`)
+        : new HTTPParserError(message, code, "");
+    this.client.__onParseError(this.socket, error);
     this.state = 99;
   }
 
@@ -890,7 +932,9 @@ class ResponseParser {
           if (this.buf.length > this.client.__maxHeaderSize) {
             this.client.__onParseError(this.socket, new HeadersOverflowError());
             this.state = 99;
+            return;
           }
+          if (this.more()) continue;
           return;
         }
         if (line.length === 0) continue;
@@ -912,7 +956,9 @@ class ResponseParser {
           if (this.headersSize + this.buf.length > this.client.__maxHeaderSize) {
             this.client.__onParseError(this.socket, new HeadersOverflowError());
             this.state = 99;
+            return;
           }
+          if (this.more()) continue;
           return;
         }
         this.headersSize += line.length;
@@ -991,7 +1037,10 @@ class ResponseParser {
         if (ret === 2) this.pause();
       } else if (this.state === 2) {
         // Content-Length body.
-        if (this.buf.length === 0) return;
+        if (this.buf.length === 0) {
+          if (this.more()) continue;
+          return;
+        }
         const n = Math.min(this.remaining, this.buf.length);
         const chunk = this.buf.subarray(0, n);
         this.buf = this.buf.subarray(n);
@@ -1006,15 +1055,51 @@ class ResponseParser {
           if (!this.complete()) return;
         }
       } else if (this.state === 3) {
-        // Chunk size line.
-        const line = this.line();
-        if (line === null) return;
-        const sizeText = line.toString("latin1").split(";")[0]!.trim();
-        if (!/^[0-9a-fA-F]+$/.test(sizeText)) {
-          this.fail("Invalid character in chunk size", "INVALID_CHUNK_SIZE");
+        // Chunk size line: hex digits, then optional whitespace and
+        // extensions, then CRLF. It is read byte by byte as it arrives.
+        if (this.buf.length === 0) {
+          if (this.more()) continue;
           return;
         }
-        const size = parseInt(sizeText, 16);
+        let i = 0;
+        let done = false;
+        for (; i < this.buf.length && !done; i++) {
+          const c = this.buf[i]!;
+          if (this.chunkCR) {
+            if (c !== 0x0a) {
+              this.fail("Expected LF after chunk size", "STRICT");
+              return;
+            }
+            done = true;
+          } else if (c === 0x0d) {
+            if (this.chunkDigits === 0) {
+              this.fail("Invalid character in chunk size", "INVALID_CHUNK_SIZE");
+              return;
+            }
+            this.chunkCR = true;
+          } else if (this.chunkExtension) {
+            continue;
+          } else if (hexValue(c) >= 0) {
+            this.chunkSize = this.chunkSize * 16 + hexValue(c);
+            this.chunkDigits++;
+            if (this.chunkSize > Number.MAX_SAFE_INTEGER) {
+              this.fail("Chunk size overflow", "INVALID_CHUNK_SIZE");
+              return;
+            }
+          } else if (this.chunkDigits > 0 && (c === 0x3b || c === 0x20 || c === 0x09)) {
+            this.chunkExtension = true;
+          } else {
+            this.fail("Invalid character in chunk size", "INVALID_CHUNK_SIZE");
+            return;
+          }
+        }
+        this.buf = this.buf.subarray(i);
+        if (!done) continue;
+        const size = this.chunkSize;
+        this.chunkSize = 0;
+        this.chunkDigits = 0;
+        this.chunkExtension = false;
+        this.chunkCR = false;
         if (size === 0) {
           this.state = 5;
         } else {
@@ -1024,7 +1109,10 @@ class ResponseParser {
       } else if (this.state === 4) {
         // Chunk data, then its CRLF.
         if (this.remaining > 0) {
-          if (this.buf.length === 0) return;
+          if (this.buf.length === 0) {
+            if (this.more()) continue;
+            return;
+          }
           const n = Math.min(this.remaining, this.buf.length);
           const chunk = this.buf.subarray(0, n);
           this.buf = this.buf.subarray(n);
@@ -1037,7 +1125,10 @@ class ResponseParser {
           if (!more) this.pause();
           continue;
         }
-        if (this.buf.length < 2) return;
+        if (this.buf.length < 2) {
+          if (this.more()) continue;
+          return;
+        }
         if (this.buf[0] !== 0x0d || this.buf[1] !== 0x0a) {
           this.fail("Expected LF after chunk data", "STRICT");
           return;
@@ -1046,7 +1137,10 @@ class ResponseParser {
         this.state = 3;
       } else if (this.state === 6) {
         // Read until the connection closes.
-        if (this.buf.length === 0) return;
+        if (this.buf.length === 0) {
+          if (this.more()) continue;
+          return;
+        }
         const chunk = this.buf;
         this.buf = Buffer.alloc(0);
         const more = this.client.__onBody(this, this.socket, Buffer.from(chunk));
