@@ -357,6 +357,7 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.bagGet",
   "dyn.bitwise",
   "dyn.compare",
+  "dyn.errorConstructorName",
   "dyn.forInKeyStrings",
   "dyn.forInKeys",
   "dyn.forInStable",

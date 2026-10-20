@@ -251,6 +251,7 @@ ScrStr *scr_error_to_string(ScrError *e);
 void scr_error_install_message_reader(ScrStr *(*reader)(ScrError *));
 void scr_error_install_name_reader(ScrStr *(*reader)(ScrError *));
 ScrStr *scr_error_default_name(const ScrError *e);
+ScrStr *scr_error_class_name(const ScrError *e);
 ScrStr *scr_error_stack(ScrError *e);
 
 ScrError *scr_error_retain(ScrError *e);

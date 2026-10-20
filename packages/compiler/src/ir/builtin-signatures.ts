@@ -3136,6 +3136,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.toStringCoerce": { argTypes: [DYN], result: STRING },
   "dyn.stringConstructor": { argTypes: [DYN], result: STRING },
   "dyn.propertyKey": { argTypes: [DYN], result: DYN },
+  // value.constructor.name from the value, its constructor and the name
+  // read from it: that name, or the class name of the native error the
+  // value holds.
+  "dyn.errorConstructorName": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.toNumeric": { argTypes: [DYN], result: DYN },
   "dyn.increment": { argTypes: [DYN, BOOL], result: DYN },
   /** JS ToNumber over a dyn value WITH the object protocol (number-hint

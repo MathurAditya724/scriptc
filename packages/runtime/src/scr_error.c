@@ -270,6 +270,15 @@ void scr_error_install_name_reader(ScrStr *(*reader)(ScrError *)) {
   scr_error_name_reader = reader;
 }
 
+/* The builtin class that constructed the error, as `error.constructor.name`
+ * reads it: the vtable's class, not the error's assignable `name`.
+ * DOMException is its own class. +1. */
+ScrStr *scr_error_class_name(const ScrError *e) {
+  if (scr_error_vts[SCR_ERR_DOMEX].pre <= e->vt->pre && e->vt->pre <= scr_error_vts[SCR_ERR_DOMEX].post)
+    return scr_str_new("DOMException", 12);
+  return scr_error_default_name(e);
+}
+
 ScrStr *scr_error_default_name(const ScrError *e) {
   for (int i = 1; i < SCR_ERR_COUNT; i++) {
     if (i == SCR_ERR_DOMEX) continue;

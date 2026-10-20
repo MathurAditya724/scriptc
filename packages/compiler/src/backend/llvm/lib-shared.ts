@@ -437,6 +437,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.toStringCoerce": "scr_dyn_string_coerce_js",
   "dyn.stringConstructor": "scr_dyn_string_constructor",
   "dyn.propertyKey": "scr_dyn_property_key_value",
+  "dyn.errorConstructorName": "scr_dyn_error_constructor_name",
   "dyn.toNumeric": "scr_dyn_to_numeric",
   "dyn.increment": "scr_dyn_increment",
   "dyn.numberConstructor": "scr_dyn_number_constructor",

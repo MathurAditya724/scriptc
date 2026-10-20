@@ -2,3 +2,6 @@
   `JSON.stringify` writes Date fields as their ISO text and Map and Set fields as `{}`, as Node.js does, and refuses classes with RegExp or Promise fields with `SC1090`.
   `Object.keys` raises an error for classes with opaque fields such as native Maps.
   Class fields, inherited accessors, and added properties retain identity through untyped values.
+  `value.constructor.name` names the class that constructed a class instance or an error, as Node.js does; for an error it is the error's class, not its `name` property.
+  A read of `value.constructor` alone in TypeScript raises `SC2020`.
+  `constructor.name` of a plain object, such as an object literal or a `JSON.parse` result, raises `SC2020` in TypeScript and throws a `TypeError` in JavaScript and on untyped values, where Node.js answers `Object`.

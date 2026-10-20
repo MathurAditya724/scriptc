@@ -1075,6 +1075,11 @@ ScrError *scr_error_from_dyn(const ScrDyn *d); /* scr_async_dyn.c (gated) */
 /* The cache's runtime-internal access pair (scr_json.c owns the storage;
  * the gated extraction reads/writes through these). */
 ScrError *scr_errdyn_err_of(const ScrDyn *d); /* +1 or NULL */
+/* value.constructor.name, given the value's constructor and the `name`
+ * read from it (undefined when the constructor is undefined or null).
+ * Borrows all three; +1, or NULL after throwing Node's TypeError. */
+ScrDyn *scr_dyn_error_constructor_name(const ScrDyn *value, const ScrDyn *constructor,
+                                       const ScrDyn *name);
 void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
 /* Sets an own property on an error: its checked-dynamic node, which casts
  * and util.inspect read. Moves value. */

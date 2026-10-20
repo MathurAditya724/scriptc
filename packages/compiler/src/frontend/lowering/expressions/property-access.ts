@@ -1,5 +1,6 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import * as ts from "../../ts7/adapter.js";
+import { lowerConstructorName } from "../constructor-name.js";
 import { localPrivateBrandClass } from "../private-brands.js";
 import { type Lowerer, PoisonError, jsFuncNameOf, neverTaintedJsType, own } from "../lowerer.js";
 import {
@@ -290,6 +291,11 @@ export function lowerPropertyAccessExpr(
     if (table) return table;
   }
   lowerThreadSlotsProperty(lowerer, expr);
+  // `value.constructor.name` (constructor-name.ts).
+  {
+    const constructorName = lowerConstructorName(lowerer, expr);
+    if (constructorName) return constructorName;
+  }
   // `EventEmitter.name`, `zlib.Gzip.name`, `C.name` over a builtin
   // class alias.
   if (expr.name.text === "name" && !expr.questionDotToken) {

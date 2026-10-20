@@ -6908,6 +6908,34 @@ void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *va
   scr_dyn_release(view);
 }
 
+/* `value.constructor.name` after the compiler read the value's
+ * constructor and its `name` (undefined when the constructor is
+ * undefined or null). A string name answers itself. A value that holds a
+ * native error has no constructor value to read, so it answers the error's
+ * class name, which an assigned `name` property does not change. Any
+ * other undefined or null constructor throws Node's TypeError for the
+ * `name` read. */
+ScrDyn *scr_dyn_error_constructor_name(const ScrDyn *value, const ScrDyn *constructor,
+                                       const ScrDyn *name) {
+  if (name->kind == SCR_DYN_STR) return scr_dyn_retain((ScrDyn *)name);
+  ScrError *error = scr_errdyn_err_of(value);
+  if (error) {
+    ScrStr *class_name = scr_error_class_name(error);
+    scr_error_release(error);
+    ScrDyn *out = scr_dyn_new_str(class_name);
+    scr_str_release(class_name);
+    return out;
+  }
+  if (constructor->kind == SCR_DYN_UNDEF || constructor->kind == SCR_DYN_NULL) {
+    char message[64];
+    int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading 'name')",
+                     constructor->kind == SCR_DYN_NULL ? "null" : "undefined");
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    return NULL;
+  }
+  return scr_dyn_retain((ScrDyn *)name);
+}
+
 /* The error's checked-dynamic node when it has one (borrowed), else NULL:
  * util.inspect reads its extra own properties. */
 ScrDyn *scr_errdyn_view_of(const ScrError *e) {
