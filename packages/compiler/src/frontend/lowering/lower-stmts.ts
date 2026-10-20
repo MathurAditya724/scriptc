@@ -11185,18 +11185,23 @@ export function lowerForStatement(lowerer: Lowerer, stmt: ts.ForStatement): IrSt
   }
 }
 
-/** safe-buffer's `var Buffer = buffer.Buffer` at file scope: a `var` alias
- * of the global Buffer is the same alias plumbing as the const spelling
- * when nothing reassigns it and no code that runs before the declaration
- * can read it (the require-binding early-reference analysis), so the
- * hoisted undefined is unobservable. */
+/** safe-buffer's `var Buffer = buffer.Buffer` (or `var pna = process`, the
+ * process-nextick-args binding once it compiles as process) at file scope:
+ * a `var` alias of a surfaced global other than the global object itself
+ * is the same alias plumbing as the const spelling when nothing reassigns
+ * it and no code that runs before the declaration can read it (the
+ * require-binding early-reference analysis), so the hoisted undefined is
+ * unobservable. */
 export function stdlibBufferVarAlias(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
   if (
     !ts.isIdentifier(decl.name) ||
     !ts.isVariableDeclarationList(decl.parent) ||
     (decl.parent.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0 ||
     decl.initializer === undefined ||
-    !bufferNamespaceMember(lowerer, decl.initializer)
+    !(
+      bufferNamespaceMember(lowerer, decl.initializer) ||
+      (stdlibGlobalAliasNameOf(lowerer, decl.initializer) ?? "globalThis") !== "globalThis"
+    )
   )
     return false;
   const symbol = lowerer.checker.getSymbolAtLocation(decl.name);

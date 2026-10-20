@@ -34,6 +34,7 @@ import { literalUnionArm } from "../union-discriminants.js";
  * (FieldTarget). */
 import { isFsStreamMember, lowerFsStreamProperty } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
+import { staticCondition, staticallySelected } from "./static-typeof.js";
 import { builtinFunctionFenceValue } from "./builtin-function-fences.js";
 import {
   isZlibStreamMember,
@@ -760,6 +761,21 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // effects.
     if (constructorGlobalTypeof(lowerer, tested) !== null)
       return { kind: "strLit", value: "function", type: STRING, loc };
+    // `typeof global.setTimeout` / `typeof globalThis.queueMicrotask`: a
+    // callable standard-library global read through the global object
+    // answers like its bare spelling (JavaScript sources represent the
+    // value as an identity token, so the operand cannot answer).
+    if (ts.isPropertyAccessExpression(tested) && !tested.questionDotToken) {
+      const name = stdlibGlobalNameOf(lowerer, tested);
+      if (name !== null && name !== "globalThis") {
+        const t = lowerer.typeOf(tested);
+        if (
+          lowerer.checker.getCallSignatures(t).length > 0 ||
+          lowerer.checker.getConstructSignatures(t).length > 0
+        )
+          return { kind: "strLit", value: "function", type: STRING, loc };
+      }
+    }
     // `typeof globalThis.AbortSignal.any` (ky's feature probe): a static
     // member of a standard-library global, declared callable, whose value
     // has no representation. The read has no effects and Node's answer
@@ -2195,7 +2211,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // undefined value so stored probes compose with optional calls.
     if (
       stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis" &&
-      !lowerer.checker.getPropertyOfType(lowerer.typeOf(expr.expression), expr.name.text)
+      !lowerer.checker.getPropertyOfType(
+        lowerer.typeOf(staticallySelected(lowerer, expr.expression)),
+        expr.name.text,
+      )
     ) {
       return dynUndefinedExpr(loc);
     }
@@ -4834,6 +4853,11 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     });
     if (presence !== null) return presence;
   }
+  // Global detection (`typeof window < "u"`, `typeof self !==
+  // "undefined" && …`): a condition whose typeof answers are static
+  // folds, so the untaken arm never lowers (static-typeof.ts).
+  const folded = staticCondition(lowerer, e);
+  if (folded !== null) return { kind: "boolLit", value: folded, type: BOOL, loc: locOf(e) };
   if (ts.isBinaryExpression(e)) {
     const op = e.operatorToken.kind;
     if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {
@@ -12728,7 +12752,7 @@ function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr |
   // An ES-module import binding reads the value Node copied when the
   // importer linked the CommonJS module (cjsAccessorSnapshotStores).
   const raw = lowerer.checker.getSymbolAtLocation(ident);
-  const binding = raw ? lowerer.checker.declarationsOf(raw)[0] : undefined;
+  const binding = raw ? raw.declarations[0] : undefined;
   if (
     binding !== undefined &&
     (ts.isImportSpecifier(binding) || ts.isExportSpecifier(binding)) &&
