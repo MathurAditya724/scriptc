@@ -52,6 +52,8 @@ ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
  * adjacent surrogate pairs combine, other surrogates stay lone. Borrowed
  * args; the string result is +1; neither throws. */
 ScrStr *scr_str_from_char_code(ScrArr *codes);
+/* String.fromCharCode over n codes in a caller-owned array (no ScrArr). */
+ScrStr *scr_str_from_char_codes(const double *codes, size_t n);
 /* Single numeric argument; avoids argument packing. Defined in scr_string.c
  * to share its character cache. Same ToUint16 and lone-surrogate behavior. */
 ScrStr *scr_str_from_char_code_one(double code);

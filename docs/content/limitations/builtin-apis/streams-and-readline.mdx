@@ -18,6 +18,10 @@
   The cursor never stops between the two UTF-16 units of a supplementary character: where Node's Up or Down movement through a multiline line would, the cursor moves to the character's start or end.
   In JavaScript, a `'history'` listener receives a copy of the history; its changes are written back when the listener returns, but the copy is not `rl.history` itself.
   `rl.history`, `historySize`, `historyIndex`, `crlfDelay`, `tabSize`, `escapeCodeTimeout`, `line`, `cursor`, and `terminal` read as in Node, except that `rl.cursor` of an interface that is not a terminal throws instead of answering `undefined`.
+  `rl[Symbol.dispose]()` closes the interface, and `instanceof` with `readline.Interface` or `readlinePromises.Interface` answers whether the interface came from that module, as in Node.
+  In JavaScript, the input and output can be any expression that evaluates to a stream, such as a function's result or an object's member; a value that is not a stream is unsupported.
+  In JavaScript, `question()` and `setPrompt()` accept a value that is not a string: when such a prompt is written, an interface that is not a terminal throws `ERR_INVALID_ARG_TYPE` as Node does (the `readline/promises` question rejects with it) and the question stays pending, and a terminal interface writes `String(value)`.
+  A terminal interface's prompt that is an object or a symbol, `getPrompt()` while the prompt is not a string, and `getCursorPos()` with an object or symbol prompt are unsupported.
   `readline.cursorTo`, `moveCursor`, `clearLine`, and `clearScreenDown` write to `process.stdout`, `process.stderr`, a writable stream, or nothing for `null` and `undefined`; their callbacks take no parameters.
   The `readline/promises` `Readline` class writes to the same outputs.
   `readline.emitKeypressEvents` emits `'keypress'` events on `process.stdin` or a readable stream, shared with terminal interfaces on that stream as in Node; a listener's first parameter must admit `undefined`, which it receives for escape sequences.

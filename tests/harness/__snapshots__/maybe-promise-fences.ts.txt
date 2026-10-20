@@ -56,10 +56,3 @@ maybe-promise-fences.ts:32:13 - error SC1090: 'instanceof Promise' on '{ v: numb
   32 | console.log(record instanceof Promise);
      |             ^~~~~~~~~~~~~~~~~~~~~~~~~
   33 | 
-
-maybe-promise-fences.ts:36:26 - error SC1090: '(unknown) => Promise<unknown>' values where '() => Promise<unknown>' is expected is not supported yet
-
-  35 | type HandlerFn = (...args: unknown[]) => Promise<unknown>;
-  36 | const fixed: HandlerFn = async (first: unknown) => first;
-     |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  37 | fixed(1, 2).then((v) => console.log(v));

@@ -44,6 +44,7 @@ import {
   observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
+import { perEvaluationPrivateNames } from "./private-brands.js";
 import {
   errorPropertyRead,
   errorPropertyWrite,
@@ -2886,10 +2887,12 @@ export class ClassDynamicDispatch {
             for (const [symbol, name] of info.symbolMethods) symbolEntries.push([symbol, name]);
           for (const [symbol, name] of symbolEntries) {
             const declaration = symbol.valueDeclaration;
+            // Module-scope consts and CommonJS key-table properties
+            // (classSymbolKeyOfSymbol) both hold their key in a global.
             if (
               declaration &&
-              ts.isVariableDeclaration(declaration) &&
-              ts.isIdentifier(declaration.name)
+              ((ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) ||
+                ts.isPropertyAssignment(declaration))
             ) {
               const global = lowerer.globalsBySymbol.get(symbol);
               if (global)
@@ -4312,19 +4315,43 @@ export class ClassDynamicDispatch {
       loc,
     };
     if (accessor && info.decl) {
-      const method = classMethodValue(lowerer, info.decl, info, member, loc);
-      if (method) {
-        const call: IrExpr = {
-          kind: "libCall",
-          fn: "dyn.reflectApply",
-          args: [
-            lowerer.coerceToExpected(method, DYN),
-            actualReceiver,
-            { kind: "dynArrLit", elems: write ? [varRef("p.1", DYN, loc)] : [], type: DYN, loc },
-          ],
-          type: DYN,
-          loc,
-        };
+      // An accessor whose private names belong to one evaluation runs as
+      // the instance's own evaluation's prototype accessor.
+      const declarer = accessor.declarer;
+      const prototype = perEvaluationPrivateNames(declarer)
+        ? classPrototypeData(lowerer, declarer, loc, upcastTo(lowerer, receiver, declarer.def.name))
+        : null;
+      const method = prototype ? null : classMethodValue(lowerer, info.decl, info, member, loc);
+      if (prototype || method) {
+        const call: IrExpr = prototype
+          ? {
+              kind: "libCall",
+              fn: write ? "dyn.reflectSet" : "dyn.reflectGet",
+              args: [
+                prototype,
+                lowerer.coerceToExpected(key, DYN),
+                ...(write ? [varRef("p.1", DYN, loc)] : []),
+                actualReceiver,
+              ],
+              type: write ? BOOL : DYN,
+              loc,
+            }
+          : {
+              kind: "libCall",
+              fn: "dyn.reflectApply",
+              args: [
+                lowerer.coerceToExpected(method!, DYN),
+                actualReceiver,
+                {
+                  kind: "dynArrLit",
+                  elems: write ? [varRef("p.1", DYN, loc)] : [],
+                  type: DYN,
+                  loc,
+                },
+              ],
+              type: DYN,
+              loc,
+            };
         return [
           {
             kind: "if",

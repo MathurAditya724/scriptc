@@ -1,5 +1,6 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import * as ts from "../../ts7/adapter.js";
+import { localPrivateBrandClass } from "../private-brands.js";
 import { type Lowerer, PoisonError, jsFuncNameOf, neverTaintedJsType, own } from "../lowerer.js";
 import {
   ARRAY_METHODS,
@@ -76,6 +77,11 @@ import { lifetimeRegionMemberOf } from "../../experimental-import.js";
 import { lowerInternTableProperty } from "../intern-tables.js";
 import { lowerThreadSlotsProperty } from "../thread-slots.js";
 import { builtinClassRefOf, runtimeClassValueOfType } from "../builtins/class-values.js";
+import {
+  lowerRuntimeConstructor,
+  lowerRuntimeConstructorName,
+  runtimeConstructorReceiver,
+} from "../builtins/runtime-constructor.js";
 import { findGenericMethodOn, lowerStaticFieldRead } from "../lower-classes.js";
 import { lowerClassPrototypeData } from "../class-prototypes.js";
 import { lowerEnumAccess } from "../lower-enums.js";
@@ -289,6 +295,16 @@ export function lowerPropertyAccessExpr(
   if (expr.name.text === "name" && !expr.questionDotToken) {
     const ref = builtinClassRefOf(lowerer, expr.expression);
     if (ref !== null) return { kind: "strLit", value: ref.name, type: STRING, loc };
+  }
+  // `x.constructor.name` and `x.constructor` on an instance of
+  // EventEmitter or a stream class (builtins/runtime-constructor.ts).
+  if (expr.name.text === "name" && !expr.questionDotToken) {
+    const ctor = runtimeConstructorReceiver(lowerer, expr.expression);
+    if (ctor) return lowerRuntimeConstructorName(lowerer, ctor.receiver, loc);
+  }
+  {
+    const ctor = runtimeConstructorReceiver(lowerer, expr);
+    if (ctor) return lowerRuntimeConstructor(lowerer, expr, ctor.info);
   }
   // `C.name` through a runtime-provided class VALUE (a `typeof Readable`
   // parameter): the class object's stored name.
@@ -3086,6 +3102,22 @@ export function fieldTarget(
       field: "stackTraceLimit",
       fieldType: F64,
     };
+  }
+  // `this.#x` in a function-local class's prototype method: the field of
+  // the brand-checked receiver (checkedPrivateReceiver).
+  if (
+    ts.isPrivateIdentifier(access.name) &&
+    access.expression.kind === ts.SyntaxKind.ThisKeyword &&
+    lowerer.resolveThis()?.type.kind === "dyn"
+  ) {
+    const owner = localPrivateBrandClass(lowerer, access.name);
+    if (owner) {
+      const ownerType: IrType & { kind: "object" } = {
+        kind: "object",
+        className: owner.info.def.name,
+      };
+      return classFieldTarget(lowerer, access.expression, ownerType, access.name.text);
+    }
   }
   const stored = ts.isIdentifier(access.expression)
     ? (lowerer.peekLocal(access.expression)?.type ?? lowerer.globalOf(access.expression)?.type)

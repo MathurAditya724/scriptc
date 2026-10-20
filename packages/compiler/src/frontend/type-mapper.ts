@@ -6,6 +6,7 @@ import type { IrRecordShape, IrType, IrUnionDef, IrUnionDiscriminant } from "../
 import {
   BYTES_ELEMENT_NAME,
   arrayOf,
+  isDynTypedRefType,
   BOOL,
   bytesOf,
   canConvertToDyn,
@@ -124,6 +125,14 @@ export function jsOpenObjectType(
     ? DYN
     : type;
 }
+
+/** The modules whose RequestOptions interface maps to the checked dynamic. */
+const HTTP_REQUEST_OPTION_MODULES: ReadonlySet<string> = new Set([
+  "http",
+  "node:http",
+  "https",
+  "node:https",
+]);
 
 /** The WebCrypto interfaces whose values are checked-dynamic: the crypto
  * global, SubtleCrypto, CryptoKey handles and the algorithm dictionaries
@@ -325,7 +334,7 @@ export class ShapeRegistry {
     ) {
       return;
     }
-    shape.declaredOrder = declaredOrder;
+    shape.declaredOrder = this.withExtendedNames(shape.id, declaredOrder);
     this.declaredOrderPriority.set(shape.id, this.currentDeclaredOrderPriority);
   }
 
@@ -341,7 +350,7 @@ export class ShapeRegistry {
       }
       const shape = this.byId.get(shapeId);
       if (!shape) continue;
-      shape.declaredOrder = best.order;
+      shape.declaredOrder = this.withExtendedNames(shapeId, best.order);
       this.declaredOrderPriority.set(shapeId, best.priority);
     }
     for (const finalize of this.derivedDeclaredOrderFinalizers) finalize();
@@ -374,7 +383,7 @@ export class ShapeRegistry {
       // still obeys first-writer-wins.
       if (shape?.declaredOrder !== originalOrder) return;
       const next = order();
-      if (next !== undefined) shape.declaredOrder = next;
+      if (next !== undefined) shape.declaredOrder = this.withExtendedNames(shape.id, next);
     };
   }
 
@@ -481,6 +490,53 @@ export class ShapeRegistry {
 
   get(shapeId: string): IrRecordShape | undefined {
     return this.byId.get(shapeId);
+  }
+
+  /** Names extendShape added to a shape, which every key-order table the
+   * shape adopts lists after its declared names. */
+  private readonly extendedNames = new Map<string, string[]>();
+
+  /** The members extendShape attached to a shape (empty for most). */
+  attachedNames(shapeId: string): readonly string[] {
+    return this.extendedNames.get(shapeId) ?? [];
+  }
+
+  private withExtendedNames(shapeId: string, order: string[]): string[] {
+    const extra = this.extendedNames.get(shapeId);
+    if (!extra) return order;
+    const missing = extra.filter((name) => !order.includes(name));
+    return missing.length === 0 ? order : [...order, ...missing];
+  }
+
+  /** Adds optional fields to an interned shape in place: members a type
+   * assertion attaches to the shape's values (`r as R & { tag: string }`
+   * followed by `view.tag = ...`; see assertion-members.ts). Every value
+   * of the shape holds them absent until a write through such a view, so
+   * the shape keeps its id, both structural keys resolve to it, and its
+   * key-order table lists the new names after the declared ones. Runs
+   * before any body lowers; existing layouts change, so the revision
+   * advances like a closing recursive placeholder. */
+  extendShape(shapeId: string, extra: readonly { name: string; type: IrType }[]): void {
+    const shape = this.byId.get(shapeId);
+    if (!shape || shape.tuple || extra.length === 0) return;
+    const fresh = extra.filter((f) => !shape.fields.some((x) => x.name === f.name));
+    if (fresh.length === 0) return;
+    shape.fields = [...shape.fields, ...fresh].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    );
+    this.extendedNames.set(shapeId, [
+      ...(this.extendedNames.get(shapeId) ?? []),
+      ...fresh.map((f) => f.name),
+    ]);
+    if (shape.declaredOrder)
+      shape.declaredOrder = this.withExtendedNames(shapeId, shape.declaredOrder);
+    const candidates = this.declaredOrderCandidates.get(shapeId);
+    if (candidates) {
+      for (const c of candidates) c.order = this.withExtendedNames(shapeId, c.order);
+    }
+    this.revision++;
+    const key = this.keyOf(shape.fields, false, shape.indexValue);
+    if (!this.byKey.has(key)) this.byKey.set(key, shapeId);
   }
 }
 
@@ -1543,6 +1599,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     contextResolutions++;
     return DYN;
   }
+  // Readonly<C> over a program class (Object.freeze's result type) is the
+  // same instance.
+  const readonlyClass = readonlyClassType(type, ctx);
+  if (readonlyClass !== null) return readonlyClass;
   if (resolveTypeParam && type.flags & ts.TypeFlags.TypeParameter) {
     const bound = resolveTypeParam(type);
     if (bound) {
@@ -2038,12 +2098,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // {}` — classNamer spells them "%anon" (unique per file), the same
     // name their collection registered.
     !classDecl.getSourceFile().isDeclarationFile &&
-    checker.getConstructSignatures(widened).length === 0
+    checker.getConstructSignatures(widened).length === 0 &&
+    // A TypeScript class declared OUTSIDE the lowered program (reached
+    // through `import type` alone) never registers, and the program can
+    // hold no instance of it: its instance type maps below as the
+    // structural type it describes, like an interface.
+    (ctx.isProgramFile(classDecl.getSourceFile()) || isJsSourceFile(classDecl.getSourceFile()))
   ) {
-    // Declared OUTSIDE the lowered program (reached through the type world
-    // alone — jsdoc `typeof import()` over a never-required module): the
-    // class will never register, so the instance type is unmappable, not
-    // an object type naming a struct that cannot exist.
+    // A JavaScript class outside the lowered program (jsdoc `typeof
+    // import()` over a never-required module) stays unmappable: JSDoc
+    // types are not checked, so its slots fall back to the dynamic value.
     if (!ctx.isProgramFile(classDecl.getSourceFile())) return null;
     // The class inside a MIXIN function: per-call-site instantiations
     // share this one node — the CURRENT instantiation (collecting or
@@ -2447,6 +2511,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // http.RequestOptions / https.RequestOptions as a declared type: an
+  // option record whose members include functions, agents and signals.
+  // Values ride checked-dynamic storage, like SpawnOptions.
+  if (
+    psym?.name === "RequestOptions" &&
+    psym.declarations.some((d) => {
+      if (!ts.isInterfaceDeclaration(d) || !ctx.isStdlibFile(d.getSourceFile())) return false;
+      for (let p: ts.Node | undefined = d.parent; p !== undefined; p = p.parent) {
+        if (ts.isModuleDeclaration(p) && ts.isStringLiteral(p.name))
+          return HTTP_REQUEST_OPTION_MODULES.has(p.name.text);
+      }
+      return false;
+    })
+  )
+    return DYN;
 
   // exactly like npm-declared types. Static fetch has one deliberately
   // narrower native representation: Response is an opaque checked-
@@ -4320,10 +4399,13 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
     // params). Declaration files keep their existing paths: library
     // callback slots such as String#replace's `(substring, ...args: any[])`
     // have intrinsic lowerings that inspect the unmapped type.
+    // node:test's default mock function type, `(...args: any[]) =>
+    // undefined` (the type parameter default of mock.fn), takes the same
+    // ABI: mock.fn() without an original records whatever its callers pass.
     if (
       rest &&
       decl !== undefined &&
-      !decl.getSourceFile().isDeclarationFile &&
+      (!decl.getSourceFile().isDeclarationFile || isNodeTestDefaultFunctionParam(decl, ctx)) &&
       (pt?.kind === "dyn" || (!pt && isAnyArrayType(checker.getTypeOfSymbol(p), checker)))
     ) {
       dynRest = true;
@@ -5053,6 +5135,19 @@ function mentionsMappedParams(
   if (type.isUnionType() || type.isIntersectionType())
     return ts.constituentTypes(type).some((part) => mentionsMappedParams(part, keys, aliases));
   return false;
+}
+
+function readonlyClassType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const alias = type.getAliasSymbol();
+  if (alias?.name !== "Readonly") return null;
+  const args = type.getAliasTypeArguments();
+  if (args.length !== 1 || !args[0]) return null;
+  const isLibAlias = alias.declarations.some(
+    (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()),
+  );
+  if (!isLibAlias) return null;
+  const mapped = mapType(args[0], ctx);
+  return mapped !== null && isDynTypedRefType(mapped) ? mapped : null;
 }
 
 function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
@@ -6287,6 +6382,23 @@ function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
     default:
       return false;
   }
+}
+
+/** A parameter of a function type that is the default of a type parameter
+ * declared in node:test's standard-library declarations (MockTracker.fn's
+ * `F extends Function = (...args: any[]) => undefined`). */
+function isNodeTestDefaultFunctionParam(decl: ts.Declaration, ctx: TypeMapperCtx): boolean {
+  const fnType = decl.parent;
+  return (
+    ts.isParameter(decl) &&
+    fnType !== undefined &&
+    ts.isFunctionTypeNode(fnType) &&
+    fnType.parent !== undefined &&
+    ts.isTypeParameterDeclaration(fnType.parent) &&
+    fnType.parent.defaultType === fnType &&
+    ctx.isStdlibFile(decl.getSourceFile()) &&
+    isDeclaredInAmbientModule(decl, "test")
+  );
 }
 
 /** `any[]` (or `readonly any[]`): an array type whose element is `any`. */
