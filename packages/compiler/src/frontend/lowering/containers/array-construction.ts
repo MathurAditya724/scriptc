@@ -265,6 +265,22 @@ function appendWidenedArrayValues(
 }
 
 /** The Array constructor's element and count forms, shared by calls and new. */
+/** The value of `.fill(v)` when `expr` is that call's receiver. */
+function fillArgumentOfReceiver(expr: ts.Expression): ts.Expression | null {
+  let receiver: ts.Node = expr;
+  let parent = expr.parent;
+  while (ts.isParenthesizedExpression(parent)) {
+    receiver = parent;
+    parent = parent.parent;
+  }
+  if (!ts.isPropertyAccessExpression(parent) || parent.expression !== receiver) return null;
+  if (parent.name.text !== "fill" || parent.questionDotToken) return null;
+  const call = parent.parent;
+  if (!ts.isCallExpression(call) || call.expression !== parent) return null;
+  const value = call.arguments.nodes[0];
+  return value !== undefined && !ts.isSpreadElement(value) ? value : null;
+}
+
 export function lowerArrayConstructor(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.NewExpression,
@@ -294,6 +310,15 @@ export function lowerArrayConstructor(
   if (result?.kind !== "array") {
     const contextual = lowerer.checker.getContextualType(expr);
     if (contextual) result = lowerer.mapTypeOf(contextual);
+  }
+  // `Array(n).fill(v)`: the checker types the length-constructed array as
+  // any[], but fill gives every element v's type.
+  if (result?.kind !== "array") {
+    const fillValue = fillArgumentOfReceiver(expr);
+    const elem = fillValue
+      ? lowerer.mapTypeOf(lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(fillValue)))
+      : null;
+    if (elem !== null && isSupportedArrayElem(elem)) result = arrayOf(elem);
   }
   if (isJsSourceFile(expr.getSourceFile()) && (result === null || result.kind === "dyn"))
     result = arrayOf(DYN);

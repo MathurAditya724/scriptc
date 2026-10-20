@@ -407,6 +407,10 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
             for (const chunk of split.chunks) setVirtualSource(chunk.path, chunk.source);
             original = split.text;
           }
+          // A module that names its export object through a variable reaches
+          // its members through `exports`.
+          const exportsVar = original === null ? null : services.cjsExportsVar(original, path);
+          if (exportsVar !== null) original = exportsVar;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
             const source = namepaths ?? original;
@@ -441,7 +445,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
                 findWidened?.text ??
                 classFields?.text ??
                 namepaths ??
-                (split !== null ? original : null);
+                (split !== null || exportsVar !== null ? original : null);
             }
           }
         } catch {

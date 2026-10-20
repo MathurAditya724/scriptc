@@ -158,6 +158,26 @@ function chaseValue(e: ts.Expression): { kind: "ident" | "hoist"; text: string }
   return null;
 }
 
+/** An object literal of side-effect-free member values (`exports.default
+ * = { context: context_api_1.context, metrics: metrics_api_1.metrics }`,
+ * tsc's default-export object): the tail const can build it once, like a
+ * chased value. Null for any other shape (spreads, methods, accessors,
+ * computed keys, or a value chaseValue rejects). */
+function chaseObjectLiteral(e: ts.Expression): { kind: "hoist"; text: string } | null {
+  let cur: ts.Expression = e;
+  while (ts.isParenthesizedExpression(cur)) cur = cur.expression;
+  if (!ts.isObjectLiteralExpression(cur)) return null;
+  for (const prop of cur.properties.nodes) {
+    if (
+      !ts.isPropertyAssignment(prop) ||
+      !(ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) ||
+      (chaseValue(prop.initializer) === null && chaseObjectLiteral(prop.initializer) === null)
+    )
+      return null;
+  }
+  return { kind: "hoist", text: cur.getText() };
+}
+
 /** The getter body's returned expression for the two descriptor getter
  * spellings (`get() { return X }` / `get: function () { return X }`) and
  * the arrow forms the esbuild table uses (`() => X`, `() => { return X }`). */
@@ -792,7 +812,7 @@ export function rewriteBundlerCjsSyntax(
         // anything else keeps the file untouched (the offender path owns
         // it: neutralizing would drop an evaluation, keeping it meets the
         // lowering's discard fence at load).
-        const chased = chaseValue(cur);
+        const chased = chaseValue(cur) ?? chaseObjectLiteral(cur);
         if (chased === null) {
           return toEsm.pads.length > 0 ? { degrade: TO_ESM_MIXED_DEGRADE } : null;
         }

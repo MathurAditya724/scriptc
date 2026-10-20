@@ -8,6 +8,7 @@ import {
   type BundledChunkSplit,
 } from "./npm-static-bundled-chunks.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
+import { normalizeCjsExportsVar } from "./npm-static-cjs-exports-var.js";
 import type { SourceFile } from "./ts7/ast-types.js";
 
 /** Evaluate an isolated, self-contained TypeScript callback under a finite
@@ -75,6 +76,14 @@ export class FrontendServices {
     this.ensureOpen();
     if (!mayBundleChunks(source)) return null;
     return splitBundledChunks(this.parse(path, source, "js"), path);
+  }
+  /** A CommonJS module that names its export object through a variable
+   * (`var ip = exports`), its member accesses respelled through `exports`
+   * (null: none). */
+  cjsExportsVar(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!source.includes("exports")) return null;
+    return normalizeCjsExportsVar(this.parse(path, source, "js"));
   }
   nullableClassFields(path: string, source: string): syntax.NpmStaticOverloadRewrite | null {
     return syntax.applyNpmStaticNullableClassFields(this.parse(path, source, "js"), source);

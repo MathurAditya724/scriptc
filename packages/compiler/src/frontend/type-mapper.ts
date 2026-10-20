@@ -1355,6 +1355,26 @@ function isWorkerHandleSymbol(
 
 /** The `{ message: any }` object type (or its union with undefined) that
  * worker_threads declares as receiveMessageOnPort's result. */
+/** A union of dns lookup option bags with numbers and nullish values that
+ * includes LookupAllOptions (whose `all: true` arm has no record form). */
+function isLookupOptionsUnion(type: ts.Type, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  if (!type.isUnionType()) return false;
+  let all = false;
+  for (const member of ts.constituentTypes(type)) {
+    if (member.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.Null | ts.TypeFlags.Undefined))
+      continue;
+    const symbol = member.getSymbol();
+    if (
+      symbol === undefined ||
+      !/^Lookup(One|All)?Options$/.test(symbol.name) ||
+      !symbol.declarations.some((d) => ctx.isStdlibFile(d.getSourceFile()))
+    )
+      return false;
+    if (symbol.name === "LookupAllOptions") all = true;
+  }
+  return all;
+}
+
 function isReceiveMessageResult(
   type: ts.Type,
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
@@ -1545,6 +1565,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // worker_threads.receiveMessageOnPort's `{ message: any } | undefined`:
   // the runtime's { message } object, a checked-dynamic value.
   if (isReceiveMessageResult(type, ctx)) return DYN;
+  // The lookup-function option union (`LookupOneOptions | LookupAllOptions
+  // | number | undefined`): with a LookupAllOptions arm it is an option bag
+  // dns.lookup reads at run time, so it rides checked-dynamic storage.
+  if (isLookupOptionsUnion(type, ctx)) return DYN;
   // @types/node spells child_process.ExecFileException as an intersection
   // type alias over two Error-derived metadata interfaces. The value is
   // still one ordinary Error; recognize the owned alias before generic
@@ -2511,6 +2535,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // dns.LookupAllOptions (`all: true`, the overload whose callback takes
+  // an address list): a lookup option bag dns.lookup reads at run time.
+  // It rides checked-dynamic storage, so the lookup function type that
+  // takes `LookupOneOptions | LookupAllOptions | number` compiles.
+  if (isStdlibInterface("LookupAllOptions")) return DYN;
   // http.RequestOptions / https.RequestOptions as a declared type: an
   // option record whose members include functions, agents and signals.
   // Values ride checked-dynamic storage, like SpawnOptions.
