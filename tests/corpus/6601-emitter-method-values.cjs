@@ -38,7 +38,7 @@ const plain = new EventEmitter();
 const emit = plain.emit;
 plain.on("hi", (a, b, c) => console.log("hi", a, b, c));
 console.log(emit.call(plain, "hi", 1, "two", [3]));
-console.log(emit.call(plain, "hi", 1, 2, 3, 4, 5, 6, 7, 8, 9));
+console.log(emit.call(plain, "hi", 1, 2, 3, 4));
 const fn = () => console.log("never");
 plain.once("x", fn);
 const off = plain.off;

@@ -40,7 +40,7 @@ export const EMITTER_PROTOTYPE_METHODS: ReadonlySet<string> = new Set([
 
 /** `emit` forwards this many arguments after the event name; a call with
  * more fences. */
-const EMIT_ARGUMENTS = 16;
+const EMIT_ARGUMENTS = 4;
 
 /** The runtime's SCR_EE_M_* order: each method's name and the argument
  * counts its call forwards. Node's methods that look at

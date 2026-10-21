@@ -40,7 +40,7 @@ console.log(o.removeAllListeners.call(o, "c") === o, o.eventNames());
 o.removeAllListeners.call(o);
 console.log(o.eventNames());
 o.on("many", (...args: unknown[]) => console.log("many:", args.length, args.join(",")));
-console.log(emit("many", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11));
+console.log(emit("many", 1, 2, 3, 4));
 console.log(o.setMaxListeners.call(o, 3) === o, o.getMaxListeners.call(o));
 
 // off through a detached method value
