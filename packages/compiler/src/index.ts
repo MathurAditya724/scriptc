@@ -112,7 +112,7 @@ import {
 import { type IrModule, type SrcLoc } from "./ir/ir.js";
 import { moduleRuntimeFeatures } from "./ir/runtime-features.js";
 import { serializeModuleParts } from "./ir/serialize.js";
-import { writeTextParts } from "./text-parts.js";
+import { readTextParts, writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
 import { loadProgram } from "./frontend/program-node.js";
 import { runFrontend, type FrontendFactory } from "./frontend/pipeline.js";
@@ -1197,7 +1197,9 @@ async function compileTracked(
         nativeProgramObject = await emitNativeProgramObject(
           entryPath,
           opts,
-          await readFile(earlyHit.llvmPath, "utf8"),
+          // A large program's LLVM exceeds the engine's string limit as one
+          // string; the emitter takes it in parts, as on a cold build.
+          await readTextParts(earlyHit.llvmPath),
           earlyHit.native,
           profile,
         );
