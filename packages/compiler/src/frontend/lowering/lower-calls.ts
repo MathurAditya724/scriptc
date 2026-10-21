@@ -8071,6 +8071,14 @@ function lowerObjectStaticCall(
             loc,
           };
     }
+    const fnIntegrity = functionIntegrity(
+      lowerer,
+      member,
+      value,
+      call.arguments.nodes[0]!,
+      locOf(call),
+    );
+    if (fnIntegrity) return fnIntegrity;
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
@@ -8154,6 +8162,8 @@ function lowerObjectStaticCall(
         )
     )
       return value;
+    const fnIntegrity = functionIntegrity(lowerer, "freeze", value, argNode, locOf(call));
+    if (fnIntegrity) return fnIntegrity;
     const integrity = lowerClassIntegrity(lowerer, call, "freeze", value);
     if (integrity) return integrity;
     lowerer.noLowering(
@@ -10636,6 +10646,58 @@ function lowerObjectAssignOntoError(lowerer: Lowerer, call: ts.CallExpression): 
     ],
     result: ref(),
     type: target.type,
+    loc,
+  };
+}
+
+/** `Object.freeze(fn)` and the other integrity operations on a function
+ * value: the function's checked-dynamic face holds its own properties (the
+ * ones a program assigns, `name`, `length`, `prototype`) and their
+ * integrity state, which the runtime keeps on its property table. The
+ * mutators answer the function itself; the queries answer from the table.
+ * Null for other values. */
+function functionIntegrity(
+  lowerer: Lowerer,
+  member: string,
+  value: IrExpr,
+  node: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (value.type.kind !== "func" || !lowerer.dynConvertible(value.type)) return null;
+  const operations = {
+    freeze: "dyn.freeze",
+    seal: "dyn.seal",
+    preventExtensions: "dyn.preventExtensions",
+    isSealed: "dyn.isSealed",
+    isExtensible: "dyn.isExtensible",
+  } as const;
+  if (!(member in operations)) return null;
+  const fn = operations[member as keyof typeof operations];
+  // The first operation on a function creates its property table, whose
+  // `name` comes from the box: give the box the function's JS name, as a
+  // closure flowing into any checked-dynamic slot gets.
+  const name = jsFuncNameOf(node, lowerer);
+  const boxed = (e: IrExpr): IrExpr => {
+    const box = lowerer.coerceToExpected(e, DYN);
+    return box.kind === "dynFrom" && name !== null ? { ...box, fnName: name } : box;
+  };
+  if (fn === "dyn.isSealed" || fn === "dyn.isExtensible") {
+    return { kind: "libCall", fn, args: [boxed(value)], type: BOOL, loc };
+  }
+  const held = lowerer.declareHiddenLocal("%integrityFn", value.type);
+  const ref = (): IrExpr => ({ kind: "varRef", localId: held.id, type: value.type, loc });
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: held.id, init: value, loc },
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn, args: [boxed(ref())], type: DYN, loc },
+        loc,
+      },
+    ],
+    result: ref(),
+    type: value.type,
     loc,
   };
 }

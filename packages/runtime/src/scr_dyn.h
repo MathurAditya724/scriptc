@@ -671,6 +671,11 @@ double scr_dyn_native_date_value(const ScrDyn *value);
 ScrDyn *scr_dyn_native_regex(ScrRegex *value);
 bool scr_dyn_native_regex_is(const ScrDyn *value);
 ScrDyn *scr_dyn_freeze(ScrDyn *value);
+/* scr_dyn_freeze of a value that is not a function (objects, arrays,
+ * primitives), for runtime callers freezing data they built. It never
+ * creates a function's property table, so it adds no dynamic-tier code to
+ * the programs that link it. */
+ScrDyn *scr_dyn_freeze_data(ScrDyn *value);
 bool scr_dyn_is_frozen(const ScrDyn *value);
 ScrDyn *scr_dyn_new_bigint(ScrBigInt *value); /* borrows and retains value */
 ScrDyn *scr_dyn_new_symbol(ScrSym *value); /* borrows and retains value */
