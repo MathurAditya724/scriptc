@@ -130,6 +130,9 @@ export interface EarlyExecutableCacheOptions {
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** Omitted without --profile-generate/--profile-use; otherwise the
+   * pattern, or the digest of the profile's bytes. */
+  profile?: string;
   /** Omitted for the default tsgo checker; with SCRIPTC_CHECKER=tsc-ts, the
    * tsc-ts executable's file identity. */
   checker?: string;
@@ -254,6 +257,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.strip ? ["strip"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.profile !== undefined ? [options.profile] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
     options.npmStatic === null
@@ -295,6 +299,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.strip) hash.update("strip\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.profile !== undefined) hash.update(`${options.profile}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
   hash

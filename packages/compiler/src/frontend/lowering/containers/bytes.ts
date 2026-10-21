@@ -146,7 +146,7 @@ function lowerBytesSortCall(
   }
   const arity = fnArg.type.params.length;
   const keyed = closureKeyOrder(lowerer.liftedFns, fnArg);
-  const order = keyed !== null && keyed.read === null ? keyed.order : null;
+  const order = keyed?.length === 1 && keyed[0]!.read === null ? keyed[0]!.order : null;
   const helper = helperFor(`${arity}${order === null ? "" : `:keyed${order}`}`, arity, true, order);
   return {
     kind: "call",

@@ -47,6 +47,7 @@ import { compilePackedLibrary } from "./backend/library-pack.js";
 import { InternalCompilerError } from "./errors.js";
 import { frontendProcessExecArgv } from "./frontend-process-args.js";
 import { type ChildProcess, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -70,6 +71,7 @@ import { emitLlvmModuleSource, LlvmUnsupportedError } from "./backend/llvm/emitt
 import { inlineRcOption } from "./backend/llvm/shapes.js";
 import {
   emitNativeArtifact,
+  isLlvmFile,
   llvmInputBytes,
   type LlvmInput,
   NativeCodegenError,
@@ -82,6 +84,11 @@ import { windowsSubsystemLinkerArgs, type WindowsSubsystem } from "./backend/tar
 import { createNativeLinkInfo } from "./backend/native-link-info.js";
 import { RuntimePackError, loadRuntimeBitcode } from "./backend/runtime-pack.js";
 import { createNativeLinkPlan } from "./backend/link-plan.js";
+import {
+  nativeProfileKey,
+  nativeProfileRefusal,
+  type NativeProfileOptions,
+} from "./backend/native-profile.js";
 import {
   executableLinkerEnvironmentFingerprint,
   linkNativeExecutable,
@@ -116,7 +123,11 @@ import { writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
 import { loadProgram } from "./frontend/program-node.js";
 import { runFrontend, type FrontendFactory } from "./frontend/pipeline.js";
-import { provenanceSources } from "./frontend/provenance-registry.js";
+import {
+  type ProvenanceSources,
+  provenanceSources,
+  setProvenanceSources,
+} from "./frontend/provenance-registry.js";
 import { clearResolveCaches } from "./frontend/resolve.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
 import { executableLinkFeatures } from "./backend/executable-features.js";
@@ -168,6 +179,7 @@ export {
   type WarmNativeCachesResult,
 } from "./backend/external-c.js";
 export { warmNativeCaches } from "./backend/warm-cache.js";
+export { mergeNativeProfiles as mergeProfiles } from "./backend/native-codegen.js";
 export {
   ANDROID_MIN_API,
   IPHONEOS_MIN_VERSION,
@@ -496,6 +508,7 @@ async function compileExecutableNative(
   programObjectDependencies: readonly NativeArtifactDependency[] = [],
   onArtifactReady?: NonNullable<Parameters<typeof compileExternalC>[0]["onArtifactReady"]>,
   programPartitions: readonly string[] = [],
+  profileGenerate = false,
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(llvmPath);
   const runtimePackTarget = programIsObject && !sanitize ? nativeCodegenTarget() : null;
@@ -510,6 +523,7 @@ async function compileExecutableNative(
       optimization: features.optimization ?? "release",
       ...(strip ? { strip: true } : {}),
       ...(windowsSubsystem === undefined ? {} : { windowsSubsystem }),
+      ...(profileGenerate ? { profileGenerate: true } : {}),
       programObjectDependencies,
     });
     const cacheableLinker =
@@ -621,6 +635,7 @@ async function emitNativeProgramObject(
   opts: CompileRequestOptions,
   llvm: LlvmInput,
   features: EarlyExecutableNativeFeatures,
+  profile: NativeProfileOptions | undefined,
 ): Promise<NativeProgramObject> {
   const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const artifactPath = join(opts.outDir, `${stem}.helper.o`);
@@ -663,6 +678,7 @@ async function emitNativeProgramObject(
       ...(runtimeBitcode === null
         ? {}
         : { importBitcode: { paths: runtimeBitcode.paths, digests: runtimeBitcode.digests } }),
+      ...(profile === undefined ? {} : { profile }),
     });
     return {
       linkPath,
@@ -683,6 +699,25 @@ async function removeNativeProgramObject(
   await Promise.all(
     [linkPath, ...partitionPaths].map((path) => rm(path, { force: true }).catch(() => undefined)),
   );
+}
+
+/** The request's profile. An indexed profile is read here so every cache keys
+ * its bytes. */
+async function readNativeProfile(
+  opts: CompileRequestOptions,
+): Promise<NativeProfileOptions | undefined> {
+  if (opts.profileGenerate !== undefined) return { generate: opts.profileGenerate };
+  if (opts.profileUse === undefined) return undefined;
+  const path = resolve(opts.profileUse);
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(path);
+  } catch (err) {
+    throw new Error(
+      `cannot read --profile-use file ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return { use: { path, digest: createHash("sha256").update(bytes).digest("hex") } };
 }
 
 function usesPrecompiledRuntimePack(opts: CompileRequestOptions, backend: "llvm"): boolean {
@@ -937,6 +972,8 @@ interface FrontendProcessRequest {
   buildPlatform: string;
   /** The compile's SCRIPTC_TIMING clock, which the frontend process's phases continue. */
   timing: TimingClock;
+  /** The compile's --provenance-sources mappings, which the frontend process installs. */
+  provenance: ProvenanceSources | null;
 }
 
 /** What the frontend process sends back. A thrown error comes back as `failed`. */
@@ -944,6 +981,8 @@ type FrontendProcessResult =
   | {
       kind: "prepared";
       llvmPath: string;
+      /** A private copy of the LLVM text, which the native helper reads (`nativeInputPath`). */
+      nativeInputPath: string;
       llvmBytes: number;
       irPath: string | undefined;
       nativeFeatures: EarlyExecutableNativeFeatures;
@@ -981,7 +1020,13 @@ async function prepareExecutableInputInChild(
   const resultPath = privateSiblingPath(join(opts.outDir, "frontend-result.json"), "frontend");
   let result: FrontendProcessResult = { kind: "failed" };
   try {
-    const request: FrontendProcessRequest = { entryPath, opts, buildPlatform, timing: timingClock };
+    const request: FrontendProcessRequest = {
+      entryPath,
+      opts,
+      buildPlatform,
+      timing: timingClock,
+      provenance: provenanceSources(),
+    };
     await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
     const exitCode = await frontendProcess.run(requestPath, resultPath);
     if (exitCode === 0)
@@ -1005,7 +1050,7 @@ async function prepareExecutableInputInChild(
   if (result.kind === "diagnostics")
     return { ok: false, diagnostics: result.diagnostics, sourceTexts };
   return {
-    llvmSource: { file: result.llvmPath, bytes: result.llvmBytes },
+    llvmSource: { file: result.nativeInputPath, bytes: result.llvmBytes },
     llvmPath: result.llvmPath,
     irPath: result.irPath,
     nativeFeatures: result.nativeFeatures,
@@ -1022,6 +1067,7 @@ async function prepareExecutableInputInChild(
 export async function runFrontendProcess(requestPath: string, resultPath: string): Promise<void> {
   const request = JSON.parse(await readFile(requestPath, "utf8")) as FrontendProcessRequest;
   clearCompileSessionCaches();
+  setProvenanceSources(request.provenance);
   const frontendInputs = new FrontendInputTracker();
   const warnings: CompileWarningSink = { warnings: [], sourceTexts: null };
   let result: FrontendProcessResult = { kind: "failed" };
@@ -1044,9 +1090,16 @@ export async function runFrontendProcess(requestPath: string, resultPath: string
     );
     const frontend = frontendInputs.snapshot();
     if (!("ok" in prepared)) {
+      // The public .ll file may be rewritten by a concurrent build of another entry with the
+      // same output stem before the native helper reads it (see emitNativeArtifact).
+      if (isLlvmFile(prepared.llvmSource))
+        throw new InternalCompilerError("in-process preparation returned LLVM text as a file");
+      const nativeInputPath = privateSiblingPath(prepared.llvmPath, "frontend-llvm");
+      await writeLlvmSource(nativeInputPath, prepared.llvmSource, 0o600);
       result = {
         kind: "prepared",
         llvmPath: prepared.llvmPath,
+        nativeInputPath,
         llvmBytes: llvmInputBytes(prepared.llvmSource),
         irPath: prepared.irPath,
         nativeFeatures: prepared.nativeFeatures,
@@ -1278,6 +1331,26 @@ async function compileTracked(
       sourceTexts: new Map(),
     };
   }
+  const profileRefusal = nativeProfileRefusal({
+    ...opts,
+    outputKind,
+    optimization: opts.optimization ?? "release",
+    sanitize: opts.sanitize ?? false,
+    platform: buildPlatform,
+  });
+  let profile: NativeProfileOptions | undefined;
+  try {
+    if (profileRefusal !== null) throw new Error(profileRefusal);
+    profile = await readNativeProfile(opts);
+  } catch (err) {
+    return {
+      ok: false,
+      diagnostics: [
+        nativeCodegenDiag("SC3002", err instanceof Error ? err.message : String(err), entryPath),
+      ],
+      sourceTexts: new Map(),
+    };
+  }
   const cacheRoot =
     outputKind === "exe" && provenanceSources() === null
       ? await prepareBuildCacheRoot(buildCacheRoot())
@@ -1300,6 +1373,7 @@ async function compileTracked(
       ...(opts.strip ? { strip: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
+      ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,
@@ -1392,6 +1466,7 @@ async function compileTracked(
           opts,
           await readFile(earlyHit.llvmPath, "utf8"),
           earlyHit.native,
+          profile,
         );
         nativeInputPath = nativeProgramObject.linkPath;
       } catch (err) {
@@ -1425,6 +1500,7 @@ async function compileTracked(
               });
             },
         nativeProgramObject?.partitionPaths,
+        profile?.generate !== undefined,
       );
       if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
         await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
@@ -1510,6 +1586,7 @@ async function compileTracked(
           opts,
           llvmSource,
           nativeFeatures,
+          profile,
         );
         timing("native-object");
         await recordEarlyExecutableNativeBuild(cacheRoot, executableCacheOptions).catch(
@@ -1548,6 +1625,7 @@ async function compileTracked(
             publishedExecutable = true;
           },
       nativeProgramObject?.partitionPaths,
+      profile?.generate !== undefined,
     );
     timing("native-link");
     if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
@@ -1574,6 +1652,8 @@ async function compileTracked(
         nativeProgramObject.partitionPaths,
       );
     }
+    // The frontend process's private copy of the LLVM text.
+    if (isLlvmFile(llvmSource)) await rm(llvmSource.file, { force: true });
   }
   if (!publishedExecutable) {
     await publishEarlyExecutableCache(cacheRoot, executableCacheOptions, {

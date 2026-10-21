@@ -28,11 +28,13 @@ async function build(
   outPath: string,
   cacheRoot: string,
   inProcess: boolean,
+  extra: { args?: string[]; env?: NodeJS.ProcessEnv } = {},
 ): Promise<Build> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     SCRIPTC_CACHE_DIR: cacheRoot,
     SCRIPTC_TIMING: "1",
+    ...extra.env,
   };
   delete env["SCRIPTC_NO_CACHE"];
   if (inProcess) env["SCRIPTC_FRONTEND_PROCESS"] = "0";
@@ -40,7 +42,7 @@ async function build(
   try {
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
-      [bootstrap, "build", entry, "-o", outPath],
+      [bootstrap, "build", entry, "-o", outPath, ...(extra.args ?? [])],
       { env, maxBuffer: 8 * 1024 * 1024 },
     );
     return { code: 0, stdout, stderr };
@@ -164,6 +166,92 @@ test.skipIf(helperTarget === null)(
       expect(stdout).toBe("compiled true\n");
       expect(stderr).toContain('"phase":"frontend-process"');
       expect((await execFileAsync(join(dir, "program"))).stdout).toBe("from eval\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  240_000,
+);
+
+test.skipIf(helperTarget === null)(
+  "a build with --provenance-sources compiles the attested sources in the frontend process",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-frontend-process-provenance-"));
+    try {
+      const fixture = join(repoRoot, "tests/fixtures/provenance");
+      const entry = join(fixture, "cases/greet/main.ts");
+      const extra = {
+        args: ["--provenance-sources"],
+        env: { SCRIPTC_PROVENANCE_MANIFEST: join(fixture, "manifest.json") },
+      };
+      await mkdir(join(dir, "child"));
+      await mkdir(join(dir, "inline"));
+      const child = await build(
+        entry,
+        join(dir, "child", "greet"),
+        join(dir, "cache"),
+        false,
+        extra,
+      );
+      const inline = await build(
+        entry,
+        join(dir, "inline", "greet"),
+        join(dir, "cache"),
+        true,
+        extra,
+      );
+      expect(child.code).toBe(0);
+      expect(inline.code).toBe(0);
+      expect(child.stderr).toContain('"phase":"frontend-process"');
+      const childLlvm = await readFile(join(dir, "child", "main.ll"), "utf8");
+      expect(childLlvm).toBe(await readFile(join(dir, "inline", "main.ll"), "utf8"));
+      // Without the flag, the program compiles the published package instead.
+      await mkdir(join(dir, "published"));
+      const published = await build(
+        entry,
+        join(dir, "published", "greet"),
+        join(dir, "cache"),
+        true,
+      );
+      expect(published.code).toBe(0);
+      expect(await readFile(join(dir, "published", "main.ll"), "utf8")).not.toBe(childLlvm);
+      expect((await execFileAsync(join(dir, "child", "greet"))).stdout).toBe(
+        "hello, world\nHELLO, COMPILER!\nhello, chain!\n",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  240_000,
+);
+
+test.skipIf(helperTarget === null)(
+  "concurrent first builds of entries with the same name in one output directory keep their own LLVM",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-frontend-process-stem-"));
+    try {
+      const out = join(dir, "out");
+      await mkdir(out);
+      const entries = ["first", "second"].map((name) => join(dir, name, "main.ts"));
+      for (const [index, entry] of entries.entries()) {
+        await mkdir(join(entry, ".."));
+        // Different programs with the same stem write the same public main.ll.
+        const lines = Array.from({ length: 200 }, (_, line) => `console.log("${index}-${line}");`);
+        await writeFile(entry, `${lines.join("\n")}\n`);
+      }
+      const builds = await Promise.all(
+        entries.map((entry, index) =>
+          build(entry, join(out, `program-${index}`), join(dir, `cache-${index}`), false),
+        ),
+      );
+      for (const [index, result] of builds.entries()) {
+        expect(result.code).toBe(0);
+        expect(result.stderr).toContain('"phase":"frontend-process"');
+        const { stdout } = await execFileAsync(join(out, `program-${index}`));
+        expect(stdout.split("\n")[0]).toBe(`${index}-0`);
+      }
+      // The frontend process's private copies of the LLVM text are removed.
+      expect((await readdir(out)).filter((name) => name.includes("frontend"))).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

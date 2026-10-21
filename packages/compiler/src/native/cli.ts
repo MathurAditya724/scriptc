@@ -8,6 +8,7 @@ import {
   selectNativeRuntimePack,
   stageNativeRuntimeSelection,
 } from "../backend/runtime-pack-native.js";
+import { mergeNativeProfiles } from "../backend/native-tools.js";
 import { setDeclarationRoot } from "../frontend/dts-paths.js";
 import { FrontendServices } from "../frontend/services.js";
 import { createNativeTs7Api } from "../frontend/ts7/native-api.js";
@@ -120,6 +121,19 @@ async function main(): Promise<number> {
         profiles.push({ profile, elapsedMs: performance.now() - start });
       }
       return { cacheRoot: cache.root, profiles };
+    },
+    mergeProfiles: async (outputPath, inputPaths, sparse) => {
+      const toolchain = getCompiler().toolchain;
+      mergeNativeProfiles({
+        executable: toolchain.helperExecutable,
+        packageRoot: toolchain.helperPackageRoot,
+        compilerVersion: toolchain.compilerVersion,
+        target: toolchain.target,
+        helper: toolchain.helper,
+        outputPath,
+        inputPaths,
+        sparse,
+      });
     },
     run: async (binary) => {
       const toolchain = getCompiler().toolchain;
