@@ -60,6 +60,18 @@ export class AstModifierList<T extends AstNode = AstNode> extends AstNodeList<T>
  * list.
  * Parent access is lazy, so resolving a checker handle near the bottom
  * of a deep tree never recursively constructs its ancestors. */
+export interface AstFileOptions {
+  /** Answer the reference an assignment, a `++`/`--` update or a for-in/of
+   * head writes without the parentheses and non-null assertions around it.
+   * TypeScript accepts both around a target (`(x) = 1`, `a[i]! += 1`) and
+   * both are erased at run time. With this option the writer's `left`,
+   * `operand` or `initializer` is the reference itself and the reference's
+   * `parent` is the writer, so every reader of a write target sees one
+   * shape. Positions stay the source's: the reference keeps its own span.
+   * Files read for other purposes keep TypeScript's exact tree. */
+  writeTargets?: boolean;
+}
+
 export class AstFile {
   readonly wire: AstWireFile;
   readonly root: AstNode;
@@ -73,10 +85,16 @@ export class AstFile {
   private lines: number[] | undefined;
   private childIndices: Uint32Array | undefined;
 
+  /** Whether nodes answer write targets without their wrappers (see
+   * AstFileOptions.writeTargets). */
+  readonly writeTargets: boolean;
+
   constructor(
     bytes: Uint8Array,
     private readonly materialized?: () => void,
+    options: AstFileOptions = {},
   ) {
+    this.writeTargets = options.writeTargets === true;
     this.wire = new AstWireFile(bytes);
     this.nodes = new Array<AstNode>(this.wire.nodeCount);
     this.lists = new Array<AstNode[]>(this.wire.nodeCount);
@@ -192,6 +210,73 @@ export class AstFile {
 /** Concrete native layout shared by every syntax kind. Kind-specific
  * properties are views over the wire; they never copy identity-bearing
  * nodes into structural records. */
+/* Write targets without their wrappers (AstFileOptions.writeTargets). */
+
+function isTargetWrapper(node: AstNode): boolean {
+  return node.kind === AstKind.ParenthesizedExpression || node.kind === AstKind.NonNullExpression;
+}
+
+function unwrapTarget(node: AstNode): AstNode {
+  let target = node;
+  while (isTargetWrapper(target)) {
+    const inner = target.childNode("expression");
+    if (inner === undefined) break;
+    target = inner;
+  }
+  return target;
+}
+
+/** Whether `field` of `node` is a write target: an assignment's left side,
+ * a `++`/`--` operand, or a for-in/of head that declares nothing. */
+function writesTarget(node: AstNode, field: "left" | "operand" | "initializer"): boolean {
+  switch (node.kind) {
+    case AstKind.BinaryExpression: {
+      if (field !== "left") return false;
+      const operator = node.childNode("operatorToken")?.kind;
+      return (
+        operator !== undefined &&
+        operator >= AstKind.FirstAssignment &&
+        operator <= AstKind.LastAssignment
+      );
+    }
+    case AstKind.PrefixUnaryExpression:
+    case AstKind.PostfixUnaryExpression:
+      return (
+        field === "operand" &&
+        (node.operator === AstKind.PlusPlusToken || node.operator === AstKind.MinusMinusToken)
+      );
+    case AstKind.ForInStatement:
+    case AstKind.ForOfStatement:
+      return (
+        field === "initializer" &&
+        node.childNode("initializer")?.kind !== AstKind.VariableDeclarationList
+      );
+    default:
+      return false;
+  }
+}
+
+/** The parent of `node`, whose syntactic parent `wrapper` is a parenthesis
+ * or a non-null assertion: the writer when the wrappers around `node` are
+ * the whole target of an assignment, update or for-in/of head, and
+ * `wrapper` otherwise. */
+function writerOf(node: AstNode, wrapper: AstNode): AstNode {
+  let outer = wrapper;
+  for (;;) {
+    const up = outer.parent;
+    if (up === undefined) return wrapper;
+    if (isTargetWrapper(up)) {
+      outer = up;
+      continue;
+    }
+    for (const field of ["left", "operand", "initializer"] as const) {
+      if (writesTarget(up, field) && up.childNode(field) === outer && unwrapTarget(outer) === node)
+        return up;
+    }
+    return wrapper;
+  }
+}
+
 export class AstNode {
   readonly kind: SyntaxKind;
   readonly pos: number;
@@ -221,7 +306,11 @@ export class AstNode {
   get parent(): AstNode | undefined {
     if (!this.parentResolved) {
       const index = this.file.wire.semanticParent(this.index);
-      this.parentCache = index === 0 || index === this.index ? undefined : this.file.node(index);
+      const parent = index === 0 || index === this.index ? undefined : this.file.node(index);
+      this.parentCache =
+        parent !== undefined && this.file.writeTargets && isTargetWrapper(parent)
+          ? writerOf(this, parent)
+          : parent;
       this.parentResolved = true;
     }
     return this.parentCache;
@@ -612,7 +701,10 @@ export class AstNode {
     return this.childNode("indexType");
   }
   get initializer(): AstNode | undefined {
-    return this.childNode("initializer");
+    const initializer = this.childNode("initializer");
+    return initializer !== undefined && this.file.writeTargets && writesTarget(this, "initializer")
+      ? unwrapTarget(initializer)
+      : initializer;
   }
   get jsdocPropertyTags(): AstNode | undefined {
     return this.childNode("jsdocPropertyTags");
@@ -621,7 +713,10 @@ export class AstNode {
     return this.childNode("label");
   }
   get left(): AstNode | undefined {
-    return this.childNode("left");
+    const left = this.childNode("left");
+    return left !== undefined && this.file.writeTargets && writesTarget(this, "left")
+      ? unwrapTarget(left)
+      : left;
   }
   get literal(): AstNode | undefined {
     return this.childNode("literal");
@@ -663,7 +758,10 @@ export class AstNode {
     return this.childNode("openingFragment");
   }
   get operand(): AstNode | undefined {
-    return this.childNode("operand");
+    const operand = this.childNode("operand");
+    return operand !== undefined && this.file.writeTargets && writesTarget(this, "operand")
+      ? unwrapTarget(operand)
+      : operand;
   }
   get operatorToken(): AstNode | undefined {
     return this.childNode("operatorToken");
