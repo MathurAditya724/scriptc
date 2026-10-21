@@ -25,6 +25,7 @@ import type { IrClassDef, IrRecordShape, IrType, IrUnionDef, SrcLoc } from "../.
 import { mapOf, STRING, typeKey } from "../../ir/ir.js";
 import { mangleClassStruct, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS } from "./shapes.js";
+import { COMPACT_ID_MASK } from "./classes.js";
 import { shapeTagFn } from "./nullable-unions.js";
 import type { InlineUnionFields } from "./inline-unions.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -66,6 +67,8 @@ export interface PublishClassInfo {
   /** Instances keep their class id in the rc word (classes.ts
    * LlClassMeta.idInRc). */
   idInRc: boolean;
+  /** Instances have the 32-bit header (classes.ts LlClassMeta.compact). */
+  compact: boolean;
   /** The class's own and inherited fields: GEP index and storage type. */
   fields: { name: string; index: number; type: IrType }[];
 }
@@ -76,6 +79,11 @@ const PUB_KIND_UNION = 5;
 /** SCR_PUB_CLASS_ID, or'ed into a kind: the object keeps its class id
  * in the high half of its rc word (classes.ts LlClassMeta.idInRc). */
 const PUB_CLASS_ID = 0x100;
+/** SCR_PUB_COMPACT, or'ed into a kind: the object has the 32-bit header
+ * (classes.ts compactHeaderWord), whose top bit is the mark. */
+const PUB_COMPACT = 0x200;
+/** COMPACT_PUBLISHED as an i32 constant. */
+const COMPACT_MARK = "-2147483648";
 /** SCR_PUB_LOG_COUNT (scr_publish.c), in a log entry's `buf`: `rc` is the
  * count of the low half. */
 const PUB_LOG_COUNT = "-2147483648";
@@ -223,7 +231,11 @@ export class PublishWalkers {
         // hold time-value bits that no walker may push.
         if (def.arms.some((arm) => scalarRefusal(arm)))
           throw new LlvmUnsupportedError(`publish of ${typeKey(t)}`, loc);
-        const live = arms.flatMap((a) => (a.fn === null ? [] : [{ tag: a.tag, fn: a.fn }]));
+        const live = arms.flatMap((a) =>
+          a.fn === null
+            ? []
+            : [{ tag: a.tag, fn: a.fn, compact: this.compactRef(def.arms[a.tag]!) }],
+        );
         if (this.host.shapeUnion(t)) {
           // The value is the record itself (or a unit encoding): no box to
           // mark; the arm's walker marks and walks the record.
@@ -256,7 +268,7 @@ export class PublishWalkers {
           for (const a of live)
             lines.push(
               `arm${a.tag}:`,
-              ...this.push("%slot", a.fn, `u${a.tag}`),
+              ...this.push("%slot", a.fn, `u${a.tag}`, a.compact),
               `  br label %done`,
             );
         }
@@ -316,18 +328,25 @@ export class PublishWalkers {
     const lines = [
       head,
       `entry:`,
-      ...(info.idInRc
+      ...(info.compact
         ? [
-            `  %idp = getelementptr inbounds i8, ptr %o, i64 4 ; the class id (classes.ts classIdRcWord)`,
-            `  %id = load i32, ptr %idp`,
+            `  %idw = load i32, ptr %o ; the class id (classes.ts compactHeaderWord)`,
+            `  %id = and i32 %idw, ${COMPACT_ID_MASK}`,
             `  %idpre = add i32 %id, -1`,
             `  %pre = zext i32 %idpre to ${this.host.sizeType}`,
           ]
-        : [
-            `  %vtp = getelementptr inbounds ptr, ptr %o, i64 1`,
-            `  %vt = load ptr, ptr %vtp`,
-            `  %pre = load ${this.host.sizeType}, ptr %vt`,
-          ]),
+        : info.idInRc
+          ? [
+              `  %idp = getelementptr inbounds i8, ptr %o, i64 4 ; the class id (classes.ts classIdRcWord)`,
+              `  %id = load i32, ptr %idp`,
+              `  %idpre = add i32 %id, -1`,
+              `  %pre = zext i32 %idpre to ${this.host.sizeType}`,
+            ]
+          : [
+              `  %vtp = getelementptr inbounds ptr, ptr %o, i64 1`,
+              `  %vt = load ptr, ptr %vtp`,
+              `  %pre = load ${this.host.sizeType}, ptr %vt`,
+            ]),
       `  switch ${this.host.sizeType} %pre, label %other [ ${cases.map((c) => `${this.host.sizeType} ${c.pre}, label %c${c.pre}`).join(" ")} ]`,
     ];
     for (const c of cases)
@@ -363,6 +382,7 @@ export class PublishWalkers {
       path,
       loc,
       info.idInRc,
+      info.compact,
     );
   }
 
@@ -374,23 +394,26 @@ export class PublishWalkers {
    * targets), and an object with a collector header leaves its candidate
    * buffer through scr_cyc_pub_take. Anything else calls scr_pub_mark, as
    * does every mark of an RC-audit build. */
-  private markLines(cyc: boolean, kind: number, classId = false): string[] {
+  private markLines(cyc: boolean, kind: number, classId = false, compact = false): string[] {
+    const flags = compact ? PUB_COMPACT : classId ? PUB_CLASS_ID : 0;
     const call = (name: string): string[] => [
-      `  %${name} = call zeroext i1 @scr_pub_mark(ptr %ctx, ptr %o, i1 ${cyc ? "true" : "false"}, i32 ${classId ? kind | PUB_CLASS_ID : kind})`,
+      `  %${name} = call zeroext i1 @scr_pub_mark(ptr %ctx, ptr %o, i1 ${cyc ? "true" : "false"}, i32 ${kind | flags})`,
       `  br i1 %${name}, label %walk, label %done`,
     ];
     if (this.host.rcAudit === true) return call("m");
     const S = this.host.sizeType;
     // An object that keeps its class id in the rc word is marked and
     // logged through its count, the low half.
-    const C = classId ? "i32" : S;
+    // A compact object's header word is logged whole (the restore writes
+    // the low 32 bits back) and marked by its top bit.
+    const C = classId || compact ? "i32" : S;
     const field = (name: string, slot: number): string[] => [
       `  %${name}p = getelementptr inbounds ptr, ptr %ctx, i32 ${slot}`,
       `  %${name} = load ${S === "i64" ? "i64" : "i32"}, ptr %${name}p`,
     ];
     const lines = [
       `  %mrc = load ${C}, ptr %o`,
-      `  %mimm = icmp eq ${C} %mrc, -1`,
+      compact ? `  %mimm = icmp slt i32 %mrc, 0` : `  %mimm = icmp eq ${C} %mrc, -1`,
       `  br i1 %mimm, label %done, label %mtest`,
       `mtest:`,
       `  %mrefp = getelementptr inbounds ptr, ptr %ctx, i32 6`,
@@ -408,7 +431,7 @@ export class PublishWalkers {
       ok = "%mok2";
     }
     lines.push(`  br i1 ${ok}, label %mfast, label %mslow`, `mslow:`, ...call("ms"), `mfast:`);
-    let buf = classId ? String(PUB_LOG_COUNT) : "0";
+    let buf = classId || compact ? String(PUB_LOG_COUNT) : "0";
     if (cyc) {
       // ScrCycHdr.buf, the word before the object: its top bit while the
       // object is a buffered candidate.
@@ -443,7 +466,9 @@ export class PublishWalkers {
       `  store i32 ${buf}, ptr %mebuf`,
       `  %mlogged1 = add ${S} %mlogged, 1`,
       `  store ${S} %mlogged1, ptr %mloggedp`,
-      `  store ${C} -1, ptr %o`,
+      ...(compact
+        ? [`  %mpub = or i32 %mrc, ${COMPACT_MARK}`, `  store i32 %mpub, ptr %o`]
+        : [`  store ${C} -1, ptr %o`]),
       `  br label %walk`,
     );
     return lines;
@@ -453,15 +478,18 @@ export class PublishWalkers {
    * immortal references (the parent links of a tree, values published
    * before) are the ones scr_pub_push skips: they are tested here, without
    * the call. The lines end in a fresh block labelled `pushed${id}`. */
-  private push(v: string, fn: string, id: string): string[] {
+  private push(v: string, fn: string, id: string, compact = false): string[] {
     return [
       `  %null${id} = icmp eq ptr ${v}, null`,
       `  br i1 %null${id}, label %pushed${id}, label %live${id}`,
       `live${id}:`,
       // The count (the low half of a 64-bit rc word) is UINT32_MAX for an
-      // immortal object of every kind (scr_rc.h SCR_RC_COUNT).
+      // immortal object of every kind (scr_rc.h SCR_RC_COUNT), and a
+      // compact object's header word has its top bit set once published.
       `  %rc${id} = load i32, ptr ${v}`,
-      `  %immortal${id} = icmp eq i32 %rc${id}, -1`,
+      compact
+        ? `  %immortal${id} = icmp slt i32 %rc${id}, 0`
+        : `  %immortal${id} = icmp eq i32 %rc${id}, -1`,
       `  br i1 %immortal${id}, label %pushed${id}, label %push${id}`,
       `push${id}:`,
       ...this.pushLines(v, fn, id),
@@ -497,6 +525,12 @@ export class PublishWalkers {
     ];
   }
 
+  /** Whether references of type `t` are compact class instances. */
+  private compactRef(t: IrType): boolean {
+    const arm = this.host.nullableArm(t) ?? t;
+    return arm.kind === "object" && this.host.classInfo(arm.className).compact;
+  }
+
   private objectBody(
     head: string,
     struct: string,
@@ -505,8 +539,14 @@ export class PublishWalkers {
     path: string,
     loc: SrcLoc,
     classId = false,
+    compact = false,
   ): string[] {
-    const lines = [head, `entry:`, ...this.markLines(traced, PUB_KIND_OBJECT, classId), `walk:`];
+    const lines = [
+      head,
+      `entry:`,
+      ...this.markLines(traced, PUB_KIND_OBJECT, classId, compact),
+      `walk:`,
+    ];
     let n = 0;
     for (const member of members) {
       const fn = this.walker(member.type, `${path}.${member.name}`, loc);
@@ -519,7 +559,7 @@ export class PublishWalkers {
       lines.push(
         `  %f${n} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${member.index} ; ${llvmComment(member.name)}`,
         `  %v${n} = load ptr, ptr %f${n}`,
-        ...this.push(`%v${n}`, fn, `${n}`),
+        ...this.push(`%v${n}`, fn, `${n}`, this.compactRef(member.type)),
       );
       n++;
     }

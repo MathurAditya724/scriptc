@@ -264,7 +264,9 @@ import {
   emitLibCall,
 } from "./lib-dispatch.js";
 import {
+  assignCompactLayouts,
   buildClassGraph,
+  classFieldTypes,
   classMembershipIntervals,
   classFieldIndex,
   classPreLines,
@@ -1492,6 +1494,15 @@ export class LlEmitter {
         classDefinitions: (cls, sizeOf) => regions.classDefs(cls, sizeOf),
       };
     }
+    // ProgramLifetime hierarchies count nothing: their instances get the
+    // 32-bit header and packed fields (classes.ts LlClassMeta.compact),
+    // except where regions count them or a slot word follows the header.
+    if (this.sizeType === "i64" && mod.lifetimeRegions !== true)
+      assignCompactLayouts(
+        this.classMeta,
+        (root) => programLifetimeClass(this.shapeHost, root) && !root.threadSlot,
+        (cls) => classFieldTypes(this.shapeHost, cls, this.int32Slots),
+      );
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -5114,6 +5125,7 @@ export class LlEmitter {
           post: meta.post,
           runtimeRooted: meta.root.def.runtime === true,
           idInRc: meta.idInRc,
+          compact: meta.compact,
           // Inline scalar-union fields are plain bits: nothing to push.
           fields: meta.def.fields.flatMap((f) =>
             this.inlineUnions.classField(className, f.name)
@@ -5154,15 +5166,21 @@ export class LlEmitter {
 
   /** Branches on "`obj` is published" (rc == SIZE_MAX, or a count of
    * UINT32_MAX in the low half for `count` i32: classes.ts
-   * LlClassMeta.idInRc); leaves the builder in the cold block and answers
-   * the continuation label. */
-  private emitPublishedTest(obj: string, count: "i32" | "i64" = this.sizeType): string {
+   * LlClassMeta.idInRc, or the top bit of a compact header word for
+   * "compact": classes.ts COMPACT_PUBLISHED); leaves the builder in the cold
+   * block and answers the continuation label. */
+  private emitPublishedTest(obj: string, count: "i32" | "i64" | "compact" = this.sizeType): string {
     const B = this.B;
     const rc = B.tmp(),
       frozen = B.tmp(),
       expected = B.tmp();
-    B.line(`${rc} = load ${count}, ptr ${obj}`);
-    B.line(`${frozen} = icmp eq ${count} ${rc}, -1`);
+    if (count === "compact") {
+      B.line(`${rc} = load i32, ptr ${obj}`);
+      B.line(`${frozen} = icmp slt i32 ${rc}, 0`);
+    } else {
+      B.line(`${rc} = load ${count}, ptr ${obj}`);
+      B.line(`${frozen} = icmp eq ${count} ${rc}, -1`);
+    }
     this.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
     B.line(`${expected} = call i1 @llvm.expect.i1(i1 ${frozen}, i1 false)`);
     const cold = B.newLabel("pub.frozen"),
@@ -5203,7 +5221,10 @@ export class LlEmitter {
     if (className !== null && !published.classGuarded(className)) return;
     const B = this.B;
     const meta = className === null ? undefined : this.classMeta.get(className);
-    const ok = this.emitPublishedTest(obj, meta?.idInRc === true ? "i32" : this.sizeType);
+    const ok = this.emitPublishedTest(
+      obj,
+      meta?.compact === true ? "compact" : meta?.idInRc === true ? "i32" : this.sizeType,
+    );
     let owner: string;
     if (meta === undefined) owner = this.cstr("Object");
     else if (!meta.hierarchy) owner = this.cstr(meta.def.jsName ?? meta.def.name);
