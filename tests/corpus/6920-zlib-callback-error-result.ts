@@ -176,6 +176,19 @@ function namedRetry(): void {
   });
 }
 
+function fallbackResult(): void {
+  // The body assigns a fallback Buffer to its result.
+  zlib.inflate(bad, (err, out) => {
+    if (!out) out = Buffer.from("fallback");
+    console.log("fallback", err?.code, typeof out, out.toString());
+    zlib.inflate(good, (err2, out2) => {
+      if (err2) out2 = Buffer.alloc(0);
+      console.log("fallback nested", err2, out2.length);
+      step();
+    });
+  });
+}
+
 function functionValues(next: () => void): void {
   steps.push(
     () => zlib.inflate(good, named),
@@ -203,6 +216,7 @@ function functionValues(next: () => void): void {
     () => zlib.inflate(good, captures),
     nestedForward,
     namedRetry,
+    fallbackResult,
     () => {
       named(new Error("direct"), Buffer.from("both"));
     },

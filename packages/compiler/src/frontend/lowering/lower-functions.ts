@@ -2,6 +2,7 @@ import { declareTypedArguments } from "./typed-arguments.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
+import { declareContextLocal } from "./function-context.js";
 import { isErrorFirstErrorType } from "./builtins/arguments.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
@@ -786,7 +787,8 @@ function lowerUndefinedResultBody(
       lowerer.suppressStats = stats;
     }
   };
-  const slot = lowerer.declareHiddenLocal("%result", DYN);
+  // Mutable: the body may assign to its result (`if (!out) out = ...`).
+  const slot = declareContextLocal(lowerer.ctx, "%result", DYN, true, undefined, undefined);
   const undefinedResult: IrStmt = {
     kind: "varDecl",
     localId: slot.id,
