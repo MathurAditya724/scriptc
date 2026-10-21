@@ -202,6 +202,7 @@ import {
   withRuntimeOptionalNarrowed,
 } from "./lower-exprs.js";
 import { globalSymbolKey } from "./expressions/global-symbols.js";
+import { identifiersNamed } from "./identifier-uses.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
 import {
   builtinGlobalValue,
@@ -4806,15 +4807,16 @@ function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrTy
   };
   const scope = owner(decl);
   let result: IrType | null = null;
-  let dynamic = false;
-  ts.walkPreorder(scope, (node) => {
-    if (dynamic) return "stop";
+  // The file's identifiers are indexed by name once (identifiersNamed), so
+  // each binding resolves only the uses spelled like it.
+  for (const node of identifiersNamed(lowerer, ts.getSourceFileOfNode(decl), decl.name.text)) {
     if (
-      !ts.isIdentifier(node) ||
       node === decl.name ||
+      node.pos < scope.pos ||
+      node.end > scope.end ||
       lowerer.checker.getSymbolAtLocation(node) !== symbol
     )
-      return undefined;
+      continue;
     let target: ts.Node = node;
     while (ts.isParenthesizedExpression(target.parent)) target = target.parent;
     const parent = target.parent;
@@ -4823,21 +4825,15 @@ function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrTy
       parent.left === target &&
       parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
       parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
-    if (reassigned) {
-      dynamic = true;
-      return "stop";
-    }
+    if (reassigned) return DYN;
     const t = lowerer.typeOf(node);
-    if (unsettled(t)) return undefined;
+    if (unsettled(t)) continue;
     const mapped = lowerer.mapTypeOf(t);
-    if (!mapped || mapped.kind !== "array" || (result !== null && !typeEquals(result, mapped))) {
-      dynamic = true;
-      return "stop";
-    }
+    if (!mapped || mapped.kind !== "array" || (result !== null && !typeEquals(result, mapped)))
+      return DYN;
     result = mapped;
-    return undefined;
-  });
-  return dynamic || result === null ? DYN : result;
+  }
+  return result ?? DYN;
 }
 
 /** A single static type for an initializer-less JavaScript `let` whose
