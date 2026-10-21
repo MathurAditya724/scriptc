@@ -431,6 +431,18 @@ export function everyStmtChild(
   throw new Error("unhandled IR node");
 }
 
+/** Called with each record literal mapExprChildren rebuilds and its
+ * replacement, so a side table keyed by node identity (the lowering's
+ * key-order witness notes) follows the literal into the rewritten tree. */
+let recordLiteralRebuilt: ((from: IrExpr, to: IrExpr) => void) | null = null;
+
+/** Installs (or with null removes) the record-literal rebuild observer. */
+export function observeRecordLiteralRebuilds(
+  observer: ((from: IrExpr, to: IrExpr) => void) | null,
+): void {
+  recordLiteralRebuilt = observer;
+}
+
 /** Copy a node with transformed immediate children; preserve all metadata. */
 export function mapExprChildren(
   node: IrExpr,
@@ -619,11 +631,14 @@ export function mapExprChildren(
       return { ...node, value: expr(node.value) };
     case "virtualCall":
       return { ...node, args: node.args.map((child) => expr(child)) };
-    case "recordLit":
-      return {
+    case "recordLit": {
+      const rebuilt: IrExpr = {
         ...node,
         fields: node.fields.map((child) => ({ ...child!, value: expr(child.value) })),
       };
+      if (recordLiteralRebuilt !== null) recordLiteralRebuilt(node, rebuilt);
+      return rebuilt;
+    }
     case "recordClone":
       return {
         ...node,
