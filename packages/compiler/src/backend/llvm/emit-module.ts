@@ -1,6 +1,7 @@
 /* LlEmitter's module-level output: module parts, helper definitions, library declarations and FFI callback definitions. */
 import { emitWasmModules } from "./wasm-modules.js";
 import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
+import { JS_IC_WORDS } from "./js-ic.js";
 import {
   mangleAsyncSpawn,
   mangleClassObj,
@@ -559,6 +560,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       out.push(
         `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr } zeroinitializer`,
       );
+    for (let site = 0; site < emitter.jsIcSiteCount; site++)
+      out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
   }
   for (const table of emitter.constantNumericTables.values()) {
     const n = table.values.length;

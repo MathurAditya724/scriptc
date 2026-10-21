@@ -185,7 +185,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Builtin functions read as values in JavaScript dependencies.
   unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
-  unit((u) => u.opts.dynTier, "scr_js_value.c"),
+  unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
   unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
   unit(
@@ -336,6 +336,9 @@ const RUNTIME_DEFINES: readonly {
   when: (opts: CcOptions) => boolean | undefined;
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
+  // Checked objects carry the dynamic tier's shapes (scr_json.c's SCR_JS_TIER build); only
+  // programs with dynamic-tier code select it.
+  { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },

@@ -69,6 +69,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The dynamic tier's jsval values (two-tier design I3): linked only into
   // programs whose IR has dynamic-tier operations.
   ["scr_js_value.c", "dynTier"],
+  ["scr_js_object.c", "dynTier"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch")],
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
@@ -147,6 +148,12 @@ export const OPTIONAL_RUNTIME_SOURCES = [
 
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
+  // Programs with dynamic-tier code keep the tier's hidden classes current
+  // in checked objects (two-tier design S4); every other program links the
+  // ordinary object, byte for byte.
+  if (source === "scr_json.c") {
+    variants.push({ id: "dyn-tier", when: { dynTier: true }, defines: ["SCR_JS_TIER"] });
+  }
   if (source === "scr_bytes.c") {
     variants.push({
       id: "text-decoder-legacy",

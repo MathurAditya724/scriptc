@@ -1,5 +1,6 @@
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
+import { JsIcSites } from "../../ir/js-ic.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitThreadSlotsIntrinsic } from "./thread-slots.js";
@@ -919,6 +920,12 @@ export class LlEmitter {
   readonly recordCloneShapes = new Set<string>();
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
+  /** Inline-cache sites of dynamic-tier functions (js-ic.ts): one
+   * zero-initialized ScrJsIc per site (scr_js.h). */
+  jsIcSiteCount = 0;
+  private jsIcSitesMemo: JsIcSites | undefined;
+  /** The tier of the function being emitted. */
+  currentTier: IrFunction["tier"] = undefined;
   /** The class graph (buildClassGraph): preorder numbering, hierarchy
    * membership, virtual slot lists. */
   readonly classMeta: Map<string, LlClassMeta>;
@@ -5553,6 +5560,15 @@ export class LlEmitter {
 
   emitExpr(e: IrExpr): LlValue {
     return emitExpr(this, e);
+  }
+
+  /** The helper classification of this module's inline-cache sites. */
+  get jsIcSites(): JsIcSites {
+    return (this.jsIcSitesMemo ??= new JsIcSites(this.mod));
+  }
+
+  jsIcSite(): string {
+    return `@sc_js_ic_${this.jsIcSiteCount++}`;
   }
 
   /** A fresh read-site cache for one constant-key dyn read. */

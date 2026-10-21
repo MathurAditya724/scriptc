@@ -53,6 +53,7 @@ import {
   inputSuffixWrites,
 } from "./borrowed-inputs.js";
 import type { Writes } from "./reference-writes.js";
+import { emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
 import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
 
 export function emitCallExpr(
@@ -88,6 +89,12 @@ export function emitCallExpr(
     case "call": {
       const callee = host.fnByName.get(e.callee);
       if (!callee) throw new InternalCompilerError(`llvm emitter bug: unknown callee ${e.callee}`);
+      if (!plainCall && !awaitEntry && !resultSlot && !stackResult) {
+        // A property helper called from dynamic-tier code is an inline
+        // cache site (two-tier design S4).
+        const site = jsIcSiteOf(host, e);
+        if (site) return emitJsIcCall(host, e, callee, site);
+      }
       if (callee.fastRead === "index" && !plainCall && !awaitEntry && !resultSlot) {
         const indexed = emitNumericIndexRead(host, e, callee);
         if (indexed) return indexed;
