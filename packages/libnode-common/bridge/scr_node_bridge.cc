@@ -96,7 +96,8 @@ void Settle(const FunctionCallbackInfo<Value> &info) {
   g_host->settle(id, outcome.data(), outcome.size());
 }
 
-char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *argv0) {
+char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *argv0,
+            uintptr_t stack_limit) {
   if (g_setup) return nullptr;
   g_host = host;
   // Native addons resolve napi_* and node::* in the global scope: promote
@@ -138,6 +139,9 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
   Isolate *isolate = g_setup->isolate();
   g_locker = new Locker(isolate);
   isolate->Enter();
+  // The runtime calls into Node on a dedicated stack of its own
+  // (scr_node_island.c), not the thread's: V8's limit follows it.
+  if (stack_limit != 0) isolate->SetStackLimit(stack_limit);
   node::SetProcessExitHandler(g_setup->env(),
                               [](node::Environment *, int code) { g_host->exit(code); });
   HandleScope handles(isolate);
@@ -152,8 +156,17 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
   TryCatch try_catch(isolate);
   if (node::LoadEnvironment(g_setup->env(), bootstrap).IsEmpty()) {
     std::string message = "the Node island bootstrap failed";
-    if (try_catch.HasCaught())
-      message += ": " + ToStdString(isolate, try_catch.Exception());
+    if (try_catch.HasCaught()) {
+      Local<Value> stack;
+      Local<Value> exception = try_catch.Exception();
+      if (exception->IsObject() &&
+          exception.As<Object>()->Get(context, Utf8(isolate, "stack")).ToLocal(&stack) &&
+          stack->IsString())
+        exception = stack;
+      message += ": " + ToStdString(isolate, exception);
+    } else if (try_catch.HasTerminated()) {
+      message += ": execution terminated";
+    }
     return Copy(message, nullptr);
   }
   Local<Value> dispatcher;

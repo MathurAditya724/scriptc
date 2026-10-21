@@ -16,7 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 1u
+#define SCR_NODE_BRIDGE_ABI 2u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -34,9 +34,12 @@ typedef struct ScrNodeBridge {
   const char *node_version;   /* the libnode it links: "24.22.0" */
   uint32_t module_version;    /* its NODE_MODULE_VERSION */
   /* Initializes Node once per process and runs `bootstrap` as the main
-   * script of one environment. argv[0] names the executable. Returns NULL,
-   * or a message the runtime frees with `release`. */
-  char *(*start)(const ScrNodeBridgeHost *host, const char *bootstrap, const char *argv0);
+   * script of one environment. argv[0] names the executable. Every entry
+   * runs on one stack the runtime provides; `stack_limit` is the lowest
+   * address JavaScript may use on it (V8's stack limit), 0 for V8's
+   * default. Returns NULL, or a message the runtime frees with `release`. */
+  char *(*start)(const ScrNodeBridgeHost *host, const char *bootstrap, const char *argv0,
+                 uintptr_t stack_limit);
   /* Calls the bootstrap's dispatcher in a callback scope (ticks and
    * microtasks drain when it closes, as after any libuv callback). A
    * synchronous call answers its outcome (+1, freed with `release`, length

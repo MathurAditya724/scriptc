@@ -22,7 +22,13 @@
  * NI-3 hosts the runtime's queues on Node's libuv, the runtime's loop drives
  * Node's: the loop slot keeps the program alive while Node has ref'd work,
  * sleeps on its backend fd up to its next timer, and runs one non-blocking
- * turn of it per loop turn. */
+ * turn of it per loop turn.
+ *
+ * Node's stack. V8 fixes an isolate's stack limit where it is created, and
+ * calls into Node can come from any async fiber (512 KB stacks without a
+ * guard page) or from the main stack. Every entry into Node therefore runs
+ * on one dedicated stack of NI_STACK bytes with a guard page, reached by a
+ * context switch; the runtime's own stack guard follows it there. */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
 #include "scr_runtime.h"
@@ -38,6 +44,8 @@
 #include "scr_node_island_host.h"
 
 #include <dlfcn.h>
+#include <sys/mman.h>
+#include <ucontext.h>
 
 #ifdef __APPLE__
 #define NI_BRIDGE_FILE "libscr_node_bridge.dylib"
@@ -49,6 +57,19 @@ typedef struct {
   uint32_t id;
   ScrPromise *promise; /* owned */
 } NiPending;
+
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define NI_ASAN 1
+void __sanitizer_start_switch_fiber(void **fake_stack_save, const void *bottom, size_t size);
+void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_old,
+                                     size_t *size_old);
+void __lsan_register_root_region(const void *p, size_t size) __attribute__((weak));
+#endif
+#endif
+
+#define NI_STACK ((size_t)64 * 1024 * 1024)
+#define NI_GUARD ((size_t)64 * 1024)
 
 static const char *ni_libnode = NULL;      /* recorded pack directory */
 static const char *ni_node_version = NULL; /* recorded Node version */
@@ -164,10 +185,114 @@ static const ScrNodeBridgeHost ni_host = {&ni_settle, &ni_exit};
 /* ── the loop slot ────────────────────────────────────────────────────── */
 
 static bool ni_alive(void) { return ni_bridge->alive() != 0; }
-static void ni_pump(void) { ni_bridge->pump(); }
+static void ni_pump_job(void *p);
+static void ni_stop_job(void *p);
+static void ni_on_node_stack(void (*job)(void *), void *arg);
+static void ni_pump(void) { ni_on_node_stack(ni_pump_job, NULL); }
 static int ni_backend_fd(void) { return ni_bridge->backend_fd(); }
 static int ni_backend_timeout(void) { return ni_bridge->backend_timeout(); }
-static void ni_stop_atexit(void) { ni_bridge->stop(); }
+static void ni_stop_atexit(void) { ni_on_node_stack(ni_stop_job, NULL); }
+
+/* ── Node's stack ─────────────────────────────────────────────────────── */
+
+static char *ni_stack = NULL; /* the mapping; usable above NI_GUARD */
+static ucontext_t ni_node_ctx, ni_caller_ctx;
+static bool ni_on_stack = false;
+static void (*ni_job)(void *) = NULL;
+static void *ni_job_arg = NULL;
+#ifdef NI_ASAN
+static void *ni_node_fake = NULL;
+static const void *ni_caller_bottom = NULL;
+static size_t ni_caller_size = 0;
+#endif
+
+static void ni_trampoline(void) {
+  for (;;) {
+#ifdef NI_ASAN
+    __sanitizer_finish_switch_fiber(ni_node_fake, &ni_caller_bottom, &ni_caller_size);
+#endif
+    ni_job(ni_job_arg);
+#ifdef NI_ASAN
+    __sanitizer_start_switch_fiber(&ni_node_fake, ni_caller_bottom, ni_caller_size);
+#endif
+    swapcontext(&ni_node_ctx, &ni_caller_ctx);
+  }
+}
+
+/* Runs job(arg) on Node's stack (directly when already there). */
+static void ni_on_node_stack(void (*job)(void *), void *arg) {
+  if (ni_on_stack) {
+    job(arg);
+    return;
+  }
+  if (ni_stack == NULL) {
+    ni_stack = mmap(NULL, NI_STACK, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (ni_stack == MAP_FAILED) ni_oom();
+    (void)mprotect(ni_stack, NI_GUARD, PROT_NONE);
+#ifdef NI_ASAN
+    if (__lsan_register_root_region) __lsan_register_root_region(ni_stack, NI_STACK);
+#endif
+    if (getcontext(&ni_node_ctx) != 0) scr_trap("scriptc: getcontext failed\n");
+    ni_node_ctx.uc_stack.ss_sp = ni_stack + NI_GUARD;
+    ni_node_ctx.uc_stack.ss_size = NI_STACK - NI_GUARD;
+    ni_node_ctx.uc_link = NULL;
+    makecontext(&ni_node_ctx, ni_trampoline, 0);
+  }
+  ni_job = job;
+  ni_job_arg = arg;
+  ni_on_stack = true;
+  uintptr_t guard = scr_stack_guard;
+  SCR_STACK_GUARD_SET(scr_stack_guard_for((uintptr_t)(ni_stack + NI_GUARD), NI_STACK - NI_GUARD));
+#ifdef NI_ASAN
+  void *caller_fake = NULL;
+  __sanitizer_start_switch_fiber(&caller_fake, ni_stack + NI_GUARD, NI_STACK - NI_GUARD);
+#endif
+  swapcontext(&ni_caller_ctx, &ni_node_ctx);
+#ifdef NI_ASAN
+  const void *bottom;
+  size_t size;
+  __sanitizer_finish_switch_fiber(caller_fake, &bottom, &size);
+#endif
+  SCR_STACK_GUARD_SET(guard);
+  ni_on_stack = false;
+}
+
+typedef struct {
+  const char *bootstrap, *argv0;
+  char *error;
+} NiStart;
+
+static void ni_start_job(void *p) {
+  NiStart *a = p;
+  /* JavaScript may use Node's stack down to a reserve above its guard page
+   * (native frames below V8's limit, the runtime's stack guard). */
+  uintptr_t limit = (uintptr_t)(ni_stack + NI_GUARD) + NI_STACK / 8;
+  a->error = ni_bridge->start(&ni_host, a->bootstrap, a->argv0, limit);
+}
+
+typedef struct {
+  uint32_t id;
+  int sync;
+  const char *file, *specifier, *name, *args;
+  size_t args_len, len;
+  char *outcome;
+} NiCall;
+
+static void ni_call_job(void *p) {
+  NiCall *a = p;
+  a->outcome =
+      ni_bridge->call(a->id, a->sync, a->file, a->specifier, a->name, a->args, a->args_len, &a->len);
+}
+
+static void ni_pump_job(void *p) {
+  (void)p;
+  ni_bridge->pump();
+}
+
+static void ni_stop_job(void *p) {
+  (void)p;
+  ni_bridge->stop();
+}
 
 /* ── loading Node ─────────────────────────────────────────────────────── */
 
@@ -211,14 +336,16 @@ static void ni_start(void) {
   scr_str_release(self);
   /* Flush first: Node writes to the same stdout. */
   fflush(stdout);
-  char *error = bridge->start(&ni_host, scr_node_island_host_js, argv0);
+  ni_bridge = bridge;
+  NiStart start = {scr_node_island_host_js, argv0, NULL};
+  ni_on_node_stack(ni_start_job, &start);
+  char *error = start.error;
   if (error != NULL) {
     char message[8192];
     snprintf(message, sizeof message, "scriptc: cannot start Node.js from %s: %s\n", dir, error);
     bridge->release(error);
     ni_fatal(message);
   }
-  ni_bridge = bridge;
   scr_atexit(ni_stop_atexit);
   scr_loop_set_node_island(&ni_alive, &ni_pump, &ni_backend_fd, &ni_backend_timeout);
 }
@@ -248,8 +375,10 @@ static char *ni_cstr(const ScrStr *s) {
 static char *ni_call(uint32_t id, bool sync, ScrStr *file, ScrStr *specifier, ScrStr *name,
                      ScrDyn *json, size_t *len) {
   char *f = ni_cstr(file), *s = ni_cstr(specifier), *n = ni_cstr(name);
-  char *outcome =
-      ni_bridge->call(id, sync ? 1 : 0, f, s, n, json->v.str->data, json->v.str->len, len);
+  NiCall call = {id, sync ? 1 : 0, f, s, n, json->v.str->data, json->v.str->len, 0, NULL};
+  ni_on_node_stack(ni_call_job, &call);
+  char *outcome = call.outcome;
+  *len = call.len;
   free(f);
   free(s);
   free(n);

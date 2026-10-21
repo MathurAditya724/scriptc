@@ -747,11 +747,13 @@ async function prepareExecutableInput(
   );
   if (!prepared.ok) return prepared;
   const { mod, sourceTexts } = prepared;
-  // Calls into Node record the libnode pack they load at run time.
+  // Calls into Node record the libnode pack an executable loads at run
+  // time. IR, LLVM and object outputs need no pack: their record stays
+  // empty, and SCRIPTC_LIBNODE supplies the pack when such a program runs.
   if (mod.nodeIsland !== undefined) {
     if (!moduleRuntimeFeatures(mod).nodeIsland) {
       delete mod.nodeIsland;
-    } else {
+    } else if (outputKind === "exe") {
       const recorded = libnodeRecord(opts.libnode, opts.outPath);
       if (typeof recorded === "string")
         return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
