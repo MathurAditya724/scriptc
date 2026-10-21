@@ -1420,9 +1420,65 @@ export function lowerOptionalNumber(
  * out-of-range read, a local or field holding one, or a hole — converts to
  * NaN instead of trusting the checker's number type. */
 export function lowerToNumberArgument(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const operand = numberOperand(lowerer, node);
+  return operand.convert ? operand.convert(operand.value) : operand.value;
+}
+
+/** The ToNumber arguments of one call (the Math functions,
+ * String.fromCharCode): Node evaluates every argument before it converts
+ * any. When an argument's conversion can run program code (valueOf or
+ * toString on a dynamic value) and a later argument follows, the arguments
+ * evaluate into temporaries first and convert in order after. `lowerOther`
+ * lowers an argument that takes no conversion (a spread), or returns null
+ * for a ToNumber argument. Returns the temporaries' statements (empty when
+ * none are needed) and the converted values. */
+export function lowerToNumberArguments(
+  lowerer: Lowerer,
+  nodes: readonly ts.Expression[],
+  lowerOther?: (node: ts.Expression) => IrExpr | null,
+): { stmts: IrStmt[]; values: IrExpr[] } {
+  const operands = nodes.map((node): NumberOperand => {
+    const other = lowerOther?.(node);
+    return other ? { value: other, convert: null, runsCode: false } : numberOperand(lowerer, node);
+  });
+  const late = operands.slice(0, -1).some((operand) => operand.runsCode);
+  if (!late) {
+    const values = operands.map((o) => (o.convert ? o.convert(o.value) : o.value));
+    return { stmts: [], values };
+  }
+  const stmts: IrStmt[] = [];
+  const values = operands.map((operand) => {
+    if (operand.value.kind === "numLit") return operand.value;
+    const temp = lowerer.declareHiddenLocal("%numberArgument", operand.value.type);
+    const loc = operand.value.loc;
+    stmts.push({ kind: "varDecl", localId: temp.id, init: operand.value, loc });
+    const read = varRef(temp.id, operand.value.type, loc);
+    return operand.convert ? operand.convert(read) : read;
+  });
+  return { stmts, values };
+}
+
+/** An argument a ToNumber site lowers: its evaluated value and the
+ * conversion that makes it a number (null when the value already is one).
+ * `runsCode`: the conversion can call program code. */
+interface NumberOperand {
+  value: IrExpr;
+  convert: ((value: IrExpr) => IrExpr) | null;
+  runsCode: boolean;
+}
+
+function numberOperand(lowerer: Lowerer, node: ts.Expression): NumberOperand {
   let inner = node;
   while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
   const loc = locOf(inner);
+  const number = (value: IrExpr): NumberOperand => ({ value, convert: null, runsCode: false });
+  const dynToNumber = (value: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "dyn.toNumberCoerce",
+    args: [value],
+    type: F64,
+    loc,
+  });
   const isOptionalNumber = (value: IrExpr): boolean =>
     value.type.kind === "union" &&
     lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0 &&
@@ -1433,34 +1489,54 @@ export function lowerToNumberArgument(lowerer: Lowerer, node: ts.Expression): Ir
       ? lowerAbsenceProbe(lowerer, inner)
       : null;
   if (optional && isOptionalNumber(optional))
-    return lowerOptionalNumber(lowerer, optional, loc, inner);
-  // A conditional builds each branch for the destination.
-  if (ts.isConditionalExpression(inner)) return lowerer.lowerExprExpecting(node, F64);
+    return number(lowerOptionalNumber(lowerer, optional, loc, inner));
+  // A conditional with number branches builds each branch as a number;
+  // other branches box, and the value converts like any dynamic value.
+  if (ts.isConditionalExpression(inner)) {
+    const branch = (b: ts.Expression) => lowerer.mapTypeOf(lowerer.typeOf(b))?.kind;
+    if (branch(inner.whenTrue) === "f64" && branch(inner.whenFalse) === "f64")
+      return number(lowerer.lowerExprExpecting(node, F64));
+    return { value: lowerer.lowerExprExpecting(node, DYN), convert: dynToNumber, runsCode: true };
+  }
   const value = lowerer.lowerExpr(node);
-  if (isOptionalNumber(value)) return lowerOptionalNumber(lowerer, value, loc, inner);
+  if (isOptionalNumber(value)) return number(lowerOptionalNumber(lowerer, value, loc, inner));
   // Other values convert with ToNumber: strings parse as numeric literals,
   // booleans and null are numbers, and checked-dynamic values call
   // valueOf/toString or throw Node's TypeError for a Symbol or BigInt.
-  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const num = (n: number): IrExpr => ({ kind: "numLit", value: n, type: F64, loc });
+  const pure = (convert: (value: IrExpr) => IrExpr): NumberOperand => ({
+    value,
+    convert,
+    runsCode: false,
+  });
   switch (value.type.kind) {
     case "string":
-      return { kind: "libCall", fn: "num.fromString", args: [value], type: F64, loc };
+      return pure((v) => ({ kind: "libCall", fn: "num.fromString", args: [v], type: F64, loc }));
     case "bool":
-      return { kind: "ternary", cond: value, then: num(1), else_: num(0), type: F64, loc };
+      return pure((v) => ({
+        kind: "ternary",
+        cond: v,
+        then: num(1),
+        else_: num(0),
+        type: F64,
+        loc,
+      }));
     case "nullT":
-      return defaultAfterUndefined(value, num(0));
+      return pure((v) => defaultAfterUndefined(v, num(0)));
     case "undefinedT":
-      return defaultAfterUndefined(value, num(NaN));
+      return pure((v) => defaultAfterUndefined(v, num(NaN)));
     case "dyn":
-      return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [value], type: F64, loc };
+      return { value, convert: dynToNumber, runsCode: true };
     case "union":
-      if (lowerer.dynConvertible(value.type)) {
-        const boxed = lowerer.coerceToExpected(value, DYN);
-        return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [boxed], type: F64, loc };
-      }
+      if (lowerer.dynConvertible(value.type))
+        return {
+          value: lowerer.coerceToExpected(value, DYN),
+          convert: dynToNumber,
+          runsCode: true,
+        };
       break;
   }
-  return lowerer.coerceInto(node, value, F64);
+  return number(lowerer.coerceInto(node, value, F64));
 }
 
 /** The stored value of an identifier whose storage holds an undefined arm

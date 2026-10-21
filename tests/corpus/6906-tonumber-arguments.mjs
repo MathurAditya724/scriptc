@@ -30,3 +30,48 @@ for (const value of [Symbol("s"), 10n]) {
     console.log(e instanceof TypeError, e.message);
   }
 }
+
+// A conditional argument converts whichever branch it takes.
+for (const flag of [true, false]) {
+  console.log(isFinite(flag ? "12" : "abc"), isNaN(flag ? null : "x"), Math.floor(flag ? "3.7" : true));
+}
+
+// Every argument is evaluated before any converts, as in Node: valueOf runs
+// after the last argument, and an argument that throws stops the call
+// before any conversion.
+let order = "";
+const valued = (name, n) => ({ valueOf: () => ((order += "v" + name), n) });
+const arg = (name, n) => ((order += "e" + name), valued(name, n));
+console.log(Math.max(arg("a", 1), arg("b", 5), arg("c", 3)), order);
+order = "";
+console.log(Math.pow(arg("a", 2), arg("b", 10)), order);
+order = "";
+console.log(Math.hypot(arg("a", 3), ...[4], arg("c", 12)), order);
+order = "";
+console.log(String.fromCharCode(arg("a", 72), arg("b", 105)), order);
+order = "";
+try {
+  Math.max(
+    arg("a", 1),
+    (() => {
+      order += "throw";
+      throw new Error("boom");
+    })(),
+  );
+} catch (e) {
+  console.log(e.message, order);
+}
+order = "";
+try {
+  Math.min(
+    {
+      valueOf() {
+        order += "x";
+        throw new TypeError("first");
+      },
+    },
+    arg("b", 2),
+  );
+} catch (e) {
+  console.log(e.message, order);
+}

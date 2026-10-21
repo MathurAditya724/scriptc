@@ -524,8 +524,15 @@ export function emitOperatorExpr(
     case "seqExpr": {
       // Statements mid-expression: each emits in place (its own frame,
       // exactly statement position); the result is an ordinary temp of
-      // the current frame. No jump can leave the expression's region.
-      for (const s of e.stmts) host.emitStmt(s);
+      // the current frame. No jump can leave the expression's region. A
+      // statement can still end the block (a call that always throws):
+      // what follows then emits in a block with no predecessors, so every
+      // value it reads is defined there, and LLVM deletes it.
+      for (const s of e.stmts) {
+        if (host.B.isTerminated()) host.B.startBlock(host.B.newLabel("seq.dead"));
+        host.emitStmt(s);
+      }
+      if (host.B.isTerminated()) host.B.startBlock(host.B.newLabel("seq.dead"));
       return host.emitExpr(e.result);
     }
     default: {
