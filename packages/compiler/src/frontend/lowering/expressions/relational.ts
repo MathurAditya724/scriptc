@@ -37,6 +37,7 @@ import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
+import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
@@ -1644,6 +1645,25 @@ export function lowerInExpression(
         expr,
         "statically-decided 'in' on computed receivers (bind the value to a variable first)",
       );
+    }
+  }
+  // A literal member name over a typed array (`"BYTES_PER_ELEMENT" in a`):
+  // the answer is Node's prototype chain for the value's kind. Numeric keys
+  // (elements) and Buffer-only names on a Uint8Array depend on the value and
+  // keep the fence.
+  if (recv.type.kind === "bytes" && key !== "-0" && String(Number(key)) !== key) {
+    const has = typedArrayHasMember(key, recv.type.elem === "u8");
+    if (has !== null) {
+      const answer: IrExpr = { kind: "boolLit", value: has, type: BOOL, loc };
+      return isSafeToDiscard(recv)
+        ? answer
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: recv, loc }],
+            result: answer,
+            type: BOOL,
+            loc,
+          };
     }
   }
   if (recv.type.kind !== "record") {

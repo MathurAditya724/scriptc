@@ -50,6 +50,7 @@ import {
   typeEquals,
   typeKey,
   unionContainerArmsOk,
+  BYTES_ELEMENT_SIZE,
 } from "../../../ir/ir.js";
 import { lowerNavigatorMember } from "../builtins/navigator.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
@@ -102,6 +103,7 @@ import {
   lowerRequireMainProperty,
 } from "../lower-node-module.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
+import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
@@ -1428,6 +1430,25 @@ export function lowerPropertyAccessExpr(
   }
   const childProperty = lowerChildPropertyRead(lowerer, expr);
   if (childProperty) return childProperty;
+  // A member a typed array's type does not declare (a JavaScript read, or
+  // one under @ts-ignore), such as the feature probe `typeof bytes.toHex`:
+  // when Node's prototype chain for the value lacks the name too, the read
+  // answers undefined, as GetV does there. Names Node has keep the fence.
+  if (
+    recvLowered.type.kind === "bytes" &&
+    !declaredMemberOf(lowerer, expr.expression, expr.name.text) &&
+    typedArrayLacksMember(expr.name.text, recvLowered.type.elem === "u8")
+  ) {
+    return isSafeToDiscard(recvLowered)
+      ? dynUndefinedExpr(loc)
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: recvLowered, loc }],
+          result: dynUndefinedExpr(loc),
+          type: DYN,
+          loc,
+        };
+  }
   lowerer.unsupported(
     "SC1090",
     expr,
@@ -2134,6 +2155,24 @@ export function lowerIntrinsicProperty(
         type: DYN,
         loc,
       };
+    }
+    // The element size: a constant of the element kind (1 for a Buffer).
+    if (name === "BYTES_PER_ELEMENT") {
+      const expected = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+      const receiver =
+        expected?.kind === "bytes" ? strictReceiver(expected) : lowerer.lowerExpr(expr.expression);
+      if (receiver.type.kind === "bytes") {
+        const size = numLit(BYTES_ELEMENT_SIZE[receiver.type.elem], loc);
+        return isSafeToDiscard(receiver)
+          ? size
+          : {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+              result: size,
+              type: F64,
+              loc,
+            };
+      }
     }
     if (name === "length" || name === "byteLength") {
       const expected = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));

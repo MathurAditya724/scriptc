@@ -8856,6 +8856,29 @@ function lowerAssignTargetInto(
         );
         return;
       }
+    } else if (recvT?.kind === "bytes") {
+      // A typed-array element (`[a[i], b[i]] = [h, l]`): the receiver, then
+      // the index, then the value, as the plain element write `b[i] = v`
+      // stores it (an f64 the runtime coerces; invalid indices are ignored).
+      const arr = lowerer.lowerExpr(t.expression);
+      if (arr.type.kind === "bytes") {
+        const recv = lowerer.declareHiddenLocal("%dtRecv", arr.type);
+        out.push({ kind: "varDecl", localId: recv.id, init: arr, loc });
+        const index = lowerer.lowerExpr(t.argumentExpression);
+        if (index.type.kind !== "f64") {
+          lowerer.unsupported("SC1090", t.argumentExpression, "indexing with non-number keys");
+        }
+        const idx = lowerer.declareHiddenLocal("%dtIdx", F64);
+        out.push({ kind: "varDecl", localId: idx.id, init: index, loc });
+        out.push({
+          kind: "bytesSet",
+          arr: varRef(recv.id, arr.type, loc),
+          index: varRef(idx.id, F64, loc),
+          value: lowerer.coerceInto(blame, valueOf(F64), F64),
+          loc,
+        });
+        return;
+      }
     } else if (recvT?.kind === "record") {
       // Tuple positions and LITERAL declared record keys are field
       // writes (the element-write lowering's own rule); runtime keys
