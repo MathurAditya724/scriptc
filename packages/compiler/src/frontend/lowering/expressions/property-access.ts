@@ -1434,26 +1434,37 @@ export function lowerPropertyAccessExpr(
   // one under @ts-ignore), such as the feature probe `typeof bytes.toHex`:
   // when Node's prototype chain for the value lacks the name too, the read
   // answers undefined, as GetV does there. Names Node has keep the fence.
+  // The element size reads the same way where the checker's type of the
+  // receiver no longer names a typed array (`a instanceof Uint8Array ||
+  // a.BYTES_PER_ELEMENT === 1`, whose right side narrows `a` to never).
+  if (recvLowered.type.kind === "bytes" && expr.name.text === "BYTES_PER_ELEMENT") {
+    return afterReceiver(recvLowered, numLit(BYTES_ELEMENT_SIZE[recvLowered.type.elem], loc), loc);
+  }
   if (
     recvLowered.type.kind === "bytes" &&
     !declaredMemberOf(lowerer, expr.expression, expr.name.text) &&
     typedArrayLacksMember(expr.name.text, recvLowered.type.elem === "u8")
   ) {
-    return isSafeToDiscard(recvLowered)
-      ? dynUndefinedExpr(loc)
-      : {
-          kind: "seqExpr",
-          stmts: [{ kind: "exprStmt", expr: recvLowered, loc }],
-          result: dynUndefinedExpr(loc),
-          type: DYN,
-          loc,
-        };
+    return afterReceiver(recvLowered, dynUndefinedExpr(loc), loc);
   }
   lowerer.unsupported(
     "SC1090",
     expr,
     `reading '${expr.name.text}' from a value of type '${lowerer.checker.typeToString(lowerer.typeOf(expr.expression))}'`,
   );
+}
+
+/** `result` after evaluating `receiver` for its effects (none to keep when
+ * the read is safe to discard). */
+function afterReceiver(receiver: IrExpr, result: IrExpr, loc: SrcLoc): IrExpr {
+  if (isSafeToDiscard(receiver)) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+    result,
+    type: result.type,
+    loc,
+  };
 }
 
 /** A call expression, through parentheses: its value has no other holder. */
@@ -2161,18 +2172,8 @@ export function lowerIntrinsicProperty(
       const expected = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
       const receiver =
         expected?.kind === "bytes" ? strictReceiver(expected) : lowerer.lowerExpr(expr.expression);
-      if (receiver.type.kind === "bytes") {
-        const size = numLit(BYTES_ELEMENT_SIZE[receiver.type.elem], loc);
-        return isSafeToDiscard(receiver)
-          ? size
-          : {
-              kind: "seqExpr",
-              stmts: [{ kind: "exprStmt", expr: receiver, loc }],
-              result: size,
-              type: F64,
-              loc,
-            };
-      }
+      if (receiver.type.kind === "bytes")
+        return afterReceiver(receiver, numLit(BYTES_ELEMENT_SIZE[receiver.type.elem], loc), loc);
     }
     if (name === "length" || name === "byteLength") {
       const expected = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));

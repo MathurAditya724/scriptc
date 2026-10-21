@@ -3607,6 +3607,9 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return scr_dyn_new_num(scr_bytes_len(bytes));
+  /* Each typed array kind's prototype carries its element size. */
+  if (key->len == 17 && memcmp(key->data, "BYTES_PER_ELEMENT", 17) == 0)
+    return scr_dyn_new_num((double)scr_bytes_elem_size(bytes->elem));
   if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
     if (!value->buffer) return scr_bytes_constructor_for(bytes->elem);
     /* Buffer retains its separate builtin identity. */
