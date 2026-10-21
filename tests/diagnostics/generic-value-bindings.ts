@@ -19,13 +19,13 @@ console.log(typeof stored);
 const flipAlias = flip;
 console.log(flipAlias(5));
 
-// Declared inside a function: instances are module functions and cannot
-// capture the enclosing frame.
-function outer(): number {
-  const inner = <T>(x: T): T => x;
-  return inner(3);
+// Declared inside a function and reading its parameter: instances are
+// module functions and cannot capture the enclosing frame.
+function outer(base: number): number {
+  const inner = <T>(x: T): [T, number] => [x, base];
+  return inner(3)[1];
 }
-console.log(outer());
+console.log(outer(4));
 
 // An ambient binding of generic function type now compiles to Node's exact
 // ReferenceError at the access (the declare-erasure stance — no diagnostic

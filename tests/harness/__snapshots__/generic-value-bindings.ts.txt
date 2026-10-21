@@ -57,17 +57,17 @@ generic-value-bindings.ts:20:13 - error SC2004: uses of 'flipAlias' inherit the 
 
   hint: the declaration of 'flipAlias' did not compile — fix the diagnostic reported there and these sites clear with it
 
-generic-value-bindings.ts:25:17 - error SC1090: generic arrow/function-expression bindings declared inside functions (the compiled instantiations of 'inner' are module functions and cannot capture the enclosing frame — declare the binding at module scope) are not supported yet
+generic-value-bindings.ts:25:17 - error SC1090: generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of 'inner' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope) are not supported yet
 
-  24 | function outer(): number {
-  25 |   const inner = <T>(x: T): T => x;
-     |                 ^~~~~~~~~~~~~~~~~
-  26 |   return inner(3);
+  24 | function outer(base: number): number {
+  25 |   const inner = <T>(x: T): [T, number] => [x, base];
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  26 |   return inner(3)[1];
 
 generic-value-bindings.ts:26:10 - error SC2004: uses of 'inner' inherit the blocker on its declaration
 
-  25 |   const inner = <T>(x: T): T => x;
-  26 |   return inner(3);
+  25 |   const inner = <T>(x: T): [T, number] => [x, base];
+  26 |   return inner(3)[1];
      |          ^~~~~
   27 | }
 
