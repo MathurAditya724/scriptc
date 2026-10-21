@@ -734,6 +734,9 @@ bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);
 ScrDyn *scr_dyn_iterator(const ScrDyn *value, const ScrStr *spell);
+/* for await over a checked-dynamic value (scr_dyn_for_await.c). */
+ScrDyn *scr_dyn_async_iterator_open(ScrDyn *value, ScrStr *spell);
+bool scr_dyn_async_iterator_was_sync(void);
 ScrDyn *scr_dyn_iterator_optional(const ScrDyn *value);
 /* from.js's probe: 2 when value[Symbol.asyncIterator] is set, 1 when
  * value[Symbol.iterator] is, 0 for neither, -1 with an error pending. */
@@ -744,6 +747,10 @@ int scr_dyn_iterable_kind(const ScrDyn *value);
  * with *kind -1 and the error pending (also for a compiled generator,
  * which only typed code can step). */
 ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind);
+/* scr_dyn_from_iterator, also answering a compiled generator the method
+ * returns when `generators` is set (for await steps it through its
+ * checked-dynamic next/return members). */
+ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators);
 /* One field of an iterator result object (value, done), read the way the
  * for-of protocol reads it. +1, or NULL with the error pending. */
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);

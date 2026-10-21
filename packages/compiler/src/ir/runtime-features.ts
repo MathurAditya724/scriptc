@@ -686,6 +686,8 @@ const RUNTIME_FEATURE_RULES = {
   streamDyn: rule({
     fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
   }),
+  /** for await over checked-dynamic values (scr_dyn_for_await.c). */
+  dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
   /** Fixed-width Buffer read/write methods called on checked-dynamic
    * values (scr_bytes_dyn.c). */
   dynBufferNum: rule({
@@ -888,6 +890,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdioExtended: false,
     stream: false,
     streamDyn: false,
+    dynForAwait: false,
     dynBufferNum: false,
     builtinValues: false,
     symbol: false,

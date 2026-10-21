@@ -102,8 +102,26 @@ static bool scr_iterator_object(const ScrDyn *value) {
 
 ScrDyn *scr_dyn_iterator_result(ScrDyn *value) {
   if (!scr_iterator_object(value)) {
-    static const char message[] = "Iterator result is not an object";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    /* V8 names a primitive result: "Iterator result 5 is not an object". */
+    bool primitive = value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BOOL ||
+                     value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL ||
+                     value->kind == SCR_DYN_BIGINT || value->kind == SCR_DYN_SYMBOL;
+    ScrStr *text = primitive ? scr_dyn_string_constructor(value) : NULL;
+    if (!text) {
+      static const char message[] = "Iterator result is not an object";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NULL;
+    }
+    static const char head[] = "Iterator result ", tail[] = " is not an object";
+    ScrStr *a = scr_str_new(head, sizeof head - 1);
+    ScrStr *b = scr_str_concat(a, text);
+    ScrStr *c = scr_str_new(tail, sizeof tail - 1);
+    ScrStr *message = scr_str_concat(b, c);
+    scr_str_release(a);
+    scr_str_release(b);
+    scr_str_release(c);
+    scr_str_release(text);
+    scr_throw_error(SCR_ERR_TYPE, message);
     return NULL;
   }
   return scr_dyn_retain(value);
@@ -5800,6 +5818,10 @@ int scr_dyn_iterable_kind(const ScrDyn *value) {
 }
 
 ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind) {
+  return scr_dyn_open_iterator(value, kind, false);
+}
+
+ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators) {
   *kind = 0;
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) return NULL;
   ScrDyn *method = NULL;
@@ -5831,7 +5853,7 @@ ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind) {
   ScrDyn *iterator = scr_iterator_call(
       method, value, *kind == 2 ? "iterable[SymbolAsyncIterator]" : "iterable[SymbolIterator]");
   scr_dyn_release(method);
-  if (iterator && scr_dyn_generator(iterator)) {
+  if (iterator && !generators && scr_dyn_generator(iterator)) {
     /* a compiled generator is stepped through typed helpers only */
     scr_dyn_release(iterator);
     iterator = NULL;

@@ -219,6 +219,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
   "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
   "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },
+  /** for await over a checked-dynamic value: the loop's iterator (a
+   * compiled async generator, Symbol.asyncIterator's result, or the sync
+   * iterator), and whether that iterator is synchronous. */
+  "dyn.asyncIteratorOpen": { argTypes: [DYN, STRING], result: DYN },
+  "dyn.asyncIteratorWasSync": { argTypes: [], result: BOOL },
   "dyn.iteratorResult": { argTypes: [DYN], result: DYN },
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },

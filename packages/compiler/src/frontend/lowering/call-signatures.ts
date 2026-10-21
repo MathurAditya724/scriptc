@@ -858,7 +858,19 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
     decl.parameters.nodes.length > 0 ? "arguments" : "dynRest",
   );
   const nameBlame: ts.Node = decl.name ?? decl;
-  const returnType = lowerer.declaredReturnType(decl, nameBlame);
+  let returnType = lowerer.declaredReturnType(decl, nameBlame);
+  // A JavaScript generator whose inferred return the checker leaves `any`
+  // (it delegates to itself: `yield* walkTree(sub)`) is still a generator:
+  // its channels are checked-dynamic values.
+  if (isGenerator && returnType.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(decl))) {
+    returnType = {
+      kind: "generator",
+      ...(isAsync ? { async: true as const } : {}),
+      yieldT: DYN,
+      retT: DYN,
+      nextT: DYN,
+    };
+  }
   if (isAsync && !isGenerator && returnType.kind !== "promise") {
     lowerer.badType(nameBlame, lowerer.typeOf(nameBlame));
   }

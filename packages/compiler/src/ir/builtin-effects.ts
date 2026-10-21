@@ -635,6 +635,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",
+  "dyn.asyncIteratorOpen",
   "dyn.iteratorResult",
   "dyn.iteratorStep",
   "dyn.mapSeedEntries",
