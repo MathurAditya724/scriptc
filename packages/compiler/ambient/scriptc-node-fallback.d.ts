@@ -2933,6 +2933,34 @@ declare module "crypto" {
     iv: BinaryLike | null,
     options?: { authTagLength?: number },
   ): Decipheriv;
+  export type ECDHKeyFormat = "compressed" | "uncompressed" | "hybrid";
+  export class ECDH {
+    private constructor();
+    static convertKey(
+      key: BinaryLike,
+      curve: string,
+      inputEncoding?: BinaryToTextEncoding,
+      outputEncoding?: "latin1" | "hex" | "base64" | "base64url",
+      format?: ECDHKeyFormat,
+    ): Buffer | string;
+    generateKeys(): Buffer;
+    generateKeys(encoding: BinaryToTextEncoding, format?: ECDHKeyFormat): string;
+    computeSecret(otherPublicKey: ArrayBufferView): Buffer;
+    computeSecret(otherPublicKey: string, inputEncoding: BinaryToTextEncoding): Buffer;
+    computeSecret(otherPublicKey: ArrayBufferView, outputEncoding: BinaryToTextEncoding): string;
+    computeSecret(
+      otherPublicKey: string,
+      inputEncoding: BinaryToTextEncoding,
+      outputEncoding: BinaryToTextEncoding,
+    ): string;
+    getPrivateKey(): Buffer;
+    getPrivateKey(encoding: BinaryToTextEncoding): string;
+    getPublicKey(encoding?: null, format?: ECDHKeyFormat): Buffer;
+    getPublicKey(encoding: BinaryToTextEncoding, format?: ECDHKeyFormat): string;
+    setPrivateKey(privateKey: ArrayBufferView): void;
+    setPrivateKey(privateKey: string, encoding: BinaryToTextEncoding): void;
+  }
+  export function createECDH(curveName: string): ECDH;
   export interface ScryptOptions {
     N?: number;
     r?: number;

@@ -234,6 +234,9 @@ export interface CcOptions {
   /** crypto.createCipheriv/createDecipheriv: compiles scr_cipher.c and links
    * the mbedTLS archive (shared with tls). */
   cipher?: boolean;
+  /** crypto.createECDH and ECDH.convertKey: compiles scr_ecdh.c and links
+   * the mbedTLS archive (shared with tls). */
+  ecdh?: boolean;
   /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
   webcrypto?: boolean;
   /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */

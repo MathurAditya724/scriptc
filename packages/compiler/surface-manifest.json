@@ -512,9 +512,7 @@
       "id": "node-builtin.crypto.createECDH",
       "kind": "node-builtin",
       "name": "crypto.createECDH",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.createHash",

@@ -573,6 +573,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.hashStream": "scr_crypto_hash_stream",
   "crypto.hashStreamPiped": "scr_crypto_hash_stream_piped",
   "crypto.cipherNew": "scr_crypto_cipher_new",
+  "crypto.ecdhNew": "scr_crypto_ecdh_new",
+  "crypto.ecdhConvertKey": "scr_crypto_ecdh_convert_key",
   "crypto.hmacNewStr": "scr_crypto_hmac_new_str",
   "crypto.hmacNewBytes": "scr_crypto_hmac_new_bytes",
   "crypto.hashUpdateStr": "scr_crypto_hash_update_str",
@@ -1555,6 +1557,8 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "dyn.builtinStreamClass",
   // Decipheriv.setAuthTag reports DEP0182 on the next tick.
   "crypto.cipherNew",
+  // ecdh.setPublicKey reports DEP0031 on the next tick.
+  "crypto.ecdhNew",
   // WebCrypto results settle through the deferred crypto queue.
   "webcrypto.sign",
   "webcrypto.verify",

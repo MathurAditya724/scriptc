@@ -1571,6 +1571,9 @@ export const BUILTIN_MODULE_FNS: Record<
     // Decipheriv handle (lowerCryptoModuleCall).
     createCipheriv: { fn: "crypto.cipherNew", params: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
     createDecipheriv: { fn: "crypto.cipherNew", params: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
+    // A checked-dynamic curve name; the result is a native ECDH handle
+    // (lowerCreateEcdh).
+    createECDH: { fn: "crypto.ecdhNew", params: [DYN], result: DYN },
   },
   zlib: {
     // The default-options convenience family is special-cased in
@@ -3061,7 +3064,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
         "createDiffieHellman",
         "createDiffieHellmanGroup",
         "getDiffieHellman",
-        "createECDH",
         "diffieHellman",
         "publicEncrypt",
         "publicDecrypt",
