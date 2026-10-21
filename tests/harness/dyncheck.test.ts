@@ -312,10 +312,11 @@ console.log("unreachable", c.host);
     // `Partial<T>` makes every member an `X | undefined` union. A present
     // object that fails X used to report only the union's own path
     // ("expected object | undefined at $.order, got object"); the record
-    // arm's builder now reports where inside it the value fails.
-    const r = await compileAndRun(
-      "optional-record-deep",
-      `interface Order {
+    // arm's builder now reports where inside it the value fails. The cast
+    // is passed straight to a typed parameter, so it is checked at the
+    // cast: one that initializes a block-local binding continues as its
+    // parsed value instead (checked-cast fallback), as in Node.
+    const types = `interface Order {
   owner: { id: string; plan: { tier: string } };
   total: number;
 }
@@ -326,10 +327,15 @@ const texts = [
   '{"order":{"owner":{"id":"u1","plan":{"tier":"pro"}},"total":3},"tags":["a",2]}',
   '{"order":5}',
 ];
+`;
+    const r = await compileAndRun(
+      "optional-record-deep",
+      `${types}function show(e: Partial<Envelope>): void {
+  console.log("ok", e.order?.owner.id);
+}
 for (const text of texts) {
   try {
-    const e = JSON.parse(text) as Partial<Envelope>;
-    console.log("ok", e.order?.owner.id);
+    show(JSON.parse(text) as Partial<Envelope>);
   } catch (err) {
     if (err instanceof TypeError) console.log(err.message);
   }
@@ -345,6 +351,25 @@ for (const text of texts) {
         "expected object | undefined at $.order, got number",
         "",
       ].join("\n"),
+    );
+    const fallback = await compileAndRun(
+      "optional-record-deep-fallback",
+      `${types}for (const text of texts) {
+  try {
+    const e = JSON.parse(text) as Partial<Envelope>;
+    console.log("ok", e.order?.owner.id);
+  } catch (err) {
+    if (err instanceof TypeError) console.log(err.message);
+  }
+}
+`,
+      "ts",
+      true,
+    );
+    expect(fallback.stdout).toBe(
+      ["ok u1", "ok 7", "ok u1", "Cannot read properties of undefined (reading 'id')", ""].join(
+        "\n",
+      ),
     );
   });
 
