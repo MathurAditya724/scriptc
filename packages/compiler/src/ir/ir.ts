@@ -1052,6 +1052,10 @@ export interface IrModule {
    * API (possibly empty). The backend appends each module's translation
    * and emits the registry the runtime looks modules up in. */
   wasmModules?: IrWasmModule[];
+  /** The modules the build saw but does not translate, with the reason,
+   * present with wasmModules. The backend emits them in a second table, so
+   * loading one rejects with a CompileError that names the reason. */
+  wasmUntranslated?: IrWasmUntranslated[];
   /** The program calls WebAssembly.Module.customSections, so translated
    * modules keep their custom sections (otherwise they carry none, and
    * debug sections cost nothing). */
@@ -1065,6 +1069,16 @@ export interface IrWasmModule {
   sha256: string;
   /** The bytes, base64. */
   bytes: string;
+}
+
+/** A WebAssembly module whose bytes the build saw but does not translate. */
+export interface IrWasmUntranslated {
+  /** Hex SHA-256 of the bytes. */
+  sha256: string;
+  /** The byte length. */
+  size: number;
+  /** Why the module is not translated, as a clause ("it uses simd, ..."). */
+  reason: string;
 }
 
 /** Verified contract facts, keyed by IR names. */
