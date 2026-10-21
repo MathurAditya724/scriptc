@@ -18,6 +18,13 @@ function mode(): number {
   console.log("evaluated mode");
   return 0o600;
 }
+// A later argument that reassigns an earlier argument's variable runs after
+// that argument was read.
+let uid = -1;
+function bumpUid(): number {
+  uid = 123456;
+  return -1;
+}
 
 function clean(text: string): string {
   return text.split(dir).join("<dir>");
@@ -91,6 +98,11 @@ attempt("mkdir", () => {
 attempt("later effects", () => fs.copyFileSync(new URL("http://a/"), logged("dest.txt")));
 attempt("later mode", () => fs.chmodSync(new URL("http://a/"), mode()));
 attempt("chmod", () => fs.chmodSync(new URL("data:text/plain,a"), 0o600));
+attempt("chown order", () => fs.chownSync(file, uid, bumpUid()));
+console.log("uid", uid);
+uid = -1;
+attempt("chown order scheme", () => fs.chownSync(new URL("http://a/"), uid, bumpUid()));
+console.log("uid", uid);
 
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("done", fs.existsSync(dir));

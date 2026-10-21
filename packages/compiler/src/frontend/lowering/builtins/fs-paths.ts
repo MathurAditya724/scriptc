@@ -2,9 +2,10 @@
  * fileURLToPath inside each function (getValidatedPath), after every
  * argument has been evaluated, and validates some arguments before the
  * path and others after it. A URL-typed path lowers to the same
- * conversion (url.fileURLToPathUrl). Later arguments with side effects are
- * evaluated into hidden locals before the conversion, so they run even
- * when it throws. The conversion keeps Node's error order when every
+ * conversion (url.fileURLToPathUrl). The later arguments through the last
+ * one with side effects are evaluated into hidden locals before the
+ * conversion, in source order, so they run even when it throws and each
+ * reads what it reads in Node. The conversion keeps Node's error order when every
  * earlier path is a URL too and each argument Node validates before the
  * path is absent or a literal that passes that validation; other URL
  * forms fence with SC2020, as do the fs.promises functions, whose
@@ -134,16 +135,26 @@ function checkUrlPaths(
   // path Node checks first cannot precede the URL.
   if (row.paths.some((i) => i < first && args[i] !== undefined))
     lowerer.noLowering(`${name} with a string path before a URL path`, call, hint);
+  // Every argument from the URL through the last one with effects is
+  // evaluated ahead of the conversion, in source order: a later argument's
+  // effect (an assignment, say) must not change what an earlier one read.
+  let last = first;
+  for (let i = first + 1; i < args.length; i++) if (!sideEffectFreeOptionValue(args[i]!)) last = i;
   const staged: ts.Expression[] = [];
-  for (let i = first + 1; i < args.length; i++) {
-    const arg = args[i]!;
-    if (sideEffectFreeOptionValue(arg)) continue;
+  for (let i = first + 1; i <= last; i++) {
+    let e = args[i]!;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
     // Literals are read by their members, so a whole-value slot cannot
     // hold them.
-    let e = arg;
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    if (ts.isObjectLiteralExpression(e) || ts.isArrayLiteralExpression(e))
-      lowerer.noLowering(`${name} with a URL path and a later literal that has effects`, arg, hint);
+    if (ts.isObjectLiteralExpression(e) || ts.isArrayLiteralExpression(e)) {
+      lowerer.noLowering(
+        sideEffectFreeOptionValue(e)
+          ? `${name} with a URL path and a literal before a later argument that has effects`
+          : `${name} with a URL path and a later literal that has effects`,
+        e,
+        hint,
+      );
+    }
     staged.push(e);
   }
   if (staged.length > 0) {
