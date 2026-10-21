@@ -762,6 +762,7 @@ export class ClassDynamicDispatch {
     const rewrite = new Set<IrFunction>();
     const toPrimitiveSites = new Set<IrFunction>();
     const hasKeySites = new Set<IrFunction>();
+    const caughtSites = new Set<IrFunction>();
     const discover = (type: IrType): void => {
       const key = typeKey(type);
       if (seenTypes.has(key)) return;
@@ -827,6 +828,13 @@ export class ClassDynamicDispatch {
             case "dynHasKey":
               hasKeySites.add(fn);
               break;
+            case "caughtTest":
+              if (expr.test === "instanceof") caughtSites.add(fn);
+              break;
+            case "caughtNarrow":
+            case "caughtCheck":
+              if (expr.type.kind === "object") caughtSites.add(fn);
+              break;
             case "dynKeyGet":
             case "dynInvoke":
               rewrite.add(fn);
@@ -865,6 +873,7 @@ export class ClassDynamicDispatch {
           return true;
         },
       });
+    changed = this.caughtDispatch.dynamicPayloads(lowerer, caughtSites, this.boxed) || changed;
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);
     const calling = this.calledConversions(lowerer);

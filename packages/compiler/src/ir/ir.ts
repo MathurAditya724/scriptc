@@ -3544,11 +3544,13 @@ export type IrExpr =
    * excluding callable and primitive references;
    * "instanceof" requires `className`: hierarchy payloads use the vtable
    * interval, while standalone classes use their exact retain adapter.
-   * Other payloads answer false. `negated` flips the result (the `!==` spelling). */
+   * Other payloads answer false. "dynamic" is a value thrown as unknown
+   * (the payload caughtToDyn returns by reference). `negated` flips the
+   * result (the `!==` spelling). */
   | {
       kind: "caughtTest";
       value: IrExpr;
-      test: "string" | "number" | "boolean" | "object" | "instanceof";
+      test: "string" | "number" | "boolean" | "object" | "instanceof" | "dynamic";
       className?: string;
       negated?: boolean;
       type: IrType;
