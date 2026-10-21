@@ -246,6 +246,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync && u.opts.dynInvoke && u.regex,
     "scr_util_callable.c",
   ),
+  // util.promisify over an untyped function: dyn promises and calls.
+  unit((u) => u.opts.utilPromisify && u.opts.dynAsync && u.opts.dynInvoke, "scr_util_promisify.c"),
   unit(
     (u) =>
       u.opts.dynBuiltinClass &&

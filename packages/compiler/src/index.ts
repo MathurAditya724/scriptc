@@ -555,6 +555,7 @@ async function compileExecutableNative(
     bigint: features.bigint,
     searchParams: features.searchParams,
     qs: features.qs,
+    utilPromisify: features.utilPromisify,
     dynBuiltinClass: features.dynBuiltinClass,
     dynBuiltinStream: features.dynBuiltinStream,
     parseArgs: features.parseArgs,

@@ -45,6 +45,7 @@ const native: EarlyExecutableNativeFeatures = {
   bigint: false,
   searchParams: false,
   qs: false,
+  utilPromisify: false,
   dynBuiltinClass: false,
   dynBuiltinStream: false,
   parseArgs: false,

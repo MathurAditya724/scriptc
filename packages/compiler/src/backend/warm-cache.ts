@@ -50,6 +50,7 @@ export async function warmNativeCaches(
         bigint: false,
         searchParams: false,
         qs: false,
+        utilPromisify: false,
         dynBuiltinClass: false,
         dynBuiltinStream: false,
         parseArgs: false,
