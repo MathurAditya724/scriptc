@@ -26,8 +26,8 @@ export function verifyPack(root) {
   expect("schema", manifest.schema, LIBNODE_PACK_SCHEMA);
   expect("package", manifest.package, packageJson.name);
   expect("version", manifest.version, packageJson.version);
-  expect("platform", manifest.platform, platform);
-  expect("os", manifest.os, platformInfo(platform).os);
+  expect("target", manifest.target, platform);
+  expect("platform", manifest.platform, platformInfo(platform).os);
   expect("arch", manifest.arch, platformInfo(platform).arch);
   expect("nodeVersion", manifest.nodeVersion, pin.nodeVersion);
   expect("moduleVersion", manifest.moduleVersion, pin.moduleVersion);

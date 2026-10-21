@@ -1,28 +1,18 @@
 import { createHash } from "node:crypto";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
+import { NODE_BRIDGE_ABI, libnodeRecord } from "./libnode.js";
 import {
-  LIBNODE_BRIDGE_ABI,
-  LIBNODE_ORIGIN,
   LIBNODE_PACK_SCHEMA,
   LibnodePackError,
-  libnodeIdentity,
+  findInstalledLibnodePack,
+  hostLibnodeTarget,
   libnodePackPackage,
   parseLibnodeSetting,
-  placeLibnode,
   readLibnodePack,
-  resolveLibnodePack,
   writeLibnodeNotices,
 } from "./libnode-pack.js";
 
@@ -45,7 +35,8 @@ function entry(bytes: string) {
   };
 }
 
-/** A pack with stand-in libraries; `edit` adjusts the manifest. */
+/** A published-style pack with stand-in libraries; `edit` adjusts the
+ * manifest build-pack.mjs would write. */
 function fakePack(
   dir: string,
   edit: (manifest: Record<string, unknown>) => void = () => {},
@@ -60,16 +51,16 @@ function fakePack(
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version: "0.4.1" }));
   const manifest: Record<string, unknown> = {
     schema: LIBNODE_PACK_SCHEMA,
-    package: name,
-    version: "0.4.1",
-    platform: "linux-x64-gnu",
-    os: "linux",
-    arch: "x64",
     nodeVersion: "24.22.0",
     moduleVersion: 137,
-    bridgeAbi: LIBNODE_BRIDGE_ABI,
+    bridgeAbi: NODE_BRIDGE_ABI,
+    platform: "linux",
+    arch: "x64",
     libnode: "libnode.so.137",
     bridge: "libscr_node_bridge.so",
+    package: name,
+    version: "0.4.1",
+    target: "linux-x64-gnu",
     license: "LICENSE",
     files: { "libnode.so.137": entry(libnode), "libscr_node_bridge.so": entry(bridge) },
   };
@@ -104,9 +95,11 @@ describe("the pack packages", () => {
     expect(libnodePackPackage("wasm32-wasi")).toBeNull();
   });
 
-  test("the bridge ABI matches the runtime header", () => {
-    const header = readFileSync(join(repo, "packages/runtime/src/scr_node_bridge.h"), "utf8");
-    expect(header).toContain(`#define SCR_NODE_BRIDGE_ABI ${LIBNODE_BRIDGE_ABI}u`);
+  test("host targets map to native target names", () => {
+    expect(hostLibnodeTarget("linux", "x64")).toBe("linux-x64-gnu");
+    expect(hostLibnodeTarget("linux", "arm64")).toBe("linux-arm64-gnu");
+    expect(hostLibnodeTarget("darwin", "arm64")).toBe("macos-arm64");
+    expect(hostLibnodeTarget("darwin", "x64")).toBe("macos-x64");
   });
 });
 
@@ -128,214 +121,126 @@ describe("parseLibnodeSetting", () => {
   });
 });
 
-describe("resolveLibnodePack", () => {
-  test("SCRIPTC_LIBNODE names the pack directory", () => {
-    const pack = fakePack(join(temp(), "pack"));
-    const found = resolveLibnodePack({
-      targetName: "linux-x64-gnu",
-      projectDir: temp(),
-      env: { SCRIPTC_LIBNODE: pack },
-      verifyHashes: true,
-    });
-    expect(found.root).toBe(pack);
-    expect(found.source).toBe("env");
-    expect(found.manifest.nodeVersion).toBe("24.22.0");
-  });
-
-  test("SCRIPTC_LIBNODE must be absolute", () => {
-    const error = thrown(() =>
-      resolveLibnodePack({
-        targetName: "linux-x64-gnu",
-        projectDir: temp(),
-        env: { SCRIPTC_LIBNODE: "relative/pack" },
-      }),
-    );
-    expect(error.message).toBe(
-      "SCRIPTC_LIBNODE must be an absolute pack directory, got 'relative/pack'",
-    );
-  });
-
-  test("finds the package in the nearest node_modules above the project", () => {
+describe("finding the installed pack", () => {
+  test("in the nearest node_modules above the project", () => {
     const root = temp();
     const pack = fakePack(join(root, "node_modules/@scriptc/libnode-linux-x64-gnu"));
     const project = join(root, "apps/web/src");
     mkdirSync(project, { recursive: true });
-    const found = resolveLibnodePack({
-      targetName: "linux-x64-gnu",
-      projectDir: project,
-      env: {},
-      resolveInstalled: () => null,
-    });
-    expect(found.root).toBe(pack);
-    expect(found.source).toBe("installed");
-  });
-
-  test("falls back to the package next to the compiler", () => {
-    const pack = fakePack(join(temp(), "libnode-linux-x64-gnu"));
-    const found = resolveLibnodePack({
-      targetName: "linux-x64-gnu",
-      projectDir: temp(),
-      env: {},
-      resolveInstalled: (name) => (name === "@scriptc/libnode-linux-x64-gnu" ? pack : null),
-    });
-    expect(found.root).toBe(pack);
-  });
-
-  test("names the package to install when none is found", () => {
-    const error = thrown(() =>
-      resolveLibnodePack({
-        targetName: "macos-arm64",
-        projectDir: temp(),
-        env: {},
+    expect(
+      findInstalledLibnodePack({
+        targetName: "linux-x64-gnu",
+        projectDir: project,
         resolveInstalled: () => null,
       }),
-    );
-    expect(error.kind).toBe("missing");
-    expect(error.message).toBe(
-      "this program needs Node.js (Node islands), but @scriptc/libnode-darwin-arm64 is not installed: install it in the project, or set SCRIPTC_LIBNODE to a libnode pack directory",
-    );
+    ).toBe(pack);
   });
 
-  test("targets without packs are unsupported", () => {
-    const error = thrown(() =>
-      resolveLibnodePack({ targetName: "linux-x64-musl", projectDir: temp(), env: {} }),
-    );
-    expect(error.kind).toBe("unsupported");
-  });
-
-  test("a pack for another platform is refused", () => {
-    const pack = fakePack(join(temp(), "pack"));
-    const error = thrown(() =>
-      resolveLibnodePack({
-        targetName: "linux-arm64-gnu",
+  test("next to the compiler when the project has none", () => {
+    const pack = fakePack(join(temp(), "libnode-darwin-arm64"));
+    expect(
+      findInstalledLibnodePack({
+        targetName: "macos-arm64",
         projectDir: temp(),
-        env: { SCRIPTC_LIBNODE: pack },
+        resolveInstalled: (name) => (name === "@scriptc/libnode-darwin-arm64" ? pack : null),
       }),
+    ).toBe(pack);
+    expect(
+      findInstalledLibnodePack({
+        targetName: "macos-arm64",
+        projectDir: temp(),
+        resolveInstalled: () => null,
+      }),
+    ).toBeNull();
+  });
+
+  test("targets without packs have none", () => {
+    expect(findInstalledLibnodePack({ targetName: "linux-x64-musl", projectDir: temp() })).toBe(
+      null,
     );
-    expect(error.message).toBe(
-      `the libnode pack at ${pack} is @scriptc/libnode-linux-x64-gnu; this target needs @scriptc/libnode-linux-arm64-gnu`,
-    );
+  });
+
+  test("libnodeRecord uses the installed pack when nothing names one", () => {
+    const root = temp();
+    const name = libnodePackPackage(hostLibnodeTarget());
+    if (name === null) return;
+    const pack = fakePack(join(root, "node_modules", name), () => {}, name);
+    expect(libnodeRecord(undefined, join(root, "app"), {}, root)).toEqual({
+      libnode: pack,
+      nodeVersion: "24.22.0",
+    });
+    // SCRIPTC_LIBNODE still wins.
+    const other = fakePack(join(temp(), "other"), (m) => {
+      m["nodeVersion"] = "24.13.1";
+    });
+    expect(libnodeRecord(undefined, join(root, "app"), { SCRIPTC_LIBNODE: other }, root)).toEqual({
+      libnode: other,
+      nodeVersion: "24.13.1",
+    });
   });
 });
 
 describe("readLibnodePack", () => {
-  test("refuses another bridge ABI", () => {
-    const pack = fakePack(join(temp(), "pack"), (m) => {
-      m["bridgeAbi"] = LIBNODE_BRIDGE_ABI + 1;
-    });
-    expect(thrown(() => readLibnodePack(pack, "env")).message).toBe(
-      `the libnode pack at ${pack} has bridge ABI ${LIBNODE_BRIDGE_ABI + 1}; this scriptc needs ${LIBNODE_BRIDGE_ABI}`,
+  test("reads a pack in build-pack.mjs's format and checks its package", () => {
+    const pack = fakePack(join(temp(), "pack"));
+    expect(
+      readLibnodePack(pack, { packageName: "@scriptc/libnode-linux-x64-gnu", verifyHashes: true })
+        .manifest.nodeVersion,
+    ).toBe("24.22.0");
+    expect(
+      thrown(() => readLibnodePack(pack, { packageName: "@scriptc/libnode-linux-arm64-gnu" }))
+        .message,
+    ).toBe(
+      `the libnode pack at ${pack} is @scriptc/libnode-linux-x64-gnu; this target needs @scriptc/libnode-linux-arm64-gnu`,
     );
-  });
-
-  test("refuses Node releases below the minimum", () => {
-    const pack = fakePack(join(temp(), "pack"), (m) => {
-      m["nodeVersion"] = "24.13.0";
-    });
-    expect(thrown(() => readLibnodePack(pack, "env")).message).toBe(
-      `the libnode pack at ${pack} is Node 24.13.0; Node islands need Node.js >=24.13.1`,
-    );
-    const ok = fakePack(join(temp(), "pack"), (m) => {
-      m["nodeVersion"] = "24.13.1";
-    });
-    expect(readLibnodePack(ok, "env").manifest.nodeVersion).toBe("24.13.1");
   });
 
   test("refuses other manifest schemas and nested file names", () => {
     const schema = fakePack(join(temp(), "pack"), (m) => {
       m["schema"] = "scriptc.libnode-pack.v0";
     });
-    expect(thrown(() => readLibnodePack(schema, "env")).kind).toBe("invalid");
+    expect(thrown(() => readLibnodePack(schema)).kind).toBe("invalid");
     const nested = fakePack(join(temp(), "pack"), (m) => {
       m["libnode"] = "lib/libnode.so.137";
-      m["files"] = {
-        ...(m["files"] as object),
-        "lib/libnode.so.137": entry("stand-in libnode"),
-      };
+      m["files"] = { ...(m["files"] as object), "lib/libnode.so.137": entry("stand-in libnode") };
     });
-    expect(thrown(() => readLibnodePack(nested, "env")).message).toContain("nested file");
+    expect(thrown(() => readLibnodePack(nested)).message).toContain("nested file");
   });
 
   test("checks sizes always and hashes on request", () => {
     const pack = fakePack(join(temp(), "pack"));
     writeFileSync(join(pack, "libnode.so.137"), "stand-in libnodE");
-    expect(readLibnodePack(pack, "env").root).toBe(pack);
-    expect(thrown(() => readLibnodePack(pack, "env", { verifyHashes: true })).message).toBe(
+    expect(readLibnodePack(pack).root).toBe(pack);
+    expect(thrown(() => readLibnodePack(pack, { verifyHashes: true })).message).toBe(
       `libnode.so.137 in the libnode pack at ${pack} does not match its manifest`,
     );
     writeFileSync(join(pack, "libnode.so.137"), "short");
-    expect(thrown(() => readLibnodePack(pack, "env")).kind).toBe("invalid");
+    expect(thrown(() => readLibnodePack(pack)).kind).toBe("invalid");
   });
 
   test("a directory without a manifest is missing", () => {
     const dir = temp();
-    expect(thrown(() => readLibnodePack(dir, "env")).message).toBe(
+    expect(thrown(() => readLibnodePack(dir)).message).toBe(
       `no libnode pack at ${dir} (manifest.json is missing or unreadable)`,
     );
   });
 });
 
-describe("placing a pack", () => {
-  test("beside copies the pack next to the output and records it relative to it", () => {
-    const pack = readLibnodePack(fakePack(join(temp(), "pack")), "env");
-    const out = join(temp(), "server");
-    const placed = placeLibnode(pack, { kind: "beside" }, out);
-    expect(placed.location).toBe(`${LIBNODE_ORIGIN}server.libnode`);
-    expect(readdirSync(`${out}.libnode`).sort()).toEqual([
-      "LICENSE",
-      "libnode.so.137",
-      "libscr_node_bridge.so",
-      "manifest.json",
-    ]);
-    expect(statSync(join(`${out}.libnode`, "libnode.so.137")).size).toBe(16);
-    // The placed directory is itself a valid pack.
-    expect(readLibnodePack(`${out}.libnode`, "env", { verifyHashes: true }).manifest.package).toBe(
-      "@scriptc/libnode-linux-x64-gnu",
-    );
-  });
-
-  test("an absolute directory is recorded as is and nothing is copied", () => {
-    const pack = readLibnodePack(fakePack(join(temp(), "pack")), "env");
-    expect(placeLibnode(pack, { kind: "path", path: "/opt/libnode" }, join(temp(), "a"))).toEqual({
-      location: "/opt/libnode",
-      files: [],
-    });
-  });
-
-  test("embedded is refused until the runtime can extract it", () => {
-    const pack = readLibnodePack(fakePack(join(temp(), "pack")), "env");
-    expect(thrown(() => placeLibnode(pack, { kind: "embedded" }, join(temp(), "a"))).kind).toBe(
-      "unsupported",
-    );
-  });
-
-  test("the identity names both libraries with sizes and hashes", () => {
-    const pack = readLibnodePack(fakePack(join(temp(), "pack")), "env");
-    expect(libnodeIdentity(pack)).toEqual({
-      nodeVersion: "24.22.0",
-      moduleVersion: 137,
-      bridgeAbi: LIBNODE_BRIDGE_ABI,
-      libnode: { name: "libnode.so.137", ...entry("stand-in libnode") },
-      bridge: { name: "libscr_node_bridge.so", ...entry("stand-in bridge") },
-    });
-  });
-
-  test("the license notices carry Node's LICENSE", () => {
-    const pack = readLibnodePack(fakePack(join(temp(), "pack")), "env");
-    const out = join(temp(), "server");
-    const path = writeLibnodeNotices(pack, out);
-    expect(path).toBe(`${out}.licenses.txt`);
-    expect(readFileSync(path, "utf8")).toBe(
-      [
-        "server runs part of its code in Node.js 24.22.0, loaded from libnode.so.137",
-        "(@scriptc/libnode-linux-x64-gnu@0.4.1). Node.js and the components it bundles are",
-        "licensed as follows. The scriptc bridge, libscr_node_bridge.so, is licensed under Apache-2.0.",
-        "",
-        "Node.js is licensed for use as follows:",
-        "",
-        "MIT",
-        "",
-      ].join("\n"),
-    );
-  });
+test("the license notices carry Node's LICENSE", () => {
+  const pack = readLibnodePack(fakePack(join(temp(), "pack")));
+  const out = join(temp(), "server");
+  const path = writeLibnodeNotices(pack, out);
+  expect(path).toBe(`${out}.licenses.txt`);
+  expect(readFileSync(path, "utf8")).toBe(
+    [
+      "server runs part of its code in Node.js 24.22.0, loaded from libnode.so.137 (@scriptc/libnode-linux-x64-gnu@0.4.1).",
+      "Node.js and the components it bundles are licensed as follows. The scriptc bridge,",
+      "libscr_node_bridge.so, is licensed under Apache-2.0.",
+      "",
+      "Node.js is licensed for use as follows:",
+      "",
+      "MIT",
+      "",
+    ].join("\n"),
+  );
 });

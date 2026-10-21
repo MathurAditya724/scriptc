@@ -16,8 +16,7 @@ export const repoRoot = dirname(dirname(commonRoot));
 export const bridgeSource = join(commonRoot, "bridge", "scr_node_bridge.cc");
 export const bridgeHeader = join(repoRoot, "packages", "runtime", "src", "scr_node_bridge.h");
 
-/** The manifest schema; the compiler's pack reader accepts exactly this. */
-export const LIBNODE_PACK_SCHEMA = "scriptc.libnode-pack.v1";
+export { LIBNODE_PACK_SCHEMA, bridgeAbi } from "../build-pack.mjs";
 
 /** Bump to invalidate every cached libnode build (a change to how the
  * library is built or staged that the pin does not capture). */
@@ -60,14 +59,6 @@ export function packFileNames(platform, moduleVersion) {
   return os === "darwin"
     ? { libnode: `libnode.${moduleVersion}.dylib`, bridge: "libscr_node_bridge.dylib" }
     : { libnode: `libnode.so.${moduleVersion}`, bridge: "libscr_node_bridge.so" };
-}
-
-/** The bridge ABI the runtime expects (SCR_NODE_BRIDGE_ABI). */
-export function bridgeAbi() {
-  const header = readFileSync(bridgeHeader, "utf8");
-  const match = /#define SCR_NODE_BRIDGE_ABI (\d+)u/.exec(header);
-  if (match === null) throw new Error(`no SCR_NODE_BRIDGE_ABI in ${bridgeHeader}`);
-  return Number(match[1]);
 }
 
 function sha256(text) {

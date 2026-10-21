@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { USES_TIMERS_LIB_FNS } from "../backend/llvm/lib-shared.js";
 import { libnodeCacheKey, libnodeRecord, NODE_BRIDGE_ABI } from "./libnode.js";
+import { findInstalledLibnodePack, hostLibnodeTarget } from "./libnode-pack.js";
 
 function pack(nodeVersion: string, bridgeAbi = NODE_BRIDGE_ABI): string {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-libnode-"));
@@ -31,7 +32,21 @@ describe("the recorded libnode pack", () => {
   });
 
   test("refuses a missing, too old or incompatible pack", () => {
-    expect(libnodeRecord(undefined, "/out/app", {})).toMatch(/no libnode pack is installed/);
+    // Unless a workspace build of the host's @scriptc/libnode-<platform>
+    // resolves next to the compiler, which libnodeRecord then uses.
+    const installed = findInstalledLibnodePack({
+      targetName: hostLibnodeTarget(),
+      projectDir: "/nonexistent",
+    });
+    if (installed === null) {
+      expect(libnodeRecord(undefined, "/out/app", {}, "/nonexistent")).toMatch(
+        /no libnode pack is installed/,
+      );
+    } else {
+      expect(libnodeRecord(undefined, "/out/app", {}, "/nonexistent")).toMatchObject({
+        libnode: installed,
+      });
+    }
     expect(libnodeRecord("/nonexistent", "/out/app", {})).toBe(
       "no libnode pack at /nonexistent (manifest.json is missing or unreadable)",
     );
@@ -78,8 +93,13 @@ describe("the recorded libnode pack", () => {
 });
 
 describe("the libnode pack in an executable's cache key", () => {
-  test("is absent without --libnode or SCRIPTC_LIBNODE", () => {
-    expect(libnodeCacheKey(undefined, {})).toBeUndefined();
+  test("is absent without --libnode, SCRIPTC_LIBNODE or an installed pack", () => {
+    const installed = findInstalledLibnodePack({
+      targetName: hostLibnodeTarget(),
+      projectDir: "/nonexistent",
+    });
+    if (installed === null) expect(libnodeCacheKey(undefined, {}, "/nonexistent")).toBeUndefined();
+    else expect(libnodeCacheKey(undefined, {}, "/nonexistent")).toContain(installed);
   });
 
   test("changes when the pack in the same directory is upgraded", () => {

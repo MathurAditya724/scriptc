@@ -40,9 +40,8 @@ import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { buildBridge } from "./build-bridge.mjs";
+import { buildPack } from "../build-pack.mjs";
 import {
-  LIBNODE_PACK_SCHEMA,
   bridgeAbi,
   bridgeHash,
   libnodeCacheKey,
@@ -65,10 +64,6 @@ async function sha256File(path) {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
-}
-
-async function fileEntry(path) {
-  return { size: statSync(path).size, sha256: await sha256File(path) };
 }
 
 /** Downloads and verifies the pinned source tarball, then extracts it. */
@@ -263,47 +258,40 @@ export async function buildLibnodePack(options) {
   for (const name of [names.libnode, names.bridge, "LICENSE", "manifest.json"]) {
     rmSync(join(packageRoot, name), { force: true });
   }
-  const libnode = join(packageRoot, names.libnode);
-  copyFileSync(join(stage, "lib", names.libnode), libnode);
-  copyFileSync(join(stage, "LICENSE"), join(packageRoot, "LICENSE"));
+  const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
   const bridgeStarted = Date.now();
-  buildBridge({
-    headers: join(stage, "headers"),
-    libnode,
-    out: join(packageRoot, names.bridge),
-    os,
+  const manifest = buildPack({
+    libnode: join(stage, "lib", names.libnode),
+    headers: join(stage, "headers", "include", "node"),
+    out: packageRoot,
+    license: join(stage, "LICENSE"),
+    extra: {
+      package: packageJson.name,
+      version: packageJson.version,
+      target: platform,
+      license: "LICENSE",
+      build: {
+        libnodeKey: key,
+        bridgeHash: bridgeHash(),
+        configureFlags: build.configureFlags,
+        icu: build.icu,
+        toolchain: build.toolchain,
+        minimumGlibc: build.minimumGlibc,
+      },
+    },
   });
   const bridgeSeconds = (Date.now() - bridgeStarted) / 1000;
-  const bridge = join(packageRoot, names.bridge);
-
-  const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-  const manifest = {
-    schema: LIBNODE_PACK_SCHEMA,
-    package: packageJson.name,
-    version: packageJson.version,
-    platform,
-    os,
-    arch,
-    nodeVersion: pin.nodeVersion,
-    moduleVersion: pin.moduleVersion,
-    bridgeAbi: bridgeAbi(),
-    libnode: names.libnode,
-    bridge: names.bridge,
-    license: "LICENSE",
-    files: {
-      [names.libnode]: await fileEntry(libnode),
-      [names.bridge]: await fileEntry(bridge),
-    },
-    build: {
-      libnodeKey: key,
-      bridgeHash: bridgeHash(),
-      configureFlags: build.configureFlags,
-      icu: build.icu,
-      toolchain: build.toolchain,
-      minimumGlibc: os === "linux" ? minimumGlibc(libnode) : null,
-    },
-  };
-  writeFileSync(join(packageRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  if (
+    manifest.nodeVersion !== pin.nodeVersion ||
+    manifest.moduleVersion !== pin.moduleVersion ||
+    manifest.bridgeAbi !== bridgeAbi() ||
+    manifest.platform !== os ||
+    manifest.arch !== arch ||
+    manifest.libnode !== names.libnode ||
+    manifest.bridge !== names.bridge
+  ) {
+    throw new Error(`the assembled pack does not match ${platform}: ${JSON.stringify(manifest)}`);
+  }
   const report = {
     platform,
     nodeVersion: pin.nodeVersion,

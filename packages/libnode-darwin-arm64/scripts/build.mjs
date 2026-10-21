@@ -16,4 +16,7 @@ await buildLibnodePack({
   platform: "darwin-arm64",
   packageRoot: dirname(dirname(fileURLToPath(import.meta.url))),
   compress: process.argv.includes("--compress"),
+  // Assemble from a restored libnode build only (CI test lanes); never
+  // start a Node build.
+  skipLibnode: process.argv.includes("--from-cache"),
 });

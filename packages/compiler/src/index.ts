@@ -774,7 +774,7 @@ async function prepareExecutableInput(
     if (!moduleRuntimeFeatures(mod).nodeIsland) {
       delete mod.nodeIsland;
     } else if (outputKind === "exe") {
-      const recorded = libnodeRecord(opts.libnode, opts.outPath);
+      const recorded = libnodeRecord(opts.libnode, opts.outPath, process.env, dirname(entryPath));
       if (typeof recorded === "string")
         return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
       mod.nodeIsland = recorded;
@@ -1376,7 +1376,7 @@ async function compileTracked(
     const helperObjectRoute =
       opts.nativeProgramObject === true || usesPrecompiledRuntimePack(opts, "llvm");
     // Calls into Node record the libnode pack, keyed by its manifest (node-islands/libnode.ts).
-    const libnodeKey = libnodeCacheKey(opts.libnode);
+    const libnodeKey = libnodeCacheKey(opts.libnode, process.env, dirname(entryPath));
     const routeOptions: Omit<
       EarlyExecutableCacheOptions,
       "implementation" | "implementationDependencies" | "nativeEnvironment"

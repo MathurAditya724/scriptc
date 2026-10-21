@@ -1,56 +1,25 @@
-/* Locating, validating and placing a libnode pack (scope-B design §2.11,
- * §2.13, §2.16.3): the directory a program with Node islands loads Node
- * from. A pack holds a stripped Node.js shared library built from one exact
- * release, the scriptc bridge compiled against that release
- * (packages/libnode-common), Node's LICENSE and manifest.json. Packs are
- * built only by the libnode-packs workflow and installed like the runtime
- * packs, as `@scriptc/libnode-<platform>`; a scriptc build never compiles
- * Node.
+/* The installed libnode packs (scope-B design §2.11, §2.13, §2.16.3):
+ * `@scriptc/libnode-<platform>`, built only by the libnode-packs workflow
+ * from the pinned Node release (packages/libnode-common) and installed like
+ * the runtime packs. A scriptc build never compiles Node.
  *
- * Where the build finds the pack, in order:
- *   1. SCRIPTC_LIBNODE in the build's environment: an absolute pack
- *      directory (a self-built pack, or a CI artifact);
- *   2. `@scriptc/libnode-<platform>` installed in the project (the nearest
- *      node_modules walking up from the project directory), else next to
- *      the compiler.
+ * libnode.ts decides which pack a build records: --libnode, else
+ * SCRIPTC_LIBNODE, else the installed pack this module finds: the nearest
+ * `node_modules/@scriptc/libnode-<platform>` walking up from the project
+ * directory, else the one next to the compiler. The manifest format is the
+ * one packages/libnode-common/build-pack.mjs writes (schema, nodeVersion,
+ * moduleVersion, bridgeAbi, platform, arch, libnode, bridge, files); the
+ * published packs add package, version, target, license and build inputs.
  *
- * How the program finds it at run time is the `nodeIslands.libnode`
- * setting (parseLibnodeSetting):
- *   "embedded"  the libraries travel inside the executable and are
- *               extracted to the cache on first use (the default; the
- *               runtime extraction lands with island packaging, NI-4);
- *   "beside"    a copy of the pack next to the output, `<output>.libnode/`,
- *               recorded relative to the executable;
- *   <path>      an absolute directory where the deployment host installs
- *               the same pack; nothing is copied.
- * SCRIPTC_LIBNODE in the program's environment overrides the recorded
- * location at run time; the runtime checks the identity recorded here
- * (libnodeIdentity) before it dlopens anything. */
+ * Also here: the `nodeIslands.libnode` setting ("embedded" | "beside" |
+ * <absolute directory>) for the project configuration, and the license
+ * notices a program that redistributes Node.js carries. */
 import { createHash } from "node:crypto";
-import {
-  copyFileSync,
-  existsSync,
-  linkSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export const LIBNODE_PACK_SCHEMA = "scriptc.libnode-pack.v1";
-
-/** The bridge ABI this compiler's runtime speaks (SCR_NODE_BRIDGE_ABI in
- * packages/runtime/src/scr_node_bridge.h). */
-export const LIBNODE_BRIDGE_ABI = 1;
-
-/** The oldest Node.js release Node islands support (decision 5). */
-export const LIBNODE_MIN_NODE = "24.13.1";
-
-/** The prefix of a recorded location relative to the executable. */
-export const LIBNODE_ORIGIN = "$ORIGIN/";
 
 /** The pack package for each native target that can host Node islands. */
 const PACK_PACKAGES: Readonly<Record<string, string>> = {
@@ -72,34 +41,26 @@ export interface LibnodeFile {
 
 export interface LibnodePackManifest {
   schema: string;
-  package: string;
-  version: string;
-  platform: string;
   nodeVersion: string;
   moduleVersion: number;
   bridgeAbi: number;
+  /** process.platform and process.arch of the pack. */
+  platform: string;
+  arch: string;
   /** File names inside the pack directory. */
   libnode: string;
   bridge: string;
-  license: string;
   files: Record<string, LibnodeFile>;
+  /** Published packs only. */
+  package?: string;
+  version?: string;
+  target?: string;
+  license?: string;
 }
 
 export interface LibnodePack {
-  /** The pack directory. */
   root: string;
-  /** How it was found. */
-  source: "env" | "installed";
   manifest: LibnodePackManifest;
-}
-
-/** What the executable records to find and check its Node at run time. */
-export interface LibnodeIdentity {
-  nodeVersion: string;
-  moduleVersion: number;
-  bridgeAbi: number;
-  libnode: { name: string } & LibnodeFile;
-  bridge: { name: string } & LibnodeFile;
 }
 
 export class LibnodePackError extends Error {
@@ -113,9 +74,17 @@ export class LibnodePackError extends Error {
 }
 
 /** The libnode pack package for a native target, or null when Node islands
- * have no pack there (musl, Windows, WASI and mobile targets: SC8012). */
+ * have no pack there (musl, Windows, WASI and mobile targets). */
 export function libnodePackPackage(targetName: string): string | null {
   return PACK_PACKAGES[targetName] ?? null;
+}
+
+/** The native target name of the host, as libnodePackPackage takes it. */
+export function hostLibnodeTarget(
+  platform: string = process.platform,
+  arch: string = process.arch,
+): string {
+  return platform === "darwin" ? `macos-${arch}` : `${platform}-${arch}-gnu`;
 }
 
 /** Validates a `nodeIslands.libnode` value; a string result is the reason
@@ -128,15 +97,6 @@ export function parseLibnodeSetting(value: unknown): LibnodePlacement | string {
     return `must be "embedded", "beside" or an absolute directory, not the relative path "${value}"`;
   }
   return `must be "embedded", "beside" or an absolute directory`;
-}
-
-function versionAtLeast(version: string, floor: string): boolean {
-  const a = version.split(".").map(Number);
-  const b = floor.split(".").map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
-  }
-  return true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -152,8 +112,8 @@ function isFileEntry(value: unknown): value is LibnodeFile {
   );
 }
 
-/** Parses manifest.json of a pack; throws LibnodePackError when it is not
- * a pack this compiler can use. */
+/** Parses a pack's manifest.json; throws LibnodePackError when it is not a
+ * pack manifest. Bridge ABI and Node version policy stay in libnode.ts. */
 export function parseLibnodePackManifest(json: unknown, where: string): LibnodePackManifest {
   const invalid = (detail: string): never => {
     throw new LibnodePackError(`the libnode pack at ${where} ${detail}`, "invalid");
@@ -164,8 +124,7 @@ export function parseLibnodePackManifest(json: unknown, where: string): LibnodeP
       `has manifest schema ${String(json["schema"])}, expected ${LIBNODE_PACK_SCHEMA}`,
     );
   }
-  const strings = ["package", "version", "platform", "nodeVersion", "libnode", "bridge", "license"];
-  for (const field of strings) {
+  for (const field of ["nodeVersion", "platform", "arch", "libnode", "bridge"]) {
     if (typeof json[field] !== "string" || json[field] === "") {
       return invalid(`has no ${field} in manifest.json`);
     }
@@ -176,34 +135,17 @@ export function parseLibnodePackManifest(json: unknown, where: string): LibnodeP
   const files = json["files"];
   if (!isRecord(files)) return invalid("lists no files in manifest.json");
   for (const name of [json["libnode"], json["bridge"]] as string[]) {
-    if (!isFileEntry(files[name])) return invalid(`lists no size and SHA-256 for ${name}`);
     if (name.includes("/") || name.includes("\\")) return invalid(`names a nested file ${name}`);
+    if (!isFileEntry(files[name])) return invalid(`lists no size and SHA-256 for ${name}`);
   }
-  const manifest = json as unknown as LibnodePackManifest;
-  if (manifest.bridgeAbi !== LIBNODE_BRIDGE_ABI) {
-    throw new LibnodePackError(
-      `the libnode pack at ${where} has bridge ABI ${manifest.bridgeAbi}; this scriptc needs ${LIBNODE_BRIDGE_ABI}`,
-      "invalid",
-    );
-  }
-  if (!versionAtLeast(manifest.nodeVersion, LIBNODE_MIN_NODE)) {
-    throw new LibnodePackError(
-      `the libnode pack at ${where} is Node ${manifest.nodeVersion}; Node islands need Node.js >=${LIBNODE_MIN_NODE}`,
-      "invalid",
-    );
-  }
-  return manifest;
+  return json as unknown as LibnodePackManifest;
 }
 
-function sha256File(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
-/** Reads and checks the pack in `root`: its manifest, and that each library
- * exists with the recorded size (and SHA-256 when `verifyHashes`). */
+/** Reads and checks the pack in `root`: its manifest, its package when
+ * `packageName` is given, and that each library exists with the recorded
+ * size (and SHA-256 when `verifyHashes`). */
 export function readLibnodePack(
   root: string,
-  source: LibnodePack["source"],
   options: { packageName?: string | undefined; verifyHashes?: boolean | undefined } = {},
 ): LibnodePack {
   let json: unknown;
@@ -218,7 +160,7 @@ export function readLibnodePack(
   const manifest = parseLibnodePackManifest(json, root);
   if (options.packageName !== undefined && manifest.package !== options.packageName) {
     throw new LibnodePackError(
-      `the libnode pack at ${root} is ${manifest.package}; this target needs ${options.packageName}`,
+      `the libnode pack at ${root} is ${manifest.package ?? "unnamed"}; this target needs ${options.packageName}`,
       "invalid",
     );
   }
@@ -231,17 +173,17 @@ export function readLibnodePack(
     } catch {
       throw new LibnodePackError(`the libnode pack at ${root} is missing ${name}`, "invalid");
     }
-    if (
-      size !== entry.size ||
-      (options.verifyHashes === true && sha256File(path) !== entry.sha256)
-    ) {
+    const hashMismatch =
+      options.verifyHashes === true &&
+      createHash("sha256").update(readFileSync(path)).digest("hex") !== entry.sha256;
+    if (size !== entry.size || hashMismatch) {
       throw new LibnodePackError(
         `${name} in the libnode pack at ${root} does not match its manifest`,
         "invalid",
       );
     }
   }
-  return { root, source, manifest };
+  return { root, manifest };
 }
 
 /** The nearest `node_modules/<name>` directory walking up from `from`. */
@@ -264,110 +206,38 @@ function resolveNextToCompiler(name: string): string | null {
   }
 }
 
-/** Finds the libnode pack a build for `targetName` uses (see the header). */
-export function resolveLibnodePack(options: {
+/** The installed pack directory for `targetName`, or null when none is
+ * installed or the target has no packs. */
+export function findInstalledLibnodePack(options: {
   targetName: string;
   projectDir: string;
-  env?: NodeJS.ProcessEnv | undefined;
-  verifyHashes?: boolean | undefined;
   /** Test hook for the compiler-relative lookup. */
   resolveInstalled?: ((name: string) => string | null) | undefined;
-}): LibnodePack {
+}): string | null {
   const packageName = libnodePackPackage(options.targetName);
-  if (packageName === null) {
-    throw new LibnodePackError(
-      `Node islands have no libnode pack for ${options.targetName}`,
-      "unsupported",
-    );
-  }
-  const fromEnv = (options.env ?? process.env)["SCRIPTC_LIBNODE"];
-  if (fromEnv !== undefined && fromEnv !== "") {
-    if (!isAbsolute(fromEnv)) {
-      throw new LibnodePackError(
-        `SCRIPTC_LIBNODE must be an absolute pack directory, got '${fromEnv}'`,
-        "invalid",
-      );
-    }
-    return readLibnodePack(fromEnv, "env", { packageName, verifyHashes: options.verifyHashes });
-  }
-  const installed =
+  if (packageName === null) return null;
+  return (
     findInstalled(packageName, options.projectDir) ??
-    (options.resolveInstalled ?? resolveNextToCompiler)(packageName);
-  if (installed === null) {
-    throw new LibnodePackError(
-      `this program needs Node.js (Node islands), but ${packageName} is not installed: install it in the project, or set SCRIPTC_LIBNODE to a libnode pack directory`,
-      "missing",
-    );
-  }
-  return readLibnodePack(installed, "installed", {
-    packageName,
-    verifyHashes: options.verifyHashes,
-  });
-}
-
-/** The identity the executable records and the runtime checks before it
- * loads the pack (design §2.2 step 1, §2.11). */
-export function libnodeIdentity(pack: LibnodePack): LibnodeIdentity {
-  const { manifest } = pack;
-  return {
-    nodeVersion: manifest.nodeVersion,
-    moduleVersion: manifest.moduleVersion,
-    bridgeAbi: manifest.bridgeAbi,
-    libnode: { name: manifest.libnode, ...manifest.files[manifest.libnode]! },
-    bridge: { name: manifest.bridge, ...manifest.files[manifest.bridge]! },
-  };
-}
-
-function linkOrCopy(from: string, to: string): void {
-  try {
-    linkSync(from, to);
-  } catch {
-    copyFileSync(from, to);
-  }
-}
-
-/** Places the pack for `outPath` according to `placement` and answers the
- * location the executable records: absolute, or relative to the
- * executable's directory behind LIBNODE_ORIGIN. */
-export function placeLibnode(
-  pack: LibnodePack,
-  placement: LibnodePlacement,
-  outPath: string,
-): { location: string; files: string[] } {
-  switch (placement.kind) {
-    case "path":
-      return { location: placement.path, files: [] };
-    case "beside": {
-      const name = `${basename(outPath)}.libnode`;
-      const target = `${outPath}.libnode`;
-      rmSync(target, { recursive: true, force: true });
-      mkdirSync(target, { recursive: true });
-      const { manifest } = pack;
-      const files = [manifest.libnode, manifest.bridge, "manifest.json", manifest.license];
-      for (const file of files) linkOrCopy(join(pack.root, file), join(target, file));
-      return { location: `${LIBNODE_ORIGIN}${name}`, files: files.map((f) => join(target, f)) };
-    }
-    case "embedded":
-      throw new LibnodePackError(
-        `embedded libnode packaging is not available yet; set nodeIslands.libnode to "beside" or an absolute directory`,
-        "unsupported",
-      );
-  }
+    (options.resolveInstalled ?? resolveNextToCompiler)(packageName)
+  );
 }
 
 /** Writes the license notices a program that redistributes Node.js must
  * carry, `<output>.licenses.txt` (design §2.13), and returns its path. */
 export function writeLibnodeNotices(pack: LibnodePack, outPath: string): string {
   const { manifest } = pack;
-  const nodeLicense = readFileSync(join(pack.root, manifest.license), "utf8");
+  const nodeLicense = readFileSync(join(pack.root, manifest.license ?? "LICENSE"), "utf8");
+  const origin =
+    manifest.package !== undefined && manifest.version !== undefined
+      ? ` (${manifest.package}@${manifest.version})`
+      : "";
   const path = `${outPath}.licenses.txt`;
   writeFileSync(
     path,
     [
-      `${basename(outPath)} runs part of its code in Node.js ${manifest.nodeVersion}, loaded from ${manifest.libnode}`,
-      `(${manifest.package}@${manifest.version}). Node.js and the components it bundles are`,
-      "licensed as follows. The scriptc bridge, " +
-        `${manifest.bridge}, is licensed under Apache-2.0.`,
+      `${basename(outPath)} runs part of its code in Node.js ${manifest.nodeVersion}, loaded from ${manifest.libnode}${origin}.`,
+      `Node.js and the components it bundles are licensed as follows. The scriptc bridge,`,
+      `${manifest.bridge}, is licensed under Apache-2.0.`,
       "",
       nodeLicense.trimEnd(),
       "",
