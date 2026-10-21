@@ -1,4 +1,5 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
+import { staticallySelected } from "../static-typeof.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
@@ -27,6 +28,7 @@ import {
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
+  BYTES_U8,
   DYN,
   F64,
   type IrExpr,
@@ -479,7 +481,10 @@ export function lowerPropertyAccessExpr(
   // undefined value so stored probes compose with optional calls.
   if (
     stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis" &&
-    !lowerer.checker.getPropertyOfType(lowerer.typeOf(expr.expression), expr.name.text)
+    !lowerer.checker.getPropertyOfType(
+      lowerer.typeOf(staticallySelected(lowerer, expr.expression)),
+      expr.name.text,
+    )
   ) {
     return dynUndefinedExpr(loc);
   }
@@ -874,7 +879,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",
@@ -983,7 +988,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",
@@ -1115,7 +1120,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       const read: IrExpr = {
         kind: "dynKeyGet",
         key,
@@ -1210,7 +1215,7 @@ export function lowerPropertyAccessExpr(
       type: STRING,
       loc: locOf(expr.name),
     };
-    const opt = hasOptionalChainGuard(expr.expression);
+    const opt = hasOptionalChainGuard(expr.expression, lowerer);
     return lowerer.maybeNarrow(
       {
         kind: "dynKeyGet",
@@ -1629,6 +1634,38 @@ export function lowerIntrinsicProperty(
   if (netAddressStatic) return netAddressStatic;
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "isBuffer")
     return lowerCheckedPredicateValue(lowerer, "Buffer.isBuffer", "buffer", locOf(expr));
+  // Buffer statics as function values (`Buffer.byteLength.bind(Buffer)` in
+  // truncate-utf8-bytes): the checked forms take any argument as Node does.
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "byteLength")
+    return lowerer.lowerNativeCallableValue(
+      {
+        fn: "buffer.byteLenValue",
+        params: [DYN, DYN],
+        result: F64,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+      },
+      "Buffer.byteLength",
+      locOf(expr),
+    );
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "alloc")
+    return bufferAllocValue(lowerer, locOf(expr));
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "compare")
+    return lowerer.lowerNativeCallableValue(
+      {
+        fn: "buffer.compareChk",
+        params: [DYN, DYN],
+        result: F64,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "required", type: DYN },
+        ],
+      },
+      "Buffer.compare",
+      locOf(expr),
+    );
   if (lowerer.stdlibGlobalMember(expr, "Date") === "now")
     return lowerer.lowerNativeCallableValue(
       {
@@ -2210,9 +2247,78 @@ export function lowerIntrinsicProperty(
         own(STDLIB_SURFACE.string, name) !== undefined
       : ARRAY_METHODS.has(name)
   ) {
+    // A JavaScript string method read as a value (smol-toml's
+    // `!!(''.isWellFormed)` feature probe): String.prototype's method, the
+    // runtime's interned function that runs it on its receiver.
+    if (kind === "string" && isJsSourceFile(expr.getSourceFile()) && !expr.questionDotToken) {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      const method: IrExpr = {
+        kind: "libCall",
+        fn: "dyn.builtinMethod",
+        args: [
+          { kind: "strLit", value: "String", type: STRING, loc: locOf(expr) },
+          { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
+        ],
+        type: DYN,
+        loc: locOf(expr),
+      };
+      return isSafeToDiscard(receiver)
+        ? method
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(expr.expression) }],
+            result: method,
+            type: DYN,
+            loc: locOf(expr),
+          };
+    }
     lowerer.unsupported("SC1090", expr, `${kind} methods as values (call '${name}' directly)`);
   }
   return null;
+}
+
+/** Buffer.alloc as a function value (`var alloc = Buffer.alloc` in
+ * tar-stream): the runtime checks the size, allocates and fills with
+ * `fill` and `encoding` as Node's alloc does. */
+function bufferAllocValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const name = "%builtin.Buffer.alloc";
+  if (!lowerer.builtinCallableValueFns.has(name)) {
+    lowerer.builtinCallableValueFns.set(name, name);
+    const params = ["size", "fill", "encoding"].map((id) => ({ localId: id, name: id, type: DYN }));
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: BYTES_U8,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: DYN, mutable: false })),
+      loc,
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "libCall",
+            fn: "buffer.allocValue",
+            args: params.map((p) => varRef(p.localId, DYN, loc)),
+            type: BYTES_U8,
+            loc,
+          },
+          loc,
+        },
+      ],
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: {
+      kind: "closure",
+      fnName: name,
+      captures: [],
+      type: { kind: "func", params: [DYN, DYN, DYN], ret: BYTES_U8 },
+      loc,
+    },
+    fnName: "alloc",
+    type: DYN,
+    loc,
+  };
 }
 
 /** A `T | undefined` class field read that the checker narrowed to `T`
@@ -2728,7 +2834,7 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
           kind: "dynKeyGet",
           value,
           key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
-          ...(expr.questionDotToken || hasOptionalChainGuard(expr.expression)
+          ...(expr.questionDotToken || hasOptionalChainGuard(expr.expression, lowerer)
             ? { optional: true as const }
             : {}),
           type: DYN,
@@ -3084,7 +3190,7 @@ export function lowerUnionProperty(
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(value, DYN),
       key,
-      ...(hasOptionalChainGuard(expr.expression) ? { optional: true as const } : {}),
+      ...(hasOptionalChainGuard(expr.expression, lowerer) ? { optional: true as const } : {}),
       type: DYN,
       loc: locOf(expr),
     };

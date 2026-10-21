@@ -159,7 +159,8 @@ console.log("unreachable", c.host);
   test("schema-directed JSON.parse declines to the checked route with identical errors", async () => {
     // `JSON.parse(text) as T` for plain record/array targets parses in one
     // pass and reruns the checked-dynamic route whenever it declines, so
-    // syntax, depth, and checked-cast failures keep their exact messages.
+    // syntax and depth failures keep their exact messages, and a value the
+    // check rejects continues as its parsed value (checked-cast fallback).
     const r = await compileAndRun(
       "schema-parse-errors",
       `interface Item { sku: string; qty: number }
@@ -197,9 +198,9 @@ for (const text of inputs) {
       'SyntaxError: Unexpected token \']\', ...","x":[1,],"qty":"... is not valid JSON (same)',
       "SyntaxError: Bad Unicode escape in JSON at position 21 (same)",
       "RangeError: Maximum call stack size exceeded (same)",
-      "TypeError: expected number at $[0].qty, got undefined (plain ok)",
-      "TypeError: expected number at $[1].qty, got boolean (plain ok)",
-      "TypeError: expected number at $[0].qty, got string (plain ok)",
+      "ok 1 undefined (plain ok)",
+      "ok 2 1 (plain ok)",
+      "ok 1 x (plain ok)",
       "ok 1 2 (plain ok)",
       "",
     ]);
@@ -211,7 +212,9 @@ for (const text of inputs) {
     // string arrays; null for object and number; missing fields; object vs
     // array at a field and at the root; duplicate keys; truncated JSON; 1e400
     // and a lone surrogate; extra nested members; reordered keys; and an Item[]
-    // root. Every line equals the perf/harness (checked-route-only) output.
+    // root. A value the check rejects continues as its parsed value, so every
+    // line but the truncated input's (whose SyntaxError text is approximate)
+    // equals Node's.
     const r = await compileAndRun(
       "schema-parse-wrong-types",
       `interface Item { sku: string; qty: number; ok: boolean }
@@ -255,23 +258,23 @@ try {
     expect(r.stderr).toBe("");
     expect(r.stdout.split("\n")).toEqual([
       "ok 1 a 1 x:2:true t",
-      "err TypeError: expected number at $.id, got string",
-      "err TypeError: expected string at $.name, got number",
-      "err TypeError: expected number at $.items[0].qty, got string",
-      "err TypeError: expected boolean at $.items[0].ok, got undefined",
-      "err TypeError: expected boolean at $.items[0].ok, got number",
-      "err TypeError: expected array at $.items, got object",
-      "err TypeError: expected object at $.items[0], got null",
-      "err TypeError: expected string at $.tags[0], got number",
+      "ok 1 a 0  ",
+      "ok 1 2 0  ",
+      "ok 1 a 1 x:2:true ",
+      "ok 1 a 1 x:2:undefined ",
+      "ok 1 a 1 x:2:1 ",
+      "err TypeError: o.items.map is not a function",
+      "err TypeError: Cannot read properties of null (reading 'sku')",
+      "ok 1 a 0  1",
       "ok 1 a 0  ",
       "ok 2 a 0  ",
-      "err TypeError: expected number at $.id, got undefined",
-      "err TypeError: expected number at $.id, got null",
-      "err TypeError: expected object at $, got array",
+      "ok undefined a 0  ",
+      "ok null a 0  ",
+      "err TypeError: Cannot read properties of undefined (reading 'length')",
       "err SyntaxError: Unexpected end of JSON input",
       "ok Infinity \uFFFD 0  ",
       "ok 7 reordered 0  ",
-      "err expected number at $[1].qty, got string",
+      "ok 2",
       "",
     ]);
   });
@@ -302,6 +305,71 @@ console.log("unreachable", c.host);
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain(
       "Uncaught TypeError: expected number | undefined at $.port, got string",
+    );
+  });
+
+  test("optional record member: the failure names the deepest path inside it", async () => {
+    // `Partial<T>` makes every member an `X | undefined` union. A present
+    // object that fails X used to report only the union's own path
+    // ("expected object | undefined at $.order, got object"); the record
+    // arm's builder now reports where inside it the value fails. The cast
+    // is passed straight to a typed parameter, so it is checked at the
+    // cast: one that initializes a block-local binding continues as its
+    // parsed value instead (checked-cast fallback), as in Node.
+    const types = `interface Order {
+  owner: { id: string; plan: { tier: string } };
+  total: number;
+}
+interface Envelope { order: Order; tags?: string[] }
+const texts = [
+  '{"order":{"owner":{"id":"u1"},"total":3}}',
+  '{"order":{"owner":{"id":7,"plan":{"tier":"pro"}},"total":3}}',
+  '{"order":{"owner":{"id":"u1","plan":{"tier":"pro"}},"total":3},"tags":["a",2]}',
+  '{"order":5}',
+];
+`;
+    const r = await compileAndRun(
+      "optional-record-deep",
+      `${types}function show(e: Partial<Envelope>): void {
+  console.log("ok", e.order?.owner.id);
+}
+for (const text of texts) {
+  try {
+    show(JSON.parse(text) as Partial<Envelope>);
+  } catch (err) {
+    if (err instanceof TypeError) console.log(err.message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "expected object at $.order.owner.plan, got undefined",
+        "expected string at $.order.owner.id, got number",
+        "expected string at $.tags[1], got number",
+        "expected object | undefined at $.order, got number",
+        "",
+      ].join("\n"),
+    );
+    const fallback = await compileAndRun(
+      "optional-record-deep-fallback",
+      `${types}for (const text of texts) {
+  try {
+    const e = JSON.parse(text) as Partial<Envelope>;
+    console.log("ok", e.order?.owner.id);
+  } catch (err) {
+    if (err instanceof TypeError) console.log(err.message);
+  }
+}
+`,
+      "ts",
+      true,
+    );
+    expect(fallback.stdout).toBe(
+      ["ok u1", "ok 7", "ok u1", "Cannot read properties of undefined (reading 'id')", ""].join(
+        "\n",
+      ),
     );
   });
 
@@ -468,7 +536,60 @@ console.log("unreachable", t[1]);
     expect(r.stderr).toContain("Uncaught TypeError: expected array at $, got object");
   });
 
+  test("checked-cast fallback: a failed value leaving its region is checked where it leaves", async () => {
+    // A block-local `JSON.parse(text) as T` whose value fails validation
+    // continues as its parsed value (checked-cast fallback): reads in the
+    // binding's region behave as in Node. Where the value flows into a typed
+    // slot outside that region (a typed parameter, a typed outer binding, a
+    // typed return), it is checked there: a value that fits continues, one
+    // that does not throws that conversion's TypeError at that use, where
+    // Node continues. Module-level bindings keep the check at the cast.
+    const r = await compileAndRun(
+      "fallback-escapes",
+      `interface Order { id: string; deployment: { id: string; plan: string } }
+function deliver(o: Order): string { return o.deployment.id + "/" + o.deployment.plan; }
+function plan(text: string): string {
+  const order = JSON.parse(text) as Order;
+  console.log("read", order.deployment?.id, order.deployment?.plan);
+  const id: string = order.id;
+  return id;
+}
+function handle(text: string): void {
+  const order = JSON.parse(text) as Order;
+  console.log("id", order.id);
+  try { console.log(deliver(order)); } catch (e) { console.log((e as Error).message); }
+}
+handle('{"id":"a","deployment":{"id":"d","plan":"pro"},"extra":1}');
+handle('{"id":"b","deployment":{"id":"d"}}');
+console.log(plan('{"id":"c","deployment":{}}'));
+try { console.log(plan('{"id":7,"deployment":{"id":"d","plan":"p"}}')); }
+catch (e) { console.log((e as Error).message); }
+let top: Order;
+try { top = JSON.parse('{"id":"t"}') as Order; console.log(top.id); }
+catch (e) { console.log((e as Error).message); }
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      [
+        "id a",
+        "d/pro",
+        "id b",
+        "expected string at $.deployment.plan, got undefined",
+        "read undefined undefined",
+        "c",
+        "read d p",
+        "expected string at $, got number",
+        "expected object at $.deployment, got undefined",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("tuple failure-path RC stress: partial tuples release on unwind", async () => {
+    // The rejected value continues as its parsed value (checked-cast
+    // fallback); the partial tuple the check built still releases.
     const r = await compileAndRun(
       "tuple-rc-failure",
       `let recovered = 0;
@@ -482,14 +603,18 @@ for (let i = 0; i < 100; i = i + 1) {
 }
 console.log(recovered);
 `,
+      "ts",
+      true,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe("100\n");
+    expect(r.stdout).toBe("-200\n");
   });
 
   test("failure-path RC stress: repeated mismatches through catch stay clean", async () => {
     // Meaningful mostly under SCRIPTC_SAN=1 (ASan + RC audit at exit): every
-    // iteration builds a partial record/array that must release on unwind.
+    // iteration builds a partial record/array that must release when the
+    // check rejects it, and the parsed value continues (checked-cast
+    // fallback), so `e2.v` reads "no" and the count becomes NaN as in Node.
     const r = await compileAndRun(
       "rc-failure-stress",
       `type Entry = { tags: string[]; v: number };
@@ -510,9 +635,11 @@ for (let i = 0; i < 100; i = i + 1) {
 }
 console.log(recovered);
 `,
+      "ts",
+      true,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe("200\n");
+    expect(r.stdout).toBe("NaN\n");
   });
 
   test("index-signature shapes CAPTURE extras — and a wrong-typed extra throws with its key path", async () => {
@@ -685,13 +812,19 @@ console.log(total);
     // The static-any lane's exit stance (the checked cast's rule applied
     // to implicit any→typed flows): Node assigns the mismatched value and
     // carries on; scriptc throws the catchable TypeError instead of
-    // returning a wrong result — the divergence is deliberate and documented.
+    // returning a wrong result where the value leaves the binding it was
+    // checked into. A block-local binding read only after the check keeps
+    // the value instead (checked-cast fallback), as Node does.
     const r = await compileAndRun(
       "any-lying-exit",
       `const a: any = "not a number";
+function width(n: number): number {
+  return n * 2;
+}
 try {
   const n: number = a;
-  console.log("unreachable", n);
+  console.log("kept", n, typeof n);
+  console.log(width(n));
 } catch (e) {
   console.log((e as Error).name);
 }
@@ -699,7 +832,7 @@ console.log("recovered");
 `,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe("TypeError\nrecovered\n");
+    expect(r.stdout).toBe("kept not a number string\nTypeError\nrecovered\n");
   });
 
   test("a lying cast into a union that cannot represent the value throws the stranded trap catchably", async () => {

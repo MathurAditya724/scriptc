@@ -1,5 +1,12 @@
 Casts from values whose type is only known at runtime validate the value.
-For example, `JSON.parse(s) as Config` throws a catchable error if the data does not match `Config`, identifying the offending path, such as `expected number at $.port, got string`.
+A value that matches the type uses the type's native layout.
+When the cast initializes a `const` or `let` binding declared in a function or block, and the binding is only read by the code after the cast, a value that does not match continues as the value it is, as under Node.js: with `JSON.parse(s) as Config` and `{"port": "eighty"}`, `config.port` is the string `"eighty"`, missing properties read `undefined`, and extra properties stay visible to `Object.keys`, `JSON.stringify`, and `util.inspect`.
+That code then runs on dynamic values, which is slower than native records.
+A statement of it that has no dynamic lowering throws a `TypeError` naming the construct and its location when such a value reaches it.
+
+In the other cases a mismatch throws a catchable `TypeError` identifying the offending path, such as `expected number at $.port, got string`: casts that initialize module-level bindings or appear in other positions, and a mismatched value that leaves the code after its cast through a typed parameter, field, return value, or outer binding, where it is checked against that type.
+A value that matches there continues, copied if it is an object.
+`--tier=static-only` makes every mismatch throw at the cast.
 A TypeScript assertion alone does not perform this validation when run under Node.js.
 
 Casts between program classes are checked too: casting an instance to a class it does not extend throws a `TypeError`, where Node.js reads the members structurally.

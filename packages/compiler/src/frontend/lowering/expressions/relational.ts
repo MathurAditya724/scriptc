@@ -1380,6 +1380,24 @@ export function lowerInExpression(
   if (key === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.right))) {
     refuseExecExceptionCode(lowerer, expr);
   }
+  // A literal key that names no declared member of an index-signature
+  // record (`"id" in match.groups`): the same keyed presence probe a
+  // runtime key takes — declared fields by name, then the overflow keys.
+  {
+    const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.right));
+    const shape = recvT?.kind === "record" ? lowerer.shapes.get(recvT.shapeId) : undefined;
+    if (
+      shape?.indexValue &&
+      !shape.tuple &&
+      !OBJECT_PROTOTYPE_KEYS.has(key) &&
+      !shape.fields.some(
+        (f) => f.name === key || f.name === `%get:${key}` || f.name === `%set:${key}`,
+      )
+    ) {
+      const probed = lowerRuntimeKeyIn(lowerer, expr, loc);
+      if (probed) return probed;
+    }
+  }
   let recv = lowerer.lowerExpr(expr.right);
   const classInfo =
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;

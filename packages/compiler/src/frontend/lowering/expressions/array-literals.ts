@@ -462,7 +462,14 @@ export function lowerArrayLiteral(
       // A same-family array whose ELEMENT lifts (string[] into a
       // (string | symbol)[] literal — per-element wrap/width copy):
       // the interned width helper reshapes before the spread copies.
-      if (src.type.kind === "array" && !typeEquals(src.type, type)) {
+      // A fixed TUPLE (`[...FILES]` with FILES typed `[string, string,
+      // string]`) spreads its positions in order: the width helper copies
+      // the tuple's fields into an array of the literal's element type.
+      if (
+        (src.type.kind === "array" ||
+          (src.type.kind === "record" && lowerer.shapes.get(src.type.shapeId)?.tuple === true)) &&
+        !typeEquals(src.type, type)
+      ) {
         const w = lowerer.widthCoerce(src, type);
         if (w) src = w;
       }

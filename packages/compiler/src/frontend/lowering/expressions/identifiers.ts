@@ -211,6 +211,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     if (arithmetic && !runtimeOptionalUseOf(expr)) {
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     }
+    // A failed checked value in a fallback tail reads its dynamic value
+    // plainly: `undefined` is a value it can hold (checked-fallback.ts).
+    if ((active || captured) && lowerer.fallbackTaint !== null && local.type.kind === "dyn") {
+      return { kind: "varRef", localId: local.id, type: local.type, loc };
+    }
     if (active || captured) {
       const use = runtimeOptionalUseOf(expr);
       if (use?.complex) {

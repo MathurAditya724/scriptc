@@ -1632,3 +1632,35 @@ await crypto.subtle.importKey("jwk", { kty: "oct", k: "c2VjcmV0" }, { name: "HMA
     );
   });
 });
+
+describe("inspecting error subclasses with properties created at run time (JS lane)", () => {
+  test("an instance whose constructor created a property is a named fence", async () => {
+    // Node prints `[Conditional [Error]: m] { extra: 'x' }`. The property
+    // lives in the instance's property bag, which the error rendering does
+    // not read, so the instance refuses instead of printing a partial
+    // object. One without such a property prints as Node prints it.
+    const r = await compileAndRun(
+      "error-subclass-runtime-properties",
+      `import * as util from "node:util";
+class Conditional extends Error {
+  constructor(message, extra) {
+    super(message);
+    if (extra) this.extra = extra;
+  }
+}
+const plain = new Conditional("plain");
+plain.stack = "";
+console.log(util.inspect(plain));
+const extra = new Conditional("extra", "x");
+extra.stack = "";
+console.log(util.inspect(extra));
+`,
+      "mjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("[Conditional [Error]: plain]\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: inspecting a 'Conditional' error with properties created at run time is not supported yet \[SC2020[^\]]*\]\n$/,
+    );
+  });
+});

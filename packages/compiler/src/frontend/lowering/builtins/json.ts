@@ -650,5 +650,57 @@ export function lowerJsonProperty(
       loc,
     };
   }
+  if (member === "parse") {
+    // JSON.parse as a value: ToString of the text, then the reviver form
+    // (a reviver that is not a function is ignored, as in Node).
+    const loc = locOf(expr);
+    const name = "%builtin.JSON.parse";
+    if (!lowerer.builtinCallableValueFns.has(name)) {
+      lowerer.builtinCallableValueFns.set(name, name);
+      const params = ["text", "reviver"].map((name) => ({ localId: name, name, type: DYN }));
+      lowerer.liftedFns.push({
+        name,
+        params,
+        returnType: DYN,
+        locals: params.map((p) => ({ id: p.localId, name: p.name, type: DYN, mutable: false })),
+        loc,
+        body: [
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "json.parseReviver",
+              args: [
+                {
+                  kind: "libCall",
+                  fn: "dyn.toStringCoerce",
+                  args: [varRef("text", DYN, loc)],
+                  type: STRING,
+                  loc,
+                },
+                varRef("reviver", DYN, loc),
+              ],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
+      });
+    }
+    return {
+      kind: "dynFrom",
+      value: {
+        kind: "closure",
+        fnName: name,
+        captures: [],
+        type: { kind: "func", params: [DYN, DYN], ret: DYN },
+        loc,
+      },
+      fnName: "parse",
+      type: DYN,
+      loc,
+    };
+  }
   lowerer.unsupported("SC1090", expr, `JSON methods as values (call '${member}' directly)`);
 }
