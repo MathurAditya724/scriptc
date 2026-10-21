@@ -10269,30 +10269,30 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
     }
     return;
   }
-  /* A live native array keeps its named properties in its metadata, so
-   * deleting one goes through the view and its commit. Numeric properties
-   * are deleted natively. Elements and `length` keep the boundary below. */
+  /* A live native array keeps the noncanonical numeric properties written
+   * natively ("-1", "1.5") in its property table, and named properties,
+   * including numeric-looking keys written through a view, in its metadata,
+   * which the view and its commit hold. Deleting such a key removes it from
+   * both. Elements and `length` keep the boundary below. */
   size_t element;
-  double number;
   if (recv->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(recv) &&
-      scr_arr_numeric_key(key->data, key->len, &number)) {
-    /* Noncanonical numeric properties ("-1", "1.5") live in the native
-     * array's property table. */
-    scr_arr_delete(recv->v.typed_ref.ptr, number);
-    return;
-  }
-  if (recv->kind == SCR_DYN_TYPED_REF && recv->v.typed_ref.commit && scr_dyn_typed_ref_array_ops(recv) &&
       !scr_typed_ref_is_length(key) && !scr_typed_ref_canonical_index(key->data, key->len, &element)) {
-    ScrDyn *view = scr_dyn_typed_ref_materialize(recv);
-    if (!scr_exc_pending() && view->kind == SCR_DYN_ARR) {
-      bool own = view->v.arr.properties && scr_dyn_obj_get(view->v.arr.properties, key->data, key->len);
-      if (own) scr_dyn_key_delete(view, key, strict);
-      if (own && !scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
+    double number;
+    bool numeric = scr_arr_numeric_key(key->data, key->len, &number);
+    if (numeric) scr_arr_delete(recv->v.typed_ref.ptr, number);
+    if (recv->v.typed_ref.commit) {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(recv);
+      if (!scr_exc_pending() && view->kind == SCR_DYN_ARR) {
+        bool own = view->v.arr.properties && scr_dyn_obj_get(view->v.arr.properties, key->data, key->len);
+        if (own) scr_dyn_key_delete(view, key, strict);
+        if (own && !scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
+        scr_dyn_release(view);
+        return;
+      }
       scr_dyn_release(view);
-      return;
+      if (scr_exc_pending()) return;
     }
-    scr_dyn_release(view);
-    if (scr_exc_pending()) return;
+    if (numeric) return;
   }
   if (recv->kind == SCR_DYN_FUNC) {
     if (scr_dyn_fn_property_fence(key)) return;

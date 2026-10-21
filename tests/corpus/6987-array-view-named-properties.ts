@@ -85,6 +85,14 @@ delete (numeric as unknown as Bag)["-1"];
 console.log(numeric[-1], "-1" in (numeric as unknown as Bag));
 for (const key in numeric) console.log("numeric key", key);
 
+// A numeric-looking key written through a view is deleted through a view too.
+const viewNumeric: string[] = ["a"];
+(viewNumeric as unknown as Bag)["-2"] = "view";
+console.log((viewNumeric as unknown as Bag)["-2"], "-2" in (viewNumeric as unknown as Bag));
+delete (viewNumeric as unknown as Bag)["-2"];
+console.log((viewNumeric as unknown as Bag)["-2"], "-2" in (viewNumeric as unknown as Bag));
+for (const key in viewNumeric) console.log("view numeric key", key);
+
 // A named key deleted before its turn is not visited.
 const visited: number[] = [1];
 (visited as unknown as Bag).first = 1;
