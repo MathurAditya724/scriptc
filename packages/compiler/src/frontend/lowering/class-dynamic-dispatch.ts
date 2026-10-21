@@ -366,7 +366,7 @@ function readOnlyBagBody(body: IrStmt[], orEmpty = false): IrStmt[] {
 
 export function classPropertiesHelper(lowerer: Lowerer, loc: SrcLoc, readOnly = false): IrFunction {
   const name = readOnly ? READ_PROPERTIES : "%dyn.class.properties";
-  const existing = lowerer.liftedFns.find((fn) => fn.name === name);
+  const existing = lowerer.liftedFnNamed(name);
   if (existing) return existing;
   const helper: IrFunction = {
     name,
@@ -1003,7 +1003,7 @@ export class ClassDynamicDispatch {
         const loc = this.propertyBag.loc;
         const method = classMethodValue(lowerer, info.decl, info, "toJSON", loc);
         const prototype = method ? classPrototypeData(lowerer, info, loc) : null;
-        const helper = lowerer.liftedFns.find((fn) => fn.name === info.def.prototypeDataHelper);
+        const helper = lowerer.liftedFnNamed(info.def.prototypeDataHelper);
         const init = helper?.body[0];
         if (
           !info.prototypeReflectionReady &&
@@ -1235,6 +1235,15 @@ export class ClassDynamicDispatch {
       });
       byMethod.set(method, matching);
       return matching;
+    };
+    const candidateSets = new Map<string, ReadonlySet<ClassInfo>>();
+    const candidateSet = (method: string): ReadonlySet<ClassInfo> => {
+      let set = candidateSets.get(method);
+      if (!set) {
+        set = new Set(candidates(method));
+        candidateSets.set(method, set);
+      }
+      return set;
     };
     for (const fn of functions) {
       // Discovery already visits every expression. Preserve bodies without
@@ -2220,16 +2229,16 @@ export class ClassDynamicDispatch {
             : expr.kind === "dynInvoke"
               ? expr
               : null;
-          const staticCandidates =
-            invoke &&
+          // Static methods matter only for methods no instance answers.
+          const staticCandidates = (method: string): boolean =>
             [...this.boxedConstructors].some((name) => {
               const info = lowerer.classes.get(name);
-              return info && findStaticOn(lowerer, info, invoke.method)?.method;
+              return info && findStaticOn(lowerer, info, method)?.method;
             });
           if (
             !invoke ||
             (candidates(invoke.method).length === 0 &&
-              !staticCandidates &&
+              !staticCandidates(invoke.method) &&
               !(invoke.method === "toString" && lowerer.classes.has("%Error")))
           )
             return expr;
@@ -2501,10 +2510,13 @@ export class ClassDynamicDispatch {
         });
         changed = true;
       }
-      for (const plan of this.propertyReceivers(lowerer, true)) {
+      // Compute the candidates where the first plan would have, so the
+      // memoized set is the same whichever plans are already answered.
+      const plans = this.propertyReceivers(lowerer, true);
+      const matching = plans.length ? candidateSet(dispatch.source.method) : null;
+      for (const plan of plans) {
         const { info } = plan;
-        if (!candidates(dispatch.source.method).includes(info) || dispatch.classes.has(plan.key))
-          continue;
+        if (dispatch.classes.has(plan.key) || !matching!.has(info)) continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.source.loc;
         const value = varRef("p.0", DYN, loc);
@@ -2648,7 +2660,7 @@ export class ClassDynamicDispatch {
         if (
           plan.info !== plan.capsule ||
           dispatch.classes.has(plan.key) ||
-          (!dispatch.field && !candidates(dispatch.method).includes(plan.info))
+          (!dispatch.field && !candidateSet(dispatch.method).has(plan.info))
         )
           continue;
         dispatch.classes.add(plan.key);
@@ -2738,6 +2750,8 @@ export class ClassDynamicDispatch {
         }
       for (const plan of this.propertyReceivers(lowerer, true)) {
         const { info } = plan;
+        // Classes answered in an earlier pass skip the member lookups.
+        if (dispatch.classes.has(plan.key)) continue;
         if (
           !isClassOwnEnumerableFieldName(dispatch.name) ||
           (!(info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
@@ -2751,7 +2765,6 @@ export class ClassDynamicDispatch {
             !findMethodOn(lowerer, info, `set:${dispatch.name}`))
         )
           continue;
-        if (dispatch.classes.has(plan.key)) continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const { receiver, condition } = this.propertyReceiver(plan, loc);
@@ -3310,7 +3323,7 @@ export class ClassDynamicDispatch {
     loc: SrcLoc,
   ): IrExpr {
     const name = fn === "dyn.hasKey" ? "%dyn.class.bagHas" : "%dyn.class.bagHasComputed";
-    let helper = lowerer.liftedFns.find((item) => item.name === name);
+    let helper = lowerer.liftedFnNamed(name);
     if (!helper) {
       const keyType = fn === "dyn.hasKey" ? STRING : DYN;
       const value = varRef("p.0", DYN, loc);
@@ -3907,7 +3920,7 @@ export class ClassDynamicDispatch {
   private readPropertyBagOrEmpty(lowerer: Lowerer, receiver: IrExpr, loc: SrcLoc): IrExpr {
     // One call per read site: large JS programs have a branch per class and
     // property, so the absent-bag handling lives in the shared helper.
-    let helper = lowerer.liftedFns.find((fn) => fn.name === READ_PROPERTIES_OR_EMPTY);
+    let helper = lowerer.liftedFnNamed(READ_PROPERTIES_OR_EMPTY);
     if (!helper) {
       // Settled by finalize; until then, the read-only bag's own dispatch.
       helper = {
@@ -4256,17 +4269,38 @@ export class ClassDynamicDispatch {
     add(root);
   }
 
+  /** propertyReceivers results by mode, with the class graph they were
+   * computed from: the boxed classes, the registered classes, the subclass
+   * links and the constructed classes only grow, so equal counts and the
+   * same capsules give the same plans. */
+  private readonly receiverPlans = new Map<
+    string,
+    { revision: string; capsules: (ClassInfo | undefined)[]; plans: readonly PropertyReceiver[] }
+  >();
+
   /** A capsule retains its static type, while its object may be a subclass.
    * Preorder insertion lets later branches test the most derived layout first. */
   private propertyReceivers(
     lowerer: Lowerer,
     streams = false,
     normalize = true,
-  ): PropertyReceiver[] {
+  ): readonly PropertyReceiver[] {
+    const mode = `${streams}:${normalize}`;
+    const revision = `${this.boxed.size}:${lowerer.classes.size}:${lowerer.subclassLinks}:${lowerer.constructedClassCount()}`;
+    const cached = this.receiverPlans.get(mode);
+    if (cached?.revision === revision) {
+      let i = 0;
+      let same = true;
+      for (const name of this.boxed)
+        if (lowerer.classes.get(name) !== cached.capsules[i++]) same = false;
+      if (same) return cached.plans;
+    }
+    const capsules: (ClassInfo | undefined)[] = [];
     const plans: PropertyReceiver[] = [];
     const seen = new Set<string>();
     for (const name of this.boxed) {
       const capsule = lowerer.classes.get(name);
+      capsules.push(capsule);
       if (
         !capsule ||
         ((capsule.builtinEmitter || capsule.builtinStream) && !streams) ||
@@ -4275,10 +4309,10 @@ export class ClassDynamicDispatch {
         continue;
       const canonical = normalize && !capsule.builtinStream && !capsule.builtinEmitter;
       const visit = (info: ClassInfo): void => {
-        if (
-          (!canonical || !seen.has(info.def.name)) &&
-          (info === capsule || lowerer.classCanBeConstructed(info))
-        ) {
+        // A seen class was visited with its whole subtree, and a canonical
+        // visit adds no plan for a seen class.
+        if (canonical && seen.has(info.def.name)) return;
+        if (info === capsule || lowerer.classCanBeConstructed(info)) {
           seen.add(info.def.name);
           plans.push({
             info,
@@ -4290,6 +4324,7 @@ export class ClassDynamicDispatch {
       };
       visit(capsule);
     }
+    this.receiverPlans.set(mode, { revision, capsules, plans });
     return plans;
   }
 

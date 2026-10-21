@@ -172,7 +172,7 @@ export function classPrototypeData(
   }
   if (!metadataOnly && !info.prototypeObservedMethodsReady) {
     info.prototypeObservedMethodsReady = true;
-    const helper = lowerer.liftedFns.find((fn) => fn.name === info.def.prototypeDataHelper)!;
+    const helper = lowerer.liftedFnNamed(info.def.prototypeDataHelper)!;
     const value = varRef(`%g.${info.def.prototypeDataHelper}`, DYN, loc);
     // Materialize only observed method slots. Own declarations stop lookup
     // at the correct prototype even if an ancestor is replaced later. An
@@ -307,7 +307,7 @@ export function reflectClassPrototype(
     if (info.base.prototypeReflectionRefusal)
       return refuse("prototype reflection with this base class is not supported yet");
   }
-  const helper = lowerer.liftedFns.find((fn) => fn.name === info.def.prototypeDataHelper);
+  const helper = lowerer.liftedFnNamed(info.def.prototypeDataHelper);
   const initialization = helper?.body[0];
   if (!helper || initialization?.kind !== "if" || info.prototypeReflectionReady) return prototype;
   info.prototypeReflectionReady = true;
