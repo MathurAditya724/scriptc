@@ -572,6 +572,9 @@ static ScrMessage *scr_message_try_publish(const ScrDyn *value) {
       } else if (d->rc != SIZE_MAX) {
         scr_cyc_on_dead(d); /* leave the candidate and tenured buffers */
         d->rc = SIZE_MAX;
+        /* A shape names a node of this thread's transition tree (scr_js.h),
+         * which other threads cannot use and which ends with this thread. */
+        if (d->kind == SCR_DYN_OBJ) d->v.obj.shape = NULL;
 #ifdef SCR_RC_AUDIT
         scr_dyn_live_forget();
 #endif

@@ -205,8 +205,9 @@ void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem) {
   ScrPubFn fn = a->elem == SCR_ELEM_STR ? scr_pub_str_fn : a->elem == SCR_ELEM_REF ? elem : NULL;
   if (!fn) return;
   size_t dense = a->len < a->cap ? a->len : a->cap;
+  const uint8_t *states = scr_arr_states_end(a);
   for (size_t i = 0; i < dense; i++)
-    if (!a->present || a->present[i]) scr_pub_slot(ctx, a->data[i], fn);
+    if (!states || *scr_arr_state_in(states, i)) scr_pub_slot(ctx, a->data[i], fn);
   if (a->ext)
     for (size_t i = 0; i < a->ext->sparse_len; i++)
       if (a->ext->sparse[i].state) scr_pub_slot(ctx, a->ext->sparse[i].slot, fn);
@@ -228,8 +229,8 @@ void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val) {
           : NULL;
   ScrPubFn vfn = m->val_kind == SCR_MAP_VAL_REF ? val : NULL;
   for (size_t i = 0; i < m->nentries; i++) {
-    const ScrMapEntry *e = &m->entries[i];
-    if (!e->hash) continue; /* tombstone */
+    if (!scr_map_entry_live(m, i)) continue; /* tombstone */
+    const ScrMapEntry *e = scr_map_entry_at(m, i);
     if (kfn) scr_pub_slot(ctx, e->key, kfn);
     if (vfn) scr_pub_slot(ctx, e->val, vfn);
   }
@@ -454,7 +455,13 @@ void scr_publish(void *root, ScrPubFn fn) {
 #endif
     for (size_t i = 0; i < each; i++) {
       void *obj = scr_pub_log_obj(&ctx.log[i]);
-      if (ctx.log[i].obj & SCR_PUB_DYN) scr_dyn_release(scr_dyn_freeze(obj));
+      if (ctx.log[i].obj & SCR_PUB_DYN) {
+        ScrDyn *d = obj;
+        /* Other threads share the object; its shape belongs to this one
+         * (scr_js.h). */
+        if (d->kind == SCR_DYN_OBJ) d->v.obj.shape = NULL;
+        scr_dyn_release(scr_dyn_freeze(d));
+      }
 #ifdef SCR_RC_AUDIT
       scr_pub_audit_forget(ctx.kinds[i]);
 #endif

@@ -1622,10 +1622,10 @@ function validateFunction(
           "while",
         ]);
         if (e.generatorDelegate) {
-          if (!fn.generator || fn.async)
-            err("delegation sequence outside a synchronous generator", e.loc);
+          if (!fn.generator) err("delegation sequence outside a generator", e.loc);
           allowed.add("return");
           allowed.add("throw");
+          allowed.add("rethrow");
           allowed.add("runtimeFence");
           allowed.add("tryCatch");
         }

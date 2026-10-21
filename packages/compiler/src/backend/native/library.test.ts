@@ -29,12 +29,18 @@ afterAll(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 
-sourceLibraryTest.each([false, true])(
-  "source library selects borrowed typed-array set only for dynInvoke=%s",
-  async (dynInvoke) => {
-    const outPath = join(directory, `probe-${dynInvoke}.a`);
-    await compileLibArchive({ cPath, outPath, dynInvoke, sanitize: true });
+sourceLibraryTest.each([
+  { dynInvoke: false, dynTier: false },
+  { dynInvoke: true, dynTier: false },
+  { dynInvoke: false, dynTier: true },
+  { dynInvoke: true, dynTier: true },
+])(
+  "source library selects optional units for dynInvoke=$dynInvoke and dynTier=$dynTier",
+  async ({ dynInvoke, dynTier }) => {
+    const outPath = join(directory, `probe-${dynInvoke}-${dynTier}.a`);
+    await compileLibArchive({ cPath, outPath, dynInvoke, dynTier, sanitize: true });
     const archive = await readFile(outPath);
     expect(archive.includes(Buffer.from("scr_dyn_typed_array_proto_set"))).toBe(dynInvoke);
+    expect(archive.includes(Buffer.from("scr_js_load_probe"))).toBe(dynTier);
   },
 );

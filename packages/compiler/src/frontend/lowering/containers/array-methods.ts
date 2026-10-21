@@ -1,3 +1,4 @@
+import { liftedFreshSpread } from "../coercions/fresh-spread.js";
 import { lowerArrayIteratorValue } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
 import { arrayConcatHelper } from "./array-concat.js";
@@ -792,6 +793,10 @@ export function lowerArrayMethodCall(
           type: F64,
           loc,
         };
+      }
+      if (!typeEquals(src.type, receiverIr)) {
+        // Fresh elements (an array literal) convert into the element layout.
+        src = liftedFreshSpread(lowerer, spreadArg.expression, src, receiverIr, loc) ?? src;
       }
       if (!typeEquals(src.type, receiverIr)) {
         lowerer.unsupported(

@@ -24,6 +24,17 @@
 #include "scr_runtime.h"
 #include "scr_key.h"
 
+/* Programs with dynamic-tier code link the SCR_JS_TIER build of this unit:
+ * its object nodes carry the tier's hidden class (ScrDyn.v.obj.shape), and
+ * every allocation and change to an object's key set resets it so the
+ * tier recomputes it on its next cache miss. Other programs link the
+ * ordinary build, where this expands to nothing. */
+#ifdef SCR_JS_TIER
+#define SCR_JS_SHAPE_RESET(d) ((d)->v.obj.shape = NULL)
+#else
+#define SCR_JS_SHAPE_RESET(d) ((void)0)
+#endif
+
 static SCR_TL ScrDyn *scr_builtin_object_prototype;
 
 /* Constructor capsules expose identity and name/length, but do not model
@@ -91,8 +102,26 @@ static bool scr_iterator_object(const ScrDyn *value) {
 
 ScrDyn *scr_dyn_iterator_result(ScrDyn *value) {
   if (!scr_iterator_object(value)) {
-    static const char message[] = "Iterator result is not an object";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    /* V8 names a primitive result: "Iterator result 5 is not an object". */
+    bool primitive = value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BOOL ||
+                     value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL ||
+                     value->kind == SCR_DYN_BIGINT || value->kind == SCR_DYN_SYMBOL;
+    ScrStr *text = primitive ? scr_dyn_string_constructor(value) : NULL;
+    if (!text) {
+      static const char message[] = "Iterator result is not an object";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NULL;
+    }
+    static const char head[] = "Iterator result ", tail[] = " is not an object";
+    ScrStr *a = scr_str_new(head, sizeof head - 1);
+    ScrStr *b = scr_str_concat(a, text);
+    ScrStr *c = scr_str_new(tail, sizeof tail - 1);
+    ScrStr *message = scr_str_concat(b, c);
+    scr_str_release(a);
+    scr_str_release(b);
+    scr_str_release(c);
+    scr_str_release(text);
+    scr_throw_error(SCR_ERR_TYPE, message);
     return NULL;
   }
   return scr_dyn_retain(value);
@@ -933,6 +962,7 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/entries preserved */
       d->v.obj.region = NULL;
+      SCR_JS_SHAPE_RESET(d);
       if (d->v.obj.cap <= SCR_DYN_KEY_CACHE_SLOTS) {
         for (size_t i = 0; i < d->v.obj.cap; i++) {
           ScrDynEntry *entry = &d->v.obj.entries[i];
@@ -957,6 +987,9 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
   fresh->prototype = NULL;
   fresh->symbol_properties = NULL;
   fresh->symbol_keys = NULL;
+#ifdef SCR_JS_TIER
+  if (kind == SCR_DYN_OBJ) SCR_JS_SHAPE_RESET(fresh);
+#endif
 #ifdef SCR_RC_AUDIT
   scr_live_dyns++;
 #endif
@@ -1601,6 +1634,7 @@ static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn
     obj->v.obj.entries = entries;
     obj->v.obj.cap = cap;
   }
+  SCR_JS_SHAPE_RESET(obj);
   ScrDynEntry *e = &obj->v.obj.entries[obj->v.obj.len++];
   if (!e->key || e->key_len != key_len || !scr_key_equal(e->key, key, key_len)) {
     char *owned = scr_dyn_key_copy(key, key_len);
@@ -3573,6 +3607,9 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return scr_dyn_new_num(scr_bytes_len(bytes));
+  /* Each typed array kind's prototype carries its element size. */
+  if (key->len == 17 && memcmp(key->data, "BYTES_PER_ELEMENT", 17) == 0)
+    return scr_dyn_new_num((double)scr_bytes_elem_size(bytes->elem));
   if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
     if (!value->buffer) return scr_bytes_constructor_for(bytes->elem);
     /* Buffer retains its separate builtin identity. */
@@ -5784,6 +5821,10 @@ int scr_dyn_iterable_kind(const ScrDyn *value) {
 }
 
 ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind) {
+  return scr_dyn_open_iterator(value, kind, false);
+}
+
+ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators) {
   *kind = 0;
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) return NULL;
   ScrDyn *method = NULL;
@@ -5815,7 +5856,7 @@ ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind) {
   ScrDyn *iterator = scr_iterator_call(
       method, value, *kind == 2 ? "iterable[SymbolAsyncIterator]" : "iterable[SymbolIterator]");
   scr_dyn_release(method);
-  if (iterator && scr_dyn_generator(iterator)) {
+  if (iterator && !generators && scr_dyn_generator(iterator)) {
     /* a compiled generator is stepped through typed helpers only */
     scr_dyn_release(iterator);
     iterator = NULL;
@@ -7122,6 +7163,7 @@ void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len)
   memmove(&entries[from], &entries[from + 1], (n - from - 1) * sizeof *entries);
   memmove(&entries[at + 1], &entries[at], (n - 1 - at) * sizeof *entries);
   entries[at] = name;
+  SCR_JS_SHAPE_RESET(view);
   free(view->v.obj.index);
   view->v.obj.index = NULL;
 }
@@ -8567,34 +8609,6 @@ static const char *scr_dyn_kind_name(const ScrDyn *d) {
   return "unknown";
 }
 
-static SCR_TL ScrDyn *scr_dyn_fallback_value;
-static SCR_TL bool scr_dyn_fallback_registered;
-
-static void scr_dyn_fallback_cleanup(void) {
-  scr_dyn_release(scr_dyn_fallback_value);
-  scr_dyn_fallback_value = NULL;
-}
-
-bool scr_dyn_check_recover(ScrDyn *d) {
-  if (!scr_exc_pending() || scr_exc_active->kind == SCR_EXC_TERMINATE) return false;
-  scr_exc_clear();
-  if (!scr_dyn_fallback_registered) {
-    scr_dyn_fallback_registered = true;
-    scr_atexit(scr_dyn_fallback_cleanup);
-  }
-  scr_dyn_release(scr_dyn_fallback_value);
-  scr_dyn_fallback_value = scr_dyn_retain(d);
-  return true;
-}
-
-bool scr_dyn_check_fallback_taken(void) { return scr_dyn_fallback_value != NULL; }
-
-ScrDyn *scr_dyn_check_fallback_take(void) {
-  ScrDyn *value = scr_dyn_fallback_value;
-  scr_dyn_fallback_value = NULL;
-  return value;
-}
-
 void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *got) {
   ScrJsonBuf b;
   scr_jb_init(&b);
@@ -9355,6 +9369,7 @@ static void scr_dyn_obj_append_shared(ScrDyn *obj, char *key, size_t key_len, Sc
     obj->v.obj.entries = entries;
     obj->v.obj.cap = cap;
   }
+  SCR_JS_SHAPE_RESET(obj);
   ScrDynEntry *e = &obj->v.obj.entries[obj->v.obj.len++];
   if (e->key != key) {
     ((ScrDynKey *)(key - offsetof(ScrDynKey, bytes)))->rc++;
@@ -10138,6 +10153,7 @@ static void scr_json_delete_member(ScrDyn *object, const ScrStr *key) {
     ScrDynEntry removed = *entry;
     memmove(entry, entry + 1, (object->v.obj.len - i - 1) * sizeof *entry);
     object->v.obj.len--;
+    SCR_JS_SHAPE_RESET(object);
     free(object->v.obj.index);
     object->v.obj.index = NULL;
     /* The moved tail aliases a live entry; spare slots own only their own
@@ -10831,8 +10847,8 @@ void scr_jb_put_dyn_entries(ScrJsonBuf *b, void *rec, ScrMap *map, bool *first) 
   uint32_t count = map->nentries;
   bool indexed = false;
   for (uint32_t i = 0; i < count && !indexed; i++) {
-    if (!map->entries[i].hash) continue;
-    const ScrStr *key = (const ScrStr *)(uintptr_t)map->entries[i].key;
+    if (!scr_map_entry_live(map, i)) continue;
+    const ScrStr *key = (const ScrStr *)(uintptr_t)scr_map_entry_at(map, i)->key;
     uint32_t index;
     indexed = scr_key_array_index(key->data, key->len, &index);
   }
@@ -14684,6 +14700,20 @@ ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell) {
 bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
   return scr_dyn_sync_generator(value);
 }
+
+#ifdef SCR_JS_TIER
+/* ── dynamic-tier primitives (scr_dyn.h, SCR_JS_TIER) ─────────────────── */
+
+const ScrDyn *scr_dyn_tier_object_prototype(void) { return scr_builtin_object_prototype; }
+
+char *scr_dyn_tier_key_copy(const char *key, size_t key_len) { return scr_dyn_key_copy(key, key_len); }
+
+void scr_dyn_tier_key_release(char *key, size_t key_len) { scr_dyn_key_release(key, key_len); }
+
+void scr_dyn_tier_append(ScrDyn *obj, char *key, size_t key_len, ScrDyn *value) {
+  scr_dyn_obj_append_shared(obj, key, key_len, value);
+}
+#endif
 
 /* The program's writes onto compiled errors (scr_error.h). Kept at the end
  * of the file, after every function they call, so the rest of the unit

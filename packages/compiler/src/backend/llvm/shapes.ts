@@ -1054,6 +1054,7 @@ export function arrNewCall(
     elem.kind === "promise" || // promise entries (Promise.all inputs): full REF story
     elem.kind === "child" || // spawned child handles: scr_child_* adapters, no trace
     elem.kind === "netServer" ||
+    elem.kind === "stats" || // fs.Stats snapshots: scr_stats_* adapters, no trace
     elem.kind === "dyn" || // native collection seeds/drains: traced REF
     elem.kind === "regex" || // RegExp values: scr_regex_* adapters, no trace (no refs inside)
     (elem.kind === "array" && traceAdapter(host, elem) !== null);

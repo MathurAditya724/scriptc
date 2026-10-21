@@ -24,6 +24,7 @@ import {
 import { isJsSourceFile, locOf } from "../../program.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
+import { documentedParameter, prototypeAssignedFunction } from "../call-signatures.js";
 import { narrowClassUnion, narrowStoredClassValue, structuralNarrowing } from "../class-unions.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "../class-assertions.js";
 import {
@@ -484,6 +485,20 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         symbol &&
         symbol.declarations.some(
           (decl) => ts.isParameter(decl) && ts.isConstructorDeclaration(decl.parent),
+        )
+      )
+        return expr;
+      // A prototype method in a file TypeScript does not check takes its
+      // documented parameters as checked-dynamic values whatever their
+      // JSDoc says (paramShape); reads keep the actual value.
+      if (
+        symbol &&
+        !lowerer.checkedJsFile(ts.getSourceFileOfNode(node)) &&
+        symbol.declarations.some(
+          (decl) =>
+            ts.isParameter(decl) &&
+            prototypeAssignedFunction(decl.parent) &&
+            documentedParameter(decl),
         )
       )
         return expr;

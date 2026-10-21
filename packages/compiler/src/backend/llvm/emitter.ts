@@ -1,5 +1,6 @@
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
+import { JsIcSites } from "../../ir/js-ic.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitThreadSlotsIntrinsic } from "./thread-slots.js";
@@ -622,13 +623,6 @@ export class LlEmitter {
     return `, !tbaa !${tag}`;
   }
 
-  /** The `!range` attachment of an array length load: a length is at most
-   * 2^32 - 1 (the runtime's SCR_ARR_MAX_LENGTH), so conversions to double
-   * and back fold. 32-bit targets load the full range anyway. */
-  get arrayLengthRange(): string {
-    return this.sizeType === "i64" ? ", !range !{i64 0, i64 4294967296}" : "";
-  }
-
   /** Whether an element access at `index` of `arr` lies in the hole-free
    * prefix: the counter of a dense array loop's fast copy indexing one of
    * the arrays its entry test covered. */
@@ -926,6 +920,12 @@ export class LlEmitter {
   readonly recordCloneShapes = new Set<string>();
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
+  /** Inline-cache sites of dynamic-tier functions (js-ic.ts): one
+   * zero-initialized ScrJsIc per site (scr_js.h). */
+  jsIcSiteCount = 0;
+  private jsIcSitesMemo: JsIcSites | undefined;
+  /** The tier of the function being emitted. */
+  currentTier: IrFunction["tier"] = undefined;
   /** The class graph (buildClassGraph): preorder numbering, hierarchy
    * membership, virtual slot lists. */
   readonly classMeta: Map<string, LlClassMeta>;
@@ -1044,6 +1044,8 @@ export class LlEmitter {
    * not a constructor (where they change), not async or a generator. */
   finalFieldBorrows = false;
   integerRanges: IntegerRanges = new Map();
+  /** The current function's bounded for-loop cursors (integer-ranges.ts). */
+  integerLoopRanges: ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>> = new Map();
   /** Number arrays of the current function whose every present element is
    * an int32 (Int32[] contracts), or null when the module has none. */
   int32Elements: ((arr: IrExpr) => boolean) | null = null;
@@ -2694,7 +2696,8 @@ export class LlEmitter {
     return emitLoopCopies(this, loop, allowed, exit, emitCopy);
   }
 
-  writeBackSpeculativeGlobals(deferred: Set<string>): void {
+  /** Store the double of each deferred shadow back to its binding. */
+  writeBackDeferred(deferred: Set<string>): void {
     const B = this.B;
     for (const id of deferred) {
       const integer = B.tmp(),
@@ -2773,7 +2776,7 @@ export class LlEmitter {
     }
     return this.globalWriters.get(id) ?? new Set<string>();
   }
-  private emitSpeculativeWrite(s: IrStmt, resume: string): void {
+  private emitSpeculativeWrite(s: IrStmt, resume: string | undefined): void {
     return emitSpeculativeWrite(this, s, resume);
   }
 
@@ -4467,7 +4470,7 @@ export class LlEmitter {
       this.B.startBlock(resume.label);
     }
     if (this.speculation?.writes.has(s)) {
-      this.emitSpeculativeWrite(s, this.speculation.resume.get(s)!);
+      this.emitSpeculativeWrite(s, this.speculation.resume.get(s));
       return;
     }
     const previous = this.B.debugLocation;
@@ -5560,6 +5563,15 @@ export class LlEmitter {
 
   emitExpr(e: IrExpr): LlValue {
     return emitExpr(this, e);
+  }
+
+  /** The helper classification of this module's inline-cache sites. */
+  get jsIcSites(): JsIcSites {
+    return (this.jsIcSitesMemo ??= new JsIcSites(this.mod));
+  }
+
+  jsIcSite(): string {
+    return `@sc_js_ic_${this.jsIcSiteCount++}`;
   }
 
   /** A fresh read-site cache for one constant-key dyn read. */

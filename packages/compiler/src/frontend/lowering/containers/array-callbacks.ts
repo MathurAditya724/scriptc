@@ -1155,7 +1155,7 @@ function findResultRetag(
 /** The find-like predicate results whose ToBoolean has a static answer:
  * bool passes through; f64/string by value; checked values and
  * truthy-answerable unions by their runtime kind or arm. */
-function findPredicateOk(lowerer: Lowerer, fnRet: IrType): boolean {
+export function findPredicateOk(lowerer: Lowerer, fnRet: IrType): boolean {
   return (
     fnRet.kind === "bool" ||
     fnRet.kind === "f64" ||
@@ -1171,7 +1171,7 @@ function findPredicateOk(lowerer: Lowerer, fnRet: IrType): boolean {
 /** ToBoolean of a predicate result inside a synthesized HOF helper — the
  * ensureBool subset the find-like path admits (bool through; checked
  * values via dynTest; f64/string/truthy-answerable unions via toBool). */
-function predicateToBoolean(e: IrExpr): IrExpr {
+export function predicateToBoolean(e: IrExpr): IrExpr {
   if (e.type.kind === "bool") return e;
   if (e.type.kind === "dyn")
     return { kind: "dynTest", test: "truthy", value: e, type: BOOL, loc: e.loc };

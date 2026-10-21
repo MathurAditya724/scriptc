@@ -60,12 +60,13 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     if (e.fn === "cp.spawnDynamic") host.emitPendingCheck();
     return out;
   }
-  if (e.fn === "child.onDyn") {
+  if (e.fn === "child.onDyn" || e.fn === "child.propsOnDyn") {
     const child = host.emitExpr(e.args[0]!);
     const event = host.emitExpr(e.args[1]!);
     const cb = host.emitExpr(e.args[2]!);
-    host.declare("declare void @scr_child_on_dyn(ptr, ptr, ptr)");
-    B.line(`call void @scr_child_on_dyn(ptr ${child.name}, ptr ${event.name}, ptr ${cb.name})`);
+    const sym = e.fn === "child.onDyn" ? "scr_child_on_dyn" : "scr_child_on_dyn_hp";
+    host.declare(`declare void @${sym}(ptr, ptr, ptr)`);
+    B.line(`call void @${sym}(ptr ${child.name}, ptr ${event.name}, ptr ${cb.name})`);
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
