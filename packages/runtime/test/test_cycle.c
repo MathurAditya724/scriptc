@@ -1315,7 +1315,7 @@ void scr_cyc_forget_event_loop_at(void);
 
 /* Once the thread's event loop runs, the full pass a fall asks for waits
  * for the loop's next idle moment, unless the heap grows another quarter
- * first. */
+ * first. A heap that shrinks while the pass waits does not cancel it. */
 static void check_death_waits_for_idle(void) {
   enum { FLOOR = 4096, RING = 64, LEAVES = 1024 };
   static ScrCycType watched_type = { &node_trace, &watched_free, 0 };
@@ -1327,7 +1327,7 @@ static void check_death_waits_for_idle(void) {
   if (!leaves || !keep) scr_trap("cycle test: out of memory\n");
   for (int i = 0; i < 4; i++) grow_dead_cycle_until_full_pass(0, false);
   scr_cyc_note_event_loop();
-  for (int round = 0; round < 2; round++) {
+  for (int round = 0; round < 3; round++) {
     Node *ring = make_ring_of(RING, &watched_type);
     age_to_old(ring);
     for (size_t i = 0; i < LEAVES; i++) leaves[i] = make_leaf();
@@ -1341,6 +1341,11 @@ static void check_death_waits_for_idle(void) {
     if (round == 0) {
       check(scr_cyc_collect_idle(), "the idle moment did not run the waiting full pass");
       check(watched_freed == RING, "the waiting full pass did not reclaim the dead old ring");
+    } else if (round == 2) {
+      drop_leaves(keep, grown);
+      grown = 0;
+      check(scr_cyc_collect_idle(), "a heap that shrank cancelled the waiting full pass");
+      check(watched_freed == RING, "the waiting full pass did not reclaim the dead old ring after a shrink");
     } else {
       grown += grow_until_watched(keep + grown, limit - grown, RING);
       check(watched_freed == RING, "the waiting full pass did not run once the heap grew another quarter");

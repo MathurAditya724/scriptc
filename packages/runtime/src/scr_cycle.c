@@ -891,10 +891,13 @@ void scr_cyc_collect_scheduled(void) {
 
 void scr_cyc_note_event_loop(void) { scr_cyc_idle_points = true; }
 
+/* The death rule held when it asked for the waiting pass, and nothing
+ * dies while the loop waits, so the pass runs without checking the rule
+ * again: a heap that kept shrinking since would fail its size test, and
+ * the dead structure it was asked for would stay buffered. */
 bool scr_cyc_collect_idle(void) {
   if (!scr_cyc_death_due_live || scr_collecting) return false;
   scr_cyc_note_fall();
-  if (!scr_cyc_died()) return false;
   scr_cyc_scheduled_pass(SCR_CYC_OLD, false, true);
   return true;
 }
