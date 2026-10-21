@@ -32,7 +32,7 @@ plain.tag = "t";
 Object.seal(plain);
 console.log(Object.isFrozen(plain), Object.isSealed(plain), Object.isExtensible(plain));
 plain.tag = "u";
-console.log(plain.tag, plain(1, 2));
+console.log(plain.tag, plain(1, 2), plain.name, plain.length);
 
 const stopped = () => 0;
 Object.preventExtensions(stopped);
@@ -42,3 +42,4 @@ try {
 } catch (error) {
   console.log(error.name, error.message);
 }
+console.log(stopped.name, stopped.length);

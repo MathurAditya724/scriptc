@@ -460,7 +460,7 @@ void scr_publish(void *root, ScrPubFn fn) {
         /* Other threads share the object; its shape belongs to this one
          * (scr_js.h). */
         if (d->kind == SCR_DYN_OBJ) d->v.obj.shape = NULL;
-        scr_dyn_release(scr_dyn_freeze(d));
+        scr_dyn_release(scr_dyn_freeze_data(d));
       }
 #ifdef SCR_RC_AUDIT
       scr_pub_audit_forget(ctx.kinds[i]);

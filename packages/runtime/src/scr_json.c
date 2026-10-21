@@ -1993,11 +1993,24 @@ static bool scr_dyn_is_extensible_view(const ScrDyn *view) {
 /* A plain function's own properties (name, length, prototype, and the ones
  * a program adds) live in its property table, which carries the function's
  * integrity state too: freezing or sealing the function freezes or seals
- * the table. +1, or NULL for other values and for class constructors, whose
- * statics keep their own fences. */
+ * the table. Class constructors are not plain functions: their statics keep
+ * their own fences. */
+static bool scr_dyn_plain_fn(const ScrDyn *object) {
+  return object->kind == SCR_DYN_FUNC && !object->v.fn.class_obj;
+}
+
+/* The table of a plain function for an integrity operation, created on
+ * first use. +1, or NULL for other values. */
 static ScrDyn *scr_dyn_fn_integrity_table(const ScrDyn *object) {
-  if (object->kind != SCR_DYN_FUNC || object->v.fn.class_obj) return NULL;
-  return scr_dyn_fn_properties(object);
+  return scr_dyn_plain_fn(object) ? scr_dyn_fn_properties(object) : NULL;
+}
+
+/* The table a plain function already has, for the integrity queries: one
+ * without a table has never been frozen, sealed or made non-extensible.
+ * +1, or NULL. */
+static ScrDyn *scr_dyn_fn_existing_table(const ScrDyn *function) {
+  ScrClosure *owner = scr_closure_identity(function->v.fn.clo);
+  return owner->props ? (ScrDyn *)scr_box_get_ref(owner->props) : NULL;
 }
 
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
@@ -2022,9 +2035,9 @@ bool scr_dyn_is_extensible(ScrDyn *object) {
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.isExtensible"); return false; }
   bool answer;
   if (scr_dyn_typed_ref_view_answer(object, scr_dyn_is_extensible_view, &answer)) return answer;
-  ScrDyn *table = scr_dyn_fn_integrity_table(object);
-  if (table) {
-    answer = !table->non_extensible;
+  if (scr_dyn_plain_fn(object)) {
+    ScrDyn *table = scr_dyn_fn_existing_table(object);
+    answer = !table || !table->non_extensible;
     scr_dyn_release(table);
     return answer;
   }
@@ -2059,9 +2072,9 @@ bool scr_dyn_is_sealed(const ScrDyn *object) {
   bool answer;
   if (scr_dyn_typed_ref_view_answer((ScrDyn *)object, scr_dyn_is_sealed, &answer)) return answer;
   if (object->symbol_properties && !scr_dyn_is_sealed(object->symbol_properties)) return false;
-  ScrDyn *table = scr_dyn_fn_integrity_table(object);
-  if (table) {
-    answer = scr_dyn_is_sealed(table);
+  if (scr_dyn_plain_fn(object)) {
+    ScrDyn *table = scr_dyn_fn_existing_table(object);
+    answer = table && scr_dyn_is_sealed(table);
     scr_dyn_release(table);
     return answer;
   }
@@ -14414,18 +14427,23 @@ ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrSt
 ScrDyn *scr_dyn_freeze(ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value)) return NULL;
   if (scr_dyn_class_integrity_fence(value, "Object.freeze")) return NULL;
-  if (value->symbol_properties) scr_dyn_release(scr_dyn_freeze(value->symbol_properties));
   ScrDyn *table = scr_dyn_fn_integrity_table(value);
-  if (table) {
-    scr_dyn_release(scr_dyn_freeze(table));
-    scr_dyn_release(table);
-    return scr_dyn_retain(value);
-  }
+  if (!table) return scr_dyn_freeze_data(value);
+  if (value->symbol_properties) scr_dyn_release(scr_dyn_freeze_data(value->symbol_properties));
+  scr_dyn_release(scr_dyn_freeze_data(table));
+  scr_dyn_release(table);
+  return scr_dyn_retain(value);
+}
+
+ScrDyn *scr_dyn_freeze_data(ScrDyn *value) {
+  if (scr_dyn_class_reflection_fence(value)) return NULL;
+  if (scr_dyn_class_integrity_fence(value, "Object.freeze")) return NULL;
+  if (value->symbol_properties) scr_dyn_release(scr_dyn_freeze_data(value->symbol_properties));
   if (value->kind == SCR_DYN_ARR) {
     value->non_extensible = true;
     value->v.arr.sealed = true;
     value->v.arr.frozen = true;
-    if (value->v.arr.properties) scr_dyn_release(scr_dyn_freeze(value->v.arr.properties));
+    if (value->v.arr.properties) scr_dyn_release(scr_dyn_freeze_data(value->v.arr.properties));
     return scr_dyn_retain(value);
   }
   if (value->kind == SCR_DYN_OBJ && !value->copied_from_native) {
@@ -14450,9 +14468,9 @@ bool scr_dyn_is_frozen(const ScrDyn *value) {
   bool answer;
   if (scr_dyn_typed_ref_view_answer((ScrDyn *)value, scr_dyn_is_frozen, &answer)) return answer;
   if (value->symbol_properties && !scr_dyn_is_frozen(value->symbol_properties)) return false;
-  ScrDyn *table = scr_dyn_fn_integrity_table(value);
-  if (table) {
-    answer = scr_dyn_is_frozen(table);
+  if (scr_dyn_plain_fn(value)) {
+    ScrDyn *table = scr_dyn_fn_existing_table(value);
+    answer = table && scr_dyn_is_frozen(table);
     scr_dyn_release(table);
     return answer;
   }

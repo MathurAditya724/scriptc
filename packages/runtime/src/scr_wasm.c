@@ -2043,7 +2043,7 @@ static ScrDyn *scr_wasm_instance_from(const ScrWasmModuleDesc *desc, ScrDyn *imp
     }
     scr_dyn_obj_set(exports, ex->name, (size_t)ex->name_len, value);
   }
-  ScrDyn *frozen = scr_dyn_freeze(exports);
+  ScrDyn *frozen = scr_dyn_freeze_data(exports);
   scr_dyn_release(frozen);
   host->exports = exports;
   ScrWasmObj *o = scr_wasm_obj_new(SCR_WASM_K_INSTANCE);
