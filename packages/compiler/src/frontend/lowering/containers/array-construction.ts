@@ -1,6 +1,7 @@
 import { generatorDrain } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
 import { liftedFreshSpread } from "../coercions/fresh-spread.js";
+import { checkedIterableSpread } from "../checked-iterable-spread.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
   dynUndefinedExpr,
@@ -25,6 +26,7 @@ import {
   STRING,
   type SrcLoc,
   arrayOf,
+  canConvertToDyn,
   funcOf,
   isRefCounted,
   isSupportedArrayElem,
@@ -152,6 +154,32 @@ export function lowerArraySpreadItems(
       ) {
         // Fresh elements (an array literal) convert into the element layout.
         source = liftedFreshSpread(lowerer, node.expression, source, arrType, loc) ?? source;
+      }
+      // A checked-dynamic source, or any other iterable spread into
+      // checked-dynamic items, drains once through the iterator protocol
+      // (with the spread call's TypeErrors), and its elements convert to
+      // the element type.
+      const drains =
+        source.type.kind === "dyn"
+          ? elem.kind === "dyn" ||
+            elem.kind === "f64" ||
+            elem.kind === "string" ||
+            elem.kind === "bool"
+          : elem.kind === "dyn" &&
+            !typeEquals(source.type, arrType) &&
+            !(
+              source.type.kind === "array" &&
+              identityPreservingWidening(lowerer, source.type.elem, elem)
+            ) &&
+            canConvertToDyn(
+              source.type,
+              (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
+            );
+      if (drains) {
+        const spelling = ts.getTextOfNode(node.expression);
+        const items = checkedIterableSpread(lowerer, source, spelling, loc);
+        source = lowerer.coerceInto(node.expression, items, arrType);
       }
       if (!typeEquals(source.type, arrType)) {
         if (
