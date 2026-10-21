@@ -93,13 +93,8 @@ describe("the recorded libnode pack", () => {
 });
 
 describe("the libnode pack in an executable's cache key", () => {
-  test("is absent without --libnode, SCRIPTC_LIBNODE or an installed pack", () => {
-    const installed = findInstalledLibnodePack({
-      targetName: hostLibnodeTarget(),
-      projectDir: "/nonexistent",
-    });
-    if (installed === null) expect(libnodeCacheKey(undefined, {}, "/nonexistent")).toBeUndefined();
-    else expect(libnodeCacheKey(undefined, {}, "/nonexistent")).toContain(installed);
+  test("is absent without --libnode or SCRIPTC_LIBNODE", () => {
+    expect(libnodeCacheKey(undefined, {})).toBeUndefined();
   });
 
   test("changes when the pack in the same directory is upgraded", () => {

@@ -1376,7 +1376,7 @@ async function compileTracked(
     const helperObjectRoute =
       opts.nativeProgramObject === true || usesPrecompiledRuntimePack(opts, "llvm");
     // Calls into Node record the libnode pack, keyed by its manifest (node-islands/libnode.ts).
-    const libnodeKey = libnodeCacheKey(opts.libnode, process.env, dirname(entryPath));
+    const libnodeKey = libnodeCacheKey(opts.libnode);
     const routeOptions: Omit<
       EarlyExecutableCacheOptions,
       "implementation" | "implementationDependencies" | "nativeEnvironment"

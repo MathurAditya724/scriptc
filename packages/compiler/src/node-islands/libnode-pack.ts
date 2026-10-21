@@ -186,12 +186,13 @@ export function readLibnodePack(
   return { root, manifest };
 }
 
-/** The nearest `node_modules/<name>` directory walking up from `from`. */
+/** The nearest `node_modules/<name>` directory with a built pack (a
+ * manifest.json) walking up from `from`. */
 function findInstalled(name: string, from: string): string | null {
   let dir = resolve(from);
   for (;;) {
     const candidate = join(dir, "node_modules", name);
-    if (existsSync(join(candidate, "package.json"))) return candidate;
+    if (existsSync(join(candidate, "manifest.json"))) return candidate;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -200,7 +201,9 @@ function findInstalled(name: string, from: string): string | null {
 
 function resolveNextToCompiler(name: string): string | null {
   try {
-    return dirname(createRequire(import.meta.url).resolve(`${name}/package.json`));
+    const dir = dirname(createRequire(import.meta.url).resolve(`${name}/package.json`));
+    // An unbuilt workspace package is not a pack.
+    return existsSync(join(dir, "manifest.json")) ? dir : null;
   } catch {
     return null;
   }

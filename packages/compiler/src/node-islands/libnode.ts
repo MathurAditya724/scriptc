@@ -119,24 +119,20 @@ export function libnodeRecord(
 }
 
 /** The part of an executable's cache key that names its libnode pack, or
- * undefined when neither --libnode nor SCRIPTC_LIBNODE is set and no pack
- * is installed. It holds the option, the pack directory and a digest of the
- * pack's manifest.json, so that a pack upgraded in place (another Node
- * version, bridge ABI or file list) gives cached executables a new key
- * instead of their old record. */
+ * undefined when neither --libnode nor SCRIPTC_LIBNODE is set. It holds the
+ * option, the pack directory and a digest of the pack's manifest.json, so
+ * that a pack upgraded in place (another Node version, bridge ABI or file
+ * list) gives cached executables a new key instead of their old record.
+ * An installed @scriptc/libnode-<platform> pack needs no part: it versions
+ * in lockstep with the compiler, whose version every key already holds, so
+ * the bootstrap's routed cache keeps serving builds where one is installed. */
 export function libnodeCacheKey(
   option: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
-  projectDir: string = process.cwd(),
 ): string | undefined {
   const fromEnv = env["SCRIPTC_LIBNODE"];
-  const installed =
-    option === undefined && fromEnv === undefined
-      ? findInstalledLibnodePack({ targetName: hostLibnodeTarget(), projectDir })
-      : null;
-  if (option === undefined && fromEnv === undefined && installed === null) return undefined;
-  const source =
-    installed ?? (option !== undefined && option !== "beside" ? option : (fromEnv ?? ""));
+  if (option === undefined && fromEnv === undefined) return undefined;
+  const source = option !== undefined && option !== "beside" ? option : (fromEnv ?? "");
   let manifest = "none";
   if (isAbsolute(source)) {
     try {
