@@ -6,11 +6,11 @@
  * (6800-6803) pins the call semantics against Node. Needs a libnode pack
  * in SCRIPTC_LIBNODE; required in the Linux x64 CI lanes (libnode.ts). */
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, test } from "vitest";
-import { compile } from "@scriptc/compiler";
+import { compile, deserializeModule } from "@scriptc/compiler";
 import { definedFunctionNames, nodeIslandSymbols } from "../../scripts/zero-cost-compare.mjs";
 import { libnodePack } from "./libnode.js";
 
@@ -30,6 +30,11 @@ interface Run {
 }
 
 let binary = "";
+
+// The fixture reads whether libnode is mapped from /proc/self/maps; other
+// platforms print "unknown".
+const before = `mapped before ${process.platform === "linux" ? "false" : "unknown"}`;
+const after = `mapped after ${process.platform === "linux" ? "true" : "unknown"}`;
 
 async function run(
   path: string,
@@ -103,12 +108,12 @@ describe.skipIf(skip)("Node islands in-process", () => {
 
   test("loads Node on the first call, and only then", async () => {
     expect(await run(binary, [])).toEqual({
-      stdout: "mapped before false\n42\nmapped after true\ndone\n",
+      stdout: `${before}\n42\n${after}\ndone\n`,
       stderr: "",
       code: 0,
     });
     expect(await run(binary, ["never"])).toEqual({
-      stdout: "mapped before false\ndone\n",
+      stdout: `${before}\ndone\n`,
       stderr: "",
       code: 0,
     });
@@ -117,7 +122,7 @@ describe.skipIf(skip)("Node islands in-process", () => {
   test("process.exit after loading Node keeps its code", async () => {
     const result = await run(binary, ["exit"]);
     expect(result.code).toBe(5);
-    expect(result.stdout).toBe("mapped before false\n42\nmapped after true\n");
+    expect(result.stdout).toBe(`${before}\n42\n${after}\n`);
   });
 
   test("beside packaging carries its own pack", async () => {
@@ -126,14 +131,14 @@ describe.skipIf(skip)("Node islands in-process", () => {
     const env = { ...process.env };
     delete env["SCRIPTC_LIBNODE"];
     const result = await run(beside, [], env);
-    expect(result.stdout).toBe("mapped before false\n42\nmapped after true\ndone\n");
+    expect(result.stdout).toBe(`${before}\n42\n${after}\ndone\n`);
     expect(result.code).toBe(0);
   }, 300_000);
 
   test("a missing pack fails the first call", async () => {
     const result = await run(binary, [], { ...process.env, SCRIPTC_LIBNODE: "/nonexistent/pack" });
     expect(result.code).toBe(1);
-    expect(result.stdout).toBe("mapped before false\n");
+    expect(result.stdout).toBe(`${before}\n`);
     expect(result.stderr).toMatch(
       /^scriptc: cannot load Node\.js for this program's Node islands: .*\/nonexistent\/pack\/libscr_node_bridge\.(so|dylib).*\n$/,
     );
@@ -184,3 +189,20 @@ describe.skipIf(skip)("Node islands in-process", () => {
     expect(conflicting).toEqual([]);
   });
 });
+
+// Lowering checks every argument and result type for JSON data; IR output
+// needs no libnode pack.
+test("recursive JSON types cross into Node", async () => {
+  const dir = join(outDir, "recursive-json");
+  mkdirSync(dir, { recursive: true });
+  const outPath = join(dir, "main.ir.json");
+  const result = await compile(join(repoRoot, "tests/fixtures/node-island/recursive-json.ts"), {
+    outPath,
+    outDir: dir,
+    outputKind: "ir",
+  });
+  if (!result.ok)
+    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
+  expect(ir).toContain("nodeIsland.callSync");
+}, 300_000);

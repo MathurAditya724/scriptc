@@ -22,7 +22,9 @@ import { DYN, STRING, type IrExpr, type IrType } from "../../ir/ir.js";
 const JSON_HINT =
   "only JSON data (numbers, strings, booleans, null, arrays, plain objects of those, and unknown) crosses into Node.js in this version";
 
-/** The first part of `t` that is not JSON data, or null. */
+/** The first part of `t` that is not JSON data, or null. `seen` holds the
+ * records and unions already being checked, so a recursive type (a JSON
+ * value type that contains arrays or records of itself) ends there. */
 function nonJsonPart(lowerer: Lowerer, t: IrType, seen: Set<string>): IrType | null {
   switch (t.kind) {
     case "f64":
@@ -35,8 +37,8 @@ function nonJsonPart(lowerer: Lowerer, t: IrType, seen: Set<string>): IrType | n
     case "array":
       return nonJsonPart(lowerer, t.elem, seen);
     case "record": {
-      if (seen.has(t.shapeId)) return null;
-      seen.add(t.shapeId);
+      if (seen.has(`record:${t.shapeId}`)) return null;
+      seen.add(`record:${t.shapeId}`);
       const shape = lowerer.shapes.get(t.shapeId);
       if (shape === undefined) return t;
       for (const field of shape.fields) {
@@ -46,6 +48,8 @@ function nonJsonPart(lowerer: Lowerer, t: IrType, seen: Set<string>): IrType | n
       return shape.indexValue === undefined ? null : nonJsonPart(lowerer, shape.indexValue, seen);
     }
     case "union": {
+      if (seen.has(`union:${t.unionId}`)) return null;
+      seen.add(`union:${t.unionId}`);
       const def = lowerer.unions.get(t.unionId);
       if (def === undefined) return t;
       for (const arm of def.arms) {

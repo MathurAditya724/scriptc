@@ -4,8 +4,12 @@ import { readFileSync } from "node:fs";
 import { callSync } from "@scriptc/node";
 
 const mode = process.argv[2] ?? "call";
-const mapped = (): boolean =>
-  process.platform !== "linux" || readFileSync("/proc/self/maps", "utf8").includes("libnode");
+// Whether libnode is mapped into the process, from /proc/self/maps; other
+// platforms report "unknown".
+const mapped = (): boolean | string =>
+  process.platform === "linux"
+    ? readFileSync("/proc/self/maps", "utf8").includes("libnode")
+    : "unknown";
 console.log("mapped before", mapped());
 if (mode !== "never") {
   console.log(callSync<number>("./helper.cjs", "answer"));
