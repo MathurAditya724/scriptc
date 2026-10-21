@@ -997,6 +997,11 @@ ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key);
 ScrDyn *scr_dyn_array_proto_call(ScrDyn *target, ScrStr *method, ScrDyn *args);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
 ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity */
+/* Native arrays read their holes as undefined without consulting
+ * Array.prototype, so storing an element on Array.prototype raises SC2020.
+ * True (with the error pending) when `recv` is Array.prototype. */
+bool scr_dyn_array_prototype_element_fence(const ScrDyn *recv);
+bool scr_dyn_is_array_prototype(const ScrDyn *d);
 /* The checked-dynamic keyed WRITE (`h.k = v` on a dyn receiver): OBJ sets
  * the member (JS: later writes win, insertion order); undefined/null and
  * non-object kinds throw Node's catchable TypeErrors (strict-mode

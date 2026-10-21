@@ -674,6 +674,17 @@ void scr_dyn_from_leave(void) {
  */
 static SCR_TL ScrDyn *scr_builtin_array_prototype;
 
+bool scr_dyn_is_array_prototype(const ScrDyn *d) {
+  return d && d == scr_builtin_array_prototype;
+}
+
+bool scr_dyn_array_prototype_element_fence(const ScrDyn *recv) {
+  if (!scr_dyn_is_array_prototype(recv)) return false;
+  static const char message[] = "Elements on Array.prototype are not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  return true;
+}
+
 /* Property names are immutable and often repeated across simultaneously live
  * objects. Entries own references to their bytes; this fixed weak table owns
  * none. Collisions only reduce sharing, and the final release removes a weak
@@ -8527,6 +8538,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       else idx = idx * 10 + (size_t)(key->data[i] - '0');
     }
     if (is_index && idx < 4294967295ULL) {
+      if (scr_dyn_array_prototype_element_fence(recv)) return;
       if (recv->v.arr.frozen && idx < recv->v.arr.len) {
         static const char message[] = "Cannot assign to read only property";
         scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
