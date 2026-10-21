@@ -332,6 +332,39 @@ function routePath(
   return join(root, "early-exe-route", routeKey(options));
 }
 
+function nativeBuildMarkerPath(
+  root: string,
+  options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment">,
+): string {
+  return join(root, "early-exe-native-build", routeKey(options));
+}
+
+/** Records that a build of the invocation `options` emitted its native program object, so the
+ * native helper's partition cache holds its partitions. Unlike the route, the record does not
+ * depend on the build publishing its executable. */
+export async function recordEarlyExecutableNativeBuild(
+  root: string | null,
+  options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment">,
+): Promise<void> {
+  if (root === null) return;
+  const marker = nativeBuildMarkerPath(root, options);
+  await mkdir(dirname(marker), { recursive: true, mode: 0o700 });
+  await writeFile(marker, "", { mode: 0o600 });
+}
+
+/** Whether an earlier build of the invocation `options` recorded its native program object
+ * (`recordEarlyExecutableNativeBuild`). False when there is no cache. */
+export async function hasEarlyExecutableNativeBuild(
+  root: string | null,
+  options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment">,
+): Promise<boolean> {
+  if (root === null) return false;
+  return stat(nativeBuildMarkerPath(root, options)).then(
+    (info) => info.isFile(),
+    () => false,
+  );
+}
+
 function routeIntegrity(stamp: Omit<EarlyExecutableRouteStamp, "integrity">): string {
   return createHash("sha256")
     .update("early-executable-route-stamp-v2\0")
