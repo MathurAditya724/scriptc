@@ -27,7 +27,7 @@ import { findMapEntryFusions } from "./map-entry-fusion.js";
 import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
 import { findLocalUnionStorage } from "./local-union-storage.js";
-import { INT32_RANGE, analyzeIntegerRanges } from "../../ir/integer-ranges.js";
+import { INT32_RANGE, analyzeIntegerRangeFacts } from "../../ir/integer-ranges.js";
 import { findBytesBounds } from "./bytes-bounds.js";
 import { findInt32Locals } from "./int32-locals.js";
 import { findIntegerViews } from "./integer-views.js";
@@ -221,7 +221,9 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.localUnionStorage = new Map();
   emitter.walkBorrows = emitter.walkBorrowsByFunction.get(fn.name) ?? new Set();
   const slotFacts = emitter.int32Slots.facts(fn.name);
-  emitter.integerRanges = analyzeIntegerRanges(numericFn, slotFacts);
+  const rangeFacts = analyzeIntegerRangeFacts(numericFn, slotFacts);
+  emitter.integerRanges = rangeFacts.ranges;
+  emitter.integerLoopRanges = rangeFacts.loopRanges;
   emitter.int32Elements = slotFacts.elements ?? null;
   emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
   // Debug builds keep every number local a double for the debugger's
