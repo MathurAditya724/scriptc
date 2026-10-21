@@ -404,12 +404,13 @@ static bool scr_arr_drop_front(ScrArr *a, size_t count) {
 }
 
 /* Slots requested by the small constructions. The small allocator rounds
- * them up to fill a block on the 16-byte grid: 7 eight-byte slots after a
- * plain header (6 after a collector header) in a 112-byte block, or 8
- * booleans in a 64-byte block. Programs that free and reuse many small
- * arrays run slower with 96-byte blocks of 5 slots. */
+ * them up to fill its block: 3 eight-byte slots after a plain header in an
+ * 80-byte block (88 after a collector header), or 8 booleans in a 64-byte
+ * block. Most small arrays hold up to three elements; two slots make
+ * arrays that grow past them move their storage often enough to slow
+ * programs that build many short lists. */
 #if SCR_SMALL_ALLOC
-#define SCR_ARR_SMALL_SLOTS ((size_t)6)
+#define SCR_ARR_SMALL_SLOTS ((size_t)3)
 #else
 #define SCR_ARR_SMALL_SLOTS ((size_t)4)
 #endif
@@ -417,13 +418,16 @@ static bool scr_arr_drop_front(ScrArr *a, size_t count) {
 /* Inline capacity of a small construction with `prefix` bytes of block
  * before the slots. */
 static size_t scr_arr_small_cap(size_t prefix, bool bools) {
-  size_t unit = bools ? SCR_ARR_BOOL_SLOT_BYTES : SCR_ARR_SLOT_BYTES;
 #if SCR_SMALL_ALLOC
-  size_t block = (prefix + SCR_ARR_SMALL_SLOTS * unit + 15) & ~(size_t)15;
-  return bools ? (block - prefix) / SCR_ARR_BOOL_SLOT_BYTES : (block - prefix) / SCR_ARR_SLOT_BYTES;
+  /* One return per slot unit, so each folds to a constant at its callers. */
+  if (bools)
+    return (scr_sa_class_size(scr_sa_class(prefix + SCR_ARR_SMALL_SLOTS * SCR_ARR_BOOL_SLOT_BYTES)) - prefix) /
+           SCR_ARR_BOOL_SLOT_BYTES;
+  return (scr_sa_class_size(scr_sa_class(prefix + SCR_ARR_SMALL_SLOTS * SCR_ARR_SLOT_BYTES)) - prefix) /
+         SCR_ARR_SLOT_BYTES;
 #else
   (void)prefix;
-  (void)unit;
+  (void)bools;
   return SCR_ARR_SMALL_SLOTS;
 #endif
 }
