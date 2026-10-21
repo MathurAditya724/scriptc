@@ -930,6 +930,7 @@ function lowerNetConnectOptions(
   let port: IrExpr | null = null;
   let host: IrExpr | null = null;
   let lookup: IrExpr | null = null;
+  let dynLookup: IrExpr | null = null;
   let autoSelect = false;
   let attempt: IrExpr | null = null;
   let optionThrow: IrExpr | null = null;
@@ -1037,7 +1038,23 @@ function lowerNetConnectOptions(
         );
       }
       lookup = lowerer.lowerExpr(initializer);
-      if (!lookupFnShapeOk(lowerer, lookup.type)) {
+      // A lookup of Node's own type (net.LookupFunction: options and a
+      // callback taking an address string or list) crosses as a checked-
+      // dynamic function the runtime calls the way Node's dial does.
+      if (
+        !lookupFnShapeOk(lowerer, lookup.type) &&
+        lookup.type.kind === "func" &&
+        lookup.type.params.length === 3 &&
+        canBoxFuncIntoDyn(
+          lookup.type,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      ) {
+        dynLookup = { kind: "dynFrom", value: lookup, type: DYN, loc: locOf(initializer) };
+      } else if (lookup.type.kind === "dyn") {
+        dynLookup = lookup;
+      } else if (!lookupFnShapeOk(lowerer, lookup.type)) {
         lowerer.noLowering(
           `a ${member} 'lookup' option of '${lowerer.fmt(lookup.type)}' values`,
           prop,
@@ -1076,6 +1093,22 @@ function lowerNetConnectOptions(
       kind: "libCall",
       fn: "net.connectAttempt",
       args: [port, host, attempt],
+      type: NETSOCKET_T,
+      loc,
+    };
+  }
+  if (dynLookup !== null) {
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `${member} with a lookup and a connect listener`,
+        expr,
+        "register the listener separately: socket.once('connect', ...)",
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "net.connectLookupDyn",
+      args: [port, host, dynLookup],
       type: NETSOCKET_T,
       loc,
     };

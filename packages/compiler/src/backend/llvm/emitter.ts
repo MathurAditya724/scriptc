@@ -622,13 +622,6 @@ export class LlEmitter {
     return `, !tbaa !${tag}`;
   }
 
-  /** The `!range` attachment of an array length load: a length is at most
-   * 2^32 - 1 (the runtime's SCR_ARR_MAX_LENGTH), so conversions to double
-   * and back fold. 32-bit targets load the full range anyway. */
-  get arrayLengthRange(): string {
-    return this.sizeType === "i64" ? ", !range !{i64 0, i64 4294967296}" : "";
-  }
-
   /** Whether an element access at `index` of `arr` lies in the hole-free
    * prefix: the counter of a dense array loop's fast copy indexing one of
    * the arrays its entry test covered. */

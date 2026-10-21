@@ -304,19 +304,13 @@ export function isOptionalProcessVersionsRead(lowerer: Lowerer, node: ts.Node): 
   );
 }
 
-const mentionsVersions = new WeakMap<Lowerer, boolean>();
-
 /** Whether any implementation source spells `versions`. Programs that
  * never do skip the per-read checker queries above entirely. */
 function programMentionsVersions(lowerer: Lowerer): boolean {
-  let known = mentionsVersions.get(lowerer);
-  if (known === undefined) {
-    known = lowerer.program
-      .getImplementationSourceFiles()
-      .some((sf) => !sf.isDeclarationFile && sf.text.includes("versions"));
-    mentionsVersions.set(lowerer, known);
-  }
-  return known;
+  lowerer.mentionsProcessVersions ??= lowerer.program
+    .getImplementationSourceFiles()
+    .some((sf) => !sf.isDeclarationFile && sf.text.includes("versions"));
+  return lowerer.mentionsProcessVersions;
 }
 
 export function lowerProcessStreamProperty(

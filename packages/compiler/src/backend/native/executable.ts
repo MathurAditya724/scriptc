@@ -113,6 +113,7 @@ interface RuntimeUnitContext {
   tls: boolean;
   tlsCa: boolean;
   cipher: boolean;
+  ecdh: boolean;
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
   tlsArchive: string | null;
@@ -181,6 +182,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch, "scr_dyn_invoke.c"),
   // Fixed-width Buffer methods called on checked-dynamic values.
   unit((u) => u.opts.dynBufferNum === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
+  // Builtin functions read as values in JavaScript dependencies.
+  unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c"),
   unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
@@ -297,6 +300,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           join(vendorTlsDir(), "include"),
           ...(u.tls ? [u.rt(join(u.rtDir, "scr_tls.c"))] : []),
           ...(u.cipher ? [u.rt(join(u.rtDir, "scr_cipher.c"))] : []),
+          ...(u.ecdh ? [u.rt(join(u.rtDir, "scr_ecdh.c"))] : []),
           u.tlsArchive,
           // mbedTLS's win32 entropy poll is BCryptGenRandom (bcrypt.h).
           // The unconditional win32 libs above do not carry it.
@@ -358,9 +362,10 @@ export async function compileCInternal(
   const http = (opts.http ?? false) || nativeFetch;
   const tls = (opts.tls ?? false) || nativeFetch;
   const tlsCa = (opts.tlsCa ?? false) || tls;
-  // Symmetric ciphers link the same mbedTLS archive as TLS.
+  // Symmetric ciphers and ECDH link the same mbedTLS archive as TLS.
   const cipher = opts.cipher ?? false;
-  const mbedtls = tls || cipher;
+  const ecdh = opts.ecdh ?? false;
+  const mbedtls = tls || cipher || ecdh;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -717,6 +722,7 @@ export async function compileCInternal(
       tls,
       tlsCa,
       cipher,
+      ecdh,
       lreObjects,
       zlibObjects,
       tlsArchive,

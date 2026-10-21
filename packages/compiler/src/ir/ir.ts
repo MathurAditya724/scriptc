@@ -647,6 +647,9 @@ export function isSupportedArrayElem(t: IrType): boolean {
     case "regex":
     case "child":
     case "netServer":
+    // fs.Stats snapshots (`await Promise.all(paths.map(stat))`): immutable
+    // refcounted handles with their own retain/release adapters.
+    case "stats":
     case "symbol":
     case "classval":
     case "moduleNs":
@@ -3824,20 +3827,11 @@ export type IrExpr =
   /** `exact`: the value is known to be a capsule this program boxed from
    * exactly the class `type` names (a `dyn.typedRefKeyIs` test guards the
    * expression), so the check is one load of the capsule's instance. */
-  /** `fallback`: a checked-cast fallback site (frontend
-   * checked-fallback.ts). A value that fails validation does not throw: the
-   * result is the dummy, and the checked dyn value parks for the
-   * `checkedCast.fallbackTaken`/`checkedCast.fallbackTake` reads the
-   * frontend emits right after the site, whose code then continues in the
-   * dynamic lowering of the region the value flows through. Other
-   * exceptions (a JSON syntax error) still throw. Only record, array,
-   * number, string and boolean targets carry it. */
   | {
       kind: "dynCheck";
       value: IrExpr;
       preserveRefs?: true;
       exact?: true;
-      fallback?: true;
       type: IrType;
       loc: SrcLoc;
     };

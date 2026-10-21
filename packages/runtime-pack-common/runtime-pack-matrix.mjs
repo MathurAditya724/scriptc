@@ -63,6 +63,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch")],
   // Fixed-width Buffer methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBufferNum", "dynInvoke")],
+  // Builtin functions read as values in JavaScript dependencies.
+  ["scr_builtin_values.c", "builtinValues"],
   ["scr_dc.c", "dc"],
   // The dynamic tier's jsval values (two-tier design I3): linked only into
   // programs whose IR has dynamic-tier operations.
@@ -137,6 +139,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
+  ["scr_ecdh.c", "ecdh"],
   ["scr_wasm.c", "wasm"],
   ["scr_webcrypto.c", "webcrypto"],
   ["scr_fetch.c", "nativeFetch"],
@@ -194,7 +197,7 @@ export function createRuntimePackMatrix({
     { id: "quickjs", predicate: false },
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
-    { id: "mbedtls", predicate: any("tlsEffective", "cipher") },
+    { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh") },
   ];
   const matrix = withLibraryRuntimeFlavors(
     withWorkerRuntimeVariants({
