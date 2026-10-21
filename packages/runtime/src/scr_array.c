@@ -2739,7 +2739,8 @@ typedef struct {
   uint32_t arity;
   bool numbers;
   bool borrowing; /* enter through f->fn_borrowed, lending the slots */
-  int32_t order;  /* 1 or -1: f orders number keys ascending or descending */
+  int32_t order;  /* 1 or -1: f orders number keys ascending or descending;
+                   * from 2, the keys of a multi-key comparator (SCR_SORT_KEYS) */
   ScrClosure *key; /* the key reader of reference elements under `order` */
   ScrSortLess less; /* a caller comparison in place of `f` (scr_sort_slots_with) */
   void *less_ctx;
@@ -2803,11 +2804,24 @@ static bool scr_sort_greater(const ScrSortCompare *c, uint64_t left, uint64_t ri
 #define SCR_SORT_PREFETCH(c, buf, index, limit) \
   SCR_SORT_PREFETCH_AT(c, buf, (index) + SCR_SORT_PREFETCH_DISTANCE, limit)
 
+/* A multi-key comparator (`k0 || k1 || ...` over field keys of reference
+ * elements) passes `order` as its key count in the low byte and, from bit
+ * 8, one bit per key that orders descending. Its reader closure takes the
+ * element and the key's index. */
+#define SCR_SORT_KEYS_MAX 8
+static bool scr_sort_keys_valid(int32_t order) {
+  uint32_t count = (uint32_t)order & 0xff;
+  return order > 0 && count >= 2 && count <= SCR_SORT_KEYS_MAX &&
+         ((uint32_t)order >> 8) >> count == 0;
+}
+
 static ScrSortCompare scr_sort_compare_for(const ScrArr *a, ScrClosure *f, uint32_t arity,
                                            int32_t order, ScrClosure *key) {
   ScrSortCompare c = {f, NULL, arity, a->elem == SCR_ELEM_F64, false, order, key};
-  if (order != 0 && (arity != 2 || (order != 1 && order != -1) ||
-                     (c.numbers ? key != NULL : a->elem != SCR_ELEM_REF || key == NULL)))
+  bool multi = order >= 2;
+  if (order != 0 &&
+      (arity != 2 || (order != 1 && order != -1 && !scr_sort_keys_valid(order)) ||
+       (c.numbers ? key != NULL || multi : a->elem != SCR_ELEM_REF || key == NULL)))
     scr_trap("scriptc: invalid keyed sort\n");
   if (!c.numbers) {
     c.borrowing = f->fn_borrowed != NULL;
@@ -3179,6 +3193,63 @@ static bool scr_sort_keyed_refs(uint64_t *values, size_t n, const ScrSortCompare
   return true;
 }
 
+/* Key `j` of a reference element through the borrowed multi-key reader. */
+static double scr_sort_read_key_at(const ScrSortCompare *c, uint64_t slot, uint32_t j) {
+  ScrClosure *reader = c->key;
+  void *x = scr_slot_to_ptr(slot);
+  if (reader->fn_borrowed)
+    return ((double (*)(ScrClosure *, void *, double))reader->fn_borrowed)(reader, x, (double)j);
+  return ((double (*)(ScrClosure *, void *, double))reader->fn)(reader, x ? c->retain(x) : x,
+                                                                (double)j);
+}
+
+/* Sorts reference slots by several keys, the first deciding. A comparator
+ * `d0 || d1 || ...` whose terms each order one key orders lexicographically:
+ * a term that is 0 or NaN (equal keys, or Infinity minus Infinity) falls
+ * through to the next. With no key NaN or -0 that order is consistent, so
+ * a stable sort by the keys gives the comparator sort's permutation. Every
+ * key is read and checked before any slot moves; stable passes from the
+ * last key to the first then leave the slots in key order. */
+static bool scr_sort_keyed_multi(uint64_t *values, size_t n, const ScrSortCompare *c) {
+  uint32_t count = (uint32_t)c->order & 0xff, descending = (uint32_t)c->order >> 8;
+  if (n > SIZE_MAX / count / sizeof(uint64_t)) scr_arr_oom();
+  uint64_t *keys = malloc(n * count * sizeof(*keys));
+  if (!keys) scr_arr_oom();
+  for (size_t i = 0; i < n; i++)
+    for (uint32_t j = 0; j < count; j++) {
+      uint64_t flip = (descending >> j) & 1 ? ~UINT64_C(0) : 0;
+      if (!scr_sort_key_encode(scr_sort_read_key_at(c, values[i], j), flip,
+                               &keys[i * count + j])) {
+        free(keys);
+        return false;
+      }
+    }
+  /* Each item's slot field holds the element's input position. */
+  ScrSortItem *items = malloc(n * sizeof(*items));
+  ScrSortItem *tmp = n > SCR_SORT_KEYED_INSERTION ? malloc(n * sizeof(*tmp)) : NULL;
+  if (!items || (n > SCR_SORT_KEYED_INSERTION && !tmp)) scr_arr_oom();
+  for (size_t i = 0; i < n; i++) items[i] = (ScrSortItem){keys[i * count + count - 1], i};
+  ScrSortItem *buf = items, *other = tmp;
+  for (uint32_t j = count; j-- > 0;) {
+    if (j + 1 < count)
+      for (size_t i = 0; i < n; i++) buf[i].key = keys[buf[i].slot * count + j];
+    ScrSortItem *sorted = buf;
+    SCR_SORT_KEYED_RECORDS(ScrSortItem, SCR_SORT_ITEM_KEY, 64, buf, other, n, false, &sorted);
+    if (sorted != buf) {
+      other = buf;
+      buf = sorted;
+    }
+  }
+  /* The key buffer holds at least n words: it keeps the input slots while
+   * they are written back in order. */
+  memcpy(keys, values, n * sizeof(*values));
+  for (size_t i = 0; i < n; i++) values[i] = keys[buf[i].slot];
+  free(keys);
+  free(items);
+  free(tmp);
+  return true;
+}
+
 /* Orders `n >= 2` slots by key when the comparator allows it. Returns false,
  * leaving the slots as they were, when a key is NaN or -0: the comparator
  * sort then runs instead. */
@@ -3186,7 +3257,8 @@ static bool scr_sort_keyed(uint64_t *values, size_t n, const ScrSortCompare *c) 
   uint64_t flip = c->order < 0 ? ~UINT64_C(0) : 0;
   if (c->numbers) return scr_sort_keyed_numbers(values, n, flip);
   scr_dyn_this_push_dyn(NULL);
-  bool sorted = scr_sort_keyed_refs(values, n, c, flip);
+  bool sorted = c->order >= 2 ? scr_sort_keyed_multi(values, n, c)
+                              : scr_sort_keyed_refs(values, n, c, flip);
   scr_dyn_this_pop();
   return sorted;
 }
