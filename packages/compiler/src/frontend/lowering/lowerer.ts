@@ -8644,8 +8644,9 @@ export class Lowerer {
   /** The ts-level twin of typeParamResolver: the bound CHECKER type of a
    * type parameter in the current instantiation (typeParamTsBindings), for
    * the resolutions where mapType's widening already dropped what the body
-   * needs (indexed accesses over literal-bound keys). Inert outside
-   * call-keyed generic instantiation. */
+   * needs (indexed accesses over literal-bound keys, conditional types
+   * over literal arguments). Inert outside generic function and class
+   * instantiation. */
   readonly typeParamTsResolver = (t: ts.Type): ts.Type | null => {
     if (!this.typeParamTsBindings || !(t.flags & ts.TypeFlags.TypeParameter)) return null;
     const sym: ts.Symbol | undefined = t.getSymbol();
@@ -10838,6 +10839,7 @@ export class Lowerer {
       family: ClassInfo;
       name: string;
       bindings: Map<ts.Symbol, IrType>;
+      tsBindings: Map<ts.Symbol, ts.Type>;
       typeArgsText: string;
       ordinal: number;
     },

@@ -688,6 +688,9 @@ export interface ClassInfo {
     path: InstantiationPath;
     family: ClassInfo;
     bindings: Map<ts.Symbol, IrType>;
+    /** The type arguments as checker types, for the resolutions that need
+     * literal identity (a conditional type over a literal argument). */
+    tsBindings: Map<ts.Symbol, ts.Type>;
     typeArgsText: string;
     ordinal: number;
   };
@@ -767,6 +770,9 @@ export interface GenericClassInfo {
   typeParams: ts.Symbol[];
   family: ClassInfo;
   instances: Map<string, { name: string; info: ClassInfo | null; poisoned?: boolean }>;
+  /** The type parameters a conditional type in the class depends on
+   * (literalSensitiveTypeParams), computed on first instantiation. */
+  literalSensitive?: Set<ts.Symbol>;
 }
 
 /** The KEY symbol behind a LATE-BOUND (`__@name@id`) property: resolved
@@ -1766,6 +1772,7 @@ export function collectClassShapeInner(
     family: ClassInfo;
     name: string;
     bindings: Map<ts.Symbol, IrType>;
+    tsBindings: Map<ts.Symbol, ts.Type>;
     typeArgsText: string;
     ordinal: number;
   },
@@ -4442,6 +4449,7 @@ export function collectClassShapeInner(
         path: inst.path,
         family: inst.family,
         bindings: inst.bindings,
+        tsBindings: inst.tsBindings,
         typeArgsText: inst.typeArgsText,
         ordinal: inst.ordinal,
       };
@@ -4582,8 +4590,10 @@ export function genericClassInstanceType(
     .getTypeArguments(ref as ts.TypeReference)
     .slice(0, gci.typeParams.length);
   const mapped: IrType[] = [];
+  const tsArgs: ts.Type[] = [];
   if (args.length === gci.typeParams.length) {
     for (const a of args) {
+      tsArgs.push(lowerer.typeParamTsResolver(a) ?? a);
       const m = lowerer.mapTypeOf(a, mapArgument);
       if (!m || m.kind === "void") {
         // An UNBOUND type parameter argument (`Box<T>` outside any
@@ -4602,9 +4612,26 @@ export function genericClassInstanceType(
       const b = lowerer.typeParamBindings?.get(tp);
       if (!b) return null;
       mapped.push(b);
+      const bound = lowerer.typeParamTsBindings?.get(tp);
+      if (bound) tsArgs.push(bound);
     }
   }
-  const key = mapped.map(typeKey).join(",");
+  // A literal argument for a type parameter that a conditional type
+  // depends on (`K extends "required" ? T : T | undefined`) selects the
+  // members' types, so it keys its own instance; mapType alone widens it.
+  gci.literalSensitive ??= literalSensitiveTypeParams(lowerer, gci);
+  const literalKey = (i: number): string | null => {
+    if (!gci.literalSensitive!.has(gci.typeParams[i]!)) return null;
+    const arg = tsArgs[i];
+    if (arg?.isStringLiteralType()) return JSON.stringify(arg.value);
+    if (arg?.isNumberLiteralType()) return String(arg.value);
+    if (arg && arg.flags & ts.TypeFlags.BooleanLiteral) return lowerer.checker.typeToString(arg);
+    return null;
+  };
+  const literals = gci.typeParams.map((_, i) => literalKey(i));
+  const key =
+    mapped.map(typeKey).join(",") +
+    (literals.some((l) => l !== null) ? `@${literals.map((l) => l ?? "*").join(",")}` : "");
   const existing = gci.instances.get(key);
   if (existing) {
     if (existing.info) lowerer.noteGenericClassInstanceDemand(existing.info);
@@ -4626,13 +4653,18 @@ export function genericClassInstanceType(
   gci.instances.set(key, entry);
   const bindings = new Map<ts.Symbol, IrType>();
   gci.typeParams.forEach((tp, i) => bindings.set(tp, mapped[i]!));
-  const rendered = mapped.map((m) => lowerer.fmt(m)).join(", ");
+  const tsBindings = new Map<ts.Symbol, ts.Type>();
+  if (tsArgs.length === gci.typeParams.length)
+    gci.typeParams.forEach((tp, i) => tsBindings.set(tp, tsArgs[i]!));
+  const rendered = mapped.map((m, i) => literals[i] ?? lowerer.fmt(m)).join(", ");
   const typeArgsText = `<${rendered.length > 80 ? rendered.slice(0, 77) + "..." : rendered}>`;
   const prevBindings = lowerer.typeParamBindings;
+  const prevTsBindings = lowerer.typeParamTsBindings;
   const prevContext = lowerer.instantiationContext;
   const previousPath = lowerer.genericInstantiationPath;
   lowerer.genericInstantiationPath = path;
   lowerer.typeParamBindings = bindings;
+  lowerer.typeParamTsBindings = tsBindings;
   lowerer.instantiationContext = `instantiating class '${gci.baseName}' with ${typeArgsText}`;
   try {
     lowerer.collectClassShapeInner(decl, undefined, {
@@ -4640,6 +4672,7 @@ export function genericClassInstanceType(
       family: gci.family,
       name,
       bindings,
+      tsBindings,
       typeArgsText,
       ordinal,
     });
@@ -4651,6 +4684,7 @@ export function genericClassInstanceType(
     return null;
   } finally {
     lowerer.typeParamBindings = prevBindings;
+    lowerer.typeParamTsBindings = prevTsBindings;
     lowerer.instantiationContext = prevContext;
     lowerer.genericInstantiationPath = previousPath;
   }
@@ -4664,6 +4698,35 @@ export function genericClassInstanceType(
   lowerer.noteGenericClassInstanceDemand(info);
   lowerer.onLateClassCollected?.(info);
   return { kind: "object", className: name };
+}
+
+/** The class's type parameters that a conditional type inside it depends
+ * on: the parameters named within a type node that is a conditional type
+ * or refers to one (`get(): Value<T, K>` with `type Value<T, K> = K
+ * extends "required" ? T : T | undefined`). Their literal arguments pick
+ * the conditional's branch. */
+function literalSensitiveTypeParams(lowerer: Lowerer, gci: GenericClassInfo): Set<ts.Symbol> {
+  const params = new Set(gci.typeParams);
+  const found = new Set<ts.Symbol>();
+  const collect = (node: ts.Node): void => {
+    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+      const symbol = lowerer.checker.getSymbolAtLocation(node.typeName);
+      if (symbol && params.has(symbol)) found.add(symbol);
+    }
+    ts.forEachChild(node, collect);
+  };
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isConditionalTypeNode(node) ||
+      (ts.isTypeReferenceNode(node) &&
+        lowerer.checker.getTypeFromTypeNode(node).isConditionalType())
+    ) {
+      collect(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const member of gci.decl.members.nodes) visit(member);
+  return found;
 }
 
 /** Runs a member-lowering thunk under an INSTANTIATION's type-parameter
@@ -4699,17 +4762,20 @@ function withInstanceBindings<T>(lowerer: Lowerer, info: ClassInfo, fn: () => T)
     }
   }
   const prevBindings = lowerer.typeParamBindings;
+  const prevTsBindings = lowerer.typeParamTsBindings;
   const prevContext = lowerer.instantiationContext;
   const prevSuppress = lowerer.suppressStats;
   const previousPath = lowerer.genericInstantiationPath;
   lowerer.genericInstantiationPath = gi.path;
   lowerer.typeParamBindings = gi.bindings;
+  lowerer.typeParamTsBindings = gi.tsBindings;
   lowerer.instantiationContext = `instantiating class '${gi.family.generic?.baseName ?? info.def.jsName ?? ""}' with ${gi.typeArgsText}`;
   lowerer.suppressStats = prevSuppress || gi.ordinal > 0;
   try {
     return fn();
   } finally {
     lowerer.typeParamBindings = prevBindings;
+    lowerer.typeParamTsBindings = prevTsBindings;
     lowerer.instantiationContext = prevContext;
     lowerer.suppressStats = prevSuppress;
     lowerer.genericInstantiationPath = previousPath;
