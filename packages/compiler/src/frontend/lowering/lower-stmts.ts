@@ -4777,6 +4777,69 @@ export function lowerVarDeclList(
   return out.length === 1 ? out[0]! : { kind: "block", body: out, loc: locOf(list) };
 }
 
+/** The type of an unannotated TypeScript binding initialized with `[]`
+ * whose element type evolves: the checker types the declaration as
+ * `never[]` or `any[]` and each later read by the elements written before
+ * it, and reads inside closures as the unsettled array. When every read
+ * with a settled element type maps to the same array type, the binding has
+ * that type. When reads disagree or the binding is reassigned, it is
+ * checked-dynamic, as the same binding is at module scope. Null for other
+ * bindings. */
+function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | null {
+  if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return null;
+  let initializer: ts.Expression = decl.initializer;
+  while (ts.isParenthesizedExpression(initializer)) initializer = initializer.expression;
+  if (!ts.isArrayLiteralExpression(initializer) || initializer.elements.nodes.length !== 0)
+    return null;
+  const unsettled = (t: ts.Type): boolean => {
+    if (!lowerer.checker.isArrayType(t)) return false;
+    const elem = lowerer.checker.getTypeArguments(t as ts.TypeReference)[0];
+    return elem !== undefined && (elem.flags & (ts.TypeFlags.Never | ts.TypeFlags.Any)) !== 0;
+  };
+  if (!unsettled(lowerer.typeOf(decl.name))) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+  if (symbol === undefined) return null;
+  const owner = (node: ts.Node): ts.Node => {
+    let n: ts.Node | undefined = node.parent;
+    while (n !== undefined && !ts.isFunctionLike(n) && !ts.isSourceFile(n)) n = n.parent;
+    return n ?? ts.getSourceFileOfNode(node);
+  };
+  const scope = owner(decl);
+  let result: IrType | null = null;
+  let dynamic = false;
+  ts.walkPreorder(scope, (node) => {
+    if (dynamic) return "stop";
+    if (
+      !ts.isIdentifier(node) ||
+      node === decl.name ||
+      lowerer.checker.getSymbolAtLocation(node) !== symbol
+    )
+      return undefined;
+    let target: ts.Node = node;
+    while (ts.isParenthesizedExpression(target.parent)) target = target.parent;
+    const parent = target.parent;
+    const reassigned =
+      ts.isBinaryExpression(parent) &&
+      parent.left === target &&
+      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+    if (reassigned) {
+      dynamic = true;
+      return "stop";
+    }
+    const t = lowerer.typeOf(node);
+    if (unsettled(t)) return undefined;
+    const mapped = lowerer.mapTypeOf(t);
+    if (!mapped || mapped.kind !== "array" || (result !== null && !typeEquals(result, mapped))) {
+      dynamic = true;
+      return "stop";
+    }
+    result = mapped;
+    return undefined;
+  });
+  return dynamic || result === null ? DYN : result;
+}
+
 /** A single static type for an initializer-less JavaScript `let` whose
  * later plain writes all agree. An evolving JS local reads as `undefined`
  * until control flow proves a write, so a scalar slot is sound only when
@@ -5470,6 +5533,19 @@ export function lowerVarDecl(
         if (elem !== undefined && (elem.flags & (ts.TypeFlags.Never | ts.TypeFlags.Any)) !== 0)
           type = DYN;
       }
+    }
+  }
+  // A TypeScript `const nodes = [];` filled by later writes: the checker
+  // types each read by the elements written before it (evolvingArrayType).
+  if (
+    returnedEmptyArrayType === null &&
+    !decl.type &&
+    !isJsSourceFile(ts.getSourceFileOfNode(decl))
+  ) {
+    const evolved = evolvingArrayType(lowerer, decl);
+    if (evolved !== null) {
+      type = evolved;
+      init = lowerer.lowerExprExpecting(decl.initializer, evolved);
     }
   }
   // An unannotated binding holding an OOB-SAFE indexed read (`elem |
