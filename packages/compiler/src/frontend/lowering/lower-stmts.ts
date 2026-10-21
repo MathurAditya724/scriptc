@@ -15,6 +15,7 @@ import {
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
+import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -2299,12 +2300,21 @@ export function lowerDestructuringDecl(
   // destructure property 'a' of 'f(...)' as it is null.") for the source
   // spellings the assignment form reproduces; other sources are refused,
   // as in the assignment form. JavaScript files keep their existing
-  // per-read errors.
-  if (
+  // per-read errors, except that a runtime computed first key checks the
+  // source first: Node throws before it evaluates any key, and V8's bare
+  // message names the source.
+  const jsRuntimeKeyCheck =
     init.type.kind === "dyn" &&
     ts.isObjectBindingPattern(decl.name) &&
-    !isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-    lowerer.anyOrigin(decl.initializer)
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    startsWithRuntimeKey(lowerer, decl.name) &&
+    destrSpellingOf(decl.initializer) !== null;
+  if (
+    jsRuntimeKeyCheck ||
+    (init.type.kind === "dyn" &&
+      ts.isObjectBindingPattern(decl.name) &&
+      !isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+      lowerer.anyOrigin(decl.initializer))
   ) {
     const spelling = destrSpellingOf(decl.initializer);
     if (spelling === null) {
@@ -2314,7 +2324,7 @@ export function lowerDestructuringDecl(
         "destructuring declaration from an `any` source whose expression spelling is unsupported (use a variable, ordinary property chain, or ordinary call)",
       );
     }
-    const first = decl.name.elements.nodes[0];
+    const first = (decl.name as ts.ObjectBindingPattern).elements.nodes[0];
     const firstKey =
       first === undefined || first.dotDotDotToken !== undefined
         ? undefined
@@ -2902,6 +2912,27 @@ export function lowerBindingPattern(
     return;
   }
   if (srcType.kind === "dyn") {
+    // A runtime computed first key evaluates after RequireObjectCoercible:
+    // a nullish source throws before the key's side effects run. Later
+    // keys follow a read that already threw.
+    if (ts.isObjectBindingPattern(pattern) && startsWithRuntimeKey(lowerer, pattern)) {
+      const loc = locOf(pattern);
+      for (const unit of ["null", "undefined"] as const) {
+        out.push({
+          kind: "if",
+          cond: { kind: "dynTest", test: unit, value: srcRef(), type: BOOL, loc },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: nodeThrowExpr(1, "", `Cannot read properties of ${unit}`, VOID, loc),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+      }
+    }
     for (const el of pattern.elements.nodes) {
       if (el.name === undefined) continue;
       const loc = locOf(el);
@@ -2949,16 +2980,21 @@ export function lowerBindingPattern(
         ts.isNumericLiteral(prop)
           ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
           : null;
-      if (propName === null) {
+      // A runtime computed key (`{ [name]: v }`) reads the live property.
+      const runtimeRead =
+        propName === null && ts.isComputedPropertyName(prop)
+          ? runtimeKeyPatternRead(lowerer, prop.expression, srcRef(), out, loc)
+          : null;
+      if (propName === null && runtimeRead === null) {
         lowerer.unsupported(
           "SC1031",
           el,
           "destructuring with computed keys that do not fold to one property name",
         );
       }
-      let value: IrExpr = {
+      let value: IrExpr = runtimeRead ?? {
         kind: "dynKeyGet",
-        key: { kind: "strLit", value: propName, type: STRING, loc },
+        key: { kind: "strLit", value: propName!, type: STRING, loc },
         value: srcRef(),
         type: DYN,
         loc,
@@ -3216,11 +3252,22 @@ export function lowerBindingPattern(
         ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
         : null;
     if (propName === null) {
-      lowerer.unsupported(
-        "SC1031",
-        el,
-        "destructuring with computed keys that do not fold to one property name",
-      );
+      // A runtime computed key (`{ [name]: v }`): the keyed read of an
+      // index-signature entry, of the declared field a literal-union key
+      // names, or of a JavaScript record's live property.
+      const runtimeRead = ts.isComputedPropertyName(prop)
+        ? runtimeKeyPatternRead(lowerer, prop.expression, srcRef(), out, locOf(el))
+        : null;
+      if (runtimeRead === null) {
+        lowerer.unsupported(
+          "SC1031",
+          el,
+          "destructuring with computed keys that do not fold to one property name",
+        );
+      }
+      const value = el.initializer ? applyBindingDefault(lowerer, el, runtimeRead) : runtimeRead;
+      lowerer.bindPatternTarget(el.name, value, isLet, out);
+      continue;
     }
     // An ACCESSOR property (%get:/%set: closure slots): the element's
     // read IS a getter call — once, at the element's pattern position
@@ -3494,6 +3541,16 @@ function lowerModuleNamespacePattern(
     if (el.initializer) value = applyBindingDefault(lowerer, el, value);
     lowerer.bindPatternTarget(el.name, value, isLet, out);
   }
+}
+
+/** Whether a pattern's first element has a computed key that does not
+ * fold to one property name, so the key evaluates at run time. */
+function startsWithRuntimeKey(lowerer: Lowerer, pattern: ts.ObjectBindingPattern): boolean {
+  const first = pattern.elements.nodes[0];
+  const key = first?.dotDotDotToken === undefined ? first?.propertyName : undefined;
+  return (
+    key !== undefined && ts.isComputedPropertyName(key) && patternKeyNameOf(lowerer, key) === null
+  );
 }
 
 function patternKeyNameOf(lowerer: Lowerer, prop: ts.PropertyName): string | null {

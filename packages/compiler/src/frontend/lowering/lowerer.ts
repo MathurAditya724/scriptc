@@ -5412,19 +5412,40 @@ export class Lowerer {
     /** `const { a, b } = table` over an index-signature record: a name that
      * is not a declared field reads the index signature and can be
      * missing. */
-    const scanRecordPattern = (name: ts.ObjectBindingPattern, init: ts.Expression): boolean => {
-      const sourceType = this.mapTypeOf(this.typeOf(init));
+    const scanRecordPattern = (
+      name: ts.ObjectBindingPattern,
+      init: ts.Node,
+      sourceType: IrType | null = this.mapTypeOf(this.typeOf(init)),
+    ): boolean => {
       if (sourceType?.kind !== "record") return false;
       const shape = this.shapes.get(sourceType.shapeId);
-      const indexValue = shape?.indexValue;
-      if (!shape || shape.tuple || !indexValue || indexValue.kind === "dyn") return false;
+      if (!shape || shape.tuple) return false;
+      const indexValue = shape.indexValue;
       let changed = false;
       for (const el of name.elements.nodes) {
+        // A nested pattern reads its element the same way
+        // (`const { limits: { [key]: limit } } = config`).
+        if (!el.dotDotDotToken && el.name !== undefined && ts.isObjectBindingPattern(el.name)) {
+          if (scanRecordPattern(el.name, init, this.mapTypeOf(this.typeOf(el.name))))
+            changed = true;
+          continue;
+        }
+        if (!indexValue || indexValue.kind === "dyn") continue;
         if (el.dotDotDotToken || el.initializer || !ts.isIdentifier(el.name)) continue;
         const key = el.propertyName ?? el.name;
-        if (!ts.isIdentifier(key) && !ts.isStringLiteral(key) && !ts.isNumericLiteral(key))
+        // A computed key that folds to one name reads like that name; a
+        // runtime key reads the entry of a record with no declared fields
+        // (runtimeKeyPatternRead), which can be missing too.
+        const keyName = ts.isComputedPropertyName(key)
+          ? this.foldedStringKeyOf(key.expression)
+          : ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key)
+            ? key.text
+            : undefined;
+        if (keyName === undefined) continue;
+        if (
+          keyName === null ? shape.fields.length > 0 : shape.fields.some((f) => f.name === keyName)
+        )
           continue;
-        if (shape.fields.some((field) => field.name === key.text)) continue;
         const symbol = symbolOf(el.name);
         if (!symbol || optionalSymbols.has(symbol)) continue;
         const read = this.mapTypeOf(this.typeOf(el.name));
@@ -6035,6 +6056,7 @@ export class Lowerer {
       ts.walkPreorder(sf, (node) => {
         if (
           ts.isVariableDeclaration(node) ||
+          (ts.isParameter(node) && ts.isObjectBindingPattern(node.name)) ||
           ts.isBinaryExpression(node) ||
           ts.isCallExpression(node) ||
           ts.isNewExpression(node) ||
@@ -6056,6 +6078,12 @@ export class Lowerer {
         if (elementStates.scan(node)) changed = true;
         if (ts.isForOfStatement(node))
           presentLoops.set(node, !elementStates.loopMayYieldUndefined(node));
+        // A parameter pattern reads its argument like a declaration's
+        // pattern reads its initializer.
+        if (ts.isParameter(node) && ts.isObjectBindingPattern(node.name)) {
+          if (scanRecordPattern(node.name, node, this.mapTypeOf(this.typeOf(node.name))))
+            changed = true;
+        }
         if (ts.isVariableDeclaration(node)) {
           if (node.initializer) {
             const result = optionalPrimitiveResultType(node.initializer);
