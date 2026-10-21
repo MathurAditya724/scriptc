@@ -235,7 +235,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     const receiver = tryLowerExpression(lowerer, expr.expression);
     if (receiver?.type.kind === "dyn") {
       const key = lowerer.lowerExprExpecting(expr.argumentExpression, DYN);
-      const optional = hasOptionalChainGuard(expr.expression);
+      const optional = hasOptionalChainGuard(expr.expression, lowerer);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",
@@ -378,7 +378,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           lowerer.lowerExpr(expr.argumentExpression),
           expr.argumentExpression,
         );
-        const optional = hasOptionalChainGuard(expr.expression);
+        const optional = hasOptionalChainGuard(expr.expression, lowerer);
         return lowerer.maybeNarrow(
           {
             kind: "dynKeyGet",
@@ -488,7 +488,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           ? lowerer.coerceToExpected(rawKey, DYN)
           : lowerRecordPropertyKey(lowerer, rawKey, expr.argumentExpression);
       if (key.type.kind === "string" || key.type.kind === "dyn") {
-        const opt = hasOptionalChainGuard(expr.expression);
+        const opt = hasOptionalChainGuard(expr.expression, lowerer);
         return lowerer.maybeNarrow(
           {
             kind: "dynKeyGet",
@@ -1306,9 +1306,14 @@ export function lowerRecordKeyRead(
   ) {
     declared = shape.fields[0]!.type;
   }
+  // Fields of different types answer a checked-dynamic value where nothing
+  // typed the read: in JavaScript, and where the checker types it 'any'
+  // (an object literal of a package's JavaScript indexed by a runtime key,
+  // such as a numeric enum's reverse mapping).
   if (
     !declared &&
-    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
+      (lowerer.typeOf(expr).flags & ts.TypeFlags.Any) !== 0) &&
     recordKeyResultOk(lowerer, shape, DYN)
   )
     declared = DYN;

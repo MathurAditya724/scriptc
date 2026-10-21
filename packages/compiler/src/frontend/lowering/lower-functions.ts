@@ -2,6 +2,7 @@ import { declareTypedArguments } from "./typed-arguments.js";
 import { varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
+import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -59,6 +60,8 @@ function declareCallReceiver(
  * same collection lists top-level declarations ride. */
 export function isTopLevelFnSymbol(lowerer: Lowerer, ident: ts.Identifier): boolean {
   const symbol = lowerer.resolveValueSymbol(ident);
+  // A reassigned JavaScript declaration is read through its module global.
+  if (isRebindableFunctionSymbol(lowerer, symbol ?? undefined)) return false;
   if (symbol && lowerer.staticCallables.get(symbol)?.kind === "declared-function") return true;
   const decl = symbol ? symbol.declarations[0] : undefined;
   return (

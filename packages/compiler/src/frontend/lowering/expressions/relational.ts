@@ -1,6 +1,6 @@
 /* instanceof and in, including private-name and runtime-key in. */
 import * as ts from "../../ts7/adapter.js";
-import { builtinClassInstanceOf, builtinClassKind } from "../builtins/builtin-class-dyn.js";
+import { builtinClassInstanceOfAny, builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import {
   checkedPrivateIn,
   localPrivateBrandClass,
@@ -401,6 +401,16 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       }
       const left = lowerer.lowerExpr(expr.left);
       if (left.type.kind === "dyn") {
+        // An untyped binding the checker narrowed to EventEmitter or a
+        // stream class (`ReleaseEmitter = EventEmitter` in JavaScript):
+        // the binding holds an untyped constructor, so the test is
+        // Function.prototype[Symbol.hasInstance] over it.
+        const builtinKind = targetInfo.def.runtime ? builtinClassKind(targetInfo.def.name) : null;
+        if (builtinKind !== null) {
+          const right = lowerer.lowerExpr(expr.right);
+          if (right.type.kind === "dyn")
+            return builtinClassInstanceOfAny(lowerer, left, builtinKind, targetInfo, loc, right);
+        }
         if (targetInfo.def.runtime) {
           lowerer.unsupported(
             "SC1090",
@@ -600,11 +610,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   }
   // `u instanceof EventEmitter` (or a stream class): an untyped object
   // built by a constructor function inherits the untyped constructor's
-  // prototype (builtin-class-dyn.ts). Compiled emitters and streams have
-  // no untyped form, so the prototype chain answers for every value.
+  // prototype (builtin-class-dyn.ts), and a compiled emitter or stream
+  // boxes as a typed reference the class test answers for.
   const builtinKind = builtinClassKind(target.def.name);
   if (left.type.kind === "dyn" && builtinKind !== null) {
-    return builtinClassInstanceOf(left, builtinKind, loc);
+    return builtinClassInstanceOfAny(lowerer, left, builtinKind, target, loc);
   }
   if (left.type.kind === "dyn") {
     lowerer.unsupported(
@@ -1379,6 +1389,24 @@ export function lowerInExpression(
   }
   if (key === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.right))) {
     refuseExecExceptionCode(lowerer, expr);
+  }
+  // A literal key that names no declared member of an index-signature
+  // record (`"id" in match.groups`): the same keyed presence probe a
+  // runtime key takes — declared fields by name, then the overflow keys.
+  {
+    const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.right));
+    const shape = recvT?.kind === "record" ? lowerer.shapes.get(recvT.shapeId) : undefined;
+    if (
+      shape?.indexValue &&
+      !shape.tuple &&
+      !OBJECT_PROTOTYPE_KEYS.has(key) &&
+      !shape.fields.some(
+        (f) => f.name === key || f.name === `%get:${key}` || f.name === `%set:${key}`,
+      )
+    ) {
+      const probed = lowerRuntimeKeyIn(lowerer, expr, loc);
+      if (probed) return probed;
+    }
   }
   let recv = lowerer.lowerExpr(expr.right);
   const classInfo =

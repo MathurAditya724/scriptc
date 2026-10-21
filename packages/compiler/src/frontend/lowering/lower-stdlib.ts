@@ -622,6 +622,20 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
         : lowerer.lowerExpr(argument);
       stmts.push({ kind: "exprStmt", expr: discarded, loc: discarded.loc });
     }
+    // A union input holding a URL arm (`string | URL`) converts through the
+    // checked-dynamic input path, which reads the URL's href at the call
+    // like the bare-URL arm below; narrowing it to a string would throw on
+    // the URL arm.
+    const unionWithUrl =
+      input.type.kind === "union" &&
+      (lowerer.unions.get(input.type.unionId)?.arms.some((arm) => arm.kind === "url") ?? false) &&
+      lowerer.dynConvertible(input.type);
+    const dynInput: IrExpr | null =
+      input.type.kind === "dyn"
+        ? inputRef
+        : unionWithUrl
+          ? { kind: "dynFrom", value: inputRef, type: DYN, loc: locOf(inputNode) }
+          : null;
     const url: IrExpr =
       input.type.kind === "url"
         ? {
@@ -631,13 +645,13 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
             type: STRING,
             loc: locOf(inputNode),
           }
-        : input.type.kind === "dyn"
-          ? inputRef
+        : dynInput !== null
+          ? dynInput
           : lowerer.coerceInto(inputNode, inputRef, STRING);
     const answer: IrExpr = {
       kind: "libCall",
-      fn: input.type.kind === "dyn" ? "fetch.input" : "fetch.start",
-      args: [input.type.kind === "dyn" ? inputRef : url, initRef],
+      fn: dynInput !== null ? "fetch.input" : "fetch.start",
+      args: [url, initRef],
       type: { kind: "promise", inner: DYN },
       loc,
     };

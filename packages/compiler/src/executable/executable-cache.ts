@@ -69,12 +69,15 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   dynForAwait?: boolean;
   eventsOnceSignal?: boolean;
+  dynBufferNum?: boolean;
+  builtinValues?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
   bigint: boolean;
   searchParams: boolean;
   qs: boolean;
+  utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
   parseArgs: boolean;
@@ -84,11 +87,13 @@ export interface EarlyExecutableNativeFeatures {
   http2: boolean;
   dgram: boolean;
   dnsPromises: boolean;
+  dgramDyn: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
   cipher: boolean;
+  ecdh: boolean;
   perfLoop: boolean;
   tlsCa: boolean;
   webcrypto: boolean;
@@ -196,6 +201,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "bigint",
   "searchParams",
   "qs",
+  "utilPromisify",
   "dynBuiltinClass",
   "dynBuiltinStream",
   "parseArgs",
@@ -205,12 +211,14 @@ const BOOLEAN_NATIVE_KEYS = [
   "http2",
   "dgram",
   "dnsPromises",
+  "dgramDyn",
   "watch",
   "foreignFfi",
   "nodeTest",
   "tls",
   "tlsCa",
   "cipher",
+  "ecdh",
   "webcrypto",
   "perfLoop",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];

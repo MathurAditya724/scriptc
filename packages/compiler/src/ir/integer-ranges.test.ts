@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  analyzeIntegerRangeFacts,
   analyzeIntegerRanges,
   bitwiseIdentityOperand,
   bitwiseRange,
@@ -1040,4 +1041,120 @@ test("bitwise identity operands follow ToInt32 and the shift-count mask", () => 
   expect(identity(">>", x, num(1))).toBeNull();
   expect(identity("<<", num(0), x)).toBeNull();
   expect(identity(">>>", num(0), x)).toBeNull();
+});
+
+test("a for loop bounds cursors it resets and copies, and their writes keep the loop range", () => {
+  // for (x = 0; x < 100; x++) { if (flag === 0) run = run + 1; else run = 0;
+  //   if (run > longest) longest = run; changes = changes + 1; }
+  const sum = bin("+", ref("run"), num(1)),
+    copied = ref("run"),
+    counted = bin("+", ref("changes"), num(1));
+  const write = (localId: string, value: IrExpr): IrStmt => ({
+    loc,
+    kind: "assign",
+    localId,
+    value,
+  });
+  const loop: IrStmt & { kind: "for" } = {
+    loc,
+    kind: "for",
+    init: { loc, kind: "varDecl", localId: "x", init: num(0) },
+    cond: condition("<", ref(), num(100)),
+    update: assign(bin("+", ref(), num(1))),
+    body: [
+      {
+        loc,
+        kind: "if",
+        cond: condition("===", ref("flag"), num(0)),
+        then: [write("run", sum)],
+        else_: [write("run", num(0))],
+      },
+      {
+        loc,
+        kind: "if",
+        cond: condition(">", ref("run"), ref("longest")),
+        then: [write("longest", copied)],
+        else_: null,
+      },
+      write("changes", counted),
+    ],
+  };
+  const declare = (localId: string): IrStmt => ({ loc, kind: "varDecl", localId, init: num(0) });
+  const f = fn([declare("run"), declare("longest"), declare("changes"), loop]);
+  f.locals.push(
+    ...["run", "longest", "changes", "flag"].map((id) => ({
+      id,
+      name: id,
+      type: F64,
+      mutable: true,
+    })),
+  );
+  const ranges = analyzeIntegerRanges(f);
+  // Each of the 100 passes adds at most one, so `run + 1` and
+  // `changes + 1` stay within the loop range though their operands reach it.
+  const range = { min: 0, max: 100 };
+  expect(ranges.get(sum)).toEqual({ min: 1, max: 100 });
+  expect(ranges.get(counted)).toEqual({ min: 1, max: 100 });
+  expect(ranges.get(copied)).toEqual({ min: 1, max: 100 });
+  expect(analyzeIntegerRangeFacts(f).loopRanges.get(loop)).toEqual(
+    new Map([
+      ["run", range],
+      ["longest", range],
+      ["changes", range],
+    ]),
+  );
+  for (const mutation of ["fraction", "cycle", "nested"] as const) {
+    const changed = structuredClone(f);
+    const body = (changed.body[3] as IrStmt & { kind: "for" }).body;
+    if (mutation === "fraction") body.push(write("run", num(0.5)));
+    // `run = longest` and `longest = run` bound neither.
+    if (mutation === "cycle") body.push(write("run", ref("longest")));
+    if (mutation === "nested")
+      body.push({
+        loc,
+        kind: "while",
+        cond: condition("<", ref("unknown"), num(1)),
+        body: [write("run", num(0))],
+      });
+    const cursors = analyzeIntegerRangeFacts(changed).loopRanges.get(changed.body[3]!);
+    expect(cursors?.has("run"), mutation).toBe(false);
+    expect(cursors?.get("changes"), mutation).toEqual(range);
+  }
+});
+
+test("a cursor of a loop over a typed array keeps its writes exact up to 2^53 - 1", () => {
+  // for (x = 0; x < bytes.length; x++) changes = changes + 1;
+  const bytes: IrExpr = {
+    loc,
+    kind: "varRef",
+    localId: "bytes",
+    type: { kind: "bytes", elem: "u8" },
+  };
+  const length: IrExpr = {
+    loc,
+    kind: "bytesIntrinsic",
+    method: "length",
+    receiver: bytes,
+    args: [],
+    type: F64,
+  };
+  const counted = bin("+", ref("changes"), num(1));
+  const f = fn([
+    { loc, kind: "varDecl", localId: "changes", init: num(0) },
+    {
+      loc,
+      kind: "for",
+      init: { loc, kind: "varDecl", localId: "x", init: num(0) },
+      cond: condition("<", ref(), length),
+      update: assign(bin("+", ref(), num(1))),
+      body: [{ loc, kind: "assign", localId: "changes", value: counted }],
+    },
+  ]);
+  f.locals.push(
+    { id: "changes", name: "changes", type: F64, mutable: true },
+    { id: "bytes", name: "bytes", type: { kind: "bytes", elem: "u8" }, mutable: false },
+  );
+  // The sum of the header range passes 2^53 - 1; the write takes the loop
+  // range instead.
+  expect(analyzeIntegerRanges(f).get(counted)).toEqual({ min: 0, max: Number.MAX_SAFE_INTEGER });
 });

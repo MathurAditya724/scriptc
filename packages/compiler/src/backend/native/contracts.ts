@@ -121,6 +121,11 @@ export interface CcOptions {
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
+  /** Fixed-width Buffer methods called on checked-dynamic values:
+   * compiles scr_bytes_dyn.c. */
+  dynBufferNum?: boolean;
+  /** Builtin functions read as values: compiles scr_builtin_values.c. */
+  builtinValues?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
@@ -160,6 +165,10 @@ export interface CcOptions {
    * line (escape-only programs ride the always-linked component encoder
    * and never flip this). */
   qs?: boolean;
+  /** The program promisifies an untyped function (util.promisify over
+   * `any`): compiles scr_util_promisify.c, which also references the
+   * dyn-async and dyn-invoke units. */
+  utilPromisify?: boolean;
   /** The program uses EventEmitter or a stream class as an untyped
    * constructor value (a constructor function's base): compiles
    * scr_dyn_builtin_class.c, which also references the inspection,
@@ -200,6 +209,10 @@ export interface CcOptions {
    * compiles scr_dns_promises.c over the dgram unit, so callback-only
    * binaries keep their exact link line. */
   dnsPromises?: boolean;
+  /** A dgram socket converts to or from an untyped value: compiles
+   * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
+   * their exact link line. */
+  dgramDyn?: boolean;
 
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free
@@ -231,6 +244,9 @@ export interface CcOptions {
   /** crypto.createCipheriv/createDecipheriv: compiles scr_cipher.c and links
    * the mbedTLS archive (shared with tls). */
   cipher?: boolean;
+  /** crypto.createECDH and ECDH.convertKey: compiles scr_ecdh.c and links
+   * the mbedTLS archive (shared with tls). */
+  ecdh?: boolean;
   /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
   webcrypto?: boolean;
   /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */
