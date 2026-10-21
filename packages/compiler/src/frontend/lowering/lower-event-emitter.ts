@@ -338,9 +338,15 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           const cbCt = lowerer.typeOf(node.arguments.nodes[1]);
           const cbT =
             lowerer.mapTypeOf(cbCt) ?? dynFallbackType(lowerer, node.arguments.nodes[1], cbCt);
+          // A TypeScript listener with no parameters is typed too: it
+          // registers without the adapter, so an untyped emit reaches it
+          // only through the event's fixed ABI. A JavaScript function
+          // without parameters can still read `arguments`.
           if (
             cbT?.kind !== "dyn" &&
-            (cbT?.kind !== "func" || cbT.params.some((p) => p.kind !== "dyn"))
+            (cbT?.kind !== "func" ||
+              (cbT.params.length === 0 && !isJsSourceFile(sf)) ||
+              cbT.params.some((p) => p.kind !== "dyn"))
           ) {
             sigOf(name).typedListener = true;
           }
