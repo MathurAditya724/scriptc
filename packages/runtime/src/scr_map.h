@@ -160,7 +160,11 @@ static inline bool scr_map_entry_live(const ScrMap *m, size_t i) {
  * filter, nbuckets and buckets as fields 8, 10, 13 and 14, and the inline
  * iteration steps read the entry count and test each entry: its hash, the
  * third field (sc_map_iter_entry), or for a number-key map its key against
- * SCR_MAP_NUM_DEAD (sc_map_iter_entry_num). */
+ * SCR_MAP_NUM_DEAD (sc_map_iter_entry_num). Iteration over a checked
+ * (unknown-key) Map or Set picks one of the two steps from the key kind,
+ * %ScrMapIx field 1, compared with SCR_MAP_KEY_F64 (0). */
+_Static_assert(offsetof(ScrMap, key_kind) == sizeof(size_t) && SCR_MAP_KEY_F64 == 0,
+               "inline iteration over checked collections reads ScrMap.key_kind as %ScrMapIx field 1");
 _Static_assert(offsetof(ScrMap, traced) == sizeof(size_t) + 2,
                "inline RC fast paths read ScrMap.traced as %ScrMapRc field 3");
 _Static_assert(offsetof(ScrMap, flags) == sizeof(size_t) + 3,

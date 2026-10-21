@@ -31,6 +31,7 @@ import {
   emitMapIterCount,
   emitMapIterEntry,
   emitMapIterSlot,
+  mapEntryLayout,
   emitMapIterStart,
   emitNumberMapGetRef,
   emitNumberMapGetScalar,
@@ -1430,7 +1431,7 @@ export function emitMapLikeIntrinsic(
       return { name: emitMapIterStart(host, r.name), type: e.type };
     case "iterLive": {
       const i = host.emitExpr(e.args[0]!);
-      const entry = emitMapIterEntry(host, r.name, i.name, kAcc === "f64");
+      const entry = emitMapIterEntry(host, r.name, i.name, mapEntryLayout(key));
       const t = B.tmp();
       B.line(`${t} = icmp ne ptr ${entry}, null`);
       return { name: t, type: e.type };
@@ -1449,7 +1450,7 @@ export function emitMapLikeIntrinsic(
           kAcc === "str" ? "ref" : kAcc,
           key,
           { decl: `declare ${retTy} @${symbol}(ptr, double)`, symbol },
-          kAcc === "f64",
+          mapEntryLayout(key),
         );
         return host.own({ name: t, type: e.type });
       }
@@ -1476,7 +1477,7 @@ export function emitMapLikeIntrinsic(
           decl: `declare ${vAcc === "bool" ? "zeroext i1" : retTy} @${symbol}(ptr, double)`,
           symbol,
         },
-        kAcc === "f64",
+        mapEntryLayout(key),
       );
       return host.own({ name: t, type: e.type });
     }
