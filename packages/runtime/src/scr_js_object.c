@@ -138,8 +138,11 @@ static const ScrJsShape *scr_js_transition(const ScrJsShape *parent, const char 
 }
 
 /* An object's shape, computed from its entries when it has none; NULL for
- * objects that stay unshaped (other kinds, the builtin Object.prototype,
- * dictionary-sized objects, key sequences past the budgets). */
+ * objects that stay unshaped (other kinds, immortal objects, the builtin
+ * Object.prototype, dictionary-sized objects, key sequences past the
+ * budgets). Immortal objects (rc == SIZE_MAX: published graphs, which
+ * threads share by pointer) are never shaped: shapes belong to one thread
+ * and die with it, and no thread writes an immortal object's header. */
 #ifdef SCR_JS_VERIFY
 /* Debugging aid (build the runtime with -DSCR_JS_VERIFY and compile with
  * SCRIPTC_JS_IC_WAYS=0 so every access probes): traps when an object's
@@ -157,7 +160,7 @@ static void scr_js_verify(const ScrDyn *object, const ScrJsShape *shape) {
 #endif
 
 static const ScrJsShape *scr_js_shape_of(ScrDyn *object) {
-  if (object->kind != SCR_DYN_OBJ) return NULL;
+  if (object->kind != SCR_DYN_OBJ || object->rc == SIZE_MAX) return NULL;
   const ScrJsShape *shape = object->v.obj.shape;
   if (shape == &scr_js_unshaped) return NULL;
 #ifdef SCR_JS_VERIFY

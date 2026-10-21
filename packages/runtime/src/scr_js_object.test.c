@@ -82,8 +82,26 @@ static void budget_bounds_shapes(size_t key_len, size_t budget) {
   free(bytes);
 }
 
+/* Immortal objects (published graphs, shared by pointer across threads)
+ * stay unshaped: probes miss, and nothing writes the shape word. */
+static void immortal_objects_stay_unshaped(void) {
+  ScrStr *key = scr_str_new("kept", 4);
+  ScrDyn *object = object_with(key, 3);
+  object->rc = SIZE_MAX;
+  assert(!probe_reads(object, key, 3));
+  assert(object->v.obj.shape == NULL);
+  ScrJsIc ic;
+  memset(&ic, 0, sizeof ic);
+  ScrDyn *value = scr_dyn_new_num(4);
+  assert(!scr_js_store_probe(object, key, value, &ic));
+  assert(object->v.obj.shape == NULL);
+  scr_dyn_release(value);
+  scr_str_release(key);
+}
+
 int main(int argc, char **argv) {
   scr_init();
+  immortal_objects_stay_unshaped();
   if (argc > 1 && strcmp(argv[1], "key-bytes") == 0) {
     /* 64 KiB keys spend the key-byte budget after 64 shapes. */
     size_t key_len = (size_t)64 << 10;

@@ -187,8 +187,9 @@ bool scr_js_truthy(ScrJsVal value);
  * per thread and live until the thread's runtime state is torn down; a
  * thread's shape count and the key bytes they hold are bounded, and an
  * object whose key sequence would need a shape past either bound stays
- * unshaped. The tier computes an object's shape on a cache miss; the
- * SCR_JS_TIER build of scr_json.c resets it on every change to the key set.
+ * unshaped, as do immortal objects, which threads share. The tier
+ * computes an object's shape on a cache miss; the SCR_JS_TIER build of
+ * scr_json.c resets it on every change to the key set.
  * Attributes stay in the entries and the prototype in the node: cache hits
  * test both live, so a shape only ever proves which key sits at which entry
  * index and which keys an object lacks.
