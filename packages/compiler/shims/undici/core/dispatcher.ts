@@ -38,6 +38,12 @@ export interface ResponseData {
 const defaultProfile: Profile = { major: 7 };
 
 export class Dispatcher extends EventEmitter {
+  // An explicit constructor: the implicit one forwards its arguments to
+  // EventEmitter's options-taking constructor, which stays a runtime fence.
+  constructor() {
+    super();
+  }
+
   dispatch(_options: DispatchOptions, _handler: DispatchHandlers): boolean {
     throw new Error("not implemented");
   }

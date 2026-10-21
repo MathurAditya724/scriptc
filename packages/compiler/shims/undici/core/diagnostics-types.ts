@@ -8,7 +8,7 @@ export declare namespace DiagnosticsChannel {
     completed: boolean;
     method?: string;
     path: string;
-    headers: string;
+    headers: string | string[];
     addHeader(key: string, value: string): Request;
   }
   interface Response {

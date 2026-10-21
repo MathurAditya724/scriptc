@@ -30,7 +30,6 @@ const ALLOWED_TYPESCRIPT5_IMPORTS = new Set([
   "packages/compiler/src/library/semantic-source.ts",
   "packages/compiler/test/ts7/harness.ts",
   "packages/compiler/test/ts7/resolver-parity.test.ts",
-  "packages/compiler/test/undici-shim-types.test.ts",
 ]);
 
 function sourceFilesUnder(dir) {

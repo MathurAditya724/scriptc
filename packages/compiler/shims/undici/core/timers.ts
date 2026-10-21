@@ -35,7 +35,9 @@ function onTick(): void {
     }
   }
   fastTimers.length = len;
+  // An idle tick stops; the next timer schedules a new one.
   if (fastTimers.length !== 0) refreshTimeout();
+  else refreshTick = null;
 }
 
 function refreshTimeout(): void {

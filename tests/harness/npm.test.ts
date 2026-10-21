@@ -111,6 +111,11 @@ const KNOWN: Record<string, Known> = {
 
 const cases = shardSelect(npmCases(fixturesRoot), (c) => c.name);
 
+/** Per-case timeouts past the default 120 s: the undici cases compile the
+ * built-in undici implementation's module graph, which a sanitized build
+ * on a CI runner takes minutes to compile. */
+const TIMEOUTS: Record<string, number> = { undici5: 600_000, undici7: 600_000 };
+
 interface RunResult {
   stdout: Buffer;
   stderr: Buffer;
@@ -233,7 +238,7 @@ describe(`npm native (${cases.length} programs${sanitize ? ", sanitized" : ""}${
         }
         await expectMatchesNode(c, built.binary);
       },
-      120_000,
+      TIMEOUTS[c.name] ?? 120_000,
     );
   }
 });
