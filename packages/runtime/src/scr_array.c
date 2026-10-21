@@ -1470,6 +1470,14 @@ static void scr_arr_invalid_length(double length) {
   scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
 }
 
+static void scr_arr_reserve_exact(ScrArr *a, size_t need);
+
+/* A length set on an empty array without storage of its own (`new
+ * Array(n)`, Array.prototype.map's result) reserves exactly that many
+ * slots, as holes, up to this many; the writes that fill the array then
+ * need no geometric growth. */
+#define SCR_ARR_PRESIZE_LIMIT ((size_t)1 << 16)
+
 void scr_arr_set_len(ScrArr *a, double length) {
   if (!(length >= 0) || !isfinite(length) || length != trunc(length) ||
       length > (double)SCR_ARR_MAX_LENGTH) {
@@ -1511,6 +1519,8 @@ void scr_arr_set_len(ScrArr *a, double length) {
       }
       if (scr_arr_ext_of(a)) scr_arr_ext_of(a)->sparse_len = scr_arr_sparse_lower_bound(scr_arr_ext_of(a)->sparse, scr_arr_ext_of(a)->sparse_len, next);
     }
+  } else if (a->len == 0 && next <= SCR_ARR_PRESIZE_LIMIT && (a->cap == 0 || scr_arr_inline(a))) {
+    scr_arr_reserve_exact(a, next);
   }
   a->len = next;
 }
@@ -2035,6 +2045,33 @@ double scr_arr_concat_copy(ScrArr *a, const ScrArr *src) {
   }
   scr_arr_refill(a);
   return SCR_ARR_LEN_F64(a->len);
+}
+
+/* Dense capacity of exactly `need` (rounded to the storage block) for an
+ * array whose final length is known: a fresh concat result, a spread
+ * literal, or a length set on an empty array. Arrays with sparse entries,
+ * and lengths past the dense cutoff, keep their ordinary growth. */
+static void scr_arr_reserve_exact(ScrArr *a, size_t need) {
+  if (need <= a->cap || need > SCR_ARR_DENSE_LIMIT || SCR_AX(a)->sparse_len != 0) return;
+  scr_arr_grow_dense_to(a, need, SCR_ARR_GROW_EXACT);
+}
+
+double scr_arr_concat_copy_exact(ScrArr *a, const ScrArr *src) {
+  if (src != a && scr_arr_is_dense(src) && src->len <= SCR_ARR_MAX_LENGTH - a->len)
+    scr_arr_reserve_exact(a, (size_t)a->len + src->len);
+  return scr_arr_concat_copy(a, src);
+}
+
+void scr_arr_reserve_spread(ScrArr *a, const ScrArr *src, size_t plain) {
+  if (src == a || !scr_arr_is_dense(src)) return;
+  size_t need = (size_t)a->len + src->len;
+  if (plain > SCR_ARR_DENSE_LIMIT || need > SCR_ARR_DENSE_LIMIT) return;
+  scr_arr_reserve_exact(a, need + plain);
+}
+
+void scr_arr_reserve_len(ScrArr *a, double n) {
+  if (!(n >= 1) || n > (double)SCR_ARR_DENSE_LIMIT) return;
+  scr_arr_reserve_exact(a, (size_t)n);
 }
 
 /* ── unshift / reverse ──────────────────────────────────────────────────

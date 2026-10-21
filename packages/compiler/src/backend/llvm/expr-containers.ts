@@ -647,10 +647,12 @@ export function emitArrIntrinsic(
       return { name: t, type: e.type };
     }
     case "concatSpread": {
+      // Appends to concat's fresh result: its storage grows to exactly
+      // the combined length (scr_arr_concat_copy_exact).
       const src = emitBorrowedInput(host, e.args[0]!);
-      host.declare(`declare double @scr_arr_concat_copy(ptr, ptr)`);
+      host.declare(`declare double @scr_arr_concat_copy_exact(ptr, ptr)`);
       const t = B.tmp();
-      B.line(`${t} = call double @scr_arr_concat_copy(ptr ${r.name}, ptr ${src.name})`);
+      B.line(`${t} = call double @scr_arr_concat_copy_exact(ptr ${r.name}, ptr ${src.name})`);
       return { name: t, type: e.type };
     }
     case "unshift": {
