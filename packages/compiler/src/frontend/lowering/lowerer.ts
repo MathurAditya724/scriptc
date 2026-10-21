@@ -3042,6 +3042,10 @@ export class Lowerer {
   // top level, top = the innermost nested function currently lowering).
   fnStack: FnCtx[] = [];
   readonly liftedFns: IrFunction[] = [];
+  /** The first lifted function of each name (liftedFnNamed), for the
+   * liftedFns indexed so far. liftedFns only grows. */
+  private readonly liftedFnsByName = new Map<string, IrFunction>();
+  private liftedFnsIndexed = 0;
   /** Runtime-provided classes used as values (defineClassValueConstruct),
    * by IR class name. */
   readonly runtimeClassValues = new Map<string, ClassInfo>();
@@ -3113,6 +3117,10 @@ export class Lowerer {
    * can contain any retained descendant, but importing its declaration
    * alone does not make every descendant constructible. */
   private constructedClasses: Set<string> | null = null;
+  /** Classes added to some ClassInfo's subclasses (lower-classes.ts). With
+   * the class and constructed-class counts, it tells caches over the class
+   * graph when the graph changed. */
+  subclassLinks = 0;
   /** Set while a subclass constructor's super() call notes its base
    * constructor edge: that edge does not instantiate the base exactly. */
   private superConstructorEdge = false;
@@ -3128,6 +3136,20 @@ export class Lowerer {
       info.genericInstance !== undefined ||
       info.mixinInstance !== undefined
     );
+  }
+  /** How many classes classCanBeConstructed admits by name, or -1 while
+   * it admits every class. The count only grows. */
+  constructedClassCount(): number {
+    return this.constructedClasses?.size ?? -1;
+  }
+  /** The first lifted function named `name`, the one
+   * `liftedFns.find((fn) => fn.name === name)` returns. */
+  liftedFnNamed(name: string | undefined): IrFunction | undefined {
+    for (; this.liftedFnsIndexed < this.liftedFns.length; this.liftedFnsIndexed++) {
+      const fn = this.liftedFns[this.liftedFnsIndexed]!;
+      if (!this.liftedFnsByName.has(fn.name)) this.liftedFnsByName.set(fn.name, fn);
+    }
+    return name === undefined ? undefined : this.liftedFnsByName.get(name);
   }
   /** Coverage remainder mode: the reachability gate inverts (see wantBody)
    * and no module is built. */
