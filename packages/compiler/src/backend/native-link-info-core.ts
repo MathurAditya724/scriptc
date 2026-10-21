@@ -25,6 +25,9 @@ export interface NativeLinkFeatures {
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
+  /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
+   * without it keep their link identity. */
+  wasm?: boolean;
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
@@ -40,6 +43,18 @@ export interface NativeLinkFeatures {
   /** Dynamic-tier jsval operations: the scr_js_* units. Absent (not false)
    * for programs without them, so their link features stay unchanged. */
   dynTier?: boolean;
+  /** Checked-dynamic stream slots: the scr_stream_dyn.c unit. Absent (not
+   * false) for programs without them. */
+  streamDyn?: boolean;
+  /** events.once with options: scr_events_once_signal.c. Absent (not
+   * false) for programs without it. */
+  eventsOnceSignal?: boolean;
+  /** Fixed-width Buffer methods called on checked-dynamic values link
+   * scr_bytes_dyn.c; absent (false) for programs without them. */
+  dynBufferNum?: boolean;
+  /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
+   * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
+  builtinValues?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
@@ -47,12 +62,18 @@ export interface NativeLinkFeatures {
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
+  dynBuiltinClass: boolean;
+  dynBuiltinStream: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
   http: boolean;
   http2: boolean;
   dgram: boolean;
+  /** node:dns/promises: scr_dns_promises.c. */
+  dnsPromises: boolean;
+  /** dgram sockets as untyped values: scr_dgram_dyn.c. */
+  dgramDyn: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
@@ -60,6 +81,11 @@ export interface NativeLinkFeatures {
   /** crypto.createCipheriv/createDecipheriv: scr_cipher.c plus the mbedTLS
    * archive. */
   cipher: boolean;
+  /** crypto.createECDH and ECDH.convertKey: scr_ecdh.c plus the mbedTLS
+   * archive. */
+  ecdh: boolean;
+  /** perf_hooks event-loop metrics: scr_perf_loop.c. */
+  perfLoop: boolean;
   tlsCa: boolean;
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey values:
    * scr_webcrypto.c. */

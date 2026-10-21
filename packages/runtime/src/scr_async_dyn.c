@@ -1437,22 +1437,27 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
  * a thenable gets a fresh promise and its resolve job, anything else a
  * fulfilled promise (a throwing `then` read rejects it). The element
  * joins the combinator right after, so a thenable's job sits between
- * the jobs of the entries around it, exactly Node's iteration. */
-static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, ScrDyn *value, const ScrDyn *reader) {
+ * the jobs of the entries around it, exactly Node's iteration. Without a
+ * combinator (`c` NULL) this is PromiseResolve for one value. */
+static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, const ScrDyn *value, const ScrDyn *reader) {
   if (value->kind == SCR_DYN_PROMISE) return scr_promise_retain(value->v.promise);
   ScrPromise *source = scr_promise_new();
   ScrDyn *then = scr_dyn_then_of(value, reader);
   if (scr_exc_pending()) {
     scr_promise_reject_pending(source);
   } else if (then) {
-    scr_promise_combine_flush(c);
+    if (c) scr_promise_combine_flush(c);
     scr_dyn_thenable_schedule(source, value, then, reader);
   } else {
-    scr_promise_fulfill_ref(source, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v,
-                            scr_dyn_trace_v);
+    scr_promise_fulfill_ref(source, scr_dyn_retain((ScrDyn *)value), scr_dyn_retain_v,
+                            scr_dyn_release_v, scr_dyn_trace_v);
   }
   scr_dyn_release(then);
   return source;
+}
+
+ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader) {
+  return scr_dyn_promise_entry(NULL, value, reader);
 }
 
 static void scr_dyn_settled_store(ScrArr *a, double i, ScrPromise *src) {

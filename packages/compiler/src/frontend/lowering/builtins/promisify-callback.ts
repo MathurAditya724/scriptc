@@ -316,7 +316,8 @@ function promisifyMaker(lowerer: Lowerer, shape: CallbackShape, loc: SrcLoc): st
               callbackParamT,
             ),
           ],
-          type: VOID,
+          // The function's own return type; the value is discarded.
+          type: fnT.ret,
           loc,
         },
         loc,

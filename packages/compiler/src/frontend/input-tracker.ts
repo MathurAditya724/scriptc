@@ -164,8 +164,28 @@ export function markFrontendInputsUnstable(): void {
   (synchronousTracker ?? activeTracker.getStore())?.markUnstable();
 }
 
+/** Compiler-synthesized module sources (a bundle's CommonJS chunks split
+ * into sibling modules, npm-static-bundled-chunks.ts). They answer like
+ * regular files but are never recorded: each derives from the content of
+ * a recorded bundle read, which already keys every cache that sees it. */
+const virtualSources = new Map<string, string>();
+
+export function setVirtualSource(path: string, text: string): void {
+  virtualSources.set(resolve(path), text);
+}
+
+export function isVirtualSource(path: string): boolean {
+  return virtualSources.has(resolve(path));
+}
+
+export function clearVirtualSources(): void {
+  virtualSources.clear();
+}
+
 export function trackedReadFile(path: string): string | null {
   path = resolve(path);
+  const virtual = virtualSources.get(path);
+  if (virtual !== undefined) return virtual;
   try {
     const text = readFileSync(path, "utf8");
     record({ op: "file", path, digest: frontendSourceDigest(text) });
@@ -178,6 +198,7 @@ export function trackedReadFile(path: string): string | null {
 
 export function trackedFileExists(path: string): boolean {
   path = resolve(path);
+  if (virtualSources.has(path)) return true;
   const kind = pathKind(path);
   record({ op: "kind", path, kind });
   return kind === "file";
@@ -185,6 +206,7 @@ export function trackedFileExists(path: string): boolean {
 
 export function trackedDirectoryExists(path: string): boolean {
   path = resolve(path);
+  if (virtualSources.has(path)) return false;
   const kind = pathKind(path);
   record({ op: "kind", path, kind });
   return kind === "directory";
@@ -192,6 +214,7 @@ export function trackedDirectoryExists(path: string): boolean {
 
 export function trackedExists(path: string): boolean {
   path = resolve(path);
+  if (virtualSources.has(path)) return true;
   const kind = pathKind(path);
   record({ op: "kind", path, kind });
   return kind !== "missing";
@@ -199,6 +222,7 @@ export function trackedExists(path: string): boolean {
 
 export function trackedRealpath(path: string): string | null {
   path = resolve(path);
+  if (virtualSources.has(path)) return path;
   try {
     const target = systemRealpath(path);
     record({ op: "realpath", path, target });
@@ -223,9 +247,13 @@ export function trackedAccessibleEntries(
     }
     files.sort();
     directories.sort();
-    const answer = { files, directories };
-    record({ op: "entries", path, files, directories });
-    return answer;
+    record({ op: "entries", path, files: [...files], directories });
+    for (const virtual of virtualSources.keys()) {
+      if (dirname(virtual) === path && !files.includes(basename(virtual)))
+        files.push(basename(virtual));
+    }
+    files.sort();
+    return { files, directories };
   } catch {
     // Enumeration can fail even while the path remains a directory. Preserve
     // the failed operation itself so a permission/ACL repair invalidates the

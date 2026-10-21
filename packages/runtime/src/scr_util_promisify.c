@@ -23,9 +23,15 @@ static ScrDyn *up_cap(ScrClosure *closure, size_t index) {
  * The wrapper calls original with the call's receiver and arguments plus a
  * callback, and answers a promise the callback settles: a truthy first
  * argument rejects with it, otherwise the second argument fulfills. A
- * synchronous throw rejects, as Node's executor does. The first settlement
- * wins. util.promisify.custom functions are not consulted. */
+ * synchronous throw rejects, as Node's executor does. The first call
+ * resolves the promise, as the executor's resolve and reject functions
+ * do: a promise it fulfills with keeps the wrapper's promise pending
+ * until it settles, and later calls and throws are ignored meanwhile.
+ * util.promisify.custom functions are not consulted. caps[0] holds the
+ * wrapper's promise and caps[1] whether it has been resolved. */
 static ScrDyn *up_callback(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  if (scr_box_get_bool(closure->caps[1])) return scr_dyn_retain(scr_dyn_undefined());
+  scr_box_set_bool(closure->caps[1], true);
   ScrDyn *settles = up_cap(closure, 0);
   ScrPromise *promise = scr_dyn_promise_of(settles);
   if (promise && scr_promise_is_pending(promise)) {
@@ -46,8 +52,9 @@ static ScrDyn *up_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   ScrDyn *receiver = scr_dyn_this_get();
   ScrPromise *promise = scr_promise_new();
   ScrDyn *result = scr_dyn_new_promise(promise);
-  ScrClosure *settle = scr_closure_new(NULL, 1);
+  ScrClosure *settle = scr_closure_new(NULL, 2);
   settle->caps[0] = up_box(scr_dyn_retain(result));
+  settle->caps[1] = scr_box_new(SCR_BOX_BOOL);
   ScrDyn *callback = scr_dyn_new_func(settle, up_callback, 2, "native:util.promisify", "");
   ScrDyn **full = malloc((argc + 1) * sizeof *full);
   if (!full) scr_trap("out of memory");
@@ -57,9 +64,14 @@ static ScrDyn *up_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   ScrDyn *returned = scr_dyn_call(original, full, argc + 1, "function");
   scr_dyn_this_pop();
   free(full);
-  if (returned) scr_dyn_release(returned);
-  else if (scr_promise_is_pending(promise)) scr_promise_reject_pending(promise);
-  else scr_exc_clear();
+  if (returned) {
+    scr_dyn_release(returned);
+  } else if (!scr_box_get_bool(settle->caps[1])) {
+    scr_box_set_bool(settle->caps[1], true);
+    scr_promise_reject_pending(promise);
+  } else {
+    scr_exc_clear();
+  }
   scr_dyn_release(callback);
   scr_dyn_release(receiver);
   scr_dyn_release(original);

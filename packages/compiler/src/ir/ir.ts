@@ -647,6 +647,9 @@ export function isSupportedArrayElem(t: IrType): boolean {
     case "regex":
     case "child":
     case "netServer":
+    // fs.Stats snapshots (`await Promise.all(paths.map(stat))`): immutable
+    // refcounted handles with their own retain/release adapters.
+    case "stats":
     case "symbol":
     case "classval":
     case "moduleNs":
@@ -1044,6 +1047,24 @@ export interface IrModule {
    * write in the program (ir/contract-check.ts). Backends may rely on them
    * unconditionally. Absent when the program writes no contract. */
   contracts?: IrContracts;
+  /** The WebAssembly modules translated into this program (wasm/
+   * translate.ts), present exactly when the program uses the WebAssembly
+   * API (possibly empty). The backend appends each module's translation
+   * and emits the registry the runtime looks modules up in. */
+  wasmModules?: IrWasmModule[];
+  /** The program calls WebAssembly.Module.customSections, so translated
+   * modules keep their custom sections (otherwise they carry none, and
+   * debug sections cost nothing). */
+  wasmCustomSections?: boolean;
+}
+
+/** A WebAssembly module whose bytes the build saw, validated within the
+ * translatable feature level. */
+export interface IrWasmModule {
+  /** Hex SHA-256 of the bytes. */
+  sha256: string;
+  /** The bytes, base64. */
+  bytes: string;
 }
 
 /** Verified contract facts, keyed by IR names. */
@@ -1406,6 +1427,11 @@ export interface IrClassDef {
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
   tracksOwnFields?: boolean;
+  /** Error subclasses: the field an instance's own `name` follows among its
+   * own properties, or null when it precedes every field. Absent when no
+   * class of the chain sets `name` during construction, and then an own
+   * `name` follows every other own property. */
+  errorNameAfter?: string | null;
   /** Stable module symbol identities for public instance layout fields. */
   symbolFields?: { field: string; globalId: string }[];
   /** RUNTIME-PROVIDED class (the builtin Error hierarchy): the struct, RC
@@ -1621,6 +1647,10 @@ export interface IrRecordShape {
    * fields carry that declaredOrder OMITS are internal '%'-fields (Dirent's
    * %dtype) — hidden from every key-order surface, JSON included. */
   declaredOrder?: string[];
+  /** Shapes with accessor slots: every own key in declaration order, with
+   * an accessor property named once (see accessorSlotProp). The
+   * checked-dynamic copy lists its keys in this order. */
+  accessorOrder?: string[];
 }
 
 /** fs.Dirent rows: the hidden %dtype entry kind (libuv's UV_DIRENT
@@ -1932,8 +1962,23 @@ export type IrStmt =
   | { kind: "return"; value: IrExpr | null; awaited?: true; loc: SrcLoc }
   /** Field write `obj.f = v` — statement-only, like `assign`/`arraySet`.
    * Evaluation order: obj, then value. The old value is released; ownership
-   * of a refcounted new value MOVES into the object. */
-  | { kind: "fieldSet"; obj: IrExpr; className: string; field: string; value: IrExpr; loc: SrcLoc }
+   * of a refcounted new value MOVES into the object. `sloppy` marks a write
+   * in sloppy-mode code, which skips a read-only field instead of throwing.
+   * `define` marks a class field initializer, which defines the property
+   * (a non-extensible instance rejects it). `attributesChecked` marks a
+   * write that already honors the instance's property attributes
+   * (CLASS_ATTRIBUTES). */
+  | {
+      kind: "fieldSet";
+      obj: IrExpr;
+      className: string;
+      field: string;
+      value: IrExpr;
+      sloppy?: true;
+      define?: true;
+      attributesChecked?: true;
+      loc: SrcLoc;
+    }
   /** Record field write `r.f = v` — mirrors `fieldSet` exactly (evaluation
    * order obj then value; old value released; refcounted new value moved
    * in), with a shape id in place of a class name. */
@@ -3331,9 +3376,10 @@ export type IrExpr =
   /** Keyed read on a dyn value — `pkg.name` / `pkg["k"]` / the
    * `pkg?.scripts` chain step on a JSON.parse result. `key` is
    * string-typed (a strLit for the dot form); `type` is always dyn. An
-   * OBJ receiver answers the member (+1) or the undefined singleton (the
-   * own-property answer — prototype members like `toString` answer
-   * undefined, SEMANTICS.md); ARR answers `length` and canonical
+   * OBJ receiver answers the member (+1), an inherited Object.prototype
+   * member (the Object constructor and the interned valueOf/toString/
+   * hasOwnProperty/propertyIsEnumerable values), or the undefined singleton;
+   * ARR answers `length` and canonical
    * in-range indices, STR answers `length` (UTF-16-exact), both
    * undefined otherwise; NUM/BOOL/BYTES answer undefined. An
    * undefined/null receiver THROWS the catchable Node-shaped TypeError
@@ -4054,6 +4100,7 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["http2Session", { tag: "SCR_DYNH_H2_SESSION", cls: "Http2Session" }],
   ["http2Stream", { tag: "SCR_DYNH_H2_STREAM", cls: "Http2Stream" }],
   ["httpClientReq", { tag: "SCR_DYNH_HTTP_CLIENT", cls: "ClientRequest" }],
+  ["dgramSocket", { tag: "SCR_DYNH_DGRAM_SOCKET", cls: "Socket" }],
   ["dir", { tag: "SCR_DYNH_DIR", cls: "Dir" }],
   ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
   ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
@@ -4077,6 +4124,27 @@ export function isClassOwnEnumerableFieldName(name: string): boolean {
 
 /** Compiler-owned storage for properties added through untyped references. */
 export const DYN_CLASS_PROPERTIES = "%dynProperties";
+
+/** Compiler-owned integrity state of a class instance whose hierarchy is
+ * passed to Object.freeze, Object.seal, Object.preventExtensions or
+ * Object.defineProperty: an f64 holding CLASS_NOT_EXTENSIBLE, CLASS_SEALED
+ * and CLASS_FROZEN bits. Other hierarchies have no such field. */
+export const CLASS_ATTRIBUTES = "%attributes";
+export const CLASS_NOT_EXTENSIBLE = 1;
+export const CLASS_SEALED = 2;
+export const CLASS_FROZEN = 4;
+
+/** Compiler-owned attributes of one declared field that Object.defineProperty
+ * changes: an f64 holding FIELD_NOT_WRITABLE, FIELD_NOT_ENUMERABLE and
+ * FIELD_NOT_CONFIGURABLE bits (zero is an ordinary data property). */
+export const CLASS_FIELD_ATTRIBUTES_PREFIX = "%attr:";
+export const FIELD_NOT_WRITABLE = 1;
+export const FIELD_NOT_ENUMERABLE = 2;
+export const FIELD_NOT_CONFIGURABLE = 4;
+
+export function classFieldAttributesName(field: string): string {
+  return CLASS_FIELD_ATTRIBUTES_PREFIX + field;
+}
 
 /** A class capsule can always preserve its exact native identity. Its
  * optional property view additionally needs converters in both directions;
@@ -4150,6 +4218,10 @@ export function canConvertToDyn(
         (a) =>
           a.kind === "undefinedT" ||
           isJsonSafeType(a, getRecord, getUnion) ||
+          // Composite arms (records holding dyn, Map or Set members) box
+          // through the walker beside the promise arm: a method answering
+          // either its result or a promise of it.
+          canBoxDynComposite(a, getRecord, getUnion, visiting) ||
           isDynTypedRefType(a) ||
           a.kind === "classval" ||
           DYN_HANDLE_KINDS.has(a.kind) ||
@@ -4231,9 +4303,6 @@ function canBoxDynCompositeAt(
       const shape = getRecord(t.shapeId);
       if (!shape) return false;
       if (recordTextCodecClass(shape) !== null) return false;
-      // Accessor slots hold the getter and setter closures, not property
-      // values (see accessorSlotProp).
-      if (shapeHasAccessorSlots(shape)) return false;
       // Recursive shapes answer coinductively, like isJsonSafeType.
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);

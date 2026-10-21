@@ -1,5 +1,6 @@
 import { generatorDrain } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
+import { liftedFreshSpread } from "../coercions/fresh-spread.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
   dynUndefinedExpr,
@@ -44,6 +45,7 @@ import {
   lowerArrayCallback,
   callbackArrayElement,
 } from "./callback-arguments.js";
+import { classGeneratorIterable } from "../class-iterables.js";
 
 /** Build the argument array for a mutating/copying operation while keeping
  * the receiver's scalar payload ABI. A missing read is represented as the
@@ -140,6 +142,16 @@ export function lowerArraySpreadItems(
       }
       if (source.type.kind === "record" && lowerer.shapes.get(source.type.shapeId)?.tuple) {
         source = lowerer.widthCoerce(source, arrType) ?? source;
+      }
+      if (
+        !typeEquals(source.type, arrType) &&
+        !(
+          source.type.kind === "array" &&
+          identityPreservingWidening(lowerer, source.type.elem, elem)
+        )
+      ) {
+        // Fresh elements (an array literal) convert into the element layout.
+        source = liftedFreshSpread(lowerer, node.expression, source, arrType, loc) ?? source;
       }
       if (!typeEquals(source.type, arrType)) {
         if (
@@ -265,6 +277,22 @@ function appendWidenedArrayValues(
 }
 
 /** The Array constructor's element and count forms, shared by calls and new. */
+/** The value of `.fill(v)` when `expr` is that call's receiver. */
+function fillArgumentOfReceiver(expr: ts.Expression): ts.Expression | null {
+  let receiver: ts.Node = expr;
+  let parent = expr.parent;
+  while (ts.isParenthesizedExpression(parent)) {
+    receiver = parent;
+    parent = parent.parent;
+  }
+  if (!ts.isPropertyAccessExpression(parent) || parent.expression !== receiver) return null;
+  if (parent.name.text !== "fill" || parent.questionDotToken) return null;
+  const call = parent.parent;
+  if (!ts.isCallExpression(call) || call.expression !== parent) return null;
+  const value = call.arguments.nodes[0];
+  return value !== undefined && !ts.isSpreadElement(value) ? value : null;
+}
+
 export function lowerArrayConstructor(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.NewExpression,
@@ -279,7 +307,7 @@ export function lowerArrayConstructor(
   // reference. Known element forms retain native arrays, including their
   // existing sparse storage and indexed property contracts.
   if (
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     (result?.kind !== "array" || result.elem.kind === "dyn")
   ) {
     return {
@@ -295,7 +323,16 @@ export function lowerArrayConstructor(
     const contextual = lowerer.checker.getContextualType(expr);
     if (contextual) result = lowerer.mapTypeOf(contextual);
   }
-  if (isJsSourceFile(expr.getSourceFile()) && (result === null || result.kind === "dyn"))
+  // `Array(n).fill(v)`: the checker types the length-constructed array as
+  // any[], but fill gives every element v's type.
+  if (result?.kind !== "array") {
+    const fillValue = fillArgumentOfReceiver(expr);
+    const elem = fillValue
+      ? lowerer.mapTypeOf(lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(fillValue)))
+      : null;
+    if (elem !== null && isSupportedArrayElem(elem)) result = arrayOf(elem);
+  }
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && (result === null || result.kind === "dyn"))
     result = arrayOf(DYN);
   if (result?.kind !== "array" || !isSupportedArrayElem(result.elem)) {
     lowerer.badType(expr, lowerer.typeOf(expr));
@@ -797,7 +834,7 @@ export function lowerArrayFromCall(
   const loc = locOf(call);
   const args = call.arguments.nodes;
   if (
-    isJsSourceFile(call.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
     args.length >= 1 &&
     args.length <= 3 &&
     !args.some(ts.isSpreadElement)
@@ -913,7 +950,7 @@ export function lowerArrayFromCall(
   // and materializes holes while keeping element reference identity.
   if ((args.length === 1 || args.length === 2) && !ts.isObjectLiteralExpression(args[0]!)) {
     const source = lowerer.lowerExpr(args[0]!);
-    const src =
+    let src =
       source.type.kind === "string" && args.length === 2
         ? strCharsCall(lowerer, source, loc)
         : source;
@@ -1008,6 +1045,9 @@ export function lowerArrayFromCall(
     if (src.type.kind === "searchParams" && args.length === 1) {
       return lowerCheckedArrayFrom(lowerer, lowerer.coerceInto(args[0]!, src, DYN), loc);
     }
+    // A class whose [Symbol.iterator] is a generator method iterates the
+    // generator that method returns.
+    src = classGeneratorIterable(lowerer, src) ?? src;
     // A generator (or an iterator adapted into one) drains in order.
     if (src.type.kind === "generator" && args.length === 1) {
       const arrT = lowerer.mapTypeOf(lowerer.typeOf(call));

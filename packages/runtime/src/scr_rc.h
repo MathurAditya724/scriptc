@@ -6,6 +6,41 @@
 
 #include "scr_core.h"
 
+/* ── reference counts ─────────────────────────────────────────────────
+ * Every heap object's first member is its `size_t rc` word. On 64-bit
+ * targets the reference count is the word's low 32 bits: an emitted
+ * instance of a class in a program-rooted hierarchy keeps its class id (its
+ * class's preorder number + 1) in the high 32 bits (llvm/classes.ts
+ * classIdRcWord), and no other object's count reaches 2^32. A count of SCR_RC_IMMORTAL marks
+ * an immortal object; for every object but those class instances the whole
+ * word is then SIZE_MAX. Code that reads or writes the count of an object of
+ * any kind goes through SCR_RC_COUNT. */
+#if SIZE_MAX > UINT32_MAX
+typedef uint32_t ScrRcCount;
+#ifdef __BYTE_ORDER__
+_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
+               "the reference count is the low half of the rc word, at offset 0");
+#endif
+#else
+typedef size_t ScrRcCount;
+#endif
+#define SCR_RC_IMMORTAL ((ScrRcCount)-1)
+#define SCR_RC_COUNT(obj) (*(ScrRcCount *)(obj))
+
+/* The class id in the high half of `obj`'s rc word, or 0 for an object
+ * without one: the high half of any other object's word is 0, or 0xffffffff
+ * (immortal) or 0x80000000 (program-lifetime), and a class id is never one of
+ * these. */
+static inline uint32_t scr_rc_class_id(const void *obj) {
+#if SIZE_MAX > UINT32_MAX
+  uint32_t high = (uint32_t)(*(const size_t *)obj >> 32);
+  return high == UINT32_MAX || high == UINT32_C(0x80000000) ? 0 : high;
+#else
+  (void)obj;
+  return 0;
+#endif
+}
+
 /* ── cycle collection (scr_cycle.c) ───────────────────────────────────
  * Reference counting alone cannot free cycles, so every object that can
  * participate in one — capture boxes, heap closures, unions, promises, and
@@ -352,6 +387,10 @@ void scr_sa_thread_starting(void);
  * pointer, or a process-wide cache keeps an immortal object. Its memory
  * then stays when it exits (scr_alloc.c). */
 void scr_sa_thread_shares(void);
+/* The event loop of the calling thread is about to wait with nothing ready
+ * (true), or is done waiting (false); worker threads are ignored. The
+ * memory of parked workers goes back while the loop waits (scr_alloc.c). */
+void scr_sa_loop_waiting(bool waiting);
 #define SCR_SA_FREE_FOREIGN(p) scr_sa_free_foreign(p)
 #else
 #define SCR_SA_FREE_FOREIGN(p) free(p)
@@ -587,6 +626,10 @@ enum {
   SCR_PUB_KIND_OBJECT = 4,
   SCR_PUB_KIND_UNION = 5,
   SCR_PUB_KIND_DYN = 6,
+  /* Or'ed into a kind: an object whose rc word keeps its class id in
+   * the high half (SCR_RC_COUNT). The mark, and a refusal's restore, write
+   * only the count. */
+  SCR_PUB_CLASS_ID = 0x100,
 };
 void scr_publish(void *root, ScrPubFn fn);
 void scr_pub_push(ScrPub *ctx, void *v, ScrPubFn fn);

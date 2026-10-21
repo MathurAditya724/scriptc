@@ -1,6 +1,7 @@
 // util.promisify over untyped (`any`) functions: the callback's error
 // rejects, its first value fulfills, a synchronous throw rejects, only the
-// first settlement counts, and the call's receiver reaches the function.
+// first settlement counts (also while a promise it fulfills with is still
+// pending), and the call's receiver reaches the function.
 import { promisify } from "node:util";
 
 const client: any = {
@@ -17,6 +18,18 @@ const client: any = {
   },
   boom(_callback: any) {
     throw new TypeError("synchronous failure");
+  },
+  adoptThenCall(callback: any) {
+    callback(null, new Promise((resolve) => setTimeout(() => resolve("adopted"), 5)));
+    callback(null, "second");
+  },
+  adoptThenReject(callback: any) {
+    callback(null, new Promise((resolve) => setTimeout(() => resolve("adopted"), 5)));
+    callback(new Error("late error"));
+  },
+  adoptThenThrow(callback: any) {
+    callback(null, new Promise((resolve) => setTimeout(() => resolve("adopted"), 5)));
+    throw new Error("late throw");
   },
 };
 
@@ -35,6 +48,13 @@ async function main(): Promise<void> {
     await promisify(client.boom)();
   } catch (error) {
     console.log("sync:", (error as Error).name, (error as Error).message);
+  }
+  for (const name of ["adoptThenCall", "adoptThenReject", "adoptThenThrow"]) {
+    try {
+      console.log(`${name}:`, await promisify(client[name])());
+    } catch (error) {
+      console.log(`${name} rejected:`, (error as Error).message);
+    }
   }
   const unbound = promisify(client.fetch);
   console.log("receiver:", await unbound.call(client, "b"));

@@ -18,9 +18,15 @@
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isNpmStaticPackage,
+  npmStaticActive,
   npmStaticPackageOfPath,
   npmStaticTransformPkgJson,
 } from "./npm-static.js";
+import {
+  clearPackageShimCaches,
+  packageShimFor,
+  throughBundledShimForwarder,
+} from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import {
   trackedAccessibleEntries,
@@ -608,6 +614,10 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
   if (provenance !== null) return normalizeResolvedPath(provenance);
   const viaPaths = resolveViaProjectPaths(specifier);
   if (viaPaths !== null) return normalizeResolvedPath(viaPaths);
+  // A package scriptc implements itself (package-shims.ts): the installed
+  // version's shim module compiles in the package's place.
+  const shim = packageShimFor(fromFile, specifier);
+  if (shim !== null) return normalizeResolvedPath(shim);
   const pkgDir = nearestPkgDir(dirname(resolve(fromFile)));
   if (pkgDir === null) return null;
   const pkg = pkgJsonOf(pkgDir);
@@ -661,6 +671,11 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
  * answer null for their dedicated callers. */
 export function resolveProjectModule(fromFile: string, specifier: string): string | null {
   if (isRelativeSpecifier(specifier) || isAbsolute(specifier)) {
+    // A bundled copy's forwarder (a virtual declaration module) answers
+    // the shim it forwards to.
+    const forwarder = join(dirname(resolve(fromFile)), `${specifier}.d.ts`);
+    const forwarded = throughBundledShimForwarder(forwarder);
+    if (forwarded !== forwarder) return forwarded;
     return resolveRelativeModule(fromFile, specifier);
   }
   if (specifier.startsWith("node:")) return null;
@@ -868,7 +883,11 @@ export function resolveBareModule(
   // never consulted — mirroring the shadowed world the tsgo host serves.
   const runtimeImport = mode === "runtime-js" || mode === "runtime-source";
   const npmStatic =
-    mode === "js-only" || (!runtimeImport && mode !== "types-only" && isNpmStaticPackage(pkgName));
+    mode === "js-only" ||
+    (!runtimeImport &&
+      mode !== "types-only" &&
+      (isNpmStaticPackage(pkgName) ||
+        (npmStaticActive() && isNpmStaticPackage(aliasedPackageOf(fromFile, pkgName)))));
   const conditions = runtimeImport
     ? RUNTIME_IMPORT_CONDITIONS
     : npmStatic
@@ -970,6 +989,23 @@ export function resolveBareModule(
   return npmStatic ? passOnce("js") : (passOnce("types") ?? passOnce("js"));
 }
 
+/** The package an npm alias directory installs (`"x-updated":
+ * "npm:x@6.3.0"` puts package x under node_modules/x-updated): the name
+ * the nearest node_modules/<dirName>/package.json declares when it
+ * differs from the directory name, else null. */
+function aliasedPackageOf(fromFile: string, dirName: string): string | null {
+  for (let dir = dirname(resolve(fromFile)); ;) {
+    const pkgDir = join(dir, "node_modules", dirName);
+    if (isDirectory(pkgDir)) {
+      const name = pkgJsonOf(pkgDir)?.name;
+      return typeof name === "string" && name !== dirName ? name : null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 export function resolveWorkspaceSourceModule(
   fromFile: string,
   specifier: string,
@@ -1029,6 +1065,7 @@ export function resolveTypeDirective(name: string, fromFile: string): string | n
 /** Resolver metadata and the active project realm are shared within one
  * compile, never across compiles in a long-lived process. */
 export function clearResolveCaches(): void {
+  clearPackageShimCaches();
   pkgJsonCache.clear();
   workspaceMembersCache.clear();
   projectRealmPkgJson = null;

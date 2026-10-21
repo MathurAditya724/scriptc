@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { analyze, compile } from "@scriptc/compiler";
 import { expect, test } from "vitest";
-import { ts7Executable } from "../../packages/compiler/src/frontend/ts7/rpc-api.js";
+import { tsgoExecutable } from "../../packages/compiler/src/frontend/ts7/rpc-api.js";
 import { runClient } from "./ts7-client-harness.js";
 
 const root = join(import.meta.dirname, "../..");
@@ -96,8 +96,9 @@ for (const backend of ["llvm"] as const) {
       );
       const report = join(dir, "native.json");
       // Only ordinary stdio is inherited. The native executable starts the
-      // actual tsgo process; the test runner never creates its RPC pipes.
-      const run = spawnSync(built.binaryPath, [ts7Executable(), dir, report], {
+      // actual tsgo process; the test runner never creates its RPC pipes. As in
+      // ts7-client-harness.ts, the protocol cases run against tsgo.
+      const run = spawnSync(built.binaryPath, [tsgoExecutable(), dir, report], {
         encoding: "utf8",
         timeout: 45_000,
       });
