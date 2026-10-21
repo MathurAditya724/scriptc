@@ -12,7 +12,6 @@
  * child (the compiler's handle-properties.ts). */
 #include "scr_runtime.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -138,10 +137,17 @@ static bool hp_set(void *h, const char *key, size_t key_len, const ScrDyn *value
     /* An accessor's setter runs on the child. Without one the write throws
      * the strict-mode TypeError, as the other handle getters do. */
     if (!entry->setter) {
-      char msg[160];
-      int n = snprintf(msg, sizeof msg, "Cannot set property %.*s of #<ChildProcess> which has only a getter",
-                       (int)key_len, key);
-      scr_throw_error_msg(SCR_ERR_TYPE, msg, n < 0 ? 0 : (size_t)n);
+      /* Built at its exact length: a property name has no length limit. */
+      static const char head[] = "Cannot set property ";
+      static const char tail[] = " of #<ChildProcess> which has only a getter";
+      size_t len = sizeof head - 1 + key_len + sizeof tail - 1;
+      char *msg = malloc(len);
+      if (!msg) scr_trap("scriptc: out of memory\n");
+      memcpy(msg, head, sizeof head - 1);
+      memcpy(msg + sizeof head - 1, key, key_len);
+      memcpy(msg + sizeof head - 1 + key_len, tail, sizeof tail - 1);
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, len);
+      free(msg);
       return true;
     }
     ScrDyn *setter = scr_dyn_retain(entry->setter);

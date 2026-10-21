@@ -102,8 +102,10 @@ const CHILD_MEMBERS: ReadonlySet<string> = new Set([
 ]);
 
 interface ChildAdditions {
-  /** Names JavaScript assigns onto typed children. */
+  /** Names JavaScript assigns or defines onto typed children. */
   written: ReadonlySet<string>;
+  /** Whether a write or definition uses a key that is not a literal. */
+  everyName: boolean;
   /** Whether the program can add properties to children at all. */
   any: boolean;
 }
@@ -123,21 +125,62 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
   // A child can reach any module (`module.exports = (child) => { child.x =
   // ... }`), so once some file loads child_process every JavaScript file's
   // writes onto children count.
+  // A key that is not a literal may name any member, so every member then
+  // goes through the child's box.
+  let everyName = false;
+  const isChild = (e: ts.Expression): boolean =>
+    lowerer.mapTypeOf(lowerer.typeOf(e))?.kind === "child";
+  const key = (k: ts.Expression | ts.PropertyName): void => {
+    if (ts.isIdentifier(k) || ts.isStringLiteralLike(k) || ts.isNumericLiteral(k))
+      written.add(k.text);
+    else everyName = true;
+  };
   for (const sf of spawns ? files : []) {
     const visit = (node: ts.Node): void => {
       if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        ts.isPropertyAccessExpression(node.left) &&
-        lowerer.mapTypeOf(lowerer.typeOf(node.left.expression))?.kind === "child"
+        (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
+        isChild(node.left.expression)
       ) {
-        written.add(node.left.name.text);
+        if (ts.isPropertyAccessExpression(node.left)) written.add(node.left.name.text);
+        else key(node.left.argumentExpression);
+      }
+      // `Object.defineProperty(child, "kill", { value })`, its Reflect
+      // twin, and `Object.defineProperties(child, { kill: ... })`.
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) &&
+        (node.expression.expression.text === "Object" ||
+          node.expression.expression.text === "Reflect")
+      ) {
+        const method = node.expression.name.text;
+        const [target, second] = node.arguments.nodes;
+        if (target && second && isChild(target)) {
+          if (method === "defineProperty") key(second);
+          else if (method === "defineProperties") {
+            if (!ts.isObjectLiteralExpression(second)) everyName = true;
+            else
+              for (const prop of second.properties.nodes) {
+                const name = prop.name;
+                if (
+                  name !== undefined &&
+                  (ts.isIdentifier(name) ||
+                    ts.isStringLiteralLike(name) ||
+                    ts.isNumericLiteral(name))
+                )
+                  written.add(name.text);
+                else everyName = true;
+              }
+          }
+        }
       }
       ts.forEachChild(node, visit);
     };
     visit(sf);
   }
-  known = { written, any: written.size > 0 || (spawns && defines) };
+  known = { written, everyName, any: written.size > 0 || everyName || (spawns && defines) };
   lowerer.childAdditions = known;
   return known;
 }
@@ -158,7 +201,8 @@ function childReceiverOf(
   const typed = lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind === "child";
   if (!untyped && (!typed || !additions.any)) return null;
   const name = access.name.text;
-  if (!untyped && CHILD_MEMBERS.has(name) && !additions.written.has(name)) return null;
+  if (!untyped && CHILD_MEMBERS.has(name) && !additions.everyName && !additions.written.has(name))
+    return null;
   const recv = tryLowerExpression(lowerer, access.expression);
   if (recv?.type.kind !== "child") return null;
   if (additions.any) lowerer.writesOntoChildren = true;
