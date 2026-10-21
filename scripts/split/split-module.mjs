@@ -135,9 +135,11 @@ const isMutable = (st) =>
 
 function inTypePosition(node) {
   for (let n = node; n.parent; n = n.parent) {
+    // A class's `extends` names a value; `implements` and an interface's
+    // `extends` name types.
+    if (ts.isExpressionWithTypeArguments(n) && ts.isHeritageClause(n.parent))
+      return !(n.parent.token === ts.SyntaxKind.ExtendsKeyword && ts.isClassLike(n.parent.parent));
     if (ts.isTypeNode(n) || ts.isTypeQueryNode?.(n)) return true;
-    if (ts.isExpressionWithTypeArguments(n) && n.parent && ts.isHeritageClause(n.parent))
-      return false;
     if (ts.isStatement(n) || (ts.isExpression(n) && !ts.isIdentifier(n))) break;
   }
   return false;

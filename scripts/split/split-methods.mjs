@@ -351,7 +351,10 @@ const walk = (n) => {
     !(n.parent && ts.isImportClause(n.parent)) &&
     !(n.parent && ts.isNamespaceImport(n.parent))
   ) {
-    const sym = checker2.getSymbolAtLocation(n);
+    const sym =
+      n.parent && ts.isShorthandPropertyAssignment(n.parent)
+        ? checker2.getShorthandAssignmentValueSymbol(n.parent)
+        : checker2.getSymbolAtLocation(n);
     const d = sym?.declarations?.[0];
     if (d && (ts.isImportSpecifier(d) || ts.isImportClause(d) || ts.isNamespaceImport(d)))
       used.add(d.name.text);
