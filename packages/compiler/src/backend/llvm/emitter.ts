@@ -54,11 +54,7 @@ import {
   VOID,
   classJsName,
 } from "../../ir/ir.js";
-import {
-  moduleRuntimeFeatures,
-  moduleUsesDynBuiltinStream,
-  moduleUsesMockTimers,
-} from "../../ir/runtime-features.js";
+import { moduleRuntimeFeatures, type RuntimeFeatures } from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { type DenseArrayLoop } from "./dense-array-loops.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
@@ -881,13 +877,16 @@ export class LlEmitter {
   /** The program calls mock.timers members (moduleUsesMockTimers): timer
    * calls emit scr_test.c's mock-aware entry points. */
   readonly mockTimers: boolean;
-  private schedulesInContextValue: boolean | undefined = undefined;
+  private runtimeFeaturesValue: RuntimeFeatures | undefined;
+  /** The module's runtime features (moduleRuntimeFeatures), found with one
+   * walk of the module the first time any of them is read. */
+  get runtimeFeatures(): RuntimeFeatures {
+    return (this.runtimeFeaturesValue ??= moduleRuntimeFeatures(this.mod));
+  }
   /** Whether timer and tick scheduling goes through the *_als entry
    * points (RuntimeFeatures asyncContext). */
   get schedulesInContext(): boolean {
-    if (this.schedulesInContextValue === undefined)
-      this.schedulesInContextValue = moduleRuntimeFeatures(this.mod).asyncContext;
-    return this.schedulesInContextValue;
+    return this.runtimeFeatures.asyncContext;
   }
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
@@ -903,10 +902,9 @@ export class LlEmitter {
   /** Identity-preserving static→dyn capsules for program classes and Web
    * APIs whose values remain directly observable. */
   readonly liveDynRefAdapters = new Map<string, LlStreamTypedRefAdapter>();
-  private dynBuiltinStreamUse: boolean | undefined;
   /** See moduleUsesDynBuiltinStream. */
   get usesDynBuiltinStream(): boolean {
-    return (this.dynBuiltinStreamUse ??= moduleUsesDynBuiltinStream(this.mod));
+    return this.runtimeFeatures.dynBuiltinStream;
   }
   /** Runtime-arm dispatchers for live union values. */
   readonly liveDynUnionRefAdapters = new Map<string, string>();
@@ -1143,7 +1141,7 @@ export class LlEmitter {
   ) {
     this.stackTraces = observesStacks(mod);
     this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
-    this.mockTimers = moduleUsesMockTimers(mod);
+    this.mockTimers = this.runtimeFeatures.mockTimers;
     this.debug =
       options.debugSources === undefined
         ? null
@@ -1156,14 +1154,18 @@ export class LlEmitter {
           );
     this.constantNumericTables = findConstantNumericTables(mod);
     this.initializerBindings = findInitializerBindings(mod);
-    this.int32Slots = analyzeInt32Slots(mod);
+    // One walk finds the dynamic field stores every analysis below consults.
     const dynamicStores = dynamicFieldStores(mod);
+    this.int32Slots = analyzeInt32Slots(mod, {
+      dynamicStores,
+      initializerBindings: this.initializerBindings,
+    });
     this.liveViewsReadOnly =
       mod.lib === undefined && !dynamicStores.all && dynamicStores.names.size === 0;
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
-    this.finalFields = analyzeFinalFields(mod);
+    this.finalFields = analyzeFinalFields(mod, false, dynamicStores);
     this.sizeType = options.pointerBits === 32 ? "i32" : "i64";
     this.ffiExtendNarrowIntegers =
       options.wasi === true || ffiExtendsNarrowIntegers(options.targetTriple);
@@ -1233,7 +1235,7 @@ export class LlEmitter {
     this.unframedFunctions = this.stackTraces
       ? captureFreeFunctions(mod, this.stackChecks, this.publishedTypes)
       : new Set();
-    this.immutableFields = computeImmutableFields(mod);
+    this.immutableFields = computeImmutableFields(mod, dynamicStores);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
     this.indirectMayThrow = mt.indirect || mod.workers === true;
     for (const cls of mod.classes ?? []) {
@@ -1358,7 +1360,7 @@ export class LlEmitter {
     this.receiverReaders = new AmbientReceiverReaders(this.fnByName);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     this.lazyCaptures = new LazyCaptures(this.fnByName);
-    const traced = computeTraced(mod);
+    const traced = computeTraced(mod, dynamicStores);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
     // A shape union's value is whichever record it holds, and the collector
