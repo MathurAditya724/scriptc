@@ -1,3 +1,5 @@
+import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { fallbackTainted } from "./checked-fallback.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -9,6 +11,7 @@ import { InternalCompilerError } from "../../errors.js";
  * (FieldTarget). */
 import * as ts from "../ts7/adapter.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
+import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerMaybePromiseAwait, maybePromiseUnionOf } from "./maybe-promise.js";
@@ -268,6 +271,25 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // enclosing optChain — read the bind temp instead of re-lowering.
   const chainRecv = lowerer.chainRecvByNode.get(expr);
   if (chainRecv) return { ...chainRecv, loc };
+
+  // A failed checked value in a fallback tail: assertions check nothing
+  // (checked-fallback.ts).
+  if (
+    lowerer.fallbackTaint !== null &&
+    (ts.isAsExpression(expr) ||
+      ts.isTypeAssertion(expr) ||
+      ts.isNonNullExpression(expr) ||
+      ts.isSatisfiesExpression(expr)) &&
+    fallbackTainted(lowerer, expr.expression)
+  )
+    return lowerer.lowerExpr(expr.expression);
+  if (lowerer.fallbackTaint !== null && fallbackTainted(lowerer, expr)) {
+    if (ts.isObjectLiteralExpression(expr)) return lowerDynObjectLiteral(lowerer, expr);
+    if (ts.isArrayLiteralExpression(expr) && !expr.elements.nodes.some(ts.isSpreadElement)) {
+      const elems = expr.elements.nodes.map((el) => lowerer.lowerExprExpecting(el, DYN));
+      return { kind: "dynArrLit", elems, type: DYN, loc };
+    }
+  }
 
   // --external-types supplies CHECKER truth only. A value rooted in one
   // of those declarations has no runtime implementation in scriptc, so
@@ -1075,6 +1097,11 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     });
     if (presence !== null) return presence;
   }
+  // Global detection (`typeof window < "u"`, `typeof self !==
+  // "undefined" && …`): a condition whose typeof answers are static
+  // folds, so the untaken arm never lowers (static-typeof.ts).
+  const folded = staticCondition(lowerer, e);
+  if (folded !== null) return { kind: "boolLit", value: folded, type: BOOL, loc: locOf(e) };
   if (ts.isBinaryExpression(e)) {
     const op = e.operatorToken.kind;
     if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {

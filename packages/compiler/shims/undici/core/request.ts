@@ -32,8 +32,10 @@ export class Request {
   error: Error | null;
   abortFn: ((err?: Error) => void) | null;
   handler: DispatchHandlers;
-  /** The request as diagnostics_channel subscribers see it: one boxed
-   * value per request, so its identity is stable across publications. */
+  profile: Profile;
+  /** The request as diagnostics_channel subscribers see it: one untyped
+   * object per request, so its identity is stable across publications.
+   * The request keeps its completed and headers fields current. */
   diagnostic: unknown;
 
   constructor(origin: string, opts: DispatchOptions, handler: DispatchHandlers, profile: Profile) {
@@ -91,6 +93,7 @@ export class Request {
     }
 
     this.completed = false;
+    this.profile = profile;
     this.aborted = false;
     this.idempotent = opts.idempotent ?? (method === "HEAD" || method === "GET");
     this.blocking = opts.blocking ?? (profile.major >= 7 ? method !== "HEAD" : false);
@@ -131,18 +134,29 @@ export class Request {
   }
 
   diagnosticView(): unknown {
-    let view = this.diagnostic;
-    if (view === null) {
-      view = {
+    if (this.diagnostic === null) {
+      // addHeader adds a header as undici's Request.addHeader does (the
+      // tracing instrumentations' header injection).
+      const view: any = {
         origin: this.origin,
         completed: this.completed,
         method: this.method,
         path: this.path,
-        headers: this.headers,
+        headers: this.diagnosticHeaders(),
+        addHeader: (key: string, value: string): unknown => {
+          this.addHeader(key, value);
+          return view;
+        },
       };
       this.diagnostic = view;
     }
-    return view;
+    return this.diagnostic;
+  }
+
+  /** The diagnostics view's headers: undici 7 publishes its header array,
+   * undici 5 the raw block. */
+  diagnosticHeaders(): string | string[] {
+    return this.profile.major >= 7 ? this.headerPairs.slice() : this.headers;
   }
 
   /** The DiagnosticsChannel.Request view's raw header block. */
@@ -155,7 +169,9 @@ export class Request {
   }
 
   addHeader(key: string, value: string): Request {
-    this.headerPairs.push(key, value);
+    processHeader(this, key, value, this.profile);
+    const view: any = this.diagnostic;
+    if (view !== null) view.headers = this.diagnosticHeaders();
     return this;
   }
 
@@ -207,6 +223,8 @@ export class Request {
 
   onComplete(trailers: Buffer[]): void {
     this.completed = true;
+    const view: any = this.diagnostic;
+    if (view !== null) view.completed = true;
     if (channels.trailers.hasSubscribers)
       channels.trailers.publish({ request: this.diagnosticView(), trailers });
     if (this.handler.onComplete !== undefined) {
@@ -235,6 +253,8 @@ function processHeader(request: Request, key: string, val: string, profile: Prof
     if (headerCharRegex.test(val)) throw new InvalidArgumentError(`invalid ${key} header`);
   }
   if (lower === "host") {
+    // The client writes the Host value into the request head as given.
+    if (headerCharRegex.test(val)) throw new InvalidArgumentError(`invalid ${key} header`);
     if (request.host === null) {
       if (headerCharRegex.test(val)) throw new InvalidArgumentError(`invalid ${key} header`);
       request.host = val;
@@ -250,7 +270,10 @@ function processHeader(request: Request, key: string, val: string, profile: Prof
       request.contentLength = n;
       return;
     }
-    if (profile.major >= 7) throw new InvalidArgumentError("duplicate content-length header");
+    // The client writes the one Content-Length it validated or computed
+    // from the body; a second field would frame the request twice. Both
+    // profiles reject it with undici 7's error (5.x sends it as given).
+    throw new InvalidArgumentError("duplicate content-length header");
   }
   if (lower === "content-type" && request.contentType === null && !headerCharRegex.test(val)) {
     request.contentType = val;

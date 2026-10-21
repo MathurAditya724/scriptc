@@ -328,15 +328,18 @@ export class Client extends DispatcherBase {
   }
 
   __onTimeout(): void {
-    this.__timerCancel = null;
-    this.__timerRefresh = null;
     const socket = this.__socket;
     const parser = this.__parser;
+    // A body timeout that fires while the response is paused keeps its
+    // timer: resuming refreshes it, as undici's parser does.
+    if (this.__timerType === TIMEOUT_BODY && parser !== null && parser.paused) return;
+    this.__timerCancel = null;
+    this.__timerRefresh = null;
     if (socket === null || parser === null) return;
     if (this.__timerType === TIMEOUT_HEADERS) {
       this.__destroySocket(socket, new HeadersTimeoutError());
     } else if (this.__timerType === TIMEOUT_BODY) {
-      if (!parser.paused) this.__destroySocket(socket, new BodyTimeoutError());
+      this.__destroySocket(socket, new BodyTimeoutError());
     } else if (this.__timerType === TIMEOUT_IDLE) {
       this.__destroySocket(socket, new InformationalError("socket idle timeout"));
     }
@@ -832,7 +835,10 @@ function isQuotedPairByte(c: number): boolean {
 class ResponseParser {
   client: Client;
   socket: Socket;
+  /** Unconsumed bytes of the current arrival, then the later arrivals in
+   * order. */
   buf: Buffer;
+  queue: Buffer[];
   state: number;
   paused: boolean;
   statusCode: number;
@@ -857,6 +863,7 @@ class ResponseParser {
     this.client = client;
     this.socket = socket;
     this.buf = Buffer.alloc(0);
+    this.queue = [];
     this.state = 0;
     this.paused = false;
     this.statusCode = 0;
@@ -895,12 +902,24 @@ class ResponseParser {
   }
 
   execute(data: Buffer): void {
-    this.buf = this.buf.length === 0 ? data : Buffer.concat([this.buf, data]);
+    if (this.buf.length === 0 && this.queue.length === 0) this.buf = data;
+    else this.queue.push(data);
     if (!this.paused) this.run();
+  }
+
+  /** Moves the next queued arrival into `buf`, after the bytes left in it;
+   * false when nothing is queued. Only a partial status, header or trailer
+   * line (bounded by maxHeaderSize) or a partial chunk-data CRLF is copied. */
+  more(): boolean {
+    const next = this.queue.shift();
+    if (next === undefined) return false;
+    this.buf = this.buf.length === 0 ? next : Buffer.concat([this.buf, next]);
+    return true;
   }
 
   resume(): void {
     if (!this.paused) return;
+    if (this.client.__timerType === TIMEOUT_BODY) this.client.__refreshTimer();
     this.paused = false;
     this.socket.resume();
     this.run();
@@ -1083,7 +1102,9 @@ class ResponseParser {
           if (this.buf.length > this.client.__maxHeaderSize) {
             this.client.__onParseError(this.socket, new HeadersOverflowError());
             this.state = 99;
+            return;
           }
+          if (this.more()) continue;
           return;
         }
         if (line.length === 0) continue;
@@ -1110,7 +1131,9 @@ class ResponseParser {
           if (this.headersSize + this.buf.length > this.client.__maxHeaderSize) {
             this.client.__onParseError(this.socket, new HeadersOverflowError());
             this.state = 99;
+            return;
           }
+          if (this.more()) continue;
           return;
         }
         this.headersSize += line.length;
@@ -1189,7 +1212,10 @@ class ResponseParser {
         if (ret === 2) this.pause();
       } else if (this.state === 2) {
         // Content-Length body.
-        if (this.buf.length === 0) return;
+        if (this.buf.length === 0) {
+          if (this.more()) continue;
+          return;
+        }
         const n = Math.min(this.remaining, this.buf.length);
         const chunk = this.buf.subarray(0, n);
         this.buf = this.buf.subarray(n);
@@ -1204,8 +1230,11 @@ class ResponseParser {
           if (!this.complete()) return;
         }
       } else if (this.state === 3) {
-        // Chunk size line.
-        if (!this.chunkSizeLine()) return;
+        // Chunk size line; a partial one continues with the next arrival.
+        if (!this.chunkSizeLine()) {
+          if (this.state === 3 && this.more()) continue;
+          return;
+        }
         if (this.chunkSize === 0) {
           this.state = 5;
         } else {
@@ -1215,7 +1244,10 @@ class ResponseParser {
       } else if (this.state === 4) {
         // Chunk data, then its CRLF.
         if (this.remaining > 0) {
-          if (this.buf.length === 0) return;
+          if (this.buf.length === 0) {
+            if (this.more()) continue;
+            return;
+          }
           const n = Math.min(this.remaining, this.buf.length);
           const chunk = this.buf.subarray(0, n);
           this.buf = this.buf.subarray(n);
@@ -1228,7 +1260,10 @@ class ResponseParser {
           if (!more) this.pause();
           continue;
         }
-        if (this.buf.length < 2) return;
+        if (this.buf.length < 2) {
+          if (this.more()) continue;
+          return;
+        }
         if (this.buf[0] !== 0x0d || this.buf[1] !== 0x0a) {
           this.fail("Expected LF after chunk data", "STRICT");
           return;
@@ -1237,7 +1272,10 @@ class ResponseParser {
         this.state = 3;
       } else if (this.state === 6) {
         // Read until the connection closes.
-        if (this.buf.length === 0) return;
+        if (this.buf.length === 0) {
+          if (this.more()) continue;
+          return;
+        }
         const chunk = this.buf;
         this.buf = Buffer.alloc(0);
         const more = this.client.__onBody(this, this.socket, Buffer.from(chunk));

@@ -26,6 +26,12 @@
  *   `try { require("encoding") } catch {}` takes its absent branch, and the
  *   package never joins the program.
  *
+ * - builtin alias: a polyfill package whose module IS a Node builtin on
+ *   Node 24 at its installed major version (builtin-package-aliases.ts).
+ *   A require of it compiles as the builtin expression at the require's
+ *   position (npm-static-builtin-aliases.ts), so the package never joins
+ *   the program.
+ *
  * A configured stand-in (for example a no-op tracer for dd-trace) is an
  * implementation entry whose module the project supplies. Today a tsconfig
  * `paths` mapping already does that: resolveProjectImport honors project
@@ -37,6 +43,11 @@ import { dirname, join, resolve } from "node:path";
 import { packageShimRoot, tsgoPath } from "./dts-paths.js";
 import { trackedDirectoryExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
+import {
+  BUILTIN_ALIAS_PACKAGES,
+  builtinAliasOf,
+  type BuiltinAlias,
+} from "./builtin-package-aliases.js";
 
 interface ImplementationShim {
   /** npm package name. */
@@ -44,13 +55,35 @@ interface ImplementationShim {
   /** Supported major versions and their entry modules, relative to the
    * shim root. */
   versions: ReadonlyMap<number, string>;
+  /** The entry has a default export (a CommonJS package's whole export
+   * object, which a default import reads). */
+  defaultExport?: boolean;
+  /** The package's main file in every supported version: a bundler's copy
+   * of it (a __commonJS chunk whose key names the package, its version
+   * and this file) is the package itself. */
+  mainFile: string;
 }
 
 const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
   [
+    "fs-extra",
+    {
+      name: "fs-extra",
+      defaultExport: true,
+      mainFile: "lib/index.js",
+      versions: new Map([
+        [8, "fs-extra/index.ts"],
+        [9, "fs-extra/index.ts"],
+        [10, "fs-extra/index.ts"],
+        [11, "fs-extra/index.ts"],
+      ]),
+    },
+  ],
+  [
     "undici",
     {
       name: "undici",
+      mainFile: "index.js",
       versions: new Map([
         [5, "undici/v5.ts"],
         [7, "undici/v7.ts"],
@@ -58,6 +91,60 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
     },
   ],
 ]);
+
+/** The shim module that stands in for a bundled copy of a package's main
+ * file (a __commonJS chunk keyed `…/<name>@<version>/…/<name>/<file>`), or
+ * null when the package, version or file is not one the registry serves. */
+export function packageShimForBundledFile(
+  name: string,
+  version: string,
+  file: string,
+): string | null {
+  const shim = IMPLEMENTATION_SHIMS.get(name);
+  if (shim === undefined || file.replace(/^\.\//, "") !== shim.mainFile) return null;
+  const major = Number(/^(\d+)\./.exec(version)?.[1] ?? NaN);
+  const entry = shim.versions.get(major);
+  return entry === undefined ? null : join(packageShimRoot(), entry);
+}
+
+/** Bundled-copy forwarders: a virtual declaration module beside a bundle
+ * (`<bundle>.<binding>.shim.d.ts`) that re-exports the shim standing in
+ * for a bundled package, so the checker loads the shim through it, and
+ * module resolution answers the shim itself for its path. */
+const bundledForwarders = new Map<string, string>();
+
+/** The forwarder declaration text for a bundled copy of a shimmed package
+ * and records its path; the bundle's call sites require the forwarder's
+ * extensionless path. */
+export function bundledShimForwarder(declPath: string, shimPath: string): string {
+  bundledForwarders.set(declPath.split("\\").join("/"), shimPath);
+  const target = JSON.stringify(tsgoPath(shimPath));
+  const shim = [...IMPLEMENTATION_SHIMS.values()].find((entry) =>
+    [...entry.versions.values()].some((v) => join(packageShimRoot(), v) === shimPath),
+  );
+  const defaultLine = shim?.defaultExport === true ? `export { default } from ${target};\n` : "";
+  return `// scriptc: this bundled package compiles from its built-in implementation.\nexport * from ${target};\n${defaultLine}`;
+}
+
+/** True for a bundled-copy forwarder's path (the --npm-static shadow keeps
+ * it visible where it hides the package's other declaration files). */
+export function isBundledShimForwarder(path: string): boolean {
+  return bundledForwarders.has(path.split("\\").join("/"));
+}
+
+/** The shim a resolved module path forwards to, or the path itself. */
+export function throughBundledShimForwarder(resolved: string): string {
+  return bundledForwarders.get(resolved.split("\\").join("/")) ?? resolved;
+}
+
+/** Every implementation module the registry ships (absolute paths), for
+ * the guard test that compiles each one. */
+export function packageShimEntries(): string[] {
+  const entries = new Set<string>();
+  for (const shim of IMPLEMENTATION_SHIMS.values())
+    for (const entry of shim.versions.values()) entries.add(join(packageShimRoot(), entry));
+  return [...entries].sort();
+}
 
 /** Package names the project marks never loaded. */
 let unloadedPackages: ReadonlySet<string> = new Set();
@@ -164,6 +251,29 @@ export function packageShimFor(fromFile: string, specifier: string): string | nu
   return dir === null ? null : shimEntryForPackageDir(dir, specifier);
 }
 
+/** The builtin a bare specifier's module is on Node 24, as installed where
+ * Node's resolution from `fromFile` finds it, or null. A package the
+ * project marks unloaded has no alias: its require throws MODULE_NOT_FOUND. */
+export function builtinPackageAliasFor(fromFile: string, specifier: string): BuiltinAlias | null {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("#"))
+    return null;
+  if (isUnloadedPackage(specifier)) return null;
+  const name = packageNameOfSpecifier(specifier);
+  if (!BUILTIN_ALIAS_PACKAGES.has(name)) return null;
+  const dir = installedPackageDir(fromFile, name);
+  if (dir === null) return null;
+  const text = trackedReadFile(join(dir, "package.json"));
+  if (text === null) return null;
+  let pkg: { name?: unknown; version?: unknown };
+  try {
+    pkg = JSON.parse(text) as { name?: unknown; version?: unknown };
+  } catch {
+    return null;
+  }
+  if (pkg.name !== name || typeof pkg.version !== "string") return null;
+  return builtinAliasOf(name, pkg.version, specifier.slice(name.length).replace(/^\//, ""));
+}
+
 /** True when a bare specifier is served by a shim or marked unloaded: it is
  * not an npm import for the npm-static machinery. */
 export function isShimmedImport(fromFile: string, specifier: string): boolean {
@@ -178,11 +288,23 @@ export function packageShimDeclarationText(path: string): string | undefined {
   if (!path.endsWith("/index.d.ts")) return undefined;
   const pkgDir = dirname(path);
   const name = pkgDir.slice(pkgDir.lastIndexOf("/") + 1);
-  if (!IMPLEMENTATION_SHIMS.has(name)) return undefined;
-  const entry = shimEntryForPackageDir(pkgDir, name);
+  const shim = IMPLEMENTATION_SHIMS.get(name);
+  if (shim === undefined) return undefined;
+  // A DefinitelyTyped twin (`@types/fs-extra`) types a package that ships no
+  // declarations. Nothing at its path names the installed runtime version,
+  // so it reads as the shim only when every supported version shares one
+  // module.
+  const viaTypes = dirname(pkgDir).endsWith("/@types");
+  const entries = new Set(shim.versions.values());
+  const entry = viaTypes
+    ? entries.size === 1
+      ? join(packageShimRoot(), [...entries][0]!)
+      : null
+    : shimEntryForPackageDir(pkgDir, name);
   if (entry === null) return undefined;
   const target = JSON.stringify(tsgoPath(entry));
-  return `// scriptc: this package compiles from its built-in implementation.\nexport * from ${target};\n`;
+  const defaultLine = shim.defaultExport === true ? `export { default } from ${target};\n` : "";
+  return `// scriptc: this package compiles from its built-in implementation.\nexport * from ${target};\n${defaultLine}`;
 }
 
 /** True for a file of the shipped package shims. They are compiler-owned
@@ -197,4 +319,5 @@ export function isPackageShimFile(fileName: string): boolean {
 /** Resets per-compile caches. */
 export function clearPackageShimCaches(): void {
   installedCache.clear();
+  bundledForwarders.clear();
 }

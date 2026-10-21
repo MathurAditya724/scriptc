@@ -2180,6 +2180,57 @@ function lowerStringMethodCallWithOptionalArgs(
   return changed ? { ...lowered, args } : lowered;
 }
 
+/** `.then(String)` / `.then(Number)` / `.then(Boolean)` over a promise of
+ * a number, string or boolean: the ambient constructor converts its first
+ * argument (the settled value), so the handler is an interned closure over
+ * the settled type applying that conversion. The constructors' own value
+ * form takes a string, which a number or boolean settled value is not.
+ * Null for every other handler. */
+function primitiveConversionHandler(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  inner: IrType,
+): IrExpr | null {
+  if (!ts.isIdentifier(node)) return null;
+  const name = node.text;
+  if (name !== "String" && name !== "Number" && name !== "Boolean") return null;
+  // A string settled value already fits the constructors' value form.
+  if (inner.kind !== "f64" && inner.kind !== "bool") return null;
+  if (!lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(node) ?? undefined)) return null;
+  const loc = locOf(node);
+  const ret: IrType = name === "String" ? STRING : name === "Number" ? F64 : BOOL;
+  const fnT = funcOf([inner], ret);
+  const key = `then.${name}:${typeKey(inner)}`;
+  let fnName = lowerer.arrHofHelpers.get(key);
+  if (fnName === undefined) {
+    fnName = `%then.${name}.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(key, fnName);
+    const value = varRef("v.0", inner, loc);
+    let body: IrExpr;
+    if (name === "Boolean") body = { kind: "toBool", operand: value, type: BOOL, loc };
+    else if (name === "String") body = { kind: "toString", operand: value, type: STRING, loc };
+    else if (inner.kind === "f64") body = value;
+    else
+      body = {
+        kind: "ternary",
+        cond: value,
+        then: { kind: "numLit", value: 1, type: F64, loc },
+        else_: { kind: "numLit", value: 0, type: F64, loc },
+        type: F64,
+        loc,
+      };
+    lowerer.liftedFns.push({
+      name: fnName,
+      params: [{ localId: "v.0", name: "v", type: inner }],
+      returnType: ret,
+      locals: [{ id: "v.0", name: "v", type: inner, mutable: false }],
+      body: [{ kind: "return", value: body, loc }],
+      loc,
+    });
+  }
+  return { kind: "closure", fnName, captures: [], type: fnT, loc };
+}
+
 function lowerNumberConstructorValue(
   lowerer: Lowerer,
   argNode: ts.Expression,
@@ -3367,6 +3418,8 @@ function lowerDynReceiverMethodCall(
       ? lowerer.checker.getNonNullableType(rawRecvTs)
       : rawRecvTs;
   if (lowerer.classImplementedProtocol(recvTs)) {
+    const viewed = pickViewGenericMethodCall(lowerer, call, access, recvTs);
+    if (viewed) return viewed;
     const property = lowerer.checker.getPropertyOfType(recvTs, access.name.text);
     if (
       property &&
@@ -4339,8 +4392,13 @@ function lowerArrayIsArrayCall(
   if (lowerer.stdlibGlobalMember(access, "Array") !== "isArray") return null;
   if (call.arguments.nodes.length !== 1) return null; // the stdlib chokepoint fences
   const argNode = call.arguments.nodes[0]!;
-  const arg = lowerer.lowerExpr(argNode);
+  let arg = lowerer.lowerExpr(argNode);
   const loc = locOf(call);
+  // A checker-narrowed dyn read arrives as a validated extraction (the
+  // dynCheck bridge). The runtime value may be wider than the flow type
+  // claims (an overload narrower than what arrives), so test the dyn value
+  // itself instead of folding on the extracted type (typeof's rule).
+  if (arg.kind === "dynCheck" && arg.value.type.kind === "dyn") arg = arg.value;
   if (arg.type.kind === "dyn") {
     return { kind: "dynTest", test: "array", value: arg, type: BOOL, loc };
   }
@@ -5793,7 +5851,9 @@ export function lowerPromiseMethodCall(
 
     if (inner.kind === "moduleNs")
       markModuleNsHandlerParams(lowerer, call.arguments.nodes[0]!, inner);
-    let cb = lowerer.lowerExpr(call.arguments.nodes[0]!);
+    let cb =
+      primitiveConversionHandler(lowerer, call.arguments.nodes[0]!, inner) ??
+      lowerer.lowerExpr(call.arguments.nodes[0]!);
     // A TYPED handler on a DYN-settling promise (the tracePromise
     // result's `.then((value) => ...)` — the checker's generic
     // instantiation typed the parameter, but the settled value is a
@@ -9350,15 +9410,18 @@ function lowerObjLitGenericMethodCall(
       lowerer.checker.getCallSignatures(recvT).length > 0
     ) {
       const value = tryLowerExpression(lowerer, access.expression);
+      // Builtin function values held as checked-dynamic functions
+      // (String.fromCharCode, JSON.stringify) bind the same way.
       if (
-        value?.type.kind === "func" &&
-        lowerer.dynConvertible(value.type) &&
+        value &&
+        (value.type.kind === "dyn" ||
+          (value.type.kind === "func" && lowerer.dynConvertible(value.type))) &&
         !call.arguments.nodes.some(ts.isSpreadElement)
       ) {
         const loc = locOf(call);
         return {
           kind: "dynInvoke",
-          recv: { kind: "dynFrom", value, type: DYN, loc },
+          recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
           method: name,
           calleeName: ts.getTextOfNode(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
@@ -10421,6 +10484,53 @@ function maybePromiseHandlerResult(
     );
   }
   return stmt;
+}
+
+/** `view.m(args)` where `view` is a `Pick<C, K>` / `Omit<C, K>` view of a
+ * program class C and `m` is one of C's GENERIC methods (its overloads
+ * included): generic methods have no dispatchable method value, so the
+ * view's live receiver is extracted as the C instance it holds (a checked
+ * extraction — a value of another class throws Node-style TypeError
+ * text naming C) and the call monomorphizes statically against C, the
+ * same lowering a C-typed receiver gets. Null for other receivers. */
+function pickViewGenericMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  recvTs: ts.Type,
+): IrExpr | null {
+  const alias = recvTs.getAliasSymbol();
+  if (alias === undefined || (ts.symbolName(alias) !== "Pick" && ts.symbolName(alias) !== "Omit"))
+    return null;
+  if (!alias.declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile)) return null;
+  const source = recvTs.getAliasTypeArguments()[0];
+  const symbol = source?.getSymbol();
+  const info = symbol ? lowerer.classBySymbol.get(symbol) : undefined;
+  if (!info || call.questionDotToken || access.questionDotToken) return null;
+  const found = findGenericMethodOn(lowerer, info, access.name.text);
+  if (!found) return null;
+  const loc = locOf(access.expression);
+  const lowered = lowerer.lowerExpr(access.expression);
+  const instance: IrType = { kind: "object", className: info.def.name };
+  // A view that statically holds an instance of another class (a
+  // structurally compatible one) calls that class's method in Node, not
+  // C's: the call is refused rather than extracted as a C instance.
+  if (
+    lowered.type.kind === "object" &&
+    lowered.type.className !== info.def.name &&
+    !lowerer.isSubclassOf(lowered.type.className, info.def.name)
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      access,
+      `calling the generic method '${access.name.text}' through a '${ts.symbolName(alias)}' view of '${info.def.name}' that holds a '${lowerer.fmt(lowered.type)}'`,
+    );
+  }
+  const receiver: IrExpr =
+    lowered.type.kind === "object"
+      ? lowered
+      : { kind: "dynCheck", value: lowerer.coerceToExpected(lowered, DYN), type: instance, loc };
+  return lowerClassGenericMethodCall(lowerer, call, access, info, found, receiver);
 }
 
 /** `Object.assign(err, ...sources)` in TypeScript onto an error-hierarchy

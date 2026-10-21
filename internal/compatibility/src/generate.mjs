@@ -17,13 +17,17 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const internalOutputPath = `${packageRoot}generated/node-v24-internal.json`;
 const backlogOutputPath = `${packageRoot}generated/node-v24-backlog.json`;
 const publicOutputPath = `${root}docs/src/generated/node-v24-compatibility.json`;
+// The docs build derives this file's values from the public artifact; a
+// merge that keeps a branch's copy would bring back a file every
+// compatibility change rewrites.
+const retiredOutputPaths = [`${root}docs/src/generated/node-v24-compatibility-meta.json`];
 const compilerManifestPath = `${root}packages/compiler/surface-manifest.json`;
 const compilerCompatPath = `${packageRoot}static-support.json`;
 const pinPath = `${packageRoot}node-v24.json`;
@@ -1009,6 +1013,10 @@ function publicSnapshot(snapshot) {
 }
 
 function checkLocal() {
+  for (const path of retiredOutputPaths) {
+    if (existsSync(path))
+      throw new Error(`${path.slice(root.length)} is no longer generated; delete it`);
+  }
   const snapshot = JSON.parse(readFileSync(internalOutputPath, "utf8"));
   if (snapshot.nodeVersion !== pin.version || snapshot.nodeCommit !== pin.commit) {
     throw new Error(

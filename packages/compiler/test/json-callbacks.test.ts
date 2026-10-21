@@ -53,7 +53,8 @@ for (const backend of ["llvm"] as const) {
         } catch (error) {
           if (error instanceof Error) console.log(error.message);
         }
-        // A checked cast still validates the result AFTER revival.
+        // A checked cast validates the result AFTER revival; a revived value
+        // that does not fit continues as that value (checked-cast fallback).
         try {
           const value = JSON.parse('{"n":1}', (key: string, value: unknown): unknown => key === "n" ? "wrong" : value) as { n: number };
           console.log(value.n);
@@ -75,6 +76,8 @@ for (const backend of ["llvm"] as const) {
           console.log(result === undefined, typeof result);
         }
         local();
+        // Values that do not fit continue as their parsed values, every
+        // iteration (and release cleanly under the sanitizer lane).
         for (let i = 0; i < 20; i++) {
           try {
             const record = JSON.parse('{"opaque":{"deep":[1,2]},"typed":"wrong"}') as { opaque: unknown; typed: number };
@@ -105,13 +108,12 @@ for (const backend of ["llvm"] as const) {
       expect(result.stdout.toString()).toBe(
         [
           "JSON.parse reviver deleting array elements is not supported yet",
-          "true",
+          "wrong",
           "true",
           "true",
           "true",
           "true undefined",
-          "true",
-          "true",
+          ...Array.from({ length: 20 }, () => ["wrong", "2"]).flat(),
           "1",
           "",
         ].join("\n"),

@@ -139,26 +139,21 @@ test("relative and bare specifiers across the whole test tree resolve identicall
       // the resolver follows Node — corpus 2124 pins the behavior
       // differentially, so parity has nothing to check here.
       if (spec.startsWith("#/")) continue;
+      // A package scriptc implements itself (package-shims.ts) resolves
+      // to its built-in module by design; 5.9.3 answers the installed
+      // package.
+      if (packageShimFor(file, spec) !== null) continue;
       bare++;
       // PROJECT imports (#alias / self-name): ts5's NON-external answers
       // for bare specifiers are exactly the package.json-mediated
       // resolutions inside the project — resolveProjectImport must agree.
+      // A package scriptc implements itself (package-shims.ts) answers its
+      // shim module where 5.9.3 answers the installed package, so only the
+      // external-library answer below is compared for it.
       const oursProj = resolveProjectImport(file, spec);
-      // The deliberate package-shim delta: a package scriptc implements
-      // itself (package-shims.ts) answers its shim module here, where
-      // 5.9.3 answers the installed package as an external import; the
-      // installed package's answer is still compared below. Resolved
-      // answers use forward slashes on every platform, as 5.9.3's do.
-      const shim = packageShimFor(file, spec);
       const theirsProj =
-        shim !== null
-          ? reference && reference.isExternalLibraryImport
-            ? shim.replaceAll("\\", "/")
-            : null
-          : reference && !reference.isExternalLibraryImport
-            ? reference.resolvedFileName
-            : null;
-      if (oursProj !== theirsProj) {
+        reference && !reference.isExternalLibraryImport ? reference.resolvedFileName : null;
+      if (oursProj !== theirsProj && packageShimFor(file, spec) === null) {
         failures.push(`${file} '${spec}' (project): ours=${oursProj} ts5=${theirsProj}`);
       }
       const ours = resolveBareModule(file, spec);

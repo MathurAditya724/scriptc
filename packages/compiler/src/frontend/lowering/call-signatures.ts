@@ -956,6 +956,28 @@ export function lambdaSignature(
       return { shapes, funcType: funcTypeFromParamShapes(shapes, DYN) };
     }
   }
+  // A callback whose arguments arrive as the runtime produced them, wider
+  // than its contextual overload says (dns.lookup's callback when the
+  // options are only known at run time: the address is a string or an
+  // address list): every parameter binds as a checked-dynamic value.
+  // Rest parameters keep their packing and optional or defaulted ones stay
+  // omittable (the prologue applies a default to an undefined argument).
+  // The slot discards the result, so a sync callback returns void and an
+  // async one keeps its promise.
+  if (lowerer.dynParamLambdas.has(node)) {
+    const shapes: ParamShape[] = node.parameters.nodes
+      .filter((param) => !isThisParameter(param))
+      .map((param) =>
+        param.dotDotDotToken
+          ? { type: DYN, mode: "dynRest" }
+          : param.initializer
+            ? { type: DYN, mode: "omittable", bodyType: DYN }
+            : { type: DYN, mode: param.questionToken ? "omittable" : "required" },
+      );
+    const isAsync = node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+    const ret = isAsync ? lowerer.declaredReturnType(node, node) : VOID;
+    return { shapes, funcType: funcTypeFromParamShapes(shapes, ret) };
+  }
   if (node.typeParameters?.nodes && !lowerer.erasingLambdas.has(node)) {
     // Generic function-like forms monomorphize only where a static home
     // exists: top-level generic function declarations, generic methods
