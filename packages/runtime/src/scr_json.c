@@ -12445,7 +12445,7 @@ ScrDynEntryPairs *scr_dyn_obj_entry_pairs(const ScrDyn *v) {
 
 void scr_dyn_entry_pairs_free(ScrDynEntryPairs *pairs) { free(pairs); }
 
-static const ScrArrOps scr_dyn_value_list_ops = {scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v};
+static ScrArrOps scr_dyn_value_list_ops = {scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v};
 
 /* A native array of `count` owned dyn values, moved in with one dense push.
  * Frees `values` unless it is `stack`. */

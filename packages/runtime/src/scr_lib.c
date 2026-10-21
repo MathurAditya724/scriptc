@@ -5788,7 +5788,7 @@ void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind) {
   if (!scr_fs_path_ok(target, "target")) return;
   if (!scr_fs_path_ok(destination, "path")) return;
 #ifdef _WIN32
-  static const ScrArrOps str_ops = { scr_str_retain_v, scr_str_release_v, NULL };
+  static ScrArrOps str_ops = { scr_str_retain_v, scr_str_release_v, NULL };
   ScrArr *parts = scr_arr_new_ops(&str_ops, 3);
   scr_arr_push_ref(parts, scr_str_retain(destination));
   scr_arr_push_ref(parts, scr_str_new("..", 2));

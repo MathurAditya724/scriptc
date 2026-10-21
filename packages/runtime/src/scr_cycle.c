@@ -1239,7 +1239,7 @@ void scr_cyc_on_release(void *obj) {
  * cycle-capable array and through the type's trace otherwise. */
 #define SCR_CYC_CHILDREN(obj, type, ARRAY_WALK, VISIT, depth)                         \
   do {                                                                               \
-    if ((type)->kind == SCR_CYC_KIND_ARRAY && ((const ScrArr *)(obj))->ext == NULL)   \
+    if ((type)->kind == SCR_CYC_KIND_ARRAY && !(((const ScrArr *)(obj))->spare & SCR_ARR_HAS_EXT))   \
       ARRAY_WALK((const ScrArr *)(obj), (void *)(depth));                            \
     else                                                                             \
       (type)->trace((obj), (VISIT), (void *)(depth));                                \

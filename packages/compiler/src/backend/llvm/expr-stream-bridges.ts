@@ -193,7 +193,10 @@ export function streamTypedRefCommitAdapter(
       { name: "cap", index: SCR_ARR_FIELD.cap, type: "i32" },
       { name: "data", index: SCR_ARR_FIELD.data, type: "ptr" },
       { name: "filled", index: SCR_ARR_FIELD.filled, type: "i32" },
-      { name: "ext", index: SCR_ARR_FIELD.ext, type: "ptr" },
+      // The out-of-line storage's pointer lives before the dense allocation
+      // and moves with data; its flag is in spare, whose element ops id the
+      // two arrays share.
+      { name: "spare", index: SCR_ARR_FIELD.spare, type: "i16" },
     ];
     for (const member of storageMembers) {
       lines.push(
