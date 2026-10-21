@@ -12,6 +12,7 @@
  * as `<output>.libnode/`, recorded as `$ORIGIN/<output>.libnode`, so the
  * executable and its Node travel together; a recorded `$ORIGIN/` path is
  * also the hook for bundling Node into the executable itself later. */
+import { createHash } from "node:crypto";
 import { copyFileSync, linkSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 
@@ -108,4 +109,29 @@ export function libnodeRecord(
   const name = `${basename(outPath)}.libnode`;
   placeBeside(source, manifest, `${outPath}.libnode`);
   return { libnode: `${ORIGIN}${name}`, nodeVersion: manifest.nodeVersion };
+}
+
+/** The part of an executable's cache key that names its libnode pack, or
+ * undefined when neither --libnode nor SCRIPTC_LIBNODE is set. It holds the
+ * option, the pack directory and a digest of the pack's manifest.json, so
+ * that a pack upgraded in place (another Node version, bridge ABI or file
+ * list) gives cached executables a new key instead of their old record. */
+export function libnodeCacheKey(
+  option: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const fromEnv = env["SCRIPTC_LIBNODE"];
+  if (option === undefined && fromEnv === undefined) return undefined;
+  const source = option !== undefined && option !== "beside" ? option : (fromEnv ?? "");
+  let manifest = "none";
+  if (isAbsolute(source)) {
+    try {
+      manifest = createHash("sha256")
+        .update(readFileSync(join(source, "manifest.json")))
+        .digest("hex");
+    } catch {
+      // A missing pack fails the build that records it (libnodeRecord).
+    }
+  }
+  return `${option ?? ""}|${source}|${manifest}`;
 }

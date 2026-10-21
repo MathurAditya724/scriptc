@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { libnodeRecord, NODE_BRIDGE_ABI } from "./libnode.js";
+import { USES_TIMERS_LIB_FNS } from "../backend/llvm/lib-shared.js";
+import { libnodeCacheKey, libnodeRecord, NODE_BRIDGE_ABI } from "./libnode.js";
 
 function pack(nodeVersion: string, bridgeAbi = NODE_BRIDGE_ABI): string {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-libnode-"));
@@ -55,10 +56,55 @@ describe("the recorded libnode pack", () => {
     expect(existsSync(join(out, "app.libnode/manifest.json"))).toBe(true);
   });
 
+  test("beside places the pack again after the outputs were deleted", () => {
+    // A cached executable restored without its pack gets it again (compile, index.ts).
+    const dir = pack("24.22.0");
+    const out = mkdtempSync(join(tmpdir(), "scriptc-libnode-out-"));
+    libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: dir });
+    rmSync(join(out, "app.libnode"), { recursive: true, force: true });
+    expect(libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: dir })).toEqual({
+      libnode: "$ORIGIN/app.libnode",
+      nodeVersion: "24.22.0",
+    });
+    expect(readFileSync(join(out, "app.libnode/libscr_node_bridge.so"), "utf8")).toBe("bridge");
+  });
+
   test("a pack the deployment places beside the executable needs no manifest at build time", () => {
     expect(libnodeRecord("$ORIGIN/node", "/out/app", {})).toEqual({
       libnode: "$ORIGIN/node",
       nodeVersion: "",
     });
   });
+});
+
+describe("the libnode pack in an executable's cache key", () => {
+  test("is absent without --libnode or SCRIPTC_LIBNODE", () => {
+    expect(libnodeCacheKey(undefined, {})).toBeUndefined();
+  });
+
+  test("changes when the pack in the same directory is upgraded", () => {
+    const dir = pack("24.22.0");
+    const before = libnodeCacheKey(dir, {});
+    expect(libnodeCacheKey(dir, {})).toBe(before);
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({ nodeVersion: "24.23.0", bridgeAbi: NODE_BRIDGE_ABI, files: {} }),
+    );
+    expect(libnodeCacheKey(dir, {})).not.toBe(before);
+  });
+
+  test("names the pack beside copies from", () => {
+    const a = pack("24.22.0");
+    const b = pack("24.22.0");
+    expect(libnodeCacheKey("beside", { SCRIPTC_LIBNODE: a })).not.toBe(
+      libnodeCacheKey("beside", { SCRIPTC_LIBNODE: b }),
+    );
+    expect(libnodeCacheKey("beside", { SCRIPTC_LIBNODE: a })).not.toBe(libnodeCacheKey(a, {}));
+  });
+});
+
+test("calls into Node keep the program's event loop running", () => {
+  // Node's ref'd timers and I/O run on the program's loop (scr_node_island.c).
+  expect(USES_TIMERS_LIB_FNS.has("nodeIsland.call")).toBe(true);
+  expect(USES_TIMERS_LIB_FNS.has("nodeIsland.callSync")).toBe(true);
 });

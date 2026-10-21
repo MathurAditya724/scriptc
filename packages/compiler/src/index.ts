@@ -108,7 +108,7 @@ import {
   nodeIslandNodeDiag,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
-import { libnodeRecord } from "./node-islands/libnode.js";
+import { libnodeCacheKey, libnodeRecord } from "./node-islands/libnode.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
@@ -1375,8 +1375,8 @@ async function compileTracked(
   if (outputKind === "exe") {
     const helperObjectRoute =
       opts.nativeProgramObject === true || usesPrecompiledRuntimePack(opts, "llvm");
-    // Calls into Node record the libnode pack (node-islands/libnode.ts).
-    const libnodeKey = opts.libnode ?? process.env["SCRIPTC_LIBNODE"];
+    // Calls into Node record the libnode pack, keyed by its manifest (node-islands/libnode.ts).
+    const libnodeKey = libnodeCacheKey(opts.libnode);
     const routeOptions: Omit<
       EarlyExecutableCacheOptions,
       "implementation" | "implementationDependencies" | "nativeEnvironment"
@@ -1445,6 +1445,17 @@ async function compileTracked(
     timing("executable-cache-hit");
     if (earlyCacheOptions === null) {
       throw new InternalCompilerError("executable cache hit without executable cache options");
+    }
+    // The pack a --libnode=beside build places next to the executable is an output of the
+    // build, like the executable: a restored executable that calls into Node gets it again.
+    if (earlyHit.native.nodeIsland === true && opts.libnode === "beside") {
+      const recorded = libnodeRecord(opts.libnode, opts.outPath);
+      if (typeof recorded === "string")
+        return {
+          ok: false,
+          diagnostics: [nodeIslandNodeDiag(recorded, entryPath)],
+          sourceTexts: new Map(),
+        };
     }
     const executableCacheOptions = earlyCacheOptions;
     // Route/proof metadata is independently evictable. A full-compiler

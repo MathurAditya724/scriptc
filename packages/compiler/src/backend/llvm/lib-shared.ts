@@ -1754,6 +1754,9 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "timers.setImmediateFnValue",
   "timers.immediatePromise",
   "dyn.builtinFunction",
-  // An asynchronous call into Node needs the loop to settle.
+  // A call into Node needs the loop: an asynchronous one to settle, and
+  // either kind may leave Node with ref'd timers or I/O, which the loop
+  // drives (scr_node_island.c) before the program exits.
   "nodeIsland.call",
+  "nodeIsland.callSync",
 ]);
