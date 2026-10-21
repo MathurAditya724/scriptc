@@ -1154,7 +1154,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         }
         if (recv?.type.kind === "array" || recv?.type.kind === "bytes") {
           const receiver = lowerer.declareHiddenLocal("%setArray", recv.type);
-          const index = lowerer.lowerExpr(expr.left.argumentExpression);
+          const index = lowerOptionalNumber(
+            lowerer,
+            lowerer.lowerExpr(expr.left.argumentExpression),
+            locOf(expr.left.argumentExpression),
+            expr.left.argumentExpression,
+          );
           if (index.type.kind !== "f64")
             lowerer.unsupported(
               "SC1090",

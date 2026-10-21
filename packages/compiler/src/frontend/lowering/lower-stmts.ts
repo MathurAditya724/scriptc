@@ -194,6 +194,7 @@ import {
   lowerElementCompoundStatement,
   lowerIncDec,
   lowerIncDecTarget,
+  lowerOptionalNumber,
   lowerGroupsProjection,
   matchResultNamedGroupsOf,
   runtimeOptionalGuardIds,
@@ -8835,7 +8836,12 @@ function lowerAssignTargetInto(
       if (arr.type.kind === "array") {
         const recv = lowerer.declareHiddenLocal("%dtRecv", arr.type);
         out.push({ kind: "varDecl", localId: recv.id, init: arr, loc });
-        const index = lowerer.lowerExpr(t.argumentExpression);
+        const index = lowerOptionalNumber(
+          lowerer,
+          lowerer.lowerExpr(t.argumentExpression),
+          locOf(t.argumentExpression),
+          t.argumentExpression,
+        );
         if (index.type.kind !== "f64") {
           lowerer.unsupported("SC1090", t.argumentExpression, "indexing with non-number keys");
         }
