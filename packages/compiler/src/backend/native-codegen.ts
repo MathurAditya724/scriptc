@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { createHash, type Hash } from "node:crypto";
+import { closeSync, constants, openSync, readSync } from "node:fs";
 import { createRequire } from "node:module";
-import { access, chmod, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -68,9 +68,31 @@ export interface NativeCodegenArtifact {
 
 const resolvedHelperCache = new Map<string, Promise<ResolvedHelper>>();
 
+/** LLVM text already written to `file`, of `bytes` bytes, which a build passes on without reading it. */
+export interface LlvmFile {
+  readonly file: string;
+  readonly bytes: number;
+}
+
+/** LLVM text as a string, as parts to concatenate, or as a file. */
+export type LlvmInput = string | readonly string[] | LlvmFile;
+
+export function isLlvmFile(llvm: LlvmInput): llvm is LlvmFile {
+  return typeof llvm === "object" && !Array.isArray(llvm);
+}
+
+/** The size of `llvm` in bytes. */
+export function llvmInputBytes(llvm: LlvmInput): number {
+  if (isLlvmFile(llvm)) return llvm.bytes;
+  return (typeof llvm === "string" ? [llvm] : llvm).reduce(
+    (bytes, part) => bytes + Buffer.byteLength(part),
+    0,
+  );
+}
+
 export interface NativeCodegenOptions {
   outputPath: string;
-  llvm: string | readonly string[];
+  llvm: LlvmInput;
   outputKind: NativeCodegenOutputKind;
   sourcePath: string;
   optimization?: "0" | "1" | "2" | "3" | "s" | "z";
@@ -271,14 +293,31 @@ async function resolveHelper(
   return pending;
 }
 
+/** Adds the bytes of `file` to `hash`, as `hash.update` of the text written there would. */
+function updateHashFromFile(hash: Hash, file: string): void {
+  const fd = openSync(file, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
+    for (;;) {
+      const read = readSync(fd, buffer, 0, buffer.length, null);
+      if (read === 0) break;
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function cacheKey(
   options: NativeCodegenOptions,
   target: NativeTargetSpec,
   helper: HelperIdentity,
 ): string {
   const hash = createHash("sha256").update("scriptc-native-codegen-v1\0");
-  for (const part of typeof options.llvm === "string" ? [options.llvm] : options.llvm)
-    hash.update(part);
+  if (isLlvmFile(options.llvm)) updateHashFromFile(hash, options.llvm.file);
+  else
+    for (const part of typeof options.llvm === "string" ? [options.llvm] : options.llvm)
+      hash.update(part);
   return hash
     .update("\0")
     .update(JSON.stringify(target))
@@ -391,7 +430,8 @@ export async function emitNativeArtifact(
   // concurrent build of another entry that has the same output stem.
   const input = privateSiblingPath(options.outputPath, "native-input");
   try {
-    await writeLlvmSource(input, options.llvm, 0o600);
+    if (isLlvmFile(options.llvm)) await copyFile(options.llvm.file, input);
+    else await writeLlvmSource(input, options.llvm, 0o600);
     await invoke(helper.binaryPath, [
       "emit",
       "--input",
