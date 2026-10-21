@@ -321,6 +321,9 @@ export interface LibArchiveOptions {
   threadInstances?: boolean;
   /** IR-detected link gates (the compileC precedent, refusal-narrowed). */
   dynInvoke?: boolean;
+  /** Buffer.prototype methods on checked-dynamic values: scr_bytes_dyn.c,
+   * with dynInvoke. */
+  dynBuffer?: boolean;
   /** See CompileOptions.dynTier: the scr_js_* units. */
   dynTier?: boolean;
   regex?: boolean;
