@@ -1783,9 +1783,22 @@ function buildNumberMethod(
   return { kind: "ternary", cond: digits.has, then: fixed, else_: shortest, type: STRING, loc };
 }
 
+/** Operand kinds whose string and number conversions run no program code. */
+const PLAIN_CONVERSION_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "f64",
+  "bigint",
+  "string",
+  "bool",
+  "symbol",
+  "nullT",
+  "undefinedT",
+]);
+
 /** Evaluate the receiver (when given) and the call's arguments, in order,
  * into hidden locals. A variable read stays a read unless a later operand
- * can assign the variable. */
+ * can assign the variable, or an argument's conversion can run program
+ * code: the methods convert their arguments after evaluating all of them
+ * (an object's toString or valueOf). */
 function evaluatedOperands(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1796,10 +1809,12 @@ function evaluatedOperands(
   const args = call.arguments.nodes.map((arg) =>
     expected ? lowerer.lowerExprExpecting(arg, expected) : lowerer.lowerExpr(arg),
   );
-  const laterWrites = (from: number): boolean => !args.slice(from).every(isSafeToDiscard);
+  const conversionsRunCode = args.some((arg) => !PLAIN_CONVERSION_KINDS.has(arg.type.kind));
+  const mayChange = (from: number): boolean =>
+    conversionsRunCode || !args.slice(from).every(isSafeToDiscard);
   return {
-    receiver: receiver && hoist(lowerer, receiver.value, stmts, receiver.name, laterWrites(0)),
-    args: args.map((arg, i) => hoist(lowerer, arg, stmts, "%methodArg", laterWrites(i + 1))),
+    receiver: receiver && hoist(lowerer, receiver.value, stmts, receiver.name, mayChange(0)),
+    args: args.map((arg, i) => hoist(lowerer, arg, stmts, "%methodArg", mayChange(i + 1))),
   };
 }
 
