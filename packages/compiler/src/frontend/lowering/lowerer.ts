@@ -140,6 +140,7 @@ import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optio
 import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
 import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
 import { guardClassAttributeWrites } from "./class-attributes.js";
+import { applyHandleProperties } from "./handle-properties.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
@@ -2163,6 +2164,10 @@ export class Lowerer {
   /** Inline program-module require calls whose %init the enclosing member
    * read or member call is already sequencing (cjs-inline-require.ts). */
   readonly inlineRequireInitDone = new Set<ts.CallExpression>();
+  /** Whether lowered code writes properties onto children, and what the
+   * program's JavaScript adds to them (handle-properties.ts). */
+  writesOntoChildren = false;
+  childAdditions: { written: ReadonlySet<string>; everyName: boolean; any: boolean } | null = null;
   /** Bindings whose unchecked string arithmetic can produce either a number
    * (NaN for an absent read) or a string. Preserve that result union at bare
    * reads instead of applying the checker-bare string narrowing adapter. */
@@ -7176,6 +7181,7 @@ export class Lowerer {
     finalizePrivateBrands(this, functions);
     trackClassFieldCreation(this, functions);
     guardClassAttributeWrites(this, functions);
+    applyHandleProperties(this, functions);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the

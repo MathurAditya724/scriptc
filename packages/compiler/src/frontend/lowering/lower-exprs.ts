@@ -136,6 +136,7 @@ export {
   lowerPrefixUnary,
 } from "./expressions/updates.js";
 import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
+import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
 
 /** An assignable `obj.field` target — a class field, a record field, or a
@@ -643,6 +644,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         return { kind: "libCall", fn: "async.awaitDyn", args: [value], type: DYN, loc };
       }
 
+      if (awaitsChildThenable(lowerer, expr, value)) {
+        return awaitDynThenable(lowerer, lowerer.coerceToExpected(value, DYN), loc);
+      }
       // A TYPED non-promise operand (`await 42`, an awaited record):
       // JS awaits non-thenables through exactly one microtask turn and
       // yields the value itself — evaluate the operand, hop, answer it.
@@ -1078,6 +1082,8 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       loc: locOf(e),
     });
     if (presence !== null) return presence;
+    if (isTimerMethodPresence(lowerer, e))
+      return { kind: "boolLit", value: true, type: BOOL, loc: locOf(e) };
   }
   // Global detection (`typeof window < "u"`, `typeof self !==
   // "undefined" && …`): a condition whose typeof answers are static
@@ -1166,6 +1172,18 @@ function maybePromiseThenPresence(
     type: result.type,
     loc,
   };
+}
+
+/** `if (t.unref)` over a Node timer handle: the guard libraries write for
+ * runtimes whose timers lack the method (execa's kill timeout). Node's
+ * Timeout and Immediate always have it. */
+function isTimerMethodPresence(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  if (access.questionDotToken || !ts.isIdentifier(access.expression)) return false;
+  if (!["ref", "unref", "hasRef", "refresh"].includes(access.name.text)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(access.name);
+  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return false;
+  const owner = lowerer.typeOf(access.expression).getSymbol();
+  return owner !== undefined && ["Timeout", "Immediate"].includes(ts.symbolName(owner));
 }
 
 export function lowerPromiseThenPresence(

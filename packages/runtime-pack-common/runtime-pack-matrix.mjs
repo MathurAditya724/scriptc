@@ -123,6 +123,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_ops.c", all("stream", "dynAsync")],
   // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
   ["scr_stream_dyn.c", "streamDyn"],
+  // Own properties JavaScript adds to children.
+  ["scr_dyn_handle_props.c", "handleProps"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.

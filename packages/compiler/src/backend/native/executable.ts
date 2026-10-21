@@ -275,6 +275,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Checked-dynamic stream slots test values and call JavaScript stream
   // members through the dyn-invoke unit.
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
+  // Own properties JavaScript adds to children.
+  unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
   // FileHandle streams reference both the stream unit and FileHandle.
