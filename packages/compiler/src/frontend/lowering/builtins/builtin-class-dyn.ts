@@ -12,7 +12,7 @@ import { locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 import type { ClassInfo } from "../lower-classes.js";
 import { classInstanceOf } from "../class-dynamic-dispatch.js";
-import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
+import { isSafeToDiscard, isSafeToRepeat } from "../expressions/evaluation-safety.js";
 
 /* EventEmitter and the stream classes as untyped constructor values, the
  * bases of JavaScript constructor functions:
@@ -121,8 +121,18 @@ export function builtinClassDynValueOf(lowerer: Lowerer, node: ts.Expression): I
   };
 }
 
+/** EventEmitter and the legacy Stream are dyn.builtinClass; the stream
+ * classes, which carry native stream state for constructor functions, are
+ * dyn.builtinStreamClass, so only programs that use them link the stream
+ * half. */
 export function builtinClassValue(kind: number, loc: SrcLoc): IrExpr {
-  return { kind: "libCall", fn: "dyn.builtinClass", args: [numLit(kind, loc)], type: DYN, loc };
+  return {
+    kind: "libCall",
+    fn: kind <= 1 ? "dyn.builtinClass" : "dyn.builtinStreamClass",
+    args: [numLit(kind, loc)],
+    type: DYN,
+    loc,
+  };
 }
 
 /** `Base.call(this, …)` / `Base.apply(this, args)` on one of those class
@@ -140,7 +150,7 @@ export function lowerBuiltinClassCall(lowerer: Lowerer, call: ts.CallExpression)
     kind: "dynInvoke",
     recv: receiver,
     method,
-    calleeName: callee.getText(),
+    calleeName: ts.getTextOfNode(callee),
     args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc,
@@ -173,13 +183,15 @@ export function builtinClassInstanceOfAny(
   callee?: IrExpr,
 ): IrExpr {
   const stmts: IrStmt[] = [];
-  const once = (expr: IrExpr, name: string): IrExpr => {
-    if (isSafeToRepeat(expr)) return expr;
+  const once = (expr: IrExpr, name: string, snapshot = false): IrExpr => {
+    if (!snapshot && isSafeToRepeat(expr)) return expr;
     const local = lowerer.declareHiddenLocal(name, DYN);
     stmts.push({ kind: "varDecl", localId: local.id, init: expr, loc });
     return { kind: "varRef", localId: local.id, type: DYN, loc };
   };
-  const tested = once(value, "%instanceValue");
+  // The left operand evaluates first: a variable read keeps its value in
+  // a local when the right-hand side can assign the variable.
+  const tested = once(value, "%instanceValue", callee !== undefined && !isSafeToDiscard(callee));
   const ctor = callee ? once(callee, "%instanceCallee") : null;
   const compiled = classInstanceOf(lowerer, tested, info, loc);
   const result: IrExpr = {

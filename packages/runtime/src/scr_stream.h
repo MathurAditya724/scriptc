@@ -48,6 +48,13 @@ typedef struct ScrStream {
   ScrStreamState *st;
 } ScrStream;
 
+/* The vtable of an object boxed as an "object:" typed ref, which may be any
+ * program class instance: NULL for one with a class id in its rc word
+ * (scr_rc.h), which has no vtable word and is no stream. */
+static inline const ScrVt *scr_stream_vt_of(const ScrStream *s) {
+  return scr_rc_class_id(s) == 0 ? s->vt : NULL;
+}
+
 extern SCR_TL ScrVt scr_readable_vt, scr_writable_vt, scr_duplex_vt,
     scr_transform_vt, scr_passthrough_vt; /* main() stamps pre/post */
 
@@ -449,6 +456,9 @@ void scr_stream_set_flush(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
  * released when the stream is freed; scr_stream_native answers it
  * (borrowed) when it was set with `release`, else NULL. */
 void scr_stream_set_flush_on_prefinish(ScrStream *s);
+/* `stream.destroyed = value` (scr_dyn_builtin_stream.c): Node's setter
+ * stores the states' flag without destroying the stream. */
+void scr_stream_set_destroyed(ScrStream *s, bool destroyed);
 void scr_stream_set_native(ScrStream *s, void *state, void (*release)(void *));
 void *scr_stream_native(ScrStream *s, void (*release)(void *));
 

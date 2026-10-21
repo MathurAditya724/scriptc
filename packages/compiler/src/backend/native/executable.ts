@@ -113,6 +113,7 @@ interface RuntimeUnitContext {
   tls: boolean;
   tlsCa: boolean;
   cipher: boolean;
+  ecdh: boolean;
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
   tlsArchive: string | null;
@@ -179,8 +180,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit((u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch, "scr_dyn_invoke.c"),
+  // Fixed-width Buffer methods called on checked-dynamic values.
+  unit((u) => u.opts.dynBufferNum === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
+  // Builtin functions read as values in JavaScript dependencies.
+  unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
-  unit((u) => u.opts.dynTier, "scr_js_value.c"),
+  unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
   unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
   unit(
@@ -250,6 +255,16 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       (u.opts.emitter || u.opts.workers),
     "scr_dyn_builtin_class.c",
   ),
+  unit(
+    (u) =>
+      u.opts.dynBuiltinStream &&
+      u.opts.dynBuiltinClass &&
+      u.opts.stream &&
+      u.opts.inspect &&
+      u.opts.dynInvoke &&
+      u.opts.symbol,
+    "scr_dyn_builtin_stream.c",
+  ),
   unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
   // The zlib stream classes reference both the zlib engine and the
   // stream unit.
@@ -285,6 +300,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           join(vendorTlsDir(), "include"),
           ...(u.tls ? [u.rt(join(u.rtDir, "scr_tls.c"))] : []),
           ...(u.cipher ? [u.rt(join(u.rtDir, "scr_cipher.c"))] : []),
+          ...(u.ecdh ? [u.rt(join(u.rtDir, "scr_ecdh.c"))] : []),
           u.tlsArchive,
           // mbedTLS's win32 entropy poll is BCryptGenRandom (bcrypt.h).
           // The unconditional win32 libs above do not carry it.
@@ -320,6 +336,9 @@ const RUNTIME_DEFINES: readonly {
   when: (opts: CcOptions) => boolean | undefined;
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
+  // Checked objects carry the dynamic tier's shapes (scr_json.c's SCR_JS_TIER build); only
+  // programs with dynamic-tier code select it.
+  { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
@@ -346,9 +365,10 @@ export async function compileCInternal(
   const http = (opts.http ?? false) || nativeFetch;
   const tls = (opts.tls ?? false) || nativeFetch;
   const tlsCa = (opts.tlsCa ?? false) || tls;
-  // Symmetric ciphers link the same mbedTLS archive as TLS.
+  // Symmetric ciphers and ECDH link the same mbedTLS archive as TLS.
   const cipher = opts.cipher ?? false;
-  const mbedtls = tls || cipher;
+  const ecdh = opts.ecdh ?? false;
+  const mbedtls = tls || cipher || ecdh;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -705,6 +725,7 @@ export async function compileCInternal(
       tls,
       tlsCa,
       cipher,
+      ecdh,
       lreObjects,
       zlibObjects,
       tlsArchive,

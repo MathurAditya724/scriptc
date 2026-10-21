@@ -61,10 +61,15 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch")],
+  // Fixed-width Buffer methods called on checked-dynamic values.
+  ["scr_bytes_dyn.c", all("dynBufferNum", "dynInvoke")],
+  // Builtin functions read as values in JavaScript dependencies.
+  ["scr_builtin_values.c", "builtinValues"],
   ["scr_dc.c", "dc"],
   // The dynamic tier's jsval values (two-tier design I3): linked only into
   // programs whose IR has dynamic-tier operations.
   ["scr_js_value.c", "dynTier"],
+  ["scr_js_object.c", "dynTier"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch")],
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
@@ -96,6 +101,19 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // through the dyn-invoke unit, inspect unhandled 'error' payloads and
   // create EventEmitter's private symbols.
   ["scr_dyn_builtin_class.c", all("dynBuiltinClass", "inspect", "dynInvoke", "symbol", "emitter")],
+  // Their stream half also references the stream unit.
+  [
+    "scr_dyn_builtin_stream.c",
+    all(
+      "dynBuiltinStream",
+      "dynBuiltinClass",
+      "stream",
+      "inspect",
+      "dynInvoke",
+      "symbol",
+      "emitter",
+    ),
+  ],
   ["scr_stream.c", "stream"],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
@@ -122,6 +140,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_tls_ca.c", "tlsCaEffective"],
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
+  ["scr_ecdh.c", "ecdh"],
   ["scr_wasm.c", "wasm"],
   ["scr_webcrypto.c", "webcrypto"],
   ["scr_fetch.c", "nativeFetch"],
@@ -129,6 +148,12 @@ export const OPTIONAL_RUNTIME_SOURCES = [
 
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
+  // Programs with dynamic-tier code keep the tier's hidden classes current
+  // in checked objects (two-tier design S4); every other program links the
+  // ordinary object, byte for byte.
+  if (source === "scr_json.c") {
+    variants.push({ id: "dyn-tier", when: { dynTier: true }, defines: ["SCR_JS_TIER"] });
+  }
   if (source === "scr_bytes.c") {
     variants.push({
       id: "text-decoder-legacy",
@@ -179,7 +204,7 @@ export function createRuntimePackMatrix({
     { id: "quickjs", predicate: false },
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
-    { id: "mbedtls", predicate: any("tlsEffective", "cipher") },
+    { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh") },
   ];
   const matrix = withLibraryRuntimeFlavors(
     withWorkerRuntimeVariants({

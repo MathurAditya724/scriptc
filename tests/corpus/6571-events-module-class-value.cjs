@@ -28,3 +28,8 @@ try {
 }
 e.removeAllListeners("x");
 console.log("removed", e.listenerCount("x"), e.emit("x", 3));
+
+// The left operand evaluates before the right-hand side assigns its
+// variable.
+var tested = new ReleaseEmitter();
+console.log("left first", tested instanceof ((tested = 1), ReleaseEmitter), tested);
