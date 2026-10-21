@@ -203,6 +203,10 @@ export interface CcOptions {
    * compiles scr_dns_promises.c over the dgram unit, so callback-only
    * binaries keep their exact link line. */
   dnsPromises?: boolean;
+  /** A dgram socket converts to or from an untyped value: compiles
+   * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
+   * their exact link line. */
+  dgramDyn?: boolean;
 
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free

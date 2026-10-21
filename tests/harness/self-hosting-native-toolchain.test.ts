@@ -39,6 +39,7 @@ const features: NativeLinkFeatures = {
   http2: false,
   dgram: false,
   dnsPromises: false,
+  dgramDyn: false,
   watch: false,
   foreignFfi: false,
   nodeTest: false,

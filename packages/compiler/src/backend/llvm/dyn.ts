@@ -86,6 +86,7 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   child: 16,
   fileHandle: 17,
   dir: 44,
+  dgramSocket: 62,
   cryptoHash: 52,
   cryptoHmac: 53,
 };
@@ -96,6 +97,15 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
 const DYN_HANDLE_BOX_FN: Record<string, string> = {
   cryptoHash: "scr_crypto_hash_to_dyn",
   cryptoHmac: "scr_crypto_hash_to_dyn",
+  dgramSocket: "scr_dgram_to_dyn",
+};
+
+/** Handle kinds whose box holds a unit-owned wrapper rather than the
+ * handle itself (a dgram socket's box carries its untyped listeners):
+ * the unit's own function unwraps it, with the tag check and TypeError
+ * of scr_dyn_handle_unbox. */
+const DYN_HANDLE_UNBOX_FN: Record<string, string> = {
+  dgramSocket: "scr_dgram_from_dyn",
 };
 
 export const DYN_KIND = {
@@ -2492,11 +2502,17 @@ export class LlDyn {
         // TypeError on any other kind or tag).
         const h = DYN_HANDLE_KINDS.get(t.kind);
         if (h) {
-          host.declare(`declare ptr @scr_dyn_handle_unbox(ptr, i32, ptr, ptr)`);
           const r = B.tmp();
-          B.line(
-            `${r} = call ptr @scr_dyn_handle_unbox(ptr %d, i32 ${DYN_HANDLE_TAG_NUM[t.kind]}, ptr %path, ptr ${want})`,
-          );
+          const unbox = DYN_HANDLE_UNBOX_FN[t.kind];
+          if (unbox) {
+            host.declare(`declare ptr @${unbox}(ptr, ptr, ptr)`);
+            B.line(`${r} = call ptr @${unbox}(ptr %d, ptr %path, ptr ${want})`);
+          } else {
+            host.declare(`declare ptr @scr_dyn_handle_unbox(ptr, i32, ptr, ptr)`);
+            B.line(
+              `${r} = call ptr @scr_dyn_handle_unbox(ptr %d, i32 ${DYN_HANDLE_TAG_NUM[t.kind]}, ptr %path, ptr ${want})`,
+            );
+          }
           B.terminate(`ret ptr ${r}`);
           break;
         }

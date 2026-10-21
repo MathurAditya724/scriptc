@@ -154,6 +154,7 @@ typedef enum {
   X(CUSTOM_EVENT, 40) /* ScrEvent with detail — new CustomEvent() */ \
   X(DATE, 30) /* JavaScript Date with stable native identity */ \
   X(DECIPHER, 46) /* node:crypto Decipheriv (scr_cipher.c) */ \
+  X(DGRAM_SOCKET, 62) /* dgram.Socket (scr_dgram.c) */ \
   X(DIR, 44) /* fs.Dir (scr_lib.c) */ \
   X(DISPOSABLE_STACK, 49) /* DisposableStack (scr_symbol.c) */ \
   X(ECDH, 64) /* node:crypto ECDH (scr_ecdh.c) */ \

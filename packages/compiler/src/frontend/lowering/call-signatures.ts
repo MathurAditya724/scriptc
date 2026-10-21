@@ -5,9 +5,10 @@ import {
 } from "./typed-arguments.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
-import { bodyReadsArguments } from "../arguments-usage.js";
+import { argumentsAliasingUnobservable, bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
 import {
+  canBoxFuncIntoDyn,
   DYN,
   type IrExpr,
   type IrFunction,
@@ -143,6 +144,26 @@ export function generatorMeta(
   return { yieldT: type.yieldT, nextT: type.nextT, resultType };
 }
 
+/** A function expression stored as a prototype method: `C.prototype.name =
+ * function (...) {}` or `C.prototype[key] = function (...) {}`
+ * (parentheses allowed around the function). */
+export function prototypeAssignedFunction(fn: ts.Node | undefined): boolean {
+  if (fn === undefined || !ts.isFunctionExpression(fn)) return false;
+  let node: ts.Node = fn;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (
+    parent === undefined ||
+    !ts.isBinaryExpression(parent) ||
+    parent.right !== node ||
+    parent.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !(ts.isPropertyAccessExpression(parent.left) || ts.isElementAccessExpression(parent.left))
+  )
+    return false;
+  const owner = parent.left.expression;
+  return ts.isPropertyAccessExpression(owner) && owner.name.text === "prototype";
+}
+
 /** A parameter with a type annotation or a JSDoc `@param`/`@type` tag. */
 export function documentedParameter(param: ts.ParameterDeclaration): boolean {
   return (
@@ -195,6 +216,20 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     // and apply checked conversions only at operations that need them.
     // In a file TypeScript checks, documented types are enforced like
     // TypeScript annotations.
+    return param.initializer
+      ? { type: DYN, mode: "omittable", bodyType: DYN }
+      : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
+  }
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    !param.dotDotDotToken &&
+    prototypeAssignedFunction(param.parent) &&
+    !checkedJsDocumentedParameter(lowerer, param)
+  ) {
+    // A prototype method (`C.prototype.m = function (a) {}`) is called
+    // through dynamic dispatch, where callers pass whatever they hold. As
+    // for constructors, JSDoc in a file TypeScript does not check
+    // documents the usual types without constraining callers.
     return param.initializer
       ? { type: DYN, mode: "omittable", bodyType: DYN }
       : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
@@ -640,6 +675,21 @@ export function requireExactArityValue(
       ? lowerer.mapTypeOf(lowerer.typeOf(contextual))
       : null;
   if (mapped && typeEquals(mapped, funcType)) return;
+  // An 'any' slot (`C.prototype.m = function (a, b) {…}` through an
+  // untyped receiver) boxes the value into a checked-dynamic function:
+  // the box completes omitted arguments with undefined and checks every
+  // argument into the completed ABI, so any boxable signature passes.
+  if (
+    target !== undefined &&
+    (target.flags & ts.TypeFlags.Any) !== 0 &&
+    canBoxFuncIntoDyn(
+      funcType,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return;
+  }
   // An object-literal METHOD has no contextual type of its own: the
   // literal's contextual type names the member slot it fills. An
   // overloaded member's slot holds its erased function, which spells the
@@ -839,7 +889,8 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
 /** Arrows inherit arguments. Ordinary JS functions receive a hidden
  * array unless a declared rest parameter already owns that contract.
  * Class methods are strict; other parameterized forms require ES modules
- * because sloppy-mode arguments alias named parameters. */
+ * because sloppy-mode arguments alias named parameters, unless the body
+ * cannot observe that aliasing (argumentsAliasingUnobservable). */
 function appendArgumentsParameter(
   lowerer: Lowerer,
   node: ts.SignatureDeclaration,
@@ -864,7 +915,8 @@ function appendArgumentsParameter(
     if (
       !classMethod &&
       !isNodeEsmFile(ts.getSourceFileOfNode(node), lowerer.program) &&
-      !unmappedArguments(node)
+      !unmappedArguments(node) &&
+      !argumentsAliasingUnobservable(node)
     ) {
       lowerer.unsupported(
         "SC1090",

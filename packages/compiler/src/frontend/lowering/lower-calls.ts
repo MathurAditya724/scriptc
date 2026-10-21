@@ -9411,7 +9411,9 @@ function lowerObjLitGenericMethodCall(
     ) {
       const value = tryLowerExpression(lowerer, access.expression);
       // Builtin function values held as checked-dynamic functions
-      // (String.fromCharCode, JSON.stringify) bind the same way.
+      // (String.fromCharCode, JSON.stringify) bind the same way, and so
+      // does a member that lowers to a checked-dynamic value (a native
+      // handle's method read in JavaScript).
       if (
         value &&
         (value.type.kind === "dyn" ||
@@ -10293,7 +10295,33 @@ export function lowerStaticNumberGlobal(
     const radix: IrExpr = args[1]
       ? lowerer.lowerExprExpecting(args[1], F64)
       : { kind: "numLit", value: 0, type: F64, loc };
-    const optional = optionalCallValue(lowerer, args[0]!);
+    let optional = optionalCallValue(lowerer, args[0]!);
+    let lowered: IrExpr | null = null;
+    // A possibly-missing or untyped text in JavaScript (`parseInt(process.
+    // env.PORT, 10)`): TypeScript rejects the call, Node parses the text
+    // of whatever arrives ("undefined").
+    if (optional === null && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const argT = lowerer.typeOf(args[0]!);
+      const parts = argT.isUnionType() ? ts.constituentTypes(argT) : [argT];
+      if (
+        parts.some(
+          (part) =>
+            (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Any)) !== 0,
+        )
+      ) {
+        const raw = lowerer.lowerExpr(args[0]!);
+        if (raw.type.kind === "union") {
+          optional = raw;
+          lowered = raw;
+        } else {
+          const text: IrExpr =
+            raw.type.kind === "dyn"
+              ? { kind: "libCall", fn: "dyn.toStringCoerce", args: [raw], type: STRING, loc }
+              : lowerer.coerceInto(args[0]!, raw, STRING);
+          return { kind: "libCall", fn: "num.parseInt", args: [text, radix], type: F64, loc };
+        }
+      }
+    }
     if (optional?.type.kind === "union") {
       const def = lowerer.unions.get(optional.type.unionId);
       const stringTag = def?.arms.findIndex((arm) => arm.kind === "string") ?? -1;
@@ -10392,7 +10420,10 @@ export function lowerStaticNumberGlobal(
         return { kind: "call", callee: helper, args: [optional, radix], type: F64, loc };
       }
     }
-    const s = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const s =
+      lowered !== null
+        ? lowerer.coerceInto(args[0]!, lowered, STRING)
+        : lowerer.lowerExprExpecting(args[0]!, STRING);
     return { kind: "libCall", fn: "num.parseInt", args: [s, radix], type: F64, loc };
   }
   // STATIC parseFloat/isFinite over exactly-typed arguments —
