@@ -222,6 +222,24 @@ export interface IntegerSlotFacts {
   elements?: (arr: IrExpr) => boolean;
 }
 
+/** A local read, or a numeric local plus or minus an integer literal
+ * (`i + 1`, `1 + i`, `i - 2`): the local and its offset. */
+function offsetRef(e: IrExpr): { localId: string; offset: number } | null {
+  if (e.kind === "varRef") return { localId: e.localId, offset: 0 };
+  if (e.kind !== "bin" || (e.op !== "+" && e.op !== "-") || e.type.kind !== "f64") return null;
+  const literal = (x: IrExpr): number | null =>
+    x.kind === "numLit" && Number.isSafeInteger(x.value) && !Object.is(x.value, -0)
+      ? x.value
+      : null;
+  const right = literal(e.right);
+  if (e.left.kind === "varRef" && e.left.type.kind === "f64" && right !== null)
+    return { localId: e.left.localId, offset: e.op === "+" ? right : -right };
+  const left = literal(e.left);
+  if (e.op === "+" && e.right.kind === "varRef" && e.right.type.kind === "f64" && left !== null)
+    return { localId: e.right.localId, offset: left };
+  return null;
+}
+
 /** Structured local dataflow. Calls cannot write uncaptured local slots,
  * but argument expressions can; unknown evaluation forms invalidate all
  * syntactically written slots before their children are inspected. Loops
@@ -544,7 +562,7 @@ export function analyzeIntegerRangeFacts(
     let ref = condition.left;
     let bound = condition.right;
     let op: string = condition.op;
-    if (ref.kind !== "varRef" && bound.kind === "varRef") {
+    if (offsetRef(ref) === null && offsetRef(bound) !== null) {
       [ref, bound] = [bound, ref];
       op =
         (
@@ -554,18 +572,30 @@ export function analyzeIntegerRangeFacts(
           >
         )[op] ?? "";
     }
-    if (ref.kind !== "varRef") return;
-    const boundRange =
+    const target = offsetRef(ref);
+    if (target === null) return;
+    const literalBound =
       bound.kind === "numLit" && Number.isFinite(bound.value)
         ? { min: bound.value, max: bound.value }
         : ranges.get(bound);
-    if (!boundRange) return;
+    if (!literalBound) return;
     // An Int32 contract local holds an int32 even where the dataflow has
     // no fact for it (loop headers, after unknown regions).
     const previous =
-      facts.get(ref.localId) ??
-      (eligible.has(ref.localId) ? (slots.locals?.(ref.localId) ?? undefined) : undefined);
+      facts.get(target.localId) ??
+      (eligible.has(target.localId) ? (slots.locals?.(target.localId) ?? undefined) : undefined);
     if (!previous) return;
+    // `x + c < b` bounds x as `x < b - c` does. A sum that rounds has a
+    // magnitude of at least 2^53, so against a bound within 2^52 every
+    // comparison answers as the exact sum would.
+    const offset = target.offset;
+    if (
+      offset !== 0 &&
+      (Math.abs(offset) > 2 ** 31 ||
+        Math.abs(literalBound.min) > 2 ** 52 ||
+        Math.abs(literalBound.max) > 2 ** 52)
+    )
+      return;
     if (!truth)
       op =
         (
@@ -574,21 +604,30 @@ export function analyzeIntegerRangeFacts(
             string
           >
         )[op] ?? "";
+    // The sum `x + c` is an integer, so the bound rounds to an integer first
+    // and the offset comes off after: integer arithmetic below 2^53 is exact,
+    // where subtracting the offset from a fractional bound could round
+    // across an integer.
     let { min, max } = previous;
-    if (op === "<") max = Math.min(max, Math.ceil(boundRange.max) - 1);
-    else if (op === "<=") max = Math.min(max, Math.floor(boundRange.max));
-    else if (op === ">") min = Math.max(min, Math.floor(boundRange.min) + 1);
-    else if (op === ">=") min = Math.max(min, Math.ceil(boundRange.min));
+    if (op === "<") max = Math.min(max, Math.ceil(literalBound.max) - 1 - offset);
+    else if (op === "<=") max = Math.min(max, Math.floor(literalBound.max) - offset);
+    else if (op === ">") min = Math.max(min, Math.floor(literalBound.min) + 1 - offset);
+    else if (op === ">=") min = Math.max(min, Math.ceil(literalBound.min) - offset);
     else if (op === "===") {
-      min = Math.max(min, boundRange.min);
-      max = Math.min(max, boundRange.max);
-    } else if (op === "!==" && boundRange.min === boundRange.max) {
+      min = Math.max(min, Math.ceil(literalBound.min) - offset);
+      max = Math.min(max, Math.floor(literalBound.max) - offset);
+    } else if (
+      op === "!==" &&
+      literalBound.min === literalBound.max &&
+      Number.isInteger(literalBound.min)
+    ) {
       // Excluding one value narrows a range that ends at it.
-      if (min === boundRange.min) min += 1;
-      else if (max === boundRange.max) max -= 1;
+      const excluded = literalBound.min - offset;
+      if (min === excluded) min += 1;
+      else if (max === excluded) max -= 1;
     }
     if (min <= max && Number.isInteger(min) && Number.isInteger(max))
-      facts.set(ref.localId, { min, max });
+      facts.set(target.localId, { min, max });
   }
   function expr(e: IrExpr, facts: Facts): IntegerRange | null {
     let range: IntegerRange | null = null;
