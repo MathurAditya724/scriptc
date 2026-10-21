@@ -42,6 +42,7 @@ import {
   unparen,
   type Edit,
 } from "./npm-static-bundled-chunks.js";
+import { getTextOfNode, tokenStartOfNode } from "./ts7/node-functions.js";
 
 export interface EsmInitHost {
   requireTargetEsModuleStamped(fromFile: string, specifier: string): boolean;
@@ -107,13 +108,13 @@ function esmHelperForm(
     const stmts = body.body.statements.nodes;
     const ret = stmts[0];
     if (stmts.length !== 1 || !ret || !ts.isReturnStatement(ret) || !ret.expression) return null;
-    const text = ret.expression.getText(sf);
+    const text = getTextOfNode(ret.expression);
     const keys = /\[\s*([A-Za-z_$][\w$]*(?:\.keys)?)\s*\(/.exec(text)?.[1];
     if (keys === undefined || (keys !== "Object.keys" && !ownNames(keys))) return null;
     return helperTokens(text) === template(KEYED_RETURN, f, r, keys) ? "keyed" : null;
   }
   if (ts.isArrowFunction(body) && body.parameters.nodes.length === 0 && !ts.isBlock(body.body)) {
-    const actual = helperTokens(body.body.getText(sf));
+    const actual = helperTokens(getTextOfNode(body.body));
     return actual !== null && actual === template(ARROW_BODY, f, r, "") ? "arrow" : null;
   }
   return null;
@@ -132,7 +133,7 @@ function removeDeclarators(sf: ts.SourceFile, dead: ReadonlySet<ts.VariableDecla
     const decls = stmt.declarationList.declarations.nodes;
     const deadAt = decls.map((d) => dead.has(d));
     if (deadAt.every((x) => x)) {
-      edits.push({ start: stmt.getStart(sf), end: stmt.getEnd(), text: "" });
+      edits.push({ start: tokenStartOfNode(stmt), end: stmt.end, text: "" });
       continue;
     }
     const lastLive = deadAt.lastIndexOf(false);
@@ -140,8 +141,8 @@ function removeDeclarators(sf: ts.SourceFile, dead: ReadonlySet<ts.VariableDecla
       if (!deadAt[i]) continue;
       edits.push(
         i < lastLive
-          ? { start: decls[i]!.getStart(sf), end: decls[i + 1]!.getStart(sf), text: "" }
-          : { start: decls[lastLive]!.getEnd(), end: decls[i]!.getEnd(), text: "" },
+          ? { start: tokenStartOfNode(decls[i]!), end: tokenStartOfNode(decls[i + 1]!), text: "" }
+          : { start: decls[lastLive]!.end, end: decls[i]!.end, text: "" },
       );
     }
   }
@@ -225,12 +226,12 @@ function calledWithReceiver(access: ts.Expression): boolean {
   );
 }
 
-/** True when a function reads its own `this`: in its body, or in an arrow
- * function inside it. */
+/** True when a function reads its own `this`: in its body or a parameter's
+ * default value, or in an arrow function inside them. */
 function readsThis(fn: ts.FunctionDeclaration): boolean {
   let found = false;
   if (fn.body === undefined) return false;
-  ts.walkPreorder(fn.body, (n) => {
+  const visit = (n: ts.Node): "stop" | "skip" | undefined => {
     if (found) return "stop";
     if (
       ts.isFunctionDeclaration(n) ||
@@ -245,7 +246,9 @@ function readsThis(fn: ts.FunctionDeclaration): boolean {
       return "skip";
     if (n.kind === ts.SyntaxKind.ThisKeyword) found = true;
     return undefined;
-  });
+  };
+  for (const parameter of fn.parameters.nodes) ts.walkPreorder(parameter, visit);
+  ts.walkPreorder(fn.body, visit);
   return found;
 }
 
@@ -317,7 +320,7 @@ export function lowerBundledEsmInits(
     return (
       init !== undefined &&
       stable(name) &&
-      helperTokens(init.getText(sf)) === helperTokens("Object.getOwnPropertyNames")
+      helperTokens(getTextOfNode(init)) === helperTokens("Object.getOwnPropertyNames")
     );
   };
   const forms = new Map<string, "keyed" | "arrow">();
@@ -439,7 +442,7 @@ export function lowerBundledEsmInits(
         }
         const spec = bareRequireSpecOf(rhs);
         if (spec === null) continue;
-        const req = rhs.getText(sf);
+        const req = getTextOfNode(rhs);
         const defaultIsModule =
           interop && (isNodeMode || !host.requireTargetEsModuleStamped(filePath, spec));
         // Every other reference must be a plain member read.
@@ -458,18 +461,18 @@ export function lowerBundledEsmInits(
             break;
           }
           if (defaultIsModule && access.name.text === "default")
-            uses.push({ start: access.getStart(sf), end: access.getEnd(), text: `(${req})` });
+            uses.push({ start: tokenStartOfNode(access), end: access.end, text: `(${req})` });
           // `new import_x.C()` must stay `new (require("x")).C()`: a bare
           // `new require("x").C()` constructs the require call itself.
           else
             uses.push({
-              start: r.getStart(sf),
-              end: r.getEnd(),
+              start: tokenStartOfNode(r),
+              end: r.end,
               text: inNewCallee(r) ? `(${req})` : req,
             });
         }
         if (!ok) continue;
-        edits.push({ start: el.getStart(sf), end: el.getEnd(), text: req }, ...uses);
+        edits.push({ start: tokenStartOfNode(el), end: el.end, text: req }, ...uses);
         deadDeclarators.add(decl);
         interopSpecs.set(name, spec);
       }
@@ -529,7 +532,7 @@ export function lowerBundledEsmInits(
     return false;
   };
   const getterText = (value: ts.Expression): string =>
-    applyEdits(source, value.getStart(sf), value.getEnd(), edits);
+    applyEdits(source, tokenStartOfNode(value), value.end, edits);
   /** A call through the namespace (`ns.fn()`, `L().fn()`) passes the object
    * the read came from as `this`; the lowered object differs from Node's
    * module object (`__esModule`, property attributes), so it must stay
@@ -657,23 +660,23 @@ export function lowerBundledEsmInits(
       // call through it (`L().fn()`) loses its receiver.
       if (calledWithReceiver(access as ts.Expression) && !receiverHidden(entries, member))
         return loaderWhy;
-      const init = initCall === null ? "" : `${initCall.getText(sf)}, `;
+      const init = initCall === null ? "" : `${getTextOfNode(initCall)}, `;
       edits.push({
-        start: access.getStart(sf),
-        end: access.getEnd(),
+        start: tokenStartOfNode(access),
+        end: access.end,
         text: `(${init}${getterText(value)})`,
       });
     }
     deadDeclarators.add(d);
     deadDeclarators.add(memoDecl);
-    loaderSpans.push({ start: d.getStart(sf), end: d.getEnd() });
+    loaderSpans.push({ start: tokenStartOfNode(d), end: d.end });
     lowered.add(target);
   }
 
   for (const r of allRefs) {
     const table = tables.get(r.text);
     if (table === undefined) continue;
-    if (loaderSpans.some((span) => r.getStart(sf) >= span.start && r.getEnd() <= span.end))
+    if (loaderSpans.some((span) => tokenStartOfNode(r) >= span.start && r.end <= span.end))
       continue;
     const p = r.parent;
     // The table's own declaration and __export call are handled below.
@@ -738,7 +741,7 @@ export function lowerBundledEsmInits(
       const inner = unparen(ns);
       const init =
         ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.CommaToken
-          ? `${unparen(inner.left).getText(sf)}; `
+          ? `${getTextOfNode(unparen(inner.left))}; `
           : "";
       if (shadowed(holder, table.entries)) return { degrade: `its shipped JS ${why}` };
       const entries = table.entries
@@ -746,8 +749,8 @@ export function lowerBundledEsmInits(
         .map(([n, value]) => `${JSON.stringify(n)}: () => ${getterText(value)}`)
         .join(", ");
       edits.push({
-        start: holder.parent.getStart(sf),
-        end: holder.parent.getEnd(),
+        start: tokenStartOfNode(holder.parent),
+        end: holder.parent.end,
         text: `${init}__export(${mainTarget}, { ${entries} });`,
       });
       lowered.add(r.text);
@@ -800,7 +803,7 @@ export function lowerBundledEsmInits(
           `get ${/^[A-Za-z_$][\w$]*$/.test(n) ? n : JSON.stringify(n)}() { return ${getterText(value)}; }`,
       )
       .join(", ");
-    edits.push({ start: p.getStart(sf), end: p.getEnd(), text: `{ ${getters} }` });
+    edits.push({ start: tokenStartOfNode(p), end: p.end, text: `{ ${getters} }` });
     lowered.add(r.text);
   }
   // A table nothing reads (its module is never required) goes too: its
@@ -810,7 +813,7 @@ export function lowerBundledEsmInits(
     const live = (refsByName.get(target) ?? []).some((x) => {
       const p = x.parent;
       if (p !== undefined && ts.isVariableDeclaration(p) && p.name === x) return false;
-      return !(x.getStart(sf) >= table.stmt.getStart(sf) && x.getEnd() <= table.stmt.getEnd());
+      return !(tokenStartOfNode(x) >= tokenStartOfNode(table.stmt) && x.end <= table.stmt.end);
     });
     if (!live) lowered.add(target);
   }
@@ -826,7 +829,7 @@ export function lowerBundledEsmInits(
       writes.has(target)
     )
       return { degrade: ESM_SHAPE_DEGRADE };
-    edits.push({ start: table.stmt.getStart(sf), end: table.stmt.getEnd(), text: "" });
+    edits.push({ start: tokenStartOfNode(table.stmt), end: table.stmt.end, text: "" });
     deadDeclarators.add(decl);
   }
   // Every removed declarator in one pass: declarators of one statement
@@ -839,13 +842,13 @@ export function lowerBundledEsmInits(
     const { call, body } = init;
     edits.push(
       {
-        start: call.getStart(sf),
-        end: body.getStart(sf) + 1,
+        start: tokenStartOfNode(call),
+        end: tokenStartOfNode(body) + 1,
         text: `(() => { let __scriptc_done = false; function __scriptc_init() {`,
       },
       {
-        start: body.getEnd() - 1,
-        end: call.getEnd(),
+        start: body.end - 1,
+        end: call.end,
         // A body split around hoisted classes ends in its last tail function.
         text: hoisted.has(init.name) ? "}" : `} ${RUN_ONCE_TAIL}`,
       },
@@ -853,6 +856,24 @@ export function lowerBundledEsmInits(
   }
   return applyEdits(source, 0, source.length, edits);
 }
+
+/** Global constructors a hoisted class may extend: reading one runs no
+ * code. */
+const GLOBAL_BASES: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+  "Array",
+  "Map",
+  "Set",
+  "Promise",
+  "Object",
+]);
 
 /** The run-once closure's closing text after the initializer function. */
 const RUN_ONCE_TAIL =
@@ -891,6 +912,21 @@ function hoistInitClasses(
 ): Map<string, { edits: Edit[]; declarators: ts.VariableDeclaration[] }> {
   const out = new Map<string, { edits: Edit[]; declarators: ts.VariableDeclaration[] }>();
   const hoistedNames = new Set<string>();
+  /** esbuild's `0 && (module.exports = { … })` annotation for Node's
+   * CommonJS lexer: code that never runs. */
+  const inDeadAnnotation = (n: ts.Node): boolean => {
+    for (let child: ts.Node = n, p = n.parent; p !== undefined; child = p, p = p.parent) {
+      if (
+        ts.isBinaryExpression(p) &&
+        p.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+        p.right === child &&
+        ts.isNumericLiteral(unparen(p.left)) &&
+        (unparen(p.left) as ts.NumericLiteral).text === "0"
+      )
+        return true;
+    }
+    return false;
+  };
   const insideFunction = (n: ts.Node): boolean => {
     for (let p = n.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent)
       if (ts.isFunctionLike(p)) return true;
@@ -905,7 +941,13 @@ function hoistInitClasses(
     let root: ts.Expression = type.expression;
     while (ts.isPropertyAccessExpression(root) && !root.questionDotToken) root = root.expression;
     if (ts.isIdentifier(root)) {
-      if (root === type.expression) return hoistedNames.has(root.text);
+      if (root === type.expression)
+        return (
+          hoistedNames.has(root.text) ||
+          // A standard global constructor the bundle never rebinds
+          // (`class extends Error`, an error base class).
+          (GLOBAL_BASES.has(root.text) && countDeclarations(sf, root.text) === 0)
+        );
       const spec = interopSpecs.get(root.text);
       return spec !== undefined && canonicalBuiltinModule(spec) !== null;
     }
@@ -925,7 +967,7 @@ function hoistInitClasses(
   for (const init of inits.values()) {
     const stmts = init.body.statements.nodes;
     if (stmts.some((st) => !ts.isExpressionStatement(st) && !ts.isEmptyStatement(st))) continue;
-    // The initializer's declaration is a statement of its own.
+    // The initializer's declarator is its statement's last one.
     const declarator = init.call.parent;
     const list = declarator?.parent;
     if (
@@ -933,7 +975,9 @@ function hoistInitClasses(
       !ts.isVariableDeclaration(declarator) ||
       list === undefined ||
       !ts.isVariableDeclarationList(list) ||
-      list.declarations.nodes.length !== 1 ||
+      // The initializer ends its statement: the split pieces follow it
+      // (`var A, B, init_x = __esm(…)` keeps A and B declared before).
+      list.declarations.nodes[list.declarations.nodes.length - 1] !== declarator ||
       unparen(declarator.initializer!) !== init.call
     )
       continue;
@@ -973,10 +1017,13 @@ function hoistInitClasses(
             (r) =>
               r === target ||
               // The class's own methods name the class itself.
-              (r.getStart(sf) >= cls.getStart(sf) && r.getEnd() <= cls.getEnd()) ||
+              (tokenStartOfNode(r) >= tokenStartOfNode(cls) && r.end <= cls.end) ||
+              inDeadAnnotation(r) ||
               (insideFunction(r) &&
                 // The initializer's own earlier code reads the unassigned binding.
-                !(r.getStart(sf) >= init.body.getStart(sf) && r.getStart(sf) < el.getEnd())),
+                !(
+                  tokenStartOfNode(r) >= tokenStartOfNode(init.body) && tokenStartOfNode(r) < el.end
+                )),
           )
         )
           continue;
@@ -987,10 +1034,15 @@ function hoistInitClasses(
         // the neighboring pieces.
         // After a hoisted neighbor the separating comma is already gone.
         const fresh = i === 0 || hoistedEls.has(els[i - 1]!);
-        const from = i === 0 ? stmt.getStart(sf) : fresh ? el.getStart(sf) : els[i - 1]!.getEnd();
+        const from =
+          i === 0 ? tokenStartOfNode(stmt) : fresh ? tokenStartOfNode(el) : els[i - 1]!.end;
         const sep = fresh ? "" : ";";
         hoistedEls.add(el);
-        edits.push({ start: from, end: cls.getStart(sf), text: `${sep} ${rest}(); ${close} ` });
+        edits.push({
+          start: from,
+          end: tokenStartOfNode(cls),
+          text: `${sep} ${rest}(); ${close} `,
+        });
         const next = els[i + 1];
         // The class's own closing brace carries the next piece's opener: an
         // empty insertion at its end would share its position with the
@@ -998,18 +1050,18 @@ function hoistInitClasses(
         edits.push(
           next === undefined
             ? {
-                start: cls.getEnd() - 1,
-                end: cls.getEnd(),
+                start: cls.end - 1,
+                end: cls.end,
                 text: `} function ${rest}() { ${strict}`,
               }
             : {
-                start: cls.getEnd(),
-                end: next.getStart(sf),
+                start: cls.end,
+                end: tokenStartOfNode(next),
                 text: ` function ${rest}() { ${strict}`,
               },
         );
         if (cls.name === undefined) {
-          const keyword = cls.getStart(sf);
+          const keyword = tokenStartOfNode(cls);
           edits.push({ start: keyword, end: keyword + "class".length, text: `class ${name}` });
         }
         declarators.push(decl);

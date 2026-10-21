@@ -45,19 +45,26 @@ const native: EarlyExecutableNativeFeatures = {
   bigint: false,
   searchParams: false,
   qs: false,
+  utilPromisify: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
   parseArgs: false,
   stream: false,
   net: false,
   http: false,
   http2: false,
   dgram: false,
+  dnsPromises: false,
+  dgramDyn: false,
   watch: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
   tlsCa: false,
   cipher: false,
+  ecdh: false,
   webcrypto: false,
+  perfLoop: false,
 };
 
 async function fixture(): Promise<{
@@ -199,7 +206,7 @@ test("early executable cache misses on source and resolution changes", async () 
   expect(await readEarlyExecutableCache(f.root, f.options)).toBeNull();
 });
 
-test("early executable keys isolate compile modes, paths, implementation, and FFI manifests", async () => {
+test("early executable keys isolate compile modes, paths, implementation, checker, and FFI manifests", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
   tracker.run(() => trackedReadFile(f.source));
@@ -216,6 +223,9 @@ test("early executable keys isolate compile modes, paths, implementation, and FF
     { ...f.options, optimization: "dev" },
     { ...f.options, optimization: "speed" },
     { ...f.options, detachedExit: true },
+    { ...f.options, profile: "profile-generate:/tmp/%p.profraw" },
+    { ...f.options, profile: "profile-use:digest" },
+    { ...f.options, checker: "tsc-ts-executable-identity" },
     { ...f.options, npmStatic: "auto" },
     { ...f.options, npmStatic: ["commander"] },
     { ...f.options, outPath: join(f.options.outDir, "other") },

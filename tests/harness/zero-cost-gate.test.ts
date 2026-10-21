@@ -5,6 +5,7 @@ import {
   compareArtifact,
   compareCounts,
   compareExecutables,
+  definedFunctionNames,
   dynamicTierSymbols,
   nmOutput,
   programVerdict,
@@ -141,6 +142,34 @@ test("the zero-cost gate recognizes dynamic-tier runtime symbols", () => {
   ).toEqual(["scr_dyn_obj_read", "scr_js_load_ic"]);
 });
 
+test("the zero-cost gate reads function names from ELF and Mach-O nm output", () => {
+  const elf = [
+    "0000000000001000 0000000000000010 T scr_dyn_call",
+    "0000000000001010 0000000000000008 t scr_dyn_obj_get",
+    "0000000000002000 0000000000000004 D scr_dyn_table",
+    "                 U memcpy",
+  ].join("\n");
+  expect(definedFunctionNames(elf, "linux")).toEqual(["scr_dyn_call", "scr_dyn_obj_get"]);
+  // Mach-O names carry a leading underscore, which would hide every
+  // dynamic-tier symbol from the prefix match.
+  const macho = [
+    "0000000100001000 T _scr_dyn_call",
+    "0000000100001010 t _scr_dyn_obj_get",
+    "0000000100002000 W __main",
+    "0000000100003000 s _scr_dyn_add.message",
+    "                 U _memcpy",
+  ].join("\n");
+  expect(definedFunctionNames(macho, "darwin")).toEqual([
+    "scr_dyn_call",
+    "scr_dyn_obj_get",
+    "_main",
+  ]);
+  expect(dynamicTierSymbols(definedFunctionNames(macho, "darwin"))).toEqual([
+    "scr_dyn_call",
+    "scr_dyn_obj_get",
+  ]);
+});
+
 test("the zero-cost gate fails differing programs unless they match the signature", () => {
   const ok = { ok: true };
   const same = { ir: { identical: true }, exe: { identical: true } };
@@ -150,11 +179,15 @@ test("the zero-cost gate fails differing programs unless they match the signatur
     allowed = false,
     baseline: object = ok,
     candidate: object = ok,
-  ) => programVerdict({ baseline, candidate, artifacts, allowed });
+    required = false,
+  ) => programVerdict({ baseline, candidate, artifacts, allowed, required });
   expect(verdict(same)).toEqual({ verdict: "identical", fails: false });
   expect(verdict(differs)).toEqual({ verdict: "differs", fails: true });
   expect(verdict(differs, true)).toEqual({ verdict: "allowed", fails: false });
   const failed = { ok: false, error: "SC1090" };
   expect(verdict({}, false, failed, failed)).toEqual({ verdict: "both-fail", fails: false });
+  // A benchmark or the self-hosted compiler that neither checkout builds
+  // was never compared.
+  expect(verdict({}, false, failed, failed, true)).toEqual({ verdict: "both-fail", fails: true });
   expect(verdict({}, true, ok, failed)).toEqual({ verdict: "build-error", fails: true });
 });

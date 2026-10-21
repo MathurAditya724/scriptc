@@ -27,6 +27,7 @@ import { funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
+import { perEvaluationPrivateNames } from "./private-brands.js";
 
 export interface ClassMethodValueSelection {
   expression: ts.PropertyAccessExpression;
@@ -51,18 +52,20 @@ export function lowerClassMethodValue(
   }
   const loc = locOf(expr);
   const receiver = lowerer.lowerExpr(expr.expression);
+  const declared = findMethodOn(lowerer, info, method);
   // A JS checker may name a class while the value is held in checked
   // storage. Read its actual property so own replacements and getters
-  // participate, and never pass a dynamic value to a native selector.
-  if (receiver.type.kind === "dyn")
+  // participate, and never pass a dynamic value to a native selector. A
+  // method whose private names belong to one evaluation is that
+  // evaluation's prototype method as well.
+  if (receiver.type.kind === "dyn" || (!!declared && perEvaluationPrivateNames(declared.declarer)))
     return {
       kind: "dynKeyGet",
-      value: receiver,
+      value: lowerer.coerceToExpected(receiver, DYN),
       key: { kind: "strLit", value: method, type: STRING, loc },
       type: DYN,
       loc,
     };
-  const declared = findMethodOn(lowerer, info, method);
   // Abstract declarations have no prototype function. Concrete descendants
   // provide the extracted value through the same reachability-driven selector.
   let value = declared?.sig.abstract
@@ -89,7 +92,8 @@ export function lowerClassMethodValue(
       loc,
     };
   };
-  const checked = isJsSourceFile(expr.getSourceFile()) && lowerer.dynConvertible(value.type);
+  const checked =
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) && lowerer.dynConvertible(value.type);
   if (checked) value = lowerer.coerceToExpected(value, DYN);
   // Select the declaration when extracting the value. Calling the value
   // later must not redispatch the method name on a different receiver.
@@ -371,7 +375,7 @@ function reflectedMethodValue(
   if (!member || (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) || !member.body)
     return null;
   let needsNativeReceiver =
-    !isJsSourceFile(declaration.getSourceFile()) ||
+    !isJsSourceFile(ts.getSourceFileOfNode(declaration)) ||
     info.localClass !== undefined ||
     lowerer.errorHierarchyClassOf(info.def.name);
   ts.walkPreorder(member, (node) => {
@@ -537,11 +541,11 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
           !(expr.kind === "closure" && expr.captures.includes(thisParam.localId)),
       });
     if (usesThis) continue;
-    // A method that never uses this remains callable when detached.
+    // A method that never uses this remains callable when detached. Without
+    // class captures it needs no class environment, so the detached copy
+    // drops the (empty) capture list, which requires a receiver.
     const name = `%method.receiverless:${target.name}`;
-    // A local class's method keeps an (empty) class-capture list; the
-    // detached copy has no receiver to read captures through.
-    const { classCaptures: _none, ...detached } = target;
+    const { classCaptures: _classCaptures, ...detached } = target;
     functions.push({
       ...detached,
       name,

@@ -1,7 +1,7 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
+import { F64, isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -32,7 +32,7 @@ import {
   emitPowerOfTwoRemainder,
   emitSignedIntegerRemainder,
 } from "./integer-remainder.js";
-import { emitDenseArrayGet, emitDenseArrayState } from "./dense-array-access.js";
+import { emitDenseArrayGet, emitDenseArrayState, slotWidth } from "./dense-array-access.js";
 import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
 
 export function emitLiteralExpr(
@@ -116,7 +116,7 @@ export function emitLiteralExpr(
         return host.own({ name: host.adoptHeap(v, e.type), type: e.type });
       }
       const t = B.tmp();
-      B.line(`${t} = load ${host.llType(b.type)}, ptr ${b.slot}`);
+      B.line(`${t} = load ${host.llType(b.type)}, ptr ${b.slot}${host.slotAlias(e.localId)}`);
       const integerView = host.integerViews.get(e.localId);
       if (integerView !== undefined) {
         // Snapshot both representations before later operands can write
@@ -558,6 +558,28 @@ export function regexLiteralTemplate(
   return `@${re.sym}`;
 }
 
+/** A string equality between `s.charAt(i)` and a literal of exactly one
+ * UTF-16 code unit: the charAt call and the unit. */
+function charAtUnitTest(
+  e: ExprOf<"strEq">,
+): { charAt: ExprOf<"strIntrinsic">; code: number } | null {
+  let text: string;
+  let other: IrExpr;
+  if (e.right.kind === "strLit") {
+    text = e.right.value;
+    other = e.left;
+  } else if (e.left.kind === "strLit") {
+    text = e.left.value;
+    other = e.right;
+  } else {
+    return null;
+  }
+  if (text.length !== 1) return null;
+  if (other.kind !== "strIntrinsic" || other.method !== "charAt" || other.args.length !== 1)
+    return null;
+  return { charAt: other, code: text.charCodeAt(0) };
+}
+
 export function emitStringExpr(
   host: LlvmEmitterContext,
   e: ExprOf<
@@ -600,6 +622,26 @@ export function emitStringExpr(
       return host.own({ name: t, type: e.type });
     }
     case "strEq": {
+      // `s.charAt(i) === "c"` (and `s[i]`, which lowers to charAt) for a
+      // one-unit literal compares the code unit: charCodeAt converts the
+      // index the same way, and an index out of range answers NaN, which
+      // equals no unit, as "" equals no one-unit literal.
+      const unit = charAtUnitTest(e);
+      if (unit !== null) {
+        const code = host.emitExpr({
+          kind: "strIntrinsic",
+          method: "charCodeAt",
+          receiver: unit.charAt.receiver,
+          args: unit.charAt.args,
+          type: F64,
+          loc: unit.charAt.loc,
+        });
+        const t = B.tmp();
+        B.line(
+          `${t} = fcmp ${e.negated ? "une" : "oeq"} double ${code.name}, ${f64Lit(unit.code)}`,
+        );
+        return { name: t, type: e.type };
+      }
       const [l, r] = emitStringInputs(host, [e.left, e.right]);
       const eq = B.tmp();
       // A literal side compares its length and bytes inline.
@@ -894,7 +936,14 @@ export function emitContainerExpr(
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayHas on non-array");
-      const t = emitDenseArrayState(host, arr.name, idx, e.index, "has");
+      const t = emitDenseArrayState(
+        host,
+        arr.name,
+        idx,
+        e.index,
+        "has",
+        slotWidth(elemAccess(e.arr.type.elem)),
+      );
       return { name: t, type: e.type };
     }
     case "arrayState": {
@@ -902,7 +951,14 @@ export function emitContainerExpr(
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayState on non-array");
-      const t = emitDenseArrayState(host, arr.name, idx, e.index, "state");
+      const t = emitDenseArrayState(
+        host,
+        arr.name,
+        idx,
+        e.index,
+        "state",
+        slotWidth(elemAccess(e.arr.type.elem)),
+      );
       return { name: t, type: e.type };
     }
     case "arrIntrinsic":

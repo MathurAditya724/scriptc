@@ -144,6 +144,20 @@ console.log(${use.replaceAll("NS", "(init_w(), __toCommonJS(w_exports))")});
   });
 });
 
+test("an export that reads `this` in a parameter's default value keeps the package refused", () => {
+  const result = lower(`${helpers}var p_exports = {};
+__export(p_exports, { who: () => who });
+function who(value = this.__esModule) { return value; }
+var init_p = __esm({ "p.ts"() {} });
+console.log((init_p(), __toCommonJS(p_exports)).who());
+`);
+  expect(result).toEqual({
+    degrade: expect.stringContaining(
+      "calls only of exported functions that do not read 'this'",
+    ) as string,
+  });
+});
+
 test("minified initializers sharing a var statement lower the same way", () => {
   expectSameBehavior(
     helpers +
@@ -257,7 +271,7 @@ test("classes whose definition or binding is observable stay assignments", () =>
 var init_m = __esm({
   "src/m.ts"() {
     A = class { static made = console.log("static field runs at definition") };
-    B = class extends Array {};
+    B = class extends globalThis.Array {};
     console.log(typeof D);
     D = class {};
     C = class {};
@@ -289,9 +303,65 @@ console.log(typeof make().on);
   expect(lowered).toContain('new (require("events")).EventEmitter()');
 });
 
+test("a hoisted class may extend a global constructor, past esbuild's export annotation", () => {
+  const lowered = expectSameBehavior(`${helpers}var AppError;
+var init_errors = __esm({
+  "src/errors.ts"() {
+    AppError = class extends Error {
+      code;
+      constructor(message, code) {
+        super(message);
+        this.code = code;
+      }
+    };
+  }
+});
+function fail() {
+  init_errors();
+  throw new AppError("failed", "E1");
+}
+function main() {
+  try {
+    fail();
+  } catch (err) {
+    console.log(err instanceof AppError, err instanceof Error, err.code, err.message);
+  }
+}
+main();
+0 && (module.exports = { AppError });
+`);
+  expect(lowered).toContain("class AppError extends Error");
+});
+
+test("an initializer declared last in a shared var statement still hoists its classes", () => {
+  const lowered = expectSameBehavior(`"use strict";
+${helpers}var BuildError, hints, init_errors = __esm({
+  "src/errors.ts"() {
+    "use strict";
+    BuildError = class extends Error {
+      constructor(code) {
+        super("failed: " + code);
+        this.code = code;
+      }
+    }, hints = { retry: "try again" };
+  }
+});
+function run() {
+  init_errors();
+  try {
+    throw new BuildError("E2");
+  } catch (err) {
+    console.log(err instanceof BuildError, err.code, err.message, hints.retry);
+  }
+}
+run();
+`);
+  expect(lowered).toContain("class BuildError extends Error");
+});
+
 test("a minified initializer that ends with its class still hoists it", () => {
   const lowered = expectSameBehavior(
-    `${helpers}var Counter;var init_counter=__esm({"src/counter.ts"(){console.log("counter init"),Counter=class{n=0;next(){return++this.n}}}});function run(){init_counter();const c=new Counter;c.next();console.log(c.next())}run();`,
+    `${helpers}var Counter,init_counter=__esm({"src/counter.ts"(){console.log("counter init"),Counter=class{n=0;next(){return++this.n}}}});function run(){init_counter();const c=new Counter;c.next();console.log(c.next())}run();`,
   );
   expect(lowered).toContain("class Counter{");
 });

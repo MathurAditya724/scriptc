@@ -118,10 +118,16 @@
  *                  growth baselines but not lower them: the heap regrowing
  *                  to where it was before such a pass reclaimed a dropped
  *                  structure is a rebuild, not growth.
+ *                  Once the thread's event loop runs, the pass waits for
+ *                  the loop's next idle moment (scr_cyc_collect_idle), or
+ *                  until the heap has grown the base fraction past where
+ *                  it was asked for.
  *   mature         the same two rules one level down: a growth fraction
  *                  measured from the last mature-or-full pass and scheduled
  *                  by everything mature passes free, and a backlog rule over
- *                  the mature buffer.
+ *                  the mature buffer. Until a mature pass has had
+ *                  candidates, the backlog threshold widens with the growth
+ *                  fraction (scr_cyc_backlog_threshold).
  *   scheduled age  a mature or old candidate has waited through a nursery's
  *                  worth of event-loop checkpoints. Candidate COUNT cannot
  *                  bound the garbage behind one root, and an idle heap does
@@ -163,8 +169,9 @@ void scr_weak_dispose(void *object) {
 #include <stdlib.h>
 #include <string.h>
 
-/* Every heap object's first member is `size_t rc`. */
-#define SCR_RC(obj) (*(size_t *)(obj))
+/* Every heap object's first member is `size_t rc`; the collector works on
+ * its count (SCR_RC_COUNT). */
+#define SCR_RC(obj) SCR_RC_COUNT(obj)
 
 static void scr_cyc_oom(void) {
   scr_trap("scriptc: out of memory\n");
@@ -217,11 +224,14 @@ typedef struct {
   unsigned char growth_shift[SCR_CYC_NGENS];
   unsigned char growth_streak[SCR_CYC_NGENS];
   unsigned backlog_shift[SCR_CYC_NGENS];
+  bool backlog_judged[SCR_CYC_NGENS];
   size_t fallen;
   size_t live_seen;
   size_t full_after;
   unsigned char death_shift;
   bool falling;
+  bool idle_points;
+  size_t death_due_live;
   bool keep_base;
   size_t trigger;
   size_t alloc_trigger;
@@ -256,6 +266,7 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_cyc_growth_shift (scr_cyc_thread.growth_shift)
 #define scr_cyc_growth_streak (scr_cyc_thread.growth_streak)
 #define scr_cyc_backlog_shift (scr_cyc_thread.backlog_shift)
+#define scr_cyc_backlog_judged (scr_cyc_thread.backlog_judged)
 #define scr_cyc_trigger (scr_cyc_thread.trigger)
 #define scr_cyc_alloc_trigger (scr_cyc_thread.alloc_trigger)
 #define scr_gray_referenced (scr_cyc_thread.gray_referenced)
@@ -270,6 +281,8 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_cyc_full_after (scr_cyc_thread.full_after)
 #define scr_cyc_death_shift (scr_cyc_thread.death_shift)
 #define scr_cyc_falling (scr_cyc_thread.falling)
+#define scr_cyc_idle_points (scr_cyc_thread.idle_points)
+#define scr_cyc_death_due_live (scr_cyc_thread.death_due_live)
 #define scr_cyc_keep_base (scr_cyc_thread.keep_base)
 #define scr_cyc_kinds (scr_cyc_thread.kinds)
 #define scr_cyc_kinds_cap (scr_cyc_thread.kinds_cap)
@@ -535,11 +548,13 @@ static unsigned scr_cyc_growth_max_shift(void) {
 }
 
 /* Doublings of each generation's backlog threshold earned by consecutive
- * passes that found almost nothing to free (see scr_cyc_backlog_threshold).
+ * passes that found almost nothing to free (see scr_cyc_backlog_threshold),
+ * and whether a pass at that level has had candidates to judge them by.
  * Only the mature and old entries are used. */
 #define SCR_CYC_BACKLOG_MAX_SHIFT 8
 #ifndef SCR_WORKERS
 static SCR_TL unsigned scr_cyc_backlog_shift[SCR_CYC_NGENS];
+static SCR_TL bool scr_cyc_backlog_judged[SCR_CYC_NGENS];
 #endif
 
 /* Mature objects in the last full pass's dead set (scr_cyc_adapt_growth). */
@@ -561,6 +576,19 @@ static SCR_TL size_t scr_cyc_mature_dead = 0;
 static SCR_TL size_t scr_cyc_fallen = 0, scr_cyc_live_seen = 0, scr_cyc_full_after = 0;
 static SCR_TL unsigned char scr_cyc_death_shift = 0;
 static SCR_TL bool scr_cyc_falling = false, scr_cyc_keep_base = false;
+#endif
+
+/* A death pass waits for an idle moment of the thread's event loop
+ * (scr_cyc_collect_idle) once the loop runs (`idle_points`): the dropped
+ * structure it reclaims is not urgent, and a program that drops one in the
+ * middle of its work (a compiler starting a rebuild in watch mode) would
+ * otherwise walk its whole heap on the way. `death_due_live`: the live
+ * count when the death rule first asked for the pass that waits, 0 when
+ * none does. If the heap grows the base fraction past that before an idle
+ * moment comes, the pass runs where it is due. */
+#ifndef SCR_WORKERS
+static SCR_TL bool scr_cyc_idle_points = false;
+static SCR_TL size_t scr_cyc_death_due_live = 0;
 #endif
 
 static size_t scr_cyc_nursery_threshold(void) {
@@ -684,11 +712,21 @@ static SCR_CYC_SCHEDULING bool scr_cyc_grown(unsigned gen) {
  * this trigger rests, leaving heap growth, the scheduled age and exit to
  * collect. That only delays garbage made from existing data: replacing it
  * requires allocation, which grows the heap and trips a growth trigger. The
- * first productive pass at that level restores the original fraction. */
+ * first productive pass at that level restores the original fraction.
+ *
+ * Only passes that had candidates adapt the threshold. Until one has, the
+ * level uses its growth fraction's doublings instead (scr_cyc_adapt_growth),
+ * which every growth-triggered pass at the level adapts, candidates or not.
+ * A program can keep a level's buffer empty while its heap grows, so that
+ * growth passes there find nothing and widen, and then fill the buffer with
+ * live objects (a structure it builds and reads as it builds it); at the
+ * base threshold, the first backlog pass would walk a quarter of the live
+ * heap to find nothing. */
 static size_t scr_cyc_backlog_threshold(unsigned gen) {
   size_t t = scr_cyc_live / SCR_CYC_GROWTH_DIV;
   if (t < SCR_CYC_NURSERY_CANDIDATES) t = SCR_CYC_NURSERY_CANDIDATES;
-  unsigned shift = scr_cyc_backlog_shift[gen];
+  unsigned shift =
+      scr_cyc_backlog_judged[gen] ? scr_cyc_backlog_shift[gen] : scr_cyc_growth_shift[gen];
   return t > (SIZE_MAX >> shift) ? SIZE_MAX : t << shift;
 }
 
@@ -788,6 +826,7 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
   size_t old_reclaimed = scr_cyc_old_freed - old_freed_before + scr_cyc_mature_dead;
   if (gen == SCR_CYC_NURSERY) return;
   if (scr_cands.n != 0) {
+    scr_cyc_backlog_judged[gen] = true;
     if (freed * SCR_CYC_GROWTH_DIV >= scr_cands.n)
       scr_cyc_backlog_shift[gen] = 0;
     else if (scr_cyc_backlog_shift[gen] < SCR_CYC_BACKLOG_MAX_SHIFT)
@@ -810,6 +849,10 @@ static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
   unsigned gen = SCR_CYC_OLD;
   bool by_growth = scr_cyc_grown(SCR_CYC_OLD);
   bool by_death = !by_growth && scr_cyc_died();
+  if (by_death && scr_cyc_idle_points) {
+    if (!scr_cyc_death_due_live) scr_cyc_death_due_live = scr_cyc_live;
+    by_death = scr_cyc_live > scr_cyc_death_due_live + scr_cyc_death_due_live / SCR_CYC_GROWTH_DIV;
+  }
   if (!by_growth && !by_death && scr_roots[SCR_CYC_OLD].n < scr_cyc_backlog_threshold(SCR_CYC_OLD)) {
     gen = SCR_CYC_MATURE;
     by_growth = scr_cyc_grown(SCR_CYC_MATURE);
@@ -845,6 +888,19 @@ void scr_cyc_collect_scheduled(void) {
     return;
   }
   scr_cyc_collect_due();
+}
+
+void scr_cyc_note_event_loop(void) { scr_cyc_idle_points = true; }
+
+/* The death rule held when it asked for the waiting pass, and nothing
+ * dies while the loop waits, so the pass runs without checking the rule
+ * again: a heap that kept shrinking since would fail its size test, and
+ * the dead structure it was asked for would stay buffered. */
+bool scr_cyc_collect_idle(void) {
+  if (!scr_cyc_death_due_live || scr_collecting) return false;
+  scr_cyc_note_fall();
+  scr_cyc_scheduled_pass(SCR_CYC_OLD, false, true);
+  return true;
 }
 
 /* ── level bypass ─────────────────────────────────────────────────────── */
@@ -1154,7 +1210,7 @@ void scr_cyc_on_release(void *obj) {
 #define SCR_CYC_WALK_GEN(h) scr_cyc_gen(h)
 #endif
 #define SCR_CYC_SKIP(child)                     \
-  ((child) == NULL || SCR_RC(child) == SIZE_MAX \
+  ((child) == NULL || SCR_RC(child) == SCR_RC_IMMORTAL \
    || SCR_CYC_WALK_GEN(scr_cyc_hdr(child)) > scr_gen_limit)
 
 /* The walks are depth-first and recursive up to SCR_CYC_WALK_DEPTH, where
@@ -1173,8 +1229,10 @@ void scr_cyc_on_release(void *obj) {
     size_t end = arr->len < arr->cap ? arr->len : arr->cap;               \
     size_t filled = arr->filled < end ? arr->filled : end;                \
     for (size_t i = 0; i < filled; i++) visit((void *)(uintptr_t)arr->data[i], ctx); \
+    const uint8_t *states = scr_arr_states_end(arr);                      \
     for (size_t i = filled; i < end; i++)                                 \
-      if (arr->present[i] == SCR_ARR_VALUE) visit((void *)(uintptr_t)arr->data[i], ctx); \
+      if (*scr_arr_state_in(states, i) == SCR_ARR_VALUE)                   \
+        visit((void *)(uintptr_t)arr->data[i], ctx);                      \
   }
 
 /* Visit every child of `obj` with VISIT, through ARRAY_WALK for a dense
@@ -1196,7 +1254,7 @@ SCR_CYC_ARRAY_WALK(scr_scan_array, scr_scan_visit)
 
 static inline __attribute__((always_inline)) void scr_mark_gray(void *obj, uintptr_t depth);
 static void scr_mg_visit(void *child, void *ctx) {
-  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
+  if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
   ScrCycHdr *h = scr_cyc_hdr(child);
   if (SCR_CYC_WALK_GEN(h) > scr_gen_limit) {
     scr_cyc_push_work(&scr_xgen_edges, scr_gray_holder);
@@ -1355,7 +1413,7 @@ static SCR_TL size_t scr_xg_freed = 0;
 static void scr_xg_release(void *obj);
 static void scr_xg_child_visit(void *child, void *ctx) {
   (void)ctx;
-  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
+  if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
   scr_xg_release(child);
 }
 
@@ -1580,7 +1638,7 @@ static void scr_yin_leave(ScrCycHdr *h, void *obj) {
 
 static void scr_yin_count_visit(void *child, void *ctx) {
   (void)ctx;
-  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
+  if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
   ScrCycHdr *h = scr_cyc_hdr(child);
   if (scr_cyc_gen(h) == SCR_CYC_YOUNG) scr_yin_counts[scr_cyc_buf_index(h)]++;
 }
@@ -1588,7 +1646,7 @@ static void scr_yin_count_visit(void *child, void *ctx) {
 /* Marked young objects are GRAY (young objects are otherwise BLACK). */
 static void scr_yin_mark_visit(void *child, void *ctx) {
   (void)ctx;
-  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
+  if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
   ScrCycHdr *h = scr_cyc_hdr(child);
   if (scr_cyc_gen(h) != SCR_CYC_YOUNG || scr_cyc_color(h) == SCR_CYC_GRAY) return;
   scr_cyc_set_color(h, SCR_CYC_GRAY);
@@ -1600,7 +1658,7 @@ static void scr_yin_mark_visit(void *child, void *ctx) {
  * the count until every teardown has run. */
 static void scr_yin_dead_visit(void *child, void *ctx) {
   (void)ctx;
-  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
+  if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
   ScrCycHdr *h = scr_cyc_hdr(child);
   if (scr_cyc_gen(h) == SCR_CYC_YOUNG && scr_cyc_color(h) != SCR_CYC_GRAY) return;
   scr_yin_push(&scr_yin_xrel, child);
@@ -1857,6 +1915,7 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
     if (gen_limit >= SCR_CYC_OLD) {
       scr_cyc_scheduled_mature_age = 0;
       scr_cyc_fallen = 0;
+      scr_cyc_death_due_live = 0;
       scr_cyc_full_after = scr_cyc_live;
     }
   }
@@ -2088,6 +2147,18 @@ size_t scr_cyc_pass_at(unsigned gen) { return scr_cyc_pass(gen); }
 /* Tests only: route appended candidates of bypassing types, as the next
  * scheduling decision or pass would. */
 void scr_cyc_route_bypassed_at(void) { scr_cyc_route_bypassed(); }
+/* Tests only: the backlog threshold at `gen`, and forgetting what passes
+ * there have taught it, as on a thread that has not collected yet. */
+size_t scr_cyc_backlog_threshold_at(unsigned gen) { return scr_cyc_backlog_threshold(gen); }
+void scr_cyc_forget_backlog_at(unsigned gen) {
+  scr_cyc_backlog_shift[gen] = 0;
+  scr_cyc_backlog_judged[gen] = false;
+}
+/* Tests only: the thread's event loop stops counting as running. */
+void scr_cyc_forget_event_loop_at(void) {
+  scr_cyc_idle_points = false;
+  scr_cyc_death_due_live = 0;
+}
 #endif
 
 size_t scr_cyc_collect_set(const ScrCycSet *set, unsigned gen) {

@@ -71,6 +71,7 @@ void scr_crypto_hash_stream_set(ScrCryptoHash *hash, void *stream, void (*releas
 void scr_crypto_hash_stream_detach(void *hash);
 void scr_crypto_hash_stream_close(ScrCryptoHash *hash);
 bool scr_crypto_hash_stream_usable(const ScrCryptoHash *hash);
+bool scr_crypto_hash_is_hmac(const ScrCryptoHash *hash);
 void scr_crypto_hash_stream_hold(ScrCryptoHash *hash);
 void scr_crypto_hash_stream_unhold(ScrCryptoHash *hash);
 ScrStream *scr_crypto_hash_stream_piped(ScrCryptoHash *hash);
@@ -87,6 +88,12 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len);
  * with the vendored mbedTLS archive). +1 handle, or NULL with Node's
  * error pending. */
 ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn *iv, ScrDyn *options);
+/* crypto.createECDH(curveName) and ECDH.convertKey(key, curve,
+ * inputEncoding, outputEncoding, format) over checked-dynamic arguments
+ * (scr_ecdh.c, linked with the vendored mbedTLS archive). +1 ECDH handle
+ * or result, or NULL with Node's error pending. */
+ScrDyn *scr_crypto_ecdh_new(ScrDyn *curve);
+ScrDyn *scr_crypto_ecdh_convert_key(ScrDyn *key, ScrDyn *curve, ScrDyn *in_enc, ScrDyn *out_enc, ScrDyn *format);
 ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
                             double iterations, double keylen, ScrStr *digest);
 ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double iterations,

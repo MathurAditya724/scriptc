@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { builtinClassKind, builtinClassValue } from "./builtins/builtin-class-dyn.js";
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
@@ -22,7 +23,7 @@ import {
   type ClassInfo,
 } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
-import { newFnCtx } from "./lowerer.js";
+import { PoisonError, newFnCtx } from "./lowerer.js";
 import { classMethodValue } from "./class-method-values.js";
 
 /** Data added to a top-level class prototype has shared identity and remains
@@ -188,12 +189,16 @@ export function classPrototypeData(
         continue;
       const compiled = classMethodValue(lowerer, access, info, method, locOf(access));
       if (!compiled) continue;
+      // A method value without a checked-dynamic form (an async method's
+      // promise-returning signature) gets no data slot.
+      const boxedValue = lowerer.coerceToExpected(compiled, DYN);
+      if (boxedValue.type.kind !== "dyn") continue;
       const descriptor: IrExpr = {
         kind: "dynObjLit",
         fields: [
           {
             key: { kind: "strLit", value: "value", type: STRING, loc },
-            value: lowerer.coerceToExpected(compiled, DYN),
+            value: boxedValue,
           },
           {
             key: { kind: "strLit", value: "writable", type: STRING, loc },
@@ -376,14 +381,37 @@ export function reflectClassPrototype(
       const method = ts.isMethodDeclaration(member)
         ? name
         : `${ts.isGetAccessor(member) ? "get" : "set"}:${name}`;
-      const value = classMethodValue(lowerer, info.decl, info, method, loc);
+      // A member whose value or key has no lowering refuses the reflection
+      // at run time; its own diagnostic must not escape this walk (the
+      // walk runs from emitReachable, after statement fences are placed).
+      let before = lowerer.diags.length;
+      let value: IrExpr | null;
+      try {
+        value = classMethodValue(lowerer, info.decl, info, method, loc);
+      } catch (error) {
+        if (!(error instanceof PoisonError)) throw error;
+        lowerer.diags.splice(before);
+        return refuse(
+          "prototype reflection with a member that has no lowering is not supported yet",
+        );
+      }
       if (!value || !lowerer.dynConvertible(value.type))
         return refuse(
           "prototype reflection with a member that cannot cross a checked value boundary is not supported yet",
         );
-      const key: IrExpr = ts.isComputedPropertyName(member.name)
-        ? lowerer.lowerExpr(member.name.expression)
-        : { kind: "strLit", value: member.name.text, type: STRING, loc };
+      let key: IrExpr;
+      before = lowerer.diags.length;
+      try {
+        key = ts.isComputedPropertyName(member.name)
+          ? lowerer.lowerExpr(member.name.expression)
+          : { kind: "strLit", value: member.name.text, type: STRING, loc };
+      } catch (error) {
+        if (!(error instanceof PoisonError)) throw error;
+        lowerer.diags.splice(before);
+        return refuse(
+          "prototype reflection with a computed member key that has no lowering is not supported yet",
+        );
+      }
       initialization.then.push(
         define(
           key,
@@ -427,6 +455,19 @@ export function lowerClassPrototypeData(
     exactClassOfReceiver(lowerer, expr.expression) ??
     (stored?.kind === "classval" ? lowerer.classes.get(stored.className) : undefined);
   if (!info) return null;
+  // EventEmitter.prototype and the stream prototypes: the untyped
+  // constructor's prototype object (builtin-class-dyn.ts).
+  const builtinKind = builtinClassKind(info.def.name);
+  if (builtinKind !== null) {
+    const loc = locOf(expr);
+    return {
+      kind: "dynKeyGet",
+      value: builtinClassValue(builtinKind, loc),
+      key: { kind: "strLit", value: "prototype", type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+  }
   const parent = expr.parent;
   const descriptorKey =
     ts.isCallExpression(parent) &&
@@ -556,6 +597,15 @@ function prototypeProtectedKeys(
         const entries: [ts.Symbol, string][] = owner.symbolMethods ? [...owner.symbolMethods] : [];
         const entry = entries.find(([, field]) => field === name);
         const declaration = entry ? entry[0].valueDeclaration : undefined;
+        // A CommonJS key-table property holds its key in the table's global.
+        const tableKey =
+          declaration && ts.isPropertyAssignment(declaration)
+            ? lowerer.globalsBySymbol.get(entry![0])
+            : undefined;
+        if (tableKey) {
+          keys.push({ kind: "varRef", localId: tableKey.id, type: tableKey.type, loc });
+          continue;
+        }
         if (
           !declaration ||
           !ts.isVariableDeclaration(declaration) ||

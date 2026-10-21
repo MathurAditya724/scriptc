@@ -27,15 +27,17 @@ import { availableParallelism } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { readWorkloads } from "../benchmarks/runtime/workloads.mjs";
 import {
   cachegrindCounts,
   compareArtifact,
   compareCounts,
   compareExecutables,
+  DYNAMIC_WORKLOADS,
+  definedFunctionNames,
   dynamicTierSymbols,
   median,
   nmOutput,
-  parseNm,
   programVerdict,
   timeRatio,
 } from "./zero-cost-compare.mjs";
@@ -96,7 +98,7 @@ that straddles it is reported as inconclusive.
 Dynamic-tier symbols (two-tier invariant I3): no executable may gain
 symbols under DYNAMIC_TIER_PREFIXES (scripts/zero-cost-compare.mjs) unless
 it matches --allow, and fully typed bench workloads (all but
-DYNAMIC_WORKLOADS in this script) may define none.
+DYNAMIC_WORKLOADS in scripts/zero-cost-compare.mjs) may define none.
 
 --cachegrind (Linux, valgrind on PATH) runs differing executables under
 cachegrind (bench workloads with their arguments, corpus programs without)
@@ -172,9 +174,8 @@ function goodCodeSet() {
   const programs = [];
   if (sets.has("bench")) {
     const suite = join(programsRoot, "benchmarks/runtime");
-    const manifest = JSON.parse(readFileSync(join(suite, "workloads.json"), "utf8"));
     const seen = new Set();
-    for (const w of manifest.workloads) {
+    for (const w of readWorkloads(suite)) {
       const entry = join(suite, w.entry);
       if (seen.has(entry)) continue;
       seen.add(entry);
@@ -307,32 +308,7 @@ function nm(binary) {
 }
 
 /** Names of the functions an executable defines. */
-const definedFunctions = (binary) =>
-  parseNm(nm(binary))
-    .filter((s) => /^[tTwW]$/.test(s.type))
-    .map((s) => s.name);
-
-/* Bench workloads whose release binaries link dynamic-tier symbols on
- * b14377864 (DYNAMIC_TIER_PREFIXES in zero-cost-compare.mjs): JSON.parse
- * trees, worker messages, regex exec metadata (two-tier §3.3 L5), and a
- * shared scr_dyn_call/scr_dyn_define_property core not yet traced to its
- * typed root. bench/thread-slots, added later, links them through worker
- * messages: node:worker_threads values are dyn objects. Every other bench
- * workload is fully typed and must link none.
- * Remove a workload here when a leak fix makes its binary clean. */
-const DYNAMIC_WORKLOADS = new Set([
-  "bench/json-records",
-  "bench/cli-config",
-  "bench/http-api",
-  "bench/validate-errors",
-  "bench/regex-logs",
-  "bench/atomics-contended",
-  "bench/intern-table",
-  "bench/thread-slots",
-  "bench/typed-array-scan-workers",
-  "bench/log-summary",
-  "bench/inventory-report",
-]);
+const definedFunctions = (binary) => definedFunctionNames(nm(binary));
 
 /** The I3 symbol check. Every executable may not gain dynamic-tier symbols
  * over the baseline (unless the program matches --allow); a fully typed
@@ -472,7 +448,15 @@ await pool(
         allow !== null &&
         programInputs(program.entry).some((f) => allow.test(readFileSync(f, "utf8")));
       const artifacts = baseline.ok && candidate.ok ? compareBuilds(baseline, candidate) : {};
-      const { verdict, fails } = programVerdict({ baseline, candidate, artifacts, allowed });
+      // The benchmark workloads and the self-hosted compiler always build.
+      const required = !program.id.startsWith("corpus/");
+      const { verdict, fails } = programVerdict({
+        baseline,
+        candidate,
+        artifacts,
+        allowed,
+        required,
+      });
       const entry = {
         id: program.id,
         verdict,
@@ -560,9 +544,19 @@ function printProgram(entry) {
   } else if (entry.cachegrind?.skipped)
     notes.push(`cachegrind skipped: ${entry.cachegrind.skipped}`);
   for (const failure of entry.dynamicTier?.failures ?? []) notes.push(`SYMBOLS: ${failure}`);
-  if (entry.baselineError) notes.push(`baseline: ${entry.baselineError.split("\n")[0]}`);
-  if (entry.candidateError) notes.push(`candidate: ${entry.candidateError.split("\n")[0]}`);
   console.log(`${label}  ${entry.id}${notes.length ? `  ${notes.join("; ")}` : ""}`);
+  // A build error's first line is often a warning; print all of it.
+  const errors =
+    entry.baselineError !== undefined && entry.baselineError === entry.candidateError
+      ? [["baseline and candidate", entry.baselineError]]
+      : [
+          ["baseline", entry.baselineError],
+          ["candidate", entry.candidateError],
+        ].filter(([, error]) => error !== undefined);
+  for (const [side, error] of errors) {
+    console.log(`           ${side}:`);
+    for (const line of error.split("\n")) console.log(`             ${line}`);
+  }
 }
 
 /* Compile time: paired --emit=llvm builds, the baseline and the candidate
@@ -637,6 +631,10 @@ if (timingRuns > 0) {
 
 const counts = {};
 for (const p of report.programs) counts[p.verdict] = (counts[p.verdict] ?? 0) + 1;
+if (!report.programs.some((p) => ["identical", "allowed", "differs"].includes(p.verdict))) {
+  failed = true;
+  report.failures.push("no program built with both checkouts, so nothing was compared");
+}
 report.counts = counts;
 report.verdict = failed ? "fail" : "pass";
 report.elapsedMs = Date.now() - started;

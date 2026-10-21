@@ -150,6 +150,7 @@ export function dynDesc(
     case "undefinedT":
       return "undefined";
     case "dyn":
+    case "jsval":
       return "unknown";
     case "promise":
       return "Promise";

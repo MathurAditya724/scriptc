@@ -5,19 +5,22 @@ import { streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
 import {
   type IrRecordShape,
   type IrType,
+  CLASS_ATTRIBUTES,
   DYN_CLASS_PROPERTIES,
   RUNTIME_STREAM_CLASSES,
   SYMBOL_T,
   classDynViewSupported,
+  classFieldAttributesName,
   isClassOwnEnumerableFieldName,
   isDirentShape,
   isDynTypedRefType,
   isRefCounted,
+  shapeHasAccessorSlots,
   typeKey,
 } from "../../ir/ir.js";
 import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
-import { type LlClassMeta, classFieldIndex, classStructSym } from "./classes.js";
+import { type LlClassMeta, classFieldIndex, classPreLines, classStructSym } from "./classes.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   FN_ATTRS,
@@ -185,10 +188,10 @@ export function streamTypedRefCommitAdapter(
       `  call void @scr_arr_outline(ptr %next)`,
     ];
     const storageMembers = [
-      { name: "len", index: 1, type: host.sizeType },
-      { name: "cap", index: 2, type: host.sizeType },
+      // The dense states follow the data slots, so they move with data and cap.
+      { name: "len", index: SCR_ARR_FIELD.len, type: "i32" },
+      { name: "cap", index: SCR_ARR_FIELD.cap, type: "i32" },
       { name: "data", index: SCR_ARR_FIELD.data, type: "ptr" },
-      { name: "present", index: SCR_ARR_FIELD.present, type: "ptr" },
       { name: "filled", index: SCR_ARR_FIELD.filled, type: "i32" },
       { name: "ext", index: SCR_ARR_FIELD.ext, type: "ptr" },
     ];
@@ -229,10 +232,13 @@ export function streamTypedRefCommitAdapter(
     ];
     if (meta.hierarchy && meta.children.length) {
       lines.push(
-        `  %derived_vt_slot = getelementptr inbounds %${classStructSym(t.className)}, ptr %target, i64 0, i32 1`,
-        `  %derived_vt = load ptr, ptr %derived_vt_slot`,
-        `  %derived_pre_slot = getelementptr inbounds %ScrVt, ptr %derived_vt, i64 0, i32 0`,
-        `  %derived_pre = load ${host.sizeType}, ptr %derived_pre_slot`,
+        ...classPreLines(
+          meta,
+          classStructSym(t.className),
+          "%target",
+          "%derived_pre",
+          host.sizeType,
+        ),
       );
       const descendants = (current: typeof meta): (typeof meta)[] =>
         current.children.flatMap((child) => [child, ...descendants(child)]);
@@ -725,16 +731,9 @@ export function streamTypedRefMaterializeAdapter(
     }
     if (adapter.classOps !== undefined) liveClassOps(host, snapshot, meta);
     if (meta.hierarchy && meta.children.length) {
-      const vtSlot = B.tmp(),
-        vt = B.tmp(),
-        preSlot = B.tmp(),
-        pre = B.tmp();
-      B.line(
-        `${vtSlot} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 1`,
-      );
-      B.line(`${vt} = load ptr, ptr ${vtSlot}`);
-      B.line(`${preSlot} = getelementptr inbounds %ScrVt, ptr ${vt}, i64 0, i32 0`);
-      B.line(`${pre} = load ${host.sizeType}, ptr ${preSlot}`);
+      const pre = B.tmp();
+      for (const line of classPreLines(meta, classStructSym(t.className), "%p", pre, host.sizeType))
+        B.line(line.trimStart());
       const descendants = (current: typeof meta): (typeof meta)[] =>
         current.children.flatMap((child) => [child, ...descendants(child)]);
       for (const child of descendants(meta).reverse()) {
@@ -763,9 +762,15 @@ export function streamTypedRefMaterializeAdapter(
       !meta.def.instancePrototypeHelper &&
       !meta.def.prototypeDataHelper
     ) {
-      host.declare(`declare ptr @scr_stream_dyn_view(ptr)`);
-      B.line(`${out} = call ptr @scr_stream_dyn_view(ptr %p)`);
+      // Programs with constructor-function streams view them through
+      // scr_dyn_builtin_stream.c, which answers their own objects.
+      const view = host.usesDynBuiltinStream
+        ? "scr_dyn_builtin_stream_view"
+        : "scr_stream_dyn_view";
+      host.declare(`declare ptr @${view}(ptr)`);
+      B.line(`${out} = call ptr @${view}(ptr %p)`);
     } else B.line(`${out} = call ptr @scr_dyn_new_obj()`);
+    const withAttributes = meta.def.fields.some((field) => field.name === CLASS_ATTRIBUTES);
     if (meta.def.tracksOwnFields) {
       host.declare(`declare ptr @scr_dyn_copy_property_descriptors(ptr, ptr)`);
       host.declare(`declare void @scr_dyn_release_v(ptr)`);
@@ -835,9 +840,27 @@ export function streamTypedRefMaterializeAdapter(
       const nullable = host.nullableFields.get(t.className, field.name);
       if (nullable) fieldValue = nullableFieldUnion(host, B, fieldValue, nullable);
       const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
+      // Attributes copied from the bag do not stop the view taking the value.
+      const setter = withAttributes ? "scr_dyn_obj_set_field" : "scr_dyn_obj_set";
+      if (withAttributes)
+        host.declare(`declare void @scr_dyn_obj_set_field(ptr, ptr, ${host.sizeType}, ptr)`);
       B.line(
-        `call void @scr_dyn_obj_set(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
+        `call void @${setter}(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
       );
+      // A field redefined through Object.defineProperty keeps its attributes.
+      const attributesField = classFieldAttributesName(field.name);
+      if (meta.def.fields.some((f) => f.name === attributesField)) {
+        host.declare(`declare void @scr_dyn_class_field_attributes(ptr, ptr, double)`);
+        const slot = B.tmp(),
+          bits = B.tmp();
+        B.line(
+          `${slot} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${classFieldIndex(meta, attributesField).index}`,
+        );
+        B.line(`${bits} = load double, ptr ${slot}`);
+        B.line(
+          `call void @scr_dyn_class_field_attributes(ptr ${out}, ptr ${host.internLiteral(field.name)}, double ${bits})`,
+        );
+      }
       if (nullable) {
         host.declare(`declare void @scr_union_release(ptr)`);
         B.line(`call void @scr_union_release(ptr ${fieldValue})`);
@@ -920,6 +943,29 @@ export function streamTypedRefMaterializeAdapter(
       B.line(`${copied} = call ptr @scr_dyn_copy_property_descriptors(ptr ${out}, ptr ${bag})`);
       B.line(`call void @scr_dyn_release_v(ptr ${copied})`);
     }
+    // An Error subclass instance's own `name` sits where its class's
+    // construction creates it: after a field, or after every other
+    // property when no constructor sets it.
+    const nameAfter = meta.def.errorNameAfter;
+    if (meta.root.def.name === "%Error" && !meta.def.runtime && nameAfter !== null) {
+      host.declare(`declare void @scr_error_dyn_place_name(ptr, ptr, ${host.sizeType})`);
+      B.line(
+        nameAfter === undefined
+          ? `call void @scr_error_dyn_place_name(ptr ${out}, ptr null, ${host.sizeType} 0)`
+          : `call void @scr_error_dyn_place_name(ptr ${out}, ptr ${host.cstr(nameAfter)}, ${host.sizeType} ${Buffer.byteLength(nameAfter, "utf8")})`,
+      );
+    }
+    // A frozen, sealed or non-extensible instance's view says so.
+    if (withAttributes) {
+      host.declare(`declare void @scr_dyn_class_view_attributes(ptr, double)`);
+      const slot = B.tmp(),
+        bits = B.tmp();
+      B.line(
+        `${slot} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${classFieldIndex(meta, CLASS_ATTRIBUTES).index}`,
+      );
+      B.line(`${bits} = load double, ptr ${slot}`);
+      B.line(`call void @scr_dyn_class_view_attributes(ptr ${out}, double ${bits})`);
+    }
     B.terminate(`ret ptr ${out}`);
   } else if (t.kind === "record") {
     const shape = host.recordsById.get(t.shapeId);
@@ -933,6 +979,7 @@ export function streamTypedRefMaterializeAdapter(
      * Declared-field records and tuples cover the live stream values. */
     const ordinary =
       shape.indexValue ||
+      shapeHasAccessorSlots(shape) ||
       shape.fields.some((field) => field.name === "handleEvent" && field.type.kind === "func");
     if (ordinary) {
       const out = B.tmp();
@@ -1313,16 +1360,9 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
   if (subclasses.length > 0) {
     exact = `@${snapshot}_cexact`;
     const B = new BlockBuilder();
-    const vtSlot = B.tmp(),
-      vt = B.tmp(),
-      preSlot = B.tmp(),
-      pre = B.tmp();
-    B.line(
-      `${vtSlot} = getelementptr inbounds %${classStructSym(meta.def.name)}, ptr %p, i64 0, i32 1`,
-    );
-    B.line(`${vt} = load ptr, ptr ${vtSlot}`);
-    B.line(`${preSlot} = getelementptr inbounds %ScrVt, ptr ${vt}, i64 0, i32 0`);
-    B.line(`${pre} = load ${host.sizeType}, ptr ${preSlot}`);
+    const pre = B.tmp();
+    for (const line of classPreLines(meta, classStructSym(meta.def.name), "%p", pre, host.sizeType))
+      B.line(line.trimStart());
     for (const child of subclasses.reverse()) {
       const childAdapter = host.liveDynRefAdapter({ kind: "object", className: child.def.name });
       const match = B.tmp(),

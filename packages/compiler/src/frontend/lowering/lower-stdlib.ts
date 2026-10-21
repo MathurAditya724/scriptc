@@ -4,6 +4,7 @@ import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerToNumberArgument } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
+import { isDeclaredInAmbientNamespace } from "../type-mapper.js";
 import {
   arrayOf,
   BOOL,
@@ -48,6 +49,8 @@ import {
   STATIC_RESPONSE_CALLS,
   STATIC_RESPONSE_READS,
 } from "../../compat/fetch-profile.js";
+import { classGeneratorIterable } from "./class-iterables.js";
+import { generatorDrain } from "./iterator-adapters.js";
 
 export function refuseUnsupportedApi(
   lowerer: Lowerer,
@@ -625,6 +628,20 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
         : lowerer.lowerExpr(argument);
       stmts.push({ kind: "exprStmt", expr: discarded, loc: discarded.loc });
     }
+    // A union input holding a URL arm (`string | URL`) converts through the
+    // checked-dynamic input path, which reads the URL's href at the call
+    // like the bare-URL arm below; narrowing it to a string would throw on
+    // the URL arm.
+    const unionWithUrl =
+      input.type.kind === "union" &&
+      (lowerer.unions.get(input.type.unionId)?.arms.some((arm) => arm.kind === "url") ?? false) &&
+      lowerer.dynConvertible(input.type);
+    const dynInput: IrExpr | null =
+      input.type.kind === "dyn"
+        ? inputRef
+        : unionWithUrl
+          ? { kind: "dynFrom", value: inputRef, type: DYN, loc: locOf(inputNode) }
+          : null;
     const url: IrExpr =
       input.type.kind === "url"
         ? {
@@ -634,13 +651,13 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
             type: STRING,
             loc: locOf(inputNode),
           }
-        : input.type.kind === "dyn"
-          ? inputRef
+        : dynInput !== null
+          ? dynInput
           : lowerer.coerceInto(inputNode, inputRef, STRING);
     const answer: IrExpr = {
       kind: "libCall",
-      fn: input.type.kind === "dyn" ? "fetch.input" : "fetch.start",
-      args: [input.type.kind === "dyn" ? inputRef : url, initRef],
+      fn: dynInput !== null ? "fetch.input" : "fetch.start",
+      args: [url, initRef],
       type: { kind: "promise", inner: DYN },
       loc,
     };
@@ -670,7 +687,7 @@ export function lowerStaticResponseCall(lowerer: Lowerer, call: ts.CallExpressio
   }
   const recvType = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const sym = recvType.getAliasSymbol() ?? recvType.getSymbol();
-  if (!sym || sym.name !== "Response" || !lowerer.isStdlibSymbol(sym)) return null;
+  if (!sym || ts.symbolName(sym) !== "Response" || !lowerer.isStdlibSymbol(sym)) return null;
   const recv = lowerer.lowerExpr(access.expression);
   if (recv.type.kind !== "dyn") return null;
   return lowerStaticFixedFetchMethodCall(lowerer, call, access, member, recv, [], (receiver) =>
@@ -756,7 +773,7 @@ function lowerStaticFixedFetchMethodCall(
       loc,
     },
     then: answer,
-    else_: nodeThrowExpr(1, "", `${access.getText()} is not a function`, answer.type, loc),
+    else_: nodeThrowExpr(1, "", `${ts.getTextOfNode(access)} is not a function`, answer.type, loc),
     type: answer.type,
     loc,
   };
@@ -930,7 +947,7 @@ export function fenceStaticResponseMember(
 ): IrExpr | null {
   const recvType = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const sym = recvType.getAliasSymbol() ?? recvType.getSymbol();
-  if (!sym || sym.name !== "Response" || !lowerer.isStdlibSymbol(sym)) return null;
+  if (!sym || ts.symbolName(sym) !== "Response" || !lowerer.isStdlibSymbol(sym)) return null;
   const members = fetchAccessMemberNames(lowerer, access);
   if (members === null) return null;
   const status = (member: string) =>
@@ -972,7 +989,7 @@ export function fenceStaticHeadersMember(
 ): IrExpr | null {
   const recvType = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const sym = recvType.getAliasSymbol() ?? recvType.getSymbol();
-  if (!sym || sym.name !== "Headers" || !lowerer.isStdlibSymbol(sym)) return null;
+  if (!sym || ts.symbolName(sym) !== "Headers" || !lowerer.isStdlibSymbol(sym)) return null;
   const members = fetchAccessMemberNames(lowerer, access);
   if (members === null) return null;
   const status = (member: string) =>
@@ -1027,7 +1044,16 @@ export function fenceStaticAbortControllerMemberRead(
 function isStdlibFetchInterface(lowerer: Lowerer, node: ts.Node, owner: string): ts.Symbol | null {
   const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node));
   for (const symbol of [type.getSymbol(), type.getAliasSymbol()]) {
-    if (symbol?.name === owner && lowerer.isStdlibSymbol(symbol)) return symbol;
+    // NodeJS.ReadableStream shares the WHATWG interface's name.
+    if (
+      symbol !== undefined &&
+      ts.symbolName(symbol) === owner &&
+      lowerer.isStdlibSymbol(symbol) &&
+      !symbol.declarations.some(
+        (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientNamespace(d, "NodeJS"),
+      )
+    )
+      return symbol;
   }
   return null;
 }
@@ -1088,10 +1114,10 @@ function fetchInterfaceInventoryOwner(
   const symbol = [type.getSymbol(), type.getAliasSymbol()].find(
     (candidate) =>
       candidate !== undefined &&
-      NODE24_FETCH_COMPAT_PROFILE.inventory.interfaces.includes(candidate.name) &&
+      NODE24_FETCH_COMPAT_PROFILE.inventory.interfaces.includes(ts.symbolName(candidate)) &&
       lowerer.isStdlibSymbol(candidate),
   );
-  return symbol ? { owner: symbol.name, symbol } : null;
+  return symbol ? { owner: ts.symbolName(symbol), symbol } : null;
 }
 
 function fenceFetchObjectMembers(
@@ -1303,7 +1329,7 @@ export function lowerFetchElementMethodCall(
           kind: "dynInvoke",
           recv: receiverRef,
           method: member,
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args: argumentRefs,
           type: DYN,
           loc,
@@ -1316,7 +1342,7 @@ export function lowerFetchElementMethodCall(
   let result: IrExpr = nodeThrowExpr(
     1,
     "",
-    `${access.getText()} is not a function`,
+    `${ts.getTextOfNode(access)} is not a function`,
     invocationType,
     loc,
   );
@@ -1470,7 +1496,8 @@ export function lowerStaticFetchCompanionCall(
   }
   const root = call.expression.expression;
   const symbol = lowerer.resolveValueSymbol(root);
-  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  if ((!symbol || !lowerer.isStdlibSymbol(symbol)) && !isStreamWebReadableStream(lowerer, root))
+    return null;
   const loc = locOf(call);
   if (root.text === "AbortSignal") {
     noteEventListeners(lowerer, loc);
@@ -1621,9 +1648,10 @@ export function lowerStaticAbortControllerCall(
   const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
-    symbol?.name !== "AbortController" ||
+    symbol === undefined ||
+    ts.symbolName(symbol) !== "AbortController" ||
     !symbol.declarations.some(
-      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
     )
   ) {
     return null;
@@ -1646,7 +1674,7 @@ export function lowerStaticAbortControllerCall(
       kind: "dynInvoke",
       recv: receiverRef,
       method: "abort",
-      calleeName: access.getText(),
+      calleeName: ts.getTextOfNode(access),
       args: argumentRefs,
       type: DYN,
       loc,
@@ -1675,9 +1703,10 @@ export function lowerStaticReadableStreamControllerCall(
   const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
-    symbol?.name !== "ReadableStreamDefaultController" ||
+    symbol === undefined ||
+    ts.symbolName(symbol) !== "ReadableStreamDefaultController" ||
     !symbol.declarations.some(
-      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
     )
   ) {
     return null;
@@ -1701,7 +1730,7 @@ export function lowerStaticReadableStreamControllerCall(
       kind: "dynInvoke",
       recv: receiver,
       method: member,
-      calleeName: access.getText(),
+      calleeName: ts.getTextOfNode(access),
       args: argumentRefs,
       type: DYN,
       loc,
@@ -1750,7 +1779,7 @@ export function lowerStaticReadableStreamCancelCall(
       kind: "dynInvoke",
       recv: receiverRef,
       method: "cancel",
-      calleeName: access.getText(),
+      calleeName: ts.getTextOfNode(access),
       args: argumentRefs,
       type: DYN,
       loc,
@@ -1783,9 +1812,10 @@ export function lowerStaticAbortSignalListenerCall(
   const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
-    (symbol?.name !== "AbortSignal" && symbol?.name !== "EventTarget") ||
+    ((symbol === undefined || ts.symbolName(symbol) !== "AbortSignal") &&
+      (symbol === undefined || ts.symbolName(symbol) !== "EventTarget")) ||
     !symbol.declarations.some(
-      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
     )
   ) {
     return null;
@@ -1808,7 +1838,7 @@ export function lowerStaticAbortSignalListenerCall(
       kind: "dynInvoke",
       recv: receiver,
       method: member,
-      calleeName: access.getText(),
+      calleeName: ts.getTextOfNode(access),
       args: argumentRefs,
       type: DYN,
       loc,
@@ -1883,6 +1913,12 @@ export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression
   };
 }
 
+/** An import binding of node:stream/web's ReadableStream, which IS the
+ * global class (`import { ReadableStream } from "node:stream/web"`). */
+function isStreamWebReadableStream(lowerer: Lowerer, ident: ts.Identifier): boolean {
+  return ident.text === "ReadableStream" && lowerer.isStdlibGlobal(ident, "ReadableStream");
+}
+
 export function lowerStaticReadableStreamNew(
   lowerer: Lowerer,
   expr: ts.NewExpression,
@@ -1891,7 +1927,11 @@ export function lowerStaticReadableStreamNew(
     return null;
   }
   const symbol = lowerer.resolveValueSymbol(expr.expression);
-  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  if (
+    (!symbol || !lowerer.isStdlibSymbol(symbol)) &&
+    !isStreamWebReadableStream(lowerer, expr.expression)
+  )
+    return null;
   const args = expr.arguments?.nodes ?? [];
   if (args.length > 1) return null;
   const loc = locOf(expr);
@@ -2130,9 +2170,10 @@ export function lowerStaticReadableStreamReaderCall(
   const receiverTs = lowerer.typeOf(access.expression);
   const symbol = receiverTs.getSymbol();
   if (
-    symbol?.name !== "ReadableStreamDefaultReader" ||
+    symbol === undefined ||
+    ts.symbolName(symbol) !== "ReadableStreamDefaultReader" ||
     !symbol.declarations.some(
-      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
     )
   ) {
     return null;
@@ -2173,7 +2214,7 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   if (call.arguments.nodes.length !== 1) {
     lowerer.unsupported("SC1090", call, "dynamic import() with import attributes");
   }
-  const res = lowerer.dynImports.get(`${call.getSourceFile().fileName}\u0000${arg.text}`);
+  const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${arg.text}`);
   if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
   if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
   if (res.kind === "program-module") {
@@ -2446,7 +2487,16 @@ export function lowerStdlibMethodCall(
   // missing read, or the read itself) converts to NaN, ToNumber's answer
   // for undefined, instead of trusting the checker's number type.
   const mathArg = (a: ts.Expression): IrExpr => lowerToNumberArgument(lowerer, a);
-  if (staticMath && name === "hypot") {
+  // Math.hypot, and Math.max/Math.min with a spread among other arguments
+  // (`Math.max(...xs, 5)`): the arguments in order, spreads flattened, as
+  // one number[] the runtime folds.
+  if (
+    staticMath &&
+    (name === "hypot" ||
+      ((name === "max" || name === "min") &&
+        call.arguments.nodes.length > 1 &&
+        call.arguments.nodes.some(ts.isSpreadElement)))
+  ) {
     const elems = call.arguments.nodes.map((a) =>
       ts.isSpreadElement(a) ? lowerer.lowerExprExpecting(a.expression, arrayOf(F64)) : mathArg(a),
     );
@@ -2458,7 +2508,8 @@ export function lowerStdlibMethodCall(
       type: arrayOf(F64),
       loc,
     };
-    return { kind: "libCall", fn: staticMath.fn, args: [packed], type: F64, loc };
+    const fn = name === "max" ? "math.maxArr" : name === "min" ? "math.minArr" : staticMath.fn;
+    return { kind: "libCall", fn, args: [packed], type: F64, loc };
   }
   if (staticMath && call.arguments.nodes.every((a) => !ts.isSpreadElement(a))) {
     // Math.max/Math.min at ANY plain arity — Node's are variadic. The
@@ -2487,9 +2538,8 @@ export function lowerStdlibMethodCall(
     }
   }
   // `Math.max(...xs)` / `Math.min(...xs)` over a number[]: a STATIC
-  // runtime fold (NaN poisons and ±0 follows JS ordering). This
-  // one-spread form lowers; mixed spread/positional argument lists keep
-  // the nest-calls fence.
+  // runtime fold (NaN poisons and ±0 follows JS ordering). Mixed
+  // spread/positional argument lists pack into one array above.
   if (
     isMath &&
     (name === "max" || name === "min") &&
@@ -2506,6 +2556,10 @@ export function lowerStdlibMethodCall(
         src = lowerer.coerceInto(spread.expression, src, inferred);
       }
     }
+    // A generator, or a class whose [Symbol.iterator] is a generator
+    // method, drains into the number[] the fold reads.
+    src = classGeneratorIterable(lowerer, src) ?? src;
+    if (src.type.kind === "generator") src = generatorDrain(lowerer, src, F64, loc) ?? src;
     if (src.type.kind !== "array" || src.type.elem.kind !== "f64") {
       lowerer.unsupported(
         "SC1090",
@@ -2613,6 +2667,6 @@ export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpres
 export function npmPackageOfSymbol(lowerer: Lowerer, sym: ts.Symbol | undefined): string | null {
   const decls = sym ? sym.declarations : undefined;
   if (!decls || decls.length === 0) return null;
-  if (!decls.every((d) => lowerer.isNpmFile(d.getSourceFile()))) return null;
-  return npmPackageNameOf(decls[0]!.getSourceFile().fileName);
+  if (!decls.every((d) => lowerer.isNpmFile(ts.getSourceFileOfNode(d)))) return null;
+  return npmPackageNameOf(ts.getSourceFileOfNode(decls[0]!).fileName);
 }

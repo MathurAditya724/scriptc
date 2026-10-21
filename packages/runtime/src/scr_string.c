@@ -115,6 +115,15 @@ static SCR_TL bool scr_sidx_cleanup_registered;
  * moves one active entry; only clearing or initializing changes the count. */
 static SCR_TL size_t scr_sidx_active;
 
+/* UTF-16 length table (scr_str_utf16_len below). */
+#define SCR_U16LEN_N 1024
+typedef struct {
+  const ScrStr *s;
+  size_t units;
+} ScrU16Len;
+/* Allocated by the first length it records; freed with the index. */
+static SCR_TL ScrU16Len *scr_u16len_tab;
+
 static void scr_sidx_clear(ScrSidx *e, unsigned *live) {
   if (e->s) {
     scr_sidx_active--;
@@ -137,6 +146,8 @@ static void scr_sidx_reset_all(void) {
   }
   scr_sidx_sparse_clock = 0;
   scr_sidx_cursor_clock = 0;
+  free(scr_u16len_tab);
+  scr_u16len_tab = NULL;
 }
 
 static void scr_sidx_register_cleanup(void) {
@@ -190,7 +201,27 @@ static __attribute__((noinline)) void scr_sidx_purge_active(const ScrStr *s) {
   }
 }
 
+/* UTF-16 lengths of non-ASCII strings longer than 64 bytes, direct-mapped
+ * by address. The four index entries above evict each other when a
+ * program reads the lengths of more long texts than that in turn (every
+ * source file of a program), and each miss walks the whole string. A slot
+ * is dropped wherever the index drops its facts: when the string is freed
+ * or reallocated, and when an append changes it in place. */
+
+/* The slot for s, or NULL before any length is recorded. */
+static inline ScrU16Len *scr_u16len_slot(const ScrStr *s) {
+  if (!scr_u16len_tab) return NULL;
+  uint64_t h = ((uint64_t)(uintptr_t)s >> 4) * UINT64_C(0x9E3779B97F4A7C15);
+  return &scr_u16len_tab[h >> 54];
+}
+
+static inline void scr_u16len_forget(const ScrStr *s) {
+  ScrU16Len *slot = scr_u16len_slot(s);
+  if (slot && slot->s == s) slot->s = NULL;
+}
+
 static void scr_sidx_purge(const ScrStr *s) {
+  scr_u16len_forget(s);
   if (scr_sidx_active) scr_sidx_purge_active(s);
 }
 
@@ -288,6 +319,7 @@ static ScrSidx *scr_sidx_for(const ScrStr *s) {
  * receiver may move from the cursor tier to the sparse tier on its next
  * lookup, so invalidate either possible entry. */
 static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
+  scr_u16len_forget(s);
   if (scr_sidx_active == 0) return;
   for (int i = 0; i < SCR_SIDX_N; i++) {
     ScrSidx *entries[] = {&scr_sidx_sparse_tab[i], &scr_sidx_cursor_tab[i]};
@@ -967,6 +999,20 @@ static const ScrChar1 scr_ascii1[128] = {
   SCR_A8(64),  SCR_A8(72),  SCR_A8(80),  SCR_A8(88),
   SCR_A8(96),  SCR_A8(104), SCR_A8(112), SCR_A8(120),
 };
+/* "10" through "99": converting a small integer to a string returns one of
+ * these (or a digit from scr_ascii1) without allocating. */
+typedef struct { size_t rc; size_t len; size_t cap; char data[3]; } ScrChar2;
+#define SCR_D2_WORD(t, u) (((uint64_t)(t) << 16) | ((uint64_t)(u) << 8) | (uint64_t)(u))
+#define SCR_D2(t, u) \
+  {SIZE_MAX, 2, SCR_STR_CAP_WORD(2, SCR_KEY_HASH32_SHORT(2, SCR_D2_WORD(t, u)), 1), {(char)(t), (char)(u), 0}}
+#define SCR_D2_ROW(t) \
+  SCR_D2(t, '0'), SCR_D2(t, '1'), SCR_D2(t, '2'), SCR_D2(t, '3'), SCR_D2(t, '4'), \
+  SCR_D2(t, '5'), SCR_D2(t, '6'), SCR_D2(t, '7'), SCR_D2(t, '8'), SCR_D2(t, '9')
+static const ScrChar2 scr_digits2[90] = {
+  SCR_D2_ROW('1'), SCR_D2_ROW('2'), SCR_D2_ROW('3'), SCR_D2_ROW('4'), SCR_D2_ROW('5'),
+  SCR_D2_ROW('6'), SCR_D2_ROW('7'), SCR_D2_ROW('8'), SCR_D2_ROW('9'),
+};
+
 static const struct { size_t rc; size_t len; size_t cap; char data[1]; }
     scr_lit_empty = {SIZE_MAX, 0, SCR_STR_CAP_WORD(0, SCR_KEY_HASH32_SHORT(0, 0), 1), ""};
 
@@ -1400,6 +1446,8 @@ static void scr_sidx_materialize_identity_prefix(const ScrStr *s, ScrSidx *e) {
 static size_t scr_sidx_len(const ScrStr *s, ScrSidx *e) {
   if (s->ascii) return s->len;
   if (e->u16len != SCR_U16_UNKNOWN) return e->u16len;
+  ScrU16Len *slot = scr_u16len_slot(s);
+  if (slot && slot->s == s) return e->u16len = slot->units;
   while (e->indexed_cb < s->len) scr_sidx_extend_one(s, e);
   scr_sidx_finish(s, e);
   return s->ascii ? s->len : e->u16len;
@@ -1812,9 +1860,10 @@ static uint16_t *scr_str_units(const ScrStr *s, size_t *n) {
  * UTF-16 units to bytes through the cursor and checkpoints. Once its
  * reads would have paid for converting it (one read per 16 bytes), a
  * receiver up to SCR_SIDX_UNITS_MAX units keeps its code units in its
- * entry and reads become loads. The array is freed with the entry, and an
- * append drops it (scr_sidx_concat_append). */
-#define SCR_SIDX_UNITS_MAX ((size_t)1 << 20)
+ * entry and reads become loads. The bound admits source texts of several
+ * megabytes, which scanners read in full. The array is freed with the
+ * entry, and an append drops it (scr_sidx_concat_append). */
+#define SCR_SIDX_UNITS_MAX ((size_t)1 << 24)
 static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
   if (!e->units) {
     if (++e->reads < 32 || e->reads * 16 < s->len || s->len > SCR_SIDX_UNITS_MAX) return false;
@@ -1899,7 +1948,20 @@ double scr_str_utf16_len(ScrStr *s) {
   ScrSidx *last = scr_sidx_last; /* a scan's receiver, length known */
   if (last && last->s == s && last->u16len != SCR_U16_UNKNOWN)
     return (double)(int64_t)last->u16len; /* lengths fit int64_t */
-  return (double)scr_sidx_len(s, scr_sidx(s));
+  ScrU16Len *slot = scr_u16len_slot(s);
+  if (slot && slot->s == s) return (double)(int64_t)slot->units;
+  size_t units = scr_sidx_len(s, scr_sidx(s));
+  /* The walk may prove the string ASCII, which needs no slot. */
+  if (s->ascii) return (double)(int64_t)units;
+  if (!scr_u16len_tab) {
+    /* Without memory the lengths are counted on each read, as before. */
+    scr_u16len_tab = calloc(SCR_U16LEN_N, sizeof *scr_u16len_tab);
+    if (!scr_u16len_tab) return (double)(int64_t)units;
+    scr_sidx_register_cleanup();
+    slot = scr_u16len_slot(s);
+  }
+  *slot = (ScrU16Len){s, units};
+  return (double)(int64_t)units;
 }
 
 double scr_str_char_code_at(ScrStr *s, double i) {
@@ -3099,6 +3161,11 @@ double scr_bytes_to_number(const char *p, size_t len) {
 }
 
 ScrStr *scr_f64_to_scrstr(double x) {
+  if (x >= 0 && x < 100) { /* -0 prints "0" as well */
+    unsigned v = (unsigned)x;
+    if ((double)v == x)
+      return v < 10 ? (ScrStr *)&scr_ascii1['0' + v] : (ScrStr *)&scr_digits2[v - 10];
+  }
   char buf[32];
   size_t len = scr_f64_to_str(x, buf);
   return scr_str_new_ascii(buf, len); /* number text is always ASCII */

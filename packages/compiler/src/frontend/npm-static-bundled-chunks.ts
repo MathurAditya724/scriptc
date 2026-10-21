@@ -24,6 +24,8 @@
 import * as ts from "./ts7/syntax.js";
 import { helperTokens } from "./helper-tokens.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
+import { getTextOfNode, tokenStartOfNode } from "./ts7/node-functions.js";
+import { bundledShimForwarder, packageShimForBundledFile } from "./package-shims.js";
 import {
   builtinAliasOf,
   versionedPackageOfKey,
@@ -152,6 +154,26 @@ function varScopedNames(body: ts.Node): Set<string> {
   return out;
 }
 
+/** The names a function binds for references in its parameter list
+ * (default values, computed keys of destructuring patterns): its
+ * parameters and a function expression's own name. Parameter initializers
+ * run in their own scope, so the body's `var`s are not visible there. */
+function parameterScopeNames(scope: ts.SignatureDeclaration): Set<string> {
+  const out = new Set<string>();
+  for (const param of scope.parameters.nodes) addBindingNames(param.name, out);
+  if (ts.isFunctionExpression(scope) && scope.name !== undefined) out.add(scope.name.text);
+  return out;
+}
+
+const NO_NAMES: ReadonlySet<string> = new Set();
+
+/** True when `node` lies inside `ancestor` (or is it). */
+function within(node: ts.Node, ancestor: ts.Node): boolean {
+  for (let n: ts.Node | undefined = node; n !== undefined; n = n.parent)
+    if (n === ancestor) return true;
+  return false;
+}
+
 /** The names one scope node binds for the references inside it. */
 function scopeNames(scope: ts.Node): Set<string> {
   const out = new Set<string>();
@@ -195,6 +217,7 @@ function scopeNames(scope: ts.Node): Set<string> {
  * names for the bundle's split. */
 class BundleScopes {
   private readonly names = new Map<ts.Node, Set<string>>();
+  private readonly parameterNames = new Map<ts.Node, Set<string>>();
 
   private of(scope: ts.Node): Set<string> {
     let names = this.names.get(scope);
@@ -205,11 +228,26 @@ class BundleScopes {
     return names;
   }
 
+  /** The names `scope` binds for a reference reached through its child
+   * `from`: a function's parameter list sees its parameters and own name
+   * but not its body's `var`s, and a computed method name sees none of
+   * them. */
+  private visible(scope: ts.Node, from: ts.Node): ReadonlySet<string> {
+    if (!isFunctionScope(scope) || from === scope.body) return this.of(scope);
+    if (from === scope.name) return NO_NAMES;
+    let names = this.parameterNames.get(scope);
+    if (names === undefined) {
+      names = parameterScopeNames(scope);
+      this.parameterNames.set(scope, names);
+    }
+    return names;
+  }
+
   /** True when a scope between the reference and `root` (inclusive)
    * binds its name. */
   boundWithin(id: ts.Identifier, root: ts.Node): boolean {
-    for (let n = id.parent; n !== undefined; n = n.parent) {
-      if (this.of(n).has(id.text)) return true;
+    for (let from: ts.Node = id, n = id.parent; n !== undefined; from = n, n = n.parent) {
+      if (this.visible(n, from).has(id.text)) return true;
       if (n === root) return false;
     }
     return false;
@@ -218,16 +256,24 @@ class BundleScopes {
   /** True when a scope inside `root` (exclusive) binds the reference's
    * name. */
   boundInside(id: ts.Identifier, root: ts.Node): boolean {
-    for (let n = id.parent; n !== undefined && n !== root; n = n.parent) {
-      if (this.of(n).has(id.text)) return true;
+    for (
+      let from: ts.Node = id, n = id.parent;
+      n !== undefined && n !== root;
+      from = n, n = n.parent
+    ) {
+      if (this.visible(n, from).has(id.text)) return true;
     }
     return false;
   }
 
   /** True when the reference resolves to a top-level binding of `sf`. */
   topLevel(id: ts.Identifier, sf: ts.SourceFile): boolean {
-    for (let n = id.parent; n !== undefined && n !== sf; n = n.parent) {
-      if (this.of(n).has(id.text)) return false;
+    for (
+      let from: ts.Node = id, n = id.parent;
+      n !== undefined && n !== sf;
+      from = n, n = n.parent
+    ) {
+      if (this.visible(n, from).has(id.text)) return false;
     }
     return true;
   }
@@ -327,16 +373,16 @@ function helperForm(
     const ret = stmts[0];
     if (stmts.length !== 1 || ret === undefined || !ts.isReturnStatement(ret) || !ret.expression)
       return null;
-    const actual = helperTokens(ret.expression.getText(sf));
+    const actual = helperTokens(getTextOfNode(ret.expression));
     if (actual === null) return null;
     // The own-key reader: esbuild's alias or the 0.11 spelling.
-    const keysRef = /\[\s*([A-Za-z_$][\w$]*(?:\.keys)?)\s*\(/.exec(ret.expression.getText(sf));
+    const keysRef = /\[\s*([A-Za-z_$][\w$]*(?:\.keys)?)\s*\(/.exec(getTextOfNode(ret.expression));
     const keys = keysRef?.[1];
     if (keys === undefined || (keys !== "Object.keys" && !ownNames(keys))) return null;
     return actual === template(KEYED_RETURN, cb, mod, keys) ? "keyed" : null;
   }
   if (ts.isArrowFunction(body) && body.parameters.nodes.length === 0 && !ts.isBlock(body.body)) {
-    const actual = helperTokens(body.body.getText(sf));
+    const actual = helperTokens(getTextOfNode(body.body));
     return actual !== null && actual === template(ARROW_BODY, cb, mod, "") ? "arrow" : null;
   }
   return null;
@@ -376,12 +422,24 @@ function selfCalledOnly(
   const fn = unparen(node.initializer);
   if (!ts.isFunctionExpression(fn) || fn.name === undefined || fn.body === undefined) return true;
   const self = fn.name.text;
-  // A parameter or `var` of the same name hides the function's own name.
-  const own = varScopedNames(fn.body);
-  for (const param of fn.parameters.nodes) addBindingNames(param.name, own);
-  if (own.has(self)) return true;
-  // Its parameter initializers see the name too.
-  return references(fn).every((r) => r.text !== self || scopes.boundInside(r, fn) || isCallee(r));
+  // A parameter of the same name hides the function's own name everywhere
+  // in it; a `var` of the same name hides it only in the body, since the
+  // parameter initializers do not see the body's `var`s.
+  if (fn.parameters.nodes.some((p) => bindsName(p.name, self))) return true;
+  const bodyVar = varScopedNames(fn.body).has(self);
+  const body = fn.body;
+  return references(fn).every(
+    (r) =>
+      r.text !== self || scopes.boundInside(r, fn) || (bodyVar && within(r, body)) || isCallee(r),
+  );
+}
+
+/** True when a binding name (an identifier or a destructuring pattern)
+ * declares `name`. */
+function bindsName(binding: ts.BindingName, name: string): boolean {
+  const names = new Set<string>();
+  addBindingNames(binding, names);
+  return names.has(name);
 }
 
 /** True when a reference is the function a call invokes: `f(...)`, or the
@@ -490,7 +548,7 @@ export function splitBundledChunks(
     const init = t.node.initializer;
     return (
       init !== undefined &&
-      helperTokens(init.getText(sf)) === helperTokens("Object.getOwnPropertyNames")
+      helperTokens(getTextOfNode(init)) === helperTokens("Object.getOwnPropertyNames")
     );
   };
   if (helperNames.length === 0) {
@@ -598,10 +656,11 @@ export function splitBundledChunks(
     const alias = builtinAliasOfChunk(chunk);
     const aliased = alias === null ? null : aliasReplacement(call, alias);
     if (alias !== null && aliased === null) unaliased.add(chunk.name);
-    const forwarded = forwarderSpec(chunk);
+    const forwarded =
+      forwarderSpec(chunk) ?? (shimOfChunk(chunk) !== null ? shimSpec(chunk) : null);
     callEdits.push({
-      start: call.getStart(sf),
-      end: call.getEnd(),
+      start: tokenStartOfNode(call),
+      end: call.end,
       text: aliased ?? `require(${JSON.stringify(forwarded ?? chunk.spec)})`,
     });
   }
@@ -629,12 +688,24 @@ export function splitBundledChunks(
   for (const chunk of chunks.values()) {
     if (!unaliased.has(chunk.name) && builtinAliasOfChunk(chunk) !== null) {
       // A chunk of a package that IS a builtin on Node 24 is that builtin.
-      bundleEdits.push({ start: chunk.stmt.getStart(sf), end: chunk.stmt.getEnd(), text: "" });
+      bundleEdits.push({ start: tokenStartOfNode(chunk.stmt), end: chunk.stmt.end, text: "" });
+      continue;
+    }
+    const shim = shimOfChunk(chunk);
+    if (shim !== null) {
+      // A bundled copy of a package scriptc implements itself is the
+      // package's shim (package-shims.ts), reached through a forwarder
+      // declaration the checker follows.
+      out.push({
+        path: shimDeclPath(chunk),
+        source: bundledShimForwarder(shimDeclPath(chunk), shim),
+      });
+      bundleEdits.push({ start: tokenStartOfNode(chunk.stmt), end: chunk.stmt.end, text: "" });
       continue;
     }
     if (forwarderSpec(chunk) !== null) {
       // A chunk that only re-exports a builtin module is that module.
-      bundleEdits.push({ start: chunk.stmt.getStart(sf), end: chunk.stmt.getEnd(), text: "" });
+      bundleEdits.push({ start: tokenStartOfNode(chunk.stmt), end: chunk.stmt.end, text: "" });
       continue;
     }
     const result = chunkSource(
@@ -650,7 +721,7 @@ export function splitBundledChunks(
     );
     if (typeof result !== "string") return result;
     out.push({ path: chunk.path, source: result });
-    bundleEdits.push({ start: chunk.stmt.getStart(sf), end: chunk.stmt.getEnd(), text: "" });
+    bundleEdits.push({ start: tokenStartOfNode(chunk.stmt), end: chunk.stmt.end, text: "" });
   }
   return { text: applyEdits(source, 0, source.length, bundleEdits), chunks: out };
 }
@@ -750,7 +821,11 @@ export function aliasReplacement(call: ts.CallExpression, alias: BuiltinAlias): 
   const text = aliasUseReplacement(call, alias);
   if (text === null) return null;
   const root = /^[A-Za-z_$][\w$]*/.exec(text)?.[0];
-  if (root !== undefined && root !== "require" && countDeclarations(call.getSourceFile(), root) > 0)
+  if (
+    root !== undefined &&
+    root !== "require" &&
+    countDeclarations(ts.getSourceFileOfNode(call), root) > 0
+  )
     return null;
   return text;
 }
@@ -799,6 +874,24 @@ function builtinAliasOfChunk(chunk: Chunk): BuiltinAlias | null {
   if (chunk.key === null) return null;
   const pkg = versionedPackageOfKey(chunk.key);
   return pkg === null ? null : builtinAliasOf(pkg.name, pkg.version, pkg.subpath);
+}
+
+/** The shim module standing in for a chunk that is a bundled copy of a
+ * shimmed package's main file at a supported version, or null. */
+function shimOfChunk(chunk: Chunk): string | null {
+  if (chunk.key === null) return null;
+  const pkg = versionedPackageOfKey(chunk.key);
+  return pkg === null ? null : packageShimForBundledFile(pkg.name, pkg.version, pkg.subpath);
+}
+
+/** The forwarder declaration beside the bundle for a shimmed chunk, and
+ * the specifier its call sites require. */
+function shimDeclPath(chunk: Chunk): string {
+  return chunk.path.replace(/\.cjs$/, ".shim.d.ts");
+}
+
+function shimSpec(chunk: Chunk): string {
+  return chunk.spec.replace(/\.cjs$/, ".shim");
 }
 
 /** The builtin module a chunk forwards, or null: a body that is exactly
@@ -930,8 +1023,8 @@ function chunkSource(
         const p = r.parent;
         edits.push(
           ts.isShorthandPropertyAssignment(p)
-            ? { start: r.getStart(sf), end: r.getEnd(), text: `${name}: ${global}` }
-            : { start: r.getStart(sf), end: r.getEnd(), text: global },
+            ? { start: tokenStartOfNode(r), end: r.end, text: `${name}: ${global}` }
+            : { start: tokenStartOfNode(r), end: r.end, text: global },
         );
       }
       continue;
@@ -975,15 +1068,17 @@ function chunkSource(
   }
   // Declaration order of the bundle: a helper reads only earlier ones.
   const ordered = [...copied].sort(
-    (a, b) => top.get(a)!.node.getStart(sf) - top.get(b)!.node.getStart(sf),
+    (a, b) => tokenStartOfNode(top.get(a)!.node) - tokenStartOfNode(top.get(b)!.node),
   );
   for (const name of ordered) {
     const node = top.get(name)!.node;
-    header.push(ts.isFunctionDeclaration(node) ? node.getText(sf) : `var ${node.getText(sf)};`);
+    header.push(
+      ts.isFunctionDeclaration(node) ? getTextOfNode(node) : `var ${getTextOfNode(node)};`,
+    );
   }
 
   const bodyStrict = strictPrologue(body.statements.nodes);
-  const text = applyEdits(sf.text, body.getStart(sf) + 1, body.getEnd() - 1, edits);
+  const text = applyEdits(sf.text, tokenStartOfNode(body) + 1, body.end - 1, edits);
   const prologue = bundleStrict || bodyStrict ? '"use strict";\n' : "";
   return prologue + (header.length > 0 ? header.join("\n") + "\n" : "") + text + "\n";
 }

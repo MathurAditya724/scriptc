@@ -18,9 +18,12 @@
  * program the check builds includes them), since real projects compile
  * them with their own Node types.
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import ts5 from "typescript5";
 import { describe, expect, test } from "vitest";
+import * as ad from "../src/frontend/ts7/adapter.js";
+import { createProgram, getPreEmitDiagnostics } from "../src/frontend/ts7/program-adapter.js";
 
 const repoRoot = join(import.meta.dirname, "../../..");
 const shimRoot = join(repoRoot, "packages/compiler/shims/undici");
@@ -282,31 +285,29 @@ type _clientApi = ExpectNever<Exclude<keyof Public<shim.Client>, keyof real.Clie
 `;
 }
 
-function check(files: Record<string, string>): string[] {
-  const options: ts5.CompilerOptions = {
+/** The diagnostics of one program, checked by the TypeScript 7 checker. */
+function check(name: string, text: string): string[] {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-undici-shim-types-"));
+  const file = join(dir, name);
+  writeFileSync(file, text);
+  const program = createProgram([file], {
     strict: true,
     noEmit: true,
     skipLibCheck: true,
     allowImportingTsExtensions: true,
-    module: ts5.ModuleKind.ESNext,
-    moduleResolution: ts5.ModuleResolutionKind.Bundler,
-    target: ts5.ScriptTarget.ES2022,
+    module: ad.ModuleKind.ESNext as number,
+    moduleResolution: ad.ModuleResolutionKind.Bundler as number,
+    target: ad.ScriptTarget.ES2022 as number,
     lib: ["lib.es2023.d.ts"],
     types: ["node"],
     typeRoots: [join(repoRoot, "node_modules/@types")],
-  };
-  const host = ts5.createCompilerHost(options);
-  const readFile = host.readFile.bind(host);
-  const fileExists = host.fileExists.bind(host);
-  host.readFile = (name) => files[name] ?? readFile(name);
-  host.fileExists = (name) => name in files || fileExists(name);
-  const program = ts5.createProgram(Object.keys(files), options, host);
-  return ts5.getPreEmitDiagnostics(program).map((d) => {
-    const where = d.file
-      ? `${d.file.fileName}:${d.file.getLineAndCharacterOfPosition(d.start ?? 0).line + 1}`
-      : "";
-    return `${where} ${ts5.flattenDiagnosticMessageText(d.messageText, "\n")}`;
   });
+  try {
+    return getPreEmitDiagnostics(program).map((d) => `${d.fileName ?? ""}:${d.pos} ${d.text}`);
+  } finally {
+    program.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe.each([5, 7])("undici %i.x shim types", (major) => {
@@ -314,18 +315,15 @@ describe.each([5, 7])("undici %i.x shim types", (major) => {
   const shim = join(shimRoot, `v${major}.ts`);
 
   test("a program written against undici type-checks against the real declarations", () => {
-    const file = join(repoRoot, `.undici-usage-real-${major}.ts`);
-    expect(check({ [file]: helpers + usage(major).replace(/UNDICI/g, real) })).toEqual([]);
+    expect(check("usage-real.ts", helpers + usage(major).replace(/UNDICI/g, real))).toEqual([]);
   });
 
   test("the same program type-checks against the shim", () => {
-    const file = join(repoRoot, `.undici-usage-shim-${major}.ts`);
-    expect(check({ [file]: helpers + usage(major).replace(/UNDICI/g, shim) })).toEqual([]);
+    expect(check("usage-shim.ts", helpers + usage(major).replace(/UNDICI/g, shim))).toEqual([]);
   });
 
   test("the shim's exports and records are a compatible subset", () => {
-    const file = join(repoRoot, `.undici-shape-${major}.ts`);
     const text = helpers + shape(major).replace(/REAL/g, real).replace(/SHIM/g, shim);
-    expect(check({ [file]: text })).toEqual([]);
+    expect(check("shape.ts", text)).toEqual([]);
   });
 });

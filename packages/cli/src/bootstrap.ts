@@ -66,6 +66,10 @@ async function tryFastPath(): Promise<number | null> {
     values["emit-ir"] ||
     values.lib ||
     values["provenance-sources"] ||
+    // The full compiler keys these builds by the profile's bytes.
+    values["profile-generate"] !== undefined ||
+    values["profile-use"] !== undefined ||
+    values.sparse ||
     (values["external-types"] ?? []).length > 0
   )
     return null;
@@ -116,6 +120,13 @@ async function tryFastPath(): Promise<number | null> {
   // the whole compiler graph to rediscover it.
   const helperRuntimePackTarget = !values.sanitize ? startup.precompiledRuntimePackTarget() : null;
   const helperObjectRoute = helperRuntimePackTarget !== null;
+  // The full compiler reports a checker it cannot find.
+  let checker: string | undefined;
+  try {
+    checker = startup.checkerCacheIdentity();
+  } catch {
+    return null;
+  }
   const hit = await startup.readRoutedExecutableCache(root, {
     entryPath: input,
     outDir,
@@ -126,6 +137,7 @@ async function tryFastPath(): Promise<number | null> {
     ...(optimization === "dev" || optimization === "speed" ? { optimization } : {}),
     ...(values.strip ? { strip: true as const } : {}),
     ...(values["detached-exit"] ? { detachedExit: true as const } : {}),
+    ...(checker === undefined ? {} : { checker }),
     npmStatic,
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${

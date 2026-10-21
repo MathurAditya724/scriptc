@@ -14,7 +14,6 @@ import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
 import { isNodeModulesPath } from "../resolve.js";
 import {
-  dateLiteralDivergenceDiag,
   keyOrderDivergenceDiag,
   localeCompareDivergenceDiag,
   unrelatedClassCastDivergenceDiag,
@@ -57,7 +56,6 @@ export function scanDivergences(
   const literals: ts.ObjectLiteralExpression[] = [];
   const observers: ts.Expression[] = [];
   const casts: (ts.AsExpression | ts.TypeAssertion)[] = [];
-  const dates: { call: ts.CallExpression | ts.NewExpression; arg: ts.Expression }[] = [];
   const localeCompares: ts.CallExpression[] = [];
   /** binding name → member names assigned through it (`q.a = 2`). */
   const assignedMembers = new Map<string, Set<string>>();
@@ -99,19 +97,8 @@ export function scanDivergences(
               member === "dir")
           ) {
             for (const a of node.arguments.nodes) if (!isLiteralLike(a)) observers.push(a);
-          } else if (recv.text === "Date" && member === "parse") {
-            if (node.arguments.nodes[0] !== undefined)
-              dates.push({ call: node, arg: node.arguments.nodes[0] });
           }
         }
-      }
-    } else if (ts.isNewExpression(node)) {
-      if (
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === "Date" &&
-        node.arguments?.nodes.length === 1
-      ) {
-        dates.push({ call: node, arg: node.arguments.nodes[0]! });
       }
     } else if (ts.isForInStatement(node)) {
       observers.push(node.expression);
@@ -294,7 +281,7 @@ export function scanDivergences(
           ts.isVariableDeclaration(decl) &&
           decl.initializer !== undefined &&
           ts.isObjectLiteralExpression(decl.initializer) &&
-          decl.getSourceFile() === inner.getSourceFile()
+          ts.getSourceFileOfNode(decl) === ts.getSourceFileOfNode(inner)
         ) {
           lit = decl.initializer;
           binding = inner.text;
@@ -304,7 +291,9 @@ export function scanDivergences(
       const contextual = safely(() => checker.getContextualType(lit!));
       if (contextual === undefined) continue;
       if (namedObjectDeclaration(checker, contextual) === null) continue;
-      const declared = safely(() => checker.getPropertiesOfType(contextual).map((p) => p.name));
+      const declared = safely(() =>
+        checker.getPropertiesOfType(contextual).map((p) => ts.symbolName(p)),
+      );
       if (declared === undefined) continue;
       const written = lit.properties.nodes.map((p) => propertyNameText(p)!);
       const assigned =
@@ -399,53 +388,7 @@ export function scanDivergences(
     }
   }
 
-  // ── Date strings the native parser does not accept ────────────────
-  for (const { call, arg } of dates) {
-    const callee = ts.isNewExpression(call)
-      ? call.expression
-      : ts.isPropertyAccessExpression(call.expression)
-        ? call.expression.expression
-        : undefined;
-    if (callee === undefined || !lowerer.isStdlibGlobal(callee, "Date")) continue;
-    for (const literal of dateStringLiterals(checker, arg)) {
-      const text = stringLiteralText(literal)!;
-      if (nativeDateParses(text) || !/\d/.test(text)) continue;
-      out.push(dateLiteralDivergenceDiag(text, locOf(literal)));
-    }
-  }
-
   return out;
-}
-
-/** The string literals a Date argument can be: the literal itself, or
- * each element of a const array of literals a for-of binding iterates. */
-function dateStringLiterals(checker: ts.TypeChecker, arg: ts.Expression): ts.Expression[] {
-  if (stringLiteralText(arg) !== null) return [arg];
-  if (!ts.isIdentifier(arg)) return [];
-  const symbol = safely(() => checker.getSymbolAtLocation(arg));
-  const decl = symbol === undefined ? undefined : symbol.valueDeclaration;
-  const list = decl?.parent;
-  const loop = list?.parent;
-  if (
-    decl === undefined ||
-    !ts.isVariableDeclaration(decl) ||
-    list === undefined ||
-    loop === undefined ||
-    !ts.isForOfStatement(loop) ||
-    loop.initializer !== list
-  )
-    return [];
-  let iterated: ts.Expression = loop.expression;
-  if (ts.isIdentifier(iterated)) {
-    const source = safely(() => checker.getSymbolAtLocation(iterated));
-    const init = source === undefined ? undefined : source.valueDeclaration;
-    if (init === undefined || !ts.isVariableDeclaration(init) || init.initializer === undefined)
-      return [];
-    if (init.parent === undefined || (init.parent.flags & ts.NodeFlags.Const) === 0) return [];
-    iterated = init.initializer;
-  }
-  if (!ts.isArrayLiteralExpression(iterated)) return [];
-  return iterated.elements.nodes.filter((e) => stringLiteralText(e) !== null);
 }
 
 /** A checker query that fails here only loses a warning. */
@@ -522,7 +465,7 @@ function identityUse(root: ts.Node, name: string, from = -1): IdentityUse | null
     return cur;
   };
   const textOf = (node: ts.Node): string => {
-    const text = node.getText();
+    const text = ts.getTextOfNode(node);
     return text.length > 60 ? `${text.slice(0, 57)}...` : text;
   };
   const visit = (node: ts.Node): "skip" | "stop" | undefined => {
@@ -650,7 +593,7 @@ function elementWrite(root: ts.Node, name: string, from: number): string | null 
     )
       target = node.operand;
     if (target !== undefined && throughElement(target)) {
-      found = target.getText();
+      found = ts.getTextOfNode(target);
       return "stop";
     }
     if (
@@ -729,8 +672,8 @@ function widthCopyBetween(
     // still observes the same writes: no divergence to report.
     const accessor = ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor;
     if (sourceProps.some((p) => (p.flags & accessor) !== 0)) return null;
-    const sourceNames = new Set(sourceProps.map((p) => p.name));
-    const targetNames = checker.getPropertiesOfType(t).map((p) => p.name);
+    const sourceNames = new Set(sourceProps.map((p) => ts.symbolName(p)));
+    const targetNames = checker.getPropertiesOfType(t).map((p) => ts.symbolName(p));
     if (targetNames.length === sourceNames.size && targetNames.every((n) => sourceNames.has(n)))
       return null;
   }
@@ -743,7 +686,7 @@ function isProgramClassType(checker: ts.TypeChecker, type: ts.Type): boolean {
   return (
     symbol !== undefined &&
     (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
-    symbol.declarations.some((d) => !d.getSourceFile().isDeclarationFile)
+    symbol.declarations.some((d) => !ts.getSourceFileOfNode(d).isDeclarationFile)
   );
 }
 
@@ -757,7 +700,7 @@ function isPlainRecordType(checker: ts.TypeChecker, type: ts.Type): boolean {
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Class) !== 0) return false;
   // Library-declared object types (Map, Date, Promise, ...) are not records.
   const decls = symbol === undefined ? [] : symbol.declarations;
-  if (decls.some((d) => d.getSourceFile().isDeclarationFile)) return false;
+  if (decls.some((d) => ts.getSourceFileOfNode(d).isDeclarationFile)) return false;
   return true;
 }
 
@@ -770,7 +713,7 @@ function namedObjectDeclaration(checker: ts.TypeChecker, type: ts.Type): ts.Node
   if (symbol === undefined) return null;
   if ((symbol.flags & ts.SymbolFlags.Class) !== 0) return null;
   const decl = symbol.declarations[0];
-  if (decl === undefined || decl.getSourceFile().isDeclarationFile) return null;
+  if (decl === undefined || ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
   return decl;
 }
 
@@ -824,7 +767,7 @@ function classDeclarationOfTypeNode(
   const symbol = lowerer.checker.getSymbolAtLocation(node.typeName);
   if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Class) === 0) return null;
   const decl = symbol.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
-  if (decl === undefined || decl.getSourceFile().isDeclarationFile) return null;
+  if (decl === undefined || ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
   return decl as ts.ClassLikeDeclaration;
 }
 
@@ -835,7 +778,7 @@ function classDeclarationOfType(
   const symbol = type.getSymbol();
   if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Class) === 0) return null;
   const decl = symbol.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
-  if (decl === undefined || decl.getSourceFile().isDeclarationFile) return null;
+  if (decl === undefined || ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
   return decl as ts.ClassLikeDeclaration;
 }
 
@@ -869,21 +812,4 @@ function classExtends(
 
 function className(decl: ts.ClassLikeDeclaration): string {
   return decl.name?.text ?? "(anonymous class)";
-}
-
-const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-
-/** The date-string grammar the native runtime accepts (scr_lib.c
- * scr_date_parse_get_time): ECMAScript's date-time format with an explicit
- * offset (date-only forms are UTC) and the certificate-time shape
- * "Mon DD HH:MM:SS YYYY GMT". Everything else parses to NaN natively. */
-export function nativeDateParses(text: string): boolean {
-  const iso =
-    /^(?:[+-]\d{6}|\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.test(text) ||
-    /^(?:[+-]\d{6}|\d{4})-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(
-      text,
-    );
-  if (iso) return true;
-  const cert = /^([A-Za-z]{3}) {1,2}\d{1,2} \d{2}:\d{2}:\d{2} \d{4} GMT$/.exec(text);
-  return cert !== null && MONTHS.includes(cert[1]!.toLowerCase());
 }

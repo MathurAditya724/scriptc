@@ -22,7 +22,12 @@ import {
   npmStaticPackageOfPath,
   npmStaticTransformPkgJson,
 } from "./npm-static.js";
-import { clearPackageShimCaches, isUnloadedPackage, packageShimFor } from "./package-shims.js";
+import {
+  clearPackageShimCaches,
+  isUnloadedPackage,
+  packageShimFor,
+  throughBundledShimForwarder,
+} from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import {
   trackedAccessibleEntries,
@@ -667,6 +672,11 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
  * answer null for their dedicated callers. */
 export function resolveProjectModule(fromFile: string, specifier: string): string | null {
   if (isRelativeSpecifier(specifier) || isAbsolute(specifier)) {
+    // A bundled copy's forwarder (a virtual declaration module) answers
+    // the shim it forwards to.
+    const forwarder = join(dirname(resolve(fromFile)), `${specifier}.d.ts`);
+    const forwarded = throughBundledShimForwarder(forwarder);
+    if (forwarded !== forwarder) return forwarded;
     return resolveRelativeModule(fromFile, specifier);
   }
   if (specifier.startsWith("node:")) return null;

@@ -7,6 +7,7 @@ import { entryFunctionExports, type EntryExportInfo } from "./lib-exports.js";
 import { entryContractFacts, type ContractFacts } from "./lib-contract.js";
 import {
   canonicalBuiltinModule,
+  npmBuiltinAliasOf,
   checkPreflight,
   isNodeTypesPath,
   locOf,
@@ -267,6 +268,9 @@ function detectAutoPackages(
       // never npm candidates. Auto keeps its original path (the
       // @types/node answer skips them below), unchanged.
       if (mode === "lib" && canonicalBuiltinModule(spec) !== null) continue;
+      // npm packages served as builtins (graceful-fs as fs) never compile
+      // their JavaScript.
+      if (npmBuiltinAliasOf(spec) !== null) continue;
       // Explicit attempts name the runtime package. Types-first resolution
       // may instead identify its @types twin, which has no runtime to admit.
       if (judged?.has(packageNameOfSpecifier(spec))) continue;

@@ -14,6 +14,7 @@ import {
   RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
+  DYN,
   STRING,
 } from "../../ir/ir.js";
 import {
@@ -56,6 +57,7 @@ import {
   stackUnionBox,
   type InlineUnionFields,
 } from "./inline-unions.js";
+import { JS_BITS, JS_TAGS } from "./jsval-encoding.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -268,6 +270,7 @@ export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release
  * table above; the split exists so call sites read type-directedly.
  * Families with a mirrored fast path call the inline helper instead. */
 export function retainSym(host: ShapeHost, t: IrType): string {
+  if (t.kind === "jsval") return jsvalRcSym(host, "retain");
   const nullable = host.nullableUnions.of(t);
   if (nullable?.repr === "shapes") return shapeUnionRc(nullable).retain;
   if (nullable) return nullableRetainSym(host, nullable.arm);
@@ -411,6 +414,7 @@ export function emitNullableRetainWrappers(host: ShapeHost): string[] {
  * points serve where one exists; records use their emitted helper.
  * Families with a mirrored fast path call the inline helper instead. */
 export function releaseSym(host: ShapeHost, t: IrType): string {
+  if (t.kind === "jsval") return jsvalRcSym(host, "release");
   const nullable = host.nullableUnions.of(t);
   if (nullable?.repr === "shapes") return shapeUnionRc(nullable).release;
   if (nullable) return releaseSym(host, nullable.arm);
@@ -433,6 +437,67 @@ export function releaseSym(host: ShapeHost, t: IrType): string {
     default:
       throw new LlvmUnsupportedError(`rc:${t.kind}`);
   }
+}
+
+/** jsval retain/release (llvm/jsval.ts). On 32-bit targets a jsval is a
+ * dyn cell and uses dyn's entry points. Otherwise the inline helper skips
+ * immediates and forwards a cell to dyn's own entry point (requested here,
+ * so it is emitted with the other helpers) and a string or BigInt to the
+ * runtime; without inline RC every retain/release is a runtime call. */
+function jsvalRcSym(host: ShapeHost, op: RcOp): string {
+  if (host.sizeType === "i32")
+    return op === "retain" ? retainSym(host, DYN) : releaseSym(host, DYN);
+  if (host.rcHelpers === null || mirroredFamily(host, "js", op) === null) {
+    const sym = op === "retain" ? "@scr_js_retain" : "@scr_js_release";
+    host.declare(op === "retain" ? `declare ptr ${sym}(ptr)` : `declare void ${sym}(ptr)`);
+    return sym;
+  }
+  if (op === "retain") retainSym(host, DYN);
+  else releaseSym(host, DYN);
+  return requestRcHelper(host, "js", op);
+}
+
+/** The inline retain/release helpers of jsval (64-bit targets). A cell
+ * goes through dyn's own retain/release entry point (inline or runtime);
+ * a string or BigInt through the runtime; immediates do nothing. */
+function jsvalRcHelper(host: ShapeHost, op: RcOp, attrs: string): string[] {
+  const dynOp = op === "retain" ? retainSym(host, DYN) : releaseSym(host, DYN);
+  const runtime = op === "retain" ? "@scr_js_retain" : "@scr_js_release";
+  // Always inlined (the helper is a tag dispatch): LLVM would otherwise
+  // weigh it together with the dyn helper it calls and keep both out of
+  // line. dyn's release tolerates NULL; its retain does not.
+  const inline = host.rcHelpersNoinline === true ? attrs : `alwaysinline ${attrs}`;
+  return [
+    `define internal ${op === "retain" ? "ptr" : "void"} @sc_rc_${op}_js(ptr %o) ${inline} { ; jsval ${op}: cells, strings and BigInts`,
+    `entry:`,
+    `  %b = ptrtoint ptr %o to i64`,
+    `  %tag = lshr i64 %b, 48`,
+    `  %cell = icmp eq i64 %tag, ${JS_TAGS.cell}`,
+    `  br i1 %cell, label %c, label %other`,
+    `c:`,
+    `  %a = and i64 %b, ${JS_BITS.payloadMask}`,
+    `  %p = inttoptr i64 %a to ptr`,
+    ...(op === "retain"
+      ? [
+          `  %live = icmp ne ptr %p, null`,
+          `  br i1 %live, label %rc, label %done`,
+          `rc:`,
+          `  %r = call ptr ${dynOp}(ptr %p)`,
+        ]
+      : [`  call void ${dynOp}(ptr %p)`]),
+    `  br label %done`,
+    `other:`,
+    `  %h = sub i64 %tag, ${JS_TAGS.str}`,
+    `  %heap = icmp ult i64 %h, 2`,
+    `  br i1 %heap, label %slow, label %done`,
+    `slow:`,
+    op === "retain" ? `  %s = call ptr ${runtime}(ptr %o)` : `  call void ${runtime}(ptr %o)`,
+    `  br label %done`,
+    `done:`,
+    `  ${op === "retain" ? "ret ptr %o" : "ret void"}`,
+    `}`,
+    ``,
+  ];
 }
 
 /* ── inline RC fast paths ─────────────────────────────────────────────── */
@@ -505,7 +570,17 @@ export function inlineRcFamily(host: ShapeHost, stem: string, op: RcOp): InlineR
  * because string-heavy programs have many release sites. */
 export type InlineRcMode = "release" | "speed";
 
-const RELEASE_RC_OPS = new Set(["str:retain", "dyn:retain", "dyn:release"]);
+const RELEASE_RC_OPS = new Set([
+  "str:retain",
+  "dyn:retain",
+  "dyn:release",
+  "js:retain",
+  "js:release",
+]);
+
+/** The jsval helpers' row: their bodies are custom (jsvalRcHelper), and
+ * they call the runtime themselves. */
+const JS_RC_ROW: InlineRcFamily = { cycle: "none", retainNull: true, release: null };
 
 /** The emitter's inline RC option for a native optimization posture: none
  * at `dev`, the `release` subset by default. Sanitized builds compile the
@@ -523,6 +598,8 @@ export function inlineRcOption(
 }
 
 function mirroredFamily(host: ShapeHost, family: string, op: RcOp): InlineRcFamily | null {
+  if (family === "js")
+    return host.rcMode !== "speed" && !RELEASE_RC_OPS.has(`js:${op}`) ? null : JS_RC_ROW;
   if (!Object.hasOwn(INLINE_RC_FAMILIES, family)) return null;
   if (host.rcMode !== "speed" && !RELEASE_RC_OPS.has(`${family}:${op}`)) return null;
   const row = INLINE_RC_FAMILIES[family]!;
@@ -548,15 +625,17 @@ export function boxReleaseSym(host: ShapeHost): string {
 /** Record the helper and declare the runtime symbols it calls now, so they
  * land in the extern block. */
 function requestRcHelper(host: ShapeHost, family: string, op: RcOp): string {
-  if (host.rcHelpers === null || mirroredFamily(host, family, op) === null) {
+  const row = host.rcHelpers === null ? null : mirroredFamily(host, family, op);
+  if (host.rcHelpers === null || row === null) {
     throw new LlvmUnsupportedError(`inline rc:${family}:${op}`);
   }
   host.rcHelpers.add(`${family}:${op}`);
   for (const decl of rcHelperDecls(family, op)) host.declare(decl);
   // Its body is written last (emitInlineRcHelpers), after the requests are
   // collected: a release that can buffer a candidate requests the append
-  // helper now.
-  if (op === "release" && INLINE_RC_FAMILIES[family]!.cycle === "always") requestCycleAppend(host);
+  // helper now. The jsval row (JS_RC_ROW) has no collector header; its
+  // cells release through dyn's helper, which makes its own request.
+  if (op === "release" && row.cycle === "always") requestCycleAppend(host);
   return `@${inlineRcName(family, op)}`;
 }
 
@@ -632,6 +711,10 @@ export function limitInlineDynReleases(parts: readonly string[]): string[] {
 }
 
 function rcHelperDecls(family: string, op: RcOp): string[] {
+  if (family === "js")
+    return [
+      op === "retain" ? `declare ptr @scr_js_retain(ptr)` : `declare void @scr_js_release(ptr)`,
+    ];
   const row = INLINE_RC_FAMILIES[family]!;
   if (op === "retain" || row.release === null) return [];
   return [
@@ -808,6 +891,10 @@ export function emitInlineRcHelpers(host: ShapeHost): string[] {
       continue;
     }
     const [family, op] = key.split(":") as [string, RcOp];
+    if (family === "js") {
+      out.push(...jsvalRcHelper(host, op, rcHelperAttrs(host)));
+      continue;
+    }
     const row = INLINE_RC_FAMILIES[family]!;
     out.push(
       ...(op === "retain" ? retainHelper(host, family, row) : releaseHelper(host, family, row)),
@@ -967,6 +1054,7 @@ export function arrNewCall(
     elem.kind === "promise" || // promise entries (Promise.all inputs): full REF story
     elem.kind === "child" || // spawned child handles: scr_child_* adapters, no trace
     elem.kind === "netServer" ||
+    elem.kind === "stats" || // fs.Stats snapshots: scr_stats_* adapters, no trace
     elem.kind === "dyn" || // native collection seeds/drains: traced REF
     elem.kind === "regex" || // RegExp values: scr_regex_* adapters, no trace (no refs inside)
     (elem.kind === "array" && traceAdapter(host, elem) !== null);
@@ -1162,6 +1250,11 @@ export function rcMembers(
   ];
 }
 
+/** The integer type a release or retain loads and stores the count as:
+ * the rc word, or its low half (an i32 at offset 0) for class instances that
+ * keep their class number in the high half (classes.ts LlClassMeta.idInRc). */
+export type RcCount = "i32" | "i64";
+
 /** The NULL- and immortal-skipping retain body shared by every shape. A
  * retain never touches the cycle header: a buffered candidate that is
  * retained again stays a candidate (scr_cycle.c, markRoots). */
@@ -1170,8 +1263,9 @@ export function retainBody(
   fnName: string,
   comment = "",
   immortal = false,
+  count: RcCount = host.sizeType,
 ): string[] {
-  const S = host.sizeType;
+  const S = count;
   if (immortal) return immortalRcBody(host, fnName, "ptr", comment);
   return [
     `define internal ptr @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
@@ -1238,6 +1332,8 @@ export interface DirectDestroy {
   readonly destroy: string;
   /** The child carries a collector header. */
   readonly traced: boolean;
+  /** The child's count type, when it is not the rc word (RcCount). */
+  readonly count?: RcCount;
 }
 
 /** The release of child `value` (a loaded field, possibly NULL) inside a
@@ -1252,19 +1348,20 @@ export function directChildReleaseLines(
   comment: string,
 ): string[] {
   const S = host.sizeType;
+  const C = target.count ?? S;
   host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
   const lines = [
     `  %${tag}.nn = icmp ne ptr ${value}, null`,
     `  br i1 %${tag}.nn, label %${tag}.chk, label %${tag}.next`,
     `${tag}.chk:`,
-    `  %${tag}.rc = load ${S}, ptr ${value}`,
-    `  %${tag}.last = icmp eq ${S} %${tag}.rc, 1`,
+    `  %${tag}.rc = load ${C}, ptr ${value}`,
+    `  %${tag}.last = icmp eq ${C} %${tag}.rc, 1`,
     `  br i1 %${tag}.last, label %${tag}.dead, label %${tag}.shared`,
     `${tag}.shared:`,
     `  call void ${target.release}(ptr ${value}) ; ${comment}`,
     `  br label %${tag}.next`,
     `${tag}.dead: ; ${comment}: the last reference`,
-    `  store ${S} 0, ptr ${value}`,
+    `  store ${C} 0, ptr ${value}`,
   ];
   if (target.traced) {
     host.declare(`declare void @scr_cyc_on_dead(ptr)`);
@@ -1427,8 +1524,9 @@ export function releaseFastPath(
   traced: boolean,
   comment = "",
   immortal = false,
+  count: RcCount = host.sizeType,
 ): string[] {
-  const S = host.sizeType;
+  const S = count;
   if (immortal) return immortalRcBody(host, fnName, "void", comment);
   return [
     `define internal void @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment} (fast path)` : ""}`,
