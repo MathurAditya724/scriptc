@@ -1117,7 +1117,7 @@ function validateFunction(
   // helpers. They are not source-level types and never return as values.
   if (fn.returnType.kind === "caught") err("return type is caught", fn.loc);
   for (const p of fn.params) {
-    if (p.type.kind === "caught" && fn.name !== "%caught.dynamicValue")
+    if (p.type.kind === "caught" && !fn.name.startsWith("%caught."))
       err(`param "${p.name}" is caught-typed`, fn.loc);
     if (!locals.has(p.localId)) {
       err(`param "${p.name}" has no local entry "${p.localId}"`, fn.loc);

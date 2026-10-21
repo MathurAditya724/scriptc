@@ -1036,6 +1036,29 @@ export function emitDynamicExpr(
         B.line(`${n} = xor i1 ${t}, true`);
         return { name: n, type: e.type };
       }
+      if (e.test === "dynamic") {
+        // A REF payload whose retain adapter is the dyn adapter (sc_cd's
+        // by-reference arm).
+        host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+        const kp = B.tmp(),
+          k = B.tmp(),
+          isRef = B.tmp(),
+          rp = B.tmp(),
+          r = B.tmp(),
+          isDyn = B.tmp(),
+          t = B.tmp();
+        B.line(`${kp} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 1`);
+        B.line(`${k} = load i32, ptr ${kp}`);
+        B.line(`${isRef} = icmp eq i32 ${k}, 4`);
+        B.line(`${rp} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 5`);
+        B.line(`${r} = load ptr, ptr ${rp}`);
+        B.line(`${isDyn} = icmp eq ptr ${r}, @scr_dyn_retain_v`);
+        B.line(`${t} = and i1 ${isRef}, ${isDyn}`);
+        if (e.negated !== true) return { name: t, type: e.type };
+        const n = B.tmp();
+        B.line(`${n} = xor i1 ${t}, true`);
+        return { name: n, type: e.type };
+      }
       if (e.test === "object") {
         host.declare(`declare zeroext i1 @scr_caught_is_object(ptr)`);
         const t = B.tmp();
