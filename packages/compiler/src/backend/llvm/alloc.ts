@@ -269,8 +269,9 @@ export function cycTypeDescriptor(name: string, trace: string, free: string, kin
  * expression) in `%o`, aborting on OOM, with the RC-audit allocation note
  * on the out-of-line path. With `cyc`, the object carries a collector
  * header (scr_cyc_alloc's contract). `stored` is the number of leading
- * object bytes the caller stores unconditionally right after (at least the
- * refcount word), which a recycled block need not clear. Labels use the
+ * object bytes the caller stores unconditionally right after (the refcount
+ * word, or the 4-byte header of a compact class instance), which a recycled
+ * block need not clear; it is a multiple of 4 and at most `size`. Labels use the
  * `sa.` prefix; the lines end in an open block.
  */
 export function emitObjectAlloc(
@@ -350,7 +351,7 @@ function allocLines(
     `  store ptr %sa.next, ptr %sa.fp`,
     `  %sa.z = getelementptr inbounds i8, ptr %sa.b, i64 ${keep}`,
     `  %sa.zn = sub i64 %sa.n, ${keep}`,
-    `  call void @llvm.memset.p0.i64(ptr align 8 %sa.z, i8 0, i64 %sa.zn, i1 false)`,
+    `  call void @llvm.memset.p0.i64(ptr align ${keep % 8 === 0 ? 8 : 4} %sa.z, i8 0, i64 %sa.zn, i1 false)`,
     `  br label %sa.fast`,
     `sa.bump: ; fresh reservation memory is already zero`,
     `  %sa.c1 = add i64 %sa.c, 1`,

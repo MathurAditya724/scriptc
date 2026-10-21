@@ -5836,13 +5836,39 @@ function evalMappedTemplate(
     if (!checkType || !extendsType) return null;
     const checked = evalMappedTemplate(checkType, keys, scope, ctx);
     if (!checked) return null;
-    const inferred = matchInferReference(checked, extendsType, ctx);
+    const inferred =
+      primitiveExtendsCheck(checked, extendsType, ctx) ??
+      matchInferReference(checked, extendsType, ctx);
     if (inferred === undefined) return null;
     const branch = inferred ? type.getTrueType() : type.getFalseType();
     const branchScope = inferred ? new Map([...scope, ...inferred]) : scope;
     return evalMappedTemplate(branch, keys, branchScope, ctx);
   }
   return mentionsMappedParams(type, keys, aliases) ? null : type;
+}
+
+/** `checked extends X` where X is a primitive or literal type, or a union of
+ * them (`K extends "required" ? ...`), and `checked` is one such type:
+ * X has no infer positions, so assignability decides the branch (an empty
+ * binding map for the true branch). A union `checked` distributes and stays
+ * undecided here (undefined), as do other shapes. */
+function primitiveExtendsCheck(
+  checked: ts.Type,
+  extendsType: ts.Type,
+  ctx: TypeMapperCtx,
+): Map<ts.Symbol, ts.Type> | false | undefined {
+  const primitive =
+    ts.TypeFlags.StringLike |
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.BigIntLike |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Undefined;
+  const isPrimitive = (t: ts.Type): boolean =>
+    !t.isUnionType() && (t.flags & primitive) !== 0 && (t.flags & ts.TypeFlags.TypeParameter) === 0;
+  const extendsParts = extendsType.isUnionType() ? ts.constituentTypes(extendsType) : [extendsType];
+  if (!isPrimitive(checked) || !extendsParts.every(isPrimitive)) return undefined;
+  return ctx.checker.isTypeAssignableTo(checked, extendsType) ? new Map() : false;
 }
 
 /** `checked extends G<..., infer T, ...>`: the infer bindings when

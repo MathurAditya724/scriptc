@@ -676,12 +676,14 @@ export function requireExactArityValue(
       : null;
   if (mapped && typeEquals(mapped, funcType)) return;
   // An 'any' slot (`C.prototype.m = function (a, b) {…}` through an
-  // untyped receiver) boxes the value into a checked-dynamic function:
+  // untyped receiver), or a slot whose type maps to a checked-dynamic
+  // value (a member of a literal lowered with a generic function's type
+  // parameters erased), boxes the value into a checked-dynamic function:
   // the box completes omitted arguments with undefined and checks every
   // argument into the completed ABI, so any boxable signature passes.
   if (
     target !== undefined &&
-    (target.flags & ts.TypeFlags.Any) !== 0 &&
+    ((target.flags & ts.TypeFlags.Any) !== 0 || mapped?.kind === "dyn") &&
     canBoxFuncIntoDyn(
       funcType,
       (id) => lowerer.shapes.get(id),
