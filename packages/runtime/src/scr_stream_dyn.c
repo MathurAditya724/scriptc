@@ -23,7 +23,11 @@ ScrStream *scr_stream_dyn_native(const ScrDyn *value, double side) {
       memcmp(value->v.typed_ref.type_key, "object:", 7) != 0)
     return NULL;
   ScrStream *stream = scr_dyn_typed_ref_unbox(value);
-  const ScrVt *vt = stream->vt;
+  const ScrVt *vt = scr_stream_vt_of(stream);
+  if (vt == NULL) {
+    value->v.typed_ref.release(stream);
+    return NULL;
+  }
   bool duplex = scr_stream_dyn_within(vt, &scr_duplex_vt) ||
                 scr_stream_dyn_within(vt, &scr_transform_vt) ||
                 scr_stream_dyn_within(vt, &scr_passthrough_vt);

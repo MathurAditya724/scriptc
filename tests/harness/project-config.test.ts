@@ -52,6 +52,48 @@ test("node-types: filesystem capacity supports typed number and BigInt results u
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: Headers, Request and Response members typed by undici-types run natively", async () => {
+  const outDir = outDirFor("fetch-handle-members");
+  const entry = join(nodeTypesDir, "fetch-handle-members.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32" ? "fetch-handle-members.exe" : "fetch-handle-members",
+    ),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: fetch's string | URL | Request input and a custom fetch cast to typeof fetch", async () => {
+  const outDir = outDirFor("fetch-input-unions");
+  const entry = join(nodeTypesDir, "fetch-input-unions.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32" ? "fetch-input-unions.exe" : "fetch-input-unions",
+    ),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 for (const [name, title] of [
   [
     "event-loop-metrics",
@@ -1019,6 +1061,20 @@ test("node-types: Cipheriv and Decipheriv match Node under @types/node", async (
   const outDir = outDirFor("node-cipher");
   const entry = join(nodeTypesDir, "cipher.ts");
   const result = await compile(entry, { outPath: join(outDir, "cipher"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: ECDH matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-ecdh");
+  const entry = join(nodeTypesDir, "ecdh.ts");
+  const result = await compile(entry, { outPath: join(outDir, "ecdh"), outDir, sanitize });
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
   if (!result.ok) return;
   const [native, node] = await Promise.all([

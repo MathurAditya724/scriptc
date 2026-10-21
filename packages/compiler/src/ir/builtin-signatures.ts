@@ -219,6 +219,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
   "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
   "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },
+  /** for await over a checked-dynamic value: the loop's iterator (a
+   * compiled async generator, Symbol.asyncIterator's result, or the sync
+   * iterator), and whether that iterator is synchronous. */
+  "dyn.asyncIteratorOpen": { argTypes: [DYN, STRING], result: DYN },
+  "dyn.asyncIteratorWasSync": { argTypes: [], result: BOOL },
   "dyn.iteratorResult": { argTypes: [DYN], result: DYN },
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
@@ -687,6 +692,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** realpath(3) with Node's error shape (syscall "lstat" in the message,
    * Node's own spelling for realpathSync failures). +1 fresh string. */
   "fs.realpathSync": { argTypes: [STRING], result: STRING },
+  /** fs.realpathSync (or its .native when the flag is true) as a function
+   * value: path and options arrive unchecked; the result is a string or a
+   * Buffer by the options' encoding. */
+  "fs.realpathValue": { argTypes: [DYN, DYN, BOOL], result: DYN },
   /** Native realpath with syscall "realpath" on failure. +1 fresh string. */
   "fs.realpathNativeSync": { argTypes: [STRING], result: STRING },
   /** The os.userInfo() field trio (uv_os_get_passwd's slices): pw_name,
@@ -1096,6 +1105,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "util.inherits": { argTypes: [DYN, DYN], result: VOID },
   "util.deprecate": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
   "util.callbackify": { argTypes: [DYN], result: DYN },
+  /** util.promisify over an untyped function value: a native dyn function
+   * whose calls answer a dyn promise the appended callback settles. */
+  "util.promisifyDyn": { argTypes: [DYN], result: DYN },
   "util.debuglog": { argTypes: [DYN, DYN], result: DYN },
   "util.typeIs": { argTypes: [DYN, STRING], result: BOOL },
   "util.typeValue": { argTypes: [DYN, STRING], result: DYN },
@@ -1437,6 +1449,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * 'error'. A synchronous throw INSIDE the lookup propagates out of the
    * connect call (may-throw seed). */
   "net.connectLookup": { argTypes: [F64, STRING, null], result: NETSOCKET_T },
+  /** connect({ host, port, lookup }) with a lookup of Node's own type, as
+   * a checked-dynamic function: the runtime calls it with { hints, all:
+   * true } and a callback taking an address string or list, then dials
+   * the answers in order. MAY THROW (host validation, a lookup throw). */
+  "net.connectLookupDyn": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
   "net.sockWrite": { argTypes: [NETSOCKET_T, STRING], result: VOID },
   "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
   "net.sockEnd": { argTypes: [NETSOCKET_T], result: VOID },
@@ -1507,10 +1524,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dgram.sendBytes": { argTypes: [DGRAMSOCK_T, BYTES_U8, F64, STRING], result: VOID },
   /** The send argument-validation ladder over dyn arguments (Node's
    * signature shuffle: slice bounds, list/type contracts, port/address
-   * validation, connected-state errors) — a fully-validated unconnected
-   * single-payload send RUNS; callback/list/connected forms meet the
-   * trailing fence. May-throw. */
-  "dgram.sendChk": { argTypes: [DGRAMSOCK_T, DYN, DYN, DYN, DYN, DYN, STRING], result: VOID },
+   * validation, connected-state errors), then the send: lists, connected
+   * sends and completion callbacks included. Up to six arguments, the
+   * missing ones undefined. May-throw. */
+  "dgram.sendChk": { argTypes: [DGRAMSOCK_T, DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
   "dgram.address": { argTypes: [DGRAMSOCK_T], result: VOID },
   "dgram.close": { argTypes: [DGRAMSOCK_T], result: VOID },
   "dgram.closeCb": {
@@ -2520,6 +2537,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "child.onSpawn": { argTypes: [CHILD_T, null], result: VOID },
   /** Rest listeners use the checked function bridge to pack event arguments. */
   "child.onDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
+  // Own properties JavaScript adds to children (handle-properties.ts).
+  "child.propsInstall": { argTypes: [], result: VOID },
+  "child.propsDefine": { argTypes: [DYN, DYN, DYN], result: DYN },
+  "child.propsDescriptor": { argTypes: [DYN, DYN], result: DYN },
+  "child.propsResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "child.propsOnDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
   "process.connected": { argTypes: [], result: BOOL },
   /** Whether this fork child opened its channel; part of process.send's
    * presence in programs with fork targets. Never throws. */
@@ -2753,6 +2776,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * cipher, key, iv and options arguments (scr_cipher.c): a native
    * Cipheriv/Decipheriv handle whose methods dispatch through dynInvoke. */
   "crypto.cipherNew": { argTypes: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
+  /** createECDH(curveName) over a checked-dynamic curve (scr_ecdh.c): a
+   * native ECDH handle whose methods dispatch through dynInvoke. */
+  "crypto.ecdhNew": { argTypes: [DYN], result: DYN },
+  /** ECDH.convertKey(key, curve, inputEncoding, outputEncoding, format):
+   * the converted point as a Buffer or string. */
+  "crypto.ecdhConvertKey": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: DYN },
   "crypto.hmacNewStr": { argTypes: [STRING, STRING], result: CRYPTOHMAC_T },
   "crypto.hmacNewBytes": { argTypes: [STRING, BYTES_U8], result: CRYPTOHMAC_T },
   "crypto.hashUpdateStr": { argTypes: [CRYPTOHASH_T, STRING], result: CRYPTOHASH_T },
@@ -2872,6 +2901,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * allocUnsafeSlow never pool. The size forms validate like Node
    * (ERR_OUT_OF_RANGE). poolSize reads and writes Buffer.poolSize. */
   "buffer.alloc": { argTypes: [F64], result: BYTES_U8 },
+  /** Buffer.alloc as a function value: the size, fill and encoding arrive
+   * unchecked, and the runtime fills as Node's alloc does. */
+  "buffer.allocValue": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
   "buffer.allocUnsafe": { argTypes: [F64], result: BYTES_U8 },
   "buffer.allocUnsafeSlow": { argTypes: [F64], result: BYTES_U8 },
   "buffer.poolFromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
@@ -2879,12 +2911,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "buffer.poolFromBytes": { argTypes: [BYTES_U8], result: BYTES_U8 },
   "buffer.poolFromArray": { argTypes: [arrayOf(F64)], result: BYTES_U8 },
   "buffer.poolFromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
+  /** poolFromDyn that also copies an array crossing by reference. */
+  "buffer.poolFromDynRef": { argTypes: [DYN, STRING], result: BYTES_U8 },
   "buffer.poolSize": { argTypes: [], result: F64 },
   "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
    * fromStr's — and Buffer.isEncoding(name) over a runtime string
    * (case-insensitive against Node's alias set). Pure; never throw. */
   "buffer.byteLenDyn": { argTypes: [DYN, STRING], result: F64 },
+  /** Buffer.byteLength as a function value: the encoding arrives at run time. */
+  "buffer.byteLenValue": { argTypes: [DYN, DYN], result: F64 },
   "buffer.byteLenStr": { argTypes: [STRING, STRING], result: F64 },
   "buffer.isEncoding": { argTypes: [STRING], result: BOOL },
   /** Buffer.concat(list, totalLength): the concatenation truncated or
@@ -4168,6 +4204,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** A numeric typed array that is not a Buffer (any element kind). */
   "insp.typedArray": { argTypes: [null, F64, F64], result: STRING },
   "insp.error": { argTypes: [null, F64, F64], result: STRING },
+  "insp.errorHasCause": { argTypes: [null], result: BOOL },
+  "insp.errorBagHasProperties": { argTypes: [DYN], result: BOOL },
+  "insp.errorCause": { argTypes: [null, F64, F64], result: STRING },
   "insp.dyn": { argTypes: [DYN, F64, F64], result: STRING },
   "insp.dynS": { argTypes: [DYN, F64], result: STRING },
   "insp.begin": { argTypes: [F64], result: VOID },
@@ -4570,6 +4609,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * lone surrogate as U+FFFD). Borrowed arg; owned (+1) string; never throws. */
   "text.decode": { argTypes: [BYTES_U8], result: STRING },
   "bytes.bufferSource": { argTypes: [DYN], result: BYTES_U8 },
+  /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array
+   * result (map and filter of a Buffer return a Buffer). */
+  "bytes.copyBrand": { argTypes: [BYTES_U8, BYTES_U8], result: VOID },
   "text.decodeBufferSource": { argTypes: [DYN], result: STRING },
   "text.decodeOptions": { argTypes: [BYTES_U8, BOOL, BOOL], result: STRING },
   "text.decodeStream": { argTypes: [DYN, BYTES_U8, F64, BOOL, BOOL, BOOL], result: STRING },

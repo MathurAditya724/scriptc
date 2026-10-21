@@ -154,8 +154,10 @@ typedef enum {
   X(CUSTOM_EVENT, 40) /* ScrEvent with detail — new CustomEvent() */ \
   X(DATE, 30) /* JavaScript Date with stable native identity */ \
   X(DECIPHER, 46) /* node:crypto Decipheriv (scr_cipher.c) */ \
+  X(DGRAM_SOCKET, 62) /* dgram.Socket (scr_dgram.c) */ \
   X(DIR, 44) /* fs.Dir (scr_lib.c) */ \
   X(DISPOSABLE_STACK, 49) /* DisposableStack (scr_symbol.c) */ \
+  X(ECDH, 64) /* node:crypto ECDH (scr_ecdh.c) */ \
   X(EVENT, 14) /* ScrEvent — new Event() and AbortSignal's abort events */ \
   X(EVENT_TARGET, 39) /* ScrEventTarget — new EventTarget() */ \
   X(FETCH_HEADERS, 13) /* native static-fetch response Headers */ \
@@ -370,6 +372,13 @@ struct ScrDyn {
        * clear it before release, so freelist reuse never sees it. */
       const char *class_name;
       struct ScrDynRegion *region; /* see ScrDynRegion */
+      /* The dynamic tier's hidden class (scr_js_object.c): the transition
+       * tree node naming this object's key sequence, or NULL while it has
+       * none. Only programs with dynamic-tier code read or maintain it:
+       * their runtime is built with SCR_JS_TIER, where every allocation and
+       * every change to the key set resets it. Other programs never look
+       * at it, so it may hold anything there. */
+      struct ScrJsShape *shape;
     } obj; /* owned */
     /* SCR_DYN_FUNC: the boxed closure (owned) + its call descriptor. `sig`
      * and `name` are static compiler-emitted literals (never freed); name
@@ -439,6 +448,9 @@ _Static_assert(offsetof(ScrDyn, v.typed_ref.type_key) == 16 + 3 * sizeof(void *)
 _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref) &&
                sizeof(((ScrDyn *)0)->v.obj) <= sizeof(((ScrDyn *)0)->v.typed_ref),
                "dyn region links must not grow the node");
+/* Dynamic-tier inline caches read the shape word in place (64-bit). */
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.shape) == 80, "v.obj.shape offset");
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.region) == 72, "v.obj.region offset");
 
 /* ── intact parse regions ─────────────────────────────────────────────
  * Every heap dyn node carries a cycle header, so an ordinary release that
@@ -722,6 +734,9 @@ bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);
 ScrDyn *scr_dyn_iterator(const ScrDyn *value, const ScrStr *spell);
+/* for await over a checked-dynamic value (scr_dyn_for_await.c). */
+ScrDyn *scr_dyn_async_iterator_open(ScrDyn *value, ScrStr *spell);
+bool scr_dyn_async_iterator_was_sync(void);
 ScrDyn *scr_dyn_iterator_optional(const ScrDyn *value);
 /* from.js's probe: 2 when value[Symbol.asyncIterator] is set, 1 when
  * value[Symbol.iterator] is, 0 for neither, -1 with an error pending. */
@@ -732,6 +747,10 @@ int scr_dyn_iterable_kind(const ScrDyn *value);
  * with *kind -1 and the error pending (also for a compiled generator,
  * which only typed code can step). */
 ScrDyn *scr_dyn_from_iterator(const ScrDyn *value, int *kind);
+/* scr_dyn_from_iterator, also answering a compiled generator the method
+ * returns when `generators` is set (for await steps it through its
+ * checked-dynamic next/return members). */
+ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators);
 /* One field of an iterator result object (value, done), read the way the
  * for-of protocol reads it. +1, or NULL with the error pending. */
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
@@ -1134,6 +1153,10 @@ bool scr_dyn_strict_eq(const ScrDyn *a, const ScrDyn *b);
  * result owned (+1). MAY THROW (NULL with the exception pending). */
 ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method);
 ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* scr_dyn_invoke_prepared for the fixed-width Buffer read/write method names
+ * (scr_bytes_dyn.c): a Buffer receiver runs the method, any other takes the
+ * ordinary dispatch. */
+ScrDyn *scr_dyn_invoke_buffer_num(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
 /* Keyed read on a FUNC node: the own-property table first (defineProperties
  * writes land there), then "name" (the box's best-effort static name; ""
@@ -1525,5 +1548,18 @@ void scr_dyn_trace_v(void *d, ScrTraceVisit visit, void *ctx);
 #ifdef SCR_RC_AUDIT
 long scr_dyn_live_count(void);
 #endif
+
+/* Checked-object primitives the dynamic tier's shapes and caches build on
+ * (scr_js_object.c). They exist only in the SCR_JS_TIER build of
+ * scr_json.c, which programs with dynamic-tier code link. */
+/* The builtin Object.prototype node, or NULL before its first use. */
+const ScrDyn *scr_dyn_tier_object_prototype(void);
+/* Shared key bytes for `key` (+1, NUL-terminated), and their release. */
+char *scr_dyn_tier_key_copy(const char *key, size_t key_len);
+void scr_dyn_tier_key_release(char *key, size_t key_len);
+/* Appends an own data property (writable, enumerable, configurable) that
+ * `obj` does not have, sharing `key`'s bytes and taking ownership of
+ * `value`, exactly as an ordinary insertion would; leaves the shape reset. */
+void scr_dyn_tier_append(ScrDyn *obj, char *key, size_t key_len, ScrDyn *value);
 
 #endif /* SCR_DYN_H */
