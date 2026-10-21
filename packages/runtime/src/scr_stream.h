@@ -48,6 +48,13 @@ typedef struct ScrStream {
   ScrStreamState *st;
 } ScrStream;
 
+/* The vtable of an object boxed as an "object:" typed ref, which may be any
+ * program class instance: NULL for one with a class id in its rc word
+ * (scr_rc.h), which has no vtable word and is no stream. */
+static inline const ScrVt *scr_stream_vt_of(const ScrStream *s) {
+  return scr_rc_class_id(s) == 0 ? s->vt : NULL;
+}
+
 extern SCR_TL ScrVt scr_readable_vt, scr_writable_vt, scr_duplex_vt,
     scr_transform_vt, scr_passthrough_vt; /* main() stamps pre/post */
 
