@@ -9480,9 +9480,11 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
 
     // A CHECKED-DYNAMIC iterable (`unknown[]`, the collapsed
     // `(string | object)[]`, JSON-parsed values): a checked IteratorRecord
-    // binds each yielded dyn value.
+    // binds each yielded dyn value. Under `for await` (a JavaScript array
+    // literal mixing promises and plain values) the async-from-sync rules
+    // await each value.
     if (iterable.type.kind === "dyn") {
-      return lowerForOfDyn(lowerer, stmt, iterable, labels);
+      return lowerForOfDyn(lowerer, stmt, iterable, labels, stmt.awaitModifier !== undefined);
     }
     if (tupleSource === null) {
       lowerer.badType(stmt.expression, lowerer.typeOf(stmt.expression));
