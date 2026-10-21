@@ -3139,6 +3139,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * scandir failure becomes its rejection. */
   "fsp.readdirTypes": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
   "fsp.rm": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
+  /** `fs.promises.rm(path, options)`: fs.rmOptsSync and fs.rmRetrySync
+   * behind a settled promise; their errors become its rejection. */
+  "fsp.rmOpts": { argTypes: [STRING, BOOL, BOOL], result: { kind: "promise", inner: VOID } },
+  "fsp.rmRetry": {
+    argTypes: [STRING, BOOL, BOOL, F64, F64],
+    result: { kind: "promise", inner: VOID },
+  },
   "fsp.stat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
   "fsp.realpath": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
   "fsp.lstat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
@@ -4622,8 +4629,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * return value has no lowering (statement position only, frontend-
    * fenced). rmOptsSync is rmSync with (recursive, force) bools: force
    * swallows ENOENT, recursive removes trees post-order, a directory
-   * without recursive throws the EISDIR-worded error (divergence 13's
-   * wording note). mkdtempSync appends the six X's and returns the
+   * without recursive throws Node's ERR_FS_EISDIR SystemError. mkdtempSync appends the six X's and returns the
    * created path (+1). accessSync takes the F_OK/R_OK/W_OK/X_OK bits as
    * one f64 (the frontend bakes fs.constants.* as literals and completes
    * an omitted mode to 0). readFdSync/readFdSyncBytes are the
@@ -4634,7 +4640,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** rmOptsSync's maxRetries/retryDelay form (path, recursive, force,
    * maxRetries, retryDelay): Node's linear-backoff retry on
    * EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM — the tmpdir-harness shape
-   * rmSync(p, { maxRetries: 3, recursive: true, force: true }). */
+   * rmSync(p, { maxRetries: 3, recursive: true, force: true }). Throws
+   * ERR_OUT_OF_RANGE for a retryDelay outside int32 >= 0 or a maxRetries
+   * outside uint32, before checking the path. */
   "fs.rmRetrySync": { argTypes: [STRING, BOOL, BOOL, F64, F64], result: VOID },
   "fs.mkdtempSync": { argTypes: [STRING], result: STRING },
   "fs.accessSync": { argTypes: [STRING, F64], result: VOID },

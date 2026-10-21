@@ -793,6 +793,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fsp.rename": "scr_fsp_rename",
   "fsp.readdir": "scr_fsp_readdir",
   "fsp.rm": "scr_fsp_rm",
+  "fsp.rmOpts": "scr_fsp_rm_opts",
+  "fsp.rmRetry": "scr_fsp_rm_opts_retry",
   "fsp.stat": "scr_fsp_stat",
   "fsp.realpath": "scr_fsp_realpath",
   "fsp.lstat": "scr_fsp_lstat",
