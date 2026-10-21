@@ -4877,12 +4877,14 @@ const TLS_VALIDATED_OPTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /** True when a literal options bag must ride the runtime walker: JS uses
- * it for the typed TLS validation ladders, and HTTPS uses it for
+ * it for the typed TLS validation ladders, HTTPS uses it for
  * keepAliveTimeoutBuffer so the HTTP option is consumed without losing
- * the literal's evaluation order. */
+ * the literal's evaluation order, and `runtimeKeys` names options only the
+ * runtime walk implements (tls.createServer's ALPNProtocols). */
 function tlsLiteralNeedsRuntimeWalk(
   node: ts.ObjectLiteralExpression,
   includeHttpTimeoutOptions = false,
+  runtimeKeys: ReadonlySet<string> = new Set(),
 ): boolean {
   const jsSource = isJsSourceFile(ts.getSourceFileOfNode(node));
   return node.properties.nodes.some(
@@ -4890,19 +4892,29 @@ function tlsLiteralNeedsRuntimeWalk(
       (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
       (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
       ((includeHttpTimeoutOptions && p.name.text === "keepAliveTimeoutBuffer") ||
+        runtimeKeys.has(p.name.text) ||
         (jsSource && TLS_VALIDATED_OPTIONS.has(p.name.text))),
   );
 }
+
+/** tls.createServer options the runtime walk implements and the literal
+ * cert/key lowering does not. */
+const TLS_SERVER_RUNTIME_OPTIONS: ReadonlySet<string> = new Set([
+  "ALPNProtocols",
+  "minVersion",
+  "maxVersion",
+]);
 
 function lowerTlsServerOptionsOrDyn(
   lowerer: Lowerer,
   node: ts.Expression,
   what: string,
   includeHttpTimeoutOptions = false,
+  runtimeKeys: ReadonlySet<string> = new Set(),
 ): { cert: IrExpr; key: IrExpr; dyn?: undefined } | { dyn: IrExpr } {
   if (
     ts.isObjectLiteralExpression(node) &&
-    !tlsLiteralNeedsRuntimeWalk(node, includeHttpTimeoutOptions)
+    !tlsLiteralNeedsRuntimeWalk(node, includeHttpTimeoutOptions, runtimeKeys)
   ) {
     return lowerTlsServerOptions(lowerer, node, what);
   }
@@ -4934,14 +4946,14 @@ function lowerTlsServerOptionsOrDyn(
  * connect(options[, cb]) and connect(port[, host][, options][, cb]) with
  * a RUNTIME options record (the checked-dynamic JS lane's shape — a dyn
  * value, or a record that converts): the runtime walk implements
- * port/host/rejectUnauthorized/ca/servername and throws the catchable
+ * port/host/rejectUnauthorized/ca/servername/ALPNProtocols/minVersion/maxVersion/timeout and throws the catchable
  * fence for other documented members (the divergence-66 stance). The
  * callback (and 'secureConnect'/'connect' listeners) fires
  * post-handshake — Node's secureConnect timing. */
 function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = expr.arguments.nodes;
   const FORMS_HINT =
-    "the supported forms are connect(options[, cb]) and connect(port[, host][, options][, cb]) — options implement port/host/rejectUnauthorized/ca/servername";
+    "the supported forms are connect(options[, cb]) and connect(port[, host][, options][, cb]) — options implement port/host/rejectUnauthorized/ca/servername/ALPNProtocols/minVersion/maxVersion/timeout";
   if (args.length < 1 || args.length > 4 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`tls.connect with ${args.length} arguments`, expr, FORMS_HINT);
   }
@@ -5060,7 +5072,13 @@ function lowerTlsModuleCall(
         "the supported form is createServer({ cert, key }, socket => ...)",
       );
     }
-    const opts = lowerTlsServerOptionsOrDyn(lowerer, args[0]!, "tls.createServer");
+    const opts = lowerTlsServerOptionsOrDyn(
+      lowerer,
+      args[0]!,
+      "tls.createServer",
+      false,
+      TLS_SERVER_RUNTIME_OPTIONS,
+    );
     if (args.length === 1) {
       return opts.dyn !== undefined
         ? { kind: "libCall", fn: "tls.createServerDyn", args: [opts.dyn], type: NETSERVER_T, loc }
