@@ -536,6 +536,29 @@ static void check_mixed_dead_structure_narrows(void) {
   check(live <= narrowed, "a pass that freed a dead mature and old structure did not narrow the growth fraction");
 }
 
+/* The phase sweep (scr_collect_cycles_phase) is for a caller that knows a
+ * phase's data has just died: it sweeps, and the growth schedule starts
+ * over. After passes that find nothing have widened the old level's
+ * fraction to the cap, the plain sweep leaves the next dead cycle to the
+ * cap, while after the phase sweep it goes once the heap has grown the base
+ * quarter past the floor. */
+static void check_phase_sweep_restarts_schedule(void) {
+  enum { FLOOR = 4096 };
+  size_t cap = configured_growth_cap();
+  if (cap < 2) return; /* the base fraction is already the cap */
+  size_t slack = 2 * configured_nursery_threshold() + 2;
+  size_t due = FLOOR + FLOOR * cap;
+  size_t live = 0;
+  for (int i = 0; i < 4; i++) live = grow_dead_cycle_until_full_pass(0, false);
+  check(live > due, "passes that found nothing did not widen the growth fraction to the cap");
+  scr_collect_cycles();
+  live = grow_dead_cycle_until_full_pass(0, false);
+  check(live > due, "the plain sweep changed the growth schedule");
+  scr_collect_cycles_phase();
+  live = grow_dead_cycle_until_full_pass(0, false);
+  check(live <= FLOOR + FLOOR / 4 + slack, "the phase sweep did not restart the growth schedule");
+}
+
 static void check_deep_ring(void) {
   enum { DEPTH = 100000 };
   size_t before = freed;
@@ -1433,6 +1456,7 @@ int main(void) {
   check_growth_cap_bounds_floating_garbage();
   check_mixed_dead_structure_narrows();
   check_death_waits_for_idle();
+  check_phase_sweep_restarts_schedule();
   check_death_brings_full_pass();
   check_nursery_bypass();
   check_mature_bypass();

@@ -29,7 +29,6 @@ import {
   vAdapters,
 } from "./shapes.js";
 import { emitLlvmLayouts } from "./layouts.js";
-import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
 import { emitArraySearchHelpers } from "./array-search.js";
 import { emitClassMembershipHelper } from "./classes.js";
 import { type RegexMatcherCode, compileRegexMatcher } from "./regex-matchers.js";
@@ -138,7 +137,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // outlive the RC audit — release it with the globals (the runtime ABI’s
   // sc_release_globals tail). Only when the dispatch unit is even
   // linked (defineProps is the only writer).
-  const runtimeFeatures = moduleRuntimeFeatures(emitter.mod);
+  const runtimeFeatures = emitter.runtimeFeatures;
   const fnValueProps = [...emitter.fnValues];
   if (fnValueProps.length > 0) emitter.declare(`declare void @scr_box_release(ptr)`);
   if (emitter.classObjs.size > 0)

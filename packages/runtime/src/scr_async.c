@@ -2900,6 +2900,19 @@ ScrPromise *scr_fsp_rm(ScrStr *path) {
   return scr_promise_settled_void();
 }
 
+ScrPromise *scr_fsp_rm_opts(ScrStr *path, bool recursive, bool force) {
+  scr_fs_rm_opts(path, recursive, force);
+  return scr_promise_settled_void();
+}
+
+/* fs.promises.rm validates the path before its options, unlike rmSync. */
+ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries,
+                                  double retry_delay) {
+  if (scr_fs_path_ok(path, "path") && scr_fs_rm_retry_options_ok(max_retries, retry_delay))
+    scr_fs_rm_opts_retry(path, recursive, force, max_retries, retry_delay);
+  return scr_promise_settled_void();
+}
+
 ScrPromise *scr_fsp_stat(ScrStr *path) {
   ScrStats *st = scr_fs_stat(path);
   return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);

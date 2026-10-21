@@ -946,7 +946,10 @@ export function registerBuiltinErrorClasses(lowerer: Lowerer): void {
       throwingSetters: [],
       staticFields: [],
     };
-    if (base) base.subclasses.push(info);
+    if (base) {
+      base.subclasses.push(info);
+      lowerer.subclassLinks++;
+    }
     lowerer.classes.set(irName, info);
   }
 }
@@ -1026,7 +1029,10 @@ export function registerBuiltinStreamClasses(lowerer: Lowerer): void {
       throwingSetters: [],
       staticFields: [],
     };
-    if (base) base.subclasses.push(info);
+    if (base) {
+      base.subclasses.push(info);
+      lowerer.subclassLinks++;
+    }
     lowerer.classes.set(irName, info);
   }
 }
@@ -4471,7 +4477,10 @@ export function collectClassShapeInner(
       };
       lowerer.genericClassByDecl.set(decl, info.generic);
     }
-    if (base) base.subclasses.push(info);
+    if (base) {
+      base.subclasses.push(info);
+      lowerer.subclassLinks++;
+    }
     lowerer.classes.set(className, info);
     if (computedBase && !functionLocalClass(decl)) {
       info.def.baseValueGlobal = `%g.${className}.computedBase`;

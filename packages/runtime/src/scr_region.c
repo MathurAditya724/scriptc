@@ -1362,6 +1362,18 @@ static void scr_rgn_thread_exit(void) {
     ScrRegion *r = i < t->nregions ? t->regions[i] : all[0];
     if (!r) continue;
     scr_rgn_spare_drop(r);
+#if defined(SCR_WORKERS) && SCR_RGN_MMAP && !defined(SCR_RGN_POISON)
+    /* Nothing is carved here after a script thread exits: the pages faulted
+     * in ahead of each chunk's bump go back while the program goes on, and
+     * its objects stay. */
+    if (!scr_context_is_main())
+      for (ScrRgnChunk *c = r->chunks; c; c = c->next) {
+        /* 64 KiB steps cover every page size, as in scr_rgn_chunk_retire. */
+        char *from = (char *)(((uintptr_t)c->bump + 0xffff) & ~(uintptr_t)0xffff);
+        if (c->touched > from) scr_mem_release_ahead(from, c->touched);
+        c->touched = c->bump;
+      }
+#endif
     for (ScrRgnSeg *s = r->segs, *next; s; s = next) {
       next = s->next;
       free(s);

@@ -35,6 +35,7 @@ import {
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
+import { observeRecordLiteralRebuilds } from "../../ir/traverse.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import {
@@ -210,6 +211,7 @@ import type {
   IrLocal,
   IrModule,
   IrWasmModule,
+  IrWasmUntranslated,
   IrParam,
   IrRecordShape,
   IrStmt,
@@ -1210,17 +1212,28 @@ export function lowerToIr(
     });
   // A program that uses the WebAssembly API carries every module the build
   // can see and translate (wasm/translate.ts); the rest fail at run time
-  // with the CompileError for untranslated bytes.
+  // with a CompileError, which names the reason for the modules the build
+  // saw but does not translate.
   if (result.module !== null && resultLowerer.usesWebAssembly) {
     const bytesByHash = new Map<string, Uint8Array>();
     const reports = discoverModules((sha256, bytes) => bytesByHash.set(sha256, bytes));
     const wasmModules: IrWasmModule[] = [];
+    const wasmUntranslated: IrWasmUntranslated[] = [];
     for (const report of reports) {
       const bytes = bytesByHash.get(report.sha256);
-      if (report.status !== "valid" || bytes === undefined) continue;
-      wasmModules.push({ sha256: report.sha256, bytes: encodeBase64(bytes) });
+      if (bytes === undefined) continue;
+      if (report.status === "valid") {
+        wasmModules.push({ sha256: report.sha256, bytes: encodeBase64(bytes) });
+        continue;
+      }
+      const reason =
+        report.status === "unsupported"
+          ? `it uses ${report.unsupported.join(", ")}, outside the translated WebAssembly feature set`
+          : `it is not a valid module: ${report.error ?? report.status}`;
+      wasmUntranslated.push({ sha256: report.sha256, size: bytes.length, reason });
     }
     result.module.wasmModules = wasmModules;
+    result.module.wasmUntranslated = wasmUntranslated;
     if (resultLowerer.usesWasmCustomSections) result.module.wasmCustomSections = true;
     timing("wasm-discovery", { modules: wasmModules.length });
   }
@@ -3045,6 +3058,10 @@ export class Lowerer {
   // top level, top = the innermost nested function currently lowering).
   fnStack: FnCtx[] = [];
   readonly liftedFns: IrFunction[] = [];
+  /** The first lifted function of each name (liftedFnNamed), for the
+   * liftedFns indexed so far. liftedFns only grows. */
+  private readonly liftedFnsByName = new Map<string, IrFunction>();
+  private liftedFnsIndexed = 0;
   /** Runtime-provided classes used as values (defineClassValueConstruct),
    * by IR class name. */
   readonly runtimeClassValues = new Map<string, ClassInfo>();
@@ -3116,6 +3133,10 @@ export class Lowerer {
    * can contain any retained descendant, but importing its declaration
    * alone does not make every descendant constructible. */
   private constructedClasses: Set<string> | null = null;
+  /** Classes added to some ClassInfo's subclasses (lower-classes.ts). With
+   * the class and constructed-class counts, it tells caches over the class
+   * graph when the graph changed. */
+  subclassLinks = 0;
   /** Set while a subclass constructor's super() call notes its base
    * constructor edge: that edge does not instantiate the base exactly. */
   private superConstructorEdge = false;
@@ -3131,6 +3152,20 @@ export class Lowerer {
       info.genericInstance !== undefined ||
       info.mixinInstance !== undefined
     );
+  }
+  /** How many classes classCanBeConstructed admits by name, or -1 while
+   * it admits every class. The count only grows. */
+  constructedClassCount(): number {
+    return this.constructedClasses?.size ?? -1;
+  }
+  /** The first lifted function named `name`, the one
+   * `liftedFns.find((fn) => fn.name === name)` returns. */
+  liftedFnNamed(name: string | undefined): IrFunction | undefined {
+    for (; this.liftedFnsIndexed < this.liftedFns.length; this.liftedFnsIndexed++) {
+      const fn = this.liftedFns[this.liftedFnsIndexed]!;
+      if (!this.liftedFnsByName.has(fn.name)) this.liftedFnsByName.set(fn.name, fn);
+    }
+    return name === undefined ? undefined : this.liftedFnsByName.get(name);
   }
   /** Coverage remainder mode: the reachability gate inverts (see wantBody)
    * and no module is built. */
@@ -7411,6 +7446,10 @@ export class Lowerer {
    * body; both fire edges through the same hooks and are not units
    * themselves. */
   emitReachable(extraRoots?: readonly string[]): { reachable: Set<string>; result: LowerResult } {
+    // Frontend passes below rewrite function bodies through the IR mapper
+    // (caught-value and class dispatch); key-order notes follow the record
+    // literals they rebuild until the witness pass has read them.
+    observeRecordLiteralRebuilds((from, to) => this.keyOrder.follow(from, to));
     this.deferredModuleInitializers = new DeferredModuleInitializers();
     const parts = this.splitFiles();
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
@@ -7841,6 +7880,7 @@ export class Lowerer {
       ...this.liftedFns,
       ...this.implicitFns,
     ]);
+    observeRecordLiteralRebuilds(null);
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     const functions = [
       ...orderedUnits,

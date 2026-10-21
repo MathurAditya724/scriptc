@@ -4329,7 +4329,7 @@ ScrDyn *scr_net_block_list_private_ranges(void) {
                                          "::1/128", "169.254.0.0/16", "fe80::/10", "fc00::/7" };
     ScrDyn *arr = scr_dyn_new_arr();
     for (size_t i = 0; i < sizeof cidrs / sizeof cidrs[0]; i++) scr_dyn_arr_push(arr, scr_net_dyn_str(cidrs[i]));
-    ranges = scr_dyn_freeze(arr); /* +1 on the same array */
+    ranges = scr_dyn_freeze_data(arr); /* +1 on the same array */
     scr_dyn_release(arr);
     scr_net_private_ranges = ranges;
     scr_atexit(scr_net_private_ranges_cleanup);

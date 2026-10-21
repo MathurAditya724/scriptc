@@ -1759,10 +1759,14 @@ static __attribute__((noinline)) size_t scr_byte_to_u16_walk(const ScrStr *s, Sc
 }
 
 /* ECMA-262 ToIntegerOrInfinity for a double already known to be a Number:
- * NaN → +0, otherwise truncate toward zero, ±Infinity preserved. */
-static double scr_to_integer_or_infinity(double x) {
-  if (isnan(x)) return 0.0;
-  return trunc(x);
+ * NaN → +0, otherwise truncate toward zero, ±Infinity preserved. Inside
+ * (-2^63, 2^63) the integer conversion truncates, without the libm trunc
+ * call baseline x86-64 needs; a fraction above -1 gives +0, as the spec's
+ * mathematical result does. Every double outside that range is already an
+ * integer or infinite, and NaN fails both comparisons. */
+static inline double scr_to_integer_or_infinity(double x) {
+  if (x > -9223372036854775808.0 && x < 9223372036854775808.0) return (double)(int64_t)x;
+  return isnan(x) ? 0.0 : x;
 }
 
 /* Byte substring search (needle and hay are both canonical WTF-8,
