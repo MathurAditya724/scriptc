@@ -57,6 +57,15 @@ static SCR_TL uint64_t scr_channel_poll_gen;
 /* the loop pass continues a phase (scr_channel_more answered true) */
 static SCR_TL bool scr_channel_continuing;
 static SCR_TL bool scr_channel_closing_phase;
+/* Messages from the thread's workers and its parent are delivered in
+ * batches, as Node's MessagePort delivers them: one callback takes the
+ * messages queued when it starts, and those that arrive meanwhile until it
+ * has taken SCR_WORKER_BATCH_MIN, with a microtask checkpoint after each,
+ * before the loop goes on to timers and immediates. A delivered message
+ * starts a batch; the loop pass continues it (scr_workers_more) while the
+ * next event is a message and the batch has room. */
+#define SCR_WORKER_BATCH_MIN 1000
+static SCR_TL size_t scr_worker_batch_left;
 static const char *const scr_worker_method_names[] = {
   "ref", "unref", "hasRef", "terminate", "postMessage", "on", "once", "addListener",
   "prependListener", "prependOnceListener", "off", "removeListener", "removeAllListeners",
@@ -700,6 +709,14 @@ static bool scr_channel_more(void) {
   return more;
 }
 
+static bool scr_workers_more(void) {
+  if (scr_channel_more()) return true;
+  if (scr_worker_batch_left == 0) return false;
+  if (scr_worker_events && scr_mailbox_head_kind(scr_worker_events) == SCR_WORKER_MESSAGE) return true;
+  scr_worker_batch_left = 0;
+  return false;
+}
+
 static void scr_worker_dispatch(void) {
   if (scr_channel_dispatch()) return;
   ScrWorkerView *port = scr_worker_port;
@@ -718,7 +735,16 @@ static void scr_worker_dispatch(void) {
     port->queued_head = event->next;
     if (!port->queued_head) port->queued_tail = NULL;
     event->next = NULL;
-  } else event = scr_mailbox_take(scr_worker_events);
+  } else {
+    event = scr_mailbox_take(scr_worker_events);
+    if (event && event->kind == SCR_WORKER_MESSAGE) {
+      if (scr_worker_batch_left == 0) {
+        size_t queued = 1 + scr_mailbox_count_kind(scr_worker_events, SCR_WORKER_MESSAGE);
+        scr_worker_batch_left = queued > SCR_WORKER_BATCH_MIN ? queued : SCR_WORKER_BATCH_MIN;
+      }
+      scr_worker_batch_left--;
+    }
+  }
   if (!event) return;
   if (event->kind == SCR_WORKER_WAKE) { scr_mail_event_free(event); return; }
   if (event->kind == SCR_WORKER_STDIN) {
@@ -869,7 +895,7 @@ static bool scr_worker_events_install(void) {
   if (scr_context_atexit(scr_worker_events_cleanup) != 0) scr_trap("scriptc: out of memory\n");
   scr_loop_set_workers(scr_workers_pending, scr_worker_events_ready, scr_worker_dispatch,
     scr_worker_events_pollfd, scr_worker_events_wait);
-  scr_loop_set_workers_more(scr_channel_more);
+  scr_loop_set_workers_more(scr_workers_more);
   return true;
 }
 

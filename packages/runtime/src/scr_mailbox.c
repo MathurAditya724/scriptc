@@ -226,6 +226,21 @@ bool scr_mailbox_pending(ScrMailbox *mailbox) {
   return pending;
 }
 
+unsigned scr_mailbox_head_kind(ScrMailbox *mailbox) {
+  scr_mailbox_lock(mailbox);
+  unsigned kind = mailbox->head ? mailbox->head->kind : 0;
+  scr_mailbox_unlock(mailbox);
+  return kind;
+}
+
+size_t scr_mailbox_count_kind(ScrMailbox *mailbox, unsigned kind) {
+  scr_mailbox_lock(mailbox);
+  size_t count = 0;
+  for (ScrMailEvent *event = mailbox->head; event; event = event->next) count += event->kind == kind;
+  scr_mailbox_unlock(mailbox);
+  return count;
+}
+
 /* A taker that finds the mailbox empty spins this long before it blocks.
  * Replies between threads usually arrive within a few microseconds, and a
  * blocked taker pays a sleep and a wakeup for each one. */
