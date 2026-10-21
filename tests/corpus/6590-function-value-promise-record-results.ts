@@ -1,6 +1,7 @@
 // Function values assigned into slots whose signatures are structurally
 // compatible but differently shaped: Promise-wrapped record results with
-// extra, optional and nested members, and record parameters.
+// extra, optional and nested members, record parameters, and a union of
+// record results converted into one record slot.
 interface Deployment {
   id: string;
   meta?: { region: string; tags?: string[] };
@@ -77,4 +78,15 @@ async function timing(): Promise<void> {
     console.log("rejected", e instanceof Error ? e.message : String(e));
   }
 }
-main().then(timing);
+interface Probe {
+  ok: boolean;
+  size?: number;
+}
+function probe(flag: boolean) {
+  return flag ? { ok: true, size: 3 } : { ok: false };
+}
+function probes(): void {
+  const check: (flag: boolean) => Probe = probe;
+  console.log(JSON.stringify(check(true)), JSON.stringify(check(false)));
+}
+main().then(timing).then(probes);

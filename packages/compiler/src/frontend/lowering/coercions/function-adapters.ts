@@ -13,6 +13,7 @@ import {
   UNDEFINED_T,
 } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
+import { newFnCtx } from "../function-context.js";
 import type { Lowerer } from "../lowerer.js";
 import { maybePromiseUnionOf } from "../maybe-promise.js";
 
@@ -394,95 +395,107 @@ export function funcCoerceAdapter(
     },
     loc,
   });
+  // The body lowers in the adapter's own function context: conversions
+  // that need scratch locals (a union of record results lifted into one
+  // record slot) declare them in the adapter, not in the function that
+  // asked for it.
+  const context = newFnCtx(false, null, null, toT.ret);
   let body: IrStmt[];
-  if (strandParams) {
-    body = [
-      strandThrow(
-        `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
-      ),
-    ];
-  } else {
-    const args = fromT.params.map((pt, i) => {
-      const aRef: IrExpr = { kind: "varRef", localId: `a.${i}`, type: toT.params[i]!, loc };
-      const partial = partialDynParams.get(i);
-      if (partial && aRef.type.kind === "union") {
-        const source = lowerer.unions.get(aRef.type.unionId)!;
-        const supported =
-          partial.kind === "union" ? lowerer.unions.get(partial.unionId)!.arms : [partial];
-        const rejected = new Set(
-          source.arms.flatMap((arm, tag) =>
-            supported.some((accepted) => typeEquals(accepted, arm)) ? [] : [tag],
-          ),
-        );
-        const narrow =
-          partial.kind === "union"
-            ? lowerer.unionRetagHelper(aRef.type.unionId, partial.unionId, loc, rejected)
-            : lowerer.narrowedArmHelper(aRef.type.unionId, partial, loc);
-        if (!narrow)
-          throw new InternalCompilerError(
-            "lowerer bug: partial callable parameter stopped narrowing",
-          );
-        return lowerer.coerceToExpected(
-          { kind: "call", callee: narrow, args: [aRef], type: partial, loc },
-          pt,
-        );
-      }
-      const narrowed = narrowedParams.get(i);
-      const helper =
-        narrowed && aRef.type.kind === "union" && pt.kind === "union"
-          ? lowerer.unionRetagHelper(aRef.type.unionId, pt.unionId, loc, narrowed)
-          : null;
-      const converted: IrExpr = helper
-        ? { kind: "call", callee: helper, args: [aRef], type: pt, loc }
-        : lowerer.coerceToExpected(aRef, pt);
-      if (!typeEquals(converted.type, pt))
-        throw new InternalCompilerError("lowerer bug: probed fn-adapter param stopped coercing");
-      return converted;
-    });
-    const call: IrExpr = {
-      kind: "callValue",
-      callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
-      receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
-      args,
-      type: fromT.ret,
-      loc,
-    };
-    if (toT.ret.kind === "void") {
+  lowerer.fnStack.push(context);
+  try {
+    if (strandParams) {
       body = [
-        { kind: "exprStmt", expr: call, loc },
-        { kind: "return", value: null, loc },
-      ];
-    } else if (voidRet === "dyn") {
-      body = [
-        { kind: "exprStmt", expr: call, loc },
-        { kind: "return", value: dynUndefinedExpr(loc), loc },
-      ];
-    } else if (voidRet === "strand") {
-      body = [
-        { kind: "exprStmt", expr: call, loc },
         strandThrow(
-          `a void result where the '${lowerer.fmt(toT)}' slot promises '${lowerer.fmt(toT.ret)}' (a thrower typed 'never' never reaches this; a genuinely void function has no result to hand over)`,
+          `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
         ),
-      ];
-    } else if (strandRet) {
-      body = [
-        { kind: "exprStmt", expr: call, loc },
-        strandThrow(
-          `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the result cannot convert to '${lowerer.fmt(toT.ret)}' — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
-        ),
-      ];
-    } else if (checkedRet) {
-      body = [
-        { kind: "return", value: { kind: "dynCheck", value: call, type: toT.ret, loc }, loc },
       ];
     } else {
-      const result = lowerer.coerceToExpected(call, toT.ret);
-      if (!typeEquals(result.type, toT.ret))
-        throw new InternalCompilerError("lowerer bug: probed fn-adapter return stopped coercing");
-      body = [{ kind: "return", value: result, loc }];
+      const args = fromT.params.map((pt, i) => {
+        const aRef: IrExpr = { kind: "varRef", localId: `a.${i}`, type: toT.params[i]!, loc };
+        const partial = partialDynParams.get(i);
+        if (partial && aRef.type.kind === "union") {
+          const source = lowerer.unions.get(aRef.type.unionId)!;
+          const supported =
+            partial.kind === "union" ? lowerer.unions.get(partial.unionId)!.arms : [partial];
+          const rejected = new Set(
+            source.arms.flatMap((arm, tag) =>
+              supported.some((accepted) => typeEquals(accepted, arm)) ? [] : [tag],
+            ),
+          );
+          const narrow =
+            partial.kind === "union"
+              ? lowerer.unionRetagHelper(aRef.type.unionId, partial.unionId, loc, rejected)
+              : lowerer.narrowedArmHelper(aRef.type.unionId, partial, loc);
+          if (!narrow)
+            throw new InternalCompilerError(
+              "lowerer bug: partial callable parameter stopped narrowing",
+            );
+          return lowerer.coerceToExpected(
+            { kind: "call", callee: narrow, args: [aRef], type: partial, loc },
+            pt,
+          );
+        }
+        const narrowed = narrowedParams.get(i);
+        const helper =
+          narrowed && aRef.type.kind === "union" && pt.kind === "union"
+            ? lowerer.unionRetagHelper(aRef.type.unionId, pt.unionId, loc, narrowed)
+            : null;
+        const converted: IrExpr = helper
+          ? { kind: "call", callee: helper, args: [aRef], type: pt, loc }
+          : lowerer.coerceToExpected(aRef, pt);
+        if (!typeEquals(converted.type, pt))
+          throw new InternalCompilerError("lowerer bug: probed fn-adapter param stopped coercing");
+        return converted;
+      });
+      const call: IrExpr = {
+        kind: "callValue",
+        callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+        receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+        args,
+        type: fromT.ret,
+        loc,
+      };
+      if (toT.ret.kind === "void") {
+        body = [
+          { kind: "exprStmt", expr: call, loc },
+          { kind: "return", value: null, loc },
+        ];
+      } else if (voidRet === "dyn") {
+        body = [
+          { kind: "exprStmt", expr: call, loc },
+          { kind: "return", value: dynUndefinedExpr(loc), loc },
+        ];
+      } else if (voidRet === "strand") {
+        body = [
+          { kind: "exprStmt", expr: call, loc },
+          strandThrow(
+            `a void result where the '${lowerer.fmt(toT)}' slot promises '${lowerer.fmt(toT.ret)}' (a thrower typed 'never' never reaches this; a genuinely void function has no result to hand over)`,
+          ),
+        ];
+      } else if (strandRet) {
+        body = [
+          { kind: "exprStmt", expr: call, loc },
+          strandThrow(
+            `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the result cannot convert to '${lowerer.fmt(toT.ret)}' — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
+          ),
+        ];
+      } else if (checkedRet) {
+        body = [
+          { kind: "return", value: { kind: "dynCheck", value: call, type: toT.ret, loc }, loc },
+        ];
+      } else {
+        const result = lowerer.coerceToExpected(call, toT.ret);
+        if (!typeEquals(result.type, toT.ret))
+          throw new InternalCompilerError("lowerer bug: probed fn-adapter return stopped coercing");
+        body = [{ kind: "return", value: result, loc }];
+      }
     }
+  } finally {
+    lowerer.fnStack.pop();
   }
-  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  lowerer.liftedFns.push(
+    ...buildFunctionAdapter(name, fromT, toT, params, context.locals, body, loc),
+  );
   return name;
 }
 
