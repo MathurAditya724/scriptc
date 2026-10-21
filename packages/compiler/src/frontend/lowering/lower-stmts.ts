@@ -11620,21 +11620,23 @@ function lowerForInArray(
       loc,
     });
     // Indices first, then the named keys the array had when the loop began.
+    const namedKey = (): IrExpr => ({
+      kind: "arrayGet",
+      arr: keysRef(),
+      index: { kind: "bin", op: "-", left: iRef(), right: lenRef(), type: F64, loc },
+      type: STRING,
+      loc,
+    });
     const keyInit: IrExpr = {
       kind: "ternary",
       cond: isIndex(),
       then: { kind: "toString", operand: iRef(), type: STRING, loc },
-      else_: {
-        kind: "arrayGet",
-        arr: keysRef(),
-        index: { kind: "bin", op: "-", left: iRef(), right: lenRef(), type: F64, loc },
-        type: STRING,
-        loc,
-      },
+      else_: namedKey(),
       type: STRING,
       loc,
     };
-    // An index is visited while it is below the live length and not a hole.
+    // An index is visited while it is below the live length and not a hole,
+    // a named key while the array still has it.
     const visits: IrExpr = {
       kind: "ternary",
       cond: isIndex(),
@@ -11653,7 +11655,13 @@ function lowerForInArray(
         type: BOOL,
         loc,
       },
-      else_: { kind: "boolLit", value: true, type: BOOL, loc },
+      else_: {
+        kind: "libCall",
+        fn: "array.hasNamedKey",
+        args: [arrRef(), namedKey()],
+        type: BOOL,
+        loc,
+      },
       type: BOOL,
       loc,
     };

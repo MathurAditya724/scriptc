@@ -77,3 +77,20 @@ for (const key in shrinking) {
 
 const match = /b(?<rest>c)?/.exec("abc");
 if (match) for (const key in match) console.log("match key", key);
+
+// A numeric property deleted through a view is gone from the array.
+const numeric: number[] = [1, 2];
+numeric[-1] = 5;
+delete (numeric as unknown as Bag)["-1"];
+console.log(numeric[-1], "-1" in (numeric as unknown as Bag));
+for (const key in numeric) console.log("numeric key", key);
+
+// A named key deleted before its turn is not visited.
+const visited: number[] = [1];
+(visited as unknown as Bag).first = 1;
+(visited as unknown as Bag).second = 2;
+(visited as unknown as Bag).third = 3;
+for (const key in visited) {
+  console.log("visited key", key);
+  if (key === "first") delete (visited as unknown as Bag).second;
+}

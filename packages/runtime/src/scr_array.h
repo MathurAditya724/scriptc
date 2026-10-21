@@ -322,6 +322,13 @@ void scr_arr_copy_metadata(ScrArr *a, struct ScrDyn *target);
  * (non-index) properties as its metadata and the noncanonical numeric
  * properties of `target`, so neither is lost when the storage is swapped. */
 void scr_arr_adopt_view_properties(ScrArr *a, struct ScrDyn *view, ScrArr *target);
+/* True when `key` is the string spelling of a number that is not an array
+ * index ("-1", "1.5", "NaN", "Infinity"), with the number in *out. Arrays
+ * keep such properties in their noncanonical property table. */
+bool scr_arr_numeric_key(const char *key, size_t len, double *out);
+/* Whether the array still has the named or noncanonical numeric property
+ * `key`: `for...in` skips a key deleted before its turn. Borrows both. */
+bool scr_arr_has_named_key(ScrArr *a, ScrStr *key);
 /* The enumerable string keys `for...in` visits after the indices: the
  * noncanonical numeric properties, then the named properties in insertion
  * order. +1. */

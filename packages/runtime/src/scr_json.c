@@ -10270,9 +10270,17 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
     return;
   }
   /* A live native array keeps its named properties in its metadata, so
-   * deleting one goes through the view and its commit. Elements and
-   * `length` keep the boundary below. */
+   * deleting one goes through the view and its commit. Numeric properties
+   * are deleted natively. Elements and `length` keep the boundary below. */
   size_t element;
+  double number;
+  if (recv->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(recv) &&
+      scr_arr_numeric_key(key->data, key->len, &number)) {
+    /* Noncanonical numeric properties ("-1", "1.5") live in the native
+     * array's property table. */
+    scr_arr_delete(recv->v.typed_ref.ptr, number);
+    return;
+  }
   if (recv->kind == SCR_DYN_TYPED_REF && recv->v.typed_ref.commit && scr_dyn_typed_ref_array_ops(recv) &&
       !scr_typed_ref_is_length(key) && !scr_typed_ref_canonical_index(key->data, key->len, &element)) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(recv);

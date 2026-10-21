@@ -4790,6 +4790,22 @@ ScrStr *scr_str_raw(ScrArr *raw, ScrArr *subs) {
   return out;
 }
 
+bool scr_arr_numeric_key(const char *key, size_t len, double *out) {
+  char text[64];
+  if (len == 0 || len >= sizeof text) return false;
+  memcpy(text, key, len);
+  text[len] = '\0';
+  char *end;
+  double number = strtod(text, &end);
+  if (end != text + len) return false;
+  char spelled[64];
+  if (scr_f64_to_str(number, spelled) != len || memcmp(spelled, key, len) != 0) return false;
+  size_t index;
+  if (scr_arr_valid_index(number, &index)) return false;
+  *out = number;
+  return true;
+}
+
 void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
   const ScrDyn *metadata = SCR_AX(a)->metadata;
   if (metadata && metadata->kind == SCR_DYN_HANDLE && metadata->v.handle.tag == SCR_DYNH_MATCH_SOURCE &&
@@ -4836,6 +4852,21 @@ ScrArr *scr_arr_named_keys(ScrArr *a) {
     scr_arr_push_ref(keys, scr_str_new(entry->key, entry->key_len));
   }
   return keys;
+}
+
+bool scr_arr_has_named_key(ScrArr *a, ScrStr *key) {
+  const ScrArrExt *x = scr_arr_ext_of(a);
+  if (!x) return false;
+  if (scr_arr_prop_index(a, key->data, key->len) != SIZE_MAX) return true;
+  const ScrDyn *metadata = x->metadata;
+  if (metadata && metadata->kind == SCR_DYN_HANDLE && metadata->v.handle.tag == SCR_DYNH_MATCH_SOURCE)
+    return true; /* index, input and groups, the only keys a pending result lists */
+  if (!metadata || metadata->kind != SCR_DYN_OBJ) return false;
+  for (size_t i = 0; i < metadata->v.obj.len; i++) {
+    const ScrDynEntry *entry = &metadata->v.obj.entries[i];
+    if (entry->key_len == key->len && memcmp(entry->key, key->data, key->len) == 0) return true;
+  }
+  return false;
 }
 
 void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
