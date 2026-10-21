@@ -12,7 +12,7 @@ Statuses are evidence-aware: `supported` and `partial` require test evidence; `r
 
 Run `pnpm node-compat:backlog` from the repository root for a summary. The filters `--tier`, `--action`, `--priority`, `--chapter`, and `--status` compose; use `--format=json` or `--format=tsv` for tooling.
 
-Run `pnpm node-compat` from the repository root after changing the Node pin or the support manifest. `pnpm node-compat:check` is the offline drift/evidence gate; `pnpm --filter @internal/compatibility check:upstream` additionally verifies the pinned upstream inputs over the network.
+Run `pnpm node-compat` from the repository root after changing the Node pin or the support manifest. `pnpm node-compat --local` does the same without network access while the pin is unchanged, by reclassifying the committed ledger rows; after a merge, `node scripts/regen-generated.mjs` regenerates every generated file instead of a hand merge. `pnpm node-compat:check` is the offline drift/evidence gate; `pnpm --filter @internal/compatibility check:upstream` additionally verifies the pinned upstream inputs over the network.
 
 ## npm packages that compile as builtins
 
