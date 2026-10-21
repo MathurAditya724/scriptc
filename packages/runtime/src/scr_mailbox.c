@@ -25,11 +25,15 @@
 #endif
 #endif
 
+/* Event kinds below this have their queued events counted (scr_mailbox_count_kind). */
+#define SCR_MAILBOX_COUNTED_KINDS 16u
+
 struct ScrMailbox {
   atomic_size_t references;
   ScrMailEvent *head;
   ScrMailEvent **tail;
   bool closed;
+  size_t queued[SCR_MAILBOX_COUNTED_KINDS]; /* under the lock */
   /* head != NULL || closed, written under the lock, read without it by
    * scr_mailbox_wait's spin. */
   atomic_bool ready;
@@ -167,6 +171,7 @@ bool scr_mailbox_post(ScrMailbox *mailbox, ScrMailEvent *event) {
   event->next = NULL;
   *mailbox->tail = event;
   mailbox->tail = &event->next;
+  if (event->kind < SCR_MAILBOX_COUNTED_KINDS) mailbox->queued[event->kind]++;
   atomic_store_explicit(&mailbox->ready, true, memory_order_release);
   scr_mailbox_unlock(mailbox);
   /* Signaled after the unlock: a woken or spinning taker then finds the
@@ -182,6 +187,7 @@ ScrMailEvent *scr_mailbox_take(ScrMailbox *mailbox) {
   if (event) {
     mailbox->head = event->next;
     event->next = NULL;
+    if (event->kind < SCR_MAILBOX_COUNTED_KINDS) mailbox->queued[event->kind]--;
   }
   if (!mailbox->head) {
     mailbox->tail = &mailbox->head;
@@ -201,6 +207,7 @@ ScrMailEvent *scr_mailbox_take_kind(ScrMailbox *mailbox, unsigned kind, uint64_t
     *slot = event->next;
     if (mailbox->tail == &event->next) mailbox->tail = slot;
     event->next = NULL;
+    if (event->kind < SCR_MAILBOX_COUNTED_KINDS) mailbox->queued[event->kind]--;
   }
   if (!mailbox->head) {
     mailbox->tail = &mailbox->head;
@@ -235,8 +242,7 @@ unsigned scr_mailbox_head_kind(ScrMailbox *mailbox) {
 
 size_t scr_mailbox_count_kind(ScrMailbox *mailbox, unsigned kind) {
   scr_mailbox_lock(mailbox);
-  size_t count = 0;
-  for (ScrMailEvent *event = mailbox->head; event; event = event->next) count += event->kind == kind;
+  size_t count = kind < SCR_MAILBOX_COUNTED_KINDS ? mailbox->queued[kind] : 0;
   scr_mailbox_unlock(mailbox);
   return count;
 }

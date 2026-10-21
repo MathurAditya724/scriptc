@@ -28,7 +28,8 @@ void scr_mailbox_close(ScrMailbox *mailbox);
 bool scr_mailbox_pending(ScrMailbox *mailbox);
 /* The kind of the first queued event, or 0 when none is queued. */
 unsigned scr_mailbox_head_kind(ScrMailbox *mailbox);
-/* The number of queued events of this kind. */
+/* The number of queued events of this kind, kept as events are posted and
+ * taken; 0 for kinds of 16 and above. */
 size_t scr_mailbox_count_kind(ScrMailbox *mailbox, unsigned kind);
 void scr_mailbox_wait(ScrMailbox *mailbox, double milliseconds);
 int scr_mailbox_pollfd(const ScrMailbox *mailbox);
