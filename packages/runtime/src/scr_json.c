@@ -1990,10 +1990,25 @@ static bool scr_dyn_is_extensible_view(const ScrDyn *view) {
   return (view->kind == SCR_DYN_OBJ || view->kind == SCR_DYN_ARR) && !view->non_extensible;
 }
 
+/* A plain function's own properties (name, length, prototype, and the ones
+ * a program adds) live in its property table, which carries the function's
+ * integrity state too: freezing or sealing the function freezes or seals
+ * the table. +1, or NULL for other values and for class constructors, whose
+ * statics keep their own fences. */
+static ScrDyn *scr_dyn_fn_integrity_table(const ScrDyn *object) {
+  if (object->kind != SCR_DYN_FUNC || object->v.fn.class_obj) return NULL;
+  return scr_dyn_fn_properties(object);
+}
+
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return NULL;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.preventExtensions"); return NULL; }
   if (scr_dyn_class_integrity_fence(object, "Object.preventExtensions")) return NULL;
+  ScrDyn *table = scr_dyn_fn_integrity_table(object);
+  if (table) {
+    table->non_extensible = true;
+    scr_dyn_release(table);
+  }
   if (object->kind == SCR_DYN_OBJ || object->kind == SCR_DYN_ARR) {
     object->non_extensible = true;
     if (object->kind == SCR_DYN_ARR && object->v.arr.properties)
@@ -2007,6 +2022,12 @@ bool scr_dyn_is_extensible(ScrDyn *object) {
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.isExtensible"); return false; }
   bool answer;
   if (scr_dyn_typed_ref_view_answer(object, scr_dyn_is_extensible_view, &answer)) return answer;
+  ScrDyn *table = scr_dyn_fn_integrity_table(object);
+  if (table) {
+    answer = !table->non_extensible;
+    scr_dyn_release(table);
+    return answer;
+  }
   return scr_dyn_is_extensible_view(object);
 }
 
@@ -2015,6 +2036,11 @@ ScrDyn *scr_dyn_seal(ScrDyn *object) {
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.seal"); return NULL; }
   if (scr_dyn_class_integrity_fence(object, "Object.seal")) return NULL;
   if (object->symbol_properties) scr_dyn_release(scr_dyn_seal(object->symbol_properties));
+  ScrDyn *table = scr_dyn_fn_integrity_table(object);
+  if (table) {
+    scr_dyn_release(scr_dyn_seal(table));
+    scr_dyn_release(table);
+  }
   if (object->kind == SCR_DYN_OBJ) {
     object->non_extensible = true;
     for (size_t i = 0; i < object->v.obj.len; i++) object->v.obj.entries[i].configurable = false;
@@ -2033,6 +2059,12 @@ bool scr_dyn_is_sealed(const ScrDyn *object) {
   bool answer;
   if (scr_dyn_typed_ref_view_answer((ScrDyn *)object, scr_dyn_is_sealed, &answer)) return answer;
   if (object->symbol_properties && !scr_dyn_is_sealed(object->symbol_properties)) return false;
+  ScrDyn *table = scr_dyn_fn_integrity_table(object);
+  if (table) {
+    answer = scr_dyn_is_sealed(table);
+    scr_dyn_release(table);
+    return answer;
+  }
   if (object->kind == SCR_DYN_ARR)
     return object->non_extensible && (object->v.arr.len == 0 || object->v.arr.sealed) &&
       (!object->v.arr.properties || scr_dyn_is_sealed(object->v.arr.properties));
@@ -14383,6 +14415,12 @@ ScrDyn *scr_dyn_freeze(ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value)) return NULL;
   if (scr_dyn_class_integrity_fence(value, "Object.freeze")) return NULL;
   if (value->symbol_properties) scr_dyn_release(scr_dyn_freeze(value->symbol_properties));
+  ScrDyn *table = scr_dyn_fn_integrity_table(value);
+  if (table) {
+    scr_dyn_release(scr_dyn_freeze(table));
+    scr_dyn_release(table);
+    return scr_dyn_retain(value);
+  }
   if (value->kind == SCR_DYN_ARR) {
     value->non_extensible = true;
     value->v.arr.sealed = true;
@@ -14412,6 +14450,12 @@ bool scr_dyn_is_frozen(const ScrDyn *value) {
   bool answer;
   if (scr_dyn_typed_ref_view_answer((ScrDyn *)value, scr_dyn_is_frozen, &answer)) return answer;
   if (value->symbol_properties && !scr_dyn_is_frozen(value->symbol_properties)) return false;
+  ScrDyn *table = scr_dyn_fn_integrity_table(value);
+  if (table) {
+    answer = scr_dyn_is_frozen(table);
+    scr_dyn_release(table);
+    return answer;
+  }
   if (value->kind == SCR_DYN_ARR)
     return scr_dyn_is_sealed(value) && (value->v.arr.len == 0 || value->v.arr.frozen) &&
       (!value->v.arr.properties || scr_dyn_is_frozen(value->v.arr.properties));
