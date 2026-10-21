@@ -1,6 +1,12 @@
 import { expect, test } from "vitest";
 import { DYN, F64, STRING, VOID, type IrModule } from "../../ir/ir.js";
-import { buildClassGraph, classMembershipIntervals, emitClassMembershipHelper } from "./classes.js";
+import {
+  buildClassGraph,
+  classIdLoadLines,
+  classMembershipIntervals,
+  emitClassMembershipHelper,
+  type LlClassMeta,
+} from "./classes.js";
 import { emitLlvmModule } from "./emitter.js";
 import {
   mangleClassNew,
@@ -212,6 +218,21 @@ test("a recycled block is cleared from the end of a ProgramLifetime instance's 3
     expect(body).toContain("%sa.zn = sub i64 %sa.n, 4");
     expect(body).toContain("call void @llvm.memset.p0.i64(ptr align 4 %sa.z,");
   }
+});
+
+test("invariant class id reads of compact instances leave out the published bit", () => {
+  const group = ", !invariant.group !{}";
+  const compact = (post: number) => ({ compact: true, root: { post } }) as unknown as LlClassMeta;
+  // Publication sets the header word's top bit; ids below 2^16 are read
+  // from the low 16 bits, which never change after construction.
+  expect(classIdLoadLines(compact(40), "%o", "%id", group)).toEqual([
+    "  %id.h = load i16, ptr %o, !invariant.group !{}",
+    "  %id = zext i16 %id.h to i32",
+  ]);
+  // Wider ids, and reads without the metadata, mask the whole word.
+  const masked = ["  %id.w = load i32, ptr %o", "  %id = and i32 %id.w, 268435455"];
+  expect(classIdLoadLines(compact(0xffff), "%o", "%id", group)).toEqual(masked);
+  expect(classIdLoadLines(compact(40), "%o", "%id", "")).toEqual(masked);
 });
 
 test("published ProgramLifetime instances use the published mark every other object uses", () => {

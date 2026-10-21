@@ -526,18 +526,24 @@ export function classIdVtLines(
 
 /** Lines that load the class id of the LlClassMeta.idInRc instance `obj`
  * into the i32 `id`: the high half of the rc word, or the low 28 bits of a
- * compact instance's header word (compactHeaderWord). */
+ * compact instance's header word (compactHeaderWord). `group` is the
+ * metadata of the load (`, !invariant.group !{}` for a load LLVM may treat
+ * as invariant), and it only goes on bytes that never change: publication
+ * sets the top bit of a compact header word, so a compact instance's id is
+ * then read as the word's low 16 bits, which hold the whole id when the
+ * hierarchy's ids are below 2^16, and otherwise as the masked word without
+ * the metadata. */
 export function classIdLoadLines(
   meta: LlClassMeta,
   obj: string,
   id: string,
   group: string,
 ): string[] {
-  if (meta.compact)
-    return [
-      `  ${id}.w = load i32, ptr ${obj}${group}`,
-      `  ${id} = and i32 ${id}.w, ${COMPACT_ID_MASK}`,
-    ];
+  if (meta.compact) {
+    if (group !== "" && meta.root.post + 1 <= 0xffff)
+      return [`  ${id}.h = load i16, ptr ${obj}${group}`, `  ${id} = zext i16 ${id}.h to i32`];
+    return [`  ${id}.w = load i32, ptr ${obj}`, `  ${id} = and i32 ${id}.w, ${COMPACT_ID_MASK}`];
+  }
   return [
     `  ${id}p = getelementptr inbounds i8, ptr ${obj}, i64 ${CLASS_ID_OFFSET}`,
     `  ${id} = load i32, ptr ${id}p${group}`,
@@ -1115,8 +1121,9 @@ export function emitClassShapes(
       nw.push(`  store i32 ${compactHeaderWord(meta)}, ptr %o ; no count (compactHeaderWord)`);
     else if (meta.compact) {
       // The header word: the class id and no count (compactHeaderWord).
-      // Only publication writes it, setting COMPACT_PUBLISHED, which the
-      // class id reads mask off, so they keep !invariant.group.
+      // Only publication writes it again, setting COMPACT_PUBLISHED in the
+      // top byte, so the class id reads that carry !invariant.group read
+      // the low 16 bits only (classIdLoadLines).
       host.declare(`declare ptr @llvm.launder.invariant.group.p0(ptr)`);
       nw.push(
         `  %o.vt = call ptr @llvm.launder.invariant.group.p0(ptr %o)`,
