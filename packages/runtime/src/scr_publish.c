@@ -229,8 +229,8 @@ void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val) {
           : NULL;
   ScrPubFn vfn = m->val_kind == SCR_MAP_VAL_REF ? val : NULL;
   for (size_t i = 0; i < m->nentries; i++) {
-    const ScrMapEntry *e = &m->entries[i];
-    if (!e->hash) continue; /* tombstone */
+    if (!scr_map_entry_live(m, i)) continue; /* tombstone */
+    const ScrMapEntry *e = scr_map_entry_at(m, i);
     if (kfn) scr_pub_slot(ctx, e->key, kfn);
     if (vfn) scr_pub_slot(ctx, e->val, vfn);
   }

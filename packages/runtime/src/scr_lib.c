@@ -12903,7 +12903,7 @@ static bool scr_set_to_arr_sparse(const ScrMap *s, ScrArr *out) {
   /* scr_arr_new reserves dense storage for the live count; keep the
    * ordinary append path in case an allocation ever declines it. */
   for (size_t i = 0; i < s->nentries; i++) {
-    if (!s->entries[i].hash) continue;
+    if (!scr_map_entry_live(s, i)) continue;
     if (out->elem == SCR_ELEM_F64) scr_arr_push_f64(out, scr_map_iter_key_f64(s, (double)i));
     else if (out->elem == SCR_ELEM_BOOL) scr_arr_push_bool(out, scr_map_iter_key_bool(s, (double)i));
     else if (out->elem == SCR_ELEM_STR) scr_arr_push_ref(out, scr_map_iter_key_str(s, (double)i));
@@ -12917,8 +12917,8 @@ ScrArr *scr_set_to_arr_f64(const ScrMap *s) {
   if (scr_set_to_arr_sparse(s, out)) return out;
   uint8_t *states = scr_arr_states_end(out);
   for (size_t i = 0; i < s->nentries; i++) {
-    if (!s->entries[i].hash) continue;
-    out->data[out->len] = s->entries[i].key;
+    if (!scr_map_entry_live(s, i)) continue;
+    out->data[out->len] = scr_map_entry_at(s, i)->key;
     *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
   }
   return out;
@@ -12929,8 +12929,8 @@ ScrArr *scr_set_to_arr_bool(const ScrMap *s) {
   if (scr_set_to_arr_sparse(s, out)) return out;
   uint8_t *states = scr_arr_states_end(out);
   for (size_t i = 0; i < s->nentries; i++) {
-    if (!s->entries[i].hash) continue;
-    scr_arr_dense_put(out, out->len, s->entries[i].key != 0);
+    if (!scr_map_entry_live(s, i)) continue;
+    scr_arr_dense_put(out, out->len, scr_map_entry_at(s, i)->key != 0);
     *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
   }
   return out;
@@ -12941,9 +12941,9 @@ ScrArr *scr_set_to_arr_str(const ScrMap *s) {
   if (scr_set_to_arr_sparse(s, out)) return out;
   uint8_t *states = scr_arr_states_end(out);
   for (size_t i = 0; i < s->nentries; i++) {
-    if (!s->entries[i].hash) continue;
-    scr_str_retain((ScrStr *)(uintptr_t)s->entries[i].key);
-    out->data[out->len] = s->entries[i].key;
+    if (!scr_map_entry_live(s, i)) continue;
+    scr_str_retain((ScrStr *)(uintptr_t)scr_map_entry_at(s, i)->key);
+    out->data[out->len] = scr_map_entry_at(s, i)->key;
     *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
   }
   return out;
@@ -12954,9 +12954,9 @@ ScrArr *scr_set_to_arr_ref(const ScrMap *s, const ScrArrOps *ops) {
   if (scr_set_to_arr_sparse(s, out)) return out;
   uint8_t *states = scr_arr_states_end(out);
   for (size_t i = 0; i < s->nentries; i++) {
-    if (!s->entries[i].hash) continue;
-    ops->retain((void *)(uintptr_t)s->entries[i].key);
-    out->data[out->len] = s->entries[i].key;
+    if (!scr_map_entry_live(s, i)) continue;
+    ops->retain((void *)(uintptr_t)scr_map_entry_at(s, i)->key);
+    out->data[out->len] = scr_map_entry_at(s, i)->key;
     *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
   }
   return out;
