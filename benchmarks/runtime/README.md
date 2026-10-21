@@ -32,6 +32,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `value-objects` | cpu | small immutable records and class instances: vector helpers, method chains, particle updates |
 | `value-records` | cpu | records that hold strings, spread state updates and destructured tuples: token helpers, an immutable reducer, tuple returns |
 | `word-graph` | cpu | string-keyed Map/Set, BFS |
+| `worker-messages` | cpu | message round trips between the main thread and one worker: each posts a number and the other answers it, so every round trip is two messages and two wakeups of a waiting thread |
 | `cli-config` | startup | a `deploy-plan` CLI: read a ~110 KB JSON manifest, validate, interpolate env values, order 80 services into dependency waves, print a summary |
 | `http-api` | server | a `node:http` JSON API: routing, query parsing, a seeded catalog, per-cart state, typed JSON bodies, `ETag`/`If-None-Match`, auth and request-id headers |
 
