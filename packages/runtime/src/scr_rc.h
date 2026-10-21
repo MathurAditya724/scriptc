@@ -608,6 +608,12 @@ void scr_cyc_context_cleanup(void);
  * turns). Cheap: usually a nursery pass; a waiting mature backlog ages into
  * a bounded full pass so sparse roots cannot float forever. */
 void scr_cyc_collect_scheduled(void);
+/* The thread's event loop runs (scr_loop_run): from now on a full pass the
+ * death rule asks for waits for scr_cyc_collect_idle. */
+void scr_cyc_note_event_loop(void);
+/* The event loop is about to wait with nothing ready: runs the full pass
+ * the death rule asked for, if one waits; returns whether it ran. */
+bool scr_cyc_collect_idle(void);
 
 /* Publication (@scriptc/threads publish; scr_cycle.c): makes everything a
  * root reaches immortal and immutable. Compiler-emitted per-type walkers

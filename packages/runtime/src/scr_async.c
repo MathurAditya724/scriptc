@@ -4419,6 +4419,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #ifdef SCR_WORKERS
     if (scr_workers_ready_fn && scr_workers_ready_fn()) due = now;
 #endif
+    /* An idle moment: a full pass the death rule deferred runs now. */
+    if (due > now && scr_cyc_collect_idle()) now = scr_now_ms();
 #if !defined(_WIN32) && !defined(__wasi__)
     if (due > now) scr_fiber_stacks_clear();
 #endif
@@ -4682,6 +4684,7 @@ void scr_loop_commonjs_entry(void) { scr_loop_cjs_entry = true; }
 bool scr_loop_run(ScrPromise *top_level) {
   /* The main module's body has returned: an enterWith it made ends here. */
   scr_loop_started = true;
+  scr_cyc_note_event_loop();
   if (scr_als_main_slot != NULL) scr_als_main_clear();
   bool first_checkpoint = !scr_loop_cjs_entry;
   bool rejection_failed;
