@@ -1245,16 +1245,6 @@ ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, cons
  * scriptc-specific behavior — JS `as` never checks (SEMANTICS.md). */
 void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *got);
 
-/* Checked-cast fallback (a `JSON.parse(text) as T` whose value fails
- * validation keeps its dynamic value instead of throwing). Right after a
- * fallback site's check, scr_dyn_check_recover takes back the exception the
- * check raised (Node runs nothing at a cast, so nothing it raises is
- * observable) and parks the checked value, which the lowered code reads
- * with scr_dyn_check_fallback_taken and takes (+1) with _take. */
-bool scr_dyn_check_recover(ScrDyn *d);
-bool scr_dyn_check_fallback_taken(void);
-ScrDyn *scr_dyn_check_fallback_take(void);
-
 /* Matchers and builders of recursive shapes (records and arrays whose type
  * reaches itself) track the dyn values they visit, so cyclic values match
  * and convert without unbounded recursion. Every matcher and builder of a

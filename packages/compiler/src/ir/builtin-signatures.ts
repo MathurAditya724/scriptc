@@ -4195,11 +4195,6 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * (inspect, Object.keys/values/entries) then answer through its live
    * checked view. The receiver is any such record type. Never throws. */
   "record.sourceHas": { argTypes: [null], result: BOOL },
-  /** A checked-cast fallback site's reads right after the check
-   * (dynCheck.fallback): whether its value failed validation, and that
-   * value (+1), taken once. */
-  "checkedCast.fallbackTaken": { argTypes: [], result: BOOL },
-  "checkedCast.fallbackTake": { argTypes: [], result: DYN },
   "insp.key": { argTypes: [STRING], result: STRING },
   "insp.moreItems": { argTypes: [F64], result: STRING },
   "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },

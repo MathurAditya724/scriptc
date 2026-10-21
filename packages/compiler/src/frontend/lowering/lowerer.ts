@@ -139,7 +139,6 @@ import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { promoteJsvals } from "../../ir/jsval.js";
-import { fallbackTainted, type FallbackSite, type FallbackTaint } from "./checked-fallback.js";
 import {
   analyzeTiers,
   dynamicStatementCount,
@@ -2231,10 +2230,6 @@ export class Lowerer {
   runtimeOptionalBindingType(node: ts.Node): IrType | null;
   runtimeOptionalBindingType(node: ts.Node, fallback: IrType): IrType;
   runtimeOptionalBindingType(node: ts.Node, fallback?: IrType): IrType | null {
-    // A binding holding a failed checked value is dynamic: undefined is one
-    // of its values already (checked-fallback.ts).
-    if (this.fallbackTaint !== null && ts.isIdentifier(node) && fallbackTainted(this, node))
-      return fallback ?? null;
     const patternType = this.runtimeOptionalPatternTypes.get(node);
     if (patternType) return patternType;
     const symbol = ts.isIdentifier(node)
@@ -2634,14 +2629,6 @@ export class Lowerer {
   /** True while re-lowering a base function's 2nd+ instance: the same source
    * statements were already counted for the first instance. */
   suppressStats = false;
-  /** Checked-cast fallback (checked-fallback.ts): sites opened by their
-   * root's declaration, by root; armed sites whose tails have not split
-   * yet; the taint of the dynamic tail being lowered; and the number of
-   * splits whose tails are being lowered (each lowers its tail twice). */
-  fallbackSites = new Map<ts.Symbol, FallbackSite>();
-  fallbackArmed: FallbackSite[] = [];
-  fallbackTaint: FallbackTaint | null = null;
-  fallbackSplitDepth = 0;
   /** Comparisons interned by operand representations and equality semantics. */
   readonly equalityHelpers = new Map<string, string>();
   /** Synthetic array-HOF loop functions (map/filter/forEach desugar),
@@ -7981,14 +7968,10 @@ export class Lowerer {
   ): IrStmt & { kind: "runtimeFence" } {
     const loc = locOf(node);
     const code = first?.code ?? fallback?.code ?? "SC1090";
-    const plainMessage =
+    const baseMessage =
       first?.message ??
       fallback?.message ??
       "this statement uses a construct with no static lowering";
-    const baseMessage =
-      this.fallbackTaint !== null
-        ? `a value that failed its checked cast reached code with no dynamic lowering: ${plainMessage}`
-        : plainMessage;
     const messageLoc = first?.loc ?? loc;
     const source = first
       ? (this.program.getSourceFile(messageLoc.file) ?? ts.getSourceFileOfNode(node))
@@ -8296,9 +8279,6 @@ export class Lowerer {
   }
 
   stdlibMemberFence(access: ts.PropertyAccessExpression): void {
-    // A member of a failed checked value reads dynamically, whatever the
-    // static member resolves to (checked-fallback.ts).
-    if (this.fallbackTaint !== null && fallbackTainted(this, access.expression)) return;
     return stdlibMemberFence(this, access);
   }
 
@@ -8348,10 +8328,6 @@ export class Lowerer {
   }
 
   typeOf(node: ts.Node): ts.Type {
-    // The dynamic lowering of a checked-cast fallback tail reads values
-    // derived from the failed value as `any`.
-    if (this.fallbackTaint !== null && fallbackTainted(this, node))
-      return this.checker.getAnyType();
     if (ts.isPropertyAccessExpression(node) && isJsSourceFile(ts.getSourceFileOfNode(node))) {
       const receiver =
         node.expression.kind === ts.SyntaxKind.ThisKeyword && this.fnStack.length > 0
@@ -12035,7 +12011,6 @@ export class Lowerer {
   }
 
   npmMemberFence(access: ts.PropertyAccessExpression): void {
-    if (this.fallbackTaint !== null && fallbackTainted(this, access.expression)) return;
     return npmMemberFence(this, access);
   }
 

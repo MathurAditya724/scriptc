@@ -73,9 +73,8 @@ Options:
       --tier <auto|static-only>
                      tier policy (default: auto). static-only keeps every
                      construct without a static lowering a compile error, so
-                     the program has no dynamic-tier demotions, and makes a
-                     checked cast whose value does not fit its type throw
-                     instead of continuing with the value
+                     the program has no dynamic-tier demotions. Both modes
+                     currently compile identically
       --explain-dynamic[=<name>]
                      coverage only: list the functions that operate on dynamic
                      values and the bindings, fields, functions, classes and
