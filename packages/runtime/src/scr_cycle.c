@@ -2195,6 +2195,23 @@ void scr_collect_cycles(void) {
   }
 }
 
+/* The full sweep, for a caller that knows a phase's data has just died (a
+ * compiler dropping its frontend). Such data is mostly cyclic, so reference
+ * counting frees little of it and the schedule cannot see it die. The
+ * growth fractions the phase widened, while its live data kept passes from
+ * finding anything, and the death rule's backoff then start over from the
+ * heap the sweep leaves, as after a productive pass. Otherwise the next
+ * phase's garbage would accumulate until the heap grew to that widened
+ * fraction. */
+void scr_collect_cycles_phase(void) {
+  scr_collect_cycles();
+  for (unsigned gen = SCR_CYC_MATURE; gen < SCR_CYC_NGENS; gen++) {
+    scr_cyc_growth_shift[gen] = 0;
+    scr_cyc_growth_streak[gen] = 0;
+  }
+  scr_cyc_death_shift = 0;
+}
+
 /* Worker TLS becomes unreachable when its OS thread returns. Release the
  * reusable traversal buffers after all context-owned roots are retired. */
 void scr_cyc_context_cleanup(void) {

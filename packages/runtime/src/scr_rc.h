@@ -619,6 +619,7 @@ static inline void scr_cyc_dead(void *obj) {
  * after and wants nothing reclaimable left), and it costs a walk of the
  * live heap — do not put it on a per-turn path. */
 void scr_collect_cycles(void);
+void scr_collect_cycles_phase(void);
 void scr_cyc_context_cleanup(void);
 
 /* One pass on the normal generational schedule, for callers that reach a
