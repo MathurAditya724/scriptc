@@ -855,6 +855,69 @@ try {
   });
 });
 
+// A curve Node lists in crypto.getCurves() but the runtime does not
+// implement throws a coded SC2020 error naming the curve when the name is
+// computed; literal names are refused at compile time (node-types-fenced).
+describe("unimplemented ECDH curves", () => {
+  test("a computed curve name throws SC2020 naming the curve", async () => {
+    const r = await compileAndRun(
+      "ecdh-computed-curve",
+      `import { createECDH, ECDH } from "node:crypto";
+const size = ["1", "6", "3"].join("");
+function report(error: unknown): void {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+try {
+  createECDH("sect" + size + "k1");
+} catch (error) {
+  report(error);
+}
+try {
+  ECDH.convertKey(Buffer.from([0]), "sect" + size + "k1");
+} catch (error) {
+  report(error);
+}
+try {
+  createECDH("sect" + size + "x1");
+} catch (error) {
+  report(error);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    const supported =
+      "has no native implementation; the supported curves are prime192v1, secp224r1, prime256v1, " +
+      "secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1 and " +
+      "brainpoolP512r1";
+    expect(r.stdout).toBe(
+      `Error SC2020 The curve 'sect163k1' ${supported}\n` +
+        `Error SC2020 The curve 'sect163k1' ${supported}\n` +
+        "TypeError ERR_CRYPTO_INVALID_CURVE Invalid EC curve name\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("ECDH property reads and writes throw SC2020", async () => {
+    const r = await compileAndRun(
+      "ecdh-properties",
+      `const crypto = require("node:crypto");
+const ecdh = crypto.createECDH("prime256v1");
+for (const run of [() => ecdh.getPublicKey.name, () => { ecdh.custom = 1; }]) {
+  try {
+    run();
+  } catch (e) {
+    console.log(e.name, e.code);
+  }
+}
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("Error SC2020\nError SC2020\n");
+  });
+});
+
 // Node formats an unknown output encoding with %s, which prints a
 // function's source text and calls a toString the encoding's class
 // defines. The cipher runtime has neither, so both throw a coded SC2020

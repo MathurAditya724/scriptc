@@ -548,14 +548,15 @@ const RUNTIME_FEATURE_RULES = {
       mod.functions.some(
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
-    // The legacy url functions and crypto.createCipheriv emit their
-    // deprecation warnings through the dyn-async unit; scr_wasm.c boxes its
-    // handles and promises through it.
+    // The legacy url functions, crypto.createCipheriv and
+    // ecdh.setPublicKey emit their deprecation warnings through the
+    // dyn-async unit; scr_wasm.c boxes its handles and promises through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
+      "crypto.ecdhNew",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
@@ -605,6 +606,10 @@ const RUNTIME_FEATURE_RULES = {
   builtinValues: rule({ fns: ["buffer.byteLenValue", "buffer.allocValue", "fs.realpathValue"] }),
   /** The stream unit emits through the emitter unit, also when the
    * program constructs no stream (a pipeline of functions). */
+  /** scr_ecdh.c over the mbedTLS archive; DEP0031 reports through the
+   * process-warning unit, and unknown encodings and formats render through
+   * the inspect unit. */
+  ecdh: rule({ fns: ["crypto.ecdhNew", "crypto.ecdhConvertKey"] }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -648,6 +653,8 @@ const RUNTIME_FEATURE_RULES = {
       "global.native",
       "util.styleText",
       "crypto.cipherNew",
+      "crypto.ecdhNew",
+      "crypto.ecdhConvertKey",
       ...BUILTIN_CLASS_LIB_FNS,
       ...UTIL_CALLABLE_LIB_FNS,
     ],
@@ -763,6 +770,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuiltinStream: false,
     dynInvoke: false,
     dynTier: false,
+    ecdh: false,
     emitter: false,
     eventTarget: false,
     eventsOnceSignal: false,

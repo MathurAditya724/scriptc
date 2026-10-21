@@ -2932,6 +2932,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return DYN;
   }
+  // node:crypto ECDH values are native handles carried by the
+  // checked-dynamic representation; lowerEcdhCall dispatches their methods.
+  if (
+    psym !== undefined &&
+    ts.symbolName(psym) === "ECDH" &&
+    psym.declarations.some(
+      (d) => ts.isClassDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  ) {
+    return DYN;
+  }
   // ReadonlyMap/ReadonlySet are the SAME runtime values as Map/Set — the
   // readonly-ness is a checker-only view (no mutating members on the
   // interface), so both map to the identical IR kinds and the read-side

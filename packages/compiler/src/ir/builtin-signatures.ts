@@ -2762,6 +2762,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * cipher, key, iv and options arguments (scr_cipher.c): a native
    * Cipheriv/Decipheriv handle whose methods dispatch through dynInvoke. */
   "crypto.cipherNew": { argTypes: [BOOL, DYN, DYN, DYN, DYN], result: DYN },
+  /** createECDH(curveName) over a checked-dynamic curve (scr_ecdh.c): a
+   * native ECDH handle whose methods dispatch through dynInvoke. */
+  "crypto.ecdhNew": { argTypes: [DYN], result: DYN },
+  /** ECDH.convertKey(key, curve, inputEncoding, outputEncoding, format):
+   * the converted point as a Buffer or string. */
+  "crypto.ecdhConvertKey": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: DYN },
   "crypto.hmacNewStr": { argTypes: [STRING, STRING], result: CRYPTOHMAC_T },
   "crypto.hmacNewBytes": { argTypes: [STRING, BYTES_U8], result: CRYPTOHMAC_T },
   "crypto.hashUpdateStr": { argTypes: [CRYPTOHASH_T, STRING], result: CRYPTOHASH_T },

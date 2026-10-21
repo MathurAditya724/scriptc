@@ -7,9 +7,9 @@
     "tierItemCount": 3454,
     "tiers": {
       "static": {
-        "audit-partial": 1197,
-        "verify-gap": 2130,
-        "replace-refusal": 40,
+        "audit-partial": 1207,
+        "verify-gap": 2121,
+        "replace-refusal": 39,
         "classify": 2,
         "implement": 85
       }
@@ -6711,12 +6711,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.crypto.createECDH",
-          "tests": []
+          "source": "surface-manifest:node-builtin.crypto.createECDH",
+          "tests": [
+            "tests/corpus/6700-ecdh-shared-secret.ts",
+            "tests/corpus/6701-ecdh-formats.ts",
+            "tests/corpus/6702-ecdh-errors.js",
+            "tests/corpus/6703-ecdh-private-keys.ts",
+            "tests/corpus/6704-ecdh-set-public-key.cjs",
+            "tests/corpus/6705-ecdh-handles.ts",
+            "tests/fixtures/node-types/ecdh.ts"
+          ]
         }
       }
     },
@@ -8847,12 +8855,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:ECDH",
+          "tests": [
+            "tests/corpus/6700-ecdh-shared-secret.ts",
+            "tests/corpus/6701-ecdh-formats.ts",
+            "tests/corpus/6702-ecdh-errors.js",
+            "tests/corpus/6703-ecdh-private-keys.ts",
+            "tests/corpus/6704-ecdh-set-public-key.cjs",
+            "tests/corpus/6705-ecdh-handles.ts",
+            "tests/fixtures/node-types/ecdh.ts"
+          ]
         }
       }
     },
@@ -8872,12 +8888,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:ecdh.computeSecret",
+          "tests": [
+            "tests/corpus/6700-ecdh-shared-secret.ts",
+            "tests/corpus/6701-ecdh-formats.ts",
+            "tests/corpus/6702-ecdh-errors.js",
+            "tests/corpus/6703-ecdh-private-keys.ts",
+            "tests/corpus/6704-ecdh-set-public-key.cjs",
+            "tests/corpus/6705-ecdh-handles.ts",
+            "tests/fixtures/node-types/ecdh.ts"
+          ]
         }
       }
     },
@@ -8897,12 +8921,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:ecdh.generateKeys",
+          "tests": [
+            "tests/corpus/6700-ecdh-shared-secret.ts",
+            "tests/corpus/6701-ecdh-formats.ts",
+            "tests/corpus/6702-ecdh-errors.js",
+            "tests/corpus/6703-ecdh-private-keys.ts",
+            "tests/corpus/6704-ecdh-set-public-key.cjs",
+            "tests/corpus/6705-ecdh-handles.ts",
+            "tests/fixtures/node-types/ecdh.ts"
+          ]
         }
       }
     },
@@ -8922,12 +8954,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:ecdh.getPrivateKey",
+          "tests": [
+            "tests/corpus/6700-ecdh-shared-secret.ts",
+            "tests/corpus/6701-ecdh-formats.ts",
+            "tests/corpus/6702-ecdh-errors.js",
+            "tests/corpus/6703-ecdh-private-keys.ts",
+            "tests/corpus/6704-ecdh-set-public-key.cjs",
+            "tests/corpus/6705-ecdh-handles.ts",
+            "tests/fixtures/node-types/ecdh.ts"
+          ]
         }
       }
     },
@@ -8947,12 +8987,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:ecdh.getPublicKey",
+          "tests": [
+            "tests/corpus/6700-ecdh-shared-secret.ts",
+            "tests/corpus/6701-ecdh-formats.ts",
+            "tests/corpus/6702-ecdh-errors.js",
+            "tests/corpus/6703-ecdh-private-keys.ts",
+            "tests/corpus/6704-ecdh-set-public-key.cjs",
+            "tests/corpus/6705-ecdh-handles.ts",
+            "tests/fixtures/node-types/ecdh.ts"
+          ]
         }
       }
     },
@@ -8972,12 +9020,20 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:ecdh.setPrivateKey",
+          "tests": [
+            "tests/corpus/6700-ecdh-shared-secret.ts",
+            "tests/corpus/6701-ecdh-formats.ts",
+            "tests/corpus/6702-ecdh-errors.js",
+            "tests/corpus/6703-ecdh-private-keys.ts",
+            "tests/corpus/6704-ecdh-set-public-key.cjs",
+            "tests/corpus/6705-ecdh-handles.ts",
+            "tests/fixtures/node-types/ecdh.ts"
+          ]
         }
       }
     },
@@ -8997,12 +9053,20 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:ecdh.setPublicKey",
+          "tests": [
+            "tests/corpus/6700-ecdh-shared-secret.ts",
+            "tests/corpus/6701-ecdh-formats.ts",
+            "tests/corpus/6702-ecdh-errors.js",
+            "tests/corpus/6703-ecdh-private-keys.ts",
+            "tests/corpus/6704-ecdh-set-public-key.cjs",
+            "tests/corpus/6705-ecdh-handles.ts",
+            "tests/fixtures/node-types/ecdh.ts"
+          ]
         }
       }
     },
@@ -14906,12 +14970,14 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:errors",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:ERR_CRYPTO_ECDH_INVALID_FORMAT",
+          "tests": [
+            "tests/corpus/6702-ecdh-errors.js"
+          ]
         }
       }
     },
@@ -14926,12 +14992,14 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:errors",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:ERR_CRYPTO_ECDH_INVALID_PUBLIC_KEY",
+          "tests": [
+            "tests/corpus/6702-ecdh-errors.js"
+          ]
         }
       }
     },

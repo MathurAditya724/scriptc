@@ -50,6 +50,7 @@ import { discoverWasmModules, type WasmModuleReport } from "../../wasm/discover.
 import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
+import { isEcdhType, lowerEcdhCall } from "./builtins/ecdh.js";
 import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
 import { hashStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
@@ -3419,17 +3420,18 @@ export class Lowerer {
   /** Declared class fields may store a DYN value only when its static type
    * is `unknown` or `object` (also with `null` or `undefined`, or an array
    * of those), names checked protocol identity, is an owned runtime
-   * handle (a Worker or MessagePort, or a fetch Headers/Request/Response),
-   * or is a WeakMap/WeakSet (native weak collections live in
-   * checked-dynamic storage, as locals of those types do); `any` fields
-   * stay refused. */
+   * handle (a Worker or MessagePort, a fetch Headers/Request/Response, or
+   * a node:crypto ECDH), or is a WeakMap/WeakSet (native weak collections
+   * live in checked-dynamic storage, as locals of those types do); `any`
+   * fields stay refused. */
   classFieldStoresDyn(type: ts.Type): boolean {
     return (
       this.opaqueValueType(type) ||
       this.classImplementedProtocol(type) ||
       isWorkerHandleType(type, this.typeCtx) ||
       isFetchHandleType(type, this.typeCtx) ||
-      this.weakCollectionType(type)
+      this.weakCollectionType(type) ||
+      this.stdlibHandleType(type, (part) => isEcdhType(this, part))
     );
   }
 
@@ -3445,12 +3447,17 @@ export class Lowerer {
         )
       );
     };
-    if (!type.isUnionType()) return weak(type);
+    return this.stdlibHandleType(type, weak);
+  }
+
+  /** A type `handle` accepts, alone or with `null`/`undefined`. */
+  private stdlibHandleType(type: ts.Type, handle: (part: ts.Type) => boolean): boolean {
+    if (!type.isUnionType()) return handle(type);
     const parts = ts.constituentTypes(type);
     return (
-      parts.some(weak) &&
+      parts.some(handle) &&
       parts.every(
-        (part) => (part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0 || weak(part),
+        (part) => (part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0 || handle(part),
       )
     );
   }
@@ -12334,6 +12341,7 @@ export class Lowerer {
       lowerStaticBlobCall(this, expr) ??
       lowerWebCryptoCall(this, expr) ??
       lowerKeyObjectCall(this, expr) ??
+      lowerEcdhCall(this, expr) ??
       lowerNetAddressCall(this, expr) ??
       lowerFetchElementMethodCall(this, expr) ??
       lowerDynamicImportCall(this, expr) ??

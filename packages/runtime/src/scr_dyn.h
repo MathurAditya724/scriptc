@@ -156,6 +156,7 @@ typedef enum {
   X(DECIPHER, 46) /* node:crypto Decipheriv (scr_cipher.c) */ \
   X(DIR, 44) /* fs.Dir (scr_lib.c) */ \
   X(DISPOSABLE_STACK, 49) /* DisposableStack (scr_symbol.c) */ \
+  X(ECDH, 64) /* node:crypto ECDH (scr_ecdh.c) */ \
   X(EVENT, 14) /* ScrEvent — new Event() and AbortSignal's abort events */ \
   X(EVENT_TARGET, 39) /* ScrEventTarget — new EventTarget() */ \
   X(FETCH_HEADERS, 13) /* native static-fetch response Headers */ \
