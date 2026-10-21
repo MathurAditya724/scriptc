@@ -48,3 +48,18 @@ class Switch<B extends boolean> {
   }
 }
 console.log(new Switch(true).label(), new Switch(false).label());
+
+// A conditional wrapped in a union alias selects its branch the same way.
+type MaybeValue<T, K extends Kind> = (K extends "required" ? T : T | undefined) | null;
+class Slot<T, K extends Kind> {
+  value: MaybeValue<T, K>;
+  kind: K;
+  constructor(value: MaybeValue<T, K>, kind: K) {
+    this.value = value;
+    this.kind = kind;
+  }
+}
+const filled = new Slot<string, "required">("a", "required");
+const empty = new Slot<string, "optional">(undefined, "optional");
+const cleared = new Slot<number, "optional">(null, "optional");
+console.log(filled.value, empty.value, cleared.value, filled.kind, empty.kind);

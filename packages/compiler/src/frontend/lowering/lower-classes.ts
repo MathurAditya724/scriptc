@@ -4616,22 +4616,28 @@ export function genericClassInstanceType(
       if (bound) tsArgs.push(bound);
     }
   }
-  // A literal argument for a type parameter that a conditional type
-  // depends on (`K extends "required" ? T : T | undefined`) selects the
-  // members' types, so it keys its own instance; mapType alone widens it.
+  // A type parameter that a conditional type in the class depends on
+  // (`K extends "required" ? T : T | undefined`) is bound to its checker
+  // type for the members, and that type keys the instance: mapType alone
+  // widens a literal, so Field<string, "required"> and Field<string,
+  // "optional"> would otherwise share one layout. The other parameters get
+  // no checker binding, so nothing in the members depends on a literal
+  // the key does not carry.
   gci.literalSensitive ??= literalSensitiveTypeParams(lowerer, gci);
-  const literalKey = (i: number): string | null => {
-    if (!gci.literalSensitive!.has(gci.typeParams[i]!)) return null;
-    const arg = tsArgs[i];
+  const sensitive = (i: number): boolean =>
+    tsArgs.length === gci.typeParams.length && gci.literalSensitive!.has(gci.typeParams[i]!);
+  const checkerKey = gci.typeParams
+    .map((_, i) => (sensitive(i) ? `#${tsArgs[i]!.id}` : "*"))
+    .join(",");
+  const key =
+    mapped.map(typeKey).join(",") + (gci.literalSensitive.size > 0 ? `@${checkerKey}` : "");
+  const literalText = (i: number): string | null => {
+    const arg = sensitive(i) ? tsArgs[i] : undefined;
     if (arg?.isStringLiteralType()) return JSON.stringify(arg.value);
     if (arg?.isNumberLiteralType()) return String(arg.value);
     if (arg && arg.flags & ts.TypeFlags.BooleanLiteral) return lowerer.checker.typeToString(arg);
     return null;
   };
-  const literals = gci.typeParams.map((_, i) => literalKey(i));
-  const key =
-    mapped.map(typeKey).join(",") +
-    (literals.some((l) => l !== null) ? `@${literals.map((l) => l ?? "*").join(",")}` : "");
   const existing = gci.instances.get(key);
   if (existing) {
     if (existing.info) lowerer.noteGenericClassInstanceDemand(existing.info);
@@ -4654,9 +4660,10 @@ export function genericClassInstanceType(
   const bindings = new Map<ts.Symbol, IrType>();
   gci.typeParams.forEach((tp, i) => bindings.set(tp, mapped[i]!));
   const tsBindings = new Map<ts.Symbol, ts.Type>();
-  if (tsArgs.length === gci.typeParams.length)
-    gci.typeParams.forEach((tp, i) => tsBindings.set(tp, tsArgs[i]!));
-  const rendered = mapped.map((m, i) => literals[i] ?? lowerer.fmt(m)).join(", ");
+  gci.typeParams.forEach((tp, i) => {
+    if (sensitive(i)) tsBindings.set(tp, tsArgs[i]!);
+  });
+  const rendered = mapped.map((m, i) => literalText(i) ?? lowerer.fmt(m)).join(", ");
   const typeArgsText = `<${rendered.length > 80 ? rendered.slice(0, 77) + "..." : rendered}>`;
   const prevBindings = lowerer.typeParamBindings;
   const prevTsBindings = lowerer.typeParamTsBindings;
@@ -4702,12 +4709,43 @@ export function genericClassInstanceType(
 
 /** The class's type parameters that a conditional type inside it depends
  * on: the parameters named within a type node that is a conditional type
- * or refers to one (`get(): Value<T, K>` with `type Value<T, K> = K
- * extends "required" ? T : T | undefined`). Their literal arguments pick
- * the conditional's branch. */
+ * or reaches one through the type aliases and interfaces it refers to
+ * (`get(): Value<T, K>` with `type Value<T, K> = K extends "required" ? T
+ * : T | undefined`, also when the alias wraps the conditional in a union
+ * or another alias). Their arguments pick the conditional's branch. */
 function literalSensitiveTypeParams(lowerer: Lowerer, gci: GenericClassInfo): Set<ts.Symbol> {
   const params = new Set(gci.typeParams);
   const found = new Set<ts.Symbol>();
+  const reaches = new Map<ts.Symbol, boolean>();
+  const declarationsReach = (symbol: ts.Symbol): boolean => {
+    const target =
+      symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
+    const known = reaches.get(target);
+    if (known !== undefined) return known;
+    reaches.set(target, false); // a recursive alias reaches through its other parts
+    const result = target.declarations.some((d) =>
+      ts.isTypeAliasDeclaration(d)
+        ? reachesConditional(d.type)
+        : ts.isInterfaceDeclaration(d)
+          ? d.members.nodes.some(reachesConditional)
+          : false,
+    );
+    reaches.set(target, result);
+    return result;
+  };
+  const reachesConditional = (node: ts.Node): boolean => {
+    if (ts.isConditionalTypeNode(node)) return true;
+    if (ts.isTypeReferenceNode(node)) {
+      const name = ts.isIdentifier(node.typeName) ? node.typeName : node.typeName.right;
+      const symbol = lowerer.checker.getSymbolAtLocation(name);
+      if (symbol && !params.has(symbol) && declarationsReach(symbol)) return true;
+    }
+    let found = false;
+    ts.forEachChild(node, (child) => {
+      if (!found && reachesConditional(child)) found = true;
+    });
+    return found;
+  };
   const collect = (node: ts.Node): void => {
     if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
       const symbol = lowerer.checker.getSymbolAtLocation(node.typeName);
@@ -4716,12 +4754,9 @@ function literalSensitiveTypeParams(lowerer: Lowerer, gci: GenericClassInfo): Se
     ts.forEachChild(node, collect);
   };
   const visit = (node: ts.Node): void => {
-    if (
-      ts.isConditionalTypeNode(node) ||
-      (ts.isTypeReferenceNode(node) &&
-        lowerer.checker.getTypeFromTypeNode(node).isConditionalType())
-    ) {
+    if (ts.isTypeNode(node) && reachesConditional(node)) {
       collect(node);
+      return;
     }
     ts.forEachChild(node, visit);
   };
