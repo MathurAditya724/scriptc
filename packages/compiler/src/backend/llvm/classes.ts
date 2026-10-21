@@ -1098,7 +1098,9 @@ export function emitClassShapes(
           host,
           sizeOf,
           traced && !lifetime ? { type: cycType } : null,
-          meta.hierarchy && !meta.idInRc ? 16 : 8,
+          // The words stored next: a compact instance's 4-byte header, the
+          // rc word, or the rc word and the vtable word.
+          meta.compact ? 4 : meta.hierarchy && !meta.idInRc ? 16 : 8,
         ),
       );
     if (meta.compact && !meta.hierarchy)

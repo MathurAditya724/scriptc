@@ -189,6 +189,31 @@ test("ProgramLifetime classes pack their fields after a 32-bit header", () => {
   expect(mortal).toContain(`%${mangleClassStruct("Leaf")} = type { i64, ptr, i8, i32, ptr, i8 }`);
 });
 
+test("a recycled block is cleared from the end of a ProgramLifetime instance's 32-bit header", () => {
+  const BOOL = { kind: "bool" as const };
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [{ name: "main", params: [], returnType: VOID, locals: [], body: [], loc }],
+    classes: [
+      { name: "Marker", fields: [], methods: [], loc },
+      { name: "Toggle", fields: [{ name: "on", type: BOOL }], methods: [], loc },
+    ],
+    contracts: { programLifetime: ["Marker", "Toggle"] },
+  };
+  const llvm = emitLlvmModule(mod, { pointerBits: 64 });
+  for (const name of ["Marker", "Toggle"]) {
+    const start = llvm.indexOf(`define internal ptr @${mangleClassNew(name)}(`);
+    const body = llvm.slice(start, llvm.indexOf("\n}\n", start));
+    // The constructor stores the 4-byte header itself; a 4-byte instance
+    // (Marker) clears nothing, and Toggle's field at offset 4 is cleared.
+    expect(body).toContain("%sa.z = getelementptr inbounds i8, ptr %sa.b, i64 4");
+    expect(body).toContain("%sa.zn = sub i64 %sa.n, 4");
+    expect(body).toContain("call void @llvm.memset.p0.i64(ptr align 4 %sa.z,");
+  }
+});
+
 test("published ProgramLifetime instances use the published mark every other object uses", () => {
   const node = { kind: "object" as const, className: "Node" };
   const leaf = { kind: "object" as const, className: "Leaf" };

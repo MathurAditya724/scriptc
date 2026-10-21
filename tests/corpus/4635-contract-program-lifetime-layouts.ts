@@ -222,3 +222,64 @@ const fresh = new Binary(new Ident(16, "y"), "-", new Literal(20, 3));
 fresh.precedence = 11;
 fresh.right.flagged = true;
 console.log("fresh", describe(fresh), describe(fresh.right), classify(fresh.left), classify(published.root));
+
+// Instances in recycled blocks: freed 8- and 16-byte objects leave their
+// blocks on the allocator's free lists, and the next instances of the same
+// sizes reuse them. Marker has no fields (a 4-byte instance); Toggle's
+// field and Pair's first field sit right after the header.
+class Scrap {
+  readonly n: number;
+  constructor(n: number) {
+    this.n = n;
+  }
+}
+
+class Blank {}
+
+class Marker implements ProgramLifetime {}
+
+class Toggle implements ProgramLifetime {
+  on: boolean;
+  constructor(on: boolean) {
+    this.on = on;
+  }
+}
+
+class Pair implements ProgramLifetime {
+  readonly low: number;
+  readonly high: Node | undefined;
+  constructor(low: number, high: Node | undefined) {
+    this.low = low | 0;
+    this.high = high;
+  }
+}
+
+const blanks: Blank[] = [];
+const scraps: Scrap[] = [];
+const markers: Marker[] = [];
+const toggles: Toggle[] = [];
+const pairs: Pair[] = [];
+for (let round = 0; round < 3; round++) {
+  for (let i = 0; i < 200; i++) {
+    blanks.push(new Blank());
+    scraps.push(new Scrap(i * 1.5));
+  }
+  let sum = 0;
+  for (const s of scraps) sum += s.n;
+  blanks.length = 0;
+  scraps.length = 0;
+  for (let i = 0; i < 200; i++) {
+    markers.push(new Marker());
+    toggles.push(new Toggle(i % 3 === 0));
+    pairs.push(new Pair(i - 100, i % 2 === 0 ? undefined : published.root));
+  }
+  let on = 0;
+  let low = 0;
+  let high = 0;
+  for (const t of toggles) if (t.on) on++;
+  for (const p of pairs) {
+    low += p.low;
+    if (p.high !== undefined) high++;
+  }
+  console.log("recycled", round, sum, markers.length, on, low, high);
+}
