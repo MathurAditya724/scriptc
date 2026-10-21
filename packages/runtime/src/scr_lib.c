@@ -10835,52 +10835,179 @@ static SCR_TL ScrDateLocalCache scr_date_local_cache;
 
 static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out);
 
-/* The local zone's offset over an interval of instants, as Node's V8 date
- * cache keeps it (kDefaultDSTDeltaInSec): when the offset and DST flag at an
- * instant equal those 19 days later, every instant between takes them too,
- * and consecutive Dates convert without a localtime call each. A zone that
- * changed its offset twice within 19 days (America/Argentina/Tucuman in June
- * 2004) breaks that assumption in V8 as well: the answers between the two
- * changes then depend on the order of the reads, and this cache gives the
- * same answers as Node for the same order (corpus date-zone-intervals.ts). */
-#define SCR_DATE_ZONE_SPAN (19.0 * 86400000.0)
+/* The local zone's offset at an instant, cached the way Node's V8 date cache
+ * (src/date/date.cc, DateCache::LocalOffsetInMs) caches it, so the answers
+ * match Node's in every order of reads. V8 keeps 32 segments of instants with
+ * one offset each and takes an offset that matches 19 days apart as constant
+ * in between (kDefaultTimeZoneOffsetDeltaInMs). A zone that changed its offset
+ * twice within 19 days (America/Argentina/Tucuman in June 2004) breaks that
+ * assumption, and Node's answers between the two changes then depend on the
+ * order of the reads; this cache gives the same answers for the same order
+ * (corpus date-zone-intervals.ts). Segments compare offsets only, as V8's do;
+ * each keeps the DST flag of the read that set its offset. */
+#define SCR_DATE_ZONE_DELTA_MS (19LL * 86400000LL)
+#define SCR_DATE_ZONE_SEGMENTS 32
+typedef struct {
+  long long start_ms, end_ms; /* empty when start_ms > end_ms */
+  double offset;              /* local minus UTC, seconds */
+  bool isdst;
+  int last_used;
+} ScrDateZoneSegment;
 typedef struct {
   bool valid;
-  bool isdst;
   unsigned generation;
-  double start, end; /* clipped instants, ms */
-  double offset;     /* local minus UTC, seconds */
+  int usage;
+  ScrDateZoneSegment segments[SCR_DATE_ZONE_SEGMENTS];
+  ScrDateZoneSegment *before, *after;
 } ScrDateZoneCache;
 static SCR_TL ScrDateZoneCache scr_date_zone_cache;
 
 static bool scr_date_zone_offset(double clipped, double *offset, bool *isdst);
 
+static void scr_date_zone_clear(ScrDateZoneSegment *segment) {
+  segment->start_ms = 0;
+  segment->end_ms = -1;
+  segment->offset = 0;
+  segment->isdst = false;
+  segment->last_used = 0;
+}
+
+static bool scr_date_zone_empty(const ScrDateZoneSegment *segment) {
+  return segment->start_ms > segment->end_ms;
+}
+
+static void scr_date_zone_reset(ScrDateZoneCache *z, unsigned generation) {
+  for (int i = 0; i < SCR_DATE_ZONE_SEGMENTS; i++) scr_date_zone_clear(&z->segments[i]);
+  z->usage = 0;
+  z->before = &z->segments[0];
+  z->after = &z->segments[1];
+  z->valid = true;
+  z->generation = generation;
+}
+
+/* V8's LeastRecentlyUsedCacheItem: the least recently used segment other
+ * than `skip`, cleared. */
+static ScrDateZoneSegment *scr_date_zone_lru(ScrDateZoneCache *z, ScrDateZoneSegment *skip) {
+  ScrDateZoneSegment *result = NULL;
+  for (int i = 0; i < SCR_DATE_ZONE_SEGMENTS; i++) {
+    ScrDateZoneSegment *s = &z->segments[i];
+    if (s == skip) continue;
+    if (!result || result->last_used > s->last_used) result = s;
+  }
+  scr_date_zone_clear(result);
+  return result;
+}
+
+/* V8's ProbeCache: the segment starting at or before `t` and the one after. */
+static void scr_date_zone_probe(ScrDateZoneCache *z, long long t) {
+  ScrDateZoneSegment *before = NULL, *after = NULL;
+  for (int i = 0; i < SCR_DATE_ZONE_SEGMENTS; i++) {
+    ScrDateZoneSegment *s = &z->segments[i];
+    if (scr_date_zone_empty(s)) continue;
+    if (s->start_ms <= t) {
+      if (!before || before->start_ms < s->start_ms) before = s;
+    } else if (t < s->end_ms) {
+      if (!after || after->end_ms > s->end_ms) after = s;
+    }
+  }
+  if (!before) before = scr_date_zone_empty(z->before) ? z->before : scr_date_zone_lru(z, after);
+  if (!after)
+    after = scr_date_zone_empty(z->after) && before != z->after ? z->after : scr_date_zone_lru(z, before);
+  z->before = before;
+  z->after = after;
+}
+
+/* V8's ExtendTheAfterSegment. */
+static void scr_date_zone_extend_after(ScrDateZoneCache *z, long long t, double offset, bool isdst) {
+  ScrDateZoneSegment *after = z->after;
+  if (!scr_date_zone_empty(after) && after->offset == offset &&
+      after->start_ms - SCR_DATE_ZONE_DELTA_MS <= t && t <= after->end_ms) {
+    after->start_ms = t;
+    return;
+  }
+  if (!scr_date_zone_empty(after)) after = z->after = scr_date_zone_lru(z, z->before);
+  after->start_ms = after->end_ms = t;
+  after->offset = offset;
+  after->isdst = isdst;
+  after->last_used = ++z->usage;
+}
+
 static bool scr_date_zone_lookup(double clipped, double *offset, bool *isdst) {
   ScrDateZoneCache *z = &scr_date_zone_cache;
   unsigned generation = scr_date_tz_generation;
-  bool current = z->valid && z->generation == generation;
-  if (current && clipped >= z->start && clipped <= z->end) {
-    *offset = z->offset;
-    *isdst = z->isdst;
+  if (!z->valid || z->generation != generation) scr_date_zone_reset(z, generation);
+  long long t = (long long)clipped;
+  if (z->usage >= INT_MAX - 10) {
+    z->usage = 0;
+    for (int i = 0; i < SCR_DATE_ZONE_SEGMENTS; i++) scr_date_zone_clear(&z->segments[i]);
+  }
+  ScrDateZoneSegment *before = z->before;
+  if (before->start_ms <= t && t <= before->end_ms) {
+    before->last_used = ++z->usage;
+    *offset = before->offset;
+    *isdst = before->isdst;
     return true;
   }
-  if (!scr_date_zone_offset(clipped, offset, isdst)) return false;
-  bool same = current && *offset == z->offset && *isdst == z->isdst;
-  if (same && clipped > z->end && clipped - z->start <= SCR_DATE_ZONE_SPAN) {
-    z->end = clipped;
-  } else if (same && clipped < z->start && z->end - clipped <= SCR_DATE_ZONE_SPAN) {
-    z->start = clipped;
-  } else {
-    z->valid = true;
-    z->generation = generation;
-    z->start = z->end = clipped;
-    z->offset = *offset;
-    z->isdst = *isdst;
-    double ahead = clipped + SCR_DATE_ZONE_SPAN, ahead_offset;
+  scr_date_zone_probe(z, t);
+  before = z->before;
+  if (scr_date_zone_empty(before)) {
+    if (!scr_date_zone_offset(clipped, offset, isdst)) return false;
+    before->start_ms = before->end_ms = t;
+    before->offset = *offset;
+    before->isdst = *isdst;
+    before->last_used = ++z->usage;
+    return true;
+  }
+  if (t <= before->end_ms) {
+    before->last_used = ++z->usage;
+    *offset = before->offset;
+    *isdst = before->isdst;
+    return true;
+  }
+  if (t - SCR_DATE_ZONE_DELTA_MS > before->end_ms) {
+    if (!scr_date_zone_offset(clipped, offset, isdst)) return false;
+    scr_date_zone_extend_after(z, t, *offset, *isdst);
+    ScrDateZoneSegment *swap = z->before;
+    z->before = z->after;
+    z->after = swap;
+    return true;
+  }
+  before->last_used = ++z->usage;
+  long long ahead = before->end_ms + SCR_DATE_ZONE_DELTA_MS;
+  if (scr_date_zone_empty(z->after) || ahead <= z->after->start_ms) {
+    double ahead_offset;
     bool ahead_dst;
-    if (ahead <= 8640000000000000.0 && scr_date_zone_offset(ahead, &ahead_offset, &ahead_dst) &&
-        ahead_offset == *offset && ahead_dst == *isdst)
-      z->end = ahead;
+    if (!scr_date_zone_offset((double)ahead, &ahead_offset, &ahead_dst)) return false;
+    scr_date_zone_extend_after(z, ahead, ahead_offset, ahead_dst);
+  } else {
+    z->after->last_used = ++z->usage;
+  }
+  ScrDateZoneSegment *after = z->after;
+  if (before->offset == after->offset) {
+    before->end_ms = after->end_ms;
+    scr_date_zone_clear(after);
+    *offset = before->offset;
+    *isdst = before->isdst;
+    return true;
+  }
+  /* Binary search for the change point, giving up after five probes (the
+   * last one reads `t` itself). */
+  for (int i = 4; i >= 0; i--) {
+    long long delta = after->start_ms - before->end_ms;
+    long long middle = i == 0 ? t : before->end_ms + delta / 2;
+    if (!scr_date_zone_offset((double)middle, offset, isdst)) return false;
+    if (before->offset == *offset) {
+      before->end_ms = middle;
+      if (t <= before->end_ms) return true;
+    } else {
+      after->start_ms = middle;
+      if (t >= after->start_ms) {
+        ScrDateZoneSegment *swap = z->before;
+        z->before = z->after;
+        z->after = swap;
+        return true;
+      }
+    }
   }
   return true;
 }

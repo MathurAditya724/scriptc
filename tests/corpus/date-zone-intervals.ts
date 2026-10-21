@@ -54,16 +54,28 @@ for (const zone of zones) {
 
 // Tucumán changed its offset twice within 12 days in June 2004. Node's
 // date cache takes an offset that matches 19 days apart as constant in
-// between, so these reads answer by their order: ascending reads keep the
-// May offset through June 12, descending reads see the June offset. Both
-// are Node's answers.
-const tucuman = [];
-for (let day = 25; day <= 31; day++) tucuman.push(Date.UTC(2004, 4, day, 12));
-for (let day = 1; day <= 20; day++) tucuman.push(Date.UTC(2004, 5, day, 12));
-for (const order of ["ascending", "descending"]) {
+// between, so the answers between the two changes depend on the order of
+// the reads. Seeded orders of reads around them, and across three years of
+// zones with daylight-saving rules, each after a zone reset, answer as
+// Node's do.
+let seed = 987654;
+const nextRandom = (): number => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+function orderChecksum(zone: string, from: number, days: number, reads: number): number {
   process.env.TZ = "UTC";
-  process.env.TZ = "America/Argentina/Tucuman";
-  const reads = new Map<number, string>();
-  for (const t of order === "ascending" ? tucuman : tucuman.slice().reverse()) reads.set(t, fields(t));
-  console.log(order, tucuman.map((t) => reads.get(t)).join(" | "));
+  process.env.TZ = zone;
+  let h = 0;
+  for (let i = 0; i < reads; i++) {
+    const d = new Date(from + Math.floor(nextRandom() * days * 24) * hour);
+    h = (h * 31 + d.getTimezoneOffset() * 7 + d.getHours()) >>> 0;
+  }
+  return h;
+}
+const tucumanOrders: number[] = [];
+for (let order = 0; order < 40; order++)
+  tucumanOrders.push(orderChecksum("America/Argentina/Tucuman", Date.UTC(2004, 4, 1), 60, 25));
+console.log("tucuman orders", tucumanOrders.join(","));
+for (const zone of ["America/Argentina/Tucuman", "America/New_York", "Australia/Lord_Howe", "America/Sao_Paulo"]) {
+  const sums: number[] = [];
+  for (let order = 0; order < 10; order++) sums.push(orderChecksum(zone, Date.UTC(2003, 0, 1), 3 * 365, 60));
+  console.log(zone, sums.join(","));
 }
