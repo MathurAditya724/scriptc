@@ -1438,6 +1438,28 @@ export function lowerToNumberArgument(lowerer: Lowerer, node: ts.Expression): Ir
   if (ts.isConditionalExpression(inner)) return lowerer.lowerExprExpecting(node, F64);
   const value = lowerer.lowerExpr(node);
   if (isOptionalNumber(value)) return lowerOptionalNumber(lowerer, value, loc, inner);
+  // Other values convert with ToNumber: strings parse as numeric literals,
+  // booleans and null are numbers, and checked-dynamic values call
+  // valueOf/toString or throw Node's TypeError for a Symbol or BigInt.
+  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  switch (value.type.kind) {
+    case "string":
+      return { kind: "libCall", fn: "num.fromString", args: [value], type: F64, loc };
+    case "bool":
+      return { kind: "ternary", cond: value, then: num(1), else_: num(0), type: F64, loc };
+    case "nullT":
+      return defaultAfterUndefined(value, num(0));
+    case "undefinedT":
+      return defaultAfterUndefined(value, num(NaN));
+    case "dyn":
+      return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [value], type: F64, loc };
+    case "union":
+      if (lowerer.dynConvertible(value.type)) {
+        const boxed = lowerer.coerceToExpected(value, DYN);
+        return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [boxed], type: F64, loc };
+      }
+      break;
+  }
   return lowerer.coerceInto(node, value, F64);
 }
 
