@@ -72,6 +72,33 @@ export function parseAstNodeHandle(handle: string): AstNodeHandle {
   };
 }
 
+/** Node fields as word offsets into a node's NODE_LEN bytes. */
+const NODE_WORDS = NODE_LEN / 4;
+const WORD_KIND = NODE_OFFSET_KIND / 4;
+const WORD_POS = NODE_OFFSET_POS / 4;
+const WORD_END = NODE_OFFSET_END / 4;
+const WORD_NEXT = NODE_OFFSET_NEXT / 4;
+const WORD_PARENT = NODE_OFFSET_PARENT / 4;
+const WORD_DATA = NODE_OFFSET_DATA / 4;
+const WORD_FLAGS = NODE_OFFSET_FLAGS / 4;
+if (
+  !Number.isInteger(NODE_WORDS) ||
+  ![WORD_KIND, WORD_POS, WORD_END, WORD_NEXT, WORD_PARENT, WORD_DATA, WORD_FLAGS].every((word) =>
+    Number.isInteger(word),
+  )
+)
+  throw new AstDecodeError("node fields are not word-aligned");
+
+/** Kept out of line, so the index check that calls it stays small enough
+ * to inline into every node accessor. */
+function invalidNodeIndex(index: number): never {
+  throw new AstDecodeError(`invalid node index ${index}`);
+}
+
+/** Whether this host stores a Uint32Array's words little-endian, the wire's
+ * byte order. */
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
 function hexWord(value: number): string {
   const digits = "0123456789abcdef";
   let result = "";
@@ -93,12 +120,14 @@ export class AstWireFile {
   private readonly extended: number;
   private readonly structured: number;
   private readonly nodes: number;
-  private readonly view: DataView;
-  private readonly stringCache = new Map<number, string>();
+  /** The node table as 32-bit words: a view of the response when it is
+   * word-aligned on a little-endian host, otherwise a decoded copy. */
+  private readonly words: Uint32Array;
+  /** Decoded strings by string word index / 2. */
+  private readonly stringCache: (string | undefined)[];
 
   constructor(private readonly bytes: Uint8Array) {
     astBounds(bytes, 0, HEADER_SIZE);
-    this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const metadata = astU32(bytes, HEADER_OFFSET_METADATA);
     if (metadata >>> 24 !== PROTOCOL_VERSION)
       throw new AstDecodeError(`unsupported protocol version ${metadata >>> 24}`);
@@ -122,6 +151,15 @@ export class AstWireFile {
     }
     this.nodeCount = (bytes.length - this.nodes) / NODE_LEN;
     this.stringCount = (this.strings - this.stringOffsets) / 8;
+    const wordCount = this.nodeCount * NODE_WORDS;
+    const start = bytes.byteOffset + this.nodes;
+    if (LITTLE_ENDIAN && start % 4 === 0) {
+      this.words = new Uint32Array(bytes.buffer, start, wordCount);
+    } else {
+      this.words = new Uint32Array(wordCount);
+      for (let i = 0; i < wordCount; i++) this.words[i] = astU32(bytes, this.nodes + i * 4);
+    }
+    this.stringCache = new Array<string | undefined>(this.stringCount).fill(undefined);
     if (this.nodeCount < 2) throw new AstDecodeError("missing root");
     if (this.kind(1) === KIND_NODE_LIST || this.parent(1) > 1)
       throw new AstDecodeError("invalid root node");
@@ -142,40 +180,41 @@ export class AstWireFile {
     }
   }
 
-  private nodeOffset(index: number): number {
-    if (!Number.isInteger(index) || index < 0 || index >= this.nodeCount)
-      throw new AstDecodeError(`invalid node index ${index}`);
-    return this.nodes + index * NODE_LEN;
+  /** The first word of node `index`. `index >>> 0 === index` accepts exactly
+   * the integers in [0, 2^32), so with the bound it accepts the same indices
+   * as an integer and range check. */
+  private nodeWord(index: number): number {
+    if (index >>> 0 !== index || index >= this.nodeCount) invalidNodeIndex(index);
+    return index * NODE_WORDS;
   }
 
   // The constructor validates the complete fixed-width node table, and
-  // nodeOffset validates its index. Read each word in one operation while
-  // preserving little-endian decoding even in an unaligned byte view.
+  // nodeWord validates its index.
   kind(index: number): number {
-    return this.view.getUint32(this.nodeOffset(index) + NODE_OFFSET_KIND, true);
+    return this.words[this.nodeWord(index) + WORD_KIND]!;
   }
   pos(index: number): number {
-    return this.view.getInt32(this.nodeOffset(index) + NODE_OFFSET_POS, true);
+    return this.words[this.nodeWord(index) + WORD_POS]! | 0;
   }
   end(index: number): number {
-    return this.view.getInt32(this.nodeOffset(index) + NODE_OFFSET_END, true);
+    return this.words[this.nodeWord(index) + WORD_END]! | 0;
   }
   flags(index: number): number {
-    return this.view.getUint32(this.nodeOffset(index) + NODE_OFFSET_FLAGS, true);
+    return this.words[this.nodeWord(index) + WORD_FLAGS]!;
   }
   data(index: number): number {
-    return this.view.getUint32(this.nodeOffset(index) + NODE_OFFSET_DATA, true);
+    return this.words[this.nodeWord(index) + WORD_DATA]!;
   }
 
   next(index: number): number {
-    const next = this.view.getUint32(this.nodeOffset(index) + NODE_OFFSET_NEXT, true);
+    const next = this.words[this.nodeWord(index) + WORD_NEXT]!;
     if (next !== 0 && (next <= index || next >= this.nodeCount))
       throw new AstDecodeError("invalid sibling link");
     return next;
   }
 
   parent(index: number): number {
-    const parent = this.view.getUint32(this.nodeOffset(index) + NODE_OFFSET_PARENT, true);
+    const parent = this.words[this.nodeWord(index) + WORD_PARENT]!;
     if (parent >= this.nodeCount || (index <= 1 ? parent > index : parent >= index))
       throw new AstDecodeError("invalid parent link");
     return parent;
@@ -188,14 +227,14 @@ export class AstWireFile {
   }
 
   string(index: number): string {
-    if (!Number.isInteger(index) || index < 0 || index % 2 !== 0 || index >= this.stringCount * 2)
+    if (index >>> 0 !== index || index % 2 !== 0 || index >= this.stringCount * 2)
       throw new AstDecodeError(`invalid string index ${index}`);
-    const cached = this.stringCache.get(index);
+    const cached = this.stringCache[index / 2];
     if (cached !== undefined) return cached;
     const start = astU32(this.bytes, this.stringOffsets + index * 4);
     const end = astU32(this.bytes, this.stringOffsets + (index + 1) * 4);
     const text = decodeAstString(this.bytes, this.strings + start, end - start);
-    this.stringCache.set(index, text);
+    this.stringCache[index / 2] = text;
     return text;
   }
 
@@ -250,7 +289,7 @@ export class AstWireFile {
   }
 
   firstChild(index: number): number {
-    this.nodeOffset(index);
+    this.nodeWord(index);
     return index + 1 < this.nodeCount && this.parent(index + 1) === index ? index + 1 : 0;
   }
 
@@ -360,7 +399,7 @@ export class AstWireFile {
     const result: number[] = [];
     for (let i = 0; i < count; i++) {
       const index = reader.uint();
-      this.nodeOffset(index);
+      this.nodeWord(index);
       if (index === 0 || this.kind(index) === KIND_NODE_LIST)
         throw new AstDecodeError("structured reference is not a node");
       result.push(index);
