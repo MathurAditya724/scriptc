@@ -180,6 +180,7 @@ export {
 } from "./backend/external-c.js";
 export { warmNativeCaches } from "./backend/warm-cache.js";
 export { mergeNativeProfiles as mergeProfiles } from "./backend/native-codegen.js";
+export { collectGarbageUnderHeapPressure } from "./heap-collection.js";
 export {
   ANDROID_MIN_API,
   IPHONEOS_MIN_VERSION,

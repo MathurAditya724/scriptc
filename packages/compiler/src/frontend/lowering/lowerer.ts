@@ -1,3 +1,4 @@
+import { relieveHeapPressure } from "../../heap-pressure.js";
 import { onlyForwarded } from "./typed-arguments.js";
 import {
   needsGeneralNodeStreams,
@@ -7789,6 +7790,7 @@ export class Lowerer {
                 this.shapes.withDeclaredOrderPriority(ref, () => this.lowerClassMembers(info)),
               ),
             );
+            relieveHeapPressure();
           }
         }
         while (instLowered < this.instantiationQueue.length) {
@@ -7816,6 +7818,7 @@ export class Lowerer {
                   ),
                 ),
               );
+              relieveHeapPressure();
             } catch (e) {
               if (!(e instanceof PoisonError)) throw e;
             }
@@ -7892,6 +7895,7 @@ export class Lowerer {
               this.shapes.withDeclaredOrderPriority(priority, unit.lower),
             );
             if (fn) loweredUnits.set(name, fn);
+            relieveHeapPressure();
           } catch (e) {
             if (!(e instanceof PoisonError)) throw e;
           }
