@@ -13,6 +13,8 @@
  *
  *   pnpm node-compat                fetch latest-v24.x and rewrite the snapshot
  *   pnpm node-compat --check        fetch and fail if the snapshot would change
+ *   pnpm node-compat --local        rewrite the snapshot without fetching: reclassify
+ *                                   the committed rows from the current sources
  *   pnpm node-compat:check          offline implementation/profile drift check
  */
 
@@ -1013,6 +1015,34 @@ function publicSnapshot(snapshot) {
   };
 }
 
+/** The committed ledger with every row's classification recomputed from
+ * the current sources. The rows themselves come from the pinned Node docs,
+ * so while the pin is unchanged this is what a fetching run writes. */
+function reclassify(snapshot) {
+  if (snapshot.nodeVersion !== pin.version || snapshot.nodeCommit !== pin.commit) {
+    throw new Error(
+      `the ledger targets Node ${snapshot.nodeVersion}, the pin ${pin.version}; run 'pnpm node-compat' to fetch the new docs`,
+    );
+  }
+  const ctx = classificationContext();
+  const ancestors = [];
+  for (const row of snapshot.rows) {
+    ancestors.length = row.depth;
+    const parentSignature = ancestors[row.depth - 1]?.signature;
+    row.static = classifyStatic(row, null, ctx, parentSignature);
+    ancestors[row.depth] = row;
+  }
+  for (const chapter of snapshot.chapters) {
+    const chapterRows = snapshot.rows.filter((row) => row.chapter === chapter.slug);
+    chapterRows[0].static = summarizeTier(
+      chapterRows,
+      "static",
+      ctx.compilerCompat.chapterPolicies[chapter.slug],
+    );
+  }
+  return snapshot;
+}
+
 function checkLocal() {
   for (const path of retiredOutputPaths) {
     if (existsSync(path))
@@ -1109,6 +1139,15 @@ async function fetchText(url) {
 async function main() {
   const args = new Set(process.argv.slice(2));
   if (args.has("--check-local")) return checkLocal();
+  if (args.has("--local")) {
+    const snapshot = reclassify(JSON.parse(readFileSync(internalOutputPath, "utf8")));
+    writeFileSync(internalOutputPath, render(snapshot));
+    writeFileSync(publicOutputPath, render(publicSnapshot(snapshot)));
+    console.log(
+      `reclassified the compatibility ledger and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
+    );
+    return;
+  }
 
   const [allText, indexMarkdown] = await Promise.all([
     fetchText(pin.allJsonUrl),

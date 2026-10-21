@@ -142,7 +142,9 @@ Never hand-edit these files:
 - `internal/compatibility/generated/node-v24-internal.json`
 - `docs/src/generated/node-v24-compatibility.json`
 
-Change compiler decision sources or the implementation-owned compatibility manifests, then regenerate. Use `pnpm manifest` when compiler decision tables change and `pnpm node-compat` whenever the Node pin, compatibility manifests, compiler surface manifest, changes.
+Change compiler decision sources or the implementation-owned compatibility manifests, then regenerate. Use `pnpm manifest` when compiler decision tables change and `pnpm node-compat` whenever the Node pin, compatibility manifests, compiler surface manifest, changes. `pnpm node-compat --local` reclassifies the committed ledger without fetching Node's docs; it writes the same files as `pnpm node-compat` while the Node pin is unchanged.
+
+Never resolve a merge conflict in these files by hand. Resolve the source conflicts, then run `node scripts/regen-generated.mjs`: it takes the merged-in branch's version of each conflicted generated file, regenerates all of them from the merged sources, and stages the ones that conflicted.
 
 The public docs artifact must not expose repository test paths, internal source identifiers, engineering evidence bookkeeping, documentation/metadata headings, command-line or configuration-only entries, or rows that are N/A in the native tier. Those remain in the complete internal census under `internal/compatibility/generated/`.
 
