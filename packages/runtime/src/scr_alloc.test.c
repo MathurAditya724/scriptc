@@ -442,6 +442,68 @@ static void check_trim(void) {
   }
   free(trim_blocks);
 }
+
+/* A thread that parks returns the pages faulted in past each slice's
+ * frontier (the rest of the frontier's huge page and the pages faulted in
+ * ahead), and its blocks stay; the next thread to claim the arena carves on
+ * from the frontier, zeroed. FRONTIER_SIZE is a class the other checks leave
+ * unused, and FRONTIER_BYTES carves past SCR_SA_HUGE_AFTER. */
+enum { FRONTIER_SIZE = 120, FRONTIER_BYTES = 12 << 20, FRONTIER_MORE = 4096 };
+static unsigned char **frontier_blocks;
+static size_t frontier_n;
+static uintptr_t frontier_hi, frontier_end;
+static size_t frontier_past;
+
+static void *frontier_allocate(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  for (size_t i = 0; i < frontier_n; i++) {
+    unsigned char *p = scr_mem_alloc(FRONTIER_SIZE);
+    assert(p && owned(p));
+    fill(p, FRONTIER_SIZE, (unsigned char)i);
+    frontier_blocks[i] = p;
+    if ((uintptr_t)p + FRONTIER_SIZE > frontier_hi) frontier_hi = (uintptr_t)p + FRONTIER_SIZE;
+  }
+  uintptr_t c = ((uintptr_t)frontier_blocks[0] - scr_sa.base) >> scr_sa.shift;
+  frontier_end = scr_sa.base + ((c + 1) << scr_sa.shift);
+  scr_sa_thread_shares();
+  scr_sa_thread_park();
+  return NULL;
+}
+
+static void *frontier_continue(void *arg) {
+  (void)arg;
+  for (size_t i = 0; i < FRONTIER_MORE; i++) {
+    unsigned char *p = scr_mem_calloc(FRONTIER_SIZE);
+    assert(p && owned(p));
+    for (size_t k = 0; k < FRONTIER_SIZE; k++) assert(p[k] == 0);
+    if ((uintptr_t)p >= frontier_hi) frontier_past++;
+    scr_mem_free(p);
+  }
+  scr_sa_thread_park();
+  return NULL;
+}
+
+static void check_release_frontiers(void) {
+  frontier_n = FRONTIER_BYTES / FRONTIER_SIZE;
+  frontier_blocks = malloc(frontier_n * sizeof *frontier_blocks);
+  assert(frontier_blocks);
+  pthread_t t;
+  assert(pthread_create(&t, NULL, frontier_allocate, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+  scr_sa_wait_trims();
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  uintptr_t from = (frontier_hi + page - 1) & ~(uintptr_t)(page - 1);
+  uintptr_t to = from + ((size_t)4 << 20) < frontier_end ? from + ((size_t)4 << 20) : frontier_end;
+  if (to > from) assert(resident_pages(from, to) == 0);
+  for (size_t i = 0; i < frontier_n; i++) verify(frontier_blocks[i], FRONTIER_SIZE, (unsigned char)i);
+  assert(pthread_create(&t, NULL, frontier_continue, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+  /* The freed block comes back each time: one block past the frontier. */
+  assert(frontier_past >= 1);
+  for (size_t i = 0; i < frontier_n; i++) scr_mem_free(frontier_blocks[i]); /* remote frees */
+  free(frontier_blocks);
+}
 #endif
 
 #if defined(SCR_WORKERS) && SCR_SMALL_ALLOC && defined(__linux__)
@@ -920,6 +982,7 @@ int main(void) {
   check_threads();
 #ifdef __linux__
   check_trim();
+  check_release_frontiers();
   check_discard();
   check_discard_delay_grows();
   check_discard_waits_for_loop();

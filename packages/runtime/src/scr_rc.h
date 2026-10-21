@@ -291,6 +291,10 @@ void scr_rt_free(void *p);
  * of [lo, hi), aligned to 256 KiB, in ahead of use; builds without the
  * helper ignore it. */
 void scr_mem_prefault(void *lo, void *hi);
+/* Returns the pages of [lo, hi) (page aligned), which hold no data, to the
+ * system (Linux): pre-fault requests for them are dropped first, so they
+ * stay returned. Other builds ignore it. */
+void scr_mem_release_ahead(void *lo, void *hi);
 /* Reorders ptrs, distinct pointers `offset` bytes into blocks that are
  * about to be freed in array order, so that the free lists hand the blocks
  * back in ascending address order (scr_alloc.c). Builds without the
