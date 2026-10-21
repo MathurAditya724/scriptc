@@ -1429,9 +1429,12 @@ export function lowerToNumberArgument(lowerer: Lowerer, node: ts.Expression): Ir
  * any. When an argument's conversion can run program code (valueOf or
  * toString on a dynamic value) and a later argument follows, the arguments
  * evaluate into temporaries first and convert in order after. `lowerOther`
- * lowers an argument that takes no conversion (a spread), or returns null
- * for a ToNumber argument. Returns the temporaries' statements (empty when
- * none are needed) and the converted values. */
+ * lowers an argument that takes no conversion (a spread's array), or returns
+ * null for a ToNumber argument; with temporaries, such an array is copied
+ * where it is evaluated, since JavaScript reads a spread's elements then,
+ * before a later conversion's valueOf could change them. Returns the
+ * temporaries' statements (empty when none are needed) and the converted
+ * values. */
 export function lowerToNumberArguments(
   lowerer: Lowerer,
   nodes: readonly ts.Expression[],
@@ -1439,7 +1442,9 @@ export function lowerToNumberArguments(
 ): { stmts: IrStmt[]; values: IrExpr[] } {
   const operands = nodes.map((node): NumberOperand => {
     const other = lowerOther?.(node);
-    return other ? { value: other, convert: null, runsCode: false } : numberOperand(lowerer, node);
+    return other
+      ? { value: other, convert: null, runsCode: false, spread: true }
+      : numberOperand(lowerer, node);
   });
   const late = operands.slice(0, -1).some((operand) => operand.runsCode);
   if (!late) {
@@ -1451,7 +1456,18 @@ export function lowerToNumberArguments(
     if (operand.value.kind === "numLit") return operand.value;
     const temp = lowerer.declareHiddenLocal("%numberArgument", operand.value.type);
     const loc = operand.value.loc;
-    stmts.push({ kind: "varDecl", localId: temp.id, init: operand.value, loc });
+    const init: IrExpr =
+      operand.spread && operand.value.type.kind === "array"
+        ? {
+            kind: "arrIntrinsic",
+            method: "slice",
+            receiver: operand.value,
+            args: [numLit(0, loc), numLit(Infinity, loc)],
+            type: operand.value.type,
+            loc,
+          }
+        : operand.value;
+    stmts.push({ kind: "varDecl", localId: temp.id, init, loc });
     const read = varRef(temp.id, operand.value.type, loc);
     return operand.convert ? operand.convert(read) : read;
   });
@@ -1460,11 +1476,13 @@ export function lowerToNumberArguments(
 
 /** An argument a ToNumber site lowers: its evaluated value and the
  * conversion that makes it a number (null when the value already is one).
- * `runsCode`: the conversion can call program code. */
+ * `runsCode`: the conversion can call program code. `spread`: the value is
+ * a spread's array (lowerToNumberArguments' `lowerOther`). */
 interface NumberOperand {
   value: IrExpr;
   convert: ((value: IrExpr) => IrExpr) | null;
   runsCode: boolean;
+  spread?: boolean;
 }
 
 function numberOperand(lowerer: Lowerer, node: ts.Expression): NumberOperand {

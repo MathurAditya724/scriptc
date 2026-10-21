@@ -75,3 +75,23 @@ try {
 } catch (e) {
   console.log(e.message, order);
 }
+
+// A spread reads its elements where it is evaluated, before an earlier
+// argument's valueOf runs.
+const values = [1, 2];
+const mutator = {
+  valueOf() {
+    values[0] = 100;
+    values.push(50);
+    return 3;
+  },
+};
+console.log(Math.max(mutator, ...values), values.join(","));
+const more = [4];
+const resetter = {
+  valueOf() {
+    more[0] = -1;
+    return 0;
+  },
+};
+console.log(Math.hypot(resetter, ...more, 3), more.join(","));
