@@ -1,3 +1,4 @@
+import { relieveHeapPressure } from "../../heap-pressure.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
 import { JsIcSites } from "../../ir/js-ic.js";
@@ -458,6 +459,8 @@ export function emitLlvmModuleSource(
   input: IrModule,
   options: LlvmTargetOptions = {},
 ): string | readonly string[] {
+  // IR validation, contracts and the frontend's disposal run after lowering without checks.
+  relieveHeapPressure(true);
   const mod = unshareNodes(input);
   const parts = new LlEmitter(
     options.debugSources === undefined

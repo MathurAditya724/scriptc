@@ -1,4 +1,5 @@
 /* LlEmitter's module-level output: module parts, helper definitions, library declarations and FFI callback definitions. */
+import { relieveHeapPressure } from "../../heap-pressure.js";
 import { emitWasmModules } from "./wasm-modules.js";
 import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import { JS_IC_WORDS } from "./js-ic.js";
@@ -66,6 +67,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     const def = emitter.emitFunction(fn);
     fnDefs.push(def);
     emitter.fnDefText.set(fn.name, def);
+    relieveHeapPressure();
   }
   emitter.selectStacklessAsync(fnDefs);
   const errorViews: string[] = [];
