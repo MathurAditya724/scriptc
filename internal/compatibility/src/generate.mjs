@@ -450,12 +450,6 @@ function summarizeTier(rows, key, chapterPolicy) {
   return tier("unreviewed", "", { source: "derived:descendants" });
 }
 
-function statusCounts(rows, key) {
-  const counts = Object.fromEntries(STATUSES.map((status) => [status, 0]));
-  for (const row of rows) if (row.scope === "api") counts[row[key].status] += 1;
-  return counts;
-}
-
 function verifiedAnchorIds(html) {
   return new Set(
     [...html.matchAll(/<a class="mark" href="#[^"]+" id="([^"]+)">#/g)].map((match) => match[1]),
@@ -527,7 +521,6 @@ function buildSnapshot({ allJson, indexMarkdown, allSha256, indexSha256 }) {
       title: link.title,
       entries: chapterRows.length,
       apiEntries: chapterRows.filter((row) => row.scope === "api").length,
-      static: statusCounts(chapterRows, "static"),
     });
     rows.push(...chapterRows);
   }
@@ -972,7 +965,6 @@ function projectPublicMatrix(snapshot) {
       title: chapter.title,
       entries: chapterRows.length,
       apiEntries: chapterRows.length,
-      static: statusCounts(chapterRows, "static"),
     });
     rows.push(...chapterRows);
   }
