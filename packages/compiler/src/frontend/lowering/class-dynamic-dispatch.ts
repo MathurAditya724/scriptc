@@ -2568,6 +2568,27 @@ export class ClassDynamicDispatch {
             receiver,
           );
           const bag = this.readPropertyBagOrEmpty(lowerer, value, loc);
+          const methodKey: IrExpr = {
+            kind: "strLit",
+            value: dispatch.source.method,
+            type: STRING,
+            loc,
+          };
+          const bagHas: IrExpr = {
+            kind: "libCall",
+            fn: "dyn.hasKey",
+            args: [bag, methodKey],
+            type: BOOL,
+            loc,
+          };
+          // An observed prototype slot answers through the bag when the bag
+          // holds the name (own or through its prototype). A bag read as a
+          // fresh empty object (an instance with no own dynamic properties
+          // whose bag initializer predates the class's prototype data) does
+          // not, so the method then comes from the class's prototype data.
+          const prototype = prototypeMethod
+            ? classPrototypeData(lowerer, info, loc, receiver)
+            : null;
           dispatch.callback.body.unshift({
             kind: "if",
             cond: condition,
@@ -2576,18 +2597,7 @@ export class ClassDynamicDispatch {
                 kind: "return",
                 value: {
                   kind: "ternary",
-                  cond: prototypeMethod
-                    ? { kind: "boolLit", value: true, type: BOOL, loc }
-                    : {
-                        kind: "libCall",
-                        fn: "dyn.hasKey",
-                        args: [
-                          bag,
-                          { kind: "strLit", value: dispatch.source.method, type: STRING, loc },
-                        ],
-                        type: BOOL,
-                        loc,
-                      },
+                  cond: prototype ? { kind: "boolLit", value: true, type: BOOL, loc } : bagHas,
                   then: {
                     kind: "dynObjLit",
                     fields: [
@@ -2595,8 +2605,17 @@ export class ClassDynamicDispatch {
                         key: { kind: "strLit", value: "value", type: STRING, loc },
                         value: {
                           kind: "dynKeyGet",
-                          value: bag,
-                          key: { kind: "strLit", value: dispatch.source.method, type: STRING, loc },
+                          value: prototype
+                            ? {
+                                kind: "ternary",
+                                cond: bagHas,
+                                then: bag,
+                                else_: prototype,
+                                type: DYN,
+                                loc,
+                              }
+                            : bag,
+                          key: methodKey,
                           type: DYN,
                           loc,
                         },
