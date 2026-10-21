@@ -2100,6 +2100,14 @@ static void scr_detach_teardown(void) {
 }
 #endif
 
+#if defined(__linux__)
+/* LLVM's profile writer. Instrumented builds (--profile-generate) link the
+ * profile runtime, which writes the profile from an atexit handler that the
+ * _Exit below skips, so the exit writes it first. Every other build leaves the
+ * weak reference null. */
+extern int __llvm_profile_write_file(void) __attribute__((weak));
+#endif
+
 void scr_process_exit(double code) {
   /* process.exit(code) assigns process.exitCode first, so a code that is
    * not a safe integer throws its RangeError and the program continues. */
@@ -2123,6 +2131,7 @@ void scr_process_exit(double code) {
    * expected). scr_init's flush-at-exit is also skipped — flush here. */
   fflush(stdout);
 #if defined(__linux__)
+  if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
   scr_detach_teardown();
 #endif
   _Exit((int)code);
