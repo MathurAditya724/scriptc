@@ -1352,7 +1352,7 @@ ScrArr *scr_emitter_event_names(ScrEmitter *em) {
  * The once wrapper is runtime-internal here, so BOTH forms answer the
  * original listeners (SEMANTICS.md documents the rawListeners
  * divergence). */
-static const ScrArrOps scr_ee_closure_arr_ops = { &scr_closure_retain_v, &scr_closure_release_v,
+static ScrArrOps scr_ee_closure_arr_ops = { &scr_closure_retain_v, &scr_closure_release_v,
                                                   &scr_closure_trace_v };
 
 ScrArr *scr_emitter_listeners(ScrEmitter *em, ScrStr *name) {
