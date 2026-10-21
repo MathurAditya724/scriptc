@@ -2918,6 +2918,12 @@ export class Lowerer {
    * for the duration of that call, the receiver lowers to the Transform of
    * the value held in the named local. */
   readonly hashStreamReceivers = new Map<ts.Expression, { localId: string; type: IrType }>();
+  /** fs call arguments evaluated ahead of a URL path's conversion
+   * (builtins/fs-paths.ts): each lowers to the hidden local that holds its
+   * value, which is null until the path's lowering has saved it. */
+  readonly stagedArguments = new Map<ts.Expression, { localId: string; type: IrType } | null>();
+  /** The staged arguments that follow each such URL path, in order. */
+  readonly stagedAfterPath = new Map<ts.Expression, ts.Expression[]>();
   readonly moduleNsParamOverrides = new Map<
     ts.ParameterDeclaration,
     IrType & { kind: "moduleNs" }
@@ -10003,6 +10009,8 @@ export class Lowerer {
     // retain their own checked conversion and must not be erased here.
     while (ts.isParenthesizedExpression(node) || ts.isSatisfiesExpression(node))
       node = node.expression;
+    const staged = this.stagedArgument(node);
+    if (staged) return expected ? this.coerceInto(node, staged, expected) : staged;
     if (expected) {
       if (ts.isConditionalExpression(node)) return lowerTernary(this, node, expected);
       const escaped = this.neverAssertionInto(node, expected);
@@ -12035,7 +12043,19 @@ export class Lowerer {
   lowerExpr(expr: ts.Expression): IrExpr {
     const hash = this.hashStreamReceivers.get(expr);
     if (hash) return hashStreamOf(varRef(hash.localId, hash.type, locOf(expr)));
-    return lowerExpr(this, expr);
+    return this.stagedArgument(expr) ?? lowerExpr(this, expr);
+  }
+
+  /** The saved value of a staged fs argument (stagedArguments), or null for
+   * every other expression. */
+  private stagedArgument(node: ts.Expression): IrExpr | null {
+    if (this.stagedArguments.size === 0) return null;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (!this.stagedArguments.has(node)) return null;
+    const slot = this.stagedArguments.get(node);
+    if (!slot)
+      throw new InternalCompilerError("an fs argument lowered before the URL path it follows");
+    return varRef(slot.localId, slot.type, locOf(node));
   }
 
   lowerIntrinsicProperty(expr: ts.PropertyAccessExpression): IrExpr | null {
