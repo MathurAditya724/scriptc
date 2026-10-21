@@ -51,3 +51,19 @@ for (const zone of zones) {
   }
   console.log(zone, "scattered", checksum(scattered));
 }
+
+// Tucumán changed its offset twice within 12 days in June 2004. Node's
+// date cache takes an offset that matches 19 days apart as constant in
+// between, so these reads answer by their order: ascending reads keep the
+// May offset through June 12, descending reads see the June offset. Both
+// are Node's answers.
+const tucuman = [];
+for (let day = 25; day <= 31; day++) tucuman.push(Date.UTC(2004, 4, day, 12));
+for (let day = 1; day <= 20; day++) tucuman.push(Date.UTC(2004, 5, day, 12));
+for (const order of ["ascending", "descending"]) {
+  process.env.TZ = "UTC";
+  process.env.TZ = "America/Argentina/Tucuman";
+  const reads = new Map<number, string>();
+  for (const t of order === "ascending" ? tucuman : tucuman.slice().reverse()) reads.set(t, fields(t));
+  console.log(order, tucuman.map((t) => reads.get(t)).join(" | "));
+}

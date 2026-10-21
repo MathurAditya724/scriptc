@@ -10835,11 +10835,14 @@ static SCR_TL ScrDateLocalCache scr_date_local_cache;
 
 static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out);
 
-/* The local zone's offset over an interval of instants. When the offset and
- * DST flag at an instant equal those 19 days later, every instant between
- * has them too: zones do not change offset twice within 19 days (Node's V8
- * date cache relies on the same span, kDefaultDSTDeltaInSec). Consecutive
- * Dates then convert without a localtime call each. */
+/* The local zone's offset over an interval of instants, as Node's V8 date
+ * cache keeps it (kDefaultDSTDeltaInSec): when the offset and DST flag at an
+ * instant equal those 19 days later, every instant between takes them too,
+ * and consecutive Dates convert without a localtime call each. A zone that
+ * changed its offset twice within 19 days (America/Argentina/Tucuman in June
+ * 2004) breaks that assumption in V8 as well: the answers between the two
+ * changes then depend on the order of the reads, and this cache gives the
+ * same answers as Node for the same order (corpus date-zone-intervals.ts). */
 #define SCR_DATE_ZONE_SPAN (19.0 * 86400000.0)
 typedef struct {
   bool valid;
