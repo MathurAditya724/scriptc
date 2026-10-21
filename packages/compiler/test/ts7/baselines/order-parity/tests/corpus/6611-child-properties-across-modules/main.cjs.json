@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6611-child-properties-across-modules/spawner.cjs",
+  "<repo>/tests/corpus/6611-child-properties-across-modules/patcher.cjs",
+  "<repo>/tests/corpus/6611-child-properties-across-modules/main.cjs"
+ ],
+ "diags": []
+}

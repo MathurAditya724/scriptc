@@ -2159,6 +2159,10 @@ export class Lowerer {
   /** Inline program-module require calls whose %init the enclosing member
    * read or member call is already sequencing (cjs-inline-require.ts). */
   readonly inlineRequireInitDone = new Set<ts.CallExpression>();
+  /** Whether lowered code writes properties onto children, and what the
+   * program's JavaScript adds to them (handle-properties.ts). */
+  writesOntoChildren = false;
+  childAdditions: { written: ReadonlySet<string>; any: boolean } | null = null;
   /** Bindings whose unchecked string arithmetic can produce either a number
    * (NaN for an absent read) or a string. Preserve that result union at bare
    * reads instead of applying the checker-bare string narrowing adapter. */

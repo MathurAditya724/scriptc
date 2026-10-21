@@ -12,6 +12,7 @@
  * child (the compiler's handle-properties.ts). */
 #include "scr_runtime.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -60,13 +61,33 @@ static ScrDyn *hp_props_of(void *child) {
   return props;
 }
 
-static bool hp_has(const ScrDyn *props, const char *key, size_t key_len) {
-  if (!props) return false;
+static ScrDynEntry *hp_entry(const ScrDyn *props, const char *key, size_t key_len) {
+  if (!props) return NULL;
   for (size_t i = 0; i < props->v.obj.len; i++) {
-    const ScrDynEntry *e = &props->v.obj.entries[i];
-    if (e->key_len == key_len && !memcmp(e->key, key, key_len)) return true;
+    ScrDynEntry *e = &props->v.obj.entries[i];
+    if (e->key_len == key_len && !memcmp(e->key, key, key_len)) return e;
   }
-  return false;
+  return NULL;
+}
+
+static bool hp_has(const ScrDyn *props, const char *key, size_t key_len) {
+  return hp_entry(props, key, key_len) != NULL;
+}
+
+/* A property the program added, read with the child as `this`: an
+ * accessor's getter runs on the child, not on the table object that holds
+ * it (`Object.defineProperty(child, "x", { get() { return this.pid; } })`).
+ * +1, or NULL with the exception pending. */
+static ScrDyn *hp_read(ScrDyn *props, ScrDyn *self, const char *key, size_t key_len) {
+  ScrDynEntry *e = hp_entry(props, key, key_len);
+  if (!e || !e->accessor) return scr_dyn_obj_read(props, key, key_len);
+  if (!e->getter) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *getter = scr_dyn_retain(e->getter);
+  scr_dyn_this_push_dyn(self);
+  ScrDyn *result = scr_dyn_call(getter, NULL, 0, "getter");
+  scr_dyn_this_pop();
+  scr_dyn_release(getter);
+  return result;
 }
 
 /* The class's methods as values (`spawned.kill.bind(spawned)`): a function
@@ -99,7 +120,12 @@ static ScrDyn *hp_method_value(void *h, const char *key, size_t key_len) {
 
 static ScrDyn *hp_get(void *h, const char *key, size_t key_len) {
   ScrDyn *props = hp_find(h);
-  if (hp_has(props, key, key_len)) return scr_dyn_obj_read(props, key, key_len);
+  if (hp_has(props, key, key_len)) {
+    ScrDyn *self = scr_dyn_new_handle(h, SCR_DYNH_CHILD);
+    ScrDyn *result = hp_read(props, self, key, key_len);
+    scr_dyn_release(self);
+    return result;
+  }
   ScrDyn *value = hp_orig->get(h, key, key_len);
   if (value || scr_exc_pending()) return value;
   return hp_method_value(h, key, key_len);
@@ -107,7 +133,29 @@ static ScrDyn *hp_get(void *h, const char *key, size_t key_len) {
 
 static bool hp_set(void *h, const char *key, size_t key_len, const ScrDyn *value) {
   ScrDyn *props = hp_find(h);
-  if (!hp_has(props, key, key_len)) {
+  ScrDynEntry *entry = hp_entry(props, key, key_len);
+  if (entry && entry->accessor) {
+    /* An accessor's setter runs on the child. Without one the write throws
+     * the strict-mode TypeError, as the other handle getters do. */
+    if (!entry->setter) {
+      char msg[160];
+      int n = snprintf(msg, sizeof msg, "Cannot set property %.*s of #<ChildProcess> which has only a getter",
+                       (int)key_len, key);
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, n < 0 ? 0 : (size_t)n);
+      return true;
+    }
+    ScrDyn *setter = scr_dyn_retain(entry->setter);
+    ScrDyn *self = scr_dyn_new_handle(h, SCR_DYNH_CHILD);
+    ScrDyn *arg = (ScrDyn *)value;
+    scr_dyn_this_push_dyn(self);
+    ScrDyn *result = scr_dyn_call(setter, &arg, 1, "setter");
+    scr_dyn_this_pop();
+    scr_dyn_release(self);
+    scr_dyn_release(setter);
+    if (result) scr_dyn_release(result);
+    return true;
+  }
+  if (!entry) {
     if (hp_orig->set && hp_orig->set(h, key, key_len, value)) return true;
     props = hp_props_of(h);
   }
@@ -122,7 +170,7 @@ static ScrDyn *hp_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *cons
   ScrDyn *props = hp_find(h);
   size_t len = strlen(method);
   if (!hp_has(props, method, len)) return hp_orig->invoke(h, self, method, args, argc, what);
-  ScrDyn *fn = scr_dyn_obj_read(props, method, len);
+  ScrDyn *fn = hp_read(props, self, method, len);
   if (!fn) return NULL;
   scr_dyn_this_push_dyn(self);
   ScrDyn *result = scr_dyn_call(fn, args, argc, what);

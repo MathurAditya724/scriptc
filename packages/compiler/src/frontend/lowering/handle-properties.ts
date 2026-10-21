@@ -17,8 +17,6 @@ import { everyStmt } from "../../ir/traverse.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
 
-const writesOntoChildren = new WeakSet<Lowerer>();
-
 /** `child.name = value` in a JavaScript file over a typed child: the write
  * lands in the child's property table through its checked-dynamic box. */
 export function lowerChildPropertyWrite(
@@ -28,7 +26,7 @@ export function lowerChildPropertyWrite(
   value: ts.Expression,
   loc: SrcLoc,
 ): IrStmt {
-  writesOntoChildren.add(lowerer);
+  lowerer.writesOntoChildren = true;
   return {
     kind: "exprStmt",
     expr: {
@@ -54,7 +52,7 @@ export function lowerChildMethodValue(lowerer: Lowerer, node: ts.Expression): Ir
   if (!isJsSourceFile(ts.getSourceFileOfNode(node))) return null;
   const recv = tryLowerExpression(lowerer, node.expression);
   if (recv?.type.kind !== "child") return null;
-  writesOntoChildren.add(lowerer);
+  lowerer.writesOntoChildren = true;
   const loc = locOf(node);
   return {
     kind: "dynKeyGet",
@@ -110,22 +108,22 @@ interface ChildAdditions {
   any: boolean;
 }
 
-const additionsOf = new WeakMap<Lowerer, ChildAdditions>();
-
 /** What the program's JavaScript adds to children: `child.name = value`
- * writes onto typed children in files that load child_process, and
- * defineProperty calls in a program that does. */
+ * writes onto typed children in any JavaScript file of a program that
+ * loads child_process, and defineProperty calls in such a program. */
 function childAdditions(lowerer: Lowerer): ChildAdditions {
-  let known = additionsOf.get(lowerer);
+  let known = lowerer.childAdditions;
   if (known) return known;
   const written = new Set<string>();
-  let spawns = false;
-  let defines = false;
-  for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (sf.isDeclarationFile || !isJsSourceFile(sf)) continue;
-    if (sf.text.includes("defineProperty")) defines = true;
-    if (!sf.text.includes("child_process")) continue;
-    spawns = true;
+  const files = lowerer.program
+    .getImplementationSourceFiles()
+    .filter((sf) => !sf.isDeclarationFile && isJsSourceFile(sf));
+  const spawns = files.some((sf) => sf.text.includes("child_process"));
+  const defines = files.some((sf) => sf.text.includes("defineProperty"));
+  // A child can reach any module (`module.exports = (child) => { child.x =
+  // ... }`), so once some file loads child_process every JavaScript file's
+  // writes onto children count.
+  for (const sf of spawns ? files : []) {
     const visit = (node: ts.Node): void => {
       if (
         ts.isBinaryExpression(node) &&
@@ -140,7 +138,7 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
     visit(sf);
   }
   known = { written, any: written.size > 0 || (spawns && defines) };
-  additionsOf.set(lowerer, known);
+  lowerer.childAdditions = known;
   return known;
 }
 
@@ -163,7 +161,7 @@ function childReceiverOf(
   if (!untyped && CHILD_MEMBERS.has(name) && !additions.written.has(name)) return null;
   const recv = tryLowerExpression(lowerer, access.expression);
   if (recv?.type.kind !== "child") return null;
-  if (additions.any) writesOntoChildren.add(lowerer);
+  if (additions.any) lowerer.writesOntoChildren = true;
   return recv;
 }
 
@@ -226,7 +224,7 @@ export function awaitsChildThenable(lowerer: Lowerer, node: ts.Node, value: IrEx
     !childAdditions(lowerer).any
   )
     return false;
-  writesOntoChildren.add(lowerer);
+  lowerer.writesOntoChildren = true;
   return true;
 }
 
@@ -240,7 +238,7 @@ const RENAMES: ReadonlyMap<IrLibFn, IrLibFn> = new Map<IrLibFn, IrLibFn>([
 /** Switches a program that can add properties to children onto the
  * property-table entries (in place) and installs the table in %main. */
 export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[]): void {
-  if (!writesOntoChildren.has(lowerer) && !childAdditions(lowerer).any) return;
+  if (!lowerer.writesOntoChildren && !childAdditions(lowerer).any) return;
   const calls: (IrExpr & { kind: "libCall" })[] = [];
   const visitor = {
     expr: (e: IrExpr): boolean => {
