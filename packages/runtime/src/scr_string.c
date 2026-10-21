@@ -1769,14 +1769,9 @@ static inline double scr_to_integer_or_infinity(double x) {
   return isnan(x) ? 0.0 : x;
 }
 
-/* Byte substring search (needle and hay are both canonical WTF-8,
- * so any byte-level match starts on a char boundary — UTF-8 is
- * self-synchronizing). Empty needle matches at hay. */
-static const char *scr_byte_find(const char *hay, size_t hay_len,
-                                  const char *nee, size_t nee_len) {
-  if (nee_len == 0) return hay;
-  if (nee_len > hay_len) return NULL;
-  if (nee_len == 1) return memchr(hay, (unsigned char)nee[0], hay_len);
+/* scr_byte_find for a needle of at least two bytes, no longer than hay. */
+static __attribute__((noinline)) const char *scr_byte_find_long(const char *hay, size_t hay_len,
+                                                                const char *nee, size_t nee_len) {
   const unsigned char first = (unsigned char)nee[0];
   const unsigned char second = (unsigned char)nee[1];
   /* The last possible match start. */
@@ -1824,6 +1819,18 @@ static const char *scr_byte_find(const char *hay, size_t hay_len,
     p = found + 1;
   }
   return NULL;
+}
+
+/* Byte substring search (needle and hay are both canonical WTF-8,
+ * so any byte-level match starts on a char boundary — UTF-8 is
+ * self-synchronizing). Empty needle matches at hay. The one-byte case,
+ * every split on a separator character, goes to memchr without a frame. */
+static inline const char *scr_byte_find(const char *hay, size_t hay_len,
+                                        const char *nee, size_t nee_len) {
+  if (nee_len == 0) return hay;
+  if (nee_len > hay_len) return NULL;
+  if (nee_len == 1) return memchr(hay, (unsigned char)nee[0], hay_len);
+  return scr_byte_find_long(hay, hay_len, nee, nee_len);
 }
 
 /* ── searches for a needle that can match half of a surrogate pair ─────
@@ -2020,6 +2027,13 @@ double scr_str_char_code_at(ScrStr *s, double i) {
 }
 
 double scr_str_index_of(ScrStr *s, ScrStr *needle, double fromIndex) {
+  /* A search from the start of a proven-ASCII receiver: byte offsets are
+   * UTF-16 indexes, and a needle with other bytes is never found. A start
+   * index that is not positive (NaN, -0 or negative) clamps to 0. */
+  if (s->ascii && !(fromIndex > 0)) {
+    const char *found = scr_byte_find(s->data, s->len, needle->data, needle->len);
+    return found ? (double)(found - s->data) : -1.0;
+  }
   double pos = scr_to_integer_or_infinity(fromIndex);
   if (needle->len > s->len) return -1.0;
   ScrSidx *e = scr_sidx_for(s);
@@ -2142,6 +2156,12 @@ static size_t scr_slice_boundary(double v, size_t len16) {
 }
 
 ScrStr *scr_str_slice(ScrStr *s, double start, double end) {
+  /* A proven-ASCII receiver needs no index map (scr_str_slice_units). */
+  if (s->ascii) {
+    size_t from = scr_slice_boundary(scr_to_integer_or_infinity(start), s->len);
+    size_t to = scr_slice_boundary(scr_to_integer_or_infinity(end), s->len);
+    return scr_str_slice_units(s, NULL, from, to);
+  }
   ScrSidx *e = scr_sidx_for(s);
   size_t len16 = scr_sidx_len(s, e);
   size_t from = scr_slice_boundary(scr_to_integer_or_infinity(start), len16);
@@ -2407,8 +2427,10 @@ void scr_str_split_cursor_init(ScrSplitCursor *cursor, uint32_t limit) {
   cursor->pending_unit = 0;
 }
 
-static ScrStr *scr_str_split_piece(const char *bytes, size_t len, ScrStr **scratch) {
-  if (!scratch || len <= 4) return scr_str_from_span(bytes, len);
+/* `ascii`: the bytes are a span of a proven-ASCII string. */
+static ScrStr *scr_str_split_piece(const char *bytes, size_t len, ScrStr **scratch, bool ascii) {
+  if (!scratch || len <= 4) return ascii ? scr_str_from_span_ascii(bytes, len)
+                                         : scr_str_from_span(bytes, len);
   ScrStr *piece = *scratch;
   if (piece && piece->rc == 1 && piece->cap >= len) {
     /* The scratch owner is the only remaining reference. Invalidate all
@@ -2419,10 +2441,12 @@ static ScrStr *scr_str_split_piece(const char *bytes, size_t len, ScrStr **scrat
     memcpy(piece->data, bytes, len);
     piece->len = len;
     piece->data[len] = '\0';
+    piece->ascii = ascii;
   } else {
     ScrStr *fresh = scr_str_alloc_raw(len, len < 64 ? 64 : len);
     memcpy(fresh->data, bytes, len);
     fresh->data[len] = '\0';
+    fresh->ascii = ascii;
     *scratch = fresh;
     scr_str_release(piece);
     piece = fresh;
@@ -2480,7 +2504,7 @@ const char *scr_str_split_cursor_span(ScrStr *s, ScrStr *sep, ScrSplitCursor *cu
 }
 
 ScrStr *scr_str_split_materialize(const char *bytes, size_t length, ScrStr **scratch) {
-  return scr_str_split_piece(bytes, length, scratch);
+  return scr_str_split_piece(bytes, length, scratch, false);
 }
 
 ScrStr *scr_str_split_cursor_next(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor,
@@ -2488,7 +2512,7 @@ ScrStr *scr_str_split_cursor_next(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor
   size_t len;
   const char *bytes = scr_str_split_span(s, sep, cursor, sep->len == 0, &len);
   if (!bytes) return NULL;
-  return scr_str_split_piece(bytes, len, scratch);
+  return scr_str_split_piece(bytes, len, scratch, s->ascii);
 }
 
 /* Move a bounded batch of pieces into array storage in one operation.
@@ -2513,7 +2537,8 @@ static void scr_str_split_fill(ScrArr *out, ScrStr *s, ScrStr *sep,
     size_t count = 0, len;
     const char *bytes;
     while (count < 64 && (bytes = scr_str_split_span(s, sep, cursor, units, &len))) {
-      ScrStr *piece = scr_str_from_span(bytes, len);
+      ScrStr *piece =
+          s->ascii ? scr_str_from_span_ascii(bytes, len) : scr_str_from_span(bytes, len);
       slots[count++] = (uint64_t)(uintptr_t)piece;
     }
     if (count) scr_arr_push_many(out, count, slots);
@@ -2522,18 +2547,43 @@ static void scr_str_split_fill(ScrArr *out, ScrStr *s, ScrStr *sep,
 }
 
 ScrArr *scr_str_split_limit(ScrStr *s, ScrStr *sep, double limit_num) {
-  uint32_t limit = scr_to_uint32(limit_num);
+  /* split(sep) passes the default limit, 2^32 - 1. */
+  uint32_t limit = limit_num == 4294967295.0 ? UINT32_MAX : scr_to_uint32(limit_num);
   /* An empty separator yields one piece per UTF-16 unit: size it once. */
   size_t pieces = 0;
   if (sep->len == 0) {
     pieces = s->ascii ? s->len : scr_sidx_len(s, scr_sidx(s));
     if (pieces > limit) pieces = limit;
   }
-  ScrArr *out = scr_arr_new(SCR_ELEM_STR, pieces);
   ScrSplitCursor cursor;
   scr_str_split_cursor_init(&cursor, limit);
-  if (sep->len == 0) scr_str_split_fill(out, s, sep, &cursor, true);
-  else scr_str_split_fill(out, s, sep, &cursor, false);
+  if (sep->len == 0) {
+    ScrArr *out = scr_arr_new(SCR_ELEM_STR, pieces);
+    scr_str_split_fill(out, s, sep, &cursor, true);
+    return out;
+  }
+  /* Most splits fit one batch: its count sizes the result, whose slots then
+   * share the header's block (scr_arr_new_inline). A longer split appends
+   * the rest batch by batch. */
+  uint64_t slots[64];
+  size_t count = 0, len;
+  const char *bytes;
+  while (count < 64 && (bytes = scr_str_split_span(s, sep, &cursor, false, &len)))
+    slots[count++] = (uint64_t)(uintptr_t)(s->ascii ? scr_str_from_span_ascii(bytes, len)
+                                                    : scr_str_from_span(bytes, len));
+  ScrArr *out = scr_arr_new_inline(SCR_ELEM_STR, count);
+  if (count) {
+    /* A fresh inline array of exactly `count` slots: store the pieces and
+     * their states directly. */
+    uint8_t *states = scr_arr_states_end(out);
+    for (size_t k = 0; k < count; k++) {
+      out->data[k] = slots[k];
+      *scr_arr_state_in(states, k) = SCR_ARR_VALUE;
+    }
+    out->len = (uint32_t)count;
+    out->filled = (uint32_t)count;
+  }
+  if (count == 64) scr_str_split_fill(out, s, sep, &cursor, false);
   return out;
 }
 
@@ -3104,7 +3154,7 @@ double scr_string_to_number(ScrStr *s) {
   return scr_bytes_to_number(s->data, s->len);
 }
 
-double scr_bytes_to_number(const char *p, size_t len) {
+static __attribute__((noinline)) double scr_bytes_to_number_any(const char *p, size_t len) {
   size_t b = 0, e = len;
   while (b < e) {
     unsigned char c = (unsigned char)p[b];
@@ -3162,6 +3212,27 @@ double scr_bytes_to_number(const char *p, size_t len) {
   double r = strtod(tmp, NULL);
   if (tmp != buf) free(tmp);
   return r;
+}
+
+/* An optional sign and 1 to 15 decimal digits, the common shape of a
+ * parsed field, is an exact integer below 2^53 with no whitespace to trim
+ * and no other grammar to apply ("-0" is -0, leading zeros are decimal).
+ * Everything else takes the full grammar. */
+double scr_bytes_to_number(const char *p, size_t len) {
+  if (len - 1 < 16) {
+    size_t i = p[0] == '-' || p[0] == '+';
+    if (i < len && len - i <= 15) {
+      int64_t m = 0;
+      size_t k = i;
+      for (; k < len; k++) {
+        unsigned d = (unsigned)(unsigned char)p[k] - '0';
+        if (d > 9) break;
+        m = m * 10 + d;
+      }
+      if (k == len) return p[0] == '-' ? -(double)m : (double)m;
+    }
+  }
+  return scr_bytes_to_number_any(p, len);
 }
 
 ScrStr *scr_f64_to_scrstr(double x) {
