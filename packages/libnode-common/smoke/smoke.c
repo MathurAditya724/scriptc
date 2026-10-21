@@ -146,7 +146,7 @@ int main(int argc, char **argv) {
   printf("bridge ABI %u, Node %s, NODE_MODULE_VERSION %u\n", bridge->abi, bridge->node_version,
          bridge->module_version);
   printf("libnode mapped before dlopen: %s\n", before == 1 ? "yes" : "no");
-  char *error = bridge->start(&kHost, kBootstrap, argv[0]);
+  char *error = bridge->start(&kHost, kBootstrap, argv[0], 0);
   if (error != NULL) {
     fprintf(stderr, "smoke: %s\n", error);
     return 1;
