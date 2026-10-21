@@ -317,6 +317,15 @@ static inline ScrArr *scr_arr_retain(ScrArr *a) {
  * the candidate-root buffer like every headered type. */
 void scr_arr_release(ScrArr *a);
 void scr_arr_copy_metadata(ScrArr *a, struct ScrDyn *target);
+/* The commit of a live array view calls this on `a`, the array converted
+ * from `view`, before `target` takes its storage: `a` takes the view's named
+ * (non-index) properties as its metadata and the noncanonical numeric
+ * properties of `target`, so neither is lost when the storage is swapped. */
+void scr_arr_adopt_view_properties(ScrArr *a, struct ScrDyn *view, ScrArr *target);
+/* The enumerable string keys `for...in` visits after the indices: the
+ * noncanonical numeric properties, then the named properties in insertion
+ * order. +1. */
+ScrArr *scr_arr_named_keys(ScrArr *a);
 /* Installed by scr_regex.c when it records a pending match source; this
  * unit links without the regex runtime. Writes the pending metadata of
  * `a` into its dynamic copy or materializes it, answering whether it

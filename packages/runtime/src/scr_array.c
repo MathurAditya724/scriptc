@@ -4795,11 +4795,67 @@ void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
   if (metadata && metadata->kind == SCR_DYN_HANDLE && metadata->v.handle.tag == SCR_DYNH_MATCH_SOURCE &&
       scr_arr_match_copy(a, target))
     return;
-  if (!SCR_AX(a)->metadata) return;
-  for (size_t i = 0; i < SCR_AX(a)->metadata->v.obj.len; i++) {
-    ScrDynEntry *entry = &SCR_AX(a)->metadata->v.obj.entries[i];
+  metadata = SCR_AX(a)->metadata;
+  if (!metadata) return;
+  for (size_t i = 0; i < metadata->v.obj.len; i++) {
+    const ScrDynEntry *entry = &metadata->v.obj.entries[i];
     ScrStr *key = scr_str_new(entry->key, entry->key_len);
-    scr_dyn_key_set(target, key, entry->value);
+    if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
+      scr_dyn_key_set(target, key, entry->value);
+    } else {
+      /* Properties defined through a view keep their attributes. */
+      ScrDyn *name = scr_dyn_new_str(key);
+      ScrDyn *descriptor = scr_dyn_own_descriptor(metadata, key);
+      if (descriptor) scr_dyn_release(scr_dyn_define_property(target, name, descriptor));
+      scr_dyn_release(descriptor);
+      scr_dyn_release(name);
+    }
     scr_str_release(key);
   }
+}
+
+ScrArr *scr_arr_named_keys(ScrArr *a) {
+  /* Most arrays have no out-of-line storage: they share one immortal empty
+   * result, which `for...in` only reads. */
+  static ScrArr none = {.rc = SIZE_MAX, .elem = SCR_ELEM_STR};
+  const ScrArrExt *x = scr_arr_ext_of(a);
+  if (!x) return &none;
+  ScrArr *keys = scr_arr_new(SCR_ELEM_STR, 0);
+  for (size_t i = 0; i < x->prop_len; i++)
+    scr_arr_push_ref(keys, scr_str_new(x->props[i].key, x->props[i].key_len));
+  const ScrDyn *metadata = x->metadata;
+  if (metadata && metadata->kind == SCR_DYN_HANDLE && metadata->v.handle.tag == SCR_DYNH_MATCH_SOURCE) {
+    static const char *const names[] = {"index", "input", "groups"};
+    for (size_t i = 0; i < 3; i++) scr_arr_push_ref(keys, scr_str_new(names[i], strlen(names[i])));
+    return keys;
+  }
+  if (!metadata || metadata->kind != SCR_DYN_OBJ) return keys;
+  for (size_t i = 0; i < metadata->v.obj.len; i++) {
+    const ScrDynEntry *entry = &metadata->v.obj.entries[i];
+    if (!entry->enumerable || scr_arr_prop_index(a, entry->key, entry->key_len) != SIZE_MAX) continue;
+    scr_arr_push_ref(keys, scr_str_new(entry->key, entry->key_len));
+  }
+  return keys;
+}
+
+void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
+  ScrArrExt *from = scr_arr_ext_of(target);
+  if (from && from->prop_len) {
+    /* Both arrays have the same element type, so the slots keep their owner. */
+    ScrArrExt *x = scr_arr_ext(a);
+    ScrArrProp *props = x->props;
+    size_t len = x->prop_len, cap = x->prop_cap;
+    x->props = from->props;
+    x->prop_len = from->prop_len;
+    x->prop_cap = from->prop_cap;
+    from->props = props;
+    from->prop_len = len;
+    from->prop_cap = cap;
+  }
+  ScrDyn *named = view && view->kind == SCR_DYN_ARR ? view->v.arr.properties : NULL;
+  if (!named || named->v.obj.len == 0) return;
+  ScrArrExt *x = scr_arr_ext(a);
+  ScrDyn *old = x->metadata;
+  x->metadata = scr_dyn_retain(named);
+  scr_dyn_release(old);
 }

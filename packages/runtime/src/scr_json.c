@@ -10269,6 +10269,23 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
     }
     return;
   }
+  /* A live native array keeps its named properties in its metadata, so
+   * deleting one goes through the view and its commit. Elements and
+   * `length` keep the boundary below. */
+  size_t element;
+  if (recv->kind == SCR_DYN_TYPED_REF && recv->v.typed_ref.commit && scr_dyn_typed_ref_array_ops(recv) &&
+      !scr_typed_ref_is_length(key) && !scr_typed_ref_canonical_index(key->data, key->len, &element)) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(recv);
+    if (!scr_exc_pending() && view->kind == SCR_DYN_ARR) {
+      bool own = view->v.arr.properties && scr_dyn_obj_get(view->v.arr.properties, key->data, key->len);
+      if (own) scr_dyn_key_delete(view, key, strict);
+      if (own && !scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
+      scr_dyn_release(view);
+      return;
+    }
+    scr_dyn_release(view);
+    if (scr_exc_pending()) return;
+  }
   if (recv->kind == SCR_DYN_FUNC) {
     if (scr_dyn_fn_property_fence(key)) return;
     ScrDyn *table = scr_dyn_fn_properties(recv);
