@@ -34,6 +34,7 @@ import {
   genValue,
   stepDrivable,
 } from "../lower-generators.js";
+import { classGeneratorIterable, iteratesThroughGenerator } from "../class-iterables.js";
 import { exitBeforeReturns } from "./for-of.js";
 import {
   iteratorSlotAdapter,
@@ -298,7 +299,7 @@ function isHelperObject(lowerer: Lowerer, expr: ts.Expression): boolean {
   if (isStageCall(lowerer, expr)) return true;
   if (!ts.isIdentifier(expr)) return false;
   const symbol = lowerer.resolveValueSymbol(expr);
-  const decl = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+  const decl = symbol ? symbol.valueDeclaration : undefined;
   if (
     !decl ||
     !ts.isVariableDeclaration(decl) ||
@@ -317,9 +318,11 @@ function isHelperObject(lowerer: Lowerer, expr: ts.Expression): boolean {
  * it rather than a wrapper. A generator (including a helper object or an
  * array iterator) is itself; an array, string or typed array gives its
  * values iterator; a Set its values and a Map its entries, as a generator
- * over the live collection. The result converts into the call's
- * IteratorObject type. Null for other arguments (objects with their own
- * next method, untyped values), which keep the Iterator fence. */
+ * over the live collection; a class instance whose `[Symbol.iterator]` is
+ * a generator method gives the generator it returns. The result converts
+ * into the call's IteratorObject type. Null for other arguments (objects
+ * with their own next method, untyped values), which keep the Iterator
+ * fence. */
 export function lowerIteratorFromCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -332,7 +335,9 @@ export function lowerIteratorFromCall(
   const argT = lowerer.mapTypeOf(lowerer.typeOf(argNode));
   if (resultT?.kind !== "generator" || resultT.async || argT === null) return null;
   const iterableKinds = ["generator", "array", "string", "bytes", "set", "map"];
-  if (!iterableKinds.includes(argT.kind) || (argT.kind === "generator" && argT.async)) return null;
+  const classIterable = iteratesThroughGenerator(lowerer, argT);
+  if (!classIterable && !iterableKinds.includes(argT.kind)) return null;
+  if (argT.kind === "generator" && argT.async) return null;
   const loc = locOf(call);
   const value = lowerer.lowerExpr(argNode);
   const own = (yieldT: IrType): GenType => ({
@@ -344,6 +349,7 @@ export function lowerIteratorFromCall(
   let iterator: IrExpr | null = null;
   const t = value.type;
   if (t.kind === "generator") iterator = value;
+  else if (classIterable) iterator = classGeneratorIterable(lowerer, value);
   else if (t.kind === "array")
     iterator = lowerArrayIteratorValue(lowerer, value, "values", own(t.elem), loc);
   else if (t.kind === "string")
@@ -678,7 +684,7 @@ function isHelperReceiver(lowerer: Lowerer, expr: ts.Expression): boolean {
   return (
     mapped?.kind === "dyn" &&
     symbol !== undefined &&
-    ADAPTED_ITERATOR_TYPES.has(symbol.name) &&
+    ADAPTED_ITERATOR_TYPES.has(ts.symbolName(symbol)) &&
     lowerer.isStdlibSymbol(symbol)
   );
 }
@@ -1800,9 +1806,15 @@ function foldStages(
         ...inner(value),
       ];
     } else {
+      // A take before this stage sets `done` as it delivers its last
+      // value, which still flattens in full: the inner walk runs with the
+      // flag clear, and keeps it set afterwards.
+      const afterTake = slots.slice(0, si).some((slot) => slot.kind === "take");
       emit = (value) => {
         const innerT = s.fnT!.ret;
         const innerId = frame.local("fm", innerT, false);
+        const heldId = afterTake ? frame.local("held", BOOL, false) : undefined;
+        const walk = walkInner(lowerer, frame, innerId, innerT, done(), inner, loc);
         return [
           {
             kind: "varDecl",
@@ -1811,7 +1823,26 @@ function foldStages(
             loc,
           },
           ...(s.cntId !== undefined ? [frame.bump(s.cntId)] : []),
-          ...walkInner(lowerer, frame, innerId, innerT, done(), inner, loc),
+          ...(heldId === undefined
+            ? walk
+            : [
+                { kind: "varDecl", localId: heldId, init: done(), loc } as IrStmt,
+                { kind: "assign", localId: doneId, value: boolLit(false, loc), loc } as IrStmt,
+                ...walk,
+                {
+                  kind: "assign",
+                  localId: doneId,
+                  value: {
+                    kind: "logical",
+                    op: "||",
+                    left: varRef(heldId, BOOL, loc),
+                    right: done(),
+                    type: BOOL,
+                    loc,
+                  },
+                  loc,
+                } as IrStmt,
+              ]),
         ];
       };
     }

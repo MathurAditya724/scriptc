@@ -10,10 +10,10 @@ import { ts7Executable } from "./rpc-api.js";
 import { Ts7Session } from "./session.js";
 import { SemanticChecker } from "./semantic-checker.js";
 import { SemanticSnapshot } from "./semantic-model.js";
-import { TypeFlags } from "./enums.js";
+import { SignatureKind, SymbolFlags, TypeFlags } from "./enums.js";
 import { createProgram, Ts7Host } from "./program-adapter.js";
 import type { AstNode } from "./ast-node.js";
-import type { SourceFile } from "./ast-types.js";
+import type { Identifier, SourceFile } from "./ast-types.js";
 
 const tempRoot = process.platform === "win32" ? tmpdir() : "/tmp";
 const protocolPath = (path: string) => path.replaceAll("\\", "/");
@@ -80,7 +80,7 @@ test("unchanged AST identities receive independent semantic answers after a depe
     const oldType = old.getTypeAtLocation(name);
     const oldSymbol = old.getSymbolAtLocation(name)!;
     expect(old.typeToString(oldType)).toBe("number");
-    expect(old.valueDeclarationOf(oldSymbol)).toBe(declaration(root, "result"));
+    expect(oldSymbol.valueDeclaration).toBe(declaration(root, "result"));
 
     h.paths.set(h.path("dependency.ts"), 'export const value: string = "changed";');
     const second = h.session.updateSnapshot({
@@ -165,11 +165,14 @@ test("all public query and prefetch entry points reject a disposed facade before
     facade.typeToString(type);
     facade.prefetchSourceFile(root);
     const calls: Record<string, () => unknown> = {
-      declarationsOf: () => facade.declarationsOf(symbol),
-      valueDeclarationOf: () => facade.valueDeclarationOf(symbol),
-      signatureDeclaration: () => facade.signatureDeclaration(signature),
       getCallSignatures: () => facade.getCallSignatures(type),
       getConstructSignatures: () => facade.getConstructSignatures(type),
+      getSignaturesOfType: () => facade.getSignaturesOfType(type, SignatureKind.Call),
+      resolveName: () => facade.resolveName("value", SymbolFlags.Value, name),
+      getResolvedSymbol: () => facade.getResolvedSymbol(name as Identifier),
+      getAnyType: () => facade.getAnyType(),
+      getNeverType: () => facade.getNeverType(),
+      getBigIntType: () => facade.getBigIntType(),
       getPropertyOfType: () => facade.getPropertyOfType(type, "missing"),
       prefetchSourceFile: () => facade.prefetchSourceFile(root),
       prefetchSourceFileStructures: () => facade.prefetchSourceFileStructures([]),

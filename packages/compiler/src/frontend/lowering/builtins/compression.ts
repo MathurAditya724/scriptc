@@ -136,17 +136,15 @@ export function zlibStreamModeOf(
   if (alias !== null) return alias.kind === "zlib" ? alias.mode : null;
   const target =
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-  const mode = ZLIB_STREAM_MODES.get(target.name);
+  const mode = ZLIB_STREAM_MODES.get(ts.symbolName(target));
   if (mode === undefined) return null;
-  return lowerer.checker
-    .declarationsOf(target)
-    .some((d) => ts.isClassDeclaration(d) && isZlibFallbackDecl(lowerer, d))
+  return target.declarations.some((d) => ts.isClassDeclaration(d) && isZlibFallbackDecl(lowerer, d))
     ? mode
     : null;
 }
 
 function isZlibFallbackDecl(lowerer: Lowerer, d: ts.Node): boolean {
-  const file = d.getSourceFile();
+  const file = ts.getSourceFileOfNode(d);
   if (!lowerer.isStdlibFile(file) || isNodeTypesPath(file.fileName)) return false;
   for (let node: ts.Node | undefined = d.parent; node; node = node.parent) {
     if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
@@ -161,15 +159,13 @@ function isZlibFallbackDecl(lowerer: Lowerer, d: ts.Node): boolean {
 export function isZlibStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(access.name);
   if (!symbol) return false;
-  return lowerer.checker
-    .declarationsOf(symbol)
-    .some(
-      (d) =>
-        d.parent !== undefined &&
-        ts.isClassDeclaration(d.parent) &&
-        d.parent.name?.text === "ZlibBase" &&
-        isZlibFallbackDecl(lowerer, d.parent),
-    );
+  return symbol.declarations.some(
+    (d) =>
+      d.parent !== undefined &&
+      ts.isClassDeclaration(d.parent) &&
+      d.parent.name?.text === "ZlibBase" &&
+      isZlibFallbackDecl(lowerer, d.parent),
+  );
 }
 
 /** `stream.bytesWritten` on a zlib stream. */

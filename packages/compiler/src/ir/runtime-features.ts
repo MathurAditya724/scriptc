@@ -9,137 +9,118 @@ import {
 } from "./ir.js";
 import { everyModuleNode } from "./traverse.js";
 
-export interface RuntimeFeatures {
-  regex: boolean;
-  copying: boolean;
-  legacyTextDecoder: boolean;
-  fileHandle: boolean;
-  fetch: boolean;
-  eventTarget: boolean;
-  processEvents: boolean;
-  emitter: boolean;
-  stream: boolean;
-  zlib: boolean;
-  dc: boolean;
-  assert: boolean;
-  dynInvoke: boolean;
-  dynAsync: boolean;
-  /** The program enters AsyncLocalStorage stores (store.run, enterWith,
-   * a diagnostics_channel store binding) or reads the test runner's
-   * context (getTestContext): its timer, immediate, tick and
-   * queueMicrotask scheduling goes through the runtime's *_als entry
-   * points, which carry the active stores into each callback. */
-  asyncContext: boolean;
-  inspect: boolean;
-  childProcess: boolean;
-  net: boolean;
-  symbol: boolean;
-  bigint: boolean;
-  searchParams: boolean;
-  qs: boolean;
-  parseArgs: boolean;
-  fsWatch: boolean;
-  nodeTest: boolean;
-  /** The program calls mock.timers members: its timer calls go through
-   * scr_test.c's mock-aware entry points. */
-  mockTimers: boolean;
-  dgram: boolean;
-  http: boolean;
-  http2: boolean;
-  tls: boolean;
-  tlsCa: boolean;
-  cipher: boolean;
-}
+/** The fixed-width Buffer read/write method names (both "UInt" and "Uint"
+ * spellings) a checked-dynamic method call routes to scr_bytes_dyn.c. */
+export const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
+  ["read", "write"].flatMap((rw) => [
+    ...["UInt", "Uint"].flatMap((u) =>
+      ["8", "16LE", "16BE", "32LE", "32BE"].map((w) => `${rw}${u}${w}`),
+    ),
+    ...[
+      "Int8",
+      "Int16LE",
+      "Int16BE",
+      "Int32LE",
+      "Int32BE",
+      "FloatLE",
+      "FloatBE",
+      "DoubleLE",
+      "DoubleBE",
+    ].map((n) => `${rw}${n}`),
+  ]),
+);
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // DEP0040 rides the dyn-async unit's warning machinery.
-  "punycode.warn",
-  "fs.callbackValue",
-  "fs.callbackCall",
-  "fs.callbackGlob",
   "async.awaitDyn",
-  "timers.immediatePromise",
   "crypto.native",
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
-  "process.onUncaughtException",
-  "process.offUncaughtException",
-  "process.onUnhandledRejection",
-  "process.offUnhandledRejection",
-  "process.onRejectionHandled",
-  "process.offRejectionHandled",
-  "process.onWarning",
-  "process.offWarning",
+  "dyn.promiseResolve",
+  "fs.callbackCall",
+  "fs.callbackGlob",
+  "fs.callbackValue",
+  "process.deprecationFlag",
   "process.emitWarning",
   "process.emitWarningText",
-  "process.deprecationFlag",
+  "process.offRejectionHandled",
+  "process.offUncaughtException",
+  "process.offUnhandledRejection",
+  "process.offWarning",
+  "process.onRejectionHandled",
+  "process.onUncaughtException",
+  "process.onUnhandledRejection",
+  "process.onWarning",
   "process.setDeprecationFlag",
+  "process.setEmitWarning",
+  "punycode.warn",
+  "timers.immediatePromise",
   // The performance timeline (scr_perf.c, linked with this unit for its
   // MaxPerformanceEntryBufferExceededWarning).
-  "perf.mark",
-  "perf.measure",
-  "perf.entries",
   "perf.clearMarks",
   "perf.clearMeasures",
-  "perf.entryName",
-  "perf.entryType",
-  "perf.entryStart",
-  "perf.entryDuration",
+  "perf.entries",
   "perf.entryDetail",
+  "perf.entryDuration",
   "perf.entryKeep",
+  "perf.entryName",
   "perf.entryRef",
+  "perf.entryStart",
+  "perf.entryType",
+  "perf.mark",
+  "perf.measure",
   // Blob and File (scr_blob.c, linked with this unit, which boxes their
   // reads as dyn promises).
-  "blob.new",
+  "als.disable",
+  "als.enterWith",
+  "als.exitRun",
+  "als.get",
+  "als.new",
+  "als.run",
+  "blob.arrayBuffer",
+  "blob.bytes",
   "blob.fileNew",
+  "blob.is",
+  "blob.new",
   "blob.slice",
   "blob.text",
-  "blob.bytes",
-  "blob.arrayBuffer",
-  "blob.is",
-  "util.styleText",
-  "util.inherits",
-  "util.deprecate",
+  "dc.chanBindStore",
+  "dc.chanRunStores",
+  "dc.chanUnbindStore",
   "util.callbackify",
   "util.debuglog",
-  "als.new",
-  "als.get",
-  "als.run",
-  "als.exitRun",
-  "als.enterWith",
-  "als.disable",
-  "dc.chanBindStore",
-  "dc.chanUnbindStore",
-  "dc.chanRunStores",
+  "util.deprecate",
+  "util.inherits",
+  "util.styleText",
 ]);
 
 /** The libCalls that enter AsyncLocalStorage stores (RuntimeFeatures
  * asyncContext). */
 const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
-  "als.run",
-  "als.exitRun",
   "als.enterWith",
+  "als.exitRun",
+  "als.run",
   "dc.chanBindStore",
   "dc.chanRunStores",
   // getTestContext() reads the test runner's entry in the same snapshot.
-  "test.hasContext",
   "test.context",
+  "test.hasContext",
 ]);
 
 const LEGACY_URL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
-  "url.legacyParse",
-  "url.legacyFormat",
-  "url.legacyResolve",
   "url.domainToASCII",
   "url.domainToUnicode",
+  "url.legacyFormat",
+  "url.legacyParse",
+  "url.legacyResolve",
 ]);
 
 const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
-  "util.inherits",
-  "util.deprecate",
   "util.callbackify",
   "util.debuglog",
+  "util.deprecate",
+  "util.inherits",
 ]);
 
 /** Entry points that link the regex unit: the regex and glob matchers (fs.glob's walk compiles its patterns with the glob matcher), and readline's terminal unit (scr_readline_tty.c), which measures with the regex unit's stripVTControlCharacters. */
@@ -170,7 +151,12 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "events.onceSignal",
   "http.clientSignal",
+  "http.requestDyn",
+  "http.requestDynCb",
+  "https.requestDyn",
+  "https.requestDynCb",
   "rl.createSignal",
   "rl.questionAsyncSignal",
   "sp.finishedOptsSignal",
@@ -185,6 +171,7 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "child.stdioStream",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",
@@ -192,6 +179,8 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fileHandle.createWriteStream",
   "fs.createReadStream",
   "fs.createWriteStream",
+  "rl.inputFromDyn",
+  "rl.outputFromDyn",
   "sp.finished",
   "sp.pipeline",
   "sp.pipelineStages",
@@ -199,8 +188,14 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.addAbortSignalFn",
   "stream.destroy",
   "stream.destroyErr",
+  "stream.dynNative",
+  "stream.dynNativePipe",
   "stream.errored",
+  "stream.pipeDyn",
   "stream.prop",
+  "stream.stdioWritable",
+  "stream.unboxDyn",
+  "stream.unpipeDyn",
   "stream.workerStdio",
 ]);
 
@@ -237,12 +232,28 @@ const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "rea
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
   "dyn.arrayPrototype",
+  "dyn.builtinFunction",
   "dyn.builtinMethod",
   "dyn.defineProperty",
   "dyn.defineProps",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
+  "dyn.globalConstructor",
   "dyn.objCreateWithProperties",
+  "dyn.objectTag",
+  "stream.dynNative",
+  "stream.dynNativePipe",
+  "stream.pipeDyn",
+  "stream.unpipeDyn",
+]);
+
+/** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
+const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "constructor",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+  "toString",
+  "valueOf",
 ]);
 
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
@@ -250,6 +261,7 @@ const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.connected",
   "process.disconnect",
   "process.forkTarget",
+  "process.ipcOpen",
   "process.onDisconnect",
   "process.onMessage",
   "process.send",
@@ -259,8 +271,23 @@ const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** libCall name prefixes that link the child-process unit. */
 const CHILD_PROCESS_LIB_PREFIXES: readonly string[] = ["child.", "cp.", "spawnRes.", "writer."];
 
+/** The entry points scr_dyn_builtin_class.c defines. The unit calls
+ * listeners through the dyn-invoke unit, renders unhandled 'error'
+ * payloads through the inspect unit, creates EventEmitter's private
+ * symbols through the symbol unit and shares defaultMaxListeners with the
+ * emitter unit, so each of them links all five. */
+const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
+  "dyn.builtinClass",
+  // the stream classes, through scr_dyn_builtin_stream.c
+  "dyn.builtinInstanceOf",
+  "dyn.builtinStreamClass",
+  "dyn.functionInstanceOf",
+];
+
 /** Entry points that link the symbol unit, besides the sym. and disposable. families. */
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // EventEmitter's kShapeMode and kCapture properties
+  ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",
   "dyn.usingMethod",
   "util.isDeepStrictEqual",
@@ -298,9 +325,6 @@ const COPYING_BYTES_METHODS: ReadonlySet<string> = new Set([
   "toReversed",
   "with",
 ]);
-
-const startsWithAny = (fn: string, prefixes: readonly string[]): boolean =>
-  prefixes.some((prefix) => fn.startsWith(prefix));
 
 /** Inspect types and expressions together in one traversal. This is a fresh
  * snapshot: callers may mutate an IR module between compilation passes. */
@@ -350,64 +374,462 @@ function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean
     }
     case "object": {
       // A boxed class instance exposes its fields as dyn values (Object.keys,
-      // spread, inspection), boxing a promise any field holds.
+      // spread, inspection), boxing a promise any field holds. It
+      // materializes inherited fields too, and the instance can be any
+      // subclass.
       const key = `class:${t.className}`;
       if (seen.has(key)) return false;
       seen.add(key);
-      const def = tables.classes.get(t.className);
-      return def?.fields.some((f) => boxesPromise(f.type, tables, seen)) ?? false;
+      const related = (def: IrClassDef): boolean => {
+        for (
+          let c: IrClassDef | undefined = def;
+          c;
+          c = c.base ? tables.classes.get(c.base) : undefined
+        )
+          if (c.name === t.className) return true;
+        return false;
+      };
+      for (const def of tables.classes.values()) {
+        if (!related(def)) continue;
+        for (
+          let c: IrClassDef | undefined = def;
+          c;
+          c = c.base ? tables.classes.get(c.base) : undefined
+        )
+          if (c.fields.some((f) => boxesPromise(f.type, tables, seen))) return true;
+      }
+      return false;
     }
     default:
       return false;
   }
 }
 
-function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): RuntimeFeatures {
-  const features: RuntimeFeatures = {
-    regex: false,
-    copying: false,
-    legacyTextDecoder: false,
-    fileHandle: false,
-    fetch: false,
-    // Subclasses of the runtime EventTarget/Event bases tear down and box
-    // through the EventTarget unit even when no event.* libCall survives.
-    eventTarget: (mod.classes ?? []).some(
-      (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
-    ),
-    processEvents: false,
-    emitter:
-      mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
-    stream: (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
-    zlib: false,
-    dc: false,
-    assert: false,
-    dynInvoke: mod.workers === true,
-    dynAsync:
+/** The libCall fns served by the OPTIONAL events unit (scr_events.c):
+ * process signal/exit listeners and the piped-stdin surface. */
+const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "process.offExit",
+  "process.offSignal",
+  "process.onExit",
+  "process.onSignal",
+  "process.stdio",
+  "stdin.nextChunk",
+  "stdin.onData",
+  "stdin.onEnd",
+  "stdin.onError",
+  // node:readline rides the stdin unit (scr_readline.c links beside
+  // scr_events.c under the same gate).
+  "rl.checkCompleter",
+  "rl.checkOptions",
+  "rl.close",
+  "rl.create",
+  "rl.createSignal",
+  "rl.cursor",
+  "rl.cursorPos",
+  "rl.getPrompt",
+  "rl.history",
+  "rl.isPromises",
+  "rl.isTerminal",
+  "rl.iterNext",
+  "rl.iterOpen",
+  "rl.iterReturn",
+  "rl.keypressStdin",
+  "rl.keypressStream",
+  "rl.line",
+  "rl.moves",
+  "rl.numProp",
+  "rl.on",
+  "rl.pause",
+  "rl.prompt",
+  "rl.promptWith",
+  "rl.question",
+  "rl.questionAsync",
+  "rl.questionAsyncDyn",
+  "rl.questionAsyncSignal",
+  "rl.questionAsyncSignalDyn",
+  "rl.questionDyn",
+  "rl.resume",
+  "rl.seq",
+  "rl.setHistory",
+  "rl.setOptions",
+  "rl.setPrompt",
+  "rl.setPromptDyn",
+  "rl.terminal",
+  "rl.uiClearLine",
+  "rl.uiClearScreenDown",
+  "rl.uiCommit",
+  "rl.uiCursorTo",
+  "rl.uiMoveCursor",
+  "rl.uiOpen",
+  "rl.uiOpenStream",
+  "rl.uiRollback",
+  "rl.write",
+  "rl.writeKey",
+  "stdin.onKeypress",
+]);
+
+/** The legacy http2.* libCalls implemented by scr_http.c/scr_tls.c (the
+ * allowHTTP1 compatibility slice) — they must NOT pull scr_http2.c, so
+ * divergence-57 binaries keep their exact link line. */
+const HTTP2_LEGACY_FNS: ReadonlySet<IrLibFn> = new Set([
+  "http2.streamNoop",
+  "http2.streamUndefCall",
+]);
+
+/** Names that reach the extended process-stream surface (the
+ * SCR_STDIO_EXTENDED events unit): stdin.setEncoding and 'resize'. */
+const STDIO_EXTENDED_NAMES: ReadonlySet<string> = new Set(["setEncoding", "resize"]);
+
+/** The libCall nodes the rules below test. */
+type LibCallNode = IrExpr & { kind: "libCall" };
+
+/** What makes a program need one optional runtime unit. The feature is set
+ * when any condition holds: `initial` from the module's declarations, a
+ * libCall named in `fns` or starting with one of `prefixes`, a libCall
+ * `libCall` accepts, another expression node `expr` accepts, or a type
+ * slot of one of the `types` kinds. A libCall or type that needs several
+ * units appears in each unit's rule. */
+interface RuntimeFeatureRule {
+  initial?: (mod: IrModule) => boolean;
+  fns?: readonly IrLibFn[];
+  prefixes?: readonly string[];
+  libCall?: (node: LibCallNode) => boolean;
+  expr?: (node: IrExpr, tables: () => TypeTables) => boolean;
+  types?: readonly IrType["kind"][];
+}
+
+/** Gives every rule in the table one type. */
+const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
+
+/* The HTTP, HTTPS, HTTP/2 and TLS surfaces, which link the net unit. */
+const NET_PREFIXES: readonly string[] = ["net.", "http.", "tls.", "https.", "http2."];
+
+/** One rule per runtime feature, sorted by name. A new feature is an
+ * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
+ * and its early exit derive from this table. The lists above keep one
+ * entry per line, sorted within each commented group, so changes that add
+ * different entries touch different lines. */
+const RUNTIME_FEATURE_RULES = {
+  assert: rule({ prefixes: ["assert."] }),
+  /** The program enters AsyncLocalStorage stores (store.run, enterWith,
+   * a diagnostics_channel store binding) or reads the test runner's
+   * context (getTestContext): its timer, immediate, tick and
+   * queueMicrotask scheduling goes through the runtime's *_als entry
+   * points, which carry the active stores into each callback. */
+  asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
+  /** scr_wasm.c converts i64 values through BigInt. */
+  bigint: rule({
+    fns: ["process.hrtimeValue"],
+    prefixes: ["bigint.", "wasm."],
+    types: ["bigint"],
+  }),
+  childProcess: rule({
+    fns: [...CHILD_PROCESS_LIB_FNS],
+    prefixes: CHILD_PROCESS_LIB_PREFIXES,
+    types: ["child", "childStream", "childWriter", "spawnRes"],
+  }),
+  /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
+   * process-warning unit, and unknown output encodings render through the
+   * inspect unit. */
+  cipher: rule({ fns: ["crypto.cipherNew"] }),
+  copying: rule({
+    expr: (node, _tables) =>
+      (node.kind === "arrIntrinsic" && COPYING_ARR_METHODS.has(node.method)) ||
+      (node.kind === "bytesIntrinsic" && COPYING_BYTES_METHODS.has(node.method)),
+  }),
+  dc: rule({ prefixes: ["dc."] }),
+  /** dns.lookup lives in the dgram unit. */
+  dgram: rule({ prefixes: ["dgram.", "dns."], types: ["dgramSocket"] }),
+  /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
+  dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
+  dynAsync: rule({
+    initial: (mod) =>
       mod.workers === true ||
       mod.functions.some(
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
+    // The legacy url functions and crypto.createCipheriv emit their
+    // deprecation warnings through the dyn-async unit; scr_wasm.c boxes its
+    // handles and promises through it.
+    fns: [
+      ...DYN_ASYNC_LIB_FNS,
+      ...READABLE_DYN_ASYNC_LIB_FNS,
+      ...LEGACY_URL_LIB_FNS,
+      "crypto.cipherNew",
+    ],
+    prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
+    expr: (node, tables) =>
+      (node.kind === "awaitExpr" && node.type.kind === "dyn") ||
+      // Rejection reasons cross as dyn values (allSettled's records, any's
+      // AggregateError list).
+      (node.kind === "intrinsic" &&
+        (node.name === "promise.allSettled" || node.name === "promise.any")) ||
+      (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
+  }),
+  /** EventEmitter and the stream classes as untyped constructor values
+   * (scr_dyn_builtin_class.c), which call listeners through the dyn-invoke
+   * unit, render unhandled 'error' payloads through the inspect unit and
+   * create EventEmitter's private symbols through the symbol unit. */
+  dynBuiltinClass: rule({
+    fns: [...BUILTIN_CLASS_LIB_FNS],
+  }),
+  /** The stream classes as untyped constructor values with their stream
+   * half (scr_dyn_builtin_stream.c): native stream state for constructor
+   * functions, over the stream unit. */
+  dynBuiltinStream: rule({ fns: ["dyn.builtinStreamClass"] }),
+  dynInvoke: rule({
+    initial: (mod) => mod.workers === true,
+    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
+    // Constant-key reads of Object.prototype member names answer the
+    // inherited member through scr_dyn_invoke.c.
+    expr: (node, _tables) =>
+      node.kind === "dynInvoke" ||
+      (node.kind === "dynKeyGet" &&
+        node.key.kind === "strLit" &&
+        INHERITED_MEMBER_NAMES.has(node.key.value)),
+  }),
+  /** The program has dynamic-tier jsval operations (js.* builtins, the
+   * jsval pass): links the scr_js_* units (two-tier design I3). */
+  dynTier: rule({ prefixes: ["js."] }),
+  /** Checked-dynamic stream slots test values and pipe into JavaScript
+   * stream objects (scr_stream_dyn.c). */
+  streamDyn: rule({
+    fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
+  }),
+  /** Fixed-width Buffer read/write methods called on checked-dynamic
+   * values (scr_bytes_dyn.c). */
+  dynBufferNum: rule({
+    expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_NUM_METHODS.has(node.method),
+  }),
+  /** Builtin functions read as values (scr_builtin_values.c). */
+  builtinValues: rule({ fns: ["buffer.byteLenValue", "buffer.allocValue", "fs.realpathValue"] }),
+  /** The stream unit emits through the emitter unit, also when the
+   * program constructs no stream (a pipeline of functions). */
+  emitter: rule({
+    initial: (mod) =>
+      mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
+    fns: [...STREAM_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
+    prefixes: ["emitter.", ...STREAM_LIB_PREFIXES],
+  }),
+  /** Subclasses of the runtime EventTarget/Event bases tear down and box
+   * through the EventTarget unit even when no event.* libCall survives. */
+  eventTarget: rule({
+    initial: (mod) =>
+      (mod.classes ?? []).some(
+        (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
+      ),
+    fns: ["events.addAbortListener", ...ABORT_SIGNAL_LIB_FNS],
+    prefixes: ["event."],
+  }),
+  /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
+  eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
+  fetch: rule({ prefixes: ["fetch."] }),
+  fileHandle: rule({ types: ["fileHandle"] }),
+  fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
+  /** A socket 'lookup' listener: the C main installs the net unit's
+   * lookup records (scr_net_lookup_install). */
+  netLookup: rule({ fns: ["net.sockOnLookup"] }),
+  http: rule({
+    prefixes: ["http.", "tls.", "https.", "http2."],
+    types: ["httpReq", "httpRes", "httpClientReq", "secureCtx"],
+  }),
+  /** The real h2 surface (scr_http2.c); the legacy http2.* libCalls of the
+   * allowHTTP1 slice are served by scr_http.c and scr_tls.c. */
+  http2: rule({
+    libCall: (node) => node.fn.startsWith("http2.") && !HTTP2_LEGACY_FNS.has(node.fn),
+    types: ["http2Session", "http2Stream"],
+  }),
+  /** scr_test.c renders thrown strings with the inspect unit's string
+   * formatting; scr_util_callable.c wraps the inspect unit; readline's
+   * terminal unit prints completion errors through it when there is a
+   * completer. */
+  inspect: rule({
+    fns: [
+      "global.native",
+      "util.styleText",
+      "crypto.cipherNew",
+      ...BUILTIN_CLASS_LIB_FNS,
+      ...UTIL_CALLABLE_LIB_FNS,
+    ],
+    prefixes: ["insp.", "console.", "test."],
+    libCall: (node) => node.fn === "rl.terminal" && !isDynUndefined(node.args[3]!),
+  }),
+  legacyTextDecoder: rule({ fns: [...LEGACY_TEXT_DECODER_LIB_FNS] }),
+  /** The program calls mock.timers members: its timer calls go through
+   * scr_test.c's mock-aware entry points. */
+  mockTimers: rule({ prefixes: ["test.mockTimers", "test.ctxMockTimers"] }),
+  net: rule({
+    prefixes: NET_PREFIXES,
+    types: [
+      "netServer",
+      "netSocket",
+      "http2Session",
+      "http2Stream",
+      "httpReq",
+      "httpRes",
+      "httpClientReq",
+      "secureCtx",
+    ],
+  }),
+  nodeTest: rule({ prefixes: ["test."], types: ["testCtx"] }),
+  /** scr_util_callable.c reads options through the parseArgs unit's
+   * descriptors. */
+  parseArgs: rule({ fns: [...PARSE_ARGS_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS] }),
+  /** perf_hooks event-loop metrics (eventLoopUtilization,
+   * monitorEventLoopDelay): scr_perf_loop.c. */
+  perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
+  processEvents: rule({ fns: [...PROCESS_EVENT_LIB_FNS, "util.styleText"], types: ["procStream"] }),
+  /** scr_url_legacy.c parses and stringifies queries. */
+  qs: rule({ fns: [...QS_LIB_FNS, ...LEGACY_URL_LIB_FNS] }),
+  /** scr_url_legacy.c lowercases and normalizes hostnames with the regex
+   * unit's libunicode, NODE_DEBUG matching in scr_util_callable.c and
+   * readline's terminal unit use the regex unit, and locale case mapping
+   * runs its default conversion. */
+  regex: rule({
+    fns: [
+      ...REGEX_LIB_FNS,
+      ...LEGACY_URL_LIB_FNS,
+      ...UTIL_CALLABLE_LIB_FNS,
+      "rl.terminal",
+      "str.localeCase",
+    ],
+    expr: (node, _tables) =>
+      node.kind === "regexLit" ||
+      node.kind === "regexIntrinsic" ||
+      (node.kind === "strIntrinsic" && CASE_MAPPING_STR_METHODS.has(node.method)),
+    types: ["regex"],
+  }),
+  searchParams: rule({ fns: ["url.searchParams"], prefixes: ["sp."], types: ["searchParams"] }),
+  /** stdin setEncoding / string data listeners / stdio 'resize' events. A
+   * typed string 'data' listener takes setEncoding-decoded chunks; the
+   * process stream object's setEncoding and 'resize' members are reached
+   * by name (dynamic member calls and event-name strings). */
+  stdioExtended: rule({
+    libCall: (node) =>
+      node.fn === "stdin.onData" &&
+      node.args[0]?.type.kind === "func" &&
+      node.args[0].type.params[0]?.kind === "string",
+    expr: (node, _tables) =>
+      (node.kind === "dynInvoke" && STDIO_EXTENDED_NAMES.has(node.method)) ||
+      (node.kind === "strLit" && STDIO_EXTENDED_NAMES.has(node.value)),
+  }),
+  stream: rule({
+    initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
+    fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
+    prefixes: STREAM_LIB_PREFIXES,
+  }),
+  /** A Dirent row converted to dyn carries Node's Symbol(type) key
+   * (scr_dyn_dirent_finish, defined in scr_symbol.c). */
+  symbol: rule({
+    initial: (mod) => (mod.records ?? []).some(isDirentShape),
+    fns: [...SYMBOL_LIB_FNS],
+    prefixes: ["sym.", "disposable."],
+    types: ["symbol"],
+  }),
+  tls: rule({ prefixes: ["tls.", "https.", "http2."], types: ["secureCtx"] }),
+  tlsCa: rule({ prefixes: ["tlsca."] }),
+  /** process.emitWarning is assigned (process.setEmitWarning). */
+  warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** The WebAssembly API (scr_wasm.c). */
+  wasm: rule({ prefixes: ["wasm."] }),
+  /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
+   * scr_webcrypto.c. */
+  webcrypto: rule({ prefixes: ["webcrypto."] }),
+  zlib: rule({ prefixes: ["zlib."] }),
+};
+
+type RuntimeFeatureName = keyof typeof RUNTIME_FEATURE_RULES;
+
+export type RuntimeFeatures = Record<RuntimeFeatureName, boolean>;
+
+const RUNTIME_FEATURE_NAMES: RuntimeFeatureName[] = [];
+for (const name in RUNTIME_FEATURE_RULES) RUNTIME_FEATURE_NAMES.push(name as RuntimeFeatureName);
+
+/** Every feature off, in the table's order. TypeScript rejects this
+ * literal when it misses a feature or names one without a rule. */
+function noRuntimeFeatures(): RuntimeFeatures {
+  return {
+    assert: false,
     asyncContext: false,
-    inspect: false,
-    childProcess: false,
-    net: false,
-    // A Dirent row converted to dyn carries Node's Symbol(type) key
-    // (scr_dyn_dirent_finish, defined in scr_symbol.c).
-    symbol: (mod.records ?? []).some(isDirentShape),
     bigint: false,
-    searchParams: false,
-    qs: false,
-    parseArgs: false,
-    fsWatch: false,
-    nodeTest: false,
-    mockTimers: false,
+    childProcess: false,
+    cipher: false,
+    copying: false,
+    dc: false,
     dgram: false,
-    http: false,
+    dnsPromises: false,
+    dynAsync: false,
+    dynBuiltinClass: false,
+    dynBuiltinStream: false,
+    dynInvoke: false,
+    dynTier: false,
+    emitter: false,
+    eventTarget: false,
+    eventsOnceSignal: false,
+    fetch: false,
+    fileHandle: false,
+    fsWatch: false,
     http2: false,
+    http: false,
+    inspect: false,
+    legacyTextDecoder: false,
+    mockTimers: false,
+    net: false,
+    netLookup: false,
+    nodeTest: false,
+    parseArgs: false,
+    perfLoop: false,
+    processEvents: false,
+    qs: false,
+    regex: false,
+    searchParams: false,
+    stdioExtended: false,
+    stream: false,
+    streamDyn: false,
+    dynBufferNum: false,
+    builtinValues: false,
+    symbol: false,
     tls: false,
     tlsCa: false,
-    cipher: false,
+    warningReplace: false,
+    wasm: false,
+    webcrypto: false,
+    zlib: false,
   };
+}
+
+const ruleOf = (name: RuntimeFeatureName): RuntimeFeatureRule => RUNTIME_FEATURE_RULES[name];
+
+/** The rules indexed for the scan: features by libCall name and by type
+ * kind, and the prefix and predicate conditions in rule order. */
+const FEATURES_BY_FN = new Map<string, RuntimeFeatureName[]>();
+const FEATURES_BY_TYPE = new Map<string, RuntimeFeatureName[]>();
+const FEATURE_PREFIXES: { prefix: string; name: RuntimeFeatureName }[] = [];
+const FEATURE_LIBCALL_TESTS: RuntimeFeatureName[] = [];
+const FEATURE_EXPR_TESTS: RuntimeFeatureName[] = [];
+for (const name of RUNTIME_FEATURE_NAMES) {
+  const rule = ruleOf(name);
+  for (const fn of rule.fns ?? []) {
+    const names = FEATURES_BY_FN.get(fn);
+    if (names) names.push(name);
+    else FEATURES_BY_FN.set(fn, [name]);
+  }
+  for (const kind of rule.types ?? []) {
+    const names = FEATURES_BY_TYPE.get(kind);
+    if (names) names.push(name);
+    else FEATURES_BY_TYPE.set(kind, [name]);
+  }
+  for (const prefix of rule.prefixes ?? []) FEATURE_PREFIXES.push({ prefix, name });
+  if (rule.libCall) FEATURE_LIBCALL_TESTS.push(name);
+  if (rule.expr) FEATURE_EXPR_TESTS.push(name);
+}
+
+function scanRuntimeFeatures(mod: IrModule, stopAt?: RuntimeFeatureName): RuntimeFeatures {
+  const features = noRuntimeFeatures();
+  for (const name of RUNTIME_FEATURE_NAMES) {
+    const initial = ruleOf(name).initial;
+    if (initial && initial(mod)) features[name] = true;
+  }
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   let tables: TypeTables | undefined;
   const typeTables = (): TypeTables =>
@@ -419,188 +841,19 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
   const expr = (node: IrExpr): boolean => {
     if (node.kind === "libCall") {
       const fn = node.fn;
-      if (REGEX_LIB_FNS.has(fn)) features.regex = true;
-      if (LEGACY_TEXT_DECODER_LIB_FNS.has(fn)) features.legacyTextDecoder = true;
-      if (fn.startsWith("fetch.")) features.fetch = true;
-      if (fn.startsWith("event.") || fn === "events.addAbortListener") features.eventTarget = true;
-      if (ABORT_SIGNAL_LIB_FNS.has(fn)) features.eventTarget = true;
-      if (PROCESS_EVENT_LIB_FNS.has(fn)) features.processEvents = true;
-      // With a completer, readline's terminal unit prints completion errors
-      // through the inspect unit.
-      if (fn === "rl.terminal") {
-        features.regex = true;
-        if (!isDynUndefined(node.args[3]!)) features.inspect = true;
-      }
-      if (fn.startsWith("emitter.")) features.emitter = true;
-      if (STREAM_LIB_FNS.has(fn) || startsWithAny(fn, STREAM_LIB_PREFIXES)) {
-        // the stream unit emits through the emitter unit, also when the
-        // program constructs no stream (a pipeline of functions)
-        features.stream = true;
-        features.emitter = true;
-      }
-      if (fn.startsWith("zlib.")) features.zlib = true;
-      if (READABLE_DYN_ASYNC_LIB_FNS.has(fn) || startsWithAny(fn, READABLE_DYN_ASYNC_PREFIXES))
-        features.dynAsync = true;
-      if (fn.startsWith("dc.")) features.dc = true;
-      if (fn.startsWith("assert.")) features.assert = true;
-      if (DYN_INVOKE_LIB_FNS.has(fn)) features.dynInvoke = true;
-      if (DYN_ASYNC_LIB_FNS.has(fn)) features.dynAsync = true;
-      if (ASYNC_CONTEXT_LIB_FNS.has(fn)) features.asyncContext = true;
-      if (
-        fn.startsWith("insp.") ||
-        fn.startsWith("console.") ||
-        fn === "global.native" ||
-        fn === "util.styleText"
-      )
-        features.inspect = true;
-      if (CHILD_PROCESS_LIB_FNS.has(fn) || startsWithAny(fn, CHILD_PROCESS_LIB_PREFIXES))
-        features.childProcess = true;
-      if (fn.startsWith("net.")) features.net = true;
-      if (fn.startsWith("http.")) {
-        features.net = true;
-        features.http = true;
-      }
-      if (fn.startsWith("tls.") || fn.startsWith("https.") || fn.startsWith("http2.")) {
-        features.net = true;
-        features.http = true;
-        features.tls = true;
-      }
-      if (fn.startsWith("http2.") && !HTTP2_LEGACY_FNS.has(fn)) features.http2 = true;
-      if (fn.startsWith("sym.") || fn.startsWith("disposable.") || SYMBOL_LIB_FNS.has(fn))
-        features.symbol = true;
-      if (fn === "process.hrtimeValue") features.bigint = true;
-      if (fn.startsWith("bigint.")) features.bigint = true;
-      if (fn.startsWith("sp.") || fn === "url.searchParams") features.searchParams = true;
-      if (QS_LIB_FNS.has(fn)) features.qs = true;
-      // scr_url_legacy.c lowercases and normalizes hostnames (the regex
-      // unit's libunicode), parses and stringifies queries, and emits its
-      // deprecation warnings through the dyn-async unit.
-      if (LEGACY_URL_LIB_FNS.has(fn)) {
-        features.regex = true;
-        features.qs = true;
-        features.dynAsync = true;
-      }
-      if (PARSE_ARGS_LIB_FNS.has(fn)) features.parseArgs = true;
-      if (fn === "util.styleText") features.processEvents = true;
-      // scr_util_callable.c: dyn wrappers over the descriptor, inspect,
-      // regex (NODE_DEBUG matching) and terminal-color units.
-      if (UTIL_CALLABLE_LIB_FNS.has(fn)) {
-        features.parseArgs = true;
-        features.inspect = true;
-        features.dynInvoke = true;
-        features.regex = true;
-      }
-      if (fn.startsWith("fs.watch") || fn.startsWith("watcher.")) features.fsWatch = true;
-      // scr_test.c renders thrown strings in the failing-tests section with
-      // the inspect unit's string formatting.
-      if (fn.startsWith("test.")) {
-        features.nodeTest = true;
-        features.inspect = true;
-        if (fn.startsWith("test.mockTimers") || fn.startsWith("test.ctxMockTimers")) {
-          features.mockTimers = true;
-        }
-      }
-      if (fn.startsWith("dgram.") || fn.startsWith("dns.")) features.dgram = true;
-      if (fn.startsWith("tlsca.")) features.tlsCa = true;
-      // scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
-      // process-warning unit, and unknown output encodings render through
-      // the inspect unit.
-      if (fn === "crypto.cipherNew") {
-        features.cipher = true;
-        features.dynAsync = true;
-        features.inspect = true;
-      }
+      for (const name of FEATURES_BY_FN.get(fn) ?? []) features[name] = true;
+      for (const { prefix, name } of FEATURE_PREFIXES)
+        if (!features[name] && fn.startsWith(prefix)) features[name] = true;
+      for (const name of FEATURE_LIBCALL_TESTS)
+        if (!features[name] && ruleOf(name).libCall!(node)) features[name] = true;
     } else {
-      switch (node.kind) {
-        case "regexLit":
-        case "regexIntrinsic":
-          features.regex = true;
-          break;
-        case "strIntrinsic":
-          if (CASE_MAPPING_STR_METHODS.has(node.method)) features.regex = true;
-          break;
-        case "arrIntrinsic":
-          if (COPYING_ARR_METHODS.has(node.method)) features.copying = true;
-          break;
-        case "bytesIntrinsic":
-          if (COPYING_BYTES_METHODS.has(node.method)) features.copying = true;
-          break;
-        case "dynInvoke":
-          features.dynInvoke = true;
-          break;
-        case "awaitExpr":
-          if (node.type.kind === "dyn") features.dynAsync = true;
-          break;
-        case "intrinsic":
-          // Rejection reasons cross as dyn values (allSettled's records,
-          // any's AggregateError list).
-          if (node.name === "promise.allSettled" || node.name === "promise.any")
-            features.dynAsync = true;
-          break;
-        case "dynFrom":
-          if (!features.dynAsync && boxesPromise(node.value.type, typeTables(), new Set()))
-            features.dynAsync = true;
-          break;
-      }
+      for (const name of FEATURE_EXPR_TESTS)
+        if (!features[name] && ruleOf(name).expr!(node, typeTables)) features[name] = true;
     }
     return keepGoing();
   };
   const type = (node: IrType): boolean => {
-    switch (node.kind) {
-      case "regex":
-        features.regex = true;
-        break;
-      case "fileHandle":
-        features.fileHandle = true;
-        break;
-      case "procStream":
-        features.processEvents = true;
-        break;
-      case "child":
-      case "childStream":
-      case "childWriter":
-      case "spawnRes":
-        features.childProcess = true;
-        break;
-      case "netServer":
-      case "netSocket":
-        features.net = true;
-        break;
-      case "http2Session":
-      case "http2Stream":
-        features.net = true;
-        features.http2 = true;
-        break;
-      case "httpReq":
-      case "httpRes":
-      case "httpClientReq":
-        features.net = true;
-        features.http = true;
-        break;
-      case "secureCtx":
-        features.net = true;
-        features.http = true;
-        features.tls = true;
-        break;
-      case "symbol":
-        features.symbol = true;
-        break;
-      case "bigint":
-        features.bigint = true;
-        break;
-      case "searchParams":
-        features.searchParams = true;
-        break;
-      case "fsWatcher":
-        features.fsWatch = true;
-        break;
-      case "testCtx":
-        features.nodeTest = true;
-        break;
-      case "dgramSocket":
-        features.dgram = true;
-        break;
-    }
+    for (const name of FEATURES_BY_TYPE.get(node.kind) ?? []) features[name] = true;
     return keepGoing();
   };
   if (keepGoing()) everyModuleNode(mod, { expr, stmt: keepGoing, type });
@@ -644,64 +897,6 @@ export function moduleUsesFetch(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "fetch").fetch;
 }
 
-/** The libCall fns served by the OPTIONAL events unit (scr_events.c):
- * process signal/exit listeners and the piped-stdin surface. */
-const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
-  "process.stdio",
-  "process.onSignal",
-  "process.offSignal",
-  "process.onExit",
-  "process.offExit",
-  "stdin.onData",
-  "stdin.onEnd",
-  "stdin.onError",
-  "stdin.nextChunk",
-  // node:readline rides the stdin unit (scr_readline.c links beside
-  // scr_events.c under the same gate).
-  "rl.create",
-  "rl.createSignal",
-  "rl.question",
-  "rl.questionAsync",
-  "rl.questionAsyncSignal",
-  "rl.close",
-  "rl.pause",
-  "rl.resume",
-  "rl.prompt",
-  "rl.promptWith",
-  "rl.setPrompt",
-  "rl.getPrompt",
-  "rl.write",
-  "rl.writeKey",
-  "rl.on",
-  "rl.iterOpen",
-  "rl.iterNext",
-  "rl.iterReturn",
-  "rl.checkOptions",
-  "rl.checkCompleter",
-  "rl.setOptions",
-  "rl.setHistory",
-  "rl.history",
-  "rl.numProp",
-  "rl.terminal",
-  "rl.line",
-  "rl.isTerminal",
-  "rl.cursor",
-  "rl.seq",
-  "rl.moves",
-  "rl.cursorPos",
-  "rl.keypressStdin",
-  "rl.keypressStream",
-  "stdin.onKeypress",
-  "rl.uiOpen",
-  "rl.uiOpenStream",
-  "rl.uiCursorTo",
-  "rl.uiMoveCursor",
-  "rl.uiClearLine",
-  "rl.uiClearScreenDown",
-  "rl.uiRollback",
-  "rl.uiCommit",
-]);
-
 /** True when the module uses the process-events surface — the link switch
  * that pulls scr_events.c into the binary and has the emitted main call
  * scr_events_install (native-toolchain.ts + emitter; the scr_regex/scr_fetch/scr_zlib
@@ -733,6 +928,14 @@ export function moduleUsesEmitter(mod: IrModule): boolean {
  * programs pay zero bytes and keep their exact link line. */
 export function moduleUsesStream(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "stream").stream;
+}
+
+/** True when the program links scr_dyn_builtin_stream.c (stream classes
+ * as untyped constructor values): its runtime streams box through that
+ * unit's view and checked casts to the stream classes accept constructor-
+ * function streams. Programs without it keep their exact code. */
+export function moduleUsesDynBuiltinStream(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "dynBuiltinStream").dynBuiltinStream;
 }
 
 export const NPM_COMPRESS_MIN = 1024;
@@ -891,14 +1094,6 @@ export function moduleUsesHttpServer(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "http").http;
 }
 
-/** The legacy http2.* libCalls implemented by scr_http.c/scr_tls.c (the
- * allowHTTP1 compatibility slice) — they must NOT pull scr_http2.c, so
- * divergence-57 binaries keep their exact link line. */
-const HTTP2_LEGACY_FNS: ReadonlySet<IrLibFn> = new Set([
-  "http2.streamNoop",
-  "http2.streamUndefCall",
-]);
-
 /** True when the module uses the REAL h2 surface (scr_http2.c): any core
  * http2.* libCall, or an h2 handle type left behind by a fenced statement
  * (its emitted release call needs the unit — the moduleUsesNet story). */
@@ -924,4 +1119,11 @@ export function moduleUsesTls(mod: IrModule): boolean {
  * the unit's default-set override for its trust anchors. */
 export function moduleUsesTlsCa(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "tlsCa").tlsCa;
+}
+
+/** True when the module has dynamic-tier jsval operations: the link switch
+ * for the scr_js_* runtime units (two-tier design I3). Programs without
+ * them never link a scr_js_ symbol. */
+export function moduleUsesDynTier(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "dynTier").dynTier;
 }

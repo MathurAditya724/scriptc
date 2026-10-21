@@ -434,7 +434,9 @@ void scr_channel_set_owner(ScrChannel *channel, int side, ScrMailbox *owner, uns
 }
 
 /* postMessage from `side`: the message (consumed) queues on the other end
- * unless either end has closed. */
+ * unless either end has closed. Only a message that finds the end's queue
+ * empty wakes its owner: the owner's loop counts an end with queued
+ * messages as ready, so it does not wait while the queue is non-empty. */
 bool scr_channel_post(ScrChannel *channel, int side, ScrMessage *message, unsigned message_kind,
                       unsigned wake_kind) {
   ScrMailEvent *event = calloc(1, sizeof(*event));
@@ -448,10 +450,11 @@ bool scr_channel_post(ScrChannel *channel, int side, ScrMessage *message, unsign
     scr_mail_event_free(event);
     return false;
   }
+  bool first = peer->count == 0;
   *peer->tail = event;
   peer->tail = &event->next;
   peer->count++;
-  ScrMailbox *wake = peer->owner ? scr_mailbox_retain(peer->owner) : NULL;
+  ScrMailbox *wake = first && peer->owner ? scr_mailbox_retain(peer->owner) : NULL;
   scr_channel_unlock(channel);
   scr_channel_wake(wake, wake_kind);
   return true;

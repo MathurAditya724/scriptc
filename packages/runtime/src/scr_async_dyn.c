@@ -822,10 +822,59 @@ ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code) {
   return w;
 }
 
+#ifdef SCR_WARNING_REPLACE
+/* The program's process.emitWarning replacement, or NULL while the
+ * property holds Node's own function. Compiled only into the
+ * SCR_WARNING_REPLACE variant, which programs assigning process.emitWarning
+ * link: every other executable keeps the plain warning paths. */
+static SCR_TL ScrDyn *scr_emit_warning_override = NULL;
+
+static void scr_emit_warning_override_teardown(void) {
+  scr_dyn_release(scr_emit_warning_override);
+  scr_emit_warning_override = NULL;
+}
+
+void scr_process_set_emit_warning(ScrDyn *fn) {
+  if (scr_emit_warning_override == NULL) scr_atexit(scr_emit_warning_override_teardown);
+  ScrDyn *previous = scr_emit_warning_override;
+  scr_emit_warning_override = scr_dyn_retain(fn);
+  scr_dyn_release(previous);
+  /* Units that report their own warnings without a listener route them
+   * here once a replacement exists. */
+  scr_warning_emit_hook = scr_emit_warning;
+}
+
+/* A runtime-built warning while a replacement is installed: Node's modules
+ * call process.emitWarning(message, type, code), so the replacement sees
+ * those arguments; nothing is reported. A throw stays pending. */
+static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *code) {
+  ScrDyn *args[3];
+  size_t argc = 0;
+  args[argc++] = scr_dyn_new_str(message);
+  ScrStr *fallback = type ? NULL : scr_str_new("Warning", 7);
+  args[argc++] = scr_dyn_new_str(type ? type : fallback);
+  scr_str_release(fallback);
+  if (code) args[argc++] = scr_dyn_new_str(code);
+  ScrDyn *r = scr_dyn_call(scr_emit_warning_override, args, argc, "process.emitWarning");
+  scr_dyn_release(r);
+  for (size_t i = 0; i < argc; i++) scr_dyn_release(args[i]);
+}
+#endif /* SCR_WARNING_REPLACE */
+
 /* A warning built from C parts (the runtime deprecation sites): name
  * defaults to "Warning"; code/detail optional. Reported synchronously.
  * Borrows message. */
 void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+#ifdef SCR_WARNING_REPLACE
+  if (scr_emit_warning_override != NULL) {
+    ScrStr *type_text = scr_str_new(name ? name : "Warning", strlen(name ? name : "Warning"));
+    ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
+    scr_emit_warning_replaced(message, type_text, code_text);
+    scr_str_release(type_text);
+    scr_str_release(code_text);
+    return;
+  }
+#endif
   ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
   ScrDyn *w = scr_warning_new(message, name ? name : "Warning", code_text);
   scr_str_release(code_text);
@@ -856,6 +905,18 @@ static void scr_warning_defer(ScrDyn *w, void (*fire)(ScrClosure *)) {
 }
 
 void scr_warning_emit_deferred(ScrDyn *w) {
+#ifdef SCR_WARNING_REPLACE
+  if (scr_emit_warning_override != NULL) {
+    const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
+    const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
+    ScrStr *name = scr_warning_name(w);
+    ScrStr *message = em && em->kind == SCR_DYN_STR ? scr_str_retain(em->v.str) : scr_str_new("", 0);
+    scr_emit_warning_replaced(message, name, ec && ec->kind == SCR_DYN_STR ? ec->v.str : NULL);
+    scr_str_release(message);
+    scr_str_release(name);
+    return;
+  }
+#endif
   if (scr_warning_is_deprecation(w)) {
     if (scr_process_deprecation_flag_on(0)) return;
     if (scr_process_deprecation_flag_on(1)) {
@@ -942,6 +1003,13 @@ static void scr_warn_bad_arg(const char *arg, const char *want) {
  * ERR_INVALID_ARG_TYPE TypeErrors at the call; non-string details are
  * ignored. The warning itself is emitted on the next tick. */
 void scr_process_emit_warning(ScrDyn *args) {
+#ifdef SCR_WARNING_REPLACE
+  if (scr_emit_warning_override != NULL) {
+    ScrDyn *r = scr_dyn_apply(scr_emit_warning_override, args, "process.emitWarning");
+    scr_dyn_release(r);
+    return;
+  }
+#endif
   size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
   ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
   ScrDyn *warning = argc >= 1 ? items[0] : NULL;
@@ -1369,22 +1437,27 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
  * a thenable gets a fresh promise and its resolve job, anything else a
  * fulfilled promise (a throwing `then` read rejects it). The element
  * joins the combinator right after, so a thenable's job sits between
- * the jobs of the entries around it, exactly Node's iteration. */
-static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, ScrDyn *value, const ScrDyn *reader) {
+ * the jobs of the entries around it, exactly Node's iteration. Without a
+ * combinator (`c` NULL) this is PromiseResolve for one value. */
+static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, const ScrDyn *value, const ScrDyn *reader) {
   if (value->kind == SCR_DYN_PROMISE) return scr_promise_retain(value->v.promise);
   ScrPromise *source = scr_promise_new();
   ScrDyn *then = scr_dyn_then_of(value, reader);
   if (scr_exc_pending()) {
     scr_promise_reject_pending(source);
   } else if (then) {
-    scr_promise_combine_flush(c);
+    if (c) scr_promise_combine_flush(c);
     scr_dyn_thenable_schedule(source, value, then, reader);
   } else {
-    scr_promise_fulfill_ref(source, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v,
-                            scr_dyn_trace_v);
+    scr_promise_fulfill_ref(source, scr_dyn_retain((ScrDyn *)value), scr_dyn_retain_v,
+                            scr_dyn_release_v, scr_dyn_trace_v);
   }
   scr_dyn_release(then);
   return source;
+}
+
+ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader) {
+  return scr_dyn_promise_entry(NULL, value, reader);
 }
 
 static void scr_dyn_settled_store(ScrArr *a, double i, ScrPromise *src) {

@@ -293,6 +293,9 @@ ScrBytes *scr_bytes_as_buffer(ScrBytes *bytes) {
   return scr_bytes_retain(bytes);
 }
 
+/* Nothing on an existing path calls this. */
+bool scr_bytes_is_buffer(const ScrBytes *bytes) { return bytes->is_buffer; }
+
 void scr_bytes_release(ScrBytes *b) {
   if (!b || b->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--b->rc == 0) {
@@ -3113,7 +3116,7 @@ static void scr_bytes_fill_from_arr(uint8_t *out, ScrBytesElem elem, const ScrAr
       /* Sparse tails and explicit undefined retain ordinary iteration
        * semantics. Numeric array slots own no conversion callbacks. */
       if (index < arr->cap) {
-        if (arr->present[index] == SCR_ARR_VALUE)
+        if (*scr_arr_state_ptr(arr, index) == SCR_ARR_VALUE)
           memcpy(&values[i], &arr->data[index], sizeof(double));
         else values[i] = NAN;
       } else values[i] = scr_arr_get_number(arr, (double)index);

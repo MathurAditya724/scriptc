@@ -2254,6 +2254,8 @@ void scr_stream_set_flush(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamPlain
 
 void scr_stream_set_flush_on_prefinish(ScrStream *s) { s->st->flush_on_prefinish = true; }
 
+void scr_stream_set_destroyed(ScrStream *s, bool destroyed) { s->st->destroyed = destroyed; }
+
 void scr_stream_set_native(ScrStream *s, void *state /*moves*/, void (*release)(void *)) {
   ScrStreamState *st = s->st;
   if (st->native) st->native_release(st->native);
@@ -4728,6 +4730,33 @@ static void scr_stream_rl_hooks_free(void) {
   }
 }
 
+/* createInterface's input or output given as a checked-dynamic value (a
+ * JavaScript function's result, an object's member): the stream (+1).
+ * An output of null or undefined is NULL (no output). A value that is
+ * not a stream with a readable (input) or writable (output) side is
+ * refused. */
+ScrStream *scr_stream_rl_from_dyn(const ScrDyn *value, bool output) {
+  if (output && (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF)) return NULL;
+  if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len > 7 &&
+      !memcmp(value->v.typed_ref.type_key, "object:", 7)) {
+    ScrStream *stream = scr_dyn_typed_ref_unbox(value);
+    const ScrVt *vt = scr_stream_vt_of(stream);
+    if (vt) {
+      bool duplex = vt == &scr_duplex_vt || vt == &scr_transform_vt || vt == &scr_passthrough_vt ||
+                    scr_vt_within(vt, &scr_duplex_vt);
+      bool ok = duplex || (output ? vt == &scr_writable_vt || scr_vt_within(vt, &scr_writable_vt)
+                                  : vt == &scr_readable_vt || scr_vt_within(vt, &scr_readable_vt));
+      if (ok) return stream;
+    }
+    value->v.typed_ref.release(stream);
+  }
+  static const char in_m[] = "createInterface with an input that is not a readable stream has no lowering";
+  static const char out_m[] = "createInterface with an output that is not a writable stream has no lowering";
+  if (output) scr_throw_error_msg_code(SCR_ERR_ERROR, out_m, sizeof out_m - 1, "SC2020");
+  else scr_throw_error_msg_code(SCR_ERR_ERROR, in_m, sizeof in_m - 1, "SC2020");
+  return NULL;
+}
+
 double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double crlf_delay,
                           ScrStr *prompt, ScrDyn *signal, ScrAbortAddFn add) {
   double id = scr_rl_open(&scr_stream_rl_io, in ? scr_stream_retain(in) : NULL,
@@ -6350,15 +6379,19 @@ void scr_stream_install(void) {
 static void scr_stream_child_read(ScrClosure *cb, ScrStream *s, double size) {
   (void)cb; (void)s; (void)size;
 }
-static ScrStream *scr_stream_child_readable(void) {
-  return scr_stream_new_readable(-1, true, true,
+static ScrStream *scr_stream_child_readable(const char *cls) {
+  ScrStream *s = scr_stream_new_readable(-1, true, true,
       scr_closure_new((void *)scr_stream_child_read, 0), scr_stream_child_read,
       NULL, NULL);
+  s->cls = cls;
+  return s;
 }
-static ScrStream *scr_stream_child_writable(ScrClosure *write, ScrStreamChunkInv write_inv,
-    ScrClosure *final_cb, ScrStreamPlainInv final_inv) {
-  return scr_stream_new_writable(-1, true, true, write, write_inv,
+static ScrStream *scr_stream_child_writable(const char *cls, ScrClosure *write,
+    ScrStreamChunkInv write_inv, ScrClosure *final_cb, ScrStreamPlainInv final_inv) {
+  ScrStream *s = scr_stream_new_writable(-1, true, true, write, write_inv,
       final_cb, final_inv, NULL, NULL);
+  s->cls = cls;
+  return s;
 }
 const ScrChildStreamOps scr_stream_child_ops = {
   scr_stream_child_readable, scr_stream_child_writable,
@@ -6380,9 +6413,9 @@ static ScrStream *scr_stream_view_receiver(const ScrDyn *value) {
   if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len > 7 &&
       !memcmp(value->v.typed_ref.type_key, "object:", 7)) {
     ScrStream *stream = scr_dyn_typed_ref_unbox(value);
-    const ScrVt *vt = stream->vt;
-    if ((vt->pre >= scr_readable_vt.pre && vt->pre <= scr_readable_vt.post) ||
-        (vt->pre >= scr_writable_vt.pre && vt->pre <= scr_writable_vt.post)) return stream;
+    const ScrVt *vt = scr_stream_vt_of(stream);
+    if (vt && ((vt->pre >= scr_readable_vt.pre && vt->pre <= scr_readable_vt.post) ||
+               (vt->pre >= scr_writable_vt.pre && vt->pre <= scr_writable_vt.post))) return stream;
     value->v.typed_ref.release(stream);
   }
   scr_dyn_arg_type_fail("destination", "an instance of Stream", value);
@@ -6422,8 +6455,10 @@ static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t 
         end = option->kind == SCR_DYN_UNDEF || scr_dyn_truthy(option);
         scr_dyn_release(option);
       }
+      /* scr_stream_pipe_general: a JavaScript caller can pipe into the
+       * converted process.stdout / process.stderr, which a pipe never ends. */
       ScrStream *returned = !strcmp(method, "pipe")
-          ? scr_stream_pipe(stream, destination, end) : scr_stream_unpipe(stream, destination);
+          ? scr_stream_pipe_general(stream, destination, end) : scr_stream_unpipe(stream, destination);
       scr_stream_release(returned);
       if (!strcmp(method, "pipe") && !scr_exc_pending()) result = scr_dyn_retain(first);
     }
@@ -6578,6 +6613,7 @@ ScrStream *scr_crypto_hash_stream(ScrCryptoHash *hash) {
                                scr_hash_stream_step(box), scr_hash_stream_transform,
                                scr_hash_stream_step(box), scr_hash_stream_flush,
                                scr_hash_stream_step(box), scr_hash_stream_destroy);
+  s->cls = scr_crypto_hash_is_hmac(hash) ? "Hmac" : "Hash";
   /* The steps keep the box alive as long as the stream. */
   scr_crypto_hash_stream_set(hash, scr_stream_retain(s), scr_stream_release_v, box);
   scr_box_release(box);
@@ -6588,4 +6624,105 @@ ScrStream *scr_crypto_hash_stream_piped(ScrCryptoHash *hash) {
   ScrStream *s = scr_crypto_hash_stream(hash);
   if (s) scr_crypto_hash_stream_hold(hash);
   return s;
+}
+
+/* ── the compiler's general stream representation ─────────────────────
+ * NodeJS.ReadableStream / NodeJS.WritableStream slots that also hold other
+ * streams compile as this unit's classes; the stdio handles convert into
+ * them where they are read or flow. Both entry points sit last in the unit
+ * and reference only global symbols and no new constant data, so programs
+ * that never convert link the same bytes as before. */
+
+/* destroy() on a bridged child stdin closes the pipe, as Node's does. */
+static void scr_stream_child_stdin_destroy(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  ScrChildWriter *writer = scr_box_get_ref(cb->caps[0]);
+  scr_child_writer_destroy(writer);
+  scr_child_writer_release(writer);
+  scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
+}
+
+/* A child stdio read (the child.stdioStream libCall): the bridged stream
+ * the checked-dynamic ChildProcess view answers for the same key ("stdin",
+ * "stdout" or "stderr", passed by the compiled program), so both views
+ * share one stream per slot. The stdin stream (the only five-byte key)
+ * gains the destroy hook that closes the pipe. +1, or NULL for an unpiped
+ * slot or a throw. */
+ScrStream *scr_stream_child_stdio(void *child, const char *key, size_t key_len) {
+  ScrDyn *handle = scr_dyn_new_handle(child, SCR_DYNH_CHILD);
+  ScrDyn *box = scr_dyn_handle_ops_of(handle)->get(child, key, key_len);
+  scr_dyn_release(handle);
+  if (box == NULL) return NULL;
+  ScrStream *stream = box->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_unbox(box) : NULL;
+  scr_dyn_release(box);
+  if (stream != NULL && key_len == 5 && stream->st->destroy_cb == NULL) {
+    ScrChildWriter *writer = scr_child_stdin(child);
+    if (writer != NULL) {
+      ScrClosure *destroy = scr_closure_new((void *)scr_stream_child_stdin_destroy, 1);
+      destroy->caps[0] = scr_box_new_obj(scr_child_writer_retain_v, scr_child_writer_release_v, NULL);
+      scr_box_set_ref(destroy->caps[0], writer);
+      stream->st->destroy_cb = destroy;
+      stream->st->destroy_inv = scr_stream_child_stdin_destroy;
+    }
+  }
+  return stream;
+}
+
+/* process.stdout / process.stderr flowing into a Writable slot (the
+ * stream.stdioWritable libCall): a Writable whose _write hands each chunk
+ * to the descriptor through process.stdout.write's synchronous path and
+ * completes at once, so ordering against console output and direct writes
+ * is unchanged. The closure keeps the fd as given (1 or 2). Each thread
+ * keeps one per descriptor, so every conversion of process.stdout answers
+ * the same stream, as Node's process.stdout is one object: listeners,
+ * writable state and identity are shared. The cache is released at exit. */
+static SCR_TL ScrStream *scr_stream_stdio_writables[2];
+static void scr_stream_stdio_write(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
+  int fd = (int)scr_box_get_f64(cb->caps[0]);
+  (void)scr_stdio_write(fd == 2 ? 2 : 1, chunk->data, chunk->len * scr_bytes_elem_size(chunk->elem));
+  scr_stream_write_done(s, NULL);
+}
+static void scr_stream_stdio_writables_free(void) {
+  for (int i = 0; i < 2; i++) {
+    ScrStream *s = scr_stream_stdio_writables[i];
+    scr_stream_stdio_writables[i] = NULL;
+    if (s) scr_stream_release(s);
+  }
+}
+ScrStream *scr_stream_stdio_writable(double fd) {
+  int i = fd == 2 ? 1 : 0;
+  if (scr_stream_stdio_writables[i] == NULL) {
+    if (scr_stream_stdio_writables[1 - i] == NULL) scr_atexit(scr_stream_stdio_writables_free);
+    ScrClosure *write = scr_closure_new((void *)scr_stream_stdio_write, 1);
+    write->caps[0] = scr_box_new(SCR_BOX_F64);
+    scr_box_set_f64(write->caps[0], i ? 2 : 1);
+    scr_stream_stdio_writables[i] = scr_stream_new_writable(-1, true, true, write,
+        scr_stream_stdio_write, NULL, NULL, NULL, NULL);
+  }
+  return scr_stream_retain(scr_stream_stdio_writables[i]);
+}
+
+/* readable.pipe() into a Writable slot under the general representation
+ * (the readable.pipeGeneral libCall), and pipe() called from JavaScript on
+ * a native stream: Node never ends process.stdout or process.stderr from a
+ * pipe, so their converted Writable keeps `end` off. */
+ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end) {
+  if (dst == scr_stream_stdio_writables[0] || dst == scr_stream_stdio_writables[1]) end = false;
+  return scr_stream_pipe(src, dst, end);
+}
+
+/* A pipeline() stage that arrives as a checked-dynamic value (the
+ * stream.unboxDyn libCall): a boxed native stream unwraps by identity
+ * (+1); any other value throws the compiled program's not-supported
+ * message (Node also takes iterables and functions there). */
+ScrStream *scr_stream_unbox_dyn(const ScrDyn *value, const ScrStr *message) {
+  if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len > 7 &&
+      !memcmp(value->v.typed_ref.type_key, "object:", 7)) {
+    ScrStream *stream = scr_dyn_typed_ref_unbox(value);
+    const ScrVt *vt = scr_stream_vt_of(stream);
+    if (vt && ((vt->pre >= scr_readable_vt.pre && vt->pre <= scr_readable_vt.post) ||
+               (vt->pre >= scr_writable_vt.pre && vt->pre <= scr_writable_vt.post))) return stream;
+    value->v.typed_ref.release(stream);
+  }
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
+  return NULL;
 }

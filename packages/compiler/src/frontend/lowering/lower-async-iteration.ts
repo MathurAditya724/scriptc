@@ -20,7 +20,7 @@ import {
   VOID,
 } from "../../ir/ir.js";
 import { locOf } from "../program.js";
-import { extractIteratorValue } from "./lower-generators.js";
+import { extractIteratorValue, type GenType } from "./lower-generators.js";
 import { streamSidesOf } from "./lower-stream.js";
 import { staticReadableStreamElementType } from "./lower-stdlib.js";
 import { genResultRecord } from "../type-mapper.js";
@@ -137,7 +137,9 @@ function literalBooleanOption(
 
 function nodeReadablePlan(lowerer: Lowerer, expression: ts.Expression): NodeReadablePlan | null {
   const direct =
-    lowerer.stageSourceType(expression) ?? lowerer.mapTypeOf(lowerer.typeOf(expression));
+    lowerer.receiverTypeOverrides.get(expression) ??
+    lowerer.stageSourceType(expression) ??
+    lowerer.mapTypeOf(lowerer.typeOf(expression));
   if (direct?.kind === "object") {
     const sides = streamSidesOf(lowerer, lowerer.classes.get(direct.className));
     if (sides === "r" || sides === "rw") {
@@ -279,6 +281,43 @@ function classAsyncIteratorPlan(
     valueType: value.type,
     hasDone: done !== undefined,
     closeResult,
+  };
+}
+
+/** `for await (const x of obj)` where obj's class declares (or inherits)
+ * `async *[Symbol.asyncIterator]()`: the loop opens the iterator with that
+ * method call, evaluated once, and then drives the async generator it
+ * returns exactly like `for await (const x of obj[Symbol.asyncIterator]())`
+ * (pi's EventStream). Null for other sources. */
+export function classAsyncGeneratorIterator(
+  lowerer: Lowerer,
+  expression: ts.Expression,
+): (IrExpr & { type: GenType }) | null {
+  const sourceType = lowerer.mapTypeOf(lowerer.typeOf(expression));
+  if (sourceType?.kind !== "object") return null;
+  const info = lowerer.classes.get(sourceType.className);
+  const open = info ? lowerer.findMethodOn(info, "sym:asyncIterator") : null;
+  if (
+    !open ||
+    open.sig.abstract === true ||
+    open.sig.params.length !== 0 ||
+    open.sig.ret.kind !== "generator" ||
+    !open.sig.ret.async
+  )
+    return null;
+  const retT = open.sig.ret;
+  const source = lowerer.lowerExpr(expression);
+  if (source.type.kind !== "object") return null;
+  return {
+    ...lowerer.accessorCall(
+      sourceType.className,
+      "sym:asyncIterator",
+      source,
+      [],
+      retT,
+      locOf(expression),
+    ),
+    type: retT,
   };
 }
 

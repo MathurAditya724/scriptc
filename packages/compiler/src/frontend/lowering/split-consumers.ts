@@ -21,7 +21,7 @@ export function isPrivateSplitConsumer(
   const local = lowerer.bindingIn(lowerer.ctx, symbol);
   if (!local || local.boxed || local.tdz || local.mutable || local.id !== iterable.localId)
     return false;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (
     !decl ||
     !ts.isVariableDeclaration(decl) ||
@@ -45,7 +45,7 @@ export function isPrivateSplitConsumer(
   )
     return false;
 
-  for (const use of identifiersNamed(lowerer, decl.getSourceFile(), name.text)) {
+  for (const use of identifiersNamed(lowerer, ts.getSourceFileOfNode(decl), name.text)) {
     if (use === decl.name || use === name) continue;
     if (lowerer.resolveValueSymbol(use) === symbol) return false;
   }

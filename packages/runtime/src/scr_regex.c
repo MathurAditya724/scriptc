@@ -691,7 +691,8 @@ static ScrDyn *scr_regex_groups_of(const ScrArr *a, uint8_t *bc) {
   const char *name = groupnames;
   for (int k = 1; k < capture_count; k++) {
     size_t length = strlen(name);
-    bool matched = (size_t)k < a->len && (size_t)k < a->cap && a->present[k] == SCR_ARR_VALUE;
+    bool matched = (size_t)k < a->len && (size_t)k < a->cap &&
+                   *scr_arr_state_ptr(a, (size_t)k) == SCR_ARR_VALUE;
     /* ES2025 duplicates sit in distinct alternatives: at most one
      * participates, and it wins over an earlier undefined. */
     if (length && (matched || !scr_dyn_obj_get(groups, name, length)))
@@ -803,7 +804,7 @@ static uint64_t scr_regex_mask_bits(double mask) {
  * present undefined (SCR_RE_NO_SPAN when lazy), a lazy capture of an ASCII
  * subject is a span word, and every other capture a fresh string. */
 static inline void scr_regex_fill_slot(const ScrRegexInput *input, uint64_t *data,
-                                       uint8_t *present, int k, uint64_t mask, uint64_t lazy,
+                                       uint8_t *states, int k, uint64_t mask, uint64_t lazy,
                                        bool spans) {
   const uint8_t *cs = input->capture[2 * k], *ce = input->capture[2 * k + 1];
   bool deferred = k < 64 && (lazy >> k & 1);
@@ -820,7 +821,7 @@ static inline void scr_regex_fill_slot(const ScrRegexInput *input, uint64_t *dat
     state = SCR_ARR_VALUE;
   }
   data[k] = word;
-  present[k] = state;
+  *scr_arr_state_in(states, (size_t)k) = state;
 }
 
 /* re.exec(s): a fresh string[] of [whole match, ...captures], or NULL
@@ -851,29 +852,29 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
      * they stay in registers across the slot stores. */
     size_t n = (size_t)count + spans;
     uint64_t *data = out->data;
-    uint8_t *present = out->present;
+    uint8_t *states = scr_arr_states_end(out);
     if (count <= 64) {
       /* Captures neither selected nor lazy are present undefined with a
        * zero payload; only the selected and lazy ones need a decision. */
       memset(data, 0, (size_t)count * sizeof *data);
-      memset(present, SCR_ARR_UNDEFINED, (size_t)count);
+      memset(states - count, SCR_ARR_UNDEFINED, (size_t)count);
       uint64_t visit = mask | lazy;
       if (count < 64) visit &= (UINT64_C(1) << count) - 1;
       while (visit) {
         int k = __builtin_ctzll(visit);
         visit &= visit - 1;
-        scr_regex_fill_slot(&input, data, present, k, mask, lazy, spans);
+        scr_regex_fill_slot(&input, data, states, k, mask, lazy, spans);
       }
     } else {
       for (int k = 0; k < count; k++)
-        scr_regex_fill_slot(&input, data, present, k, mask, lazy, spans);
+        scr_regex_fill_slot(&input, data, states, k, mask, lazy, spans);
     }
     if (spans) {
       data[count] = (uint64_t)(uintptr_t)scr_str_retain(s);
-      present[count] = SCR_ARR_VALUE;
+      *scr_arr_state_in(states, count) = SCR_ARR_VALUE;
     }
     size_t filled = 0;
-    while (filled < n && present[filled] == SCR_ARR_VALUE) filled++;
+    while (filled < n && *scr_arr_state_in(states, filled) == SCR_ARR_VALUE) filled++;
     out->filled = (uint32_t)filled;
     out->len = n;
     if (metadata) {
@@ -904,14 +905,14 @@ static bool scr_regex_group_bytes(const ScrArr *m, double k, const char **p, siz
   /* Array lengths stay below 2^53, so signed conversions are exact. */
   if (!(k >= 0 && k < (double)(int64_t)m->len)) return false;
   size_t i = (size_t)(int64_t)k;
-  if (m->present[i] == SCR_ARR_VALUE) {
+  if (*scr_arr_state_ptr(m, i) == SCR_ARR_VALUE) {
     const ScrStr *str = (const ScrStr *)(uintptr_t)m->data[i];
     *p = str->data;
     *n = str->len;
     return true;
   }
   uint64_t span = m->data[i];
-  if (m->present[i] != SCR_ARR_UNDEFINED || span == SCR_RE_NO_SPAN) return false;
+  if (*scr_arr_state_ptr(m, i) != SCR_ARR_UNDEFINED || span == SCR_RE_NO_SPAN) return false;
   const ScrStr *subject = (const ScrStr *)(uintptr_t)m->data[m->len - 1];
   *p = subject->data + (span >> 32);
   *n = (size_t)((span & UINT32_MAX) - (span >> 32));
@@ -1045,21 +1046,22 @@ static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices
      * directly, then the hole-free prefix is the run of captures from 0. */
     ScrArr *row = scr_arr_new_inline(SCR_ELEM_STR, (size_t)capture_count);
     uint64_t *data = row->data;
-    uint8_t *present = row->present;
+    uint8_t *states = scr_arr_states_end_w(row, 8);
     for (int k = 0; k < capture_count; k++) {
       const uint8_t *cs = capture[2 * k], *ce = capture[2 * k + 1];
       if (cs == NULL || ce == NULL) {
         data[k] = 0;
-        present[k] = SCR_ARR_UNDEFINED;
+        *scr_arr_state_in(states, (size_t)k) = SCR_ARR_UNDEFINED;
       } else {
         ScrStr *text =
             scr_regex_span(&input, scr_capture_index(&input, cs), scr_capture_index(&input, ce));
         data[k] = (uint64_t)(uintptr_t)text;
-        present[k] = SCR_ARR_VALUE;
+        *scr_arr_state_in(states, (size_t)k) = SCR_ARR_VALUE;
       }
     }
     size_t filled = 0;
-    while (filled < (size_t)capture_count && present[filled] == SCR_ARR_VALUE) filled++;
+    while (filled < (size_t)capture_count && *scr_arr_state_in(states, filled) == SCR_ARR_VALUE)
+      filled++;
     row->filled = (uint32_t)filled;
     row->len = (size_t)capture_count;
     if (source) scr_regex_defer_metadata(row, source, start);
@@ -2019,6 +2021,222 @@ static ScrStr *scr_str_case_conv(const ScrStr *s, int to_lower) {
 
 ScrStr *scr_str_to_lower(const ScrStr *s) { return scr_str_case_conv(s, 1); }
 ScrStr *scr_str_to_upper(const ScrStr *s) { return scr_str_case_conv(s, 0); }
+
+/* ── String.prototype.toLocaleLowerCase / toLocaleUpperCase ────────────
+ * V8 decides the case mapping from the FIRST requested locale only
+ * (probed: ["en", 5] maps like "en", [5] throws, a non-object primitive
+ * requests nothing). ICU tailors case mapping for Turkic (tr, az: dotted
+ * and dotless I), Lithuanian (dot above retention) and Greek uppercasing
+ * (accent removal); every other language uses the default conversion.
+ * The Turkic rules are SpecialCasing's: lowercase I → ı unless a
+ * U+0307 follows (then I + U+0307 → i), İ → i; uppercase i → İ. Tags are
+ * checked against the unicode_locale_id structure; anything this unit
+ * cannot decide exactly (malformed tags, whose V8 RangeError texts vary,
+ * objects, lt, el uppercasing, I before other combining marks) throws a
+ * 'not supported yet' Error rather than guess. Nothing on an existing
+ * path calls this. */
+
+static bool scr_tag_alpha(const char *p, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (!((p[i] >= 'a' && p[i] <= 'z') || (p[i] >= 'A' && p[i] <= 'Z'))) return false;
+  return true;
+}
+
+static bool scr_tag_digit(const char *p, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (!(p[i] >= '0' && p[i] <= '9')) return false;
+  return true;
+}
+
+static bool scr_tag_alnum(const char *p, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (!scr_tag_alpha(p + i, 1) && !scr_tag_digit(p + i, 1)) return false;
+  return true;
+}
+
+static bool scr_tag_same(const char *a, size_t an, const char *b, size_t bn) {
+  if (an != bn) return false;
+  for (size_t i = 0; i < an; i++) {
+    char x = a[i] >= 'A' && a[i] <= 'Z' ? (char)(a[i] + 32) : a[i];
+    char y = b[i] >= 'A' && b[i] <= 'Z' ? (char)(b[i] + 32) : b[i];
+    if (x != y) return false;
+  }
+  return true;
+}
+
+/* 0 default, 1 Turkic, 2 Lithuanian, 3 Greek; -1 when the tag is outside
+ * the structural grammar handled here. */
+static int scr_locale_case_rules(const char *tag, size_t len) {
+  const char *subtags[64];
+  size_t lens[64];
+  size_t count = 0;
+  size_t start = 0;
+  for (size_t i = 0; i <= len; i++) {
+    if (i < len && tag[i] != '-') continue;
+    if (i == start || count == 64) return -1;
+    subtags[count] = tag + start;
+    lens[count++] = i - start;
+    start = i + 1;
+  }
+  size_t k = 0;
+  size_t lang = lens[0];
+  if (!scr_tag_alpha(subtags[0], lang) || !((lang >= 2 && lang <= 3) || (lang >= 5 && lang <= 8)))
+    return -1;
+  k = 1;
+  if (k < count && lens[k] == 4 && scr_tag_alpha(subtags[k], 4)) k++;
+  if (k < count && ((lens[k] == 2 && scr_tag_alpha(subtags[k], 2)) ||
+                    (lens[k] == 3 && scr_tag_digit(subtags[k], 3))))
+    k++;
+  size_t variants = k;
+  while (k < count && scr_tag_alnum(subtags[k], lens[k]) &&
+         ((lens[k] >= 5 && lens[k] <= 8) || (lens[k] == 4 && scr_tag_digit(subtags[k], 1)))) {
+    for (size_t j = variants; j < k; j++)
+      if (scr_tag_same(subtags[j], lens[j], subtags[k], lens[k])) return -1;
+    k++;
+  }
+  size_t singletons = k;
+  while (k < count) {
+    if (lens[k] != 1 || !scr_tag_alnum(subtags[k], 1)) return -1;
+    for (size_t j = singletons; j < k; j++)
+      if (lens[j] == 1 && scr_tag_same(subtags[j], 1, subtags[k], 1)) return -1;
+    bool private_use = subtags[k][0] == 'x' || subtags[k][0] == 'X';
+    size_t min = private_use ? 1 : 2;
+    size_t first = ++k;
+    while (k < count && lens[k] >= min && lens[k] <= 8 && scr_tag_alnum(subtags[k], lens[k]) &&
+           (private_use || lens[k] > 1))
+      k++;
+    if (k == first) return -1;
+    if (private_use && k != count) return -1;
+  }
+  if (lang > 3) return 0;
+  char l[3] = {0, 0, 0};
+  for (size_t i = 0; i < lang; i++)
+    l[i] = subtags[0][i] >= 'A' && subtags[0][i] <= 'Z' ? (char)(subtags[0][i] + 32) : subtags[0][i];
+  bool two = lang == 2;
+  if ((two && l[0] == 't' && l[1] == 'r') || (two && l[0] == 'a' && l[1] == 'z') ||
+      (!two && l[0] == 't' && l[1] == 'u' && l[2] == 'r') ||
+      (!two && l[0] == 'a' && l[1] == 'z' && l[2] == 'e'))
+    return 1;
+  if ((two && l[0] == 'l' && l[1] == 't') || (!two && l[0] == 'l' && l[1] == 'i' && l[2] == 't'))
+    return 2;
+  if ((two && l[0] == 'e' && l[1] == 'l') || (!two && l[0] == 'e' && l[1] == 'l' && l[2] == 'l') ||
+      (!two && l[0] == 'g' && l[1] == 'r' && l[2] == 'e'))
+    return 3;
+  return 0;
+}
+
+static ScrStr *scr_locale_case_unsupported(bool upper) {
+  static const char lower_msg[] =
+      "String.prototype.toLocaleLowerCase with this locale argument is not supported yet";
+  static const char upper_msg[] =
+      "String.prototype.toLocaleUpperCase with this locale argument is not supported yet";
+  /* The unit's existing "SC2020" literal: a separate constant array would
+   * absorb it (LLVM merges identical constants) and move it out of the
+   * string section every regex-linking binary keeps. */
+  if (upper) scr_throw_error_msg_code(SCR_ERR_ERROR, upper_msg, sizeof upper_msg - 1, "SC2020");
+  else scr_throw_error_msg_code(SCR_ERR_ERROR, lower_msg, sizeof lower_msg - 1, "SC2020");
+  return NULL;
+}
+
+static ScrStr *scr_turkic_case(const ScrStr *s, bool upper) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  for (size_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    if (upper && c == 'i') {
+      scr_jb_putc(&b, (char)0xC4); /* İ */
+      scr_jb_putc(&b, (char)0xB0);
+      continue;
+    }
+    if (!upper && c == 'I') {
+      unsigned char n0 = i + 1 < s->len ? (unsigned char)s->data[i + 1] : 0;
+      unsigned char n1 = i + 2 < s->len ? (unsigned char)s->data[i + 2] : 0;
+      if (n0 == 0xCC && n1 == 0x87) { /* I + U+0307 → i */
+        scr_jb_putc(&b, 'i');
+        i += 2;
+        continue;
+      }
+      /* Another combining mark (U+0300..U+036F) may precede a U+0307. */
+      if ((n0 == 0xCC && n1 >= 0x80) || (n0 == 0xCD && n1 >= 0x80 && n1 <= 0xAF)) {
+        scr_str_release(scr_jb_finish(&b));
+        return scr_locale_case_unsupported(upper);
+      }
+      scr_jb_putc(&b, (char)0xC4); /* ı */
+      scr_jb_putc(&b, (char)0xB1);
+      continue;
+    }
+    if (!upper && c == 0xC4 && i + 1 < s->len && (unsigned char)s->data[i + 1] == 0xB0) {
+      scr_jb_putc(&b, 'i'); /* İ → i */
+      i++;
+      continue;
+    }
+    scr_jb_putc(&b, (char)c);
+  }
+  ScrStr *mapped = scr_jb_finish(&b);
+  ScrStr *result = scr_str_case_conv(mapped, upper ? 0 : 1);
+  scr_str_release(mapped);
+  return result;
+}
+
+ScrStr *scr_str_locale_case(const ScrStr *s, ScrDyn *locales, bool upper) {
+  ScrDyn *owned = NULL;
+  if (locales->kind == SCR_DYN_TYPED_REF) {
+    owned = scr_dyn_typed_ref_materialize(locales);
+    if (!owned) return NULL;
+    locales = owned;
+  }
+  const ScrDyn *tag = NULL;
+  int rules = 0;
+  switch (locales->kind) {
+  case SCR_DYN_NULL: {
+    static const char msg[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NUM:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_SYMBOL:
+  case SCR_DYN_BIGINT:
+    break;
+  case SCR_DYN_STR:
+    tag = locales;
+    break;
+  case SCR_DYN_ARR:
+    if (locales->v.arr.len == 0) break;
+    if (locales->v.arr.presence && !locales->v.arr.presence[0]) {
+      static const char msg[] = "Language ID should be string or object.";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      scr_dyn_release(owned);
+      return NULL;
+    }
+    tag = locales->v.arr.items[0];
+    if (tag->kind != SCR_DYN_STR) {
+      bool primitive = tag->kind == SCR_DYN_UNDEF || tag->kind == SCR_DYN_NULL ||
+                       tag->kind == SCR_DYN_NUM || tag->kind == SCR_DYN_BOOL ||
+                       tag->kind == SCR_DYN_BIGINT || tag->kind == SCR_DYN_SYMBOL;
+      scr_dyn_release(owned);
+      if (!primitive) return scr_locale_case_unsupported(upper);
+      static const char msg[] = "Language ID should be string or object.";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      return NULL;
+    }
+    break;
+  default:
+    scr_dyn_release(owned);
+    return scr_locale_case_unsupported(upper);
+  }
+  if (tag) {
+    rules = scr_locale_case_rules(tag->v.str->data, tag->v.str->len);
+    if (rules < 0 || rules == 2 || (rules == 3 && upper)) {
+      scr_dyn_release(owned);
+      return scr_locale_case_unsupported(upper);
+    }
+  }
+  scr_dyn_release(owned);
+  if (rules == 1) return scr_turkic_case(s, upper);
+  return scr_str_case_conv(s, upper ? 0 : 1);
+}
 
 static void *scr_normalize_realloc(void *opaque, void *ptr, size_t size) {
   (void)opaque;

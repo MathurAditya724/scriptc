@@ -24,11 +24,22 @@ export function builtinImportOf(
   lowerer: Lowerer,
   ident: ts.Identifier,
 ): { module: string; member: string } | null {
+  const binding = builtinModuleBindingOf(lowerer, ident);
+  // node:stream/web's exports ARE the web stream globals: its bindings
+  // lower through the globals' own paths (stdlibGlobalNameOf resolves the
+  // alias to the same name), not through module-member tables.
+  return binding?.module === "stream/web" ? null : binding;
+}
+
+function builtinModuleBindingOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): { module: string; member: string } | null {
   const symbol =
     ts.isShorthandPropertyAssignment(ident.parent) && ident.parent.name === ident
       ? lowerer.checker.getShorthandAssignmentValueSymbol(ident.parent)
       : lowerer.checker.getSymbolAtLocation(ident);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl) return null;
   // The CommonJS twin of the named import: a destructured require
   // binding (`const { readFileSync } = require("fs")`, renames via
@@ -123,8 +134,8 @@ export function builtinImportOf(
   // keys the same tables under the builtin's own member name.
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
     const target = lowerer.checker.getAliasedSymbol(symbol);
-    const tdecl = lowerer.checker.declarationsOf(target)[0];
-    if (tdecl !== undefined && tdecl.getSourceFile().isDeclarationFile) {
+    const tdecl = target.declarations[0];
+    if (tdecl !== undefined && ts.getSourceFileOfNode(tdecl).isDeclarationFile) {
       for (
         let p: ts.Node | undefined = tdecl.parent;
         p !== undefined && !ts.isSourceFile(p);
@@ -132,7 +143,7 @@ export function builtinImportOf(
       ) {
         if (ts.isModuleDeclaration(p) && ts.isStringLiteral(p.name)) {
           const module = canonicalBuiltinModule(p.name.text);
-          if (module !== null) return { module, member: target.name };
+          if (module !== null) return { module, member: ts.symbolName(target) };
           break;
         }
       }
@@ -153,7 +164,7 @@ export function esmImportBindingKind(
   ident: ts.Identifier,
 ): "namespace" | "named" | null {
   const symbol = lowerer.checker.getSymbolAtLocation(ident);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined) return null;
   if (ts.isNamespaceImport(decl)) return "namespace";
   return ts.isImportSpecifier(decl) ? "named" : null;
@@ -286,14 +297,14 @@ export function createRequireCalleeFileOf(
 ): ts.SourceFile | null {
   const e = stripTypeCasts(callee);
   if (ts.isCallExpression(e)) {
-    return createRequireBaseCallOf(lowerer, e) !== null ? e.getSourceFile() : null;
+    return createRequireBaseCallOf(lowerer, e) !== null ? ts.getSourceFileOfNode(e) : null;
   }
   if (!ts.isIdentifier(e)) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(e);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) return null;
   return createRequireBindingDecl(lowerer, decl.name, decl.initializer)
-    ? decl.getSourceFile()
+    ? ts.getSourceFileOfNode(decl)
     : null;
 }
 
@@ -391,7 +402,7 @@ export function createRequireProgramModuleDecl(
  * binding poison with the same module-naming diagnostic. */
 export function fencedBuiltinImportOf(lowerer: Lowerer, ident: ts.Identifier): string | null {
   const symbol = lowerer.checker.getSymbolAtLocation(ident);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl) return null;
   // The CommonJS twins: `const x = require("net")` and
   // `const { createServer } = require("net")` — the require statement

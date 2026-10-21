@@ -93,11 +93,11 @@ export function builtinClassAliasOwnsNoSlot(lowerer: Lowerer, symbol: ts.Symbol)
   if (builtinClassAliasOf(lowerer, symbol) === null) return false;
   const binding =
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-  const decl = lowerer.checker.valueDeclarationOf(binding);
+  const decl = binding.valueDeclaration;
   if (decl === undefined || !ts.isVariableDeclaration(decl)) return false;
   if (builtinMemberRequireDecl(decl.name, decl.initializer)) return false;
   if (streamClassAliasDecl(lowerer, decl.name, decl.initializer)) return false;
-  if (!isJsSourceFile(decl.getSourceFile())) return true;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return true;
   let init = decl.initializer;
   while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
   if (init === undefined) return true;
@@ -157,9 +157,10 @@ export function runtimeClassValueOfType(lowerer: Lowerer, type: ts.Type): string
   const symbol = type.getSymbol();
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   let info = lowerer.builtinEmitterInfoOf(symbol) ?? lowerer.builtinStreamInfoOf(symbol);
-  if (!info && symbol.name.endsWith("Constructor")) {
+  if (!info && ts.symbolName(symbol).endsWith("Constructor")) {
     for (const [irName, rec] of RUNTIME_ERROR_CLASSES) {
-      if (`${rec.lib}Constructor` === symbol.name) info = lowerer.classes.get(irName) ?? null;
+      if (`${rec.lib}Constructor` === ts.symbolName(symbol))
+        info = lowerer.classes.get(irName) ?? null;
     }
   }
   return info?.valueCtorParams !== undefined ? info.def.name : null;
@@ -189,7 +190,7 @@ export function sameBuiltinClass(a: BuiltinClassRef, b: BuiltinClassRef): boolea
  * can name a class (an identifier or a property access), or null. */
 function constInitializerOf(lowerer: Lowerer, symbol: ts.Symbol): ts.Expression | null {
   if ((symbol.flags & ts.SymbolFlags.BlockScopedVariable) === 0) return null;
-  const decl = lowerer.checker.valueDeclarationOf(symbol);
+  const decl = symbol.valueDeclaration;
   if (
     decl === undefined ||
     !ts.isVariableDeclaration(decl) ||

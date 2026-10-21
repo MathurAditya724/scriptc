@@ -8,6 +8,7 @@ import { InternalCompilerError } from "../../errors.js";
  * seeds), npm/JSON import collection, per-file %init functions, %main, and
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
+import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
 import { dirname as dirnamePath, resolve as resolvePath } from "node:path";
@@ -93,6 +94,7 @@ import {
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
+import { isWebCryptoMemberType } from "./builtins/webcrypto.js";
 import {
   bindingContextualGenericFnNodeOf,
   bindingGenericFnAliasInfoOf,
@@ -113,6 +115,7 @@ import {
   isVarDeclared,
   numericIteratorSourceOf,
   provenanceElidedConstDecl,
+  stdlibBufferVarAlias,
 } from "./lower-stmts.js";
 import { objectFactoryGlobalType } from "./object-factory-new.js";
 import { streamClassAliasDecl } from "./lower-stream.js";
@@ -143,7 +146,8 @@ import { forkTargetPaths } from "../fork-target.js";
 import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { handleEventReaderPrelude } from "./lower-event-target.js";
-import { jsHoldsDynObject } from "./lower-exprs.js";
+import { cjsAccessorSnapshotStores, jsHoldsDynObject } from "./lower-exprs.js";
+import { keptIdentityAssertion } from "./assertion-identity.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
 export interface FileParts {
@@ -151,6 +155,49 @@ export interface FileParts {
   fnDecls: ts.FunctionDeclaration[];
   classDecls: ts.ClassDeclaration[];
   topStmts: ts.Statement[];
+}
+
+/** Preflight's module graph (LoadResult.moduleEdges), for the walks that
+ * append modules outside the startup order, and the set collecting the
+ * inline require() calls that close a cycle there. */
+export interface AppendGraph {
+  edges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
+  inlineCycleCalls?: Set<ts.Node>;
+}
+
+/** An appended module's edges: its import and export declarations, then
+ * the require() edges preflight resolved — a CommonJS file's only edges
+ * (the compiled CommonJS package a workspace module loaded on demand
+ * imports, and the sibling packages and files IT requires). */
+function appendedEdgesOf(
+  program: ts.Program,
+  graph: AppendGraph | undefined,
+): (sf: ts.SourceFile) => CycleEdge[] {
+  const cache = new Map<ts.SourceFile, CycleEdge[]>();
+  return (sf) => {
+    let out = cache.get(sf);
+    if (out !== undefined) return out;
+    out = orderedImportsOf(program, sf).flatMap(({ stmt, dep }) =>
+      dep !== null && dep !== sf
+        ? [{ dep, stmt: stmt as ts.ImportDeclaration | ts.ExportDeclaration }]
+        : [],
+    );
+    for (const e of graph?.edges?.get(sf) ?? [])
+      if (e.stmt === undefined && e.dep !== sf) out.push(e);
+    cache.set(sf, out);
+    return out;
+  };
+}
+
+/** Lazy inline requires run after their module's top level: their modules
+ * join the order afterwards, as in preflight's walk. */
+function visitLazyEdges(
+  sf: ts.SourceFile,
+  edgesOf: (sf: ts.SourceFile) => CycleEdge[],
+  state: ReadonlyMap<ts.SourceFile, "visiting" | "done">,
+  visit: (sf: ts.SourceFile) => void,
+): void {
+  for (const e of edgesOf(sf)) if (e.lazy === true && state.get(e.dep) === undefined) visit(e.dep);
 }
 
 /** Program modules selected by statically resolved child_process.fork()
@@ -163,8 +210,9 @@ export function appendForkModules(
   order: ts.SourceFile[],
   targets: ts.SourceFile[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
-  appendEntryModules(program, order, targets, forkTargetPaths(program, order), onCycle);
+  appendEntryModules(program, order, targets, forkTargetPaths(program, order), onCycle, graph);
 }
 
 export function appendWorkerModules(
@@ -172,8 +220,9 @@ export function appendWorkerModules(
   order: ts.SourceFile[],
   targets: ts.SourceFile[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
-  appendEntryModules(program, order, targets, workerTargetPaths(program, order), onCycle);
+  appendEntryModules(program, order, targets, workerTargetPaths(program, order), onCycle, graph);
 }
 
 function appendEntryModules(
@@ -182,6 +231,7 @@ function appendEntryModules(
   targets: ts.SourceFile[],
   paths: readonly string[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
   if (order.length === 0) return;
   const byPath = new Map(
@@ -191,22 +241,24 @@ function appendEntryModules(
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
   const stack: string[] = [];
-  const staticEdgesOf = (sf: ts.SourceFile): CycleEdge[] =>
-    orderedImportsOf(program, sf).flatMap(({ stmt, dep }) =>
-      dep !== null && dep !== sf
-        ? [{ dep, stmt: stmt as ts.ImportDeclaration | ts.ExportDeclaration }]
-        : [],
-    );
-  const cycleAdmissionReason = makeCycleAdmission(program, staticEdgesOf);
+  const staticEdgesOf = appendedEdgesOf(program, graph);
+  const cycleAdmissionReason = makeCycleAdmission(program, (sf) =>
+    staticEdgesOf(sf).filter((e) => e.call === undefined),
+  );
   const visit = (sf: ts.SourceFile): void => {
     const prior = state.get(sf);
     if (prior === "done") return;
     state.set(sf, "visiting");
     stack.push(sf.fileName);
     for (const edge of staticEdgesOf(sf)) {
+      if (edge.lazy === true) continue; // visited after this module completes
       const edgeState = state.get(edge.dep);
       if (edgeState === "done") continue;
       if (edgeState === "visiting") {
+        if (edge.call !== undefined) {
+          graph?.inlineCycleCalls?.add(edge.call);
+          continue;
+        }
         const reason = cycleAdmissionReason(sf, edge);
         if (reason !== null) {
           const cycleStart = stack.indexOf(edge.dep.fileName);
@@ -219,6 +271,7 @@ function appendEntryModules(
     stack.pop();
     state.set(sf, "done");
     added.push(sf);
+    visitLazyEdges(sf, staticEdgesOf, state, visit);
   };
 
   const knownTargets = new Set(targets);
@@ -243,8 +296,12 @@ export function splitFiles(lowerer: Lowerer): FileParts[] {
   const files = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
   return files.map((sf) => {
     const fp: FileParts = { sf, fnDecls: [], classDecls: [], topStmts: [] };
+    const rebindable = collectRebindableFunctions(lowerer, sf);
     for (const stmt of sf.statements.nodes) {
-      if (ts.isFunctionDeclaration(stmt)) fp.fnDecls.push(stmt);
+      // A reassigned JavaScript declaration lives in a module global that
+      // the init body assigns first (rebindable-functions.ts).
+      if (ts.isFunctionDeclaration(stmt) && rebindable.has(stmt)) fp.topStmts.push(stmt);
+      else if (ts.isFunctionDeclaration(stmt)) fp.fnDecls.push(stmt);
       else if (ts.isClassDeclaration(stmt)) fp.classDecls.push(stmt);
       // Namespaces: ambient/type-only ones are zero-runtime and skip;
       // instantiated bodies FLATTEN into this file's parts (functions/
@@ -310,27 +367,30 @@ export function appendDynamicImportModules(
   program: ts.Program,
   order: ts.SourceFile[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
   if (order.length === 0) return; // no preflight order — sites keep their fences
   const state = new Map<ts.SourceFile, "visiting" | "done">();
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
   const stack: string[] = [];
-  const staticEdgesOf = (sf: ts.SourceFile): CycleEdge[] =>
-    orderedImportsOf(program, sf).flatMap(({ stmt, dep }) =>
-      dep !== null && dep !== sf
-        ? [{ dep, stmt: stmt as ts.ImportDeclaration | ts.ExportDeclaration }]
-        : [],
-    );
-  const cycleAdmissionReason = makeCycleAdmission(program, staticEdgesOf);
+  const staticEdgesOf = appendedEdgesOf(program, graph);
+  const cycleAdmissionReason = makeCycleAdmission(program, (sf) =>
+    staticEdgesOf(sf).filter((e) => e.call === undefined),
+  );
   const visit = (sf: ts.SourceFile): void => {
     if (state.get(sf) !== undefined) return;
     state.set(sf, "visiting");
     stack.push(sf.fileName);
     for (const e of staticEdgesOf(sf)) {
+      if (e.lazy === true) continue; // visited after this module completes
       const s = state.get(e.dep);
       if (s === "done") continue;
       if (s === "visiting") {
+        if (e.call !== undefined) {
+          graph?.inlineCycleCalls?.add(e.call);
+          continue;
+        }
         // A back edge: Node answers it from the cache. Same admission
         // question as preflight's static walk, same fence when refused.
         const reason = cycleAdmissionReason(sf, e);
@@ -345,6 +405,7 @@ export function appendDynamicImportModules(
     stack.pop();
     state.set(sf, "done");
     added.push(sf);
+    visitLazyEdges(sf, staticEdgesOf, state, visit);
   };
   const scanned = new Set<ts.SourceFile>();
   for (;;) {
@@ -651,9 +712,7 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
         const modSym = lowerer.checker.getSymbolAtLocation(node.arguments.nodes[0]);
         const ownModule =
           modSym !== undefined &&
-          lowerer.checker
-            .declarationsOf(modSym)
-            .some((d) => ts.isSourceFile(d) && !d.isDeclarationFile);
+          modSym.declarations.some((d) => ts.isSourceFile(d) && !d.isDeclarationFile);
         const builtin = canonicalBuiltinModule(spec);
         const res = ownModule
           ? ({ kind: "program-module" } as const)
@@ -691,7 +750,10 @@ export function collectJsonImports(lowerer: Lowerer, parts: FileParts[]): void {
       const nameSym = lowerer.checker.getSymbolAtLocation(clause.name);
       if (!nameSym || !(nameSym.flags & ts.SymbolFlags.Alias)) continue;
       const target = lowerer.checker.getAliasedSymbol(nameSym);
-      const jsonSf = lowerer.checker.declarationsOf(target)[0]?.getSourceFile();
+      const jsonSf =
+        target.declarations.length === 0
+          ? undefined
+          : ts.getSourceFileOfNode(target.declarations[0]!);
       if (!jsonSf || !jsonSf.fileName.endsWith(".json")) continue;
       try {
         const tsType = lowerer.typeOf(clause.name);
@@ -869,6 +931,14 @@ export function moduleArtifacts(
             if (!root) continue;
             while (root.base) root = root.base;
             valueInstanceOfRoots.add(root.def.name);
+          }
+          break;
+        case "libCall":
+          // The general stream representation's child stdio read bridges
+          // through the runtime install that boxes both stream classes.
+          if (node.fn === "child.stdioStream") {
+            visitClass("%Readable");
+            visitClass("%Writable");
           }
           break;
         case "dynFrom":
@@ -1053,7 +1123,7 @@ function checkedGlobalReference(lowerer: Lowerer, expression: ts.Expression): bo
   )
     return false;
   const root = lowerer.checker.getSymbolAtLocation(expression.expression);
-  const namespace = root && lowerer.checker.declarationsOf(root).some(ts.isNamespaceImport);
+  const namespace = root && root.declarations.some(ts.isNamespaceImport);
   return (
     (namespace || lowerer.cjsLocalModuleBindingOf(expression.expression)) &&
     lowerer.globalOf(expression.name)?.type.kind === "dyn"
@@ -1166,7 +1236,7 @@ function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefi
   if (
     (ts.isFunctionExpression(e) || ts.isArrowFunction(e)) &&
     !e.typeParameters?.nodes.length &&
-    isJsSourceFile(e.getSourceFile())
+    isJsSourceFile(ts.getSourceFileOfNode(e))
   )
     return true;
   if (ts.isIdentifier(e) || ts.isArrowFunction(e) || ts.isFunctionExpression(e)) {
@@ -1217,6 +1287,36 @@ function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefi
   return false;
 }
 
+/** A JavaScript default-export object literal holding a class the program
+ * could not lower (`export default { parse, TomlDate }` where TomlDate
+ * extends an unsupported base): the literal narrows that member away, its
+ * diagnostics deferred to the reads that reach it, so the binding's type
+ * drops it too. Otherwise the module's own initialization would fail the
+ * width check against members no build can supply. */
+function withoutRejectedClassMembers(
+  lowerer: Lowerer,
+  expression: ts.Expression,
+  type: IrType,
+): IrType {
+  let literal = expression;
+  while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
+  if (!ts.isObjectLiteralExpression(literal) || type.kind !== "record") return type;
+  const shape = lowerer.shapes.get(type.shapeId);
+  if (!shape || shape.tuple) return type;
+  const rejected = (t: IrType): boolean =>
+    t.kind === "classval" &&
+    !lowerer.classes.has(t.className) &&
+    lowerer.deferredClassByName.has(t.className);
+  if (!shape.fields.some((f) => rejected(f.type))) return type;
+  const kept = shape.fields.filter((f) => !rejected(f.type));
+  const shapeId = lowerer.shapes.intern(
+    kept.map((f) => ({ name: f.name, type: f.type })),
+    false,
+    shape.indexValue,
+  );
+  return { kind: "record", shapeId };
+}
+
 export function collectGlobals(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -1232,6 +1332,21 @@ export function collectGlobals(
   // collected earlier in this pass must resolve them (lower-expando.ts).
   collectExpandoMembers(lowerer, sf);
   for (const stmt of topStmts) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name && isRebindableFunction(lowerer, stmt)) {
+      const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
+      if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+        const g: IrGlobal = {
+          id: `%g.${tag}${stmt.name.text}`,
+          name: stmt.name.text,
+          type: DYN,
+          mutable: true,
+        };
+        lowerer.globalsBySymbol.set(symbol, g);
+        lowerer.globalsByDeclNode.set(stmt, g);
+        lowerer.globalsList.push(g);
+      }
+      continue;
+    }
     // `export default <expr>`: the module's `default` binding is a const
     // module global (registered under the checker's default-export
     // symbol — the symbol a default IMPORT's alias chain terminates at,
@@ -1261,11 +1376,11 @@ export function collectGlobals(
       if (!symbol) continue;
       if (symbol.flags & ts.SymbolFlags.Alias) {
         const target = lowerer.checker.getAliasedSymbol(symbol);
-        const vd = lowerer.checker.valueDeclarationOf(target);
+        const vd = target.valueDeclaration;
         const mutableVar =
           vd !== undefined &&
           ts.isVariableDeclaration(vd) &&
-          !vd.getSourceFile().isDeclarationFile &&
+          !ts.getSourceFileOfNode(vd).isDeclarationFile &&
           (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0;
         // Immutable targets: alias plumbing — importers resolve to the
         // target's storage (the alias-resolved read IS the snapshot when
@@ -1319,6 +1434,7 @@ export function collectGlobals(
           type = unitOnlyUnion(lowerer.unions);
         }
         if (type.kind === "void") lowerer.badType(stmt.expression, tsType);
+        if (isJsSourceFile(sf)) type = withoutRejectedClassMembers(lowerer, stmt.expression, type);
         const g: IrGlobal = { id: `%g.${tag}default`, name: "default", type, mutable: false };
         lowerer.globalsBySymbol.set(symbol, g);
         lowerer.globalsList.push(g);
@@ -1356,8 +1472,17 @@ export function collectGlobals(
           // common/tls's `exports.check = function (certs) {...}` —
           // keep func-ness with dyn pieces; everything else is dyn).
           const strict = lowerer.checker.getTypeOfSymbol(symbol);
-          const t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, nameNode, strict);
+          let t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, nameNode, strict);
           if (!t || t.kind === "void") lowerer.badType(typeNode, strict);
+          // An export typed as the empty object literal (tsc's enum output
+          // `exports.E || (exports.E = {})` after its `exports.E = void 0`
+          // preamble): TS's `{}` admits any later non-nullish value and the
+          // export is undefined until then, so it rides checked-dynamic
+          // storage like the same-shaped var binding (varBindingType).
+          if (t.kind === "record" && isJsSourceFile(sf)) {
+            const shape = lowerer.shapes.get(t.shapeId);
+            if (shape && shape.fields.length === 0 && !shape.indexValue && !shape.tuple) t = DYN;
+          }
           // An immutable export source shares its live storage and native
           // callable ABI. Mutable sources need a separate snapshot slot:
           // later writes to the binding do not change the exported value.
@@ -1370,8 +1495,7 @@ export function collectGlobals(
               if (vG) {
                 if (!vG.mutable) {
                   lowerer.globalsBySymbol.set(symbol, vG);
-                  for (const d of lowerer.checker.declarationsOf(symbol))
-                    lowerer.globalsByDeclNode.set(d, vG);
+                  for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, vG);
                   return;
                 }
                 const g: IrGlobal = {
@@ -1381,8 +1505,7 @@ export function collectGlobals(
                   mutable: false,
                 };
                 lowerer.globalsBySymbol.set(symbol, g);
-                for (const d of lowerer.checker.declarationsOf(symbol))
-                  lowerer.globalsByDeclNode.set(d, g);
+                for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
                 lowerer.globalsList.push(g);
                 return;
               }
@@ -1392,8 +1515,7 @@ export function collectGlobals(
           lowerer.globalsBySymbol.set(symbol, g);
           // Importer aliases resolve to a DISTINCT late-bound symbol with
           // the same declaration — key the node too (globalOf's fallback).
-          for (const d of lowerer.checker.declarationsOf(symbol))
-            lowerer.globalsByDeclNode.set(d, g);
+          for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
           lowerer.globalsList.push(g);
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
@@ -1536,11 +1658,11 @@ export function collectGlobals(
       )
         continue;
       const target = lowerer.checker.getAliasedSymbol(aliasSym);
-      const vd = lowerer.checker.valueDeclarationOf(target);
+      const vd = target.valueDeclaration;
       const mutableVar =
         vd !== undefined &&
         ts.isVariableDeclaration(vd) &&
-        !vd.getSourceFile().isDeclarationFile &&
+        !ts.getSourceFileOfNode(vd).isDeclarationFile &&
         (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0;
       if (!mutableVar) continue;
       const diagsBefore = lowerer.diags.length;
@@ -1551,7 +1673,7 @@ export function collectGlobals(
         }
         if (type.kind === "void") lowerer.badType(stmt.name, lowerer.typeOf(stmt.name));
         const g: IrGlobal = {
-          id: `%g.${tag}${nsPathPrefix(stmt)}%alias.${stmt.name.text}%${stmt.getStart()}`,
+          id: `%g.${tag}${nsPathPrefix(stmt)}%alias.${stmt.name.text}%${ts.tokenStartOfNode(stmt)}`,
           name: stmt.name.text,
           type,
           mutable: false,
@@ -1601,43 +1723,9 @@ export function collectGlobals(
         )
       )
     ) {
-      if (ts.isVariableStatement(stmt) && (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0) {
-        for (const decl of stmt.declarationList.declarations.nodes) {
-          stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer);
-        }
-      }
-      // `const { codes: { ERR_X } } = require("./errors")`: the outer
-      // keys stay alias plumbing, but a nested pattern destructures the
-      // export's value at the require, so its bindings own storage like
-      // any destructured declaration (lowerVarDeclarator assigns them).
-      if (ts.isVariableStatement(stmt)) {
-        const isLetList =
-          (stmt.declarationList.flags & ts.NodeFlags.Let) !== 0 ||
-          (stmt.declarationList.flags & ts.NodeFlags.BlockScoped) === 0;
-        for (const decl of stmt.declarationList.declarations.nodes) {
-          for (const element of requireNestedPatternsOf(decl)) {
-            for (const nameNode of boundIdentifiersOf(element.name!)) {
-              const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
-              if (!symbol || lowerer.globalsBySymbol.has(symbol)) continue;
-              const mapped = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
-              const type = mapped && mapped.kind !== "void" ? mapped : DYN;
-              const g: IrGlobal = {
-                id: `%g.${tag}${nameNode.text}`,
-                name: nameNode.text,
-                type,
-                mutable: isLetList,
-                source: bindingSource(nameNode),
-                ...((type.kind === "func" || type.kind === "dyn") && !isVarDeclared(decl)
-                  ? { tdz: true as const }
-                  : {}),
-              };
-              lowerer.globalsBySymbol.set(symbol, g);
-              lowerer.globalsList.push(g);
-              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
-            }
-          }
-        }
-      }
+      if (ts.isVariableStatement(stmt))
+        for (const decl of stmt.declarationList.declarations.nodes)
+          registerRequireDeclBindings(lowerer, sf, stmt.declarationList, decl, tag);
       continue;
     }
     // `declare const __VERSION__: string` — AMBIENT: no storage exists
@@ -1671,6 +1759,16 @@ export function collectGlobals(
       // probes below would otherwise claim the call-initializer shape
       // and put its fences on the build.
       if (provenanceElidedConstDecl(lowerer, decl)) continue;
+      // A require declarator beside other declarators (`var EventEmitter =
+      // require("events"), R = class extends EventEmitter {}`): the
+      // statement lowering treats it as the alias plumbing of a whole
+      // require statement (lowerVarDeclarator), so it owns no storage
+      // either. A global here would never be assigned, and a read through
+      // it would see null.
+      if (requireAliasDecl(lowerer, decl)) {
+        registerRequireDeclBindings(lowerer, sf, list, decl, tag);
+        continue;
+      }
       // A stored built-in numeric value iterator has no first-class
       // global representation. Its same-%init for-of uses are backed by
       // hidden source/cursor/done locals registered when the declaration
@@ -1895,6 +1993,7 @@ export function collectGlobals(
       // same test).
       const stableStdlibAlias =
         isConst ||
+        stdlibBufferVarAlias(lowerer, decl) ||
         ((list.flags & ts.NodeFlags.Let) !== 0 &&
           ts.isIdentifier(decl.name) &&
           stdlibGlobalAliasNameOf(lowerer, decl.initializer) !== null &&
@@ -1919,7 +2018,8 @@ export function collectGlobals(
             decl.initializer &&
             !decl.type &&
             !hasJsTypeAnnotation(decl) &&
-            !lowerer.mapTypeOf(lowerer.typeOf(nameNode))
+            (!lowerer.mapTypeOf(lowerer.typeOf(nameNode)) ||
+              isWebCryptoMemberType(lowerer, lowerer.typeOf(nameNode)))
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
@@ -1954,6 +2054,30 @@ export function collectGlobals(
                 checkedGlobalReference(lowerer, initializer)) ||
               stdlibGlobalNameOf(lowerer, initializer) === "globalThis")
           ) {
+            const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+            if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+              const g: IrGlobal = {
+                id: `%g.${tag}${nsPrefix}${nameNode.text}`,
+                name: nameNode.text,
+                type: DYN,
+                mutable: isLet,
+                source: bindingSource(nameNode),
+                ...(!isVarDeclared(decl) ? { tdz: true as const } : {}),
+              };
+              lowerer.globalsBySymbol.set(symbol, g);
+              lowerer.globalsList.push(g);
+              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+            }
+            continue;
+          }
+          // A file-scope binding of an assertion of the global object
+          // (`const state = globalThis as { [KEY]?: State }`): the binding
+          // holds that object, so writes through it reach the object other
+          // modules read (assertion-identity.ts).
+          const asserted = decl.initializer
+            ? keptIdentityAssertion(lowerer, decl.initializer)
+            : undefined;
+          if (nameNode === decl.name && !decl.type && asserted) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
               const g: IrGlobal = {
@@ -2248,15 +2372,14 @@ export function collectGlobals(
             ts.isCallExpression(decl.initializer)
               ? lowerer.checker.getResolvedSignature(decl.initializer)
               : undefined;
-          const callDeclaration =
-            callSignature && lowerer.checker.signatureDeclaration(callSignature);
+          const callDeclaration = callSignature && callSignature.declaration;
           const callType =
-            callDeclaration && isJsSourceFile(callDeclaration.getSourceFile())
+            callDeclaration && isJsSourceFile(ts.getSourceFileOfNode(callDeclaration))
               ? lowerer.mapTypeOf(lowerer.typeOf(nameNode))
               : null;
           const inferredJsCall =
             callDeclaration &&
-            isJsSourceFile(callDeclaration.getSourceFile()) &&
+            isJsSourceFile(ts.getSourceFileOfNode(callDeclaration)) &&
             (!callType ||
               (unannotatedCall &&
                 callType.kind === "union" &&
@@ -2516,6 +2639,11 @@ export function collectGlobals(
           };
           lowerer.globalsBySymbol.set(symbol, g);
           lowerer.globalsList.push(g);
+          // `let f: T;` initializes the binding (to undefined) where the
+          // declaration runs: later writes are ordinary stores, which the
+          // pointer guard alone would refuse (markCycleEarlyBindings).
+          if (g.tdz && !decl.initializer)
+            lowerer.uninitializedLexicalGlobals.set(g.id, { name: nameNode, module: sf, symbol });
           // Mutable checked-dynamic LET globals ride the same entry
           // init: a closure called above the declaration statement
           // reads the dyn undefined instead of faulting on NULL — the
@@ -2557,6 +2685,61 @@ function noteVarGlobalEntryInit(lowerer: Lowerer, sf: ts.SourceFile, g: IrGlobal
   const inits = lowerer.varGlobalEntryInits.get(sf) ?? [];
   inits.push(g);
   lowerer.varGlobalEntryInits.set(sf, inits);
+}
+
+/** A JavaScript require declaration the statement lowering treats as alias
+ * plumbing (lowerVarDeclarator): no storage, the reads resolve through to
+ * the module. JSON documents and native FFI requires keep their storage. */
+function requireAliasDecl(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  return (
+    decl.initializer !== undefined &&
+    requireSpecOf(decl.initializer) !== null &&
+    !isNativeFfiRequire(lowerer, decl.initializer) &&
+    !isJsonRequireDecl(lowerer, decl) &&
+    isJsSourceFile(decl.getSourceFile())
+  );
+}
+
+/** The registrations a top-level require declaration does make. `const
+ * process = require('node:process')` aliases the global process
+ * (stdlibGlobalAliasDecl's require form) so reads through the binding
+ * lower via the process surface. In `const { codes: { ERR_X } } =
+ * require("./errors")` the outer keys stay alias plumbing, but a nested
+ * pattern destructures the export's value at the require, so its bindings
+ * own storage like any destructured declaration (lowerVarDeclarator
+ * assigns them). */
+function registerRequireDeclBindings(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  list: ts.VariableDeclarationList,
+  decl: ts.VariableDeclaration,
+  tag: string,
+): void {
+  if ((list.flags & ts.NodeFlags.Const) !== 0)
+    stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer);
+  const isLetList =
+    (list.flags & ts.NodeFlags.Let) !== 0 || (list.flags & ts.NodeFlags.BlockScoped) === 0;
+  for (const element of requireNestedPatternsOf(decl)) {
+    for (const nameNode of boundIdentifiersOf(element.name!)) {
+      const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+      if (!symbol || lowerer.globalsBySymbol.has(symbol)) continue;
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
+      const type = mapped && mapped.kind !== "void" ? mapped : DYN;
+      const g: IrGlobal = {
+        id: `%g.${tag}${nameNode.text}`,
+        name: nameNode.text,
+        type,
+        mutable: isLetList,
+        source: bindingSource(nameNode),
+        ...((type.kind === "func" || type.kind === "dyn") && !isVarDeclared(decl)
+          ? { tdz: true as const }
+          : {}),
+      };
+      lowerer.globalsBySymbol.set(symbol, g);
+      lowerer.globalsList.push(g);
+      if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+    }
+  }
 }
 
 /** The nested half of module-scope `var` hoisting: a `var` inside a
@@ -2603,6 +2786,14 @@ function collectNestedVarGlobals(
   });
   for (const list of lists) {
     for (const decl of list.declarations.nodes) {
+      // A nested builtin require (`if (c) { var fs = require("fs"); }`)
+      // lowers to nothing: its bindings are alias plumbing wherever the
+      // statement sits (lowerVarDeclarator), so they own no storage.
+      if (
+        requireAliasDecl(lowerer, decl) &&
+        canonicalBuiltinModule(requireSpecOf(decl.initializer!)!) !== null
+      )
+        continue;
       for (const nameNode of boundIdentifiersOf(decl.name)) {
         const diagsBefore = lowerer.diags.length;
         try {
@@ -2674,7 +2865,7 @@ export function declSymbolOf(
     ts.canHaveModifiers(decl) &&
     ts.getModifiers(decl)?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword) === true;
   if (!isDefault) return undefined;
-  const sym = defaultExportSymbolOf(lowerer, decl.getSourceFile());
+  const sym = defaultExportSymbolOf(lowerer, ts.getSourceFileOfNode(decl));
   return sym ?? undefined;
 }
 
@@ -2692,7 +2883,7 @@ export function declSymbolOf(
  * expression so the expression's OWN diagnostic wins when it has one,
  * then poisons. */
 export function lowerDefaultExport(lowerer: Lowerer, stmt: ts.ExportAssignment): IrStmt | null {
-  const symbol = defaultExportSymbolOf(lowerer, stmt.getSourceFile());
+  const symbol = defaultExportSymbolOf(lowerer, ts.getSourceFileOfNode(stmt));
   if (symbol && symbol.flags & ts.SymbolFlags.Alias && !lowerer.globalsBySymbol.has(symbol))
     return null;
   const g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
@@ -2705,7 +2896,7 @@ export function lowerDefaultExport(lowerer: Lowerer, stmt: ts.ExportAssignment):
       while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
       if (
         ts.isClassExpression(inner) &&
-        !isJsSourceFile(stmt.getSourceFile()) &&
+        !isJsSourceFile(ts.getSourceFileOfNode(stmt)) &&
         inner.typeParameters === undefined &&
         (decoratorNodesOf(inner).length > 0 ||
           inner.members.nodes.some((m) => decoratorNodesOf(m).length > 0)) &&
@@ -2766,6 +2957,23 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
+    // Reassigned function declarations are initialized when the module
+    // starts, as declarations are hoisted: before its dependencies run, so
+    // a module of an import cycle can call one while it initializes. Their
+    // statements then lower to nothing (rebindable-functions.ts).
+    for (const stmt of stmts) {
+      if (!ts.isFunctionDeclaration(stmt) || !stmt.name || !isRebindableFunction(lowerer, stmt))
+        continue;
+      const g = lowerer.globalsByDeclNode.get(stmt);
+      if (!g) continue;
+      header.push({
+        kind: "assign",
+        localId: g.id,
+        value: lowerer.coerceToExpected(lowerer.lowerLambda(stmt), DYN),
+        loc: locOf(stmt),
+      });
+      ctx.hoistedFnDecls.add(stmt);
+    }
     for (const { stmt, dep } of orderedImportsOf(lowerer.program, sf)) {
       const npm = lowerer.npmInitActions.get(sf)?.get(stmt);
       if (npm !== undefined && npm.length > 0) {
@@ -2823,6 +3031,14 @@ export function lowerFileInit(
             });
           } else {
             header.push({ kind: "exprStmt", expr: call, loc });
+            // An ES-module importer links a CommonJS dependency: Node
+            // copies its lexer-visible exports here.
+            if (
+              (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) &&
+              !isCjsJsFile(sf, lowerer.program) &&
+              isCjsJsFile(dep, lowerer.program)
+            )
+              header.push(...cjsAccessorSnapshotStores(lowerer, dep, loc));
           }
         }
       }
@@ -2877,11 +3093,16 @@ export function lowerFileInit(
     // a function called above the declaration reads `undefined`, exactly
     // Node); checked-dynamic var globals hold the dyn undefined the same
     // way. After the guard: a cache-hit revisit must not reset them.
+    // A union slot the body retypes checked-dynamic (lowerVarDecl: a
+    // JavaScript var initialized with an existing checked-dynamic object)
+    // gets the dyn undefined once the body has lowered.
+    const unionEntryInits: { at: number; g: IrGlobal }[] = [];
     for (const g of lowerer.varGlobalEntryInits.get(sf) ?? []) {
       if (g.type.kind !== "union" && g.type.kind !== "dyn") continue;
       const wrapped =
         g.type.kind === "dyn" ? dynUndefinedExpr(loc0) : lowerer.unassignedSlotInit(g.type, loc0);
       if (wrapped) {
+        if (g.type.kind === "union") unionEntryInits.push({ at: header.length, g });
         // A let global whose early reads are checked (initFlag) only
         // gets its storage filled here: this is not the source write, so
         // it must neither run the TDZ check nor set the flag.
@@ -2912,7 +3133,7 @@ export function lowerFileInit(
           c.decl &&
           ts.isClassDeclaration(c.decl) &&
           !c.mixinInstance &&
-          c.decl.getSourceFile() === sf &&
+          ts.getSourceFileOfNode(c.decl) === sf &&
           (lowerer.classInitFlags.has(c.def.name) ||
             c.callableBase !== undefined ||
             c.def.baseValueGlobal !== undefined ||
@@ -2921,7 +3142,7 @@ export function lowerFileInit(
             (c.staticBlocks?.length ?? 0) > 0 ||
             c.classDecorators !== undefined),
       )
-      .map((c) => ({ pos: c.decl!.getStart(), info: c }));
+      .map((c) => ({ pos: ts.tokenStartOfNode(c.decl!), info: c }));
     // Statics-bearing MIXIN instantiations whose call evaluates in THIS
     // file: their declaration-time code runs when the call does — the
     // top-level statement lower-mixins recorded. Insertion order is
@@ -2941,7 +3162,7 @@ export function lowerFileInit(
       // anything the statement's lowering emits. Hoisted class
       // declarations never share a kept statement's start, so `<=`
       // changes nothing for them.
-      while (at < statics.length && statics[at]!.pos <= stmt.getStart()) {
+      while (at < statics.length && statics[at]!.pos <= ts.tokenStartOfNode(stmt)) {
         body.push(
           ...withClassInitFlag(
             lowerer,
@@ -2975,6 +3196,16 @@ export function lowerFileInit(
         ),
       );
       at++;
+    }
+    for (const { at, g } of unionEntryInits) {
+      if (g.type.kind !== "dyn") continue;
+      body[at] = {
+        kind: "assign",
+        localId: g.id,
+        value: dynUndefinedExpr(loc0),
+        ...(g.initFlag !== undefined ? { initializes: true as const } : {}),
+        loc: loc0,
+      };
     }
     const moduleRef = cjsModuleRef(lowerer, sf);
     if (moduleRef !== null) {
@@ -3133,6 +3364,7 @@ function rememberEvaluationError(
 export function buildMain(lowerer: Lowerer): IrFunction {
   const loc: SrcLoc = { file: lowerer.entry.fileName, start: 0, end: 0 };
   const body: IrStmt[] = [
+    ...lowerer.mainPrelude,
     ...cjsModuleRegistryPrelude(lowerer, loc),
     ...handleEventReaderPrelude(lowerer, loc),
   ];

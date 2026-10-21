@@ -37,6 +37,12 @@ int scr_decimal_scan(const char *p, size_t n, double *out);
  * the length. */
 size_t scr_f64_to_fixed(double x, int f, char *buf);
 
+/* toPrecision / toExponential(fractionDigits) digits for POSITIVE finite
+ * a and 1 <= p <= 101: the spec's p-digit n (ties to the larger n on the
+ * exact binary value) into digits (NUL-terminated, >= p + 1 bytes) and its
+ * decimal exponent e (value ~ d.ddd x 10^e) into *e_out. Returns p. */
+int scr_f64_precision_digits(double a, int p, char *digits, int *e_out);
+
 /* ToString for template literals / string coercion. Returns +1. */
 ScrStr *scr_f64_to_scrstr(double x);
 ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
@@ -46,6 +52,8 @@ ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
  * adjacent surrogate pairs combine, other surrogates stay lone. Borrowed
  * args; the string result is +1; neither throws. */
 ScrStr *scr_str_from_char_code(ScrArr *codes);
+/* String.fromCharCode over n codes in a caller-owned array (no ScrArr). */
+ScrStr *scr_str_from_char_codes(const double *codes, size_t n);
 /* Single numeric argument; avoids argument packing. Defined in scr_string.c
  * to share its character cache. Same ToUint16 and lone-surrogate behavior. */
 ScrStr *scr_str_from_char_code_one(double code);
@@ -73,6 +81,11 @@ bool scr_num_is_safe_integer(double x);
 ScrStr *scr_num_to_exponential(double x);
 ScrStr *scr_num_to_fixed0(double x);
 ScrStr *scr_num_to_fixed(double x, double fraction_digits);
+/* Number.prototype.toPrecision(precision) and toExponential(fractionDigits)
+ * with the argument already coerced (has_precision false = undefined).
+ * Invalid digit counts throw V8's RangeError (NULL). Result +1. */
+ScrStr *scr_num_to_precision(double x, double precision, bool has_precision);
+ScrStr *scr_num_to_exponential_digits(double x, double fraction_digits);
 ScrStr *scr_num_to_string_radix_f64(double value, double radix);
 
 /* Object.is over two numbers — the spec's SameValue on doubles: NaN
@@ -105,9 +118,18 @@ ScrStr *scr_date_to_iso(double ms);
 /* Node's Date.prototype.toUTCString ("Thu, 01 Jan 1970 00:00:00 GMT";
  * "Invalid Date" for NaN). Never throws; +1. */
 ScrStr *scr_date_to_utc_string(double ms);
-/* new Date(dateString).getTime(): the BOUNDED parse (the X509 validity
- * shape + ECMA's format with an explicit offset); NaN elsewhere. */
+/* The BOUNDED parse (the X509 validity shape + ECMA's format with an
+ * explicit offset); NaN elsewhere. */
 double scr_date_parse_get_time(ScrStr *s);
+/* Date.parse and new Date(dateString): V8's date parser (the ES5 format,
+ * then its legacy grammar: RFC 1123/2822, Date#toString, "Jan 2, 2024",
+ * ...). Zone-less dates are local time. Never throws. */
+double scr_date_parse(ScrStr *s);
+/* new Date(year, monthIndex, date, hours, minutes, seconds, ms) over
+ * already-number arguments: V8's MakeDay/MakeTime over LOCAL fields, then
+ * UTC(t) in the host zone and TimeClip. Never throws. */
+double scr_date_new_local(double y, double mo, double d,
+                          double h, double mi, double s, double ms);
 /* Date.UTC over already-number arguments (frontend completes the spec's
  * defaults): MakeDay/MakeTime/TimeClip exactly — 0–99 maps to 1900+year,
  * month/date rollover, NaN for non-finite parts, out-of-range results,

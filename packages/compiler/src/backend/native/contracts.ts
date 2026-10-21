@@ -109,11 +109,32 @@ export interface CcOptions {
    * reactions, AsyncLocalStorage, the unhandledRejection/warning
    * process events. */
   dynAsync?: boolean;
+  /** The program has dynamic-tier jsval operations (moduleUsesDynTier on
+   * the IR): compiles the scr_js_* units (two-tier design I3). Programs
+   * without them link no scr_js_ symbol. */
+  dynTier?: boolean;
+  /** Checked-dynamic stream slots (stream.dynNative / stream.pipeDyn):
+   * compiles scr_stream_dyn.c. */
+  streamDyn?: boolean;
+  /** events.once with options (events.onceSignal): compiles
+   * scr_events_once_signal.c. */
+  eventsOnceSignal?: boolean;
+  /** Fixed-width Buffer methods called on checked-dynamic values:
+   * compiles scr_bytes_dyn.c. */
+  dynBufferNum?: boolean;
+  /** Builtin functions read as values: compiles scr_builtin_values.c. */
+  builtinValues?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
    * scr_event_target.c. */
   eventTarget?: boolean;
+  /** The WebAssembly API: compiles scr_wasm.c. */
+  wasm?: boolean;
+  /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
+  warningReplace?: boolean;
+  /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
+  stdioExtended?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -142,6 +163,15 @@ export interface CcOptions {
    * line (escape-only programs ride the always-linked component encoder
    * and never flip this). */
   qs?: boolean;
+  /** The program uses EventEmitter or a stream class as an untyped
+   * constructor value (a constructor function's base): compiles
+   * scr_dyn_builtin_class.c, which also references the inspection,
+   * dyn-invoke and symbol units. */
+  dynBuiltinClass?: boolean;
+  /** The program uses a stream class as an untyped constructor value:
+   * compiles scr_dyn_builtin_stream.c, the constructors' stream half, which
+   * also references the stream unit. */
+  dynBuiltinStream?: boolean;
   /** The program uses native util parsing, comparison, or styling. Optional
    * utility units also require their symbol, inspection, and warning features. */
   parseArgs?: boolean;
@@ -169,6 +199,11 @@ export interface CcOptions {
    * on the IR): compiles scr_dgram.c into the binary — the net gating
    * precedent, so dgram-free binaries keep their exact link line. */
   dgram?: boolean;
+  /** The program uses node:dns/promises (the dns.promisesLookup libCalls):
+   * compiles scr_dns_promises.c over the dgram unit, so callback-only
+   * binaries keep their exact link line. */
+  dnsPromises?: boolean;
+
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free
    * binaries keep their exact link line. */
@@ -199,6 +234,10 @@ export interface CcOptions {
   /** crypto.createCipheriv/createDecipheriv: compiles scr_cipher.c and links
    * the mbedTLS archive (shared with tls). */
   cipher?: boolean;
+  /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
+  webcrypto?: boolean;
+  /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */
+  perfLoop?: boolean;
   /** Internal compiler hook: called only after a strict native artifact hit
    * or a successful stable build has installed `outPath`. The executable
    * frontend cache uses it to publish its stamp after native dependencies
@@ -267,6 +306,8 @@ export interface LibArchiveOptions {
   threadInstances?: boolean;
   /** IR-detected link gates (the compileC precedent, refusal-narrowed). */
   dynInvoke?: boolean;
+  /** See CompileOptions.dynTier: the scr_js_* units. */
+  dynTier?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;

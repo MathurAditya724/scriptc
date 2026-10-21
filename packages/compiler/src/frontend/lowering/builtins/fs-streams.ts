@@ -19,7 +19,7 @@ import {
 } from "../../../ir/ir.js";
 
 function isFsFallbackDecl(lowerer: Lowerer, d: ts.Node): boolean {
-  const file = d.getSourceFile();
+  const file = ts.getSourceFileOfNode(d);
   if (!lowerer.isStdlibFile(file) || isNodeTypesPath(file.fileName)) return false;
   for (let node: ts.Node | undefined = d.parent; node; node = node.parent) {
     if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
@@ -34,15 +34,13 @@ function isFsFallbackDecl(lowerer: Lowerer, d: ts.Node): boolean {
 export function isFsStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(access.name);
   if (!symbol) return false;
-  return lowerer.checker
-    .declarationsOf(symbol)
-    .some(
-      (d) =>
-        d.parent !== undefined &&
-        ts.isClassDeclaration(d.parent) &&
-        (d.parent.name?.text === "ReadStream" || d.parent.name?.text === "WriteStream") &&
-        isFsFallbackDecl(lowerer, d.parent),
-    );
+  return symbol.declarations.some(
+    (d) =>
+      d.parent !== undefined &&
+      ts.isClassDeclaration(d.parent) &&
+      (d.parent.name?.text === "ReadStream" || d.parent.name?.text === "WriteStream") &&
+      isFsFallbackDecl(lowerer, d.parent),
+  );
 }
 
 /** bytesRead / bytesWritten / pending / path reads. Null for other
@@ -155,11 +153,13 @@ export function fsStreamClassOf(
   lowerer: Lowerer,
   symbol: ts.Symbol | null | undefined,
 ): "ReadStream" | "WriteStream" | null {
-  if (!symbol || (symbol.name !== "ReadStream" && symbol.name !== "WriteStream")) return null;
-  const declared = lowerer.checker
-    .declarationsOf(symbol)
-    .some((d) => ts.isClassDeclaration(d) && isFsFallbackDecl(lowerer, d));
-  return declared ? symbol.name : null;
+  if (!symbol) return null;
+  const name = ts.symbolName(symbol);
+  if (name !== "ReadStream" && name !== "WriteStream") return null;
+  const declared = symbol.declarations.some(
+    (d) => ts.isClassDeclaration(d) && isFsFallbackDecl(lowerer, d),
+  );
+  return declared ? name : null;
 }
 
 /** `new fs.ReadStream(path, options)` / `new fs.WriteStream(...)`: the

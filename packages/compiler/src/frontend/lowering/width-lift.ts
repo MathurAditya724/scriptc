@@ -7,7 +7,9 @@ export type WidthLift =
   | { how: "copy" }
   | { how: "wrap"; tag: number }
   | { how: "discriminantWrap" }
+  | { how: "discriminantRoute" }
   | { how: "retag" }
+  | { how: "unitRetag" }
   | { how: "liftWrap"; tag: number; arm: IrType }
   | { how: "width" }
   | { how: "unionWidth" }

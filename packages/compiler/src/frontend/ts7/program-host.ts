@@ -21,7 +21,7 @@ import { dirname, join, resolve } from "node:path";
 import { Ts7Api } from "./api.js";
 import type { Ts7TimingInfo } from "./session-timing.js";
 import type { Ts7FileSystem } from "./rpc-filesystem.js";
-import type { CompilerOptions, Diagnostic } from "./semantic-types.js";
+import type { CompilerOptions, Diagnostic, SourceFileMetadata } from "./semantic-types.js";
 import type { SourceFile } from "./ast-types.js";
 import type { Ts7SessionProject as Project, Ts7SessionSnapshot as Snapshot } from "./session.js";
 import { CheckerFacade } from "./checker.js";
@@ -40,6 +40,7 @@ import {
   trackedReadFile,
   trackedRealpath,
 } from "../input-tracker.js";
+import { packageShimDeclarationText } from "../package-shims.js";
 
 /** The compiler options our createProgram accepts: TS7's CompilerOptions
  * shape (numeric enums for target/module/moduleResolution — the enums module
@@ -154,6 +155,11 @@ export class Ts7Host {
             const replacement = shadow.readFile(fileName);
             if (replacement !== undefined) return stripSourceBom(replacement);
           }
+          // A package scriptc implements itself (package-shims.ts): its
+          // installed declaration entry re-exports the shim module, in every
+          // program the host creates.
+          const shim = packageShimDeclarationText(fileName);
+          if (shim !== undefined) return shim;
           const source = trackedReadFile(fileName);
           return source === null ? null : stripSourceBom(source);
         },
@@ -343,8 +349,20 @@ export class Ts7Program {
     return this.project.program.getSyntacticDiagnostics(sourceFile?.fileName);
   }
 
+  getBindDiagnostics(sourceFile?: SourceFile): readonly Diagnostic[] {
+    return this.project.program.getBindDiagnostics(sourceFile?.fileName);
+  }
+
   getSemanticDiagnostics(sourceFile?: SourceFile): readonly Diagnostic[] {
     return this.project.program.getSemanticDiagnostics(sourceFile?.fileName);
+  }
+
+  getSuggestionDiagnostics(sourceFile?: SourceFile): readonly Diagnostic[] {
+    return this.project.program.getSuggestionDiagnostics(sourceFile?.fileName);
+  }
+
+  getDeclarationDiagnostics(sourceFile?: SourceFile): readonly Diagnostic[] {
+    return this.project.program.getDeclarationDiagnostics(sourceFile?.fileName);
   }
 
   getGlobalDiagnostics(): readonly Diagnostic[] {
@@ -357,6 +375,10 @@ export class Ts7Program {
 
   getConfigFileParsingDiagnostics(): readonly Diagnostic[] {
     return this.project.program.getConfigFileParsingDiagnostics();
+  }
+
+  getSourceFileMetadata(fileName: string): SourceFileMetadata | undefined {
+    return this.project.program.getSourceFileMetadata(resolve(fileName));
   }
 
   isSourceFileDefaultLibrary(file: SourceFile): boolean {

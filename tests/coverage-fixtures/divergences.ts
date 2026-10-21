@@ -20,14 +20,14 @@ console.log(tagged.label);
 const view: Labeled = tagged;
 console.log(view === tagged);
 
-// Key order: the literal's order differs from the declaration and the
-// program observes it.
+// Key order: values of one type are built in two orders and the program
+// observes them, so the type keeps its declaration order.
 interface Point {
   x: number;
   y: number;
 }
 const point: Point = { y: 1, x: 2 };
-console.log(JSON.stringify(point));
+console.log(JSON.stringify(point), JSON.stringify({ x: 3, y: 4 }));
 
 // Text outside the built-in collation compares by code point natively.
 console.log(["б", "а"].sort((p, q) => p.localeCompare(q)).join(","), "яблоко".localeCompare("груша"));
@@ -47,7 +47,7 @@ function sizeOf(s: Shape): number {
 }
 console.log(sizeOf(new Circle()));
 
-// The native date parser takes ISO 8601 with an explicit offset.
+// Date strings parse with V8's grammar natively, so none of these diverge.
 console.log(Date.parse("Jan 2, 2024"), new Date("2024/01/02").getTime(), Date.parse("2024-01-02T03:04:05Z"));
 const stamps = ["2024-03-04T05:06:07Z", "March 4, 2024"];
 for (const stamp of stamps) console.log(Date.parse(stamp));

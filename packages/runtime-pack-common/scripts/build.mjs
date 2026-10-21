@@ -432,7 +432,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 22, marker: "scr_runtime_abi_v22" },
+      runtime_abi: { version: 23, marker: "scr_runtime_abi_v23" },
       compiler: {
         command: compiler,
         identity: compilerVersion,
@@ -440,7 +440,12 @@ async function build() {
         ...(unitHelper === null ? {} : { speed_codegen: unitHelper.identity }),
       },
       macros: {
-        executable: ["SCR_TEXT_DECODER_LEGACY", "SCR_YIN"],
+        executable: [
+          "SCR_TEXT_DECODER_LEGACY",
+          "SCR_WARNING_REPLACE",
+          "SCR_STDIO_EXTENDED",
+          "SCR_YIN",
+        ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],
         sanitizer: "external-toolchain-required",
       },

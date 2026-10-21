@@ -109,7 +109,7 @@ function markerNamed(
   if (!MARKERS.has(written)) return null;
   let member = written;
   const symbol = checker.getSymbolAtLocation(ident);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined) return null;
   let importDecl: ts.Node | undefined;
   if (ts.isImportSpecifier(decl) && !qualified) {
@@ -130,7 +130,7 @@ function markerNamed(
 function nameText(node: ts.Node | undefined): string {
   if (node === undefined) return "<anonymous>";
   if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) return node.text;
-  return node.getText();
+  return ts.getTextOfNode(node);
 }
 
 function contractDiag(

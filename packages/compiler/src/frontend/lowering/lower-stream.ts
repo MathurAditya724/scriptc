@@ -49,6 +49,8 @@ import { sideEffectFreeOptionValue } from "./surfaces.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { genResultRecord } from "../type-mapper.js";
+import { noteUntypedStreamFlow, requestGeneralStreamSurface } from "./general-streams.js";
+import { dynNativeBranch } from "./dyn-streams.js";
 import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import {
   BOOL,
@@ -167,6 +169,16 @@ export const UNDERSCORE_METHODS: ReadonlyMap<string, string> = new Map([
   ["destroy", "_destroy"],
   ["transform", "_transform"],
   ["flush", "_flush"],
+]);
+
+/** The completion callback's parameter position in each underscore
+ * method that takes one (cbTuples' "fn" positions). */
+export const STREAM_COMPLETION_CALLBACK_INDEX: ReadonlyMap<string, number> = new Map([
+  ["_write", 2],
+  ["_final", 0],
+  ["_destroy", 1],
+  ["_transform", 2],
+  ["_flush", 0],
 ]);
 
 /** The accepted option-callback names (canonical flag order) and the
@@ -492,7 +504,7 @@ function followOptionsArg(
     } catch {
       return node;
     }
-    const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
+    const decl = sym ? sym.valueDeclaration : undefined;
     if (!sym || !decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
       return node;
     if ((ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) === 0) return node;
@@ -586,6 +598,33 @@ function dynOptionsValue(lowerer: Lowerer, arg: ts.Expression): IrExpr | null {
   return v.type.kind === "dyn" ? v : null;
 }
 
+/** @types/node declares the transform/flush completion callback as
+ * `(error?: Error | null, data?: any) => void`. Outside objectMode Node
+ * accepts only a Buffer, a string or nothing as `data`, so the callback
+ * parameter is typed with that union while the option callback lowers: a
+ * checked-dynamic value passed as `data` converts at the call. Returns the
+ * pinned parameter symbol (the caller unpins it), or null when the
+ * declared type needs no pin. */
+function pinAnyDataCompletion(
+  lowerer: Lowerer,
+  which: string,
+  fnNode: ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+): ts.Symbol | null {
+  const index = which === "transform" ? 2 : which === "flush" ? 0 : -1;
+  const param = index < 0 ? undefined : fnNode.parameters.nodes[index];
+  if (param === undefined || !ts.isIdentifier(param.name) || param.dotDotDotToken) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(param.name);
+  if (!symbol || lowerer.stageSourceTypes.has(symbol)) return null;
+  const declared = lowerer.paramShape(param).type;
+  if (declared.kind !== "func" || declared.rest || declared.params[1]?.kind !== "dyn") return null;
+  const data = unionOf(lowerer, [BYTES, STRING, { kind: "undefinedT" }]);
+  lowerer.stageSourceTypes.set(
+    symbol,
+    funcOf([declared.params[0]!, data, ...declared.params.slice(2)], declared.ret),
+  );
+  return symbol;
+}
+
 /** Parses the options object literal of a stream constructor. `which`
  * names the callbacks this class accepts, in canonical flag order. */
 function parseStreamOptions(
@@ -671,22 +710,27 @@ function parseStreamOptions(
         continue;
       }
       const full = tuples[name]!.map((t) => (t === "fn" ? null : t));
-      // The completion-callback tail: typed by the checker contextually;
-      // accept the user's declared func type as the tuple's entry so the
-      // prefix check compares like with like.
-      const { funcType } = lowerer.lambdaSignature(fnNode);
-      const tuple: IrType[] = full.map((t, i) => {
-        if (t !== null) return t;
-        const declared = funcType.params[i];
-        if (declared !== undefined && declared.kind !== "func" && declared.kind !== "dyn") {
-          lowerer.noLowering(
-            `a '${name}' callback whose parameter ${i} is '${lowerer.fmt(declared)}' where Node passes the completion callback`,
-            fnNode!,
-          );
-        }
-        return declared ?? funcOf([], VOID);
-      });
-      present.set(name, lowerStreamCallback(lowerer, name, fnNode, thisType, tuple));
+      const pinned = pinAnyDataCompletion(lowerer, name, fnNode);
+      try {
+        // The completion-callback tail: typed by the checker contextually;
+        // accept the user's declared func type as the tuple's entry so the
+        // prefix check compares like with like.
+        const { funcType } = lowerer.lambdaSignature(fnNode);
+        const tuple: IrType[] = full.map((t, i) => {
+          if (t !== null) return t;
+          const declared = funcType.params[i];
+          if (declared !== undefined && declared.kind !== "func" && declared.kind !== "dyn") {
+            lowerer.noLowering(
+              `a '${name}' callback whose parameter ${i} is '${lowerer.fmt(declared)}' where Node passes the completion callback`,
+              fnNode!,
+            );
+          }
+          return declared ?? funcOf([], VOID);
+        });
+        present.set(name, lowerStreamCallback(lowerer, name, fnNode, thisType, tuple));
+      } finally {
+        if (pinned) lowerer.stageSourceTypes.delete(pinned);
+      }
       continue;
     }
     // `{ signal }` shorthand: the binding is the value.
@@ -999,6 +1043,15 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
   };
 }
 
+/** True when a value of Node's argument type `passed` widens implicitly
+ * into the declared parameter type `declared` (one of its union arms, or a
+ * sub-union of it). */
+function widensInto(lowerer: Lowerer, passed: IrType, declared: IrType, loc: SrcLoc): boolean {
+  if (declared.kind !== "union") return false;
+  const probe: IrExpr = { kind: "varRef", localId: "%probe", type: passed, loc };
+  return typeEquals(lowerer.coerceToExpected(probe, declared).type, declared);
+}
+
 /* ── user subclasses (`extends Readable`, the underscore-override form) ── */
 
 /** The wrapper closure binding one overridden underscore method as the
@@ -1075,10 +1128,17 @@ function streamMethodWrapper(
         );
       }
     } else if (!typeEquals(got.type, want)) {
+      // A declared supertype of what Node passes (`chunk: Buffer | string`)
+      // is sound: the wrapper takes Node's value and widens it into the
+      // declared parameter.
+      if (widensInto(lowerer, want, got.type, loc)) {
+        paramTypes.push(want);
+        continue;
+      }
       lowerer.noLowering(
         `a '${methodName}' method whose parameter ${i} is '${lowerer.fmt(got.type)}' where Node passes '${lowerer.fmt(want)}'`,
         blame,
-        "annotate the parameter with the Node signature's type (chunks are Buffers here)",
+        "annotate the parameter with the Node signature's type or a supertype of it (chunks are Buffers here)",
       );
     }
     paramTypes.push(got.type);
@@ -1094,7 +1154,11 @@ function streamMethodWrapper(
     for (let i = 0; i < paramTypes.length; i++) {
       const local = lowerer.declareHiddenLocal(`a${i}`, paramTypes[i]!);
       params.push({ localId: local.id, name: local.name, type: paramTypes[i]! });
-      argRefs.push({ kind: "varRef", localId: local.id, type: paramTypes[i]!, loc });
+      const arg: IrExpr = { kind: "varRef", localId: local.id, type: paramTypes[i]!, loc };
+      const declaredType = declared[i]!.type;
+      argRefs.push(
+        typeEquals(arg.type, declaredType) ? arg : lowerer.coerceToExpected(arg, declaredType),
+      );
     }
     const thisRef: IrExpr = { kind: "varRef", localId: thisLocal.id, type: thisType, loc };
     let call: IrExpr;
@@ -1411,7 +1475,7 @@ export function lowerStreamStaticCall(
     member === "toWeb" &&
     cls === "%Readable" &&
     call.arguments.nodes.length === 2 &&
-    isJsSourceFile(call.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
     ts.isObjectLiteralExpression(call.arguments.nodes[1]!)
   ) {
     for (const p of call.arguments.nodes[1]!.properties.nodes) {
@@ -1445,7 +1509,7 @@ export function lowerStreamStaticCall(
     );
   }
   const type: IrType = { kind: "object", className: "%Readable" };
-  const js = isJsSourceFile(call.getSourceFile());
+  const js = isJsSourceFile(ts.getSourceFileOfNode(call));
   const srcNode = args[0];
   const optsNode = args[1];
   const srcT = srcNode ? lowerer.mapTypeOf(lowerer.typeOf(srcNode)) : null;
@@ -2024,6 +2088,27 @@ function lowerStreamArg(
   const v = isHashValueType(lowered.type)
     ? hashStreamOf(lowered, what === "pipeline" || what === "compose")
     : lowered;
+  // A checked-dynamic pipeline stage (an untyped source or destination):
+  // a boxed native stream unwraps at run time; other values (iterables,
+  // functions) throw the not-supported Error there.
+  if (v.type.kind === "dyn" && what === "pipeline") {
+    noteUntypedStreamFlow(lowerer, null);
+    return {
+      kind: "libCall",
+      fn: "stream.unboxDyn",
+      args: [
+        v,
+        strLit(
+          lowerer.dynNodeStreams
+            ? "pipeline stages other than native streams (JavaScript stream objects, iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet"
+            : "pipeline stages other than native streams (iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet",
+          locOf(node),
+        ),
+      ],
+      type: { kind: "object", className: "%Duplex" },
+      loc: locOf(node),
+    };
+  }
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
   if (!streamSidesOf(lowerer, info)) {
     // A provably-non-stream value in a JS source (the invalid-input
@@ -2042,7 +2127,7 @@ function lowerStreamArg(
         loc: locOf(node),
       });
     };
-    if (isJsSourceFile(node.getSourceFile()) && lowerer.dynConvertible(v.type)) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(node)) && lowerer.dynConvertible(v.type)) {
       if (what === "pipeline") {
         // Strings and arrays are iterables — VALID pipeline stages in
         // Node — and a record carrying a readable/writable member may be
@@ -3056,7 +3141,7 @@ function lowerOperatorCallback(
   if (v.type.kind === "dyn") return v;
   if (
     v.type.kind !== "func" &&
-    isJsSourceFile(node.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
     lowerer.dynConvertible(v.type)
   ) {
     // JavaScript passes any value; Node's validateFunction throws.
@@ -3274,6 +3359,235 @@ function pipeEndOption(lowerer: Lowerer, options: ts.Expression | undefined, loc
     end = lowerer.lowerExprExpecting(prop.initializer, BOOL);
   }
   return end;
+}
+
+/** `readable.pipe(process.stdout)`: the process stream joins the pipe as
+ * an fd-backed Writable (stream.stdioWritable), and — like Node, which
+ * never ends process.stdout or process.stderr from a pipe — the source's
+ * end does not end it. pipe() answers the process stream itself. */
+function pipeIntoStdio(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  target: IrExpr,
+): IrExpr {
+  const loc = locOf(call);
+  // JS order: the receiver, then the destination, then the options.
+  const receiverValue = lowerer.lowerExpr(access.expression);
+  const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
+  const stdio = lowerer.declareHiddenLocal("%pipeStdio", target.type);
+  const options = call.arguments.nodes[1];
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: source.id, init: receiverValue, loc },
+    { kind: "varDecl", localId: stdio.id, init: target, loc },
+  ];
+  // The options literal still evaluates; its end flag has no effect here.
+  if (options !== undefined) {
+    stmts.push({ kind: "exprStmt", expr: pipeEndOption(lowerer, options, loc), loc });
+  }
+  const receiver: IrExpr = { kind: "varRef", localId: source.id, type: receiverValue.type, loc };
+  const writable: IrType = { kind: "object", className: "%Writable" };
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "readable.pipe",
+      args: [
+        receiver,
+        {
+          kind: "libCall",
+          fn: "stream.stdioWritable",
+          args: [{ kind: "varRef", localId: stdio.id, type: target.type, loc }],
+          type: writable,
+          loc,
+        },
+        boolLit(false, loc),
+      ],
+      type: writable,
+      loc,
+    },
+    loc,
+  });
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: { kind: "varRef", localId: stdio.id, type: target.type, loc },
+    type: target.type,
+    loc,
+  };
+}
+
+/** `readable.unpipe(untyped)`: a native destination (boxed) unpipes as a
+ * typed one does; any other value unpipes the JavaScript destination a
+ * pipe into it registered (scr_stream_dyn.c), or does nothing when there
+ * is none, as Node's unpipe does for a destination it is not piped into.
+ * The call answers the source. */
+function unpipeDyn(lowerer: Lowerer, receiver: IrExpr, dst: IrExpr, loc: SrcLoc): IrExpr {
+  noteUntypedStreamFlow(lowerer, null);
+  const source = lowerer.declareHiddenLocal("%unpipeSource", receiver.type);
+  const destination = lowerer.declareHiddenLocal("%unpipeDestination", dst.type);
+  const sourceRef = varRef(source.id, receiver.type, loc);
+  const destinationRef = varRef(destination.id, dst.type, loc);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: source.id, init: receiver, loc },
+    { kind: "varDecl", localId: destination.id, init: dst, loc },
+  ];
+  const unpipeNative = (native: IrExpr): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "readable.unpipe",
+      args: [sourceRef, native],
+      type: receiver.type,
+      loc,
+    },
+    loc,
+  });
+  if (lowerer.dynNodeStreams) {
+    stmts.push(
+      dynNativeBranch(lowerer, destinationRef, "w", unpipeNative, {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "stream.unpipeDyn",
+          args: [sourceRef, destinationRef],
+          type: VOID,
+          loc,
+        },
+        loc,
+      }),
+    );
+  } else {
+    stmts.push(
+      unpipeNative({
+        kind: "libCall",
+        fn: "stream.unboxDyn",
+        args: [
+          destinationRef,
+          strLit("unpipe destinations other than native streams are not supported yet", loc),
+        ],
+        type: { kind: "object", className: "%Duplex" },
+        loc,
+      }),
+    );
+  }
+  return { kind: "seqExpr", stmts, result: sourceRef, type: receiver.type, loc };
+}
+
+/** The pipe() libCall for a destination of type `dst`. Under the general
+ * stream representation a Writable slot can hold the converted
+ * process.stdout / process.stderr, which a pipe never ends (as in Node), so
+ * the pipe takes readable.pipeGeneral, which checks for them. */
+function generalPipe(lowerer: Lowerer, dst: IrType): "readable.pipe" | "readable.pipeGeneral" {
+  return lowerer.generalNodeStreams && dst.kind === "object" && dst.className === "%Writable"
+    ? "readable.pipeGeneral"
+    : "readable.pipe";
+}
+
+/** `readable.pipe(untyped)`: a checked-dynamic destination unwraps a boxed
+ * native stream at run time (stream.unboxDyn; other values throw the
+ * not-supported Error), and pipe() answers the destination value itself. */
+function pipeIntoDyn(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  target: IrExpr,
+): IrExpr {
+  const loc = locOf(call);
+  noteUntypedStreamFlow(lowerer, null);
+  const receiverValue = lowerer.lowerExpr(access.expression);
+  const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
+  const destination = lowerer.declareHiddenLocal("%pipeDestination", target.type);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: source.id, init: receiverValue, loc },
+    { kind: "varDecl", localId: destination.id, init: target, loc },
+  ];
+  const end = pipeEndOption(lowerer, call.arguments.nodes[1], loc);
+  const duplex: IrType = { kind: "object", className: "%Duplex" };
+  // Checked-dynamic stream slots (dyn-streams.ts): a JavaScript stream
+  // object is a destination too, piped with Node's listener protocol.
+  if (lowerer.dynNodeStreams) {
+    const sourceRef: IrExpr = { kind: "varRef", localId: source.id, type: receiverValue.type, loc };
+    const destinationRef: IrExpr = {
+      kind: "varRef",
+      localId: destination.id,
+      type: target.type,
+      loc,
+    };
+    const ending = lowerer.declareHiddenLocal("%pipeEnd", BOOL);
+    stmts.push({ kind: "varDecl", localId: ending.id, init: end, loc });
+    const endRef: IrExpr = { kind: "varRef", localId: ending.id, type: BOOL, loc };
+    stmts.push(
+      dynNativeBranch(
+        lowerer,
+        destinationRef,
+        "w",
+        (native) => ({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            // Checked-dynamic slots come with the general representation,
+            // where a boxed native destination can be the converted
+            // process.stdout (generalPipe).
+            fn: "readable.pipeGeneral",
+            args: [sourceRef, native, endRef],
+            type: native.type,
+            loc,
+          },
+          loc,
+        }),
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "stream.pipeDyn",
+            args: [sourceRef, lowerer.coerceToExpected(sourceRef, DYN), destinationRef, endRef],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ),
+    );
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: destinationRef,
+      type: target.type,
+      loc,
+    };
+  }
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: lowerer.generalNodeStreams ? "readable.pipeGeneral" : "readable.pipe",
+      args: [
+        { kind: "varRef", localId: source.id, type: receiverValue.type, loc },
+        {
+          kind: "libCall",
+          fn: "stream.unboxDyn",
+          args: [
+            { kind: "varRef", localId: destination.id, type: target.type, loc },
+            strLit("pipe destinations other than native streams are not supported yet", loc),
+          ],
+          type: duplex,
+          loc,
+        },
+        end,
+      ],
+      type: duplex,
+      loc,
+    },
+    loc,
+  });
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: { kind: "varRef", localId: destination.id, type: target.type, loc },
+    type: target.type,
+    loc,
+  };
 }
 
 export function lowerStreamMethodCall(
@@ -3525,22 +3839,26 @@ export function lowerStreamMethodCall(
         loc,
       };
     }
-    const dst = lowerer.lowerExpr(args[0]!);
+    const target = lowerer.lowerExpr(args[0]!);
+    if (target.type.kind === "procStream") return pipeIntoStdio(lowerer, call, access, target);
+    if (target.type.kind === "dyn") return pipeIntoDyn(lowerer, call, access, target);
+    const dst = target;
     const dstInfo =
       dst.type.kind === "object" ? lowerer.classes.get(dst.type.className) : undefined;
     const dstSides = streamSidesOf(lowerer, dstInfo);
     if (dstSides !== "w" && dstSides !== "rw") {
+      requestGeneralStreamSurface(lowerer, args[0]!);
       lowerer.noLowering(
         `pipe into a '${lowerer.fmt(dst.type)}'`,
         args[0]!,
-        "the destination must be a stream Writable/Duplex (process streams and sockets are not pipe destinations yet)",
+        "the destination must be a stream Writable/Duplex, process.stdout or process.stderr (sockets are not pipe destinations yet)",
       );
     }
     const end = pipeEndOption(lowerer, args[1], loc);
     const receiver = lowerer.lowerExpr(access.expression);
     return {
       kind: "libCall",
-      fn: "readable.pipe",
+      fn: generalPipe(lowerer, dst.type),
       args: [receiver, dst, end],
       type: dst.type,
       loc,
@@ -3553,6 +3871,7 @@ export function lowerStreamMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     if (args[0] !== undefined) {
       const dst = lowerer.lowerExpr(args[0]);
+      if (dst.type.kind === "dyn") return unpipeDyn(lowerer, receiver, dst, loc);
       const dstInfo =
         dst.type.kind === "object" ? lowerer.classes.get(dst.type.className) : undefined;
       const dstSides = streamSidesOf(lowerer, dstInfo);
@@ -3563,6 +3882,44 @@ export function lowerStreamMethodCall(
         kind: "libCall",
         fn: "readable.unpipe",
         args: [receiver, dst],
+        type: receiver.type,
+        loc,
+      };
+    }
+    // Checked-dynamic slots: unpipe() also unpipes the JavaScript
+    // destinations stream.pipeDyn registered (stream.unpipeDyn with an
+    // undefined destination), as Node's unpipe() empties every pipe.
+    if (lowerer.dynNodeStreams) {
+      const source = lowerer.declareHiddenLocal("%unpipeSource", receiver.type);
+      const sourceRef = varRef(source.id, receiver.type, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: source.id, init: receiver, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "readable.unpipe",
+              args: [sourceRef],
+              type: receiver.type,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "stream.unpipeDyn",
+              args: [sourceRef, dynUndefinedExpr(loc)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: sourceRef,
         type: receiver.type,
         loc,
       };
@@ -3654,8 +4011,10 @@ export function lowerStreamMethodCall(
         : lowerer.lowerExprExpecting(args[0]!, STRING);
     const fn = kind === "bytes" ? "writable.write" : "writable.writeStr";
     if (cbArg !== undefined) {
-      const cb = lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb.type.kind !== "func" || cb.type.params.length > 0) {
+      const cb = callbackDeclaresParameters(cbArg)
+        ? null
+        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
+      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
         lowerer.noLowering(
           "write completion callbacks taking the error argument",
           cbArg,
@@ -3712,8 +4071,10 @@ export function lowerStreamMethodCall(
       );
     }
     if (cbArg !== undefined) {
-      const cb = lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb.type.kind !== "func" || cb.type.params.length > 0) {
+      const cb = callbackDeclaresParameters(cbArg)
+        ? null
+        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
+      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
         lowerer.noLowering(
           "end callbacks with parameters",
           cbArg,
@@ -3977,4 +4338,18 @@ export function lowerStreamProperty(
     return propCall(BOOL);
   }
   return null;
+}
+
+/** Whether an inline completion callback declares a parameter. Node calls
+ * write and end callbacks with an error argument (null on success), but the
+ * native callback receives none, so the parameter would read undefined
+ * where Node passes null or the error. A function literal with parameters
+ * would otherwise adapt to the zero-parameter slot silently. */
+function callbackDeclaresParameters(node: ts.Expression): boolean {
+  let callback = node;
+  while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
+  return (
+    (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) &&
+    callback.parameters.nodes.length > 0
+  );
 }

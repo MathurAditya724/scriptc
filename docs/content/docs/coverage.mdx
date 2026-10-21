@@ -60,7 +60,7 @@ Code that operates on values whose types are known only at runtime, such as `any
 
 `--explain-dynamic` lists those functions and the operation that makes each one dynamic. It also lists the units an unsupported construct would move to the dynamic tier: the binding, field, class, function, or module that has no static representation for the construct, with the diagnostic behind each one. These are the constructs the dynamic tier is planned to compile; today they remain blockers in TypeScript and deferred runtime errors in JavaScript. Add a name, such as `--explain-dynamic=Point`, to show only the matching units. With `--print=diagnostics`, the document gains a `tiers` object with the same information.
 
-`--tier=static-only` keeps every unsupported construct a blocker instead of moving it to the dynamic tier; code that already operates on runtime-typed values compiles as before. Today `auto`, the default, behaves the same way.
+`--tier=static-only` keeps every unsupported construct a blocker instead of moving it to the dynamic tier; code that already operates on runtime-typed values compiles as before. It also makes a checked cast whose value does not match its type throw, where `auto`, the default, continues with the value in the dynamic tier (see [runtime type checks](/docs/limitations#runtime-type-checks)). Otherwise `auto` behaves the same way today.
 
 ## Diagnostic codes
 
@@ -76,10 +76,9 @@ Coverage and `scriptc build` report the same diagnostic codes. Common ones inclu
 Some code compiles but can behave differently than under Node.js. Coverage reports the cases it can detect as `SC6xxx` warnings, and `scriptc build` prints the same warnings after a successful build. They never fail a build, but `--fail-on=divergences` can fail a CI job on them.
 
 - `SC6001`: a record passed to, stored as, asserted as, or stored as an array element of a record type with different properties is copied, and the program then writes through the copy or compares it by identity.
-- `SC6002`: an object literal's key order differs from its type's declaration order, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
+- `SC6002`: values of one record type are built in different key orders, so the type keeps its declaration order, an object literal's key order differs from it, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
 - `SC6003`: `localeCompare` compares a string literal outside the built-in Latin-script collation.
 - `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.
-- `SC6005`: a `Date` string literal uses a form the native parser does not accept.
 
 ## Gating builds and CI
 

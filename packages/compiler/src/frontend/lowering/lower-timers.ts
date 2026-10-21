@@ -330,7 +330,7 @@ function isRealTimerCallee(lowerer: Lowerer, callee: ts.Expression): boolean {
   if (ts.isIdentifier(callee)) return lowerer.builtinImportOf(callee)?.module === "timers";
   if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
     const sym = lowerer.checker.getSymbolAtLocation(callee.expression);
-    const decl = sym ? lowerer.checker.declarationsOf(sym)[0] : undefined;
+    const decl = sym ? sym.declarations[0] : undefined;
     return decl !== undefined && ts.isNamespaceImport(decl);
   }
   return false;
@@ -420,7 +420,7 @@ function lowerTimerCall(
       lowerer.noLowering(`clearTimeout with ${expr.arguments.nodes.length} arguments`, expr);
     }
     let handle = lowerer.lowerExpr(expr.arguments.nodes[0]!);
-    if (handle.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile())) {
+    if (handle.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
       const stored = lowerer.declareHiddenLocal("%timer.clear", DYN);
       const ref = varRef(stored.id, DYN, loc);
       handle = {

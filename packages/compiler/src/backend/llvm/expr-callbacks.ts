@@ -1,6 +1,13 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
-import { type IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/ir.js";
+import {
+  type IrType,
+  UNDEFINED_T,
+  isRefCounted,
+  isUnitType,
+  typeEquals,
+  typeKey,
+} from "../../ir/ir.js";
 import { mangleGenResThunk, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS, llFieldType, releaseSym, retainSym, traceArg, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -48,6 +55,23 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
   if (sym) return sym;
   sym = `sc_race_${host.resolveThunks.size}`;
   host.resolveThunks.set(key, sym);
+  const toArms = to.kind === "union" ? (host.unionsById.get(to.unionId)?.arms ?? []) : [];
+  if (from.kind === "void" && !toArms.some((a) => a.kind === "undefinedT")) {
+    // A Promise<never> entry (the frontend admits void entries without an
+    // undefined result arm only for those): it can only reject, so its
+    // fulfillment adapter never runs.
+    host.declare(`declare void @scr_trap(ptr)`);
+    const msg = host.cstr("scriptc: a Promise<never> race entry fulfilled\n");
+    host.resolveThunkDefs.push(
+      `define internal void @${sym}(ptr %dst, ptr %src) ${FN_ATTRS} { ; race ${key}`,
+      `entry:`,
+      `  call void @scr_trap(ptr ${msg})`,
+      `  unreachable`,
+      `}`,
+      ``,
+    );
+    return sym;
+  }
   if (to.kind !== "union")
     throw new InternalCompilerError("llvm emitter bug: race adapter to a non-union");
   const toDef = host.unionsById.get(to.unionId);
@@ -68,6 +92,14 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
     `define internal void @${sym}(ptr %dst, ptr %src) ${FN_ATTRS} { ; race ${key}`,
     `entry:`,
   ];
+  if (from.kind === "void") {
+    // A Promise<void> entry fulfills with undefined: the result's
+    // undefined arm, whatever the entry's payload slot holds.
+    const tag = tagOf(UNDEFINED_T);
+    d.push(`  ${fulfill(host.unitInstanceRef(to.unionId, tag))}`, `  ret void`, `}`, ``);
+    host.resolveThunkDefs.push(...d);
+    return sym;
+  }
   if (from.kind !== "union") {
     // One arm wrap, straight off the payload accessors.
     const tag = tagOf(from);
@@ -739,6 +771,31 @@ export function childDataThunkFor(host: LlvmEmitterContext, param: IrType): stri
   return sym;
 }
 
+/** The child-stream 'data' thunk for an unknown/any chunk parameter: the
+ * runtime's Buffer (or, after setEncoding, string) chunk boxes into a
+ * checked-dynamic value the listener owns. */
+export function childDataDynThunkFor(host: LlvmEmitterContext, chunk: "bytes" | "str"): string {
+  const key = `cdd:${chunk}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = `sc_cdd_${host.resolveThunks.size}`;
+  host.resolveThunks.set(key, sym);
+  const box = chunk === "bytes" ? "scr_dyn_new_buffer" : "scr_dyn_new_str";
+  host.declare(`declare ptr @${box}(ptr)`);
+  host.resolveThunkDefs.push(
+    `define internal void @${sym}(ptr %cb, ptr %chunk) ${FN_ATTRS} { ; child 'data' → dyn (${chunk})`,
+    `entry:`,
+    `  %d = call ptr @${box}(ptr %chunk)`,
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+    `  call void %fn(ptr %cb, ptr %d)`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  return sym;
+}
+
 export function emitterFixedAdapter(
   host: LlvmEmitterContext,
   cbT: IrType & { kind: "func" },
@@ -807,23 +864,27 @@ export function emitterFixedAdapter(
  * (the event's tuple to any[]): the runtime-built listener closure holds
  * the boxer in caps[0], so the adapter calls it with the event's typed
  * arguments, as emitterFixedAdapter calls a listener, and hands the array
- * to scr_events_once_fire. */
+ * to scr_events_once_fire (or `fire`, the signal form's entry). */
 export function emitterOnceAdapter(
   host: LlvmEmitterContext,
   boxerT: IrType & { kind: "func" },
+  fire = "scr_events_once_fire",
 ): { fn: string; shim: string } {
   const cursor = boxerT.params.length > 4;
   const shim = cursor ? "scr_ee_inv_args" : `scr_ee_inv_fixed${boxerT.params.length}`;
   if (cursor) host.declare("declare ptr @scr_ee_arg_next(ptr)");
   host.declare(`declare void @${shim}(ptr, ptr)`);
-  const key = `eeOnce:${typeKey(boxerT)}`;
+  const key =
+    fire === "scr_events_once_fire"
+      ? `eeOnce:${typeKey(boxerT)}`
+      : `eeOnce:${fire}:${typeKey(boxerT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return { fn: sym, shim };
   sym = `sc_ee_once_${host.resolveThunks.size}`;
   host.resolveThunks.set(key, sym);
   host.declare(`declare ptr @scr_box_get_ref(ptr)`);
   host.declare(`declare void @scr_closure_release(ptr)`);
-  host.declare(`declare void @scr_events_once_fire(ptr, ptr)`);
+  host.declare(`declare void @${fire}(ptr, ptr)`);
   const params = cursor ? "ptr %args" : boxerT.params.map((_, i) => `ptr %a${i}`).join(", ");
   const d: string[] = [
     `define internal void @${sym}(ptr %cb${params ? ", " + params : ""}) ${FN_ATTRS} { ; events.once adapter ${typeKey(boxerT)}`,
@@ -854,7 +915,7 @@ export function emitterOnceAdapter(
     `  %fn = load ptr, ptr %fnp`,
     `  %arr = call ptr %fn(${passed.join(", ")}) ; the boxed arguments, +1`,
     `  call void @scr_closure_release(ptr %boxer)`,
-    `  call void @scr_events_once_fire(ptr %cb, ptr %arr) ; moves %arr`,
+    `  call void @${fire}(ptr %cb, ptr %arr) ; moves %arr`,
     `  ret void`,
     `}`,
     ``,

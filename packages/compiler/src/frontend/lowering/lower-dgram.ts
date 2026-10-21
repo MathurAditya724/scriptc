@@ -15,6 +15,7 @@ import {
   BOOL,
   canBoxFuncIntoDyn,
   canDynCheckTo,
+  typeKey,
   DGRAMSOCK_T,
   DYN,
   F64,
@@ -131,6 +132,7 @@ export function lowerDgramDnsModuleCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (bi.module === "dns") return lowerDnsModuleCall(lowerer, expr, bi, loc);
+  if (bi.module === "dns/promises") return lowerDnsPromisesCall(lowerer, expr, bi, loc);
   if (bi.module !== "dgram") return null;
   const args = expr.arguments.nodes;
   if (bi.member === "createSocket") {
@@ -193,7 +195,7 @@ export function lowerDgramDnsModuleCall(
         sawType = true;
       } else if (name === "reuseAddr") {
         reuseAddr = lowerer.lowerExprExpecting(prop.initializer, BOOL);
-      } else if (name === "signal" && isJsSourceFile(expr.getSourceFile())) {
+      } else if (name === "signal" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         // A provably-non-AbortSignal signal (the invalid-input probes:
         // strings, numbers, plain records) throws Node's
         // validateAbortSignal ladder; plausible signal values keep the
@@ -278,6 +280,124 @@ function lowerDnsCallback(lowerer: Lowerer, node: ts.Expression, what: string): 
   );
 }
 
+/** node:dns/promises calls (and dns.promises members): lookup(hostname[,
+ * options]) and lookupService(address, port) as promises over the callback
+ * forms' runtime (argument errors throw synchronously, as Node validates
+ * before it creates the promise), plus the shared getServers and result
+ * order functions. A typed result (Promise<LookupAddress>) checks the
+ * settled value through the checked-dynamic boundary. */
+function lowerDnsPromisesCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  bi: { module: string; member: string },
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments.nodes;
+  const dyn = (node: ts.Expression): IrExpr =>
+    lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+  if (bi.member === "lookup" || bi.member === "lookupService") {
+    const service = bi.member === "lookupService";
+    if (service ? args.length !== 2 : args.length !== 1 && args.length !== 2) {
+      lowerer.noLowering(
+        `dnsPromises.${bi.member} with ${args.length} arguments`,
+        expr,
+        service
+          ? "the form is lookupService(address, port)"
+          : "the supported forms are lookup(hostname) and lookup(hostname, options)",
+      );
+    }
+    const promise: IrExpr = {
+      kind: "libCall",
+      fn: service ? "dns.promisesLookupService" : "dns.promisesLookup",
+      args: [dyn(args[0]!), args.length === 2 ? dyn(args[1]!) : dynUndefinedExpr(loc)],
+      type: { kind: "promise", inner: DYN },
+      loc,
+    };
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (declared === null || declared.kind !== "promise" || declared.inner.kind === "dyn") {
+      return promise;
+    }
+    return checkedDynPromise(lowerer, promise, declared, expr, loc);
+  }
+  if (["getServers", "getDefaultResultOrder", "setDefaultResultOrder"].includes(bi.member)) {
+    return lowerDnsModuleCall(lowerer, expr, { module: "dns", member: bi.member }, loc);
+  }
+  lowerer.noLowering(
+    `dnsPromises.${bi.member}`,
+    expr,
+    "lookup, lookupService, getServers, getDefaultResultOrder, and setDefaultResultOrder are the lowered dns/promises functions",
+    ts.isIdentifier(expr.expression) ? lowerer.resolveValueSymbol(expr.expression) : undefined,
+  );
+}
+
+/** A promise<dyn> as the call site's typed promise: an interned async
+ * helper awaits it and checks the settled value into the declared inner
+ * type (a mismatch rejects with the checked-dynamic TypeError). */
+function checkedDynPromise(
+  lowerer: Lowerer,
+  promise: IrExpr,
+  declared: IrType & { kind: "promise" },
+  node: ts.Node,
+  loc: SrcLoc,
+): IrExpr {
+  const inner = declared.inner;
+  if (
+    !canDynCheckTo(
+      inner,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    lowerer.noLowering(
+      `a dns/promises result typed '${lowerer.fmt(declared)}'`,
+      node,
+      "the settled value must have a checked-dynamic conversion (type it as the documented LookupAddress shape or unknown)",
+    );
+  }
+  const key = `dns.promise:${typeKey(declared)}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = `%dns.promise.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, helper);
+    const promiseT: IrType = { kind: "promise", inner: DYN };
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "promise", name: "promise", type: promiseT }],
+      returnType: inner,
+      locals: [
+        { id: "promise", name: "promise", type: promiseT, mutable: false },
+        { id: "settled", name: "settled", type: DYN, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "settled",
+          init: {
+            kind: "awaitExpr",
+            value: { kind: "varRef", localId: "promise", type: promiseT, loc },
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "dynCheck",
+            value: { kind: "varRef", localId: "settled", type: DYN, loc },
+            type: inner,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+      async: true,
+    });
+  }
+  return { kind: "call", callee: helper, args: [promise], type: declared, loc };
+}
+
 /** dns module calls: lookup(hostname[, options], callback) with Node's
  * option forms, lookupService(address, port, callback), getServers() and
  * get/setDefaultResultOrder(). The runtime validates the arguments as
@@ -290,8 +410,17 @@ function lowerDnsModuleCall(
   loc: SrcLoc,
 ): IrExpr {
   const args = expr.arguments.nodes;
-  const dyn = (node: ts.Expression): IrExpr =>
-    lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+  const dyn = (node: ts.Expression): IrExpr => {
+    // `opts as dns.LookupOneOptions` over a checked-dynamic value (the
+    // overload-satisfying cast of a pass-through lookup): the cast changes
+    // no value, so the options reach the runtime as they are.
+    let inner = node;
+    while (ts.isAsExpression(inner) || ts.isParenthesizedExpression(inner))
+      inner = inner.expression;
+    if (inner !== node && lowerer.mapTypeOf(lowerer.typeOf(inner))?.kind === "dyn")
+      return lowerer.lowerExpr(inner);
+    return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+  };
   // A callback whose second parameter is typed (string, LookupAddress[])
   // cannot take the undefined Node passes after an error.
   const typedResult = (node: ts.Expression): IrExpr => {
@@ -312,8 +441,31 @@ function lowerDnsModuleCall(
     const hostname = dyn(args[0]!);
     const options = args.length === 3 ? dyn(args[1]!) : dynUndefinedExpr(loc);
     const last = args[args.length - 1]!;
-    const typed = typedResult(last);
-    const cb = lowerDnsCallback(lowerer, last, "lookup callbacks");
+    // Options known only at run time (a checked-dynamic value, or one cast
+    // to an overload's option type) decide between Node's two callback
+    // shapes there: the address is a string, or an address list with
+    // `all: true`. An inline callback then binds its parameters as
+    // checked-dynamic values, whatever the overload the checker picked
+    // says, and its body tests what actually arrived.
+    let runtimeOptions = false;
+    if (args.length === 3) {
+      let inner: ts.Expression = args[1]!;
+      while (ts.isParenthesizedExpression(inner) || ts.isAsExpression(inner))
+        inner = inner.expression;
+      runtimeOptions = lowerer.mapTypeOf(lowerer.typeOf(inner))?.kind === "dyn";
+    }
+    let callbackNode: ts.Expression = last;
+    while (ts.isParenthesizedExpression(callbackNode)) callbackNode = callbackNode.expression;
+    const dynCallback =
+      runtimeOptions && (ts.isArrowFunction(callbackNode) || ts.isFunctionExpression(callbackNode));
+    const typed = dynCallback ? boolLit(false, loc) : typedResult(last);
+    if (dynCallback) lowerer.dynParamLambdas.add(callbackNode);
+    let cb: IrExpr;
+    try {
+      cb = lowerDnsCallback(lowerer, last, "lookup callbacks");
+    } finally {
+      if (dynCallback) lowerer.dynParamLambdas.delete(callbackNode);
+    }
     return {
       kind: "libCall",
       fn: "dns.lookupDyn",
@@ -449,7 +601,7 @@ export function lowerDgramMethodCall(
       return { kind: "libCall", fn, args: [receiver, data, port, host], type: VOID, loc };
     }
     if (
-      isJsSourceFile(call.getSourceFile()) &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       args.length <= 5 &&
       !args.some(ts.isSpreadElement)
     ) {
