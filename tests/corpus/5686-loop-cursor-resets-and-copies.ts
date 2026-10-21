@@ -135,6 +135,19 @@ function countDown(values: Float64Array): number {
   return remaining * 1000 + below;
 }
 
+// The condition writes the copy's source on every pass, so the source's
+// entry value does not bound the copy.
+function copiesFromCondition(values: number[]): string {
+  let source = 0;
+  let cursor = 0;
+  const seen: number[] = [];
+  for (let i = 0; i < ((source = values[i] ?? 0), values).length; i++) {
+    cursor = source;
+    seen.push(cursor);
+  }
+  return seen.join(",");
+}
+
 const ints = new Int32Array(64);
 for (let i = 0; i < ints.length; i++) ints[i] = ((i * 37) % 11) - 3;
 console.log("longestRun", longestRun(ints), longestRun(new Int32Array(0)));
@@ -155,3 +168,4 @@ console.log("readsInside", readsInside(10), readsInside(0));
 const samples = new Float64Array(20);
 for (let i = 0; i < samples.length; i++) samples[i] = (i * 0.37) % 1;
 console.log("countDown", countDown(samples), countDown(new Float64Array(0)));
+console.log("copiesFromCondition", copiesFromCondition([0.5, 1.25, 2.75]));

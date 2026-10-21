@@ -129,6 +129,13 @@ export function boundedIntegerLoopFacts(
     if (region) opaque--;
     return completed;
   };
+  // The condition and the update run on every pass too. A binding either
+  // one writes (`i < (src = next(), n)`) changes in ways the budget does
+  // not count, so it is neither a stable bound nor a copy source.
+  opaque++;
+  expr(loop.cond);
+  expr(loop.update.value);
+  opaque--;
   loop.body.every(stmt);
   if (written.has(counter)) return result;
   const stable = (id: string): boolean => {
