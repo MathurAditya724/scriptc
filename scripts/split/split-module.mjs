@@ -36,10 +36,11 @@
  * outside their file references get `export`. Names a manifest lists but
  * the module lacks are skipped, and new declarations stay in the module,
  * so the same manifest applies to an edited copy of the module. */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, posix } from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
+import { confine, confineHost } from "./confine.mjs";
 
 const [command, configPath, ...flags] = process.argv.slice(2);
 const config = JSON.parse(readFileSync(configPath, "utf8"));
@@ -50,6 +51,10 @@ const flag = (name) => {
 // --repo runs on another checkout (a temporary worktree); --tools names the
 // checkout whose node_modules supply typescript.
 const repo = resolve(flag("--repo") ?? config.repo ?? process.cwd());
+// Every read and write stays inside the checkout, or for the manifest, the
+// config's directory (confine.mjs).
+const checkout = confine(repo);
+const configFiles = confine(dirname(resolve(configPath)));
 // The manifest path is relative to the config file.
 config.manifest = resolve(dirname(resolve(configPath)), flag("--manifest") ?? config.manifest);
 const toolsDir = resolve(flag("--tools") ?? config.repo ?? process.cwd());
@@ -150,11 +155,13 @@ function inTypePosition(node) {
  * marked type-only when every reference sits in a type position. */
 function analyze(text) {
   const sf = parse(text);
-  const host = ts.createCompilerHost({});
+  const host = confineHost(ts.createCompilerHost({}), checkout);
+  const tsconfigPath = join(repo, config.tsconfig);
+  checkout.check(tsconfigPath);
   const tsconfig = ts.getParsedCommandLineOfConfigFile(
-    join(repo, config.tsconfig),
+    tsconfigPath,
     {},
-    { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} },
+    { ...confineHost(ts.sys, checkout), onUnRecoverableConfigFileDiagnostic: () => {} },
   );
   const options = { ...tsconfig.options, noEmit: true };
   const realGet = host.getSourceFile;
@@ -269,7 +276,7 @@ function analyze(text) {
 /* ── plan ────────────────────────────────────────────────────────────── */
 
 function plan() {
-  const text = extractBranches(readFileSync(modulePath, "utf8"));
+  const text = extractBranches(checkout.read(modulePath));
   const { statements } = analyze(text);
   const fileOf = new Map();
   for (const [file, names] of Object.entries(config.seeds))
@@ -311,7 +318,7 @@ function plan() {
     const file = s.names.map((n) => fileOf.get(n)).find(Boolean);
     if (file) (manifest[file] ??= []).push(...s.names);
   }
-  writeFileSync(config.manifest, JSON.stringify(manifest, null, 2) + "\n");
+  configFiles.write(config.manifest, JSON.stringify(manifest, null, 2) + "\n");
   for (const [file, names] of Object.entries(manifest)) console.log(`${file}: ${names.length}`);
 }
 
@@ -334,8 +341,8 @@ function fullText(text, st) {
 }
 
 function apply() {
-  const manifest = JSON.parse(readFileSync(config.manifest, "utf8"));
-  let text = extractBranches(readFileSync(modulePath, "utf8"));
+  const manifest = JSON.parse(configFiles.read(config.manifest));
+  let text = extractBranches(checkout.read(modulePath));
   const { source, statements, imports } = analyze(text);
   const fileOf = new Map();
   for (const [file, names] of Object.entries(manifest)) for (const n of names) fileOf.set(n, file);
@@ -434,9 +441,9 @@ function apply() {
       "",
     ].join("\n");
     const path = join(moduleDir, file);
-    mkdirSync(dirname(path), { recursive: true });
-    if (existsSync(path)) throw new Error(`${file} exists`);
-    writeFileSync(path, out);
+    checkout.mkdir(dirname(path));
+    if (checkout.exists(path)) throw new Error(`${file} exists`);
+    checkout.write(path, out);
   }
 
   // The module: drop moved declarations, rewrite its import block.
@@ -522,7 +529,7 @@ function apply() {
     (addLines.length ? "\n" + addLines.join("\n") : "") +
     moduleText.slice(at);
   moduleText = moduleText.replace(/\n{3,}/g, "\n\n");
-  writeFileSync(modulePath, moduleText);
+  checkout.write(modulePath, moduleText);
   // Format what changed with the tools checkout's oxfmt, so the split and
   // every rehome of it are formatted the same way.
   const touched = [modulePath, ...[...files.keys()].map((f) => join(moduleDir, f))];

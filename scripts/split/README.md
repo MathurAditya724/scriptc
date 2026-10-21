@@ -9,7 +9,7 @@ Run them from a checkout with `node_modules` installed. That checkout is the too
 - `split-methods.mjs apply <config>` moves class methods into exported functions that take the instance as a parameter (`emitter`). The class keeps a one-line stub with the same signature, so callers don't change.
 - `move-state.mjs apply <config>` moves a group of class fields into a feature's state object, defined in the feature's file with `defineModuleState` (`packages/compiler/src/backend/llvm/emitter-state.ts`). It rewrites `this.<field>` and `emitter.<field>` to `KEY.of(this).<field>` and creates files from templates. It also applies the change's other edits as literal replacements, in order. A replacement whose text isn't found the expected number of times is reported and skipped.
 
-Each transform takes `--repo <dir>` (the tree to rewrite) and `--tools <dir>`, and formats what it writes with oxfmt. `configs/` holds the configs of splits that have landed. For example, `configs/loop-state/` moves the loop optimizations' state out of `LlEmitter`.
+Each transform takes `--repo <dir>` (the tree to rewrite) and `--tools <dir>`, and formats what it writes with oxfmt. The tools read and write the tree's files only at real paths inside `--repo`, and a config's templates and manifest only inside the config's directory. A path that resolves elsewhere, through a symlink or `..`, stops the tool with an error (`confine.mjs`). `configs/` holds the configs of splits that have landed. For example, `configs/loop-state/` moves the loop optimizations' state out of `LlEmitter`.
 
 ## Rehoming an open branch
 ```sh

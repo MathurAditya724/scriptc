@@ -24,10 +24,11 @@
  * <onto> instead. When the cherry-pick conflicts, the script stops and
  * leaves the work tree with the conflicts to resolve; see the message. */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { confine } from "./confine.mjs";
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -157,7 +158,9 @@ try {
         : Object.keys(
             (({ files, ...rest }) => files ?? rest)(
               JSON.parse(
-                readFileSync(resolve(dirname(resolve(configPath)), config.manifest), "utf8"),
+                confine(dirname(resolve(configPath))).read(
+                  resolve(dirname(resolve(configPath)), config.manifest),
+                ),
               ),
             ),
           );
@@ -166,7 +169,10 @@ try {
     for (const file of gitIn(resultDir, "diff", "--name-only", "--diff-filter=U")
       .split("\n")
       .filter(Boolean)) {
-      if (splitFiles.has(file) && resolveImportConflicts(join(resultDir, file))) {
+      if (
+        splitFiles.has(file) &&
+        resolveImportConflicts(confine(resultDir), join(resultDir, file))
+      ) {
         execFileSync(join(tools, "node_modules/.bin/oxfmt"), [file], {
           cwd: resultDir,
           stdio: ["ignore", "ignore", "inherit"],
@@ -212,11 +218,12 @@ try {
 
 /* Rewrites every conflict in `path` whose two sides hold only import
  * declarations as the union of both: one declaration per module and kind,
- * with the named imports of both sides in first-seen order. Returns false,
+ * with the named imports of both sides in first-seen order, read and
+ * written through the result checkout's guard. Returns false,
  * leaving the file unchanged, when any conflict holds other code. */
-function resolveImportConflicts(path) {
+function resolveImportConflicts(checkout, path) {
   const ts = createRequire(join(tools, "package.json"))("typescript");
-  const text = readFileSync(path, "utf8");
+  const text = checkout.read(path);
   const region = /^<<<<<<< [^\n]*\n([\s\S]*?)^=======\n([\s\S]*?)^>>>>>>> [^\n]*\n/gm;
   const imports = (side) => {
     const sf = ts.createSourceFile("side.ts", side, ts.ScriptTarget.Latest, true);
@@ -266,7 +273,7 @@ function resolveImportConflicts(path) {
     );
   });
   if (!ok || resolved === text) return false;
-  writeFileSync(path, pruneUnusedImports(ts, resolved, imported));
+  checkout.write(path, pruneUnusedImports(ts, resolved, imported));
   return true;
 }
 

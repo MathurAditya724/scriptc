@@ -23,10 +23,11 @@
  * rewritten file imports the key.
  * The group's file must already exist and hold everything else (header,
  * setup function); the tool appends the interface and key to it. */
-import { existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
+import { confine } from "./confine.mjs";
 
 const [command, configPath, ...flags] = process.argv.slice(2);
 if (command !== "apply") throw new Error("usage: move-state.mjs apply <config.json>");
@@ -41,6 +42,9 @@ const require = createRequire(join(toolsDir, "package.json"));
 const ts = require("typescript");
 const modulePath = join(repo, config.module);
 const dir = join(repo, config.dir);
+// Every read and write stays inside the checkout, or for the templates, the
+// config's directory (confine.mjs).
+const checkout = confine(repo);
 
 // Adds an import line after the file's first block of imports (up to a
 // blank line or other code).
@@ -56,6 +60,7 @@ const addImport = (text, line) => {
   return text.slice(0, at) + line + "\n" + text.slice(at);
 };
 const configDir = dirname(resolve(configPath));
+const configFiles = confine(configDir);
 // The names the class's instance goes by in the directory's sources.
 const receivers = config.receivers ?? ["this", "emitter"];
 const touched = new Set();
@@ -63,11 +68,11 @@ const touched = new Set();
 // branch already has the file).
 for (const [file, template] of Object.entries(config.create ?? {})) {
   const path = join(dir, file);
-  if (existsSync(path)) continue;
-  writeFileSync(path, readFileSync(join(configDir, template), "utf8"));
+  if (checkout.exists(path)) continue;
+  checkout.write(path, configFiles.read(join(configDir, template)));
   touched.add(path);
 }
-let moduleText = readFileSync(modulePath, "utf8");
+let moduleText = checkout.read(modulePath);
 for (const group of config.groups) {
   const sf = ts.createSourceFile(modulePath, moduleText, ts.ScriptTarget.Latest, true);
   const cls = sf.statements.find((s) => ts.isClassDeclaration(s) && s.name?.text === config.class);
@@ -124,22 +129,22 @@ for (const group of config.groups) {
     `export interface ${group.interfaceName ?? iName} {\n${iface.join("\n")}\n}\n\n` +
     `export const ${group.key} = defineModuleState<${group.interfaceName ?? iName}>(() => ({\n${factory.join("\n")}\n}));\n`;
   const groupPath = join(dir, group.file);
-  let groupText = readFileSync(groupPath, "utf8");
+  let groupText = checkout.read(groupPath);
   if (!groupText.includes('from "./emitter-state.js"'))
     groupText = addImport(groupText, `import { defineModuleState } from "./emitter-state.js";`);
   groupText = groupText.trimEnd() + "\n" + stateText;
-  writeFileSync(groupPath, groupText);
+  checkout.write(groupPath, groupText);
   touched.add(groupPath);
   group.rename = group.present.length
     ? new RegExp(`(?<![\\w$.])(${receivers.join("|")})\\.(${group.present.join("|")})\\b`, "g")
     : null;
 }
-writeFileSync(modulePath, moduleText);
+checkout.write(modulePath, moduleText);
 
 // Rewrite accesses across the directory.
-for (const file of readdirSync(dir).filter((f) => f.endsWith(".ts"))) {
+for (const file of checkout.list(dir).filter((f) => f.endsWith(".ts"))) {
   const path = join(dir, file);
-  let text = path === modulePath ? moduleText : readFileSync(path, "utf8");
+  let text = path === modulePath ? moduleText : checkout.read(path);
   let changed = false;
   for (const group of config.groups) {
     if (!group.rename) continue;
@@ -171,7 +176,7 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith(".ts"))) {
     }
   }
   if (changed) {
-    writeFileSync(path, text);
+    checkout.write(path, text);
     touched.add(path);
   }
 }
@@ -182,7 +187,7 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith(".ts"))) {
 let skipped = 0;
 for (const r of config.replacements ?? []) {
   const path = join(dir, r.file);
-  const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const text = checkout.exists(path) ? checkout.read(path) : "";
   const count = text.split(r.find).length - 1;
   if (count !== (r.count ?? 1)) {
     console.warn(
@@ -191,7 +196,7 @@ for (const r of config.replacements ?? []) {
     skipped++;
     continue;
   }
-  writeFileSync(path, text.split(r.find).join(r.replace));
+  checkout.write(path, text.split(r.find).join(r.replace));
   touched.add(path);
 }
 const oxfmt = join(toolsDir, "node_modules/.bin/oxfmt");

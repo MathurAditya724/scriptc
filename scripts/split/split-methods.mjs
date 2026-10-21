@@ -20,10 +20,11 @@
  * reference from the module's scope, with paths rebased; the module imports
  * the functions and drops imports nothing uses anymore. Names the config
  * lists but the class lacks are skipped. */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, posix } from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
+import { confine, confineHost } from "./confine.mjs";
 
 const [command, configPath, ...flags] = process.argv.slice(2);
 if (command !== "apply") throw new Error("usage: split-methods.mjs apply <config.json>");
@@ -33,6 +34,8 @@ const flag = (name) => {
   return i >= 0 ? flags[i + 1] : undefined;
 };
 const repo = resolve(flag("--repo") ?? process.cwd());
+// Every read and write in the checkout stays inside it (confine.mjs).
+const checkout = confine(repo);
 const toolsDir = resolve(flag("--tools") ?? process.cwd());
 const require = createRequire(join(toolsDir, "package.json"));
 const ts = require("typescript");
@@ -42,8 +45,8 @@ const className = config.class;
 // The host parameter's name; a moved body that already uses it is refused.
 const hostName = config.hostName ?? "emitter";
 
-const text = readFileSync(modulePath, "utf8");
-const host = ts.createCompilerHost({ noEmit: true });
+const text = checkout.read(modulePath);
+const host = confineHost(ts.createCompilerHost({ noEmit: true }), checkout);
 const sf = ts.createSourceFile(modulePath, text, ts.ScriptTarget.Latest, true);
 const realGet = host.getSourceFile;
 host.getSourceFile = (f, l, ...r) =>
@@ -294,9 +297,9 @@ const renderImports = (entry) => {
 for (const [file, entry] of files) {
   if (!entry.decls.length) continue;
   const path = join(moduleDir, file);
-  if (existsSync(path)) throw new Error(`${file} exists`);
+  if (checkout.exists(path)) throw new Error(`${file} exists`);
   const header = config.headers?.[file];
-  writeFileSync(
+  checkout.write(
     path,
     [...(header ? [header] : []), ...renderImports(entry), "", entry.decls.join("\n\n"), ""].join(
       "\n",
@@ -336,7 +339,7 @@ out += text.slice(cursor);
 
 // Re-analyze the rewritten module for unused imports, then add the new ones.
 const sf2 = ts.createSourceFile(modulePath, out, ts.ScriptTarget.Latest, true);
-const host2 = ts.createCompilerHost({ noEmit: true });
+const host2 = confineHost(ts.createCompilerHost({ noEmit: true }), checkout);
 const get2 = host2.getSourceFile;
 host2.getSourceFile = (f, l, ...r) =>
   resolve(f) === modulePath ? sf2 : get2.call(host2, f, l, ...r);
@@ -403,7 +406,7 @@ const add = [...moduleNeeds].map(
 );
 const at = lastImport ? lastImport.end : 0;
 final = final.slice(0, at) + (add.length ? "\n" + add.join("\n") : "") + final.slice(at);
-writeFileSync(modulePath, final);
+checkout.write(modulePath, final);
 // Format what changed with the tools checkout's oxfmt, so the split and
 // every rehome of it are formatted the same way.
 const touched = [
