@@ -572,6 +572,30 @@ export class AstNode {
     return token?.kind === SyntaxKind.QuestionToken ? token : undefined;
   }
 
+  // A write target keeps its parentheses and non-null assertions in the
+  // tree; with AstFileOptions.writeTargets these views return the target
+  // without them.
+  get initializer(): AstNode | undefined {
+    const initializer = this.childNode("initializer");
+    return initializer !== undefined && this.file.writeTargets && writesTarget(this, "initializer")
+      ? unwrapTarget(initializer)
+      : initializer;
+  }
+
+  get left(): AstNode | undefined {
+    const left = this.childNode("left");
+    return left !== undefined && this.file.writeTargets && writesTarget(this, "left")
+      ? unwrapTarget(left)
+      : left;
+  }
+
+  get operand(): AstNode | undefined {
+    const operand = this.childNode("operand");
+    return operand !== undefined && this.file.writeTargets && writesTarget(this, "operand")
+      ? unwrapTarget(operand)
+      : operand;
+  }
+
   // BEGIN GENERATED CHILD GETTERS
   // Generated from typescript@7.0.2; run scripts/generate-ts7-ast-schema.mjs.
   get argument(): AstNode | undefined {
@@ -700,23 +724,11 @@ export class AstNode {
   get indexType(): AstNode | undefined {
     return this.childNode("indexType");
   }
-  get initializer(): AstNode | undefined {
-    const initializer = this.childNode("initializer");
-    return initializer !== undefined && this.file.writeTargets && writesTarget(this, "initializer")
-      ? unwrapTarget(initializer)
-      : initializer;
-  }
   get jsdocPropertyTags(): AstNode | undefined {
     return this.childNode("jsdocPropertyTags");
   }
   get label(): AstNode | undefined {
     return this.childNode("label");
-  }
-  get left(): AstNode | undefined {
-    const left = this.childNode("left");
-    return left !== undefined && this.file.writeTargets && writesTarget(this, "left")
-      ? unwrapTarget(left)
-      : left;
   }
   get literal(): AstNode | undefined {
     return this.childNode("literal");
@@ -756,12 +768,6 @@ export class AstNode {
   }
   get openingFragment(): AstNode | undefined {
     return this.childNode("openingFragment");
-  }
-  get operand(): AstNode | undefined {
-    const operand = this.childNode("operand");
-    return operand !== undefined && this.file.writeTargets && writesTarget(this, "operand")
-      ? unwrapTarget(operand)
-      : operand;
   }
   get operatorToken(): AstNode | undefined {
     return this.childNode("operatorToken");
