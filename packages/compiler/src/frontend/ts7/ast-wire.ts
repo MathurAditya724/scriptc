@@ -32,6 +32,16 @@ import {
   astChildOrder,
 } from "./ast-schema.generated.js";
 
+/** A node table read as a preorder tree (AstWireFile.preorder): each
+ * node's kind, with PREORDER_LIST for lists, and the end of its subtree. */
+export interface AstPreorder {
+  readonly kinds: Uint16Array;
+  readonly ends: Uint32Array;
+}
+
+/** The kind AstPreorder records for a list (KIND_NODE_LIST on the wire). */
+export const PREORDER_LIST = 0xffff;
+
 export interface AstFileReference {
   pos: number;
   end: number;
@@ -125,6 +135,7 @@ export class AstWireFile {
   private readonly words: Uint32Array;
   /** Decoded strings by string word index / 2. */
   private readonly stringCache: (string | undefined)[];
+  private preorderTree: AstPreorder | null | undefined;
 
   constructor(private readonly bytes: Uint8Array) {
     astBounds(bytes, 0, HEADER_SIZE);
@@ -315,6 +326,66 @@ export class AstWireFile {
     if (children.length !== count)
       throw new AstDecodeError("node list length does not match its links");
     return children;
+  }
+
+  /** The node table as a preorder tree, built on first use: every node's
+   * subtree is the index range up to `ends[index]`, and `kinds[index]` is its
+   * kind. The pass checks the links the linked walk checks one child at a
+   * time: each node's parent is open, the first child follows its parent,
+   * each sibling link names the end of the previous sibling's subtree, a
+   * last child has no sibling link, and each list holds `data` nodes and no
+   * lists. null when any check fails; walks then follow the links and fail
+   * where they read the inconsistent node. */
+  preorder(): AstPreorder | null {
+    if (this.preorderTree === undefined) this.preorderTree = this.buildPreorder();
+    return this.preorderTree;
+  }
+
+  private buildPreorder(): AstPreorder | null {
+    const count = this.nodeCount;
+    const words = this.words;
+    const kinds = new Uint16Array(count);
+    const ends = new Uint32Array(count);
+    // The nodes whose subtrees contain the current index, innermost last,
+    // with the number of children each has so far.
+    const open: number[] = [1];
+    const children: number[] = [0];
+    const rootKind = words[NODE_WORDS + WORD_KIND]!;
+    if (rootKind >= PREORDER_LIST) return null;
+    kinds[1] = rootKind;
+    for (let index = 2; index <= count; index++) {
+      const word = index * NODE_WORDS;
+      const parent = index < count ? words[word + WORD_PARENT]! : 0;
+      let previous = 0;
+      while (open.length > 0 && open[open.length - 1] !== parent) {
+        const closed = open.pop()!;
+        const closedChildren = children.pop()!;
+        ends[closed] = index;
+        const closedWord = closed * NODE_WORDS;
+        if (kinds[closed] === PREORDER_LIST && closedChildren !== words[closedWord + WORD_DATA]!)
+          return null;
+        if (open.length > 0 && open[open.length - 1] === parent) previous = closed;
+        else if (closed !== 1 && words[closedWord + WORD_NEXT]! !== 0) return null;
+      }
+      if (index === count) break;
+      if (open.length === 0 || parent >= index) return null;
+      if (
+        previous !== 0 ? words[previous * NODE_WORDS + WORD_NEXT]! !== index : index !== parent + 1
+      )
+        return null;
+      const kind = words[word + WORD_KIND]!;
+      if (kind === KIND_NODE_LIST) {
+        if (kinds[parent] === PREORDER_LIST) return null;
+        kinds[index] = PREORDER_LIST;
+      } else {
+        if (kind >= PREORDER_LIST) return null;
+        kinds[index] = kind;
+      }
+      children[children.length - 1] = children[children.length - 1]! + 1;
+      open.push(index);
+      children.push(0);
+    }
+    return { kinds, ends };
   }
 
   /** The semantic walk flattens lists and omits attached JSDoc trees.

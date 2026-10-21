@@ -47,6 +47,8 @@ import {
 } from "./ast-guards.generated.js";
 import type { Ts7DiagnosticData as Diagnostic } from "./session-schema.generated.js";
 import { ModifierFlags, SyntaxKind } from "./enums.js";
+import { AstKind } from "./ast-schema.generated.js";
+import { PREORDER_LIST } from "./ast-wire.js";
 
 /* ---- everything 7 kept under the same name ---- */
 
@@ -101,7 +103,7 @@ export function forEachChild<T>(
   return node.forEachChild(cbNode, cbNodes);
 }
 
-/** Preorder walk over a whole subtree with an EXPLICIT stack. The idiomatic
+/** Preorder walk over a whole subtree without recursion. The idiomatic
  * recursive forEachChild visit costs two JS frames per AST level, so a
  * pathologically deep tree — the ~6500-term left-nested binary chain of the
  * binderBinaryExpressionStress corpus pair — overflows the stack as an ICE
@@ -110,8 +112,61 @@ export function forEachChild<T>(
  * detection) walk this way instead, so absurd nesting always reaches the
  * named fence. The callback may answer "skip" to leave a node's children
  * unvisited (scope and depth cut-offs — `depth` counts levels below the
- * root) or "stop" to end the walk early. */
+ * root) or "stop" to end the walk early.
+ *
+ * The wire stores nodes in preorder, so the walk visits the subtree's index
+ * range in order: it enters lists without a level of their own, and passes
+ * over attached JSDoc trees and skipped subtrees by their end index. A table
+ * that is not a checked preorder tree (AstWireFile.preorder) is walked
+ * through its links instead. */
 export function walkPreorder(
+  root: Node,
+  cb: (node: Node, depth: number) => void | "skip" | "stop",
+  kinds?: ReadonlySet<SyntaxKind>,
+): void {
+  const file = root.file;
+  const tree = file.wire.preorder();
+  if (tree === null) {
+    walkLinkedPreorder(root, cb, kinds);
+    return;
+  }
+  const nodeKinds = tree.kinds;
+  const ends = tree.ends;
+  const start = root.index;
+  const stop = ends[start]!;
+  // The subtree ends of the visited nodes that contain the current index.
+  const open: number[] = [];
+  let index = start;
+  while (index < stop) {
+    const kind = nodeKinds[index]!;
+    if (kind === PREORDER_LIST) {
+      index++;
+      continue;
+    }
+    if (
+      kind === AstKind.JSDoc &&
+      index !== start &&
+      nodeKinds[file.wire.parent(index)] !== PREORDER_LIST
+    ) {
+      index = ends[index]!;
+      continue;
+    }
+    while (open.length > 0 && open[open.length - 1]! <= index) open.pop();
+    const node = kinds === undefined || kinds.has(kind) ? file.node(index) : undefined;
+    const verdict = node === undefined ? undefined : cb(node, open.length);
+    if (verdict === "stop") return;
+    if (verdict === "skip") {
+      index = ends[index]!;
+      continue;
+    }
+    open.push(ends[index]!);
+    index++;
+  }
+}
+
+/** walkPreorder through the sibling and parent links, with an explicit
+ * stack. */
+function walkLinkedPreorder(
   root: Node,
   cb: (node: Node, depth: number) => void | "skip" | "stop",
   kinds?: ReadonlySet<SyntaxKind>,
