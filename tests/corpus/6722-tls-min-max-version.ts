@@ -4,7 +4,8 @@
 // ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION, a client range with neither TLSv1.2
 // nor TLSv1.3 fails with ERR_SSL_NO_PROTOCOLS_AVAILABLE once the handshake
 // starts, and an invalid version or a secureProtocol conflict throws Node's
-// TypeError from tls.connect.
+// TypeError from tls.connect and tls.createServer. null selects the default
+// bound, as undefined does.
 import * as tls from "node:tls";
 import { readFileSync } from "node:fs";
 
@@ -16,6 +17,17 @@ const key = readFileSync(dir + "localhost-key.pem");
 const upTo12 = tls.createServer({ cert, key, maxVersion: "TLSv1.2" }, (s) => s.end(`server:${s.getProtocol()}`));
 const from13 = tls.createServer({ cert, key, minVersion: "TLSv1.3" }, (s) => s.end(`server:${s.getProtocol()}`));
 const any = tls.createServer({ cert, key }, (s) => s.end(`server:${s.getProtocol()}`));
+const nullBounds = tls.createServer({ cert, key, minVersion: null as any, maxVersion: null as any }, (s) =>
+  s.end(`server:${s.getProtocol()}`),
+);
+for (const maxVersion of [3, "TLSv9"]) {
+  try {
+    tls.createServer({ cert, key, maxVersion: maxVersion as any });
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    console.log("createServer", err.name, err.code, err.message);
+  }
+}
 
 function listen(server: tls.Server): Promise<number> {
   return new Promise<number>((resolve) =>
@@ -74,12 +86,16 @@ async function main(): Promise<void> {
   await attempt("max-1.1", pAny, { maxVersion: "TLSv1.1" });
   await attempt("min-above-max", pAny, { minVersion: "TLSv1.3", maxVersion: "TLSv1.2" });
   await attempt("null-min", pAny, { minVersion: null });
+  const pNull = await listen(nullBounds);
+  await attempt("null-server", pNull, {});
+  await attempt("null-both", pNull, { minVersion: null, maxVersion: null });
   await attempt("invalid-min", pAny, { minVersion: "TLSv9" });
   await attempt("invalid-max", pAny, { maxVersion: 3 });
   await attempt("conflict", pAny, { minVersion: "TLSv1.2", secureProtocol: "TLSv1_2_method" });
   upTo12.close();
   from13.close();
   any.close();
+  nullBounds.close();
 }
 
 void main();

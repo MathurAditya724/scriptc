@@ -1813,38 +1813,11 @@ static bool scr_tls_opts_validate(const ScrDyn *opts) {
       return false;
     }
   }
-  static const char *const VERSION_OPTS[] = { "minVersion", "maxVersion", NULL };
-  for (size_t i = 0; VERSION_OPTS[i] != NULL; i++) {
-    const ScrDyn *v = scr_dyn_obj_get(opts, VERSION_OPTS[i], strlen(VERSION_OPTS[i]));
-    if (v == NULL || v->kind == SCR_DYN_UNDEF) continue;
-    bool valid = false;
-    if (v->kind == SCR_DYN_STR) {
-      static const char *const KNOWN[] = { "TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3", NULL };
-      for (size_t k = 0; KNOWN[k] != NULL; k++) {
-        if (v->v.str->len == strlen(KNOWN[k]) && memcmp(v->v.str->data, KNOWN[k], v->v.str->len) == 0) {
-          valid = true;
-          break;
-        }
-      }
-    }
-    if (!valid) {
-      /* %j: strings render JSON-quoted, everything else inspect-lite. */
-      char rendered[96];
-      if (v->kind == SCR_DYN_STR) {
-        snprintf(rendered, sizeof rendered, "\"%.*s\"",
-                 (int)(v->v.str->len < 80 ? v->v.str->len : 80), v->v.str->data);
-      } else {
-        /* %j over non-strings: JSON.stringify's scalar renderings. */
-        char lite[64];
-        snprintf(rendered, sizeof rendered, "%s", scr_dyn_inspect_lite(v, lite, sizeof lite));
-      }
-      char msg[192];
-      int len = snprintf(msg, sizeof msg, "%s is not a valid %s TLS protocol version",
-                         rendered, VERSION_OPTS[i][2] == 'n' ? "minimum" : "maximum");
-      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_TLS_INVALID_PROTOCOL_VERSION");
-      return false;
-    }
-  }
+  /* Node's toV: null and undefined select the default bound. */
+  int version;
+  if (!scr_tls_version_dyn(scr_dyn_obj_get(opts, "minVersion", 10), "minimum", 12, &version) ||
+      !scr_tls_version_dyn(scr_dyn_obj_get(opts, "maxVersion", 10), "maximum", 13, &version))
+    return false;
   static const char *const NUM_OPTS[] = { "handshakeTimeout", "keepAliveInitialDelay", NULL };
   for (size_t i = 0; NUM_OPTS[i] != NULL; i++) {
     const ScrDyn *v = scr_dyn_obj_get(opts, NUM_OPTS[i], strlen(NUM_OPTS[i]));
