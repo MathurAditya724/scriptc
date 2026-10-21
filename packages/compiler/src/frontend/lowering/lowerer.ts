@@ -5414,7 +5414,7 @@ export class Lowerer {
      * missing. */
     const scanRecordPattern = (
       name: ts.ObjectBindingPattern,
-      init: ts.Expression,
+      init: ts.Node,
       sourceType: IrType | null = this.mapTypeOf(this.typeOf(init)),
     ): boolean => {
       if (sourceType?.kind !== "record") return false;
@@ -6056,6 +6056,7 @@ export class Lowerer {
       ts.walkPreorder(sf, (node) => {
         if (
           ts.isVariableDeclaration(node) ||
+          (ts.isParameter(node) && ts.isObjectBindingPattern(node.name)) ||
           ts.isBinaryExpression(node) ||
           ts.isCallExpression(node) ||
           ts.isNewExpression(node) ||
@@ -6077,6 +6078,12 @@ export class Lowerer {
         if (elementStates.scan(node)) changed = true;
         if (ts.isForOfStatement(node))
           presentLoops.set(node, !elementStates.loopMayYieldUndefined(node));
+        // A parameter pattern reads its argument like a declaration's
+        // pattern reads its initializer.
+        if (ts.isParameter(node) && ts.isObjectBindingPattern(node.name)) {
+          if (scanRecordPattern(node.name, node, this.mapTypeOf(this.typeOf(node.name))))
+            changed = true;
+        }
         if (ts.isVariableDeclaration(node)) {
           if (node.initializer) {
             const result = optionalPrimitiveResultType(node.initializer);

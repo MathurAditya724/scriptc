@@ -62,3 +62,14 @@ const {
   limits: { [missingKey]: defaultedLimit } = {},
 } = nestedConfig;
 console.log(nestedLimit, defaultedLimit === undefined);
+
+// Parameter patterns return a missing entry as undefined.
+function pickWeight(name: string, { [name]: weight }: Record<string, number>) {
+  return weight;
+}
+const pickArrow = (name: string, { [name]: weight }: Record<string, number>) => weight;
+function pickNested(name: string, { limits: { [name]: limit } }: { limits: Record<string, number> }) {
+  return limit;
+}
+console.log(pickWeight("a", weights), pickWeight(missingKey, weights));
+console.log(pickArrow(missingKey, weights) === undefined, pickNested(missingKey, nestedConfig));
