@@ -2529,6 +2529,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "child.onSpawn": { argTypes: [CHILD_T, null], result: VOID },
   /** Rest listeners use the checked function bridge to pack event arguments. */
   "child.onDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
+  // Own properties JavaScript adds to children (handle-properties.ts).
+  "child.propsInstall": { argTypes: [], result: VOID },
+  "child.propsDefine": { argTypes: [DYN, DYN, DYN], result: DYN },
+  "child.propsDescriptor": { argTypes: [DYN, DYN], result: DYN },
+  "child.propsResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "child.propsOnDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
   "process.connected": { argTypes: [], result: BOOL },
   /** Whether this fork child opened its channel; part of process.send's
    * presence in programs with fork targets. Never throws. */

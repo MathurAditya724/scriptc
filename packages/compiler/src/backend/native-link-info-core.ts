@@ -46,6 +46,9 @@ export interface NativeLinkFeatures {
   /** Checked-dynamic stream slots: the scr_stream_dyn.c unit. Absent (not
    * false) for programs without them. */
   streamDyn?: boolean;
+  /** Own properties JavaScript adds to children: scr_dyn_handle_props.c.
+   * Absent (false) for programs without them. */
+  handleProps?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;

@@ -135,6 +135,7 @@ import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optio
 import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
 import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
 import { guardClassAttributeWrites } from "./class-attributes.js";
+import { applyHandleProperties } from "./handle-properties.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
@@ -7171,6 +7172,7 @@ export class Lowerer {
     finalizePrivateBrands(this, functions);
     trackClassFieldCreation(this, functions);
     guardClassAttributeWrites(this, functions);
+    applyHandleProperties(this, functions);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the

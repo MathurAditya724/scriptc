@@ -33,6 +33,9 @@ export const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // DEP0040 rides the dyn-async unit's warning machinery.
   "async.awaitDyn",
+  // The child property table adopts thenables through the dyn-async unit.
+  "child.propsInstall",
+  "child.propsResolve",
   "crypto.native",
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
@@ -235,6 +238,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.builtinFunction",
   "dyn.builtinMethod",
   "dyn.defineProperty",
+  "child.propsDefine",
   "dyn.defineProps",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
@@ -597,6 +601,8 @@ const RUNTIME_FEATURE_RULES = {
   streamDyn: rule({
     fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
   }),
+  /** Own properties JavaScript adds to children (scr_dyn_handle_props.c). */
+  handleProps: rule({ fns: ["child.propsInstall"] }),
   /** Fixed-width Buffer read/write methods called on checked-dynamic
    * values (scr_bytes_dyn.c). */
   dynBufferNum: rule({
@@ -794,6 +800,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdioExtended: false,
     stream: false,
     streamDyn: false,
+    handleProps: false,
     dynBufferNum: false,
     builtinValues: false,
     symbol: false,

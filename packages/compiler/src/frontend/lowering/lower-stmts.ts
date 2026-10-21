@@ -3,6 +3,7 @@ import { declaredMemberOf, isPromisePrototypeRead } from "./expressions/property
 import { hostsAll } from "./expressions/hosted-narrowing.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream } from "./dyn-streams.js";
+import { lowerChildPropertyWrite } from "./handle-properties.js";
 import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
@@ -7702,6 +7703,8 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
               loc,
             };
           }
+          if (recv?.type.kind === "child" && isJsSourceFile(ts.getSourceFileOfNode(expr)))
+            return lowerChildPropertyWrite(lowerer, recv, expr.left, expr.right, locOf(expr));
           // `err.code = v` on an Error value (`err as Error & { code?:
           // string }`): typed reads come from the runtime error's code
           // slot, so the write lands there. A value that is not statically

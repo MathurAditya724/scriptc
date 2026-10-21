@@ -116,6 +116,8 @@ export interface CcOptions {
   /** Checked-dynamic stream slots (stream.dynNative / stream.pipeDyn):
    * compiles scr_stream_dyn.c. */
   streamDyn?: boolean;
+  /** Own properties JavaScript adds to children: compiles scr_dyn_handle_props.c. */
+  handleProps?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;

@@ -163,6 +163,7 @@ import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/com
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
 import { keyedFieldRead } from "./keyed-field-targets.js";
 import { promisePrototypeValue } from "../thenables.js";
+import { lowerChildPropertyRead } from "../handle-properties.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -1386,6 +1387,8 @@ export function lowerPropertyAccessExpr(
       expr,
     );
   }
+  const childProperty = lowerChildPropertyRead(lowerer, expr);
+  if (childProperty) return childProperty;
   lowerer.unsupported(
     "SC1090",
     expr,

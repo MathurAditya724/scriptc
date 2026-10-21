@@ -176,6 +176,7 @@ import {
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { lowerChildMethodValue, lowerChildPropertyCall } from "./handle-properties.js";
 import { classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import { structuralReadType } from "./class-unions.js";
@@ -1463,6 +1464,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerCipherMethodCall(lowerer, expr, expr.expression) ??
       lowerFileHandleMethodCall(lowerer, expr, expr.expression) ??
       lowerDirMethodCall(lowerer, expr, expr.expression) ??
+      lowerChildPropertyCall(lowerer, expr, expr.expression) ??
       lowerer.lowerChildMethodCall(expr, expr.expression) ??
       // Piped child-output stream receivers — on/once("data" | "end").
       lowerChildStreamMethodCall(lowerer, expr, expr.expression) ??
@@ -1645,6 +1647,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         const t = ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr);
         if (t) return nsUndefRead(lowerer, ambientRoot.text, expr, t);
       }
+    }
+    {
+      const childCall = lowerChildPropertyCall(lowerer, expr, expr.expression, true);
+      if (childCall) return childCall;
     }
     // The lib fence's METHOD-CALL chokepoint: a stdlib-declared member
     // that every lowering above declined — an unlowered member
@@ -9410,6 +9416,19 @@ function lowerObjLitGenericMethodCall(
         return {
           kind: "dynInvoke",
           recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
+          method: name,
+          calleeName: ts.getTextOfNode(access),
+          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          type: DYN,
+          loc,
+        };
+      }
+      const childMethod = lowerChildMethodValue(lowerer, access.expression);
+      if (childMethod && !call.arguments.nodes.some(ts.isSpreadElement)) {
+        const loc = locOf(call);
+        return {
+          kind: "dynInvoke",
+          recv: childMethod,
           method: name,
           calleeName: ts.getTextOfNode(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),

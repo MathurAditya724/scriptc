@@ -67,6 +67,7 @@ export interface EarlyExecutableNativeFeatures {
   dynAsync: boolean;
   dynTier?: boolean;
   streamDyn?: boolean;
+  handleProps?: boolean;
   eventsOnceSignal?: boolean;
   dynBufferNum?: boolean;
   builtinValues?: boolean;
