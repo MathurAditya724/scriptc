@@ -455,6 +455,9 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // Polyfill packages that ARE a Node builtin compile as the builtin.
           const aliased = original === null ? null : services.builtinAliasRequires(original, path);
           if (aliased !== null) original = aliased;
+          // tsc's interop helpers around builtin modules.
+          const tscHelpers = original === null ? null : services.tscBuiltinImports(original, path);
+          if (tscHelpers !== null) original = tscHelpers;
           // A module exporting one of its functions reaches its members
           // through that function.
           const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
@@ -469,6 +472,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           if (exportsVar !== null) original = exportsVar;
           const respelled =
             split !== null ||
+            tscHelpers !== null ||
             esm !== null ||
             aliased !== null ||
             fnExports !== null ||
