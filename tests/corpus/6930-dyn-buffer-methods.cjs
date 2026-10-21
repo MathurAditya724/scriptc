@@ -143,3 +143,125 @@ console.log(box.text.indexOf("an"), box.text.lastIndexOf("an"), box.text.include
 console.log(box.list.indexOf(2), box.list.includes(4), box.list.fill(0, 1).join(","), box.list.toString());
 console.log(Array.from(box.bytes.fill(9, 2)), box.bytes.toString());
 console.log(box.sink.write("x"), box.sink.written, box.sink.toString(1, 2));
+
+// fill with other ArrayBufferViews repeats their raw bytes; an empty view is
+// ERR_INVALID_ARG_VALUE with Node's inspect of the view.
+const tm = (name, f) => {
+  try {
+    const v = f();
+    console.log(name, Buffer.isBuffer(v) ? `<${v.toString("hex")}>` : JSON.stringify(v));
+  } catch (e) {
+    console.log(name, e.name, e.code, JSON.stringify(e.message));
+  }
+};
+function Held(bytes) {
+  this.b = bytes;
+}
+const held = (bytes) => new Held(bytes).b;
+const filled = (n) => held(Buffer.alloc(n));
+tm("fill Uint16Array", () => filled(6).fill(new Uint16Array([0x0102])));
+tm("fill DataView", () => filled(6).fill(new DataView(new Uint8Array([7, 8, 9]).buffer)));
+tm("fill DataView window", () => filled(6).fill(new DataView(new Uint8Array([1, 2, 3, 4]).buffer, 1, 2)));
+tm("fill Float64Array", () => filled(10).fill(new Float64Array([1])));
+tm("fill subarray", () => filled(6).fill(new Uint16Array([1, 2, 3]).subarray(1)));
+tm("fill Int8Array range", () => filled(6).fill(new Int8Array([-1, 2]), 1, 4));
+tm("fill empty Uint16Array", () => filled(6).fill(new Uint16Array(0)));
+tm("fill empty Uint8Array", () => filled(6).fill(new Uint8Array(0)));
+for (const [size, offset] of [[0, 0], [1, 1], [6, 6], [7, 7], [8, 8], [120, 3], [101, 101]])
+  tm(`fill empty DataView ${size}/${offset}`, () => filled(6).fill(new DataView(new ArrayBuffer(size), offset, 0)));
+tm("fill empty DataView over bytes", () => filled(6).fill(new DataView(new Uint8Array(200).fill(171).buffer, 7, 0)));
+
+// Buffer needles under utf16le search whole 2-byte units.
+const units = held(Buffer.from("abcabc", "utf16le"));
+const split = held(Buffer.from([0x61, 0x00, 0x62, 0x00, 0x00, 0x62, 0x00, 0x63]));
+const N = (bytes) => Buffer.from(bytes);
+tm("indexOf utf16le needle", () => [split.indexOf(N([0x62, 0x00]), 0, "ucs2"), split.indexOf(N([0x62, 0x00]))]);
+tm("indexOf utf16le odd position", () => [
+  split.indexOf(N([0x00, 0x62]), 0, "ucs2"),
+  split.indexOf(N([0x00, 0x62]), 0, "UTF-16LE"),
+  split.indexOf(N([0x00, 0x62])),
+]);
+tm("lastIndexOf utf16le needle", () => [
+  units.lastIndexOf(N([0x62, 0x00]), undefined, "ucs2"),
+  split.lastIndexOf(N([0x00, 0x62]), undefined, "ucs2"),
+  ...[5, 3, 2, 1, -100, 100].map((at) => split.lastIndexOf(N([0x62, 0x00]), at, "ucs2")),
+]);
+tm("indexOf utf16le offsets", () => [1, 2, 3, -5, 7, 2.9].map((at) => split.indexOf(N([0x62, 0x00]), at, "ucs2")));
+tm("indexOf utf16le short needles", () => [
+  split.indexOf(N([0x62]), 0, "ucs2"),
+  held(N([0x62])).indexOf(N([0x62]), 0, "ucs2"),
+  split.indexOf(Buffer.alloc(0), 3, "ucs2"),
+  split.indexOf(Buffer.alloc(0), 30, "ucs2"),
+  split.indexOf(N([0x62, 0, 0]), 0, "ucs2"),
+]);
+tm("indexOf utf16le odd lengths", () => [
+  held(N([1, 0, 2, 0, 3])).indexOf(N([2, 0, 3]), 0, "ucs2"),
+  held(N([1, 0, 2, 0, 3, 0])).indexOf(N([2, 0, 3]), 0, "ucs2"),
+  held(N([1, 2, 1, 2, 1, 2])).indexOf(N([2, 1, 2]), 0, "ucs2"),
+  held(N([1, 0, 2, 0, 3])).lastIndexOf(N([3]), undefined, "ucs2"),
+  held(N([0, 2, 0, 2, 0])).lastIndexOf(N([2, 0]), undefined, "ucs2"),
+]);
+tm("indexOf buffer needle other encodings", () => [
+  split.indexOf(N([0x62, 0x00]), 0, "nope"),
+  split.indexOf(N([0x00, 0x62]), 0, "nope"),
+  split.indexOf(N([0x00, 0x62]), 0, "latin1"),
+]);
+tm("indexOf utf16le strings", () => [
+  split.indexOf("b", 0, "ucs2"),
+  units.lastIndexOf("b", undefined, "ucs2"),
+  units.indexOf("b", 3, "ucs2"),
+  units.lastIndexOf("b", 3, "ucs2"),
+  units.indexOf("", 3, "ucs2"),
+  units.indexOf("", 30, "ucs2"),
+  units.lastIndexOf("", 30, "ucs2"),
+  split.indexOf("戀", 0, "ucs2"),
+]);
+tm("includes utf16le needle", () => [split.includes(N([0x00, 0x62]), 0, "ucs2"), split.includes(N([0x62, 0x00]), 3, "ucs2")]);
+
+// toString windows with infinite and out-of-range bounds.
+const word = held(Buffer.from("hello"));
+tm("toString infinite bounds", () => [
+  word.toString("utf8", 1, Infinity),
+  word.toString("utf8", -Infinity, 2),
+  word.toString("utf8", Infinity),
+  word.toString("utf8", NaN, 3),
+  word.toString("utf8", 1e300, 2),
+  word.toString("utf8", 1, 1e300),
+  word.toString("utf8", -1e300, 1e300),
+  word.toString("utf8", 0, -Infinity),
+  word.toString("utf8", 2, NaN),
+  word.toString("utf8", 0.5, 4.5),
+  word.toString("hex", -0.5, -0),
+  word.toString("latin1", 4.9),
+  word.toString(undefined, undefined, Infinity),
+]);
+
+// The same searches and windows on Buffers the compiler types statically.
+const typed = Buffer.from([0x61, 0x00, 0x62, 0x00, 0x00, 0x62, 0x00, 0x63]);
+const typedUnits = Buffer.from("abcabc", "utf16le");
+console.log(
+  "typed utf16le",
+  typed.indexOf(Buffer.from([0x00, 0x62]), 0, "ucs2"),
+  Buffer.from([0x62]).indexOf(Buffer.from([0x62]), 0, "ucs2"),
+  typed.lastIndexOf(Buffer.from([0x62, 0x00]), 5, "ucs2"),
+  typed.indexOf(Buffer.from([0x62, 0x00]), 3, "ucs2"),
+  typed.includes(Buffer.from([0x00, 0x62]), 0, "utf16le"),
+  typed.indexOf("b", 0, "ucs2"),
+  typedUnits.lastIndexOf("b", 100, "ucs2"),
+  typedUnits.lastIndexOf("b", 3, "ucs2"),
+  typedUnits.indexOf("", 30, "ucs2"),
+  typedUnits.indexOf("b", 1e300, "ucs2"),
+  typedUnits.indexOf("c", -1e300, "ucs2"),
+);
+const typedWord = Buffer.from("hello");
+console.log(
+  "typed windows",
+  JSON.stringify([
+    typedWord.toString("utf8", 1, Infinity),
+    typedWord.toString("utf8", -Infinity, 2),
+    typedWord.toString("utf8", Infinity),
+    typedWord.toString("utf8", NaN, 3),
+    typedWord.toString("utf8", 1, 1e300),
+    typedWord.toString("hex", 0, -Infinity),
+  ]),
+);

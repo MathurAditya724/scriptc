@@ -187,6 +187,91 @@ static ScrStr *scr_bytes_dyn_quoted(const ScrStr *text) {
   return scr_jb_finish(&jb);
 }
 
+/* Appends Node's inspect of an ArrayBuffer at indentation level `indent`:
+ * the first 100 bytes as hex pairs, on one line when it fits the 80-column
+ * break length (reduceToSingleString), one entry per line otherwise. */
+static void scr_bytes_dyn_inspect_array_buffer(ScrJsonBuf *jb, const ScrBytes *owner, size_t indent) {
+  static const char digits[] = "0123456789abcdef";
+  size_t len = owner->len * scr_bytes_elem_size(owner->elem);
+  size_t shown = len < 100 ? len : 100;
+  ScrJsonBuf contents;
+  scr_jb_init(&contents);
+  scr_jb_puts(&contents, "[Uint8Contents]: <");
+  for (size_t i = 0; i < shown; i++) {
+    uint8_t byte;
+    scr_bytes_read(owner, i, &byte, 1);
+    if (i) scr_jb_putc(&contents, ' ');
+    scr_jb_putc(&contents, digits[byte >> 4]);
+    scr_jb_putc(&contents, digits[byte & 15]);
+  }
+  if (len > shown) {
+    char more[48];
+    snprintf(more, sizeof more, " ... %zu more byte%s", len - shown, len - shown > 1 ? "s" : "");
+    scr_jb_puts(&contents, more);
+  }
+  scr_jb_putc(&contents, '>');
+  ScrStr *first = scr_jb_finish(&contents);
+  char second[40];
+  int second_len = snprintf(second, sizeof second, "[byteLength]: %zu", len);
+  /* isBelowBreakLength with two entries, start = 2 + indentation + "ArrayBuffer {" + 10. */
+  size_t total = 2 + (2 + indent + 13 + 10) + first->len + (size_t)second_len;
+  if (total <= 80) {
+    scr_jb_puts(jb, "ArrayBuffer { ");
+    scr_jb_put_str(jb, first);
+    scr_jb_puts(jb, ", ");
+    scr_jb_puts(jb, second);
+    scr_jb_puts(jb, " }");
+  } else {
+    scr_jb_puts(jb, "ArrayBuffer {\n");
+    for (size_t i = 0; i < indent + 2; i++) scr_jb_putc(jb, ' ');
+    scr_jb_put_str(jb, first);
+    scr_jb_puts(jb, ",\n");
+    for (size_t i = 0; i < indent + 2; i++) scr_jb_putc(jb, ' ');
+    scr_jb_puts(jb, second);
+    scr_jb_putc(jb, '\n');
+    for (size_t i = 0; i < indent; i++) scr_jb_putc(jb, ' ');
+    scr_jb_putc(jb, '}');
+  }
+  scr_str_release(first);
+}
+
+/* ERR_INVALID_ARG_VALUE for an empty ArrayBufferView fill value: Node's
+ * inspect of the view (a Buffer, an empty typed array, or a DataView with
+ * its buffer), cut to 128 characters followed by "...". */
+static ScrStr *scr_bytes_dyn_empty_view_message(const ScrDyn *value) {
+  const ScrBytes *view = value->v.bytes;
+  ScrJsonBuf jb;
+  scr_jb_init(&jb);
+  if (value->buffer) {
+    scr_jb_puts(&jb, "<Buffer >");
+  } else if (!view->is_data_view) {
+    scr_jb_puts(&jb, scr_bytes_elem_name(view->elem));
+    scr_jb_puts(&jb, "(0) []");
+  } else {
+    const ScrBytes *owner = view->backing ? view->backing : view;
+    char line[64];
+    snprintf(line, sizeof line, "DataView {\n  [byteLength]: 0,\n  [byteOffset]: %zu,\n  [buffer]: ",
+             (size_t)(view->data - owner->data));
+    scr_jb_puts(&jb, line);
+    scr_bytes_dyn_inspect_array_buffer(&jb, owner, 2);
+    scr_jb_puts(&jb, "\n}");
+  }
+  ScrStr *inspected = scr_jb_finish(&jb);
+  ScrJsonBuf out;
+  scr_jb_init(&out);
+  scr_jb_puts(&out, "The argument 'value' is invalid. Received ");
+  if (inspected->len > 128) {
+    ScrStr *head = scr_str_new(inspected->data, 128);
+    scr_jb_put_str(&out, head);
+    scr_str_release(head);
+    scr_jb_puts(&out, "...");
+  } else {
+    scr_jb_put_str(&out, inspected);
+  }
+  scr_str_release(inspected);
+  return scr_jb_finish(&out);
+}
+
 /* buf.fill(value[, offset[, end]][, encoding]): buffer.js's _fill. A string
  * takes its encoding from the first string among offset and end; numbers and
  * other non-view values fill with ToUint32(value) & 255. Answers the receiver. */
@@ -244,9 +329,23 @@ static ScrDyn *scr_bytes_dyn_fill(ScrDyn *recv, ScrDyn *const *args, size_t argc
     /* An empty string fills with zeros. */
     out = text->len == 0 ? scr_bytes_fill_num(b, 0, 2, from, to) : scr_bytes_fill(b, pattern, 2, from, to);
     scr_bytes_release(pattern);
-  } else if (value->kind == SCR_DYN_BYTES && !value->v.bytes->is_data_view &&
-             value->v.bytes->elem == SCR_BYTES_U8) {
-    out = scr_bytes_fill(b, value->v.bytes, 2, from, to);
+  } else if (value->kind == SCR_DYN_BYTES) {
+    /* Any ArrayBufferView repeats its raw bytes: a byte view over the
+     * value's storage (a typed array of wider elements, or a DataView). */
+    const ScrBytes *view = value->v.bytes;
+    if (view->len == 0) {
+      ScrStr *message = scr_bytes_dyn_empty_view_message(value);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_INVALID_ARG_VALUE");
+      scr_str_release(message);
+      return NULL;
+    }
+    ScrBytes pattern = { .rc = 1,
+                         .len = view->len * scr_bytes_elem_size(view->elem),
+                         .elem = SCR_BYTES_U8,
+                         .data = view->data,
+                         .backing = NULL,
+                         .shared = view->shared };
+    out = scr_bytes_fill(b, &pattern, 2, from, to);
   } else {
     double n;
     if (!scr_dyn_number_coerce_js(value, &n)) return NULL;
@@ -256,21 +355,27 @@ static ScrDyn *scr_bytes_dyn_fill(ScrDyn *recv, ScrDyn *const *args, size_t argc
   scr_bytes_release(out);
   return scr_dyn_retain(recv);
 }
-/* buf.toString(encoding, start, end): the window clamps to
- * [0, length] with NaN as 0, an empty window answers "" before the
- * encoding resolves, and an undefined encoding is utf8. */
+/* buf.toString(encoding, start, end): the window clamps to [0, length]
+ * with NaN as 0 (infinite and out-of-range values included), an empty
+ * window answers "" before the encoding resolves, and an undefined encoding
+ * is utf8. */
 static ScrDyn *scr_bytes_dyn_to_string(ScrBytes *b, ScrDyn *const *args, size_t argc) {
   const ScrDyn *encoding = scr_bytes_dyn_arg(args, argc, 0);
   const ScrDyn *start = scr_bytes_dyn_arg(args, argc, 1);
   const ScrDyn *end = scr_bytes_dyn_arg(args, argc, 2);
-  double from = 0, to = (double)b->len;
+  const double len = (double)b->len;
+  double from = NAN, to = len;
   if (!scr_bytes_dyn_undef(start) && !scr_dyn_number_coerce_js(start, &from)) return NULL;
   if (!scr_bytes_dyn_undef(end) && !scr_dyn_number_coerce_js(end, &to)) return NULL;
-  if (from != from) from = 0;
-  if (to != to) to = 0;
-  from = trunc(from);
-  to = trunc(to);
-  if (from >= (double)b->len || to <= from || to <= 0) return scr_bytes_dyn_str("", 0);
+  /* `if (start <= 0) start = 0; else if (start >= len) return ''; else
+   * start = MathTrunc(start) || 0`, then `end > len` clamps to the length
+   * and other ends truncate (NaN as 0), so both stay within [0, len]. */
+  if (from <= 0) from = 0;
+  else if (from >= len) return scr_bytes_dyn_str("", 0);
+  else from = from == from ? trunc(from) : 0;
+  if (to > len) to = len;
+  else to = to == to ? trunc(to) : 0;
+  if (to <= from) return scr_bytes_dyn_str("", 0);
   ScrStr *enc = scr_bytes_dyn_undef(encoding) ? scr_str_new("utf8", 4) : scr_bytes_dyn_encoding(encoding);
   if (!enc) return NULL;
   ScrStr *text = scr_bytes_to_str_range(b, enc, from, to);
@@ -313,6 +418,23 @@ static ScrDyn *scr_bytes_dyn_copy(const ScrBytes *b, ScrDyn *const *args, size_t
   return scr_dyn_new_num(scr_bytes_copy_into(b, target->v.bytes, 3, offsets[0], offsets[1], offsets[2]));
 }
 
+/* Whether an encoding name is one of the utf16le spellings, in any ASCII case. */
+static bool scr_bytes_dyn_is_ucs2(const ScrStr *raw) {
+  static const char *const names[] = { "utf16le", "utf-16le", "ucs2", "ucs-2" };
+  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+    size_t n = strlen(names[i]);
+    if (raw->len != n) continue;
+    size_t k = 0;
+    for (; k < n; k++) {
+      char c = raw->data[k];
+      if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
+      if (c != names[i][k]) break;
+    }
+    if (k == n) return true;
+  }
+  return false;
+}
+
 /* buf.indexOf/lastIndexOf/includes(value[, byteOffset][, encoding]):
  * buffer.js's bidirectionalIndexOf. A string byteOffset is the encoding;
  * the offset clamps to the int32 range, and NaN searches everything. */
@@ -333,25 +455,30 @@ static ScrDyn *scr_bytes_dyn_index_of(const ScrBytes *b, ScrDyn *const *args, si
   if (value->kind == SCR_DYN_NUM) {
     found = scr_bytes_index_of_num(b, value->v.num, at, fwd);
   } else {
-    ScrStr *enc = NULL;
+    ScrStr *raw = NULL;
     if (!scr_bytes_dyn_undef(encoding)) {
-      ScrStr *raw = scr_dyn_string_coerce_js(encoding);
+      raw = scr_dyn_string_coerce_js(encoding);
       if (!raw) return NULL;
-      /* An unknown encoding throws for a string needle only. */
-      enc = value->kind == SCR_DYN_STR ? scr_bytes_normalize_encoding(raw) : NULL;
-      scr_str_release(raw);
-      if (value->kind == SCR_DYN_STR && !enc) return NULL;
     }
     if (value->kind == SCR_DYN_STR) {
-      if (!enc) enc = scr_str_new("utf8", 4);
+      /* An unknown encoding throws for a string needle. */
+      ScrStr *enc = raw ? scr_bytes_normalize_encoding(raw) : scr_str_new("utf8", 4);
+      if (raw) scr_str_release(raw);
+      if (!enc) return NULL;
+      bool ucs2 = enc->len == 7 && !memcmp(enc->data, "utf16le", 7);
       ScrBytes *needle = scr_bytes_from_str(value->v.str, enc);
-      found = scr_bytes_index_of(b, needle, at, enc->len == 7 && !memcmp(enc->data, "utf16le", 7) ? 2 : 1, fwd);
+      found = scr_bytes_index_of(b, needle, at, ucs2 ? 2 : 1, fwd);
       scr_bytes_release(needle);
       scr_str_release(enc);
     } else if (value->kind == SCR_DYN_BYTES && !value->v.bytes->is_data_view &&
                value->v.bytes->elem == SCR_BYTES_U8) {
-      found = scr_bytes_index_of(b, value->v.bytes, at, 1, fwd);
+      /* A Buffer needle searches 2-byte units under a utf16le encoding and
+       * bytes under any other, an unknown name included. */
+      bool ucs2 = raw && scr_bytes_dyn_is_ucs2(raw);
+      if (raw) scr_str_release(raw);
+      found = scr_bytes_index_of(b, value->v.bytes, at, ucs2 ? 2 : 1, fwd);
     } else {
+      if (raw) scr_str_release(raw);
       scr_dyn_arg_type_fail("value", "one of type number or string or an instance of Buffer or Uint8Array", value);
       return NULL;
     }
