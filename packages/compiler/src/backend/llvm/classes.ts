@@ -569,6 +569,16 @@ export const COMPACT_HEADER_TAG = 0x70000000;
 export const COMPACT_PUBLISHED = 0x80000000;
 export const COMPACT_ID_MASK = 0x0fffffff;
 
+/** The leading bytes of a new instance that its allocation function stores
+ * right after allocating it (emitObjectAlloc's `stored`), which a recycled
+ * block therefore need not clear: a compact instance's 4-byte header word
+ * (its fields start at offset 4), the 8-byte rc word, or the rc word and
+ * the vtable word of a hierarchy member that keeps its class in a vtable. */
+export function storedHeaderBytes(meta: LlClassMeta): number {
+  if (meta.compact) return 4;
+  return meta.hierarchy && !meta.idInRc ? 16 : 8;
+}
+
 /** The header word a compact instance is created with. */
 export function compactHeaderWord(meta: LlClassMeta): number {
   return COMPACT_HEADER_TAG | (meta.hierarchy ? meta.pre + 1 : 0);
@@ -1098,9 +1108,7 @@ export function emitClassShapes(
           host,
           sizeOf,
           traced && !lifetime ? { type: cycType } : null,
-          // The words stored next: a compact instance's 4-byte header, the
-          // rc word, or the rc word and the vtable word.
-          meta.compact ? 4 : meta.hierarchy && !meta.idInRc ? 16 : 8,
+          storedHeaderBytes(meta),
         ),
       );
     if (meta.compact && !meta.hierarchy)
