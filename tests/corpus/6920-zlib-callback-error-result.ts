@@ -149,6 +149,33 @@ function inflated(input: Buffer): Promise<Buffer> {
   );
 }
 
+function sink(err: Error | null, out: Buffer): void {
+  console.log("sink", err, typeof out, out?.length);
+  step();
+}
+function nestedForward(): void {
+  // On the outer error path, the nested callback forwards its own result.
+  zlib.inflate(bad, (err, out) => {
+    console.log("outer", err?.code, typeof out);
+    zlib.inflate(good, (err2, out2) => sink(err2, out2));
+  });
+}
+let attempts = 0;
+function namedRetry(): void {
+  // A named callback that calls itself with an error and a Buffer.
+  zlib.inflate(bad, function retry(err, out) {
+    attempts++;
+    if (err) {
+      if (attempts < 3) return retry(new Error("again"), Buffer.from("x"));
+      console.log("gave up", attempts, err.message, out.length);
+      step();
+      return;
+    }
+    console.log("retry value", out.length);
+    step();
+  });
+}
+
 function functionValues(next: () => void): void {
   steps.push(
     () => zlib.inflate(good, named),
@@ -174,6 +201,8 @@ function functionValues(next: () => void): void {
     () => forwardGzip("text that does not fit", arrow),
     () => zlib.inflate(bad, captures),
     () => zlib.inflate(good, captures),
+    nestedForward,
+    namedRetry,
     () => {
       named(new Error("direct"), Buffer.from("both"));
     },

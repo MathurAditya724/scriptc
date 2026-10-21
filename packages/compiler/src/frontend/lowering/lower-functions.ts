@@ -718,13 +718,13 @@ function lowerUndefinedResultBody(
   const loc = locOf(node);
   const param = lowerer.bindingIn(lowerer.ctx, result.symbol);
   if (param === null) throw new InternalCompilerError("lowerer bug: callback result unbound");
-  const absent: IrExpr = {
+  const absent = (): IrExpr => ({
     kind: "libCall",
     fn: "bytes.isAbsent",
     args: [varRef(param.id, param.type, loc)],
     type: BOOL,
     loc,
-  };
+  });
   const fence: IrStmt = {
     kind: "runtimeFence",
     code: "SC2020",
@@ -750,9 +750,10 @@ function lowerUndefinedResultBody(
     lowerer.suppressStats = true;
     lowerer.errorPathCopies++;
     try {
-      // Passed on into a Buffer slot, the result stays the absent Buffer
-      // the adapter passed: a callee with this entry test reads it as
-      // undefined.
+      // Passed on into a Buffer slot, the result stays what the adapter
+      // passed: the Buffer, or the absent Buffer, which a callee with this
+      // entry test reads as undefined. (The copy that serves both paths
+      // reaches this with a Buffer.)
       const body = transformStmtList(withKnownError(knownError, lowerBody), {
         expr: (e) =>
           e.kind === "dynCheck" &&
@@ -760,7 +761,14 @@ function lowerUndefinedResultBody(
           e.value.localId === slot.id &&
           e.type.kind === "bytes" &&
           e.type.elem === "u8"
-            ? { kind: "libCall", fn: "bytes.absent", args: [], type: e.type, loc: e.loc }
+            ? {
+                kind: "ternary",
+                cond: absent(),
+                then: { kind: "libCall", fn: "bytes.absent", args: [], type: e.type, loc: e.loc },
+                else_: varRef(param.id, param.type, e.loc),
+                type: e.type,
+                loc: e.loc,
+              }
             : e,
         stmt: (stmt) => stmt,
       });
@@ -795,7 +803,7 @@ function lowerUndefinedResultBody(
           localId: slot.id,
           init: {
             kind: "ternary",
-            cond: absent,
+            cond: absent(),
             then: dynUndefinedExpr(loc),
             else_: lowerer.coerceInto(result.name, varRef(param.id, param.type, loc), DYN),
             type: DYN,
@@ -811,7 +819,7 @@ function lowerUndefinedResultBody(
   return [
     {
       kind: "if",
-      cond: absent,
+      cond: absent(),
       then: withoutResult === null ? [fence] : [undefinedResult, ...withoutResult],
       else_: withResult,
       loc,

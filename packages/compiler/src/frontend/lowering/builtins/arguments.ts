@@ -20,6 +20,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { lowerAbsenceProbe } from "../lower-exprs.js";
+import { bodyReadsArguments } from "../../arguments-usage.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
 import { voidizedCallback } from "../lower-server.js";
 export function optionalStringTags(
@@ -269,9 +270,14 @@ export function errorFirstCallback(
 ): IrExpr {
   // A literal here is called only by the callback adapter, which passes
   // null as the error whenever it passes a result (lowerUndefinedResultBody).
+  // A named function expression can also call itself, and a function
+  // expression can reach itself through `arguments.callee`.
   let literal: ts.Expression = node;
   while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
-  if (ts.isArrowFunction(literal) || ts.isFunctionExpression(literal))
+  if (
+    ts.isArrowFunction(literal) ||
+    (ts.isFunctionExpression(literal) && literal.name === undefined && !bodyReadsArguments(literal))
+  )
     lowerer.errorFirstLiterals.add(literal);
   let callback = lowerer.lowerExpr(node);
   if (callback.type.kind === "dyn") {
