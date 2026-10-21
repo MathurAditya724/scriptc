@@ -66,9 +66,35 @@ static ScrDyn *bc_class(int kind);
 /* The stream half, once registered (scr_dyn_builtin_stream.c). */
 static SCR_TL const ScrDynStreamOps *bc_stream_ops;
 
-/* EventEmitter.prototype's method on a receiver with stream state. */
+/* The program's dispatch for compiled emitters (a program class extending
+ * EventEmitter, or `new EventEmitter()`), which reach these methods as
+ * typed refs whose listeners live in the native registry; installed by
+ * scr_dyn_emitter_method. */
+static SCR_TL ScrDyn *bc_compiled_dispatch;
+
+/* method(...args) on a compiled emitter: the dispatch runs with the
+ * receiver as `this` and the method's SCR_EE_M_* index before the
+ * arguments. */
+static ScrDyn *bc_compiled_event(int method, ScrDyn *self, ScrDyn *const *args, size_t argc) {
+  ScrDyn **argv = malloc((argc + 1) * sizeof *argv);
+  if (!argv) scr_trap("out of memory");
+  argv[0] = scr_dyn_new_num(method);
+  for (size_t i = 0; i < argc; i++) argv[i + 1] = args[i];
+  scr_dyn_this_push_dyn(self);
+  ScrDyn *result = scr_dyn_call(bc_compiled_dispatch, argv, argc + 1, bc_names[BC_EMITTER]);
+  scr_dyn_this_pop();
+  scr_dyn_release(argv[0]);
+  free(argv);
+  return result;
+}
+
+/* EventEmitter.prototype's method on a receiver with stream state, or on
+ * a compiled emitter. */
 static bool bc_stream_event(int method, ScrDyn *self, ScrDyn *const *args, size_t argc, ScrDyn **result) {
-  return bc_stream_ops != NULL && bc_stream_ops->event(method, self, args, argc, result);
+  if (bc_stream_ops != NULL && bc_stream_ops->event(method, self, args, argc, result)) return true;
+  if (bc_compiled_dispatch == NULL || self->kind != SCR_DYN_TYPED_REF) return false;
+  *result = bc_compiled_event(method, self, args, argc);
+  return true;
 }
 
 /* ── property helpers ───────────────────────────────────────────────── */
@@ -1436,6 +1462,8 @@ static void bc_teardown(void) {
     if (bc_symbols[i]) scr_dyn_release(bc_symbols[i]);
     bc_symbols[i] = NULL;
   }
+  if (bc_compiled_dispatch) scr_dyn_release(bc_compiled_dispatch);
+  bc_compiled_dispatch = NULL;
   if (scr_exc_pending()) scr_exc_clear();
 }
 
@@ -1540,6 +1568,19 @@ ScrDyn *scr_dyn_builtin_class(double kind) {
   int index = (int)kind;
   if (index < 0 || index >= BC_COUNT) scr_trap("scriptc: unknown builtin class value\n");
   return scr_dyn_retain(bc_class(index));
+}
+
+/* EventEmitter.prototype[name], +1, read off a compiled emitter or the
+ * class; the first read installs the program's dispatch for compiled
+ * emitters (borrowed, retained). */
+ScrDyn *scr_dyn_emitter_method(const ScrStr *name, ScrDyn *dispatch) {
+  ScrDyn *ctor = bc_class(BC_EMITTER);
+  if (!bc_compiled_dispatch) bc_compiled_dispatch = scr_dyn_retain(dispatch);
+  ScrDyn *prototype = bc_get(ctor, "prototype");
+  if (!prototype) return NULL;
+  ScrDyn *method = bc_get(prototype, name->data);
+  scr_dyn_release(prototype);
+  return method;
 }
 
 /* OrdinaryHasInstance over the value's prototype chain. */

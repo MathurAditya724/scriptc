@@ -74,6 +74,12 @@ import {
   lowerDynamicEmitterOn,
 } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
+import {
+  EMITTER_PROTOTYPE_METHODS,
+  emitterMethodValue,
+  inheritedEmitterMethod,
+  overriddenEmit,
+} from "./emitter-method-values.js";
 import { STREAM_OPERATORS } from "./lower-stream.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 
@@ -2771,6 +2777,7 @@ export class ClassDynamicDispatch {
           !isClassOwnEnumerableFieldName(dispatch.name) ||
           (!(info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
             !eventTargetInheritedMember(info, dispatch.name) &&
+            !inheritedEmitterMethod(lowerer, info, dispatch.name) &&
             !findMethodOn(lowerer, info, dispatch.name) &&
             !findGenericMethodOn(lowerer, info, dispatch.name) &&
             dispatch.name !== "constructor" &&
@@ -2888,6 +2895,12 @@ export class ClassDynamicDispatch {
                 value: { kind: "boolLit", value: dispatch.probe === "in", type: BOOL, loc },
                 loc,
               },
+            ];
+          // An inherited EventEmitter.prototype method: `in` sees it, the
+          // own-property probes see only an own property that shadows it.
+          if (dispatch.probe === "in" && inheritedEmitterMethod(lowerer, info, name))
+            return [
+              { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
             ];
           if (!dispatch.probe)
             return dispatch.reflect
@@ -3101,6 +3114,8 @@ export class ClassDynamicDispatch {
           for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
         const inherited = eventTargetApiMembers(info);
         if (inherited) for (const name of inherited) names.add(name);
+        for (const name of EMITTER_PROTOTYPE_METHODS.keys())
+          if (inheritedEmitterMethod(lowerer, info, name)) names.add(name);
 
         for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
           const methodNames = [...owner.methods.keys()];
@@ -3548,6 +3563,10 @@ export class ClassDynamicDispatch {
         for (const name of c.methods.keys())
           names.add(name.startsWith("get:") || name.startsWith("set:") ? name.slice(4) : name);
     }
+    // EventEmitter.prototype's methods on compiled emitters.
+    for (const { info } of this.propertyReceivers(lowerer, true))
+      for (const name of EMITTER_PROTOTYPE_METHODS.keys())
+        if (inheritedEmitterMethod(lowerer, info, name)) names.add(name);
     return names;
   }
 
@@ -4308,7 +4327,9 @@ export class ClassDynamicDispatch {
           (!canonical || !seen.has(info.def.name)) &&
           (info === capsule || lowerer.classCanBeConstructed(info))
         ) {
-          seen.add(info.def.name);
+          // A subclass visited under a runtime capsule (boxed as that
+          // base) keeps its own canonical plan for values boxed as itself.
+          if (canonical) seen.add(info.def.name);
           plans.push({
             info,
             capsule: canonical ? info : capsule,
@@ -4728,6 +4749,45 @@ export class ClassDynamicDispatch {
               loc,
             },
           ];
+    // An emit override has no function value (it is specialized per event
+    // name and payload type).
+    if (
+      !write &&
+      name === "emit" &&
+      overriddenEmit(info) &&
+      inheritedEmitterMethod(lowerer, info, name)
+    )
+      return [
+        {
+          kind: "runtimeFence",
+          code: "SC2020",
+          message:
+            "reading an overridden EventEmitter emit through an untyped value is not supported yet",
+          loc,
+        },
+      ];
+    // An inherited EventEmitter.prototype method: an own property shadows
+    // it, otherwise the read answers the function
+    // `EventEmitter.prototype.<name>` reads.
+    if (!write && inheritedEmitterMethod(lowerer, info, name)) {
+      const instance = lowerer.coerceToExpected(receiver, DYN);
+      const bag = this.readPropertyBagOrEmpty(lowerer, instance, loc);
+      const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+      return [
+        {
+          kind: "return",
+          value: {
+            kind: "ternary",
+            cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
+            then: { kind: "libCall", fn: "dyn.bagGet", args: [bag, key, instance], type: DYN, loc },
+            else_: emitterMethodValue(lowerer, name, loc),
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ];
+    }
     const field = info.fields.get(name);
     const member = `${write ? "set" : "get"}:${name}`;
     const accessor = field ? null : findMethodOn(lowerer, info, member);
@@ -5159,6 +5219,11 @@ export class ClassDynamicDispatch {
         loc,
       },
     ];
+    // An emit override is specialized per event name and payload type; an
+    // untyped emit names neither, so it refuses rather than bypassing the
+    // override for the native emit.
+    if (method === "emit" && overriddenEmit(info) && inheritedEmitterMethod(lowerer, info, method))
+      return fence();
     if (
       emitterRooted(lowerer, info) &&
       !streamRooted(info) &&

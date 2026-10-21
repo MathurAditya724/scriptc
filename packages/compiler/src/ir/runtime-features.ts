@@ -259,6 +259,8 @@ const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
   "dyn.builtinClass",
   // the stream classes, through scr_dyn_builtin_stream.c
   "dyn.builtinStreamClass",
+  // EventEmitter.prototype's methods read off compiled emitters
+  "dyn.emitterMethod",
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
 ];

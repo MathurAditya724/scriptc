@@ -128,6 +128,10 @@ import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerEventStaticProperty } from "../builtins/numbers.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
+import {
+  lowerEmitterInstanceMethod,
+  lowerEmitterPrototypeMethod,
+} from "../emitter-method-values.js";
 import { iteratorResultValueRead } from "../lower-generators.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
 import { nullishGenericBindingUnitOf } from "../binding-analysis.js";
@@ -328,6 +332,12 @@ export function lowerPropertyAccessExpr(
   {
     const ctor = runtimeConstructorReceiver(lowerer, expr);
     if (ctor) return lowerRuntimeConstructor(lowerer, expr, ctor.info);
+  }
+  // EventEmitter.prototype's methods as values (emitter-method-values.ts).
+  {
+    const method =
+      lowerEmitterPrototypeMethod(lowerer, expr) ?? lowerEmitterInstanceMethod(lowerer, expr);
+    if (method) return method;
   }
   // `C.name` through a runtime-provided class VALUE (a `typeof Readable`
   // parameter): the class object's stored name.
