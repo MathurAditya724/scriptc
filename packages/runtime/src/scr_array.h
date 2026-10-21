@@ -442,6 +442,15 @@ double scr_arr_unshift_many(ScrArr *a, size_t count, const uint64_t *slots);
 double scr_arr_push_spread(ScrArr *a, const ScrArr *src);
 /* Append a concat argument by indexed property copy, preserving holes. */
 double scr_arr_concat_copy(ScrArr *a, const ScrArr *src);
+/* The same append for Array.prototype.concat's fresh result: dense storage
+ * grows to exactly the combined length instead of geometrically. */
+double scr_arr_concat_copy_exact(ScrArr *a, const ScrArr *src);
+/* Exact dense capacity for an array literal about to copy `src` and then
+ * `plain` more elements (a spread position). */
+void scr_arr_reserve_spread(ScrArr *a, const ScrArr *src, size_t plain);
+/* Exact dense capacity for `n` elements of an array that is filled to that
+ * length next (Array.from({ length: n })); no effect for other lengths. */
+void scr_arr_reserve_len(ScrArr *a, double n);
 
 /* unshift returns the new length and _ref takes ownership. The spread form
  * borrows a same-element-kind source, retains copied refs, and snapshots
