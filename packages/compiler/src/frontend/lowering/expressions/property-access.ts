@@ -162,6 +162,7 @@ import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/compression.js";
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
 import { keyedFieldRead } from "./keyed-field-targets.js";
+import { promisePrototypeValue } from "../thenables.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -735,6 +736,10 @@ export function lowerPropertyAccessExpr(
   if (!hasOptionalChainGuard(expr.expression)) {
     const typed = lowerProtocolPropertyRead(lowerer, expr);
     if (typed) return typed;
+  }
+  {
+    const promiseMember = lowerPromiseConstructorRead(lowerer, expr);
+    if (promiseMember) return promiseMember;
   }
   const handled =
     lowerer.lowerProcessEnvGet(expr) ??
@@ -4170,4 +4175,76 @@ function jsFunctionExpandoMember(lowerer: Lowerer, access: ts.PropertyAccessExpr
 export function declaredMemberOf(lowerer: Lowerer, receiver: ts.Expression, name: string): boolean {
   const symbol = lowerer.checker.getPropertyOfType(lowerer.typeOf(receiver), name);
   return !!symbol && symbol.declarations.length > 0;
+}
+
+/** Whether `expr` reads Promise.prototype, directly or as
+ * `promise.constructor.prototype`. The checker types it Promise<any>, but
+ * the value is an ordinary object, so a binding inferred from it stays
+ * checked-dynamic (as in Node, promise methods called on it throw). */
+export function isPromisePrototypeRead(lowerer: Lowerer, expr: ts.Expression | undefined): boolean {
+  if (!expr) return false;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return false;
+  if (expr.name.text !== "prototype") return false;
+  if (lowerer.stdlibGlobalMember(expr, "Promise") === "prototype") return true;
+  const inner = expr.expression;
+  return (
+    ts.isPropertyAccessExpression(inner) &&
+    !inner.questionDotToken &&
+    inner.name.text === "constructor" &&
+    lowerer.mapTypeOf(lowerer.typeOf(inner.expression))?.kind === "promise"
+  );
+}
+
+/** A promise's `constructor` (the Promise constructor value), and
+ * Promise.prototype read as `promise.constructor.prototype` or
+ * `Promise.prototype` (execa's `(async () => {})().constructor.prototype`):
+ * an object holding the runtime's then, catch and finally (thenables.ts).
+ * Null for other reads. */
+function lowerPromiseConstructorRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  const loc = locOf(expr);
+  const isPromise = (node: ts.Expression): boolean =>
+    lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "promise";
+  if (expr.name.text === "prototype") {
+    if (lowerer.stdlibGlobalMember(expr, "Promise") === "prototype")
+      return promisePrototypeValue(lowerer, loc);
+    const inner = expr.expression;
+    if (
+      ts.isPropertyAccessExpression(inner) &&
+      !inner.questionDotToken &&
+      inner.name.text === "constructor" &&
+      isPromise(inner.expression)
+    ) {
+      const receiver = lowerer.lowerExpr(inner.expression);
+      const prototype = promisePrototypeValue(lowerer, loc);
+      return isSafeToDiscard(receiver)
+        ? prototype
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+            result: prototype,
+            type: DYN,
+            loc,
+          };
+    }
+    return null;
+  }
+  if (expr.name.text === "constructor" && isPromise(expr.expression)) {
+    const receiver = lowerer.lowerExpr(expr.expression);
+    const ctor = builtinGlobalValue("Promise", loc)!;
+    return isSafeToDiscard(receiver)
+      ? ctor
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+          result: ctor,
+          type: DYN,
+          loc,
+        };
+  }
+  return null;
 }

@@ -2091,6 +2091,9 @@ export class Lowerer {
    * setEncoding call whose receiver is a socket or an untyped value.
    * Computed once on first use (null until then). */
   socketEncodingReachable: boolean | null = null;
+  /** Whether some program source can define a thenable
+   * (programMayDefineThenables). Null until first asked. */
+  thenablesMayBeDefined: boolean | null = null;
   /** Lambdas lowered with checked-dynamic parameters (lambdaSignature):
    * callbacks whose arguments are wider than their contextual overload. */
   readonly dynParamLambdas = new Set<ts.Node>();

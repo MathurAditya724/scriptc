@@ -122,6 +122,7 @@ import { streamClassAliasDecl } from "./lower-stream.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
+import { isPromisePrototypeRead } from "./expressions/property-access.js";
 import {
   collectNamespaceStmt,
   nsMemberIdentOf,
@@ -2040,19 +2041,24 @@ export function collectGlobals(
           // Builtin declarations do not always describe the concrete native
           // callable ABI. Preserve checked-native values in shared storage;
           // adapting the loader to (string) would replace its validation.
+          // An inferred Promise.prototype binding holds an ordinary object
+          // (isPromisePrototypeRead), in TypeScript as well.
           const initializer = decl.initializer ? stripTypeCasts(decl.initializer) : undefined;
           if (
-            isJsSourceFile(sf) &&
-            nameNode === decl.name &&
-            initializer &&
-            (isNativeBuiltinValueInitializer(lowerer, initializer) ||
-              (!decl.type &&
-                !hasJsTypeAnnotation(decl) &&
-                lowerer.mapTypeOf(lowerer.typeOf(nameNode))?.kind === "date") ||
-              (!decl.type &&
-                !hasJsTypeAnnotation(decl) &&
-                checkedGlobalReference(lowerer, initializer)) ||
-              stdlibGlobalNameOf(lowerer, initializer) === "globalThis")
+            (nameNode === decl.name &&
+              !decl.type &&
+              isPromisePrototypeRead(lowerer, decl.initializer)) ||
+            (isJsSourceFile(sf) &&
+              nameNode === decl.name &&
+              initializer &&
+              (isNativeBuiltinValueInitializer(lowerer, initializer) ||
+                (!decl.type &&
+                  !hasJsTypeAnnotation(decl) &&
+                  lowerer.mapTypeOf(lowerer.typeOf(nameNode))?.kind === "date") ||
+                (!decl.type &&
+                  !hasJsTypeAnnotation(decl) &&
+                  checkedGlobalReference(lowerer, initializer)) ||
+                stdlibGlobalNameOf(lowerer, initializer) === "globalThis"))
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
