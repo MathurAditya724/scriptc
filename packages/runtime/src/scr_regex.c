@@ -2784,6 +2784,24 @@ static ScrDyn *scr_native_regex_invoke(void *ptr, ScrDyn *self, const char *meth
     scr_str_release(subject);
     return scr_exc_pending() ? NULL : scr_dyn_new_bool(matches);
   }
+  if (strcmp(method, "exec") == 0) {
+    /* The match array: each capture (undefined when it did not
+     * participate), then index, input and groups; null without a match.
+     * The exec itself reads and advances lastIndex. */
+    ScrStr *subject = scr_dyn_string_coerce_js(argc ? args[0] : scr_dyn_undefined());
+    if (!subject) return NULL;
+    ScrArr *row = scr_regex_exec(subject, re);
+    scr_str_release(subject);
+    if (!row) return scr_exc_pending() ? NULL : scr_dyn_new_null();
+    ScrDyn *match = scr_dyn_new_arr();
+    for (size_t k = 0; k < row->len; k++)
+      scr_dyn_arr_push(match, *scr_arr_state_ptr(row, k) == SCR_ARR_VALUE
+                                  ? scr_dyn_new_str((ScrStr *)(uintptr_t)row->data[k])
+                                  : scr_dyn_retain(scr_dyn_undefined()));
+    scr_arr_copy_metadata(row, match);
+    scr_arr_release(row);
+    return match;
+  }
   static const char message[] = "Native RegExp method has no lowering";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return NULL;
