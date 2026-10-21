@@ -10746,9 +10746,6 @@ double scr_date_utc(double y, double mo, double d,
 typedef struct ScrDateParts {
   long long year;
   int month, date, day, hours, minutes, seconds, milliseconds;
-  /* Local fields: tm_isdst at the instant (or its surrogate). It fills the
-   * padding before timezone_offset, so the struct keeps its size. */
-  bool isdst;
   double timezone_offset;
 } ScrDateParts;
 
@@ -10785,7 +10782,6 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   out->seconds = (int)(msday / 1000 % 60);
   out->milliseconds = (int)(msday % 1000);
   out->timezone_offset = 0;
-  out->isdst = false;
 }
 
 /* The thread's last UTC decomposition: reading several UTC fields of one
@@ -10843,14 +10839,13 @@ static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out);
  * twice within 19 days (America/Argentina/Tucuman in June 2004) breaks that
  * assumption, and Node's answers between the two changes then depend on the
  * order of the reads; this cache gives the same answers for the same order
- * (corpus date-zone-intervals.ts). Segments compare offsets only, as V8's do;
- * each keeps the DST flag of the read that set its offset. */
+ * (corpus date-zone-intervals.ts). Segments hold offsets only, as V8's do;
+ * zone names decide daylight time at the instant (scr_date_zone_name). */
 #define SCR_DATE_ZONE_DELTA_MS (19LL * 86400000LL)
 #define SCR_DATE_ZONE_SEGMENTS 32
 typedef struct {
   long long start_ms, end_ms; /* empty when start_ms > end_ms */
   double offset;              /* local minus UTC, seconds */
-  bool isdst;
   int last_used;
 } ScrDateZoneSegment;
 typedef struct {
@@ -10868,7 +10863,6 @@ static void scr_date_zone_clear(ScrDateZoneSegment *segment) {
   segment->start_ms = 0;
   segment->end_ms = -1;
   segment->offset = 0;
-  segment->isdst = false;
   segment->last_used = 0;
 }
 
@@ -10918,7 +10912,7 @@ static void scr_date_zone_probe(ScrDateZoneCache *z, long long t) {
 }
 
 /* V8's ExtendTheAfterSegment. */
-static void scr_date_zone_extend_after(ScrDateZoneCache *z, long long t, double offset, bool isdst) {
+static void scr_date_zone_extend_after(ScrDateZoneCache *z, long long t, double offset) {
   ScrDateZoneSegment *after = z->after;
   if (!scr_date_zone_empty(after) && after->offset == offset &&
       after->start_ms - SCR_DATE_ZONE_DELTA_MS <= t && t <= after->end_ms) {
@@ -10928,11 +10922,11 @@ static void scr_date_zone_extend_after(ScrDateZoneCache *z, long long t, double 
   if (!scr_date_zone_empty(after)) after = z->after = scr_date_zone_lru(z, z->before);
   after->start_ms = after->end_ms = t;
   after->offset = offset;
-  after->isdst = isdst;
   after->last_used = ++z->usage;
 }
 
-static bool scr_date_zone_lookup(double clipped, double *offset, bool *isdst) {
+static bool scr_date_zone_lookup(double clipped, double *offset) {
+  bool isdst; /* scr_date_zone_offset's flag, unused here */
   ScrDateZoneCache *z = &scr_date_zone_cache;
   unsigned generation = scr_date_tz_generation;
   if (!z->valid || z->generation != generation) scr_date_zone_reset(z, generation);
@@ -10945,28 +10939,25 @@ static bool scr_date_zone_lookup(double clipped, double *offset, bool *isdst) {
   if (before->start_ms <= t && t <= before->end_ms) {
     before->last_used = ++z->usage;
     *offset = before->offset;
-    *isdst = before->isdst;
     return true;
   }
   scr_date_zone_probe(z, t);
   before = z->before;
   if (scr_date_zone_empty(before)) {
-    if (!scr_date_zone_offset(clipped, offset, isdst)) return false;
+    if (!scr_date_zone_offset(clipped, offset, &isdst)) return false;
     before->start_ms = before->end_ms = t;
     before->offset = *offset;
-    before->isdst = *isdst;
     before->last_used = ++z->usage;
     return true;
   }
   if (t <= before->end_ms) {
     before->last_used = ++z->usage;
     *offset = before->offset;
-    *isdst = before->isdst;
     return true;
   }
   if (t - SCR_DATE_ZONE_DELTA_MS > before->end_ms) {
-    if (!scr_date_zone_offset(clipped, offset, isdst)) return false;
-    scr_date_zone_extend_after(z, t, *offset, *isdst);
+    if (!scr_date_zone_offset(clipped, offset, &isdst)) return false;
+    scr_date_zone_extend_after(z, t, *offset);
     ScrDateZoneSegment *swap = z->before;
     z->before = z->after;
     z->after = swap;
@@ -10976,9 +10967,8 @@ static bool scr_date_zone_lookup(double clipped, double *offset, bool *isdst) {
   long long ahead = before->end_ms + SCR_DATE_ZONE_DELTA_MS;
   if (scr_date_zone_empty(z->after) || ahead <= z->after->start_ms) {
     double ahead_offset;
-    bool ahead_dst;
-    if (!scr_date_zone_offset((double)ahead, &ahead_offset, &ahead_dst)) return false;
-    scr_date_zone_extend_after(z, ahead, ahead_offset, ahead_dst);
+    if (!scr_date_zone_offset((double)ahead, &ahead_offset, &isdst)) return false;
+    scr_date_zone_extend_after(z, ahead, ahead_offset);
   } else {
     z->after->last_used = ++z->usage;
   }
@@ -10987,7 +10977,6 @@ static bool scr_date_zone_lookup(double clipped, double *offset, bool *isdst) {
     before->end_ms = after->end_ms;
     scr_date_zone_clear(after);
     *offset = before->offset;
-    *isdst = before->isdst;
     return true;
   }
   /* Binary search for the change point, giving up after five probes (the
@@ -10995,7 +10984,7 @@ static bool scr_date_zone_lookup(double clipped, double *offset, bool *isdst) {
   for (int i = 4; i >= 0; i--) {
     long long delta = after->start_ms - before->end_ms;
     long long middle = i == 0 ? t : before->end_ms + delta / 2;
-    if (!scr_date_zone_offset((double)middle, offset, isdst)) return false;
+    if (!scr_date_zone_offset((double)middle, offset, &isdst)) return false;
     if (before->offset == *offset) {
       before->end_ms = middle;
       if (t <= before->end_ms) return true;
@@ -11031,12 +11020,10 @@ static bool scr_date_local_parts(double ms, ScrDateParts *out) {
 
 static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out) {
   double local_offset;
-  bool isdst;
-  if (!scr_date_zone_lookup(clipped, &local_offset, &isdst)) return false;
+  if (!scr_date_zone_lookup(clipped, &local_offset)) return false;
   scr_date_utc_parts_unchecked(clipped + local_offset * 1000.0, out);
   double timezone_offset = trunc(-local_offset / 60.0);
   out->timezone_offset = timezone_offset == 0 ? 0 : timezone_offset;
-  out->isdst = isdst;
   return true;
 }
 
@@ -11459,7 +11446,9 @@ static ScrStr *scr_date_text(double ms, int mode) {
     *o++ = ' ';
     *o++ = '(';
     /* Zone names are at most 64 bytes (scr_timezone_data.h). */
-    const char *zone = scr_date_zone_name(ms, p.isdst);
+    /* The name's daylight flag is decided at the instant itself, as V8's
+     * LocalTimezone does, not from the offset cache. */
+    const char *zone = scr_date_zone_name(ms, -1);
     size_t zone_len = strlen(zone);
     memcpy(o, zone, zone_len);
     o += zone_len;

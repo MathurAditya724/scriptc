@@ -79,3 +79,22 @@ for (const zone of ["America/Argentina/Tucuman", "America/New_York", "Australia/
   for (let order = 0; order < 10; order++) sums.push(orderChecksum(zone, Date.UTC(2003, 0, 1), 3 * 365, 60));
   console.log(zone, sums.join(","));
 }
+
+// Africa/Algiers kept its +1 offset on 21 October 1977 but left daylight
+// time: the zone name changes while the offset does not, in every order of
+// reads.
+const algiers: number[] = [];
+for (let day = 15; day <= 31; day++) algiers.push(Date.UTC(1977, 9, day, 12));
+for (const order of ["ascending", "descending", "mixed"]) {
+  process.env.TZ = "UTC";
+  process.env.TZ = "Africa/Algiers";
+  const reads =
+    order === "ascending"
+      ? algiers
+      : order === "descending"
+        ? algiers.slice().reverse()
+        : [algiers[16]!, algiers[0]!, algiers[8]!, ...algiers];
+  const names = new Map<number, string>();
+  for (const t of reads) names.set(t, new Date(t).toString().slice(16));
+  console.log(order, algiers.map((t) => names.get(t)).join(" | "));
+}
