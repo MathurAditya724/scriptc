@@ -9,6 +9,7 @@ import { InternalCompilerError } from "../../errors.js";
  * (FieldTarget). */
 import * as ts from "../ts7/adapter.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
+import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerMaybePromiseAwait, maybePromiseUnionOf } from "./maybe-promise.js";
@@ -134,6 +135,7 @@ export {
   lowerIncDecTarget,
   lowerPrefixUnary,
 } from "./expressions/updates.js";
+import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
 
 /** An assignable `obj.field` target — a class field, a record field, or a
@@ -636,6 +638,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // and answers itself. Thenable adoption stays unmodeled
       // (SEMANTICS.md).
       if (value.type.kind === "dyn") {
+        // A program that can define thenables adopts them (thenables.ts).
+        if (programMayDefineThenables(lowerer)) return awaitDynThenable(lowerer, value, loc);
         return { kind: "libCall", fn: "async.awaitDyn", args: [value], type: DYN, loc };
       }
 
@@ -1075,6 +1079,11 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     });
     if (presence !== null) return presence;
   }
+  // Global detection (`typeof window < "u"`, `typeof self !==
+  // "undefined" && …`): a condition whose typeof answers are static
+  // folds, so the untaken arm never lowers (static-typeof.ts).
+  const folded = staticCondition(lowerer, e);
+  if (folded !== null) return { kind: "boolLit", value: folded, type: BOOL, loc: locOf(e) };
   if (ts.isBinaryExpression(e)) {
     const op = e.operatorToken.kind;
     if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {

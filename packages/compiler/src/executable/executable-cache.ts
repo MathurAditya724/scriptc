@@ -68,6 +68,8 @@ export interface EarlyExecutableNativeFeatures {
   dynTier?: boolean;
   streamDyn?: boolean;
   eventsOnceSignal?: boolean;
+  dynBufferNum?: boolean;
+  builtinValues?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
@@ -89,6 +91,7 @@ export interface EarlyExecutableNativeFeatures {
   nodeTest: boolean;
   tls: boolean;
   cipher: boolean;
+  ecdh: boolean;
   perfLoop: boolean;
   tlsCa: boolean;
   webcrypto: boolean;
@@ -212,6 +215,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "tls",
   "tlsCa",
   "cipher",
+  "ecdh",
   "webcrypto",
   "perfLoop",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];

@@ -119,6 +119,11 @@ export interface CcOptions {
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
+  /** Fixed-width Buffer methods called on checked-dynamic values:
+   * compiles scr_bytes_dyn.c. */
+  dynBufferNum?: boolean;
+  /** Builtin functions read as values: compiles scr_builtin_values.c. */
+  builtinValues?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
@@ -233,6 +238,9 @@ export interface CcOptions {
   /** crypto.createCipheriv/createDecipheriv: compiles scr_cipher.c and links
    * the mbedTLS archive (shared with tls). */
   cipher?: boolean;
+  /** crypto.createECDH and ECDH.convertKey: compiles scr_ecdh.c and links
+   * the mbedTLS archive (shared with tls). */
+  ecdh?: boolean;
   /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
   webcrypto?: boolean;
   /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */

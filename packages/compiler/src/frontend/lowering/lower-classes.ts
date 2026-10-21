@@ -8,6 +8,7 @@ import {
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { lowerReadlineUiNew } from "./builtins/readline.js";
+import { builtinMemberRequireDecl } from "./builtins/module-bindings.js";
 import { checkedClassUnionAssertion } from "./class-assertions.js";
 import { collectClassMethodMutations } from "./class-method-mutations.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -100,7 +101,7 @@ import { isAssertClassNew } from "./assert-instances.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
-import { knownBufEncoding } from "./containers/bytes.js";
+import { knownBufEncoding, lowerNodeModulesBufferConstruct } from "./containers/bytes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
@@ -1036,11 +1037,16 @@ export function builtinStreamInfoOf(
     // member to the stdlib class symbol. The declaration itself is
     // alias plumbing (streamClassAliasDecl — both declaration walks
     // skip it).
+    // A `var`/`let` binding of the inline require member
+    // (`var Transform = require("stream").Transform`) is the same alias
+    // plumbing as builtinMemberRequireDecl's: its declaration owns no
+    // storage either way.
     const decl = symbol.valueDeclaration;
     if (
       decl &&
       ts.isVariableDeclaration(decl) &&
-      (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
+      ((ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 ||
+        builtinMemberRequireDecl(decl.name, decl.initializer)) &&
       decl.initializer !== undefined &&
       ts.isPropertyAccessExpression(decl.initializer) &&
       !decl.initializer.questionDotToken &&
@@ -1399,7 +1405,8 @@ export function builtinEmitterInfoOf(
     if (
       decl !== undefined &&
       ts.isVariableDeclaration(decl) &&
-      (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
+      ((ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 ||
+        builtinMemberRequireDecl(decl.name, decl.initializer)) &&
       decl.initializer !== undefined &&
       ts.isPropertyAccessExpression(decl.initializer) &&
       !decl.initializer.questionDotToken &&
@@ -5549,8 +5556,18 @@ export function lowerStaticFieldRead(
   }
   // `C.name` — the JS-observable class name, a compile-time constant on
   // the direct spelling (tsc rejects user statics named `name`, so the
-  // chain above can never shadow it in TypeScript sources).
+  // chain above can never shadow it in TypeScript sources). A class of an
+  // import cycle reads it from its class object instead, whose reference
+  // checks the class's initialization (checkCycleBindingAccesses).
   if (expr.name.text === "name" && info.def.jsName !== undefined) {
+    if (lowerer.classInitFlags.get(info.def.name)?.cycle === true)
+      return {
+        kind: "libCall",
+        fn: "class.name",
+        args: [classValueRef(lowerer, info, expr.expression)],
+        type: STRING,
+        loc,
+      };
     return { kind: "strLit", value: info.def.jsName, type: STRING, loc };
   }
   if (info.callableBase)
@@ -6770,14 +6787,22 @@ function thunkAsyncSlot(
 ): void {
   if (overridden.sig.async !== true) return;
   const declarer = overridden.declarer;
+  // The slot answers the body's promise: an untyped async method's `dyn`
+  // result is the promise's payload, so the slot's ABI is that promise. An
+  // async generator method's slot keeps its generator object.
+  const ret: IrType =
+    overridden.sig.gen || overridden.sig.ret.kind === "promise"
+      ? overridden.sig.ret
+      : { kind: "promise", inner: overridden.sig.ret };
   declarer.returnAdapters ??= new Map();
   if (!declarer.returnAdapters.has(mName)) {
     declarer.returnAdapters.set(mName, {
       params: [...overridden.sig.params],
-      ret: overridden.sig.ret,
+      ret,
       async: true,
     });
   }
+  overridden.sig.ret = ret;
   delete overridden.sig.async;
 }
 
@@ -9204,6 +9229,11 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
+  // A dependency's deprecated `new Buffer(...)` fallback (containers/bytes.ts).
+  {
+    const buffer = lowerNodeModulesBufferConstruct(lowerer, expr);
+    if (buffer) return buffer;
+  }
   // new Function(...): Node's EvalError under
   // --disallow-code-generation-from-strings (code-generation.ts).
   if (codeGenerationCalleeOf(lowerer, expr.expression) === "Function")

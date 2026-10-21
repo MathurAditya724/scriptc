@@ -2,6 +2,8 @@
 // wrapper shape): listeners registered, removed and emitted through the
 // bound functions, the socket closed through its bound close, and an
 // 'error' emitted after close still reaching the listener left on it.
+// Untyped listeners run with the socket as `this`, and a listener that an
+// earlier listener of the same emission removed still runs.
 'use strict';
 const dgram = require('dgram');
 
@@ -34,6 +36,7 @@ function finish() {
       console.log('threw', e.message);
     }
     server.close();
+    listenerChecks();
   });
   t.close();
 }
@@ -59,3 +62,30 @@ server.bind(0, '127.0.0.1', () => {
   console.log('emit custom', t.emit('nobody'));
   t.send(Buffer.from('ping'), (err, bytes) => console.log('sent', err, bytes));
 });
+
+function listenerChecks() {
+  const socket = dgram.createSocket('udp4');
+  const on = socket.on.bind(socket);
+  const emit = socket.emit.bind(socket);
+  const removeListener = socket.removeListener.bind(socket);
+  const later = () => console.log('later ran');
+  on('connect', () => {
+    console.log('first');
+    removeListener('connect', later);
+  });
+  on('connect', later);
+  emit('connect');
+  emit('connect');
+  on('error', function (err) {
+    console.log('error this', this === socket, err.message);
+  });
+  emit('error', new Error('emitted'));
+  on('listening', function () {
+    console.log('listening this', this === socket);
+    this.close();
+  });
+  on('close', function () {
+    console.log('close this', this === socket);
+  });
+  socket.bind(0, '127.0.0.1');
+}

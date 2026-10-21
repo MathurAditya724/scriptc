@@ -20,7 +20,7 @@ import type { IrExpr, IrLocal, IrRecordShape, IrStmt, IrType, SrcLoc } from "../
 import { isCjsExportTableLiteral, isJsSourceFile, locOf } from "../../program.js";
 import { NARROW_FIRST } from "../surfaces.js";
 import { recordShapeMismatchDiag } from "../../../diagnostics/diagnostic.js";
-import { PoisonError, neverTaintedJsType } from "../lowerer.js";
+import { PoisonError, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import type { Lowerer } from "../lowerer.js";
 import { lowerIndexMergeHelper } from "../containers/indexed-objects.js";
 import type { IndexMergeContributor } from "../containers/indexed-objects.js";
@@ -186,6 +186,16 @@ function propNameText(lowerer: Lowerer, name: ts.PropertyName): string {
   // — the same name the checker gives the property symbol).
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
   return (name as ts.Identifier | ts.StringLiteral).text;
+}
+
+/** The name an anonymous function or a method takes from its property key
+ * (NamedEvaluation): an identifier, string or numeric key, or a computed
+ * key that folds to one string. Null for other keys. */
+function propertyFunctionName(lowerer: Lowerer, name: ts.PropertyName): string | null {
+  if (ts.isComputedPropertyName(name)) return literalComputedKey(lowerer, name);
+  if (ts.isNumericLiteral(name)) return String(Number(name.text));
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  return null;
 }
 
 /** The runtime-keyed JS object literal (a computed key that doesn't fold):
@@ -406,6 +416,26 @@ export function lowerDynObjectLiteral(
     let v = boxValue
       ? boxValue(valueExpr as ts.Expression, raw)
       : lowerer.coerceToExpected(raw, DYN);
+    // A function that boxes into a property takes its name as Node gives
+    // it: a function read by name keeps that name (`{ f }`, `{ k: f }`),
+    // and an anonymous function or a method takes the property's name
+    // (`{ g: function () {} }`, `{ m() {} }`).
+    if (
+      !boxValue &&
+      v.kind === "dynFrom" &&
+      v.value.type.kind === "func" &&
+      v.fnName === undefined
+    ) {
+      let anonymous: ts.Node = valueExpr;
+      while (ts.isParenthesizedExpression(anonymous)) anonymous = anonymous.expression;
+      const name =
+        ts.isMethodDeclaration(prop) ||
+        ((ts.isFunctionExpression(anonymous) || ts.isArrowFunction(anonymous)) &&
+          !(ts.isFunctionExpression(anonymous) && anonymous.name))
+          ? propertyFunctionName(lowerer, prop.name!)
+          : jsFuncNameOf(valueExpr, lowerer);
+      if (name !== null) v = { ...v, fnName: name };
+    }
     // A JS object's array-valued properties retain the same source array.
     // Repeated references must compare equal and mutations remain shared.
     if (
@@ -3192,6 +3222,22 @@ export function lowerShorthandValue(
         prop,
         `generic functions as values (call '${propName.text}' directly)`,
       );
+    }
+    // A program class name (`{ parse, TomlError }`, an imported class
+    // included): the class object, exactly the long form `{ C: C }`.
+    // Generic classes keep the identifier path's contextual pinning.
+    const classInfo = lowerer.classBySymbol.get(resolved);
+    if (classInfo && !classInfo.generic) {
+      const decoratedGlobal = classInfo.classDecorators?.valueGlobalId;
+      if (decoratedGlobal !== undefined) {
+        return {
+          kind: "varRef",
+          localId: decoratedGlobal,
+          type: { kind: "classval", className: classInfo.def.name },
+          loc,
+        };
+      }
+      return lowerer.classValueRef(classInfo, propName);
     }
   }
   lowerer.rejectUnresolvedSymbol(

@@ -140,9 +140,11 @@ static void *bcs_capsule_retain(void *p) { return scr_stream_retain(p); }
 /* Also the capsule's tag. */
 static void bcs_capsule_release(void *p) { scr_stream_release(p); }
 
-static bool bcs_stream_vt(const ScrVt *vt) {
-  return (vt->pre >= scr_readable_vt.pre && vt->pre <= scr_readable_vt.post) ||
-         (vt->pre >= scr_writable_vt.pre && vt->pre <= scr_writable_vt.post);
+/* Whether `stream`, boxed as an "object:" typed ref, is a runtime stream. */
+static bool bcs_stream_vt(const ScrStream *stream) {
+  const ScrVt *vt = scr_stream_vt_of(stream);
+  return vt != NULL && ((vt->pre >= scr_readable_vt.pre && vt->pre <= scr_readable_vt.post) ||
+                        (vt->pre >= scr_writable_vt.pre && vt->pre <= scr_writable_vt.post));
 }
 
 static void bcs_rec_release(void *p);
@@ -154,7 +156,7 @@ static ScrStream *bcs_of(const ScrDyn *value) {
   if (value != NULL && value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len > 7 &&
       memcmp(value->v.typed_ref.type_key, "object:", 7) == 0) {
     ScrStream *stream = value->v.typed_ref.ptr;
-    return bcs_stream_vt(stream->vt) && scr_stream_native(stream, bcs_rec_release) ? stream : NULL;
+    return bcs_stream_vt(stream) && scr_stream_native(stream, bcs_rec_release) ? stream : NULL;
   }
   if (value == NULL || value->kind != SCR_DYN_OBJ || value->symbol_properties == NULL) return NULL;
   ScrDyn *capsule = scr_dyn_obj_get(value->symbol_properties, bcs_hidden_key, BCS_HIDDEN_LEN);
@@ -184,7 +186,7 @@ static ScrStream *bcs_native_of(const ScrDyn *value) {
       memcmp(value->v.typed_ref.type_key, "object:", 7) != 0)
     return NULL;
   ScrStream *stream = scr_dyn_typed_ref_unbox(value);
-  if (bcs_stream_vt(stream->vt)) return stream;
+  if (bcs_stream_vt(stream)) return stream;
   value->v.typed_ref.release(stream);
   return NULL;
 }

@@ -64,6 +64,23 @@ function isWritten(expr: ts.Node): boolean {
   return ts.isDeleteExpression(parent);
 }
 
+/** Whether an identifier assigns its binding where it declares it: a
+ * `var` with an initializer or in a for-in/for-of head, a destructured
+ * element, or a function declaration's name. A redeclared parameter keeps
+ * its binding, so each of these writes the parameter. */
+function isDeclarationWrite(id: ts.Identifier): boolean {
+  const parent = id.parent;
+  if (ts.isVariableDeclaration(parent) && parent.name === id) {
+    if (parent.initializer !== undefined) return true;
+    const head = parent.parent?.parent;
+    return (
+      (ts.isForInStatement(head) || ts.isForOfStatement(head)) && head.initializer === parent.parent
+    );
+  }
+  if (ts.isBindingElement(parent)) return parent.name === id;
+  return ts.isFunctionDeclaration(parent) && parent.name === id;
+}
+
 /** Whether sloppy-mode `arguments` in `fn`'s own body behaves exactly like
  * an unmapped copy of the call's arguments. A mapped arguments object
  * aliases the named parameters, so it differs from a copy only when one
@@ -107,7 +124,11 @@ export function argumentsAliasingUnobservable(fn: ts.SignatureDeclaration): bool
   let paramWritten = false;
   ts.walkPreorder(fn.body, (node) => {
     if (ts.isTypeNode(node)) return "skip";
-    if (ts.isIdentifier(node) && names.has(node.text) && isWritten(node)) {
+    if (
+      ts.isIdentifier(node) &&
+      names.has(node.text) &&
+      (isWritten(node) || isDeclarationWrite(node))
+    ) {
       paramWritten = true;
       return "stop";
     }

@@ -156,47 +156,47 @@ static ScrDyn *scr_dgram_dyn_take(ScrDgramDyn *e, int ev, size_t i) {
   return fn;
 }
 
-/* A proxy closure fired from the native list: its entry and key. The
- * listener is +1 for the call (taken out first when it was once). */
-static ScrDyn *scr_dgram_dyn_proxy_fn(ScrClosure *cb, int ev) {
+/* Calls an untyped listener with the socket as `this`, as EventEmitter
+ * does. */
+static void scr_dgram_dyn_call(ScrDgramDyn *e, const ScrDyn *fn, ScrDyn *const *args,
+                               size_t argc) {
+  scr_dyn_this_push(e, SCR_DYNH_DGRAM_SOCKET);
+  ScrDyn *r = scr_dyn_call(fn, args, argc, "listener");
+  scr_dyn_this_pop();
+  scr_dyn_release(r);
+}
+
+/* A proxy closure fired from the native list: its entry, key and
+ * listener. A once listener leaves the entry's list first. The proxy
+ * holds its own listener, so a listener that an earlier listener of the
+ * same emission removed still runs, as EventEmitter's emit runs its copy
+ * of the listener list. */
+static void scr_dgram_dyn_fire(ScrClosure *cb, int ev, ScrDyn *const *args, size_t argc) {
   ScrDgramDyn *e = (ScrDgramDyn *)scr_box_get_ref(cb->caps[0]);
   double id = scr_box_get_f64(cb->caps[1]);
   long i = scr_dgram_dyn_find(e, ev, id);
-  ScrDyn *fn = NULL;
-  if (i >= 0) {
-    fn = e->ev[ev].ls[i].once ? scr_dgram_dyn_take(e, ev, (size_t)i)
-                              : scr_dyn_retain(e->ev[ev].ls[i].fn);
-  }
-  scr_dgram_dyn_release_v(e);
-  return fn;
-}
-
-static void scr_dgram_dyn_call(ScrDyn *fn, ScrDyn *const *args, size_t argc) {
-  if (fn == NULL) return;
-  ScrDyn *r = scr_dyn_call(fn, args, argc, "listener");
-  scr_dyn_release(r);
+  if (i >= 0 && e->ev[ev].ls[i].once) scr_dyn_release(scr_dgram_dyn_take(e, ev, (size_t)i));
+  ScrDyn *fn = (ScrDyn *)scr_box_get_ref(cb->caps[2]);
+  scr_dgram_dyn_call(e, fn, args, argc);
   scr_dyn_release(fn);
+  scr_dgram_dyn_release_v(e);
 }
 
 static void scr_dgram_dyn_fire_message(ScrClosure *cb, ScrBytes *msg, ScrStr *addr,
                                        ScrStr *family, double port, double size) {
-  ScrDyn *fn = scr_dgram_dyn_proxy_fn(cb, SCR_DGRAM_EV_MESSAGE);
-  if (fn == NULL) return;
   ScrDyn *rinfo = scr_dyn_new_obj();
   scr_dyn_obj_set(rinfo, "address", 7, scr_dyn_new_str(addr));
   scr_dyn_obj_set(rinfo, "family", 6, scr_dyn_new_str(family));
   scr_dyn_obj_set(rinfo, "port", 4, scr_dyn_new_num(port));
   scr_dyn_obj_set(rinfo, "size", 4, scr_dyn_new_num(size));
   ScrDyn *args[2] = { scr_dyn_new_bytes(msg), rinfo };
-  scr_dgram_dyn_call(fn, args, 2);
+  scr_dgram_dyn_fire(cb, SCR_DGRAM_EV_MESSAGE, args, 2);
   scr_dyn_release(args[0]);
   scr_dyn_release(rinfo);
 }
 
 /* A runtime 'error' (msg) or an emitted one (scr_event_error_payload). */
 static void scr_dgram_dyn_fire_error(ScrClosure *cb, ScrStr *msg) {
-  ScrDyn *fn = scr_dgram_dyn_proxy_fn(cb, SCR_DGRAM_EV_ERROR);
-  if (fn == NULL) return;
   ScrDyn *err;
   if (scr_event_error_payload != NULL) {
     err = scr_dyn_from_error(scr_event_error_payload);
@@ -206,18 +206,18 @@ static void scr_dgram_dyn_fire_error(ScrClosure *cb, ScrStr *msg) {
     scr_error_release(e);
   }
   ScrDyn *args[1] = { err };
-  scr_dgram_dyn_call(fn, args, 1);
+  scr_dgram_dyn_fire(cb, SCR_DGRAM_EV_ERROR, args, 1);
   scr_dyn_release(err);
 }
 
 static void scr_dgram_dyn_fire_close(ScrClosure *cb) {
-  scr_dgram_dyn_call(scr_dgram_dyn_proxy_fn(cb, SCR_DGRAM_EV_CLOSE), NULL, 0);
+  scr_dgram_dyn_fire(cb, SCR_DGRAM_EV_CLOSE, NULL, 0);
 }
 static void scr_dgram_dyn_fire_listening(ScrClosure *cb) {
-  scr_dgram_dyn_call(scr_dgram_dyn_proxy_fn(cb, SCR_DGRAM_EV_LISTENING), NULL, 0);
+  scr_dgram_dyn_fire(cb, SCR_DGRAM_EV_LISTENING, NULL, 0);
 }
 static void scr_dgram_dyn_fire_connect(ScrClosure *cb) {
-  scr_dgram_dyn_call(scr_dgram_dyn_proxy_fn(cb, SCR_DGRAM_EV_CONNECT), NULL, 0);
+  scr_dgram_dyn_fire(cb, SCR_DGRAM_EV_CONNECT, NULL, 0);
 }
 
 static ScrDgramLs *scr_dgram_native_list(ScrDgramSocket *s, int ev) {
@@ -256,11 +256,13 @@ static void scr_dgram_dyn_on(ScrDgramDyn *e, int ev, const ScrDyn *fn, bool once
     (void *)&scr_dgram_dyn_fire_close, (void *)&scr_dgram_dyn_fire_listening,
     (void *)&scr_dgram_dyn_fire_connect,
   };
-  ScrClosure *proxy = scr_closure_new(fires[ev], 2);
+  ScrClosure *proxy = scr_closure_new(fires[ev], 3);
   proxy->caps[0] = scr_box_new_obj(&scr_dgram_dyn_retain_v, &scr_dgram_dyn_release_v, NULL);
   scr_box_set_ref(proxy->caps[0], scr_dgram_dyn_retain_v(e));
   proxy->caps[1] = scr_box_new(SCR_BOX_F64);
   scr_box_set_f64(proxy->caps[1], id);
+  proxy->caps[2] = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+  scr_box_set_ref(proxy->caps[2], scr_dyn_retain((ScrDyn *)fn));
   switch (ev) {
   case SCR_DGRAM_EV_MESSAGE:
     scr_dgram_on_message(s, proxy, &scr_dgram_dyn_fire_message, once);
@@ -375,10 +377,7 @@ static ScrDyn *scr_dgram_dyn_emit(ScrDgramDyn *e, ScrDyn *const *args, size_t ar
       if (e->ev[ev].ls[i].once) scr_dyn_release(scr_dgram_dyn_take(e, ev, i));
     }
     for (size_t i = 0; i < n; i++) {
-      if (!scr_exc_pending()) {
-        ScrDyn *r = scr_dyn_call(snap[i].fn, rest, nrest, "listener");
-        scr_dyn_release(r);
-      }
+      if (!scr_exc_pending()) scr_dgram_dyn_call(e, snap[i].fn, rest, nrest);
       scr_dyn_release(snap[i].fn);
     }
     free(snap);
@@ -395,7 +394,7 @@ static ScrDyn *scr_dgram_dyn_emit(ScrDgramDyn *e, ScrDyn *const *args, size_t ar
       continue;
     }
     if (scr_dgram_is_proxy(&snap[i])) {
-      scr_dgram_dyn_call(scr_dgram_dyn_proxy_fn(cb, ev), rest, nrest);
+      scr_dgram_dyn_fire(cb, ev, rest, nrest);
     } else if (ev == SCR_DGRAM_EV_ERROR) {
       const ScrDyn *er = nrest > 0 ? rest[0] : scr_dyn_undefined();
       if (text == NULL) {

@@ -28,6 +28,8 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
+    ...(features.dynBufferNum ? { dynBufferNum: true } : {}),
+    ...(features.builtinValues ? { builtinValues: true } : {}),
     events: features.processEvents,
     emitter: features.emitter,
     symbol: features.symbol,
@@ -50,6 +52,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     tls: features.tls,
     tlsCa: features.tlsCa,
     cipher: features.cipher,
+    ecdh: features.ecdh,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
   };

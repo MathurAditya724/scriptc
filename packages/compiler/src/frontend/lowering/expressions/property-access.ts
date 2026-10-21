@@ -1,4 +1,5 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
+import { staticallySelected } from "../static-typeof.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
@@ -27,6 +28,7 @@ import {
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
+  BYTES_U8,
   DYN,
   F64,
   type IrExpr,
@@ -156,10 +158,11 @@ import { narrowStoredClassValue, structuralReadType } from "../class-unions.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { lowerUnionFieldRead } from "./union-fields.js";
 import { errorPropertyRead } from "../error-methods.js";
-import { isSafeToRepeat } from "./evaluation-safety.js";
+import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/compression.js";
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
 import { keyedFieldRead } from "./keyed-field-targets.js";
+import { promisePrototypeValue } from "../thenables.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -517,7 +520,10 @@ export function lowerPropertyAccessExpr(
   // undefined value so stored probes compose with optional calls.
   if (
     stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis" &&
-    !lowerer.checker.getPropertyOfType(lowerer.typeOf(expr.expression), expr.name.text)
+    !lowerer.checker.getPropertyOfType(
+      lowerer.typeOf(staticallySelected(lowerer, expr.expression)),
+      expr.name.text,
+    )
   ) {
     return dynUndefinedExpr(loc);
   }
@@ -770,6 +776,10 @@ export function lowerPropertyAccessExpr(
     const typed = lowerProtocolPropertyRead(lowerer, expr);
     if (typed) return typed;
   }
+  {
+    const promiseMember = lowerPromiseConstructorRead(lowerer, expr);
+    if (promiseMember) return promiseMember;
+  }
   const handled =
     lowerer.lowerProcessEnvGet(expr) ??
     lowerer.lowerServerProperty(expr) ??
@@ -908,7 +918,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",
@@ -1017,7 +1027,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       return lowerer.maybeNarrow(
         {
           kind: "dynKeyGet",
@@ -1149,7 +1159,7 @@ export function lowerPropertyAccessExpr(
         type: STRING,
         loc: locOf(expr.name),
       };
-      const opt = hasOptionalChainGuard(expr.expression);
+      const opt = hasOptionalChainGuard(expr.expression, lowerer);
       const read: IrExpr = {
         kind: "dynKeyGet",
         key,
@@ -1244,7 +1254,7 @@ export function lowerPropertyAccessExpr(
       type: STRING,
       loc: locOf(expr.name),
     };
-    const opt = hasOptionalChainGuard(expr.expression);
+    const opt = hasOptionalChainGuard(expr.expression, lowerer);
     return lowerer.maybeNarrow(
       {
         kind: "dynKeyGet",
@@ -1663,6 +1673,38 @@ export function lowerIntrinsicProperty(
   if (netAddressStatic) return netAddressStatic;
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "isBuffer")
     return lowerCheckedPredicateValue(lowerer, "Buffer.isBuffer", "buffer", locOf(expr));
+  // Buffer statics as function values (`Buffer.byteLength.bind(Buffer)` in
+  // truncate-utf8-bytes): the checked forms take any argument as Node does.
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "byteLength")
+    return lowerer.lowerNativeCallableValue(
+      {
+        fn: "buffer.byteLenValue",
+        params: [DYN, DYN],
+        result: F64,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+      },
+      "Buffer.byteLength",
+      locOf(expr),
+    );
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "alloc")
+    return bufferAllocValue(lowerer, locOf(expr));
+  if (lowerer.stdlibGlobalMember(expr, "Buffer") === "compare")
+    return lowerer.lowerNativeCallableValue(
+      {
+        fn: "buffer.compareChk",
+        params: [DYN, DYN],
+        result: F64,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "required", type: DYN },
+        ],
+      },
+      "Buffer.compare",
+      locOf(expr),
+    );
   if (lowerer.stdlibGlobalMember(expr, "Date") === "now")
     return lowerer.lowerNativeCallableValue(
       {
@@ -2244,9 +2286,78 @@ export function lowerIntrinsicProperty(
         own(STDLIB_SURFACE.string, name) !== undefined
       : ARRAY_METHODS.has(name)
   ) {
+    // A JavaScript string method read as a value (smol-toml's
+    // `!!(''.isWellFormed)` feature probe): String.prototype's method, the
+    // runtime's interned function that runs it on its receiver.
+    if (kind === "string" && isJsSourceFile(expr.getSourceFile()) && !expr.questionDotToken) {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      const method: IrExpr = {
+        kind: "libCall",
+        fn: "dyn.builtinMethod",
+        args: [
+          { kind: "strLit", value: "String", type: STRING, loc: locOf(expr) },
+          { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
+        ],
+        type: DYN,
+        loc: locOf(expr),
+      };
+      return isSafeToDiscard(receiver)
+        ? method
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(expr.expression) }],
+            result: method,
+            type: DYN,
+            loc: locOf(expr),
+          };
+    }
     lowerer.unsupported("SC1090", expr, `${kind} methods as values (call '${name}' directly)`);
   }
   return null;
+}
+
+/** Buffer.alloc as a function value (`var alloc = Buffer.alloc` in
+ * tar-stream): the runtime checks the size, allocates and fills with
+ * `fill` and `encoding` as Node's alloc does. */
+function bufferAllocValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const name = "%builtin.Buffer.alloc";
+  if (!lowerer.builtinCallableValueFns.has(name)) {
+    lowerer.builtinCallableValueFns.set(name, name);
+    const params = ["size", "fill", "encoding"].map((id) => ({ localId: id, name: id, type: DYN }));
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: BYTES_U8,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: DYN, mutable: false })),
+      loc,
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "libCall",
+            fn: "buffer.allocValue",
+            args: params.map((p) => varRef(p.localId, DYN, loc)),
+            type: BYTES_U8,
+            loc,
+          },
+          loc,
+        },
+      ],
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: {
+      kind: "closure",
+      fnName: name,
+      captures: [],
+      type: { kind: "func", params: [DYN, DYN, DYN], ret: BYTES_U8 },
+      loc,
+    },
+    fnName: "alloc",
+    type: DYN,
+    loc,
+  };
 }
 
 /** A `T | undefined` class field read that the checker narrowed to `T`
@@ -2762,7 +2873,7 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
           kind: "dynKeyGet",
           value,
           key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
-          ...(expr.questionDotToken || hasOptionalChainGuard(expr.expression)
+          ...(expr.questionDotToken || hasOptionalChainGuard(expr.expression, lowerer)
             ? { optional: true as const }
             : {}),
           type: DYN,
@@ -3118,7 +3229,7 @@ export function lowerUnionProperty(
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(value, DYN),
       key,
-      ...(hasOptionalChainGuard(expr.expression) ? { optional: true as const } : {}),
+      ...(hasOptionalChainGuard(expr.expression, lowerer) ? { optional: true as const } : {}),
       type: DYN,
       loc: locOf(expr),
     };
@@ -4103,4 +4214,76 @@ function jsFunctionExpandoMember(lowerer: Lowerer, access: ts.PropertyAccessExpr
 export function declaredMemberOf(lowerer: Lowerer, receiver: ts.Expression, name: string): boolean {
   const symbol = lowerer.checker.getPropertyOfType(lowerer.typeOf(receiver), name);
   return !!symbol && symbol.declarations.length > 0;
+}
+
+/** Whether `expr` reads Promise.prototype, directly or as
+ * `promise.constructor.prototype`. The checker types it Promise<any>, but
+ * the value is an ordinary object, so a binding inferred from it stays
+ * checked-dynamic (as in Node, promise methods called on it throw). */
+export function isPromisePrototypeRead(lowerer: Lowerer, expr: ts.Expression | undefined): boolean {
+  if (!expr) return false;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return false;
+  if (expr.name.text !== "prototype") return false;
+  if (lowerer.stdlibGlobalMember(expr, "Promise") === "prototype") return true;
+  const inner = expr.expression;
+  return (
+    ts.isPropertyAccessExpression(inner) &&
+    !inner.questionDotToken &&
+    inner.name.text === "constructor" &&
+    lowerer.mapTypeOf(lowerer.typeOf(inner.expression))?.kind === "promise"
+  );
+}
+
+/** A promise's `constructor` (the Promise constructor value), and
+ * Promise.prototype read as `promise.constructor.prototype` or
+ * `Promise.prototype` (execa's `(async () => {})().constructor.prototype`):
+ * an object holding the runtime's then, catch and finally (thenables.ts).
+ * Null for other reads. */
+function lowerPromiseConstructorRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  const loc = locOf(expr);
+  const isPromise = (node: ts.Expression): boolean =>
+    lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "promise";
+  if (expr.name.text === "prototype") {
+    if (lowerer.stdlibGlobalMember(expr, "Promise") === "prototype")
+      return promisePrototypeValue(lowerer, loc);
+    const inner = expr.expression;
+    if (
+      ts.isPropertyAccessExpression(inner) &&
+      !inner.questionDotToken &&
+      inner.name.text === "constructor" &&
+      isPromise(inner.expression)
+    ) {
+      const receiver = lowerer.lowerExpr(inner.expression);
+      const prototype = promisePrototypeValue(lowerer, loc);
+      return isSafeToDiscard(receiver)
+        ? prototype
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+            result: prototype,
+            type: DYN,
+            loc,
+          };
+    }
+    return null;
+  }
+  if (expr.name.text === "constructor" && isPromise(expr.expression)) {
+    const receiver = lowerer.lowerExpr(expr.expression);
+    const ctor = builtinGlobalValue("Promise", loc)!;
+    return isSafeToDiscard(receiver)
+      ? ctor
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+          result: ctor,
+          type: DYN,
+          loc,
+        };
+  }
+  return null;
 }

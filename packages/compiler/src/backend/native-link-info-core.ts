@@ -49,6 +49,12 @@ export interface NativeLinkFeatures {
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
+  /** Fixed-width Buffer methods called on checked-dynamic values link
+   * scr_bytes_dyn.c; absent (false) for programs without them. */
+  dynBufferNum?: boolean;
+  /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
+   * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
+  builtinValues?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
@@ -74,6 +80,9 @@ export interface NativeLinkFeatures {
   /** crypto.createCipheriv/createDecipheriv: scr_cipher.c plus the mbedTLS
    * archive. */
   cipher: boolean;
+  /** crypto.createECDH and ECDH.convertKey: scr_ecdh.c plus the mbedTLS
+   * archive. */
+  ecdh: boolean;
   /** perf_hooks event-loop metrics: scr_perf_loop.c. */
   perfLoop: boolean;
   tlsCa: boolean;
