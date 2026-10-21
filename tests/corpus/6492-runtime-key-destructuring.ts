@@ -51,3 +51,14 @@ for (const resource of ["cpu", "memory", "disk"]) {
 const missingKey = process.argv.length > 99 ? "a" : "missing";
 const { [missingKey]: missingWeight } = weights;
 console.log(missingWeight, missingWeight === undefined);
+
+// The same in a nested module-scope pattern, with and without a default
+// for the nested source.
+const nestedConfig = { limits: { cpu: 2 } as Record<string, number> };
+const {
+  limits: { [missingKey]: nestedLimit },
+} = nestedConfig;
+const {
+  limits: { [missingKey]: defaultedLimit } = {},
+} = nestedConfig;
+console.log(nestedLimit, defaultedLimit === undefined);

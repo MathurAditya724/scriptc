@@ -5377,14 +5377,25 @@ export class Lowerer {
     /** `const { a, b } = table` over an index-signature record: a name that
      * is not a declared field reads the index signature and can be
      * missing. */
-    const scanRecordPattern = (name: ts.ObjectBindingPattern, init: ts.Expression): boolean => {
-      const sourceType = this.mapTypeOf(this.typeOf(init));
+    const scanRecordPattern = (
+      name: ts.ObjectBindingPattern,
+      init: ts.Expression,
+      sourceType: IrType | null = this.mapTypeOf(this.typeOf(init)),
+    ): boolean => {
       if (sourceType?.kind !== "record") return false;
       const shape = this.shapes.get(sourceType.shapeId);
-      const indexValue = shape?.indexValue;
-      if (!shape || shape.tuple || !indexValue || indexValue.kind === "dyn") return false;
+      if (!shape || shape.tuple) return false;
+      const indexValue = shape.indexValue;
       let changed = false;
       for (const el of name.elements.nodes) {
+        // A nested pattern reads its element the same way
+        // (`const { limits: { [key]: limit } } = config`).
+        if (!el.dotDotDotToken && el.name !== undefined && ts.isObjectBindingPattern(el.name)) {
+          if (scanRecordPattern(el.name, init, this.mapTypeOf(this.typeOf(el.name))))
+            changed = true;
+          continue;
+        }
+        if (!indexValue || indexValue.kind === "dyn") continue;
         if (el.dotDotDotToken || el.initializer || !ts.isIdentifier(el.name)) continue;
         const key = el.propertyName ?? el.name;
         // A computed key that folds to one name reads like that name; a
