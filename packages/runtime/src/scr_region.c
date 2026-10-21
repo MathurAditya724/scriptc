@@ -827,8 +827,8 @@ static void scr_rgn_walk_map(ScrRgnWalk *w, ScrMap *m) {
                              : (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
   ScrRgnSlotKind vk = valref ? scr_rgn_slot_kind(m->ops->val_release) : (ScrRgnSlotKind){SCR_RGN_S_NONE, NULL};
   for (size_t i = 0; i < m->nentries; i++) {
-    const ScrMapEntry *e = &m->entries[i];
-    if (!e->hash) continue; /* tombstone */
+    if (!scr_map_entry_live(m, i)) continue; /* tombstone */
+    const ScrMapEntry *e = scr_map_entry_at(m, i);
     scr_rgn_slot_as(w, scr_rgn_slot_ptr(e->key), kk);
     scr_rgn_slot_as(w, scr_rgn_slot_ptr(e->val), vk);
   }

@@ -10822,8 +10822,8 @@ void scr_jb_put_dyn_entries(ScrJsonBuf *b, void *rec, ScrMap *map, bool *first) 
   uint32_t count = map->nentries;
   bool indexed = false;
   for (uint32_t i = 0; i < count && !indexed; i++) {
-    if (!map->entries[i].hash) continue;
-    const ScrStr *key = (const ScrStr *)(uintptr_t)map->entries[i].key;
+    if (!scr_map_entry_live(map, i)) continue;
+    const ScrStr *key = (const ScrStr *)(uintptr_t)scr_map_entry_at(map, i)->key;
     uint32_t index;
     indexed = scr_key_array_index(key->data, key->len, &index);
   }

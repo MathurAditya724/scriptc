@@ -35,7 +35,8 @@ export function emitNumberMapEntry(host: LlvmEmitterContext, map: string, key: s
   return entry;
 }
 
-/** Load a found entry's value slot as `type` (double, i64 or ptr). */
+/** Load a found entry's value slot as `type` (double, i64 or ptr). The value
+ * is at byte 8 in both entry layouts (%ScrMapEntry, %ScrMapNumEntry). */
 export function emitNumberMapSlot(host: LlvmEmitterContext, entry: string, type: string): string {
   const B = host.B;
   const slot = B.tmp(),
@@ -190,13 +191,25 @@ export function emitNumberMapSetScalar(
 /** Declared by the inline Map/Set iteration steps; its presence makes the
  * emitter define sc_map_iter_entry and sc_map_iter_count (emitter.ts). */
 export const MAP_ITER_DECL = "declare zeroext i1 @scr_map_iter_live(ptr, double)";
+/** Declared by the iteration steps over a number-key Map/Set; its presence
+ * makes the emitter define sc_map_iter_entry_num and sc_map_iter_count. */
+export const MAP_ITER_NUM_DECL = "declare double @scr_map_iter_count(ptr)";
+/** scr_map.h SCR_MAP_NUM_DEAD: a dead number-key entry's key word. */
+export const SCR_MAP_NUM_DEAD = "9218868437227405313";
 
 /** The entry at an iteration index, or null for a tombstone or an index at
- * or past the entry count (the scr_map_iter_live test). */
-export function emitMapIterEntry(host: LlvmEmitterContext, map: string, index: string): string {
-  host.declare(MAP_ITER_DECL);
+ * or past the entry count (the scr_map_iter_live test). `num`: the map has
+ * number keys, whose entries are { key, val } (scr_map.h ScrMapNumEntry). */
+export function emitMapIterEntry(
+  host: LlvmEmitterContext,
+  map: string,
+  index: string,
+  num: boolean,
+): string {
+  host.declare(num ? MAP_ITER_NUM_DECL : MAP_ITER_DECL);
   const entry = host.B.tmp();
-  host.B.line(`${entry} = call ptr @sc_map_iter_entry(ptr ${map}, double ${index})`);
+  const helper = num ? "sc_map_iter_entry_num" : "sc_map_iter_entry";
+  host.B.line(`${entry} = call ptr @${helper}(ptr ${map}, double ${index})`);
   return entry;
 }
 
@@ -230,9 +243,10 @@ export function emitMapIterSlot(
   access: "f64" | "bool" | "ref",
   type: IrType,
   runtime: { decl: string; symbol: string },
+  num: boolean,
 ): string {
   const B = host.B;
-  const entry = emitMapIterEntry(host, map, index);
+  const entry = emitMapIterEntry(host, map, index, num);
   const found = B.tmp();
   B.line(`${found} = icmp ne ptr ${entry}, null`);
   const hit = B.newLabel("mapit.hit"),

@@ -1430,7 +1430,7 @@ export function emitMapLikeIntrinsic(
       return { name: emitMapIterStart(host, r.name), type: e.type };
     case "iterLive": {
       const i = host.emitExpr(e.args[0]!);
-      const entry = emitMapIterEntry(host, r.name, i.name);
+      const entry = emitMapIterEntry(host, r.name, i.name, kAcc === "f64");
       const t = B.tmp();
       B.line(`${t} = icmp ne ptr ${entry}, null`);
       return { name: t, type: e.type };
@@ -1441,10 +1441,16 @@ export function emitMapLikeIntrinsic(
       if (kAcc !== "ref") {
         const retTy = kAcc === "f64" ? "double" : kAcc === "bool" ? "zeroext i1" : "ptr";
         const symbol = `scr_map_iter_key_${kAcc}`;
-        const t = emitMapIterSlot(host, r.name, i.name, 0, kAcc === "str" ? "ref" : kAcc, key, {
-          decl: `declare ${retTy} @${symbol}(ptr, double)`,
-          symbol,
-        });
+        const t = emitMapIterSlot(
+          host,
+          r.name,
+          i.name,
+          0,
+          kAcc === "str" ? "ref" : kAcc,
+          key,
+          { decl: `declare ${retTy} @${symbol}(ptr, double)`, symbol },
+          kAcc === "f64",
+        );
         return host.own({ name: t, type: e.type });
       }
       const retTy = "ptr";
@@ -1459,10 +1465,19 @@ export function emitMapLikeIntrinsic(
       const i = host.emitExpr(e.args[0]!);
       const retTy = vAcc === "f64" ? "double" : vAcc === "bool" ? "i1" : "ptr";
       const symbol = `scr_map_iter_val_${vAcc}`;
-      const t = emitMapIterSlot(host, r.name, i.name, 1, vAcc, receiverType.value, {
-        decl: `declare ${vAcc === "bool" ? "zeroext i1" : retTy} @${symbol}(ptr, double)`,
-        symbol,
-      });
+      const t = emitMapIterSlot(
+        host,
+        r.name,
+        i.name,
+        1,
+        vAcc,
+        receiverType.value,
+        {
+          decl: `declare ${vAcc === "bool" ? "zeroext i1" : retTy} @${symbol}(ptr, double)`,
+          symbol,
+        },
+        kAcc === "f64",
+      );
       return host.own({ name: t, type: e.type });
     }
     case "iterEnter":
