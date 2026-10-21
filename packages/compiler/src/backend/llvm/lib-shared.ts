@@ -1465,7 +1465,6 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.classInherit": "scr_dyn_class_inherit",
   "dyn.builtinClass": "scr_dyn_builtin_class",
   "dyn.builtinStreamClass": "scr_dyn_builtin_stream_class",
-  "dyn.emitterMethod": "scr_dyn_emitter_method",
   "dyn.builtinInstanceOf": "scr_dyn_builtin_instanceof",
   "dyn.functionInstanceOf": "scr_dyn_function_instanceof",
   "dyn.classSuper": "scr_dyn_class_super",

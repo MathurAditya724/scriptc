@@ -5,9 +5,6 @@
   An untyped `emit` of an event that has a listener with typed parameters converts its arguments to the event's typed tuple before any listener runs, and throws a `TypeError` when they do not convert.
   Through an untyped value, `listeners()` and `rawListeners()` of an event with a listener that has typed parameters are unsupported, and `emit('error')` of an object that is not an Error with no `error` listener is unsupported.
   Untyped `newListener` and `removeListener` listeners receive `undefined` in place of a listener registered with typed parameters.
-  An untyped `emit` on, or an untyped read of `emit` from, an instance of a class that overrides `emit` is unsupported.
-  Calling `EventEmitter.prototype.emit` as a function value on a compiled emitter with more than 4 arguments after the event name is unsupported.
-  Calling EventEmitter.prototype's methods with an instance of a compiled class that does not extend EventEmitter as the receiver throws a `TypeError`.
-  Through an untyped value, a stream's `emit` and listener-introspection methods read as `undefined`.
+  Reading EventEmitter methods as properties through an untyped value (`typeof emitter.listeners`) answers `undefined`.
   `events.once` accepts EventEmitter and stream instances with a literal event name and an optional object-literal `{ signal }`; a stream's `data` event, other options values, and EventTarget emitters are unsupported.
   Reading `defaultMaxListeners` through a CommonJS destructured or member binding (`const { defaultMaxListeners } = require("events")`) is unsupported.

@@ -3611,10 +3611,6 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * functions over them get native stream state
    * (scr_dyn_builtin_stream.c). */
   "dyn.builtinStreamClass": { argTypes: [F64], result: DYN },
-  /** EventEmitter.prototype[name] off EventEmitter (0) above; the first
-   * read installs the program's dispatch (the DYN function) that runs
-   * those methods on compiled emitters. */
-  "dyn.emitterMethod": { argTypes: [STRING, DYN], result: DYN },
   /** `value instanceof C` for those constructors, over the value's
    * prototype chain. */
   "dyn.builtinInstanceOf": { argTypes: [DYN, F64], result: BOOL },

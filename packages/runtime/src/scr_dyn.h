@@ -1159,11 +1159,6 @@ ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
 ScrDyn *scr_dyn_builtin_class(double kind);
 bool scr_dyn_builtin_instanceof(ScrDyn *value, double kind);
 bool scr_dyn_function_instanceof(ScrDyn *value, ScrDyn *callee);
-/* EventEmitter.prototype[name] (+1); the first call installs DISPATCH,
- * the program's function that runs those methods on compiled emitters
- * (typed refs): called with the emitter as `this`, the method's
- * SCR_EE_M_* index, then the call's arguments. */
-ScrDyn *scr_dyn_emitter_method(const ScrStr *name, ScrDyn *dispatch);
 /* The stream half of those constructors (scr_dyn_builtin_stream.c, linked
  * with the dynBuiltinStream feature), registered with
  * scr_dyn_builtin_class_streams before the first stream class value is

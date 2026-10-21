@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/6600-emitter-method-values-untyped.ts"
- ],
- "diags": []
-}
