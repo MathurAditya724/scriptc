@@ -15,6 +15,7 @@ import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
 import { iteratorCanStep, iteratorValue } from "./iterator-consumption.js";
+import { notIterableSpelling } from "./iterable-spelling.js";
 import { isPrivateSplitConsumer } from "./split-consumers.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Statement lowering: the statement dispatch (lowerStmt), variable
@@ -10576,22 +10577,7 @@ function lowerForOfDyn(
   labels?: string[],
 ): IrStmt {
   const loc = locOf(stmt);
-  const headText = (e: ts.Expression): string | null => {
-    if (ts.isIdentifier(e)) return e.text;
-    if (ts.isPropertyAccessExpression(e) && !e.questionDotToken && ts.isIdentifier(e.name)) {
-      const base = headText(e.expression);
-      return base === null ? null : `${base}.${e.name.text}`;
-    }
-    return null;
-  };
-  const name = headText(stmt.expression);
-  const callee = ts.isCallExpression(stmt.expression) ? headText(stmt.expression.expression) : null;
-  const spell =
-    name !== null
-      ? `${name} is not iterable`
-      : callee !== null
-        ? `${callee} is not a function or its return value is not iterable`
-        : "";
+  const spell = notIterableSpelling(stmt.expression);
   const iterator = lowerer.declareHiddenLocal("%dofIterator", DYN);
   const next = lowerer.declareHiddenLocal("%dofNext", DYN);
   const fast = lowerer.declareHiddenLocal("%dofNative", BOOL);
