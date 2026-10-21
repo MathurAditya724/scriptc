@@ -113,6 +113,48 @@ test("ordinary code reports no divergence", () => {
   expect(coverage.divergences ?? []).toEqual([]);
 });
 
+test("likely-hot functions with untyped values report as a performance warning", async () => {
+  const { coverage } = analyze(fixture("dynamic-tier/hot.js"));
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.divergences ?? []).toEqual([]);
+  expect((coverage.performance ?? []).map((d) => d.code)).toEqual(["SC6101"]);
+  // Not a blocker or a divergence: only --fail-on=dynamic fails on it.
+  expect(coveragePasses(coverage, "divergences")).toBe(true);
+  expect(coveragePasses(coverage, "dynamic")).toBe(false);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test" });
+  expect(envelope.diagnostics.map((d) => [d.code, d.category, d.severity])).toEqual([
+    ["SC6101", "performance", "warning"],
+  ]);
+  await expect(report(fixture("dynamic-tier/hot.js"))).toMatchFileSnapshot(
+    "__snapshots__/coverage-dynamic-tier.txt",
+  );
+});
+
+test("the performance warning names the untyped value of each function", () => {
+  const { coverage } = analyze(fixture("dynamic-tier/typed-hot.ts"));
+  expect(coverage.performance?.[0]?.message.split("\n")).toEqual([
+    "2 functions that likely run often use untyped values, which runs slower than typed code:",
+    "  regionTotals (typed-hot.ts:3): `items` is `any`, in a loop",
+    "  countRegions (typed-hot.ts:9): `parsed` holds an untyped `JSON.parse` result, in a loop",
+  ]);
+});
+
+test("untyped setup code that runs once reports no performance warning", () => {
+  const { coverage } = analyze(fixture("dynamic-tier/quiet.ts"));
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.performance).toBeUndefined();
+  expect(coveragePasses(coverage, "dynamic")).toBe(true);
+});
+
+test("dynamic-tier code in npm packages is summarized by package", () => {
+  const { coverage } = analyze(fixture("dynamic-tier/package/main.ts"));
+  expect(coverage.performance?.[0]?.message.split("\n")).toEqual([
+    "1 function that likely runs often uses untyped values, which runs slower than typed code:",
+    "  sumAmounts (main.ts:6): `rows` is `any`, in a loop",
+    "  untyped code in npm packages: untyped-lib (1 function)",
+  ]);
+});
+
 test("statements of a signature-blocked function count as not static", () => {
   const { coverage } = analyze(fixture("blocked-signature.ts"));
   const un = coverage.unreached?.stats;
