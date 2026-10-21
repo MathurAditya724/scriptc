@@ -296,6 +296,10 @@ ScrBytes *scr_bytes_as_buffer(ScrBytes *bytes) {
 /* Nothing on an existing path calls this. */
 bool scr_bytes_is_buffer(const ScrBytes *bytes) { return bytes->is_buffer; }
 
+void scr_bytes_copy_brand(ScrBytes *dst, const ScrBytes *src) {
+  if (dst->elem == SCR_BYTES_U8 && src->elem == SCR_BYTES_U8) dst->is_buffer = src->is_buffer;
+}
+
 void scr_bytes_release(ScrBytes *b) {
   if (!b || b->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--b->rc == 0) {

@@ -4594,6 +4594,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * lone surrogate as U+FFFD). Borrowed arg; owned (+1) string; never throws. */
   "text.decode": { argTypes: [BYTES_U8], result: STRING },
   "bytes.bufferSource": { argTypes: [DYN], result: BYTES_U8 },
+  /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array
+   * result (map and filter of a Buffer return a Buffer). */
+  "bytes.copyBrand": { argTypes: [BYTES_U8, BYTES_U8], result: VOID },
   "text.decodeBufferSource": { argTypes: [DYN], result: STRING },
   "text.decodeOptions": { argTypes: [BYTES_U8, BOOL, BOOL], result: STRING },
   "text.decodeStream": { argTypes: [DYN, BYTES_U8, F64, BOOL, BOOL, BOOL], result: STRING },

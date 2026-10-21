@@ -545,6 +545,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stats.birthtime": "scr_stats_birthtime",
   "text.decode": "scr_text_decode",
   "bytes.bufferSource": "scr_bytes_buffer_source",
+  "bytes.copyBrand": "scr_bytes_copy_brand",
   "text.decodeBufferSource": "scr_text_decode_buffer_source",
   "text.decodeOptions": "scr_text_decode_options",
   "text.decodeStream": "scr_text_decode_stream",

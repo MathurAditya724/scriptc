@@ -161,6 +161,9 @@ ScrBytes *scr_bytes_raw_view(ScrBytes *bytes);
 ScrBytes *scr_bytes_as_buffer(ScrBytes *bytes); /* borrows; +1, Buffer factory only */
 /* Buffer.isBuffer over a typed view: the view's Buffer brand. Borrows. */
 bool scr_bytes_is_buffer(const ScrBytes *bytes);
+/* A fresh Uint8Array result of a Buffer's map or filter takes the Buffer
+ * brand (Node's species). Borrows both. */
+void scr_bytes_copy_brand(ScrBytes *dst, const ScrBytes *src);
 /* Views retain the root allocation; offsets are relative to its complete
  * byte storage, including when src is itself a subarray. */
 ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
