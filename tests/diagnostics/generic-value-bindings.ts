@@ -27,6 +27,15 @@ function outer(base: number): number {
 }
 console.log(outer(4));
 
+// Used as a value inside a function: each call of the enclosing function
+// makes a new function object (`make() !== make()`), and the compiled
+// instances are shared module functions.
+function make(): (x: number) => number {
+  const same = <T>(x: T): T => x;
+  return same<number>;
+}
+console.log(make() === make());
+
 // An ambient binding of generic function type now compiles to Node's exact
 // ReferenceError at the access (the declare-erasure stance — no diagnostic
 // here; the optional chain cannot guard the root's own throw).

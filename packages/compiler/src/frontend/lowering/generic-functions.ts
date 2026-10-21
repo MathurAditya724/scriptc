@@ -87,6 +87,10 @@ export interface GenericFnInfo {
    * defining literal must sit at module scope (no enclosing frame to
    * capture). */
   objectLiteral?: true;
+  /** A binding declared inside a function: each evaluation of the
+   * declaration makes a new function object in JavaScript, while the
+   * compiled instances are shared module functions, so only calls lower. */
+  functionScoped?: true;
   /** IMPLICIT-ANY monomorphization (npm-static JS): parallel to
    * decl.parameters — the param's own symbol when the slot is a BINDABLE
    * implicit-any parameter (untyped, identifier-named, never written in
@@ -1183,6 +1187,16 @@ export function lowerGenericFnValue(
     lowerer.requireExactArityValue(ref, ref, inst.params, funcType);
     lowerer.noteEdge(inst.name);
     return { kind: "closure", fnName: inst.name, captures: [], type: funcType, loc };
+  }
+  // Each call of the enclosing function makes a new function object for a
+  // binding declared inside it (`make() !== make()` when make returns
+  // it), which one shared compiled instance cannot give.
+  if (info.functionScoped) {
+    lowerer.unsupported(
+      "SC1090",
+      ref,
+      `generic arrow/function-expression bindings declared inside functions as values (each call of the enclosing function makes a new '${info.baseName}' function object, while its compiled instances are shared module functions — call '${info.baseName}' directly, or declare it at module scope)`,
+    );
   }
   const fenceUnpinned: () => never = () =>
     lowerer.unsupported(
@@ -2489,6 +2503,7 @@ export function bindingGenericFnInfoOf(
   if (fnNode.asteriskToken) lowerer.unsupported("SC1071", fnNode);
   // Inside a function, the compiled instances are module functions, so
   // the initializer may not use the enclosing frame.
+  let functionScoped = false;
   for (
     let n: ts.Node | undefined = decl.parent;
     n !== undefined && !ts.isSourceFile(n);
@@ -2502,6 +2517,7 @@ export function bindingGenericFnInfoOf(
           `generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of '${name}' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope)`,
         );
       }
+      functionScoped = true;
       break;
     }
   }
@@ -2548,6 +2564,7 @@ export function bindingGenericFnInfoOf(
     ),
     typeParams,
     instances: new Map(),
+    ...(functionScoped ? { functionScoped: true as const } : {}),
   };
   lowerer.bindingGenericFns.set(fnNode, info);
   lowerer.genericFnsBySymbol.set(sym, info);
