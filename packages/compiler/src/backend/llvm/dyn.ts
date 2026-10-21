@@ -3349,9 +3349,9 @@ export class LlDyn {
       B.startBlock(labels.get(DYN_KIND.ARR)!);
       {
         // Array.prototype.toString: join(",") — null/undefined ELEMENTS
-        // print empty (unlike top level), nested arrays flatten.
+        // print empty (unlike top level), nested arrays flatten. The length
+        // is read once, as join reads it.
         const n = this.lenOf(B, "%d");
-        const items = this.itemsOf(B, "%d");
         this.i64Loop(B, "ds.ar", n, (i, brNext) => {
           const nz = B.tmp();
           B.line(`${nz} = icmp ugt ${this.S} ${i}, 0`);
@@ -3362,7 +3362,18 @@ export class LlDyn {
           B.line(`call void @scr_jb_putc(ptr %b, i8 44)`);
           B.br(lel);
           B.startBlock(lel);
-          const e = this.itemAt(B, items, i);
+          // An element's toString can append to, shrink or reallocate the
+          // array: each index reads the current items, an index past the
+          // current length prints empty, and the element stays retained
+          // while it converts.
+          const now = this.lenOf(B, "%d");
+          const inside = B.tmp();
+          B.line(`${inside} = icmp ult ${this.S} ${i}, ${now}`);
+          const lIn = B.newLabel("ds.in");
+          const lSkip = B.newLabel("ds.sk");
+          B.condBr(inside, lIn, lSkip);
+          B.startBlock(lIn);
+          const e = this.itemAt(B, this.itemsOf(B, "%d"), i);
           const ek = this.kindOf(B, e);
           const isU = B.tmp();
           const isN = B.tmp();
@@ -3370,13 +3381,22 @@ export class LlDyn {
           B.line(`${isU} = icmp eq i32 ${ek}, ${DYN_KIND.UNDEF}`);
           B.line(`${isN} = icmp eq i32 ${ek}, ${DYN_KIND.NULL}`);
           B.line(`${unit} = or i1 ${isU}, ${isN}`);
-          const lSkip = B.newLabel("ds.sk");
           const lRec = B.newLabel("ds.rc");
           B.condBr(unit, lSkip, lRec);
           B.startBlock(lSkip);
           brNext();
           B.startBlock(lRec);
-          B.line(`call void @sc_ds_buf(ptr %b, ptr ${e})`);
+          const held = this.retainDyn(B, e);
+          host.declare(`declare void @scr_dyn_release_v(ptr)`);
+          B.line(`call void @sc_ds_buf(ptr %b, ptr ${held})`);
+          B.line(`call void @scr_dyn_release_v(ptr ${held})`);
+          // The first exception an element's conversion throws ends the
+          // conversion; later elements are not read.
+          const thrown = B.tmp();
+          for (const line of host.pendingTestLines(thrown)) B.line(line.trimStart());
+          const lMore = B.newLabel("ds.mo");
+          B.condBr(thrown, done, lMore);
+          B.startBlock(lMore);
         });
         B.br(done);
       }

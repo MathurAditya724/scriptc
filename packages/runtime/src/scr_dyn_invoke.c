@@ -72,8 +72,12 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
   case SCR_DYN_STR:
     scr_jb_write(b, d->v.str->data, d->v.str->len);
     return;
-  case SCR_DYN_ARR:
-    for (size_t i = 0; i < d->v.arr.len; i++) {
+  case SCR_DYN_ARR: {
+    /* The length is read once, as join reads it; an element's toString can
+     * append to or shrink the array (scr_dyn_arr_at answers undefined past
+     * its current end). */
+    size_t len = d->v.arr.len;
+    for (size_t i = 0; i < len; i++) {
       if (i > 0) scr_jb_putc(b, ',');
       ScrDyn *e = scr_dyn_arr_at(d, (double)i);
       if (!e) return;
@@ -82,6 +86,7 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
       if (scr_exc_pending()) return;
     }
     return;
+  }
   case SCR_DYN_OBJ: {
     const ScrDyn *marker = scr_dyn_obj_get(d, "%error", 6);
     if (marker) {

@@ -38,3 +38,29 @@ try { console.log(`${thrower}`); } catch (e) { console.log("template", e.message
 try { console.log([thrower].join()); } catch (e) { console.log("join", e.message); }
 try { console.log(String([thrower])); } catch (e) { console.log("String", e.message); }
 try { console.log([new RefNum(1), thrower].sort()); } catch (e) { console.log("sort", e.message); }
+
+// The conversions read the array's length once: elements an element's
+// toString appends are not converted, an index it removes reads empty, and
+// the first exception ends the conversion before later elements convert.
+const growing = [];
+growing.push({ toString() { growing.push("late"); return "g"; } }, "b");
+console.log(`${growing}`, growing.length);
+console.log(growing.join("|"), growing.length);
+console.log(String(growing), growing.length);
+const shrinking = [];
+shrinking.push({ toString() { shrinking.length = 1; return "s"; } }, "gone", "also");
+console.log(`${shrinking}`, shrinking.length);
+shrinking.push("gone", "also");
+console.log(shrinking.join("|"), shrinking.length);
+shrinking.push("gone", "also");
+console.log(String(shrinking), shrinking.length);
+const visited = [];
+const stops = [];
+stops.push(
+  { toString() { throw new Error("first"); } },
+  { toString() { visited.push("second"); return "second"; } },
+);
+try { console.log(`${stops}`); } catch (e) { console.log("template", e.message, visited.length); }
+try { console.log(stops.join()); } catch (e) { console.log("join", e.message, visited.length); }
+try { console.log(String(stops)); } catch (e) { console.log("String", e.message, visited.length); }
+try { console.log(`${[stops]}`); } catch (e) { console.log("nested", e.message, visited.length); }

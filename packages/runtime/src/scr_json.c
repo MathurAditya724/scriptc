@@ -7492,8 +7492,13 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     /* Object.prototype.toString with the Promise @@toStringTag. */
     return scr_str_new("[object Promise]", 16);
   case SCR_DYN_ARR: {
+    /* Array.prototype.join reads the length once and each element by index:
+     * an element's toString can append to or shrink the array, so an index
+     * past the current length reads undefined, and the element stays
+     * retained while it converts. */
+    size_t len = d->v.arr.len;
     ScrStr *out = scr_str_new("", 0);
-    for (size_t i = 0; i < d->v.arr.len; i++) {
+    for (size_t i = 0; i < len; i++) {
       if (i > 0) {
         ScrStr *comma = scr_str_new(",", 1);
         ScrStr *joined = scr_str_concat(out, comma);
@@ -7501,11 +7506,21 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
         scr_str_release(comma);
         out = joined;
       }
-      const ScrDyn *e = d->v.arr.items[i];
-      if (e->kind == SCR_DYN_UNDEF || e->kind == SCR_DYN_NULL) continue; /* JS join: empty */
+      ScrDyn *e = scr_dyn_arr_at(d, (double)i);
+      if (e->kind == SCR_DYN_UNDEF || e->kind == SCR_DYN_NULL) { /* JS join: empty */
+        scr_dyn_release(e);
+        if (scr_exc_pending()) {
+          scr_str_release(out);
+          return NULL;
+        }
+        continue;
+      }
       /* ToString with the object protocol: an element's own or inherited
        * toString/valueOf runs, as in Array.prototype.join. */
-      ScrStr *piece = scr_dyn_string_coerce_js(e);
+      ScrStr *piece = NULL;
+      if (e->kind == SCR_DYN_PROXY) scr_dyn_proxy_unsupported("string conversion");
+      else piece = scr_dyn_string_coerce_js(e);
+      scr_dyn_release(e);
       if (!piece || scr_exc_pending()) {
         scr_str_release(piece);
         scr_str_release(out);
