@@ -86,6 +86,7 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   child: 16,
   fileHandle: 17,
   dir: 44,
+  dgramSocket: 62,
   cryptoHash: 52,
   cryptoHmac: 53,
 };
@@ -96,6 +97,15 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
 const DYN_HANDLE_BOX_FN: Record<string, string> = {
   cryptoHash: "scr_crypto_hash_to_dyn",
   cryptoHmac: "scr_crypto_hash_to_dyn",
+  dgramSocket: "scr_dgram_to_dyn",
+};
+
+/** Handle kinds whose box holds a unit-owned wrapper rather than the
+ * handle itself (a dgram socket's box carries its untyped listeners):
+ * the unit's own function unwraps it, with the tag check and TypeError
+ * of scr_dyn_handle_unbox. */
+const DYN_HANDLE_UNBOX_FN: Record<string, string> = {
+  dgramSocket: "scr_dgram_from_dyn",
 };
 
 export const DYN_KIND = {
@@ -1448,29 +1458,22 @@ export class LlDyn {
    * differently), runs the checked-dynamic route — scr_json_parse plus the
    * dynCheck builder — which reports the exact error. Returns +1, or null
    * with the pending flag set. */
-  jsonParseHelper(t: IrType, fallback = false): string | null {
+  jsonParseHelper(t: IrType): string | null {
     if (t.kind !== "record" && t.kind !== "array") return null;
     const key = typeKey(t);
-    const cacheKey = fallback ? `fallback:${key}` : key;
-    const existing = this.jsonParsers.get(cacheKey);
+    const existing = this.jsonParsers.get(key);
     if (existing) return existing;
     if (!this.jsonSchemaSupported(t, new Set())) return null;
     const host = this.host;
     const name = `sc_jp_${this.jsonParsers.size}`;
-    this.jsonParsers.set(cacheKey, name);
+    this.jsonParsers.set(key, name);
     const schema = this.jsonSchema(t);
     const check = this.dynCheckHelper(t);
     host.declare(`declare ptr @scr_json_parse_schema(ptr, ptr)`);
     host.declare(`declare ptr @scr_json_parse(ptr)`);
     host.declare(`declare void @scr_dyn_release(ptr)`);
-    // A fallback site (dynCheck.fallback): a value that fails validation
-    // parks as the checked value (scr_dyn_check_recover) and the helper
-    // returns the dummy with no exception pending. Syntax errors still
-    // throw.
-    if (fallback) host.declare(`declare zeroext i1 @scr_dyn_check_recover(ptr)`);
-    const recover = fallback ? [`  call zeroext i1 @scr_dyn_check_recover(ptr %d)`] : [];
     this.defs.push(
-      `define internal ptr @${name}(ptr %text) ${FN_ATTRS} { ; JSON.parse as ${llvmCommentText(key)}${fallback ? " (fallback)" : ""}`,
+      `define internal ptr @${name}(ptr %text) ${FN_ATTRS} { ; JSON.parse as ${llvmCommentText(key)}`,
       `entry:`,
       `  %fast = call ptr @scr_json_parse_schema(ptr %text, ptr @${schema})`,
       `  %hit = icmp ne ptr %fast, null`,
@@ -1485,7 +1488,6 @@ export class LlDyn {
       `  ret ptr null`,
       `check:`,
       `  %v = call ptr @${check}(ptr %d, ptr null)`,
-      ...recover,
       `  call void @scr_dyn_release(ptr %d)`,
       `  ret ptr %v`,
       `}`,
@@ -2500,11 +2502,17 @@ export class LlDyn {
         // TypeError on any other kind or tag).
         const h = DYN_HANDLE_KINDS.get(t.kind);
         if (h) {
-          host.declare(`declare ptr @scr_dyn_handle_unbox(ptr, i32, ptr, ptr)`);
           const r = B.tmp();
-          B.line(
-            `${r} = call ptr @scr_dyn_handle_unbox(ptr %d, i32 ${DYN_HANDLE_TAG_NUM[t.kind]}, ptr %path, ptr ${want})`,
-          );
+          const unbox = DYN_HANDLE_UNBOX_FN[t.kind];
+          if (unbox) {
+            host.declare(`declare ptr @${unbox}(ptr, ptr, ptr)`);
+            B.line(`${r} = call ptr @${unbox}(ptr %d, ptr %path, ptr ${want})`);
+          } else {
+            host.declare(`declare ptr @scr_dyn_handle_unbox(ptr, i32, ptr, ptr)`);
+            B.line(
+              `${r} = call ptr @scr_dyn_handle_unbox(ptr %d, i32 ${DYN_HANDLE_TAG_NUM[t.kind]}, ptr %path, ptr ${want})`,
+            );
+          }
           B.terminate(`ret ptr ${r}`);
           break;
         }

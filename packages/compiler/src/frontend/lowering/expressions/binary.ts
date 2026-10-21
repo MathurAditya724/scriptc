@@ -45,6 +45,7 @@ import { lowerElementCompoundParts } from "./element-access.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { storedClassValueType } from "../lower-classes.js";
+import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
@@ -1153,7 +1154,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         }
         if (recv?.type.kind === "array" || recv?.type.kind === "bytes") {
           const receiver = lowerer.declareHiddenLocal("%setArray", recv.type);
-          const index = lowerer.lowerExpr(expr.left.argumentExpression);
+          const index = lowerOptionalNumber(
+            lowerer,
+            lowerer.lowerExpr(expr.left.argumentExpression),
+            locOf(expr.left.argumentExpression),
+            expr.left.argumentExpression,
+          );
           if (index.type.kind !== "f64")
             lowerer.unsupported(
               "SC1090",
@@ -1477,6 +1483,25 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
             ? { liveRef: true as const }
             : {}),
         };
+        return {
+          kind: "dynScalarEq",
+          left: scalarSide === left ? boxed : left,
+          right: scalarSide === right ? boxed : right,
+          ...(negated ? { negated: true as const } : {}),
+          type: BOOL,
+          loc,
+        };
+      }
+      // EventEmitter or a stream class against an untyped value in
+      // JavaScript: the untyped value can hold the class's untyped
+      // constructor (coerceToExpected), which compares by identity.
+      if (
+        dynSide.type.kind === "dyn" &&
+        isJsSourceFile(expr.getSourceFile()) &&
+        ((scalarSide.type.kind === "moduleNs" && scalarSide.type.moduleId === "builtin:events") ||
+          (scalarSide.kind === "classRef" && builtinClassKind(scalarSide.className) !== null))
+      ) {
+        const boxed = lowerer.coerceToExpected(scalarSide, DYN);
         return {
           kind: "dynScalarEq",
           left: scalarSide === left ? boxed : left,

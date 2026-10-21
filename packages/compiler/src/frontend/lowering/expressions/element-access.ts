@@ -1306,9 +1306,14 @@ export function lowerRecordKeyRead(
   ) {
     declared = shape.fields[0]!.type;
   }
+  // Fields of different types answer a checked-dynamic value where nothing
+  // typed the read: in JavaScript, and where the checker types it 'any'
+  // (an object literal of a package's JavaScript indexed by a runtime key,
+  // such as a numeric enum's reverse mapping).
   if (
     !declared &&
-    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
+      (lowerer.typeOf(expr).flags & ts.TypeFlags.Any) !== 0) &&
     recordKeyResultOk(lowerer, shape, DYN)
   )
     declared = DYN;
@@ -1488,7 +1493,12 @@ export function lowerElementCompoundParts(
       "compound assignment through a non-native array or byte view",
     );
   }
-  const index = lowerer.lowerExpr(target.argumentExpression);
+  const index = lowerOptionalNumber(
+    lowerer,
+    lowerer.lowerExpr(target.argumentExpression),
+    locOf(target.argumentExpression),
+    target.argumentExpression,
+  );
   if (index.type.kind !== "f64")
     lowerer.unsupported("SC1090", target.argumentExpression, "indexing with non-number keys");
   const receiverLocal = lowerer.declareHiddenLocal("%compoundArray", receiver.type);
@@ -1831,7 +1841,14 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     const recv = lowerer.lowerExpr(target.expression);
     // The checker's flow type is a typed array, but the storage is wider.
     if (recv.type.kind !== "bytes") return lowerWiderBytesWrite(lowerer, expr, target, recv);
-    const index = lowerer.lowerExpr(target.argumentExpression);
+    // An index the checker types as a number but whose storage may hold
+    // undefined (a hole read) converts with ToNumber, as the reads do.
+    const index = lowerOptionalNumber(
+      lowerer,
+      lowerer.lowerExpr(target.argumentExpression),
+      locOf(target.argumentExpression),
+      target.argumentExpression,
+    );
     if (index.type.kind === "dyn" && recv.type.kind === "bytes") {
       return {
         kind: "exprStmt",

@@ -85,10 +85,14 @@ test("@types/node 20 class-declared timer handles compile and match Node", async
   });
   if (!result.ok)
     throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-  const [node, native] = await Promise.all([
-    execFileAsync(process.execPath, [join(dir, "main.ts")], { cwd: dir, encoding: "utf8" }),
-    execFileAsync(result.binaryPath, [], { cwd: dir, encoding: "utf8" }),
-  ]);
+  // One after the other, and the timer 200 ms out: under load Node's own
+  // startup can outlast a short timer, which then runs before the
+  // immediate.
+  const node = await execFileAsync(process.execPath, [join(dir, "main.ts")], {
+    cwd: dir,
+    encoding: "utf8",
+  });
+  const native = await execFileAsync(result.binaryPath, [], { cwd: dir, encoding: "utf8" });
   expect(native.stdout).toBe(node.stdout);
   expect(native.stdout).toBe("hasRef true\nimmediate\nfired true\n");
 }, 180_000);

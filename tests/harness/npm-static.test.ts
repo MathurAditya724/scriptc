@@ -76,7 +76,7 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2590)
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2590, 2595)
     ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
     ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
@@ -1435,6 +1435,15 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       "gtchunk17",
       "gtcjsdist",
       "gtcore",
+    ]);
+  }, 180_000);
+
+  // 2595: a minified chunk whose top-level var statement mixes require
+  // bindings with a class extending the events binding; the bindings own no
+  // storage, so the constructor reaches the modules through them.
+  test("bundled chunk 2595-bundled-chunk-emitter builds its emitters through require bindings", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2595-bundled-chunk-emitter/main.ts"), [
+      "gtchunkee",
     ]);
   }, 180_000);
 

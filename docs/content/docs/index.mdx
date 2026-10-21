@@ -68,24 +68,25 @@ Programs are checked against the `es2025` standard library, scriptc's own declar
 
 ## Runtime type checks
 
-Compiled code relies on types, so scriptc checks a value whose type is only known at runtime before using it as a specific type. Parsed JSON that matches the type you cast it to uses the type's native layout. A value that does not match continues as the value it is, as under Node.js, which does not check the `as Config` assertion:
+Compiled code relies on types, so scriptc checks a value whose type is only known at runtime before using it as a specific type. For example, parsed JSON must match the type you cast it to:
 
 ```ts:cast.ts
 type Config = { port: number };
 
-for (const text of ['{"port": 8080}', '{"port": "eighty"}']) {
-  const config = JSON.parse(text) as Config;
-  console.log(config.port, typeof config.port);
+try {
+  const config = JSON.parse('{"port": "eighty"}') as Config;
+  console.log(config.port);
+} catch (error) {
+  if (error instanceof Error) console.log(error.message);
 }
 ```
 
 ```console
 $ scriptc run cast.ts
-8080 number
-eighty string
+expected number at $.port, got string
 ```
 
-See [runtime type checks](/docs/limitations#runtime-type-checks) for where a mismatch still throws.
+Under Node.js, the same `as Config` assertion performs no check. See [runtime type checks](/docs/limitations#runtime-type-checks) for details.
 
 ## Build-time evaluation
 

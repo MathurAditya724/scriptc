@@ -176,6 +176,7 @@ import {
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { lowerChildMethodValue, lowerChildPropertyCall } from "./handle-properties.js";
 import { classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import { structuralReadType } from "./class-unions.js";
@@ -1463,6 +1464,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerCipherMethodCall(lowerer, expr, expr.expression) ??
       lowerFileHandleMethodCall(lowerer, expr, expr.expression) ??
       lowerDirMethodCall(lowerer, expr, expr.expression) ??
+      lowerChildPropertyCall(lowerer, expr, expr.expression) ??
       lowerer.lowerChildMethodCall(expr, expr.expression) ??
       // Piped child-output stream receivers — on/once("data" | "end").
       lowerChildStreamMethodCall(lowerer, expr, expr.expression) ??
@@ -1645,6 +1647,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         const t = ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr);
         if (t) return nsUndefRead(lowerer, ambientRoot.text, expr, t);
       }
+    }
+    {
+      const childCall = lowerChildPropertyCall(lowerer, expr, expr.expression, true);
+      if (childCall) return childCall;
     }
     // The lib fence's METHOD-CALL chokepoint: a stdlib-declared member
     // that every lowering above declined — an unlowered member
@@ -3797,8 +3803,20 @@ function lowerDynReceiverMethodCall(
         )
     )
       return true;
+    // A standard-library member spelled as a function-typed property
+    // (undici-types declares Headers.append/forEach/... and the body mixin
+    // as `readonly append: (...) => void`; scriptc's own declarations use
+    // methods) is still the handle's native method: it takes the shared
+    // receiver dispatch below either way (which also calls a plain object's
+    // own member), so the lowering does not depend on which declaration
+    // file supplies the type.
+    const libMethod =
+      prop !== undefined &&
+      prop.declarations.length > 0 &&
+      prop.declarations.every((decl) => lowerer.isStdlibFile(decl.getSourceFile()));
     return (
       prop !== undefined &&
+      !libMethod &&
       prop.declarations.some(
         (decl) => ts.isPropertyDeclaration(decl) || ts.isPropertySignature(decl),
       )
@@ -9399,7 +9417,9 @@ function lowerObjLitGenericMethodCall(
     ) {
       const value = tryLowerExpression(lowerer, access.expression);
       // Builtin function values held as checked-dynamic functions
-      // (String.fromCharCode, JSON.stringify) bind the same way.
+      // (String.fromCharCode, JSON.stringify) bind the same way, and so
+      // does a member that lowers to a checked-dynamic value (a native
+      // handle's method read in JavaScript).
       if (
         value &&
         (value.type.kind === "dyn" ||
@@ -9410,6 +9430,19 @@ function lowerObjLitGenericMethodCall(
         return {
           kind: "dynInvoke",
           recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
+          method: name,
+          calleeName: ts.getTextOfNode(access),
+          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          type: DYN,
+          loc,
+        };
+      }
+      const childMethod = lowerChildMethodValue(lowerer, access.expression);
+      if (childMethod && !call.arguments.nodes.some(ts.isSpreadElement)) {
+        const loc = locOf(call);
+        return {
+          kind: "dynInvoke",
+          recv: childMethod,
           method: name,
           calleeName: ts.getTextOfNode(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
@@ -10281,7 +10314,33 @@ export function lowerStaticNumberGlobal(
     const radix: IrExpr = args[1]
       ? lowerer.lowerExprExpecting(args[1], F64)
       : { kind: "numLit", value: 0, type: F64, loc };
-    const optional = optionalCallValue(lowerer, args[0]!);
+    let optional = optionalCallValue(lowerer, args[0]!);
+    let lowered: IrExpr | null = null;
+    // A possibly-missing or untyped text in JavaScript (`parseInt(process.
+    // env.PORT, 10)`): TypeScript rejects the call, Node parses the text
+    // of whatever arrives ("undefined").
+    if (optional === null && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const argT = lowerer.typeOf(args[0]!);
+      const parts = argT.isUnionType() ? ts.constituentTypes(argT) : [argT];
+      if (
+        parts.some(
+          (part) =>
+            (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Any)) !== 0,
+        )
+      ) {
+        const raw = lowerer.lowerExpr(args[0]!);
+        if (raw.type.kind === "union") {
+          optional = raw;
+          lowered = raw;
+        } else {
+          const text: IrExpr =
+            raw.type.kind === "dyn"
+              ? { kind: "libCall", fn: "dyn.toStringCoerce", args: [raw], type: STRING, loc }
+              : lowerer.coerceInto(args[0]!, raw, STRING);
+          return { kind: "libCall", fn: "num.parseInt", args: [text, radix], type: F64, loc };
+        }
+      }
+    }
     if (optional?.type.kind === "union") {
       const def = lowerer.unions.get(optional.type.unionId);
       const stringTag = def?.arms.findIndex((arm) => arm.kind === "string") ?? -1;
@@ -10380,7 +10439,10 @@ export function lowerStaticNumberGlobal(
         return { kind: "call", callee: helper, args: [optional, radix], type: F64, loc };
       }
     }
-    const s = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const s =
+      lowered !== null
+        ? lowerer.coerceInto(args[0]!, lowered, STRING)
+        : lowerer.lowerExprExpecting(args[0]!, STRING);
     return { kind: "libCall", fn: "num.parseInt", args: [s, radix], type: F64, loc };
   }
   // STATIC parseFloat/isFinite over exactly-typed arguments —

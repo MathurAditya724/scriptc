@@ -398,7 +398,11 @@ struct ScrClosure;
  * (-1) without side effects: f64 elements are their own keys, and reference
  * elements read theirs through the borrowed `key` closure (element ->
  * number). Keys that are all numbers other than NaN and -0 then sort without
- * calling `f`, with the same stable result. */
+ * calling `f`, with the same stable result. An `order` from 2 says `f`
+ * orders reference elements by several such keys, the first deciding: the
+ * low byte is the key count (2..8), each bit from bit 8 marks a key that
+ * orders descending, and `key` reads key j of an element (element, j ->
+ * number). */
 void scr_arr_sort_values(ScrArr *a, double count, struct ScrClosure *f, uint32_t arity,
                          int32_t order, struct ScrClosure *key);
 /* Comparator sort of a dense array in place: `a.sort(f)`, or with `owned`

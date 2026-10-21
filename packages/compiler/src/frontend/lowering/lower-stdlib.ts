@@ -622,6 +622,20 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
         : lowerer.lowerExpr(argument);
       stmts.push({ kind: "exprStmt", expr: discarded, loc: discarded.loc });
     }
+    // A union input holding a URL arm (`string | URL`) converts through the
+    // checked-dynamic input path, which reads the URL's href at the call
+    // like the bare-URL arm below; narrowing it to a string would throw on
+    // the URL arm.
+    const unionWithUrl =
+      input.type.kind === "union" &&
+      (lowerer.unions.get(input.type.unionId)?.arms.some((arm) => arm.kind === "url") ?? false) &&
+      lowerer.dynConvertible(input.type);
+    const dynInput: IrExpr | null =
+      input.type.kind === "dyn"
+        ? inputRef
+        : unionWithUrl
+          ? { kind: "dynFrom", value: inputRef, type: DYN, loc: locOf(inputNode) }
+          : null;
     const url: IrExpr =
       input.type.kind === "url"
         ? {
@@ -631,13 +645,13 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
             type: STRING,
             loc: locOf(inputNode),
           }
-        : input.type.kind === "dyn"
-          ? inputRef
+        : dynInput !== null
+          ? dynInput
           : lowerer.coerceInto(inputNode, inputRef, STRING);
     const answer: IrExpr = {
       kind: "libCall",
-      fn: input.type.kind === "dyn" ? "fetch.input" : "fetch.start",
-      args: [input.type.kind === "dyn" ? inputRef : url, initRef],
+      fn: dynInput !== null ? "fetch.input" : "fetch.start",
+      args: [url, initRef],
       type: { kind: "promise", inner: DYN },
       loc,
     };
@@ -2403,7 +2417,16 @@ export function lowerStdlibMethodCall(
   // missing read, or the read itself) converts to NaN, ToNumber's answer
   // for undefined, instead of trusting the checker's number type.
   const mathArg = (a: ts.Expression): IrExpr => lowerToNumberArgument(lowerer, a);
-  if (staticMath && name === "hypot") {
+  // Math.hypot, and Math.max/Math.min with a spread among other arguments
+  // (`Math.max(...xs, 5)`): the arguments in order, spreads flattened, as
+  // one number[] the runtime folds.
+  if (
+    staticMath &&
+    (name === "hypot" ||
+      ((name === "max" || name === "min") &&
+        call.arguments.nodes.length > 1 &&
+        call.arguments.nodes.some(ts.isSpreadElement)))
+  ) {
     const elems = call.arguments.nodes.map((a) =>
       ts.isSpreadElement(a) ? lowerer.lowerExprExpecting(a.expression, arrayOf(F64)) : mathArg(a),
     );
@@ -2415,7 +2438,8 @@ export function lowerStdlibMethodCall(
       type: arrayOf(F64),
       loc,
     };
-    return { kind: "libCall", fn: staticMath.fn, args: [packed], type: F64, loc };
+    const fn = name === "max" ? "math.maxArr" : name === "min" ? "math.minArr" : staticMath.fn;
+    return { kind: "libCall", fn, args: [packed], type: F64, loc };
   }
   if (staticMath && call.arguments.nodes.every((a) => !ts.isSpreadElement(a))) {
     // Math.max/Math.min at ANY plain arity — Node's are variadic. The
@@ -2444,9 +2468,8 @@ export function lowerStdlibMethodCall(
     }
   }
   // `Math.max(...xs)` / `Math.min(...xs)` over a number[]: a STATIC
-  // runtime fold (NaN poisons and ±0 follows JS ordering). This
-  // one-spread form lowers; mixed spread/positional argument lists keep
-  // the nest-calls fence.
+  // runtime fold (NaN poisons and ±0 follows JS ordering). Mixed
+  // spread/positional argument lists pack into one array above.
   if (
     isMath &&
     (name === "max" || name === "min") &&

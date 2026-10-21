@@ -82,6 +82,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.inherits": "scr_util_inherits",
   "util.deprecate": "scr_util_deprecate",
   "util.callbackify": "scr_util_callbackify",
+  "util.promisifyDyn": "scr_util_promisify",
   "util.debuglog": "scr_util_debuglog",
   "util.typeIs": "scr_dyn_util_type_is",
   "util.typeValue": "scr_dyn_util_type_value",
@@ -544,6 +545,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stats.birthtime": "scr_stats_birthtime",
   "text.decode": "scr_text_decode",
   "bytes.bufferSource": "scr_bytes_buffer_source",
+  "bytes.copyBrand": "scr_bytes_copy_brand",
   "text.decodeBufferSource": "scr_text_decode_buffer_source",
   "text.decodeOptions": "scr_text_decode_options",
   "text.decodeStream": "scr_text_decode_stream",
@@ -573,6 +575,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.hashStream": "scr_crypto_hash_stream",
   "crypto.hashStreamPiped": "scr_crypto_hash_stream_piped",
   "crypto.cipherNew": "scr_crypto_cipher_new",
+  "crypto.ecdhNew": "scr_crypto_ecdh_new",
+  "crypto.ecdhConvertKey": "scr_crypto_ecdh_convert_key",
   "crypto.hmacNewStr": "scr_crypto_hmac_new_str",
   "crypto.hmacNewBytes": "scr_crypto_hmac_new_bytes",
   "crypto.hashUpdateStr": "scr_crypto_hash_update_str",
@@ -651,9 +655,6 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
-  // Checked-cast fallback reads (scr_json.c); take answers +1.
-  "checkedCast.fallbackTaken": "scr_dyn_check_fallback_taken",
-  "checkedCast.fallbackTake": "scr_dyn_check_fallback_take",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).
@@ -952,6 +953,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.iterPack": "scr_dyn_iter_pack",
   "dyn.destructureRest": "scr_dyn_destructure_rest",
   "dyn.iterator": "scr_dyn_iterator",
+  "dyn.asyncIteratorOpen": "scr_dyn_async_iterator_open",
+  "dyn.asyncIteratorWasSync": "scr_dyn_async_iterator_was_sync",
   "dyn.arrayFromIterator": "scr_dyn_array_from_iterator",
   "dyn.iteratorResult": "scr_dyn_iterator_result",
   "dyn.iteratorCanStep": "scr_dyn_iterator_can_step",
@@ -974,6 +977,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.promiseAllSettled": "scr_dyn_promise_all_settled",
   "dyn.promiseAny": "scr_dyn_promise_any",
   "dyn.promiseResolve": "scr_dyn_promise_resolve",
+  "child.propsInstall": "scr_dyn_handle_props_install",
+  "child.propsDefine": "scr_dyn_define_property_hp",
+  "child.propsDescriptor": "scr_dyn_get_own_property_descriptor_hp",
+  "child.propsResolve": "scr_dyn_promise_resolve_hp",
   "dyn.typeof": "scr_dyn_typeof",
   "dyn.objectTag": "scr_dyn_object_tag_of",
   "dyn.freeze": "scr_dyn_freeze",
@@ -1555,6 +1562,8 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "dyn.builtinStreamClass",
   // Decipheriv.setAuthTag reports DEP0182 on the next tick.
   "crypto.cipherNew",
+  // ecdh.setPublicKey reports DEP0031 on the next tick.
+  "crypto.ecdhNew",
   // WebCrypto results settle through the deferred crypto queue.
   "webcrypto.sign",
   "webcrypto.verify",
@@ -1567,6 +1576,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
   "util.callbackify",
+  "util.promisifyDyn",
   "util.debuglog",
   "worker.new",
   "worker.parentPort",

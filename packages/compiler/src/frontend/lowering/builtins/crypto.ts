@@ -1,5 +1,6 @@
 import { lowerBuiltinByteInput, errorFirstBytesCallback, errorFirstCallback } from "./arguments.js";
 import { isKeyObjectValue } from "./key-object.js";
+import { lowerCreateEcdh } from "./ecdh.js";
 import { boolLit, dynUndefinedExpr, nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
@@ -408,6 +409,7 @@ export function lowerCryptoModuleCall(
       loc,
     };
   }
+  if (bi.member === "createECDH") return lowerCreateEcdh(lowerer, expr);
   if (bi.member === "createHmac") {
     if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
@@ -896,7 +898,7 @@ const CIPHER_METHODS = new Set([
 
 /** V8's spelling of a callee in "is not a function" messages: call
  * arguments render as "(...)". */
-function v8CalleeText(node: ts.Expression): string {
+export function v8CalleeText(node: ts.Expression): string {
   if (ts.isPropertyAccessExpression(node))
     return `${v8CalleeText(node.expression)}.${node.name.text}`;
   if (ts.isCallExpression(node)) return `${v8CalleeText(node.expression)}(...)`;

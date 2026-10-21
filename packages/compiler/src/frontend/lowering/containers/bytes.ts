@@ -1,4 +1,4 @@
-import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import { boolLit, dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { BUF_NUM_METHODS } from "./buffer-numeric-methods.js";
 import * as ts from "../../ts7/adapter.js";
 import {
@@ -12,6 +12,9 @@ import {
   type IrBytesIntrinsicMethod,
   type IrExpr,
   type IrLibFn,
+  type IrLocal,
+  type IrParam,
+  type IrStmt,
   type IrType,
   STRING,
   type SrcLoc,
@@ -38,6 +41,9 @@ import {
 import { lowerCheckedArrayFrom } from "./array-construction.js";
 import { lowerToNumberArgument } from "../lower-exprs.js";
 import { lowerBytesIteratorValue } from "../iterator-adapters.js";
+import { lowerArrayCallback } from "./callback-arguments.js";
+import { findPredicateOk, predicateToBoolean } from "./array-callbacks.js";
+import { typeKey } from "../../type-mapper.js";
 
 /** TypedArray.prototype.sort and toSorted. The receiver and comparator
  * expressions are evaluated before entering the helper (buildBytesSortFn).
@@ -140,7 +146,7 @@ function lowerBytesSortCall(
   }
   const arity = fnArg.type.params.length;
   const keyed = closureKeyOrder(lowerer.liftedFns, fnArg);
-  const order = keyed !== null && keyed.read === null ? keyed.order : null;
+  const order = keyed?.length === 1 && keyed[0]!.read === null ? keyed[0]!.order : null;
   const helper = helperFor(`${arity}${order === null ? "" : `:keyed${order}`}`, arity, true, order);
   return {
     kind: "call",
@@ -149,6 +155,371 @@ function lowerBytesSortCall(
     type: bytesT,
     loc,
   };
+}
+
+/** The TypedArray.prototype callback methods. */
+type BytesCallbackMethod =
+  | "forEach"
+  | "map"
+  | "filter"
+  | "some"
+  | "every"
+  | "find"
+  | "findIndex"
+  | "findLast"
+  | "findLastIndex"
+  | "reduce"
+  | "reduceRight";
+
+const BYTES_CALLBACK_METHODS: ReadonlySet<string> = new Set<BytesCallbackMethod>([
+  "forEach",
+  "map",
+  "filter",
+  "some",
+  "every",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "reduce",
+  "reduceRight",
+]);
+
+/** The typed-array callback methods (forEach, map, filter, some, every,
+ * find, findIndex, findLast, findLastIndex, reduce, reduceRight). The
+ * receiver, the callback and reduce's initial value evaluate in order
+ * before the helper runs. The helper reads the length once (typed arrays
+ * have no holes) and each element when it visits it, so the callback's
+ * writes show in later elements. The callback receives the element, its
+ * index and the typed array (reduce's receive the accumulator first). map
+ * and filter return a new typed array of the receiver's kind; map stores
+ * each result with the element conversion of that kind. A thisArg keeps
+ * the fence, as for arrays. */
+function lowerBytesCallbackCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  method: BytesCallbackMethod,
+  bytesT: IrType & { kind: "bytes" },
+): IrExpr {
+  const loc = locOf(call);
+  const nArgs = call.arguments.nodes.length;
+  const reduce = method === "reduce" || method === "reduceRight";
+  if (nArgs < 1 || nArgs > (reduce ? 2 : 1) || call.arguments.nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `.${method} with ${nArgs} arguments on ${BYTES_ELEMENT_NAME[bytesT.elem]}`,
+      call,
+      reduce ? undefined : "the thisArg parameter has no lowering — use an arrow function",
+    );
+  }
+  const argNode = call.arguments.nodes[0]!;
+  const hasInit = reduce && nArgs === 2;
+  const accT = reduce ? (hasInit ? lowerer.irTypeOf(call) : F64) : null;
+  if (accT !== null && (accT.kind === "void" || accT.kind === "func"))
+    lowerer.badType(call, lowerer.typeOf(call));
+  const receiver = lowerer.lowerExprExpecting(access.expression, bytesT);
+  const { fnArg, arity } = lowerArrayCallback(
+    lowerer,
+    argNode,
+    accT !== null ? [accT, F64] : [F64],
+    bytesT,
+    false,
+    accT ?? undefined,
+  );
+  const fnRet = fnArg.type.ret;
+  const predicate =
+    method === "filter" ||
+    method === "some" ||
+    method === "every" ||
+    method === "find" ||
+    method === "findIndex" ||
+    method === "findLast" ||
+    method === "findLastIndex";
+  if (predicate && !findPredicateOk(lowerer, fnRet))
+    lowerer.badType(argNode, lowerer.typeOf(argNode));
+  if (method === "map" && !lowerer.coercibleValue(F64, fnRet))
+    lowerer.badType(argNode, lowerer.typeOf(argNode));
+  const resultT: IrType =
+    accT ??
+    (method === "forEach"
+      ? VOID
+      : method === "map" || method === "filter"
+        ? bytesT
+        : method === "some" || method === "every"
+          ? BOOL
+          : method === "findIndex" || method === "findLastIndex"
+            ? F64
+            : lowerer.irTypeOf(call));
+  const helper = bytesCallbackHelper(lowerer, method, bytesT, resultT, fnRet, arity, hasInit, loc);
+  const args: IrExpr[] = [receiver, fnArg];
+  if (hasInit) args.push(lowerer.lowerExprExpecting(call.arguments.nodes[1]!, resultT));
+  return { kind: "call", callee: helper, args, type: resultT, loc };
+}
+
+/** The interned helper of one typed-array callback method shape. */
+function bytesCallbackHelper(
+  lowerer: Lowerer,
+  method: BytesCallbackMethod,
+  bytesT: IrType & { kind: "bytes" },
+  resultT: IrType,
+  fnRet: IrType,
+  arity: number,
+  hasInit: boolean,
+  loc: SrcLoc,
+): string {
+  const key = `bytes.${method}:${bytesT.elem}:${typeKey(resultT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : ""}`;
+  const existing = lowerer.arrHofHelpers.get(key);
+  if (existing) return existing;
+  const name = `%bytes.${method}.${lowerer.arrHofHelpers.size}`;
+  lowerer.arrHofHelpers.set(key, name);
+  const reduce = method === "reduce" || method === "reduceRight";
+  const backward = method === "reduceRight" || method === "findLast" || method === "findLastIndex";
+  const fnT = funcOf(
+    (reduce ? [resultT, F64, F64, bytesT] : [F64, F64, bytesT]).slice(0, arity),
+    fnRet,
+  );
+  const keptT = arrayOf(F64);
+  const a = (): IrExpr => varRef("a.0", bytesT, loc);
+  const i = (): IrExpr => varRef("i.0", F64, loc);
+  const n = (): IrExpr => varRef("n.0", F64, loc);
+  const acc = (): IrExpr => varRef("acc.0", resultT, loc);
+  const element = (): IrExpr => varRef("v.0", F64, loc);
+  const at = (index: IrExpr): IrExpr => ({
+    kind: "bytesIntrinsic",
+    method: "get",
+    receiver: a(),
+    args: [index],
+    type: F64,
+    loc,
+  });
+  const callback = (): IrExpr => ({
+    kind: "callValue",
+    callee: varRef("f.0", fnT, loc),
+    args: (reduce ? [acc(), element(), i(), a()] : [element(), i(), a()]).slice(0, arity),
+    type: fnRet,
+    loc,
+  });
+  const inRange = (): IrExpr =>
+    backward
+      ? { kind: "bin", op: ">=", left: i(), right: numLit(0, loc), type: BOOL, loc }
+      : { kind: "bin", op: "<", left: i(), right: n(), type: BOOL, loc };
+  const advance = (): IrStmt => ({
+    kind: "assign",
+    localId: "i.0",
+    value: {
+      kind: "bin",
+      op: backward ? "-" : "+",
+      left: i(),
+      right: numLit(1, loc),
+      type: F64,
+      loc,
+    },
+    loc,
+  });
+  const ret = (value: IrExpr | null): IrStmt => ({ kind: "return", value, loc });
+  // map and filter of a Buffer return a Buffer (Node's species).
+  const copyBrand = (out: IrExpr): IrStmt => ({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "bytes.copyBrand", args: [out, a()], type: VOID, loc },
+    loc,
+  });
+  const locals: IrLocal[] = [
+    { id: "a.0", name: "a", type: bytesT, mutable: true },
+    { id: "f.0", name: "f", type: fnT, mutable: true },
+    ...(hasInit ? [{ id: "z.0", name: "z", type: resultT, mutable: true } as IrLocal] : []),
+    ...(reduce || method === "map" || method === "filter"
+      ? [{ id: "acc.0", name: "acc", type: resultT, mutable: true } as IrLocal]
+      : []),
+    ...(method === "filter"
+      ? [{ id: "kept.0", name: "kept", type: keptT, mutable: true } as IrLocal]
+      : []),
+    { id: "n.0", name: "n", type: F64, mutable: false },
+    { id: "i.0", name: "i", type: F64, mutable: true },
+    { id: "v.0", name: "v", type: F64, mutable: true },
+  ];
+  const params: IrParam[] = [
+    { localId: "a.0", name: "a", type: bytesT },
+    { localId: "f.0", name: "f", type: fnT },
+    ...(hasInit ? [{ localId: "z.0", name: "z", type: resultT }] : []),
+  ];
+  const visit: IrStmt[] = [{ kind: "assign", localId: "v.0", value: at(i()), loc }];
+  const prologue: IrStmt[] = [];
+  let epilogue: IrStmt[];
+  switch (method) {
+    case "forEach":
+      visit.push({ kind: "exprStmt", expr: callback(), loc });
+      epilogue = [ret(null)];
+      break;
+    case "map":
+      prologue.push({
+        kind: "varDecl",
+        localId: "acc.0",
+        init: { kind: "bytesNew", source: n(), type: bytesT, loc },
+        loc,
+      });
+      visit.push({
+        kind: "bytesSet",
+        arr: acc(),
+        index: i(),
+        value: lowerer.coerceToExpected(callback(), F64),
+        loc,
+      });
+      if (bytesT.elem === "u8") prologue.push(copyBrand(acc()));
+      epilogue = [ret(acc())];
+      break;
+    case "filter":
+      prologue.push({
+        kind: "varDecl",
+        localId: "kept.0",
+        init: { kind: "arrayLit", elems: [], type: keptT, loc },
+        loc,
+      });
+      visit.push({
+        kind: "if",
+        cond: predicateToBoolean(callback()),
+        then: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "arrIntrinsic",
+              method: "push",
+              receiver: varRef("kept.0", keptT, loc),
+              args: [element()],
+              type: F64,
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      });
+      epilogue = [
+        {
+          kind: "varDecl",
+          localId: "acc.0",
+          init: { kind: "bytesNew", source: varRef("kept.0", keptT, loc), type: bytesT, loc },
+          loc,
+        },
+        ...(bytesT.elem === "u8" ? [copyBrand(acc())] : []),
+        ret(acc()),
+      ];
+      break;
+    case "some":
+    case "every": {
+      const found = method === "some";
+      const test = predicateToBoolean(callback());
+      visit.push({
+        kind: "if",
+        cond: found ? test : { kind: "unary", op: "!", operand: test, type: BOOL, loc },
+        then: [ret(boolLit(found, loc))],
+        else_: null,
+        loc,
+      });
+      epilogue = [ret(boolLit(!found, loc))];
+      break;
+    }
+    case "find":
+    case "findLast":
+      visit.push({
+        kind: "if",
+        cond: predicateToBoolean(callback()),
+        then: [ret(lowerer.coerceToExpected(element(), resultT))],
+        else_: null,
+        loc,
+      });
+      epilogue = [
+        ret(
+          lowerer.coerceToExpected(
+            { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+            resultT,
+          ),
+        ),
+      ];
+      break;
+    case "findIndex":
+    case "findLastIndex":
+      visit.push({
+        kind: "if",
+        cond: predicateToBoolean(callback()),
+        then: [ret(i())],
+        else_: null,
+        loc,
+      });
+      epilogue = [ret(numLit(-1, loc))];
+      break;
+    case "reduce":
+    case "reduceRight":
+      if (hasInit) {
+        prologue.push({
+          kind: "varDecl",
+          localId: "acc.0",
+          init: varRef("z.0", resultT, loc),
+          loc,
+        });
+      } else {
+        prologue.push(
+          {
+            kind: "if",
+            cond: { kind: "unary", op: "!", operand: inRange(), type: BOOL, loc },
+            then: [
+              {
+                kind: "throw",
+                value: {
+                  kind: "libCall",
+                  fn: "error.new",
+                  args: [
+                    {
+                      kind: "strLit",
+                      value: "Reduce of empty array with no initial value",
+                      type: STRING,
+                      loc,
+                    },
+                  ],
+                  type: { kind: "object", className: "%TypeError" },
+                  loc,
+                },
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          { kind: "varDecl", localId: "acc.0", init: at(i()), loc },
+          advance(),
+        );
+      }
+      visit.push({
+        kind: "assign",
+        localId: "acc.0",
+        value: lowerer.coerceToExpected(callback(), resultT),
+        loc,
+      });
+      epilogue = [ret(acc())];
+      break;
+  }
+  const body: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: "n.0",
+      init: { kind: "bytesIntrinsic", method: "length", receiver: a(), args: [], type: F64, loc },
+      loc,
+    },
+    {
+      kind: "varDecl",
+      localId: "i.0",
+      init: backward
+        ? { kind: "bin", op: "-", left: n(), right: numLit(1, loc), type: F64, loc }
+        : numLit(0, loc),
+      loc,
+    },
+    { kind: "varDecl", localId: "v.0", init: numLit(0, loc), loc },
+    ...prologue,
+    { kind: "for", init: null, cond: inRange(), update: advance(), body: visit, loc },
+    ...epilogue,
+  ];
+  lowerer.liftedFns.push({ name, params, returnType: resultT, locals, body, loc });
+  return name;
 }
 
 /* ── typed arrays / Buffer ─────────────────────────────────────────────── */
@@ -465,6 +836,9 @@ export function lowerBytesMethodCall(
   }
   if (name === "sort" || name === "toSorted") {
     return lowerBytesSortCall(lowerer, call, access, receiverIr);
+  }
+  if (BYTES_CALLBACK_METHODS.has(name)) {
+    return lowerBytesCallbackCall(lowerer, call, access, name as BytesCallbackMethod, receiverIr);
   }
   // values()/keys()/entries() as iterator objects (for...of heads and
   // stored numeric iterators lower before this).

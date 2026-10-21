@@ -1,5 +1,3 @@
-import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
-import { fallbackTainted } from "./checked-fallback.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -137,6 +135,8 @@ export {
   lowerIncDecTarget,
   lowerPrefixUnary,
 } from "./expressions/updates.js";
+import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
+import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
 
 /** An assignable `obj.field` target — a class field, a record field, or a
@@ -271,25 +271,6 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // enclosing optChain — read the bind temp instead of re-lowering.
   const chainRecv = lowerer.chainRecvByNode.get(expr);
   if (chainRecv) return { ...chainRecv, loc };
-
-  // A failed checked value in a fallback tail: assertions check nothing
-  // (checked-fallback.ts).
-  if (
-    lowerer.fallbackTaint !== null &&
-    (ts.isAsExpression(expr) ||
-      ts.isTypeAssertion(expr) ||
-      ts.isNonNullExpression(expr) ||
-      ts.isSatisfiesExpression(expr)) &&
-    fallbackTainted(lowerer, expr.expression)
-  )
-    return lowerer.lowerExpr(expr.expression);
-  if (lowerer.fallbackTaint !== null && fallbackTainted(lowerer, expr)) {
-    if (ts.isObjectLiteralExpression(expr)) return lowerDynObjectLiteral(lowerer, expr);
-    if (ts.isArrayLiteralExpression(expr) && !expr.elements.nodes.some(ts.isSpreadElement)) {
-      const elems = expr.elements.nodes.map((el) => lowerer.lowerExprExpecting(el, DYN));
-      return { kind: "dynArrLit", elems, type: DYN, loc };
-    }
-  }
 
   // --external-types supplies CHECKER truth only. A value rooted in one
   // of those declarations has no runtime implementation in scriptc, so
@@ -658,9 +639,14 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // and answers itself. Thenable adoption stays unmodeled
       // (SEMANTICS.md).
       if (value.type.kind === "dyn") {
+        // A program that can define thenables adopts them (thenables.ts).
+        if (programMayDefineThenables(lowerer)) return awaitDynThenable(lowerer, value, loc);
         return { kind: "libCall", fn: "async.awaitDyn", args: [value], type: DYN, loc };
       }
 
+      if (awaitsChildThenable(lowerer, expr, value)) {
+        return awaitDynThenable(lowerer, lowerer.coerceToExpected(value, DYN), loc);
+      }
       // A TYPED non-promise operand (`await 42`, an awaited record):
       // JS awaits non-thenables through exactly one microtask turn and
       // yields the value itself — evaluate the operand, hop, answer it.
@@ -1096,6 +1082,8 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       loc: locOf(e),
     });
     if (presence !== null) return presence;
+    if (isTimerMethodPresence(lowerer, e))
+      return { kind: "boolLit", value: true, type: BOOL, loc: locOf(e) };
   }
   // Global detection (`typeof window < "u"`, `typeof self !==
   // "undefined" && …`): a condition whose typeof answers are static
@@ -1184,6 +1172,18 @@ function maybePromiseThenPresence(
     type: result.type,
     loc,
   };
+}
+
+/** `if (t.unref)` over a Node timer handle: the guard libraries write for
+ * runtimes whose timers lack the method (execa's kill timeout). Node's
+ * Timeout and Immediate always have it. */
+function isTimerMethodPresence(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  if (access.questionDotToken || !ts.isIdentifier(access.expression)) return false;
+  if (!["ref", "unref", "hasRef", "refresh"].includes(access.name.text)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(access.name);
+  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return false;
+  const owner = lowerer.typeOf(access.expression).getSymbol();
+  return owner !== undefined && ["Timeout", "Immediate"].includes(ts.symbolName(owner));
 }
 
 export function lowerPromiseThenPresence(

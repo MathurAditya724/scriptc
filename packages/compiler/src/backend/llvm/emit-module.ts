@@ -1,6 +1,7 @@
 /* LlEmitter's module-level output: module parts, helper definitions, library declarations and FFI callback definitions. */
 import { emitWasmModules } from "./wasm-modules.js";
 import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
+import { JS_IC_WORDS } from "./js-ic.js";
 import {
   mangleAsyncSpawn,
   mangleClassObj,
@@ -34,6 +35,8 @@ import { emitClassMembershipHelper } from "./classes.js";
 import { type RegexMatcherCode, compileRegexMatcher } from "./regex-matchers.js";
 import {
   MAP_ITER_DECL,
+  MAP_ITER_NUM_DECL,
+  SCR_MAP_NUM_DEAD,
   NUMBER_MAP_ENTRY_DECL,
   STRING_MAP_ENTRY_DECL,
 } from "./map-number-lookup.js";
@@ -449,25 +452,29 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // The ScrMap prefix { rc, key_kind, val_kind, traced } — the inline
     // RC fast paths test the traced byte (shapes.ts).
     ...(emitter.rcHelpers === null ? [] : [`%ScrMapRc = type { ${emitter.sizeType}, i8, i8, i8 }`]),
-    // The complete ScrMap and its { key, val, hash } entry, read by the
-    // inline number-key lookup (sc_map_entry_f64) and the inline
-    // iteration steps (sc_map_iter_entry): field 8 is the i32 entry
+    // The complete ScrMap and its entries, read by the inline number-key
+    // lookup (sc_map_entry_f64) and the inline iteration steps
+    // (sc_map_iter_entry, sc_map_iter_entry_num): field 8 is the i32 entry
     // count, field 10 the i64 absent-key filter, entries is field 11,
     // nbuckets and buckets fields 13 and 14, the direct index and its i32
     // length fields 15 and 16.
     ...(emitter.decls.has(NUMBER_MAP_ENTRY_DECL) ||
     emitter.decls.has(STRING_MAP_ENTRY_DECL) ||
-    emitter.decls.has(MAP_ITER_DECL)
+    emitter.decls.has(MAP_ITER_DECL) ||
+    emitter.decls.has(MAP_ITER_NUM_DECL)
       ? [
           `%ScrMapIx = type { ${emitter.sizeType}, i8, i8, i8, i8, i32, ptr, ptr, i32, i32, i64, ptr, i32, i32, ptr, ptr, i32, i32 }`,
         ]
       : []),
-    // String-keyed reference reads load the value slot of the entry
-    // scr_map_entry_str returns (map-number-lookup.ts).
+    // The { key, val, hash } entry of every map but a number-key one, whose
+    // entry is { key, val } (scr_map.h ScrMapNumEntry). String-keyed
+    // reference reads load the value slot of the entry scr_map_entry_str
+    // returns (map-number-lookup.ts).
     ...(emitter.decls.has(NUMBER_MAP_ENTRY_DECL) ||
     emitter.decls.has(STRING_MAP_ENTRY_DECL) ||
-    emitter.decls.has(MAP_ITER_DECL)
-      ? [`%ScrMapEntry = type { i64, i64, i64 }`]
+    emitter.decls.has(MAP_ITER_DECL) ||
+    emitter.decls.has(MAP_ITER_NUM_DECL)
+      ? [`%ScrMapEntry = type { i64, i64, i64 }`, `%ScrMapNumEntry = type { i64, i64 }`]
       : []),
     // The runtime error prefix { rc, vt, name, message, code, cause } and the
     // class-object shape { rc, pre, post, ctor, name } — field reads on
@@ -559,6 +566,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       out.push(
         `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr } zeroinitializer`,
       );
+    for (let site = 0; site < emitter.jsIcSiteCount; site++)
+      out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
   }
   for (const table of emitter.constantNumericTables.values()) {
     const n = table.values.length;
@@ -1083,7 +1092,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
       sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
       `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
       `  %entries = load ptr, ptr %ep`,
-      `  %found = getelementptr inbounds %ScrMapEntry, ptr %entries, ${sz} %e`,
+      `  %found = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %e`,
       `  ret ptr %found`,
       `miss:`,
       `  ret ptr null`,
@@ -1135,7 +1144,8 @@ export function helperDefs(emitter: LlEmitter): string[] {
       `  %ents = load ptr, ptr %eps`,
       `  %linear = icmp eq ${sz} %nb, 0`,
       `  br i1 %linear, label %scan, label %buckets`,
-      // Small maps keep no bucket table: scan the cached entry hashes.
+      // Small maps keep no bucket table: scan the entries' keys. A number-key
+      // entry has no cached hash; a dead entry's key matches no key.
       `scan:`,
       `  %nep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
       ...(sz === "i64"
@@ -1147,14 +1157,10 @@ export function helperDefs(emitter: LlEmitter): string[] {
       `  %sdone = icmp eq ${sz} %si, %ne`,
       `  br i1 %sdone, label %miss, label %scan.entry`,
       `scan.entry:`,
-      `  %se = getelementptr inbounds %ScrMapEntry, ptr %ents, ${sz} %si`,
-      `  %seh = getelementptr inbounds %ScrMapEntry, ptr %se, i32 0, i32 2`,
-      `  %sh = load i64, ptr %seh`,
+      `  %se = getelementptr inbounds %ScrMapNumEntry, ptr %ents, ${sz} %si`,
       `  %sk = load i64, ptr %se`,
-      `  %shq = icmp eq i64 %sh, %h`,
       `  %skq = icmp eq i64 %sk, %kb`,
-      `  %sq = and i1 %shq, %skq`,
-      `  br i1 %sq, label %scan.found, label %scan.next`,
+      `  br i1 %skq, label %scan.found, label %scan.next`,
       `scan.found:`,
       `  ret ptr %se`,
       `scan.next:`,
@@ -1189,14 +1195,10 @@ export function helperDefs(emitter: LlEmitter): string[] {
       `  %bix = and i32 %b, 16777215`,
       `  %bix1 = sub i32 %bix, 1`,
       sz === "i32" ? `  %bi = add i32 %bix1, 0` : `  %bi = zext i32 %bix1 to ${sz}`,
-      `  %pe = getelementptr inbounds %ScrMapEntry, ptr %ents, ${sz} %bi`,
-      `  %peh = getelementptr inbounds %ScrMapEntry, ptr %pe, i32 0, i32 2`,
-      `  %ph = load i64, ptr %peh`,
+      `  %pe = getelementptr inbounds %ScrMapNumEntry, ptr %ents, ${sz} %bi`,
       `  %pk = load i64, ptr %pe`,
-      `  %phq = icmp eq i64 %ph, %h`,
       `  %pkq = icmp eq i64 %pk, %kb`,
-      `  %pq = and i1 %phq, %pkq`,
-      `  br i1 %pq, label %probe.found, label %probe.next`,
+      `  br i1 %pkq, label %probe.found, label %probe.next`,
       `probe.found:`,
       `  ret ptr %pe`,
       `probe.next:`,
@@ -1214,36 +1216,66 @@ export function helperDefs(emitter: LlEmitter): string[] {
   }
   // Map/Set iteration steps read the entries array inline: an index is
   // live when it is below the entry count and its entry's cached hash is
-  // nonzero (a tombstone's is zero), as scr_map_iter_live decides. The
-  // entry count is read again at every step, so entries appended during
-  // the iteration are visited.
-  if (emitter.decls.has(MAP_ITER_DECL)) {
+  // nonzero (a tombstone's is zero), as scr_map_iter_live decides, or for
+  // a number-key map when its key is not SCR_MAP_NUM_DEAD. The entry count
+  // is read again at every step, so entries appended during the iteration
+  // are visited.
+  if (emitter.decls.has(MAP_ITER_DECL) || emitter.decls.has(MAP_ITER_NUM_DECL)) {
     const sz = emitter.sizeType;
+    if (emitter.decls.has(MAP_ITER_DECL))
+      defs.push(
+        `define internal ptr @sc_map_iter_entry(ptr %m, double %i) ${FN_ATTRS} {`,
+        `entry:`,
+        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+        `  %n = load i32, ptr %np`,
+        `  %nf = uitofp i32 %n to double`,
+        `  %lo = fcmp oge double %i, 0.0`,
+        `  %hi = fcmp olt double %i, %nf`,
+        `  %in = and i1 %lo, %hi`,
+        `  br i1 %in, label %load, label %none`,
+        `load:`,
+        `  %ix = fptoui double %i to ${sz}`,
+        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+        `  %entries = load ptr, ptr %ep`,
+        `  %e = getelementptr inbounds %ScrMapEntry, ptr %entries, ${sz} %ix`,
+        `  %hp = getelementptr inbounds %ScrMapEntry, ptr %e, i32 0, i32 2`,
+        `  %h = load i64, ptr %hp`,
+        `  %live = icmp ne i64 %h, 0`,
+        `  br i1 %live, label %yes, label %none`,
+        `yes:`,
+        `  ret ptr %e`,
+        `none:`,
+        `  ret ptr null`,
+        `}`,
+        ``,
+      );
+    if (emitter.decls.has(MAP_ITER_NUM_DECL))
+      defs.push(
+        `define internal ptr @sc_map_iter_entry_num(ptr %m, double %i) ${FN_ATTRS} {`,
+        `entry:`,
+        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+        `  %n = load i32, ptr %np`,
+        `  %nf = uitofp i32 %n to double`,
+        `  %lo = fcmp oge double %i, 0.0`,
+        `  %hi = fcmp olt double %i, %nf`,
+        `  %in = and i1 %lo, %hi`,
+        `  br i1 %in, label %load, label %none`,
+        `load:`,
+        `  %ix = fptoui double %i to ${sz}`,
+        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+        `  %entries = load ptr, ptr %ep`,
+        `  %e = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %ix`,
+        `  %key = load i64, ptr %e`,
+        `  %live = icmp ne i64 %key, ${SCR_MAP_NUM_DEAD}`,
+        `  br i1 %live, label %yes, label %none`,
+        `yes:`,
+        `  ret ptr %e`,
+        `none:`,
+        `  ret ptr null`,
+        `}`,
+        ``,
+      );
     defs.push(
-      `define internal ptr @sc_map_iter_entry(ptr %m, double %i) ${FN_ATTRS} {`,
-      `entry:`,
-      `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
-      `  %n = load i32, ptr %np`,
-      `  %nf = uitofp i32 %n to double`,
-      `  %lo = fcmp oge double %i, 0.0`,
-      `  %hi = fcmp olt double %i, %nf`,
-      `  %in = and i1 %lo, %hi`,
-      `  br i1 %in, label %load, label %none`,
-      `load:`,
-      `  %ix = fptoui double %i to ${sz}`,
-      `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
-      `  %entries = load ptr, ptr %ep`,
-      `  %e = getelementptr inbounds %ScrMapEntry, ptr %entries, ${sz} %ix`,
-      `  %hp = getelementptr inbounds %ScrMapEntry, ptr %e, i32 0, i32 2`,
-      `  %h = load i64, ptr %hp`,
-      `  %live = icmp ne i64 %h, 0`,
-      `  br i1 %live, label %yes, label %none`,
-      `yes:`,
-      `  ret ptr %e`,
-      `none:`,
-      `  ret ptr null`,
-      `}`,
-      ``,
       `define internal double @sc_map_iter_count(ptr %m) ${FN_ATTRS} {`,
       `entry:`,
       `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,

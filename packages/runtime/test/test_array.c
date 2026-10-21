@@ -1720,6 +1720,94 @@ static void test_keyed_sort(void) {
   check(mock_live == live0, "keyed record sorts balance every key read");
 }
 
+/* Multi-key sorts: a record's value v has keys v / 100 (major), v / 10 % 10
+ * (middle) and v % 10 (minor). Value -1 reads key 1 as -0 and value -2 reads
+ * it as NaN; the comparators treat both as the comparator expressions do. */
+static double multi_key_of(int value, uint32_t j) {
+  if (j == 1 && value == -1) return -0.0;
+  if (j == 1 && value == -2) return NAN;
+  if (value < 0) value = 0;
+  return j == 0 ? value / 100 : j == 1 ? value / 10 % 10 : value % 10;
+}
+
+static double multi_term(double d) { return d != d ? 0 : d; }
+
+/* `a.major - b.major || b.middle - a.middle` */
+static double multi_two(ScrClosure *self, void *a, void *b) {
+  (void)self;
+  sort_calls++;
+  int x = ((MockRec *)a)->value, y = ((MockRec *)b)->value;
+  mock_release(a);
+  mock_release(b);
+  double d = multi_term(multi_key_of(x, 0) - multi_key_of(y, 0));
+  return d != 0 ? d : multi_key_of(y, 1) - multi_key_of(x, 1);
+}
+
+/* `b.major - a.major || a.middle - b.middle || b.minor - a.minor` */
+static double multi_three(ScrClosure *self, void *a, void *b) {
+  (void)self;
+  sort_calls++;
+  int x = ((MockRec *)a)->value, y = ((MockRec *)b)->value;
+  mock_release(a);
+  mock_release(b);
+  double d = multi_term(multi_key_of(y, 0) - multi_key_of(x, 0));
+  if (d == 0) d = multi_term(multi_key_of(x, 1) - multi_key_of(y, 1));
+  return d != 0 ? d : multi_key_of(y, 2) - multi_key_of(x, 2);
+}
+
+static double multi_key(ScrClosure *self, void *a, double j) {
+  (void)self;
+  key_reads++;
+  int value = ((MockRec *)a)->value;
+  mock_release(a);
+  return multi_key_of(value, (uint32_t)j);
+}
+
+static void test_multi_key_sort(void) {
+  ScrClosure two = {SIZE_MAX, (void *)multi_two, 0, NULL, 0};
+  ScrClosure three = {SIZE_MAX, (void *)multi_three, 0, NULL, 0};
+  ScrClosure key = {SIZE_MAX, (void *)multi_key, 0, NULL, 0};
+  /* Two keys with the second descending; three with the first and third. */
+  const int32_t two_order = 2 | 1 << 9, three_order = 3 | 1 << 8 | 1 << 10;
+  const size_t sizes[] = {2, 5, 40, 49, 1000, 70000, 140000};
+  long live0 = mock_live;
+  bool identical = true, direct = true, fallback = true;
+  for (size_t s = 0; s < sizeof(sizes) / sizeof(*sizes); s++) {
+    for (int variant = 0; variant < 6; variant++) {
+      /* Two or three keys; then no special key, a -0 or a NaN in key 1. */
+      bool use_three = variant & 1;
+      int special = variant / 2;
+      size_t n = sizes[s];
+      ScrArr *expected = scr_arr_new_ops(&mock_ops, 0);
+      ScrArr *actual = scr_arr_new_ops(&mock_ops, 0);
+      for (size_t i = 0; i < n; i++) {
+        int value = (int)(keyed_random() % (n < 100 ? 300 : 3000));
+        if (special && i == n / 2) value = -special;
+        MockRec *r = mock_new(value);
+        scr_arr_push_ref(expected, r);
+        scr_arr_push_ref(actual, mock_retain(r));
+      }
+      ScrClosure *cmp = use_three ? &three : &two;
+      int32_t order = use_three ? three_order : two_order;
+      scr_arr_sort_values(expected, (double)n, cmp, 2, 0, NULL);
+      sort_calls = 0;
+      key_reads = 0;
+      if (s % 2) scr_arr_sort_values(actual, (double)n, cmp, 2, order, &key);
+      else scr_arr_sort_dense(actual, cmp, 2, s % 4 == 2, order, &key);
+      for (size_t i = 0; i < n; i++)
+        identical &= scr_arr_peek_ref(expected, (double)i) == scr_arr_peek_ref(actual, (double)i);
+      if (special) fallback &= sort_calls > 0;
+      else direct &= sort_calls == 0 && key_reads == (long)n * (use_three ? 3 : 2);
+      scr_arr_release(expected);
+      scr_arr_release(actual);
+    }
+  }
+  check(identical, "multi-key record sorts keep the comparator sort's stable permutation");
+  check(direct, "multi-key record sorts read each key once and call no comparator");
+  check(fallback, "a -0 or NaN in a later key sorts through the comparator");
+  check(mock_live == live0, "multi-key record sorts balance every key read");
+}
+
 /* Typed-array sorts: the default numeric order and recognized comparator
  * orders against the comparator sort, which follows Node's merge schedule. */
 static double typed_mod_ascending(ScrClosure *self, double a, double b) {
@@ -2046,6 +2134,7 @@ int main(int argc, char **argv) {
   test_primitive_sort();
   test_comparator_sort();
   test_keyed_sort();
+  test_multi_key_sort();
   test_dense_slots();
   test_typed_sort();
   test_dense_comparator_sort();
