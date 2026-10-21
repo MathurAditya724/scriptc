@@ -3362,18 +3362,22 @@ export class LlDyn {
           B.line(`call void @scr_jb_putc(ptr %b, i8 44)`);
           B.br(lel);
           B.startBlock(lel);
-          // An element's toString can append to, shrink or reallocate the
-          // array: each index reads the current items, an index past the
-          // current length prints empty, and the element stays retained
-          // while it converts.
-          const now = this.lenOf(B, "%d");
-          const inside = B.tmp();
-          B.line(`${inside} = icmp ult ${this.S} ${i}, ${now}`);
-          const lIn = B.newLabel("ds.in");
-          const lSkip = B.newLabel("ds.sk");
-          B.condBr(inside, lIn, lSkip);
-          B.startBlock(lIn);
-          const e = this.itemAt(B, this.itemsOf(B, "%d"), i);
+          // Each index reads the element as join does (scr_dyn_arr_at, +1):
+          // from the current storage, undefined past the current length,
+          // and through the prototype for a hole. An element's toString
+          // can append to, shrink or reallocate the array; a getter that
+          // throws answers NULL with the exception pending.
+          host.declare(`declare ptr @scr_dyn_arr_at(ptr, double)`);
+          host.declare(`declare void @scr_dyn_release_v(ptr)`);
+          const index = B.tmp();
+          B.line(`${index} = uitofp ${this.S} ${i} to double`);
+          const e = B.tmp();
+          B.line(`${e} = call ptr @scr_dyn_arr_at(ptr %d, double ${index})`);
+          const missing = B.tmp();
+          B.line(`${missing} = icmp eq ptr ${e}, null`);
+          const lGot = B.newLabel("ds.gt");
+          B.condBr(missing, done, lGot);
+          B.startBlock(lGot);
           const ek = this.kindOf(B, e);
           const isU = B.tmp();
           const isN = B.tmp();
@@ -3382,14 +3386,14 @@ export class LlDyn {
           B.line(`${isN} = icmp eq i32 ${ek}, ${DYN_KIND.NULL}`);
           B.line(`${unit} = or i1 ${isU}, ${isN}`);
           const lRec = B.newLabel("ds.rc");
+          const lSkip = B.newLabel("ds.sk");
           B.condBr(unit, lSkip, lRec);
           B.startBlock(lSkip);
+          B.line(`call void @scr_dyn_release_v(ptr ${e})`);
           brNext();
           B.startBlock(lRec);
-          const held = this.retainDyn(B, e);
-          host.declare(`declare void @scr_dyn_release_v(ptr)`);
-          B.line(`call void @sc_ds_buf(ptr %b, ptr ${held})`);
-          B.line(`call void @scr_dyn_release_v(ptr ${held})`);
+          B.line(`call void @sc_ds_buf(ptr %b, ptr ${e})`);
+          B.line(`call void @scr_dyn_release_v(ptr ${e})`);
           // The first exception an element's conversion throws ends the
           // conversion; later elements are not read.
           const thrown = B.tmp();

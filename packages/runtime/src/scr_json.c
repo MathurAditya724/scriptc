@@ -7507,6 +7507,10 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
         out = joined;
       }
       ScrDyn *e = scr_dyn_arr_at(d, (double)i);
+      if (!e) { /* an inherited getter threw: the exception is pending */
+        scr_str_release(out);
+        return NULL;
+      }
       if (e->kind == SCR_DYN_UNDEF || e->kind == SCR_DYN_NULL) { /* JS join: empty */
         scr_dyn_release(e);
         if (scr_exc_pending()) {

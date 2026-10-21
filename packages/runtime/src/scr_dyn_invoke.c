@@ -1215,7 +1215,7 @@ static ScrDyn *scr_dyn_invoke_impl(
       scr_jb_init(&b);
       ScrStr *separator = argc > 0 && args[0]->kind != SCR_DYN_UNDEF
         ? scr_dyn_string_coerce_js(args[0]) : scr_str_new(",", 1);
-      if (!separator) { free(b.data); return NULL; }
+      if (!separator) return NULL; /* nothing written yet */
       for (size_t i = 0; i < len; i++) {
         if (i > 0) scr_jb_write(&b, separator->data, separator->len);
         ScrDyn *e = scr_dyn_arr_at(recv, (double)i);
@@ -1223,7 +1223,12 @@ static ScrDyn *scr_dyn_invoke_impl(
           if (e->kind != SCR_DYN_UNDEF && e->kind != SCR_DYN_NULL) scr_dyn_display_buf(&b, e, true);
           scr_dyn_release(e);
         }
-        if (!e || scr_exc_pending()) { scr_str_release(separator); free(b.data); return NULL; }
+        if (!e || scr_exc_pending()) {
+          /* The buffer's bytes live in a string allocation: discard it as one. */
+          scr_str_release(scr_jb_finish(&b));
+          scr_str_release(separator);
+          return NULL;
+        }
       }
       scr_str_release(separator);
       ScrStr *joined = scr_jb_finish(&b);

@@ -64,3 +64,15 @@ try { console.log(`${stops}`); } catch (e) { console.log("template", e.message, 
 try { console.log(stops.join()); } catch (e) { console.log("join", e.message, visited.length); }
 try { console.log(String(stops)); } catch (e) { console.log("String", e.message, visited.length); }
 try { console.log(`${[stops]}`); } catch (e) { console.log("nested", e.message, visited.length); }
+
+// A hole reads through the prototype: a getter there that throws ends each
+// conversion with its exception.
+const holeyProto = Object.create(Array.prototype);
+Object.defineProperty(holeyProto, '1', { get() { throw new Error('getter'); } });
+const holey = [];
+holey[0] = 'a';
+holey[2] = 'c';
+Object.setPrototypeOf(holey, holeyProto);
+try { console.log(String(holey)); } catch (e) { console.log('String', e.message); }
+try { console.log(holey.join('|')); } catch (e) { console.log('join', e.message); }
+try { console.log(`${holey}`); } catch (e) { console.log('template', e.message); }
