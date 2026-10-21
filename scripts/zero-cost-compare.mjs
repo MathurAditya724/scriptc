@@ -478,10 +478,13 @@ export function compareCounts(baseline, candidate) {
 
 /** One program's verdict from its build results and artifact comparisons.
  * `allowed` marks programs that match the change's pattern signature. */
-export function programVerdict({ baseline, candidate, artifacts, allowed }) {
+/** `required` programs must build with both checkouts: a failure both share
+ * means the gate compared nothing for them. Other programs may fail the same
+ * way on both sides, as a corpus program the compiler refuses does. */
+export function programVerdict({ baseline, candidate, artifacts, allowed, required = false }) {
   if (!baseline.ok || !candidate.ok) {
     if (!baseline.ok && !candidate.ok && baseline.error === candidate.error)
-      return { verdict: "both-fail", fails: false };
+      return { verdict: "both-fail", fails: required };
     return { verdict: "build-error", fails: true };
   }
   const differing = Object.entries(artifacts).filter(([, r]) => !r.identical);
