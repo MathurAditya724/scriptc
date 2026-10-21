@@ -171,6 +171,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const usesEvents = runtimeFeatures.processEvents;
   const usesChildProcess = runtimeFeatures.childProcess;
   const usesFsWatch = runtimeFeatures.fsWatch;
+  // Programs that call into Node record the libnode pack and its Node
+  // version before %main (scr_node_island.c).
+  const usesNodeIsland = runtimeFeatures.nodeIsland;
   // Stream-surface programs fill the loop's stream hook (the deferred
   // next-tick emissions) and the emitter's post-registration flow kick
   // before %main — scr_stream.c links only when the line is emitted
@@ -229,6 +232,14 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (workerStdioBox || workerStdinBox)
     emitter.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
   if (usesFsWatch) emitter.declare(`declare void @scr_watch_install()`);
+  if (usesNodeIsland) emitter.declare(`declare void @scr_node_island_install(ptr, ptr)`);
+  // Interned now: the C-string constants flush before main assembles.
+  const nodeIslandConfig = usesNodeIsland
+    ? [
+        emitter.cstr(emitter.mod.nodeIsland?.libnode ?? ""),
+        emitter.cstr(emitter.mod.nodeIsland?.nodeVersion ?? ""),
+      ]
+    : null;
   if (emitter.ffiHasForeignCallback) emitter.declare(`declare void @scr_ffi_install()`);
   if (usesStream) emitter.declare(`declare void @scr_stream_install()`);
   if (usesNetLookup) emitter.declare(`declare void @scr_net_lookup_install()`);
@@ -856,6 +867,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // fs.watch programs fill the loop's watch hooks the same way —
     // scr_watch.c links only when this line is emitted.
     ...(usesFsWatch ? [`  call void @scr_watch_install()`] : []),
+    ...(nodeIslandConfig
+      ? [
+          `  call void @scr_node_island_install(ptr ${nodeIslandConfig[0]}, ptr ${nodeIslandConfig[1]})`,
+        ]
+      : []),
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),

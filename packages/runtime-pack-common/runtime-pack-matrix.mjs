@@ -152,6 +152,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_wasm.c", "wasm"],
   ["scr_webcrypto.c", "webcrypto"],
   ["scr_fetch.c", "nativeFetch"],
+  // Node islands: libnode loaded on first use (explicit @scriptc/node calls),
+  // over the SCR_NODE_ISLANDS build of scr_async.c.
+  ["scr_node_island.c", "nodeIsland"],
 ];
 
 export function variantsFor(source) {
@@ -184,6 +187,15 @@ export function variantsFor(source) {
       id: "stdio-extended",
       when: { stdioExtended: true },
       defines: ["SCR_STDIO_EXTENDED"],
+    });
+  }
+  // Programs with Node islands link the event loop with the Node island slot;
+  // every other program keeps the default object, byte for byte.
+  if (source === "scr_async.c") {
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
     });
   }
   if (source === "scr_cycle.c") {

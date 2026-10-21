@@ -1032,6 +1032,12 @@ export interface IrModule {
    * evaluation is itself awaited, so promise jobs queued by its body run
    * first. The event loop selects the matching first checkpoint. */
   commonJsEntry?: boolean;
+  /** Programs that call into Node islands (`nodeIsland.*` libCalls): the
+   * libnode pack directory (absolute, or `$ORIGIN/`-relative to the
+   * executable) and the exact Node version its bridge links. Set by the
+   * executable build (node-islands/libnode.ts); the emitted main records
+   * both before %main. */
+  nodeIsland?: { libnode: string; nodeVersion: string };
   /** Outbound native FFI declarations used by `ffiCall` expressions.
    * These are link-time C ABI imports, not runtime dynamic-library handles:
    * executable builds resolve their symbols from the manifest's archive

@@ -36,6 +36,12 @@ export interface CompileBaseOptions {
    * executable mapped and the memory charged for up to ~100 ms after exit.
    * Executables only; no effect on other platforms. */
   detachedExit?: boolean;
+  /** Where a program that calls into Node.js (@scriptc/node) loads Node
+   * from: a libnode pack directory recorded into the executable, or
+   * "beside" to copy the pack next to the executable. Default: the pack in
+   * SCRIPTC_LIBNODE at build time. SCRIPTC_LIBNODE overrides the recorded
+   * directory at run time (node-islands/libnode.ts). */
+  libnode?: string;
   /** Instrument the executable for profile-guided optimization. Each run
    * writes a raw profile to this path pattern (`%p` expands to the process
    * id; `LLVM_PROFILE_FILE` overrides the pattern at run time). Linux

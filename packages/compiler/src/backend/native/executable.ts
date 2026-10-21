@@ -323,6 +323,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  unit((u) => u.opts.nodeIsland === true, "scr_node_island.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -349,6 +350,7 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
+  { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 
 function runtimeDefineArgs(opts: CcOptions): string[] {

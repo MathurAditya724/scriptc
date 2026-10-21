@@ -59,6 +59,7 @@ export interface EarlyExecutableNativeFeatures {
   wasm?: boolean;
   warningReplace?: boolean;
   stdioExtended?: boolean;
+  nodeIsland?: boolean;
   zlib: boolean;
   assert: boolean;
   inspect: boolean;
@@ -130,6 +131,9 @@ export interface EarlyExecutableCacheOptions {
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** Omitted unless --libnode or SCRIPTC_LIBNODE is set (calls into Node.js
+   * record the pack). */
+  libnode?: string;
   /** Omitted without --profile-generate/--profile-use; otherwise the
    * pattern, or the digest of the profile's bytes. */
   profile?: string;
@@ -257,6 +261,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.strip ? ["strip"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.libnode !== undefined ? [`libnode:${options.libnode}`] : []),
     ...(options.profile !== undefined ? [options.profile] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
@@ -299,6 +304,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.strip) hash.update("strip\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.libnode !== undefined) hash.update(`libnode:${options.libnode}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");

@@ -937,6 +937,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "json.parseReviver": "scr_json_parse_reviver",
   "json.stringifyReplacer": "scr_json_stringify_replacer",
   "json.stringifyValue": "scr_json_stringify_value",
+  "nodeIsland.callSync": "scr_node_island_call_sync",
+  "nodeIsland.call": "scr_node_island_call",
   "dyn.keySet": "scr_dyn_key_set",
   "dyn.keySetComputed": "scr_dyn_key_set_computed",
   "dyn.keyDelete": "scr_dyn_key_delete",
@@ -1747,4 +1749,6 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "timers.setImmediateFnValue",
   "timers.immediatePromise",
   "dyn.builtinFunction",
+  // An asynchronous call into Node needs the loop to settle.
+  "nodeIsland.call",
 ]);

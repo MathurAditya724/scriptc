@@ -53,6 +53,11 @@ Options:
                      a helper process so the parent sees the exit sooner. The
                      helper keeps the executable mapped and its memory charged
                      for up to ~100 ms after exit (opt in; --emit=exe only)
+      --libnode <dir|beside>
+                     the libnode pack that calls into Node.js (@scriptc/node)
+                     load at run time, or beside to copy it next to the
+                     executable (default: SCRIPTC_LIBNODE at build time;
+                     SCRIPTC_LIBNODE overrides it at run time)
       --profile-generate <pattern>
                      Linux: instrument the executable for profile-guided
                      optimization. Each run writes a raw profile to the
@@ -119,6 +124,7 @@ export const CLI_OPTIONS = {
   strip: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
+  libnode: { type: "string" },
   "profile-generate": { type: "string" },
   "profile-use": { type: "string" },
   sparse: { type: "boolean", default: false },

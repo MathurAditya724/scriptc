@@ -62,6 +62,8 @@
  *            to a cast to an unrelated class (SC6004); SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
  *            parses date strings with V8's grammar
+ *   SC8xxx  Node islands: the program calls into Node.js, and the build
+ *            finds no usable libnode pack (SC8005)
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
@@ -110,6 +112,17 @@ export function nativeCodegenDiag(
     message,
     loc: { file, start: 0, end: 0 },
     ...(shown !== undefined ? { hint: shown } : {}),
+  };
+}
+
+/** SC8005 — the program calls into Node.js (@scriptc/node), and the build
+ * found no usable libnode pack to record into the binary. */
+export function nodeIslandNodeDiag(message: string, file: string): ScrDiagnostic {
+  return {
+    code: "SC8005",
+    message,
+    loc: { file, start: 0, end: 0 },
+    hint: "point SCRIPTC_LIBNODE or --libnode at a libnode pack (packages/libnode-common/build-pack.mjs assembles one) for Node.js >=24.13.1",
   };
 }
 

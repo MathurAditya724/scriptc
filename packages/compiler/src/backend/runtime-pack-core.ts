@@ -92,6 +92,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   builtinValues: boolean;
   warningReplace: boolean;
   stdioExtended: boolean;
+  nodeIsland: boolean;
   nativeFetch: boolean;
   netEffective: boolean;
   httpEffective: boolean;
@@ -289,6 +290,7 @@ export function effectiveRuntimeFeatures(
     builtinValues: features.builtinValues === true,
     warningReplace: features.warningReplace === true,
     stdioExtended: features.stdioExtended === true,
+    nodeIsland: features.nodeIsland === true,
     nativeFetch,
     netEffective,
     httpEffective,

@@ -1,0 +1,111 @@
+/* The libnode pack a program with Node islands loads Node from (scope-B
+ * design §2.11, §2.13, §2.16). The build reads the pack's manifest and
+ * records the pack directory and its Node version into the executable;
+ * the executable loads that pack on its first call into Node, checks that
+ * its bridge links exactly that Node, and never searches for another.
+ * SCRIPTC_LIBNODE overrides the recorded directory at run time.
+ *
+ * Where the build finds the pack: `--libnode=<pack directory>`, else
+ * SCRIPTC_LIBNODE in the build's environment (until NI-13 publishes
+ * @scriptc/libnode-<platform> packages that an installation carries).
+ * `--libnode=beside` takes that pack and copies it next to the executable
+ * as `<output>.libnode/`, recorded as `$ORIGIN/<output>.libnode`, so the
+ * executable and its Node travel together; a recorded `$ORIGIN/` path is
+ * also the hook for bundling Node into the executable itself later. */
+import { copyFileSync, linkSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { basename, isAbsolute, join, resolve } from "node:path";
+
+/** The oldest Node.js release Node islands support: synchronous
+ * module.registerHooks, which shared modules need, is a release candidate
+ * from here on (decision 5). */
+export const NODE_ISLAND_MIN_NODE = "24.13.1";
+
+/** The bridge ABI this compiler's runtime speaks (scr_node_bridge.h). */
+export const NODE_BRIDGE_ABI = 1;
+
+/** The prefix of a recorded path relative to the executable's directory. */
+export const ORIGIN = "$ORIGIN/";
+
+export interface LibnodeRecord {
+  /** The pack directory: absolute, or `$ORIGIN/`-relative. */
+  libnode: string;
+  /** The exact Node version the pack's bridge links. */
+  nodeVersion: string;
+}
+
+interface PackManifest {
+  nodeVersion: string;
+  bridgeAbi: number;
+  files: Record<string, unknown>;
+}
+
+function versionAtLeast(version: string, floor: string): boolean {
+  const a = version.split(".").map(Number);
+  const b = floor.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return (a[i] ?? 0) > (b[i] ?? 0);
+  return true;
+}
+
+function readManifest(dir: string): PackManifest | string {
+  let manifest: Partial<PackManifest>;
+  try {
+    manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as PackManifest;
+  } catch {
+    return `no libnode pack at ${dir} (manifest.json is missing or unreadable)`;
+  }
+  if (typeof manifest.nodeVersion !== "string" || typeof manifest.bridgeAbi !== "number")
+    return `the libnode pack at ${dir} has a malformed manifest.json`;
+  if (manifest.bridgeAbi !== NODE_BRIDGE_ABI)
+    return `the libnode pack at ${dir} has bridge ABI ${manifest.bridgeAbi}; this scriptc needs ${NODE_BRIDGE_ABI}`;
+  if (!versionAtLeast(manifest.nodeVersion, NODE_ISLAND_MIN_NODE))
+    return `the libnode pack at ${dir} is Node ${manifest.nodeVersion}; Node islands need Node.js >=${NODE_ISLAND_MIN_NODE}`;
+  return {
+    nodeVersion: manifest.nodeVersion,
+    bridgeAbi: manifest.bridgeAbi,
+    files: manifest.files ?? {},
+  };
+}
+
+/** Copies the pack next to the executable (hard links where possible). */
+function placeBeside(source: string, manifest: PackManifest, target: string): void {
+  rmSync(target, { recursive: true, force: true });
+  mkdirSync(target, { recursive: true });
+  for (const name of ["manifest.json", "LICENSE", ...Object.keys(manifest.files)]) {
+    const from = join(source, name);
+    try {
+      statSync(from);
+    } catch {
+      continue;
+    }
+    try {
+      linkSync(from, join(target, name));
+    } catch {
+      copyFileSync(from, join(target, name));
+    }
+  }
+}
+
+/** What to record for a program that calls into Node, or the reason the
+ * build cannot (an SC8005 message). `option` is --libnode. */
+export function libnodeRecord(
+  option: string | undefined,
+  outPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): LibnodeRecord | string {
+  const fromEnv = env["SCRIPTC_LIBNODE"];
+  const beside = option === "beside";
+  const source = option !== undefined && !beside ? option : fromEnv;
+  if (source === undefined || source === "")
+    return "this program calls into Node.js (@scriptc/node), but no libnode pack is installed: set SCRIPTC_LIBNODE or pass --libnode=<pack directory>";
+  if (source.startsWith(ORIGIN)) {
+    // A pack the deployment places next to the executable: nothing to read.
+    return { libnode: source, nodeVersion: "" };
+  }
+  if (!isAbsolute(source)) return `the libnode pack directory must be absolute, got '${source}'`;
+  const manifest = readManifest(source);
+  if (typeof manifest === "string") return manifest;
+  if (!beside) return { libnode: resolve(source), nodeVersion: manifest.nodeVersion };
+  const name = `${basename(outPath)}.libnode`;
+  placeBeside(source, manifest, `${outPath}.libnode`);
+  return { libnode: `${ORIGIN}${name}`, nodeVersion: manifest.nodeVersion };
+}

@@ -19,6 +19,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
+    ...(features.nodeIsland ? { nodeIsland: true } : {}),
     zlib: features.zlib,
     assert: features.assert,
     inspect: features.inspect,

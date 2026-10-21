@@ -70,6 +70,9 @@ async function tryFastPath(): Promise<number | null> {
     values["profile-generate"] !== undefined ||
     values["profile-use"] !== undefined ||
     values.sparse ||
+    // The full compiler keys these builds by the recorded libnode pack.
+    values.libnode !== undefined ||
+    process.env["SCRIPTC_LIBNODE"] !== undefined ||
     (values["external-types"] ?? []).length > 0
   )
     return null;

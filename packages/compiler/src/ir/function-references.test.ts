@@ -215,6 +215,8 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "wasmModules[].sha256": "other",
   "wasmModules[].bytes": "other",
   "threadSlotKeys[]": "other",
+  "nodeIsland.libnode": "other",
+  "nodeIsland.nodeVersion": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };

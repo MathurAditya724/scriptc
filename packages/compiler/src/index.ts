@@ -98,8 +98,10 @@ import {
   ffiNativeBuildDiag,
   iceDiag,
   nativeCodegenDiag,
+  nodeIslandNodeDiag,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
+import { libnodeRecord } from "./node-islands/libnode.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
@@ -547,6 +549,7 @@ async function compileExecutableNative(
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
+    ...(features.nodeIsland ? { nodeIsland: true } : {}),
     zlib: features.zlib,
     assert: features.assert,
     inspect: features.inspect,
@@ -744,6 +747,17 @@ async function prepareExecutableInput(
   );
   if (!prepared.ok) return prepared;
   const { mod, sourceTexts } = prepared;
+  // Calls into Node record the libnode pack they load at run time.
+  if (mod.nodeIsland !== undefined) {
+    if (!moduleRuntimeFeatures(mod).nodeIsland) {
+      delete mod.nodeIsland;
+    } else {
+      const recorded = libnodeRecord(opts.libnode, opts.outPath);
+      if (typeof recorded === "string")
+        return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
+      mod.nodeIsland = recorded;
+    }
+  }
   if (warningSink !== undefined && prepared.warnings.length > 0) {
     warningSink.warnings = prepared.warnings;
     warningSink.sourceTexts = sourceTexts;
@@ -1114,6 +1128,8 @@ async function compileTracked(
         ? executableLinkerEnvironmentFingerprint(process.env, nativeCodegenTarget()?.defaultLinker)
         : executableNativeEnvironmentFingerprint(),
     ]);
+    // Calls into Node record the libnode pack (node-islands/libnode.ts).
+    const libnodeKey = opts.libnode ?? process.env["SCRIPTC_LIBNODE"];
     earlyCacheOptions = {
       entryPath,
       outDir: opts.outDir,
@@ -1125,6 +1141,7 @@ async function compileTracked(
       ...(opts.strip ? { strip: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
+      ...(libnodeKey === undefined ? {} : { libnode: libnodeKey }),
       ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
