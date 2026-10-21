@@ -4940,15 +4940,17 @@ declare module "net" {
     host?: string,
     connectListener?: () => void,
   ): Socket;
-  /* The caller-resolver dial (@types/node's net.LookupFunction, narrowed
-   * to the lowered shape): the runtime invokes it as Node does and dials
-   * the answered addresses in order under autoSelectFamily: true. */
+  /* The caller-resolver dial (@types/node's net.LookupFunction): the
+   * runtime invokes it as Node's autoSelectFamily dial does (options
+   * { hints, all: true }, so the callback answers an address list) and
+   * dials the answered addresses in order. */
   export type LookupFunction = (
     hostname: string,
-    options: unknown,
+    options: import("node:dns").LookupOptions,
     callback: (
       err: NodeJS.ErrnoException | null,
-      addresses: { address: string; family: number }[],
+      address: string | import("node:dns").LookupAddress[],
+      family?: number,
     ) => void,
   ) => void;
   export function connect(

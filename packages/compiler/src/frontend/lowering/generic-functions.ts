@@ -275,10 +275,13 @@ export function genericCallInstance(
   {
     const rdecl = rsig ? rsig.declaration : undefined;
     if (
+      rsig &&
       rdecl &&
       (ts.isFunctionDeclaration(rdecl) || ts.isMethodDeclaration(rdecl)) &&
       !rdecl.body
     ) {
+      const overload = overloadCallInstance(lowerer, expr, info, rsig, rdecl);
+      if (overload) return overload;
       lowerer.unsupported(
         "SC1090",
         expr,
@@ -313,14 +316,7 @@ export function genericCallInstance(
     fenceGenericSignatureResult(lowerer, expr, retTs);
     lowerer.badType(expr, retTs);
   }
-  // A body that can return an indexed read that misses returns undefined
-  // there, as in JavaScript, whatever the declared result says. An async
-  // body's promise is always present and settles with undefined there.
-  const returnType = lowerer.runtimeOptionalGenericReturns.has(info.decl)
-    ? mappedReturn.kind === "promise"
-      ? { kind: "promise" as const, inner: lowerer.runtimeOptionalType(mappedReturn.inner) }
-      : lowerer.runtimeOptionalType(mappedReturn)
-    : mappedReturn;
+  const returnType = runtimeReturnType(lowerer, info, mappedReturn);
 
   // keyof-constrained type parameters (`K extends keyof T`): the bound
   // LITERAL is semantic — the instance body reads the named field — so
@@ -331,23 +327,11 @@ export function genericCallInstance(
   // share one runtime-keyed instance per IR signature, exactly the
   // widened discipline.
   const named = staticNameBindings(lowerer, expr, info);
-  const keyofTps = keyofConstrainedTypeParams(info);
-  if (keyofTps.size > 0) {
+  if (keyofConstrainedTypeParams(info).size > 0) {
     const tsBindings = new Map<ts.Symbol, ts.Type>();
     const bindings = lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings);
-    const litKey = info.typeParams
-      .filter((tp) => keyofTps.has(tp))
-      .map((tp) => {
-        const bound = tsBindings.get(tp);
-        return bound?.isStringLiteralType()
-          ? JSON.stringify(bound.value)
-          : bound?.isNumberLiteralType()
-            ? String(bound.value)
-            : "*";
-      })
-      .join(",");
     return internGenericInstance(lowerer, expr, info, params, returnType, () => bindings, {
-      extraKey: `@${litKey}${named?.key ?? ""}`,
+      extraKey: `${keyofLiteralKey(info, tsBindings)}${named?.key ?? ""}`,
       tsBindings,
       ...(named ? { staticFnNames: named.names } : {}),
     });
@@ -361,6 +345,110 @@ export function genericCallInstance(
     (tsBindings) => lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings),
     named ? { extraKey: named.key, staticFnNames: named.names } : undefined,
   );
+}
+
+/** A call that resolved to an OVERLOAD signature of a generic function
+ * or method with an implementation (`request<T>(p: WithHandler<T>):
+ * Promise<T>; request(p: Plain): Promise<Res>; request<T>(p: Params<T>)
+ * {...}`): the implementation monomorphizes under the bindings the
+ * overload's resolved signature proves for its type parameters (the
+ * structural unification every generic call uses, run against the
+ * overload; unbound parameters take their declared defaults). The
+ * instance's parameters and result are the IMPLEMENTATION's under those
+ * bindings — the body was checked against them — and the call's
+ * arguments and result coerce across, exactly as a non-generic overload
+ * call reconciles with its implementation (parameters the overload omits
+ * must be optional in the implementation). Null when the overload does
+ * not belong to this implementation or the arities do not line up. */
+function overloadCallInstance(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  info: GenericFnInfo,
+  rsig: ts.Signature,
+  rdecl: ts.FunctionDeclaration | ts.MethodDeclaration,
+): GenericInstance | null {
+  const impl = info.decl;
+  if (
+    rdecl.parent !== impl.parent ||
+    rdecl.name === undefined ||
+    impl.name === undefined ||
+    rdecl.name.getText() !== impl.name.getText() ||
+    rdecl.parameters.nodes.length > impl.parameters.nodes.length ||
+    impl.parameters.nodes
+      .slice(rdecl.parameters.nodes.length)
+      .some((p) => p.questionToken === undefined && p.initializer === undefined) ||
+    rdecl.parameters.nodes.some((p) => p.dotDotDotToken !== undefined)
+  )
+    return null;
+  const declSig = lowerer.checker.getSignatureFromDeclaration(impl);
+  if (!declSig) return null;
+  const tsBindings = new Map<ts.Symbol, ts.Type>();
+  const bindings = new Map<ts.Symbol, IrType>();
+  unifySignatureBindings(lowerer, info, rsig, bindings, tsBindings);
+  // Explicit type arguments name the OVERLOAD's type parameters, which
+  // need not match the implementation's in order: the resolved overload
+  // already carries them, so unification binds first, and an explicit
+  // argument binds only a still-unbound implementation parameter of the
+  // same name.
+  const overloadTps = rdecl.typeParameters?.nodes ?? [];
+  expr.typeArguments?.nodes.forEach((ta, i) => {
+    const name = overloadTps[i]?.name.text;
+    const tp = info.typeParams.find((p) => ts.symbolName(p) === name);
+    if (!tp || bindings.has(tp)) return;
+    const taT = lowerer.checker.getTypeFromTypeNode(ta);
+    const mapped = lowerer.mapTypeOf(taT);
+    if (mapped) {
+      bindings.set(tp, mapped);
+      tsBindings.set(tp, taT);
+    }
+  });
+  bindDefaultTypeParams(lowerer, info.typeParams, impl.typeParameters?.nodes, bindings, tsBindings);
+  // A type parameter the overload never mentions (a handler the overload
+  // omits) is `unknown`, the checker's own answer for an uninferred one.
+  for (const tp of info.typeParams) {
+    if (bindings.has(tp)) continue;
+    bindings.set(tp, DYN);
+    tsBindings.set(tp, lowerer.checker.getUnknownType());
+  }
+  const previous = lowerer.typeParamBindings;
+  const previousTs = lowerer.typeParamTsBindings;
+  lowerer.typeParamBindings = bindings;
+  lowerer.typeParamTsBindings = tsBindings;
+  let params: ParamShape[];
+  let returnType: IrType | null;
+  try {
+    params = paramShapes(
+      lowerer,
+      impl.parameters.nodes,
+      declSig,
+      (_param, i) => expr.arguments.nodes[i] ?? expr,
+    );
+    returnType = lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(declSig));
+  } finally {
+    lowerer.typeParamBindings = previous;
+    lowerer.typeParamTsBindings = previousTs;
+  }
+  if (!returnType) return null;
+  // keyof-constrained parameters key their instance on the bound literal,
+  // as on the implementation-signature path.
+  const runtimeReturn = runtimeReturnType(lowerer, info, returnType);
+  return internGenericInstance(lowerer, expr, info, params, runtimeReturn, () => bindings, {
+    ...(keyofConstrainedTypeParams(info).size > 0
+      ? { extraKey: keyofLiteralKey(info, tsBindings) }
+      : {}),
+    tsBindings,
+  });
+}
+
+/** An instance's result type: a body that can return an indexed read
+ * that misses returns undefined there, as in JavaScript, whatever the
+ * declared result says. An async body's promise is always present and
+ * settles with undefined there. */
+function runtimeReturnType(lowerer: Lowerer, info: GenericFnInfo, mapped: IrType): IrType {
+  if (!lowerer.runtimeOptionalGenericReturns.has(info.decl)) return mapped;
+  return mapped.kind === "promise"
+    ? { kind: "promise", inner: lowerer.runtimeOptionalType(mapped.inner) }
+    : lowerer.runtimeOptionalType(mapped);
 }
 
 /** A generic factory whose result is one of its own local classes
@@ -596,6 +684,25 @@ function keyofConstrainedTypeParams(info: GenericFnInfo): Set<ts.Symbol> {
   return out;
 }
 
+/** The instance-key suffix of the literals bound to `info`'s
+ * keyof-constrained type parameters (`@"a"`; `*` for a non-literal
+ * binding): two literals can map to one IR signature while their bodies
+ * read different fields. */
+function keyofLiteralKey(info: GenericFnInfo, tsBindings: Map<ts.Symbol, ts.Type>): string {
+  const keyofTps = keyofConstrainedTypeParams(info);
+  const literals = info.typeParams
+    .filter((tp) => keyofTps.has(tp))
+    .map((tp) => {
+      const bound = tsBindings.get(tp);
+      return bound?.isStringLiteralType()
+        ? JSON.stringify(bound.value)
+        : bound?.isNumberLiteralType()
+          ? String(bound.value)
+          : "*";
+    });
+  return `@${literals.join(",")}`;
+}
+
 /** Type-parameter symbol → concrete IR type for one instantiation.
  * Explicit type arguments bind directly; the rest come from structurally
  * matching each DECLARED param/return type (which mentions the type
@@ -736,6 +843,27 @@ function unifySignatureBindings(
         // so match it against the whole remaining union. Removing null
         // too is safe only when no undeclared null arm remains.
         unify(dParts[0]!, lowerer.checker.getNonNullableType(inst), depth + 1);
+      } else if (dParts.length > 1 && iParts.length === dParts.length) {
+        // `T | Promise<T>` against `Res | Promise<Res>`: each declared
+        // part that names a generic target (Promise, an interface, an
+        // alias) pairs with the one instantiated part of the same target;
+        // a single remaining bare type parameter takes the single
+        // remaining instantiated part.
+        const remaining = [...iParts];
+        const bare: ts.Type[] = [];
+        for (const d of dParts) {
+          if (d.flags & ts.TypeFlags.TypeParameter) {
+            bare.push(d);
+            continue;
+          }
+          const target = d.getSymbol() ?? d.getAliasSymbol();
+          if (target === undefined) return;
+          const matches = remaining.filter((i) => (i.getSymbol() ?? i.getAliasSymbol()) === target);
+          if (matches.length !== 1) return;
+          remaining.splice(remaining.indexOf(matches[0]!), 1);
+          unify(d, matches[0]!, depth + 1);
+        }
+        if (bare.length === 1 && remaining.length === 1) unify(bare[0]!, remaining[0]!, depth + 1);
       }
       return;
     }

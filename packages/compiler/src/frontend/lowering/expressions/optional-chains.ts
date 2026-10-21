@@ -98,7 +98,11 @@ export function isRequireMainFilename(lowerer: Lowerer, expr: ts.Expression): bo
 export function isOptionalChainTail(lowerer: Lowerer, expr: ts.Expression): boolean {
   const tail = chainTailDot(lowerer, expr);
   if (!tail) return false;
-  const recvT = lowerer.mapTypeOf(lowerer.typeOf(tail.expression));
+  const recvTs = lowerer.typeOf(tail.expression);
+  // An `any` receiver short-circuits the whole tail too: `a?.b.c` reads
+  // `.c` normally once `a` is present.
+  if (recvTs.flags & ts.TypeFlags.Any) return true;
+  const recvT = lowerer.mapTypeOf(recvTs);
   if (recvT?.kind === "dyn") return true;
   if (recvT?.kind === "union") {
     const def = lowerer.unions.get(recvT.unionId);
@@ -119,7 +123,7 @@ export function isOptionalChainTail(lowerer: Lowerer, expr: ts.Expression): bool
  * throwing. Walks the receiver spine only; the argument of the access
  * itself is not part of the guard. Parentheses end the chain
  * (`(a?.b).c` reads `.c` from undefined); `!` does not. */
-export function hasOptionalChainGuard(expr: ts.Expression): boolean {
+export function hasOptionalChainGuard(expr: ts.Expression, lowerer?: Lowerer): boolean {
   let cur: ts.Expression = expr;
   for (;;) {
     if (ts.isNonNullExpression(cur)) {
@@ -131,7 +135,11 @@ export function hasOptionalChainGuard(expr: ts.Expression): boolean {
       ts.isElementAccessExpression(cur) ||
       ts.isCallExpression(cur)
     ) {
-      if (cur.questionDotToken) return true;
+      // Inside an optional chain's guarded body (dynamic reads pass the
+      // lowerer), the enclosing optChain already short-circuits on the
+      // consumed token, so the steps above it read normally: `a?.b.c`
+      // throws when `a.b` is undefined.
+      if (cur.questionDotToken) return lowerer === undefined || !lowerer.chainHandled.has(cur);
       cur = cur.expression;
       continue;
     }

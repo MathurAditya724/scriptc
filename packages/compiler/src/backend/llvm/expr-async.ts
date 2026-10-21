@@ -374,7 +374,7 @@ export function emitSerializationExpr(
       // falls back to exactly this route whenever the fast path declines.
       const parsed = e.value;
       if (!e.preserveRefs && parsed.kind === "libCall" && parsed.fn === "json.parse") {
-        const fused = host.dyn.jsonParseHelper(e.type);
+        const fused = host.dyn.jsonParseHelper(e.type, e.fallback === true);
         if (fused) {
           const text = emitBorrowedInput(host, parsed.args[0]!);
           const r = B.tmp();
@@ -400,6 +400,12 @@ export function emitSerializationExpr(
       B.line(
         `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${dynV.name}, ptr null)`,
       );
+      // A fallback site: a value that fails validation parks as the
+      // checked value instead of throwing (dynCheck.fallback).
+      if (e.fallback) {
+        host.declare(`declare zeroext i1 @scr_dyn_check_recover(ptr)`);
+        B.line(`call zeroext i1 @scr_dyn_check_recover(ptr ${dynV.name})`);
+      }
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck();
       return out;

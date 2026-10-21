@@ -8567,6 +8567,34 @@ static const char *scr_dyn_kind_name(const ScrDyn *d) {
   return "unknown";
 }
 
+static SCR_TL ScrDyn *scr_dyn_fallback_value;
+static SCR_TL bool scr_dyn_fallback_registered;
+
+static void scr_dyn_fallback_cleanup(void) {
+  scr_dyn_release(scr_dyn_fallback_value);
+  scr_dyn_fallback_value = NULL;
+}
+
+bool scr_dyn_check_recover(ScrDyn *d) {
+  if (!scr_exc_pending() || scr_exc_active->kind == SCR_EXC_TERMINATE) return false;
+  scr_exc_clear();
+  if (!scr_dyn_fallback_registered) {
+    scr_dyn_fallback_registered = true;
+    scr_atexit(scr_dyn_fallback_cleanup);
+  }
+  scr_dyn_release(scr_dyn_fallback_value);
+  scr_dyn_fallback_value = scr_dyn_retain(d);
+  return true;
+}
+
+bool scr_dyn_check_fallback_taken(void) { return scr_dyn_fallback_value != NULL; }
+
+ScrDyn *scr_dyn_check_fallback_take(void) {
+  ScrDyn *value = scr_dyn_fallback_value;
+  scr_dyn_fallback_value = NULL;
+  return value;
+}
+
 void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *got) {
   ScrJsonBuf b;
   scr_jb_init(&b);
