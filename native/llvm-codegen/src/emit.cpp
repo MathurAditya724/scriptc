@@ -31,6 +31,7 @@
 #include "llvm/PassRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/ProfileData/InstrProfReader.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/PGOOptions.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/Caching.h"
@@ -56,6 +57,10 @@ using namespace llvm;
 namespace scriptc {
 
 static constexpr size_t MaxPartitions = 64;
+// The thin link's import allowance for hot and hottest call edges, as a
+// multiple of the usual size limit, in builds with a profile. See
+// limitProfileImports().
+static constexpr const char *ProfileImportMultiplier = "2";
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
   EmitOptions Options;
@@ -145,6 +150,24 @@ std::optional<PGOOptions> profileOptions(const EmitOptions &Options) {
   if (!Options.ProfileUse.empty())
     return PGOOptions(Options.ProfileUse, "", "", "", PGOOptions::IRUse);
   return std::nullopt;
+}
+
+// With a profile, the thin link imports the callees of hot call edges up to
+// 10 times, and of the hottest edges up to 100 times, the usual size limit,
+// into every partition that calls them. On large programs that triples the
+// build's time and memory for no measurable run-time gain over a much smaller
+// allowance, so profile builds use that one. The importer's limits are
+// process-wide options; the helper sets them once.
+void limitProfileImports() {
+  static const bool Limited = [] {
+    auto Registered = cl::getRegisteredOptions();
+    for (StringRef Name :
+         {"import-hot-multiplier", "import-critical-multiplier"})
+      if (cl::Option *Option = Registered.lookup(Name))
+        Option->addOccurrence(0, Name, ProfileImportMultiplier);
+    return true;
+  }();
+  (void)Limited;
 }
 
 // Reads the profile's header once, before any partition needs it: it must
@@ -666,6 +689,8 @@ compileOptimizedPartitions(const EmitOptions &Options,
   std::vector<std::string> Names(Count);
   for (size_t I = 0; I < Count; ++I)
     Names[I] = "partition-" + std::to_string(I);
+  if (!Options.ProfileUse.empty())
+    limitProfileImports();
   lto::LTO Link(std::move(Config),
                 lto::createInProcessThinBackend(hardware_concurrency()));
   // Profile instrumentation gives every partition its own weak copy of the
