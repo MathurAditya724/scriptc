@@ -292,7 +292,10 @@ export function lowerBuiltinModuleCall(
     return lowerFsPromisesMkdirCall(lowerer, expr, loc);
   }
   if (bi.module === "fs" && bi.member === "rmSync" && expr.arguments.nodes.length === 2) {
-    return lowerFsRemoveCall(lowerer, expr, loc);
+    return lowerFsRemoveCall(lowerer, expr, loc, false);
+  }
+  if (bi.module === "fs/promises" && bi.member === "rm" && expr.arguments.nodes.length === 2) {
+    return lowerFsRemoveCall(lowerer, expr, loc, true);
   }
   // accessSync(p, mode?) and truncateSync(p, len?), with their promise
   // spellings: an omitted mode is Node's F_OK (0) and an omitted len is 0.
