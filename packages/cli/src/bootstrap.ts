@@ -70,7 +70,9 @@ async function tryFastPath(): Promise<number | null> {
     values["profile-generate"] !== undefined ||
     values["profile-use"] !== undefined ||
     values.sparse ||
-    (values["external-types"] ?? []).length > 0
+    (values["external-types"] ?? []).length > 0 ||
+    // The full CLI validates the Node island policy flags.
+    hasNodeIslandFlags(values)
   )
     return null;
   const backend = values.backend;
@@ -176,6 +178,21 @@ async function tryFastPath(): Promise<number | null> {
   });
 }
 
+function hasNodeIslandFlags(
+  values: ReturnType<
+    typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
+  >["values"],
+): boolean {
+  return (
+    values["node-islands"] !== undefined ||
+    (values["node-island"] ?? []).length > 0 ||
+    (values.native ?? []).length > 0 ||
+    values.node !== undefined ||
+    values["explain-island"] !== undefined ||
+    values["strict-user-js"]
+  );
+}
+
 /** An unchanged program's coverage verdict replays from the verdict cache
  * without loading the compiler graph. Anything else (a miss, a comment-only
  * edit, options the replay does not cover) defers to the full CLI. */
@@ -205,7 +222,9 @@ async function coverageFastPath(
     values["provenance-sources"] ||
     values["emit-ir"] ||
     (values["npm-static"] ?? []).length > 0 ||
-    (values["external-types"] ?? []).length > 0
+    (values["external-types"] ?? []).length > 0 ||
+    // The replay covers the default Node island policy only.
+    hasNodeIslandFlags(values)
   )
     return null;
   let startup: typeof import("@scriptc/compiler/startup-cache");
