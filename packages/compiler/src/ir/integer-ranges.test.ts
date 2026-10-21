@@ -941,6 +941,25 @@ test("a counter plus or minus a literal compared with a bound narrows the counte
   expect(gRanges.get(wide)).toEqual({ min: 0, max: 100 });
 });
 
+test("an offset comes off a fractional bound after the bound rounds to an integer", () => {
+  // x = unknown | 0; if (x + 2147483648 > -(2 ** -60)) observe(x): the sum is
+  // an integer, so the condition holds exactly when x + 2^31 >= 0. Subtracting
+  // the offset from the fractional bound first would round to -2^31 and drop
+  // x = -2^31 from the range.
+  const kept = ref();
+  const f = fn([
+    assign(bin("|", ref("unknown"), num(0))),
+    {
+      loc,
+      kind: "if",
+      cond: condition(">", bin("+", ref(), num(2147483648)), num(-(2 ** -60))),
+      then: [observe(kept)],
+      else_: null,
+    },
+  ]);
+  expect(analyzeIntegerRanges(f).get(kept)).toEqual({ min: -2147483648, max: 2147483647 });
+});
+
 test("whole-program slot facts seed parameters, field reads and call results", () => {
   const field: IrExpr = {
     loc,

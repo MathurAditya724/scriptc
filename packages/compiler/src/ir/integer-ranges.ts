@@ -560,7 +560,6 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
         Math.abs(literalBound.max) > 2 ** 52)
     )
       return;
-    const boundRange = { min: literalBound.min - offset, max: literalBound.max - offset };
     if (!truth)
       op =
         (
@@ -569,18 +568,27 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
             string
           >
         )[op] ?? "";
+    // The sum `x + c` is an integer, so the bound rounds to an integer first
+    // and the offset comes off after: integer arithmetic below 2^53 is exact,
+    // where subtracting the offset from a fractional bound could round
+    // across an integer.
     let { min, max } = previous;
-    if (op === "<") max = Math.min(max, Math.ceil(boundRange.max) - 1);
-    else if (op === "<=") max = Math.min(max, Math.floor(boundRange.max));
-    else if (op === ">") min = Math.max(min, Math.floor(boundRange.min) + 1);
-    else if (op === ">=") min = Math.max(min, Math.ceil(boundRange.min));
+    if (op === "<") max = Math.min(max, Math.ceil(literalBound.max) - 1 - offset);
+    else if (op === "<=") max = Math.min(max, Math.floor(literalBound.max) - offset);
+    else if (op === ">") min = Math.max(min, Math.floor(literalBound.min) + 1 - offset);
+    else if (op === ">=") min = Math.max(min, Math.ceil(literalBound.min) - offset);
     else if (op === "===") {
-      min = Math.max(min, boundRange.min);
-      max = Math.min(max, boundRange.max);
-    } else if (op === "!==" && boundRange.min === boundRange.max) {
+      min = Math.max(min, Math.ceil(literalBound.min) - offset);
+      max = Math.min(max, Math.floor(literalBound.max) - offset);
+    } else if (
+      op === "!==" &&
+      literalBound.min === literalBound.max &&
+      Number.isInteger(literalBound.min)
+    ) {
       // Excluding one value narrows a range that ends at it.
-      if (min === boundRange.min) min += 1;
-      else if (max === boundRange.max) max -= 1;
+      const excluded = literalBound.min - offset;
+      if (min === excluded) min += 1;
+      else if (max === excluded) max -= 1;
     }
     if (min <= max && Number.isInteger(min) && Number.isInteger(max))
       facts.set(target.localId, { min, max });
