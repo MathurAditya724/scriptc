@@ -255,6 +255,25 @@ function isStatFsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression
   );
 }
 
+/** The dgram.Socket methods its checked-dynamic handle answers as
+ * function values (scr_dgram.c's scr_dgram_dyn_method_names). */
+const DGRAM_METHOD_VALUES = new Set([
+  "on",
+  "once",
+  "addListener",
+  "removeListener",
+  "off",
+  "emit",
+  "send",
+  "close",
+  "bind",
+  "connect",
+  "disconnect",
+  "address",
+  "ref",
+  "unref",
+]);
+
 export function lowerPropertyAccessExpr(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -263,6 +282,26 @@ export function lowerPropertyAccessExpr(
   if (!expr.questionDotToken) {
     const navigator = lowerNavigatorMember(lowerer, expr, NODE_COMPAT_VERSION);
     if (navigator) return navigator;
+  }
+  // A dgram socket's method read as a value in JavaScript (`emit:
+  // socket.emit.bind(socket)`): the socket crosses as its checked-dynamic
+  // handle, whose methods are function values that dispatch on their
+  // receiver, as the prototype methods do. The receiver is a native
+  // socket whatever its declaration spells (the shipped types declare no
+  // EventEmitter members), so the name decides.
+  if (
+    !expr.questionDotToken &&
+    DGRAM_METHOD_VALUES.has(expr.name.text) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "dgramSocket"
+  ) {
+    return {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
   }
   // `fn.name` on a function parameter of a generic instance keyed by
   // its argument's static name (call-site specialization).

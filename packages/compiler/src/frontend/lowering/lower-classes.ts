@@ -90,14 +90,17 @@ import {
   withUnitArm,
 } from "../type-mapper.js";
 import {
+  canonicalBuiltinModule,
   cjsClassExprWholeExportOf,
   isCjsJsFile,
   isJsSourceFile,
   isModuleExportsAccess,
   locOf,
+  requireSpecOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
 import { isAssertClassNew } from "./assert-instances.js";
+import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
@@ -977,6 +980,19 @@ export function registerBuiltinEmitterClass(lowerer: Lowerer): void {
     staticFields: [],
   };
   lowerer.classes.set(RUNTIME_EMITTER_CLASS, info);
+}
+
+/** `class Bus extends require("events") {}` in a CommonJS module: the
+ * events module is the EventEmitter class itself, so the base is the
+ * runtime emitter, exactly as through a `require("events")` binding. */
+export function builtinRequireBaseOf(lowerer: Lowerer, node: ts.Expression): ClassInfo | null {
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isCallExpression(expr) || !isJsSourceFile(expr.getSourceFile())) return null;
+  const spec = requireSpecOf(expr);
+  if (spec === null || canonicalBuiltinModule(spec) !== "events") return null;
+  if (!isCjsRequireGlobal(lowerer, expr.expression)) return null;
+  return lowerer.classes.get(RUNTIME_EMITTER_CLASS) ?? null;
 }
 
 /** The runtime-provided node:stream classes as eagerly-registered
@@ -2099,6 +2115,11 @@ export function collectClassShapeInner(
       // callee is NOT a mixin function keeps the computed-expression
       // fence below.
       if (t && ts.isCallExpression(t.expression) && !t.typeArguments?.nodes) {
+        const requiredBase = builtinRequireBaseOf(lowerer, t.expression);
+        if (requiredBase) {
+          base = requiredBase;
+          continue;
+        }
         const mixinBase = lowerer.mixinCallClassInfoOf(t.expression);
         if (mixinBase) {
           base = mixinBase;
@@ -5765,7 +5786,7 @@ export function lowerClassExpressionInfo(
       )?.types?.nodes[0]?.expression;
       if (
         heritage &&
-        (ts.isCallExpression(heritage) ||
+        ((ts.isCallExpression(heritage) && !builtinRequireBaseOf(lowerer, heritage)) ||
           (ts.isIdentifier(heritage) &&
             (lowerer.peekLocal(heritage) ?? lowerer.globalOf(heritage)) != null))
       ) {

@@ -18,6 +18,7 @@ import {
   setGlobalDispatcher,
 } from "undici";
 import type { Dispatcher } from "undici";
+import { checkPeers } from "./peers.ts";
 
 const server = http.createServer((req, res) => {
   const url = req.url ?? "/";
@@ -195,7 +196,6 @@ server.listen(0, "127.0.0.1", async () => {
   for (let i = 0; i < 4; i++) {
     const r = await request(`${origin}/r${i}`, { dispatcher: agent });
     await r.body.text();
-    await turn();
   }
   console.log("connections opened:", agent.connections);
   console.log("stats:", agent.statsFor(origin));
@@ -294,5 +294,6 @@ server.listen(0, "127.0.0.1", async () => {
 
   await agent.close();
   server.close();
+  await checkPeers();
   console.log("done");
 });

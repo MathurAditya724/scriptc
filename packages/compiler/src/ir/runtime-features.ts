@@ -8,6 +8,7 @@ import {
   RUNTIME_STREAM_CLASSES,
 } from "./ir.js";
 import { everyModuleNode } from "./traverse.js";
+import { JsIcSites, hasJsIcSite } from "./js-ic.js";
 
 /** The fixed-width Buffer read/write method names (both "UInt" and "Uint"
  * spellings) a checked-dynamic method call routes to scr_bytes_dyn.c. */
@@ -92,6 +93,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dc.chanRunStores",
   "dc.chanUnbindStore",
   "util.callbackify",
+  "util.promisifyDyn",
   "util.debuglog",
   "util.deprecate",
   "util.inherits",
@@ -346,6 +348,8 @@ interface TypeTables {
   records: Map<string, IrRecordShape>;
   unions: Map<string, IrUnionDef>;
   classes: Map<string, IrClassDef>;
+  /** mentionsDgramSocket's carriers, computed on first use. */
+  dgramCarriers?: DgramCarriers;
 }
 
 /** Whether boxing a value of type `t` as dyn boxes a promise, which goes
@@ -407,6 +411,78 @@ function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean
     default:
       return false;
   }
+}
+
+/** The record shapes, unions and classes whose values carry a dgram socket
+ * (directly or through other members), computed once per module. */
+interface DgramCarriers {
+  records: Set<string>;
+  unions: Set<string>;
+  anyClass: boolean;
+}
+
+/** Whether `t` carries a dgram socket, given the carrier sets so far:
+ * structural through functions (parameters and result), promises and
+ * collections; named records, unions and class instances by the sets. */
+function carriesDgram(t: IrType, carriers: DgramCarriers): boolean {
+  switch (t.kind) {
+    case "dgramSocket":
+      return true;
+    case "func":
+      return t.params.some((p) => carriesDgram(p, carriers)) || carriesDgram(t.ret, carriers);
+    case "promise":
+      return carriesDgram(t.inner, carriers);
+    case "array":
+    case "set":
+      return carriesDgram(t.elem, carriers);
+    case "map":
+      return carriesDgram(t.key, carriers) || carriesDgram(t.value, carriers);
+    case "record":
+      return carriers.records.has(t.shapeId);
+    case "union":
+      return carriers.unions.has(t.unionId);
+    case "object":
+      // Any class may be the instance's runtime class or one of its bases.
+      return carriers.anyClass;
+    default:
+      return false;
+  }
+}
+
+/** The module's dgram carriers: a fixpoint over its records, unions and
+ * class fields. */
+function dgramCarriers(tables: TypeTables): DgramCarriers {
+  const carriers: DgramCarriers = { records: new Set(), unions: new Set(), anyClass: false };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [id, shape] of tables.records)
+      if (!carriers.records.has(id) && shape.fields.some((f) => carriesDgram(f.type, carriers))) {
+        carriers.records.add(id);
+        changed = true;
+      }
+    for (const [id, def] of tables.unions)
+      if (!carriers.unions.has(id) && def.arms.some((a) => carriesDgram(a, carriers))) {
+        carriers.unions.add(id);
+        changed = true;
+      }
+    if (
+      !carriers.anyClass &&
+      [...tables.classes.values()].some((c) => c.fields.some((f) => carriesDgram(f.type, carriers)))
+    ) {
+      carriers.anyClass = true;
+      changed = true;
+    }
+  }
+  return carriers;
+}
+
+/** Whether converting a value of type `t` to or from dyn converts a dgram
+ * socket, which goes through scr_dgram_dyn.c: the socket itself, or a
+ * function, collection, record, union, promise or class instance that
+ * carries one (boxed functions convert their parameters too). */
+function mentionsDgramSocket(t: IrType, tables: TypeTables): boolean {
+  tables.dgramCarriers ??= dgramCarriers(tables);
+  return carriesDgram(t, tables.dgramCarriers);
 }
 
 /** The libCall fns served by the OPTIONAL events unit (scr_events.c):
@@ -544,6 +620,14 @@ const RUNTIME_FEATURE_RULES = {
   dc: rule({ prefixes: ["dc."] }),
   /** dns.lookup lives in the dgram unit. */
   dgram: rule({ prefixes: ["dgram.", "dns."], types: ["dgramSocket"] }),
+  /** A dgram socket converts to or from an untyped value (its handle box,
+   * a boxed function or record that carries one): scr_dgram_dyn.c over
+   * the dgram unit. */
+  dgramDyn: rule({
+    expr: (node, tables) =>
+      (node.kind === "dynFrom" && mentionsDgramSocket(node.value.type, tables())) ||
+      (node.kind === "dynCheck" && mentionsDgramSocket(node.type, tables())),
+  }),
   /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
   dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
   dynAsync: rule({
@@ -584,7 +668,12 @@ const RUNTIME_FEATURE_RULES = {
   dynBuiltinStream: rule({ fns: ["dyn.builtinStreamClass"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
-    fns: [...DYN_INVOKE_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
+    fns: [
+      ...DYN_INVOKE_LIB_FNS,
+      ...UTIL_CALLABLE_LIB_FNS,
+      ...BUILTIN_CLASS_LIB_FNS,
+      "util.promisifyDyn",
+    ],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.
     expr: (node, _tables) =>
@@ -603,6 +692,8 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** Own properties JavaScript adds to children (scr_dyn_handle_props.c). */
   handleProps: rule({ fns: ["child.propsInstall"] }),
+  /** for await over checked-dynamic values (scr_dyn_for_await.c). */
+  dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
   /** Fixed-width Buffer read/write methods called on checked-dynamic
    * values (scr_bytes_dyn.c). */
   dynBufferNum: rule({
@@ -741,6 +832,10 @@ const RUNTIME_FEATURE_RULES = {
   }),
   tls: rule({ prefixes: ["tls.", "https.", "http2."], types: ["secureCtx"] }),
   tlsCa: rule({ prefixes: ["tlsca."] }),
+  /** util.promisify over an untyped function (scr_util_promisify.c): its
+   * promises go through the dyn-async unit and its calls through the
+   * dyn-invoke unit. */
+  utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
   /** The WebAssembly API (scr_wasm.c). */
@@ -770,6 +865,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     copying: false,
     dc: false,
     dgram: false,
+    dgramDyn: false,
     dnsPromises: false,
     dynAsync: false,
     dynBuiltinClass: false,
@@ -801,11 +897,13 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stream: false,
     streamDyn: false,
     handleProps: false,
+    dynForAwait: false,
     dynBufferNum: false,
     builtinValues: false,
     symbol: false,
     tls: false,
     tlsCa: false,
+    utilPromisify: false,
     warningReplace: false,
     wasm: false,
     webcrypto: false,
@@ -872,6 +970,12 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: RuntimeFeatureName): Runtim
     return keepGoing();
   };
   if (keepGoing()) everyModuleNode(mod, { expr, stmt: keepGoing, type });
+  // Inline-cache sites of dynamic-tier functions use the tier's shapes
+  // (scr_js_object.c, with the SCR_JS_TIER build of scr_json.c).
+  if (!features.dynTier && mod.functions.some((fn) => fn.tier === "dynamic")) {
+    const sites = new JsIcSites(mod);
+    features.dynTier = mod.functions.some((fn) => fn.tier === "dynamic" && hasJsIcSite(fn, sites));
+  }
   return features;
 }
 
@@ -1136,9 +1240,9 @@ export function moduleUsesTlsCa(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "tlsCa").tlsCa;
 }
 
-/** True when the module has dynamic-tier jsval operations: the link switch
- * for the scr_js_* runtime units (two-tier design I3). Programs without
- * them never link a scr_js_ symbol. */
+/** True when the module has dynamic-tier jsval operations or inline-cache
+ * sites: the link switch for the scr_js_* runtime units (two-tier design
+ * I3). Programs without them never link a scr_js_ symbol. */
 export function moduleUsesDynTier(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "dynTier").dynTier;
 }

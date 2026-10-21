@@ -13,6 +13,8 @@
  *
  *   pnpm node-compat                fetch latest-v24.x and rewrite the snapshot
  *   pnpm node-compat --check        fetch and fail if the snapshot would change
+ *   pnpm node-compat --local        rewrite the snapshot without fetching: reclassify
+ *                                   the committed rows from the current sources
  *   pnpm node-compat:check          offline implementation/profile drift check
  */
 
@@ -22,12 +24,15 @@ import { fileURLToPath } from "node:url";
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const internalOutputPath = `${packageRoot}generated/node-v24-internal.json`;
-const backlogOutputPath = `${packageRoot}generated/node-v24-backlog.json`;
 const publicOutputPath = `${root}docs/src/generated/node-v24-compatibility.json`;
-// The docs build derives this file's values from the public artifact; a
-// merge that keeps a branch's copy would bring back a file every
-// compatibility change rewrites.
-const retiredOutputPaths = [`${root}docs/src/generated/node-v24-compatibility-meta.json`];
+// Files derived from the ledger elsewhere: the docs build computes the
+// metadata from the public artifact, and `pnpm node-compat:backlog` builds
+// the backlog in memory. A merge that keeps a branch's copy would bring
+// back a file every compatibility change rewrites.
+const retiredOutputPaths = [
+  `${root}docs/src/generated/node-v24-compatibility-meta.json`,
+  `${packageRoot}generated/node-v24-backlog.json`,
+];
 const compilerManifestPath = `${root}packages/compiler/surface-manifest.json`;
 const compilerCompatPath = `${packageRoot}static-support.json`;
 const pinPath = `${packageRoot}node-v24.json`;
@@ -447,12 +452,6 @@ function summarizeTier(rows, key, chapterPolicy) {
   return tier("unreviewed", "", { source: "derived:descendants" });
 }
 
-function statusCounts(rows, key) {
-  const counts = Object.fromEntries(STATUSES.map((status) => [status, 0]));
-  for (const row of rows) if (row.scope === "api") counts[row[key].status] += 1;
-  return counts;
-}
-
 function verifiedAnchorIds(html) {
   return new Set(
     [...html.matchAll(/<a class="mark" href="#[^"]+" id="([^"]+)">#/g)].map((match) => match[1]),
@@ -524,7 +523,6 @@ function buildSnapshot({ allJson, indexMarkdown, allSha256, indexSha256 }) {
       title: link.title,
       entries: chapterRows.length,
       apiEntries: chapterRows.filter((row) => row.scope === "api").length,
-      static: statusCounts(chapterRows, "static"),
     });
     rows.push(...chapterRows);
   }
@@ -873,7 +871,7 @@ function backlogAction(tier) {
   return null;
 }
 
-function buildBacklog(snapshot) {
+export function buildBacklog(snapshot) {
   const tasks = [];
   const tierItems = { static: {} };
   const priorities = { high: 0, normal: 0, low: 0 };
@@ -969,7 +967,6 @@ function projectPublicMatrix(snapshot) {
       title: chapter.title,
       entries: chapterRows.length,
       apiEntries: chapterRows.length,
-      static: statusCounts(chapterRows, "static"),
     });
     rows.push(...chapterRows);
   }
@@ -1016,6 +1013,34 @@ function publicSnapshot(snapshot) {
       },
     })),
   };
+}
+
+/** The committed ledger with every row's classification recomputed from
+ * the current sources. The rows themselves come from the pinned Node docs,
+ * so while the pin is unchanged this is what a fetching run writes. */
+function reclassify(snapshot) {
+  if (snapshot.nodeVersion !== pin.version || snapshot.nodeCommit !== pin.commit) {
+    throw new Error(
+      `the ledger targets Node ${snapshot.nodeVersion}, the pin ${pin.version}; run 'pnpm node-compat' to fetch the new docs`,
+    );
+  }
+  const ctx = classificationContext();
+  const ancestors = [];
+  for (const row of snapshot.rows) {
+    ancestors.length = row.depth;
+    const parentSignature = ancestors[row.depth - 1]?.signature;
+    row.static = classifyStatic(row, null, ctx, parentSignature);
+    ancestors[row.depth] = row;
+  }
+  for (const chapter of snapshot.chapters) {
+    const chapterRows = snapshot.rows.filter((row) => row.chapter === chapter.slug);
+    chapterRows[0].static = summarizeTier(
+      chapterRows,
+      "static",
+      ctx.compilerCompat.chapterPolicies[chapter.slug],
+    );
+  }
+  return snapshot;
 }
 
 function checkLocal() {
@@ -1070,9 +1095,6 @@ function checkLocal() {
       throw new Error(`${row.id} exposes a row that is not applicable to native compilation`);
     }
   }
-  if (readFileSync(backlogOutputPath, "utf8") !== render(buildBacklog(snapshot))) {
-    throw new Error("the Node compatibility backlog is stale; run 'pnpm node-compat'");
-  }
   if (readFileSync(publicOutputPath, "utf8") !== render(publicSnapshot(snapshot))) {
     throw new Error("the docs compatibility artifact is stale; run 'pnpm node-compat'");
   }
@@ -1117,6 +1139,15 @@ async function fetchText(url) {
 async function main() {
   const args = new Set(process.argv.slice(2));
   if (args.has("--check-local")) return checkLocal();
+  if (args.has("--local")) {
+    const snapshot = reclassify(JSON.parse(readFileSync(internalOutputPath, "utf8")));
+    writeFileSync(internalOutputPath, render(snapshot));
+    writeFileSync(publicOutputPath, render(publicSnapshot(snapshot)));
+    console.log(
+      `reclassified the compatibility ledger and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
+    );
+    return;
+  }
 
   const [allText, indexMarkdown] = await Promise.all([
     fetchText(pin.allJsonUrl),
@@ -1138,14 +1169,11 @@ async function main() {
   );
   verifyAnchors(snapshot, htmlByChapter);
   const internalRendered = render(snapshot);
-  const backlogRendered = render(buildBacklog(snapshot));
   const publicRendered = render(publicSnapshot(snapshot));
 
   if (args.has("--check")) {
     if (readFileSync(internalOutputPath, "utf8") !== internalRendered)
       throw new Error("internal Node compatibility snapshot is stale; run 'pnpm node-compat'");
-    if (readFileSync(backlogOutputPath, "utf8") !== backlogRendered)
-      throw new Error("Node compatibility backlog is stale; run 'pnpm node-compat'");
     if (readFileSync(publicOutputPath, "utf8") !== publicRendered)
       throw new Error("public Node compatibility snapshot is stale; run 'pnpm node-compat'");
     console.log(
@@ -1154,11 +1182,11 @@ async function main() {
     return;
   }
   writeFileSync(internalOutputPath, internalRendered);
-  writeFileSync(backlogOutputPath, backlogRendered);
   writeFileSync(publicOutputPath, publicRendered);
   console.log(
-    `wrote compatibility ledger, backlog, and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
+    `wrote compatibility ledger and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
   );
 }
 
-await main();
+// backlog.mjs imports buildBacklog; only running this file generates.
+if (process.argv[1] === fileURLToPath(import.meta.url)) await main();

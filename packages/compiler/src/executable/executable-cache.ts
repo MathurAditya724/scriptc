@@ -68,6 +68,7 @@ export interface EarlyExecutableNativeFeatures {
   dynTier?: boolean;
   streamDyn?: boolean;
   handleProps?: boolean;
+  dynForAwait?: boolean;
   eventsOnceSignal?: boolean;
   dynBufferNum?: boolean;
   builtinValues?: boolean;
@@ -77,6 +78,7 @@ export interface EarlyExecutableNativeFeatures {
   bigint: boolean;
   searchParams: boolean;
   qs: boolean;
+  utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
   parseArgs: boolean;
@@ -86,6 +88,7 @@ export interface EarlyExecutableNativeFeatures {
   http2: boolean;
   dgram: boolean;
   dnsPromises: boolean;
+  dgramDyn: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
@@ -199,6 +202,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "bigint",
   "searchParams",
   "qs",
+  "utilPromisify",
   "dynBuiltinClass",
   "dynBuiltinStream",
   "parseArgs",
@@ -208,6 +212,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "http2",
   "dgram",
   "dnsPromises",
+  "dgramDyn",
   "watch",
   "foreignFfi",
   "nodeTest",

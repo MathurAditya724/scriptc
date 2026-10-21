@@ -219,6 +219,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
   "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
   "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },
+  /** for await over a checked-dynamic value: the loop's iterator (a
+   * compiled async generator, Symbol.asyncIterator's result, or the sync
+   * iterator), and whether that iterator is synchronous. */
+  "dyn.asyncIteratorOpen": { argTypes: [DYN, STRING], result: DYN },
+  "dyn.asyncIteratorWasSync": { argTypes: [], result: BOOL },
   "dyn.iteratorResult": { argTypes: [DYN], result: DYN },
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
@@ -1100,6 +1105,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "util.inherits": { argTypes: [DYN, DYN], result: VOID },
   "util.deprecate": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
   "util.callbackify": { argTypes: [DYN], result: DYN },
+  /** util.promisify over an untyped function value: a native dyn function
+   * whose calls answer a dyn promise the appended callback settles. */
+  "util.promisifyDyn": { argTypes: [DYN], result: DYN },
   "util.debuglog": { argTypes: [DYN, DYN], result: DYN },
   "util.typeIs": { argTypes: [DYN, STRING], result: BOOL },
   "util.typeValue": { argTypes: [DYN, STRING], result: DYN },
@@ -1516,10 +1524,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dgram.sendBytes": { argTypes: [DGRAMSOCK_T, BYTES_U8, F64, STRING], result: VOID },
   /** The send argument-validation ladder over dyn arguments (Node's
    * signature shuffle: slice bounds, list/type contracts, port/address
-   * validation, connected-state errors) — a fully-validated unconnected
-   * single-payload send RUNS; callback/list/connected forms meet the
-   * trailing fence. May-throw. */
-  "dgram.sendChk": { argTypes: [DGRAMSOCK_T, DYN, DYN, DYN, DYN, DYN, STRING], result: VOID },
+   * validation, connected-state errors), then the send: lists, connected
+   * sends and completion callbacks included. Up to six arguments, the
+   * missing ones undefined. May-throw. */
+  "dgram.sendChk": { argTypes: [DGRAMSOCK_T, DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
   "dgram.address": { argTypes: [DGRAMSOCK_T], result: VOID },
   "dgram.close": { argTypes: [DGRAMSOCK_T], result: VOID },
   "dgram.closeCb": {

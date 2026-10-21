@@ -118,6 +118,8 @@ export interface CcOptions {
   streamDyn?: boolean;
   /** Own properties JavaScript adds to children: compiles scr_dyn_handle_props.c. */
   handleProps?: boolean;
+  /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
+  dynForAwait?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -165,6 +167,10 @@ export interface CcOptions {
    * line (escape-only programs ride the always-linked component encoder
    * and never flip this). */
   qs?: boolean;
+  /** The program promisifies an untyped function (util.promisify over
+   * `any`): compiles scr_util_promisify.c, which also references the
+   * dyn-async and dyn-invoke units. */
+  utilPromisify?: boolean;
   /** The program uses EventEmitter or a stream class as an untyped
    * constructor value (a constructor function's base): compiles
    * scr_dyn_builtin_class.c, which also references the inspection,
@@ -205,6 +211,10 @@ export interface CcOptions {
    * compiles scr_dns_promises.c over the dgram unit, so callback-only
    * binaries keep their exact link line. */
   dnsPromises?: boolean;
+  /** A dgram socket converts to or from an untyped value: compiles
+   * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
+   * their exact link line. */
+  dgramDyn?: boolean;
 
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free

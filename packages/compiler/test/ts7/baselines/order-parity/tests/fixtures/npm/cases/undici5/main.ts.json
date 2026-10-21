@@ -15,6 +15,7 @@
   "<repo>/packages/compiler/shims/undici/core/fetch.ts",
   "<repo>/packages/compiler/shims/undici/core/errors-v5.ts",
   "<repo>/packages/compiler/shims/undici/v5.ts",
+  "<repo>/tests/fixtures/npm/cases/undici5/peers.ts",
   "<repo>/tests/fixtures/npm/cases/undici5/main.ts"
  ],
  "diags": []

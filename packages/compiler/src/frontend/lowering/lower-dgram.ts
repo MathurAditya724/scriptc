@@ -9,7 +9,6 @@ import { dynUndefinedExpr, boolLit } from "../../ir/build.js";
  * generic rejection, never silence. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import { ladderFenceExpr } from "./lowerer.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import {
   BOOL,
@@ -28,6 +27,7 @@ import {
 } from "../../ir/ir.js";
 import { resultIsDiscarded } from "./call-position.js";
 import { lowerCallbackArg as lowerCallbackArgShared } from "./callback-arg.js";
+import { documentedParameter } from "./call-signatures.js";
 
 const DGRAM_SURFACE_HINT =
   "bind, connect, disconnect, send, address, close, unref/ref, the socket " +
@@ -521,6 +521,17 @@ function lowerDnsModuleCall(
   );
 }
 
+/** A listener JavaScript leaves untyped: a function literal with a
+ * parameter that has neither an annotation nor JSDoc (paramShape makes it
+ * checked-dynamic), or any other untyped value. */
+function untypedJsListener(lowerer: Lowerer, node: ts.Expression): boolean {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isArrowFunction(e) || ts.isFunctionExpression(e))
+    return e.parameters.nodes.some((param) => !documentedParameter(param));
+  return (lowerer.typeOf(e).flags & ts.TypeFlags.Any) !== 0;
+}
+
 /** Method calls on dgram.Socket receivers — one entry in lower-calls.ts's
  * intrinsic chain (after lowerServerMethodCall). Null for other
  * receivers. */
@@ -576,9 +587,9 @@ export function lowerDgramMethodCall(
     // send(msg, port, address) — one datagram to an explicit destination
     // (the static fast path). Every OTHER shape in a JS source rides the
     // checked-dynamic ladder (dgram.sendChk): Node's signature shuffle,
-    // slice bounds, list/type contracts, port/address validation, and
-    // the connected-state errors — with the compiler-rendered fence as
-    // the post-validation tail for the callback/list/connected forms.
+    // slice bounds, list/type contracts, port/address validation, the
+    // connected-state errors, then the send itself — lists, connected
+    // sends and completion callbacks included.
     const staticShape =
       args.length === 3 &&
       !args.some(ts.isSpreadElement) &&
@@ -602,13 +613,13 @@ export function lowerDgramMethodCall(
     }
     if (
       isJsSourceFile(ts.getSourceFileOfNode(call)) &&
-      args.length <= 5 &&
+      args.length <= 6 &&
       !args.some(ts.isSpreadElement)
     ) {
       const receiver = lowerer.lowerExpr(access.expression);
       const slots: IrExpr[] = [];
       let ok = true;
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 6; i++) {
         const n = args[i];
         if (!n) {
           slots.push(dynUndefinedExpr(loc));
@@ -636,16 +647,7 @@ export function lowerDgramMethodCall(
         return {
           kind: "libCall",
           fn: "dgram.sendChk",
-          args: [
-            receiver,
-            ...slots,
-            ladderFenceExpr(
-              lowerer,
-              `send in this form`,
-              call,
-              "send(msg, port, address) — one string or Buffer datagram — is the lowered form; callback, list, and connected sends have no lowering yet",
-            ),
-          ],
+          args: [receiver, ...slots],
           type: VOID,
           loc,
         };
@@ -709,6 +711,22 @@ export function lowerDgramMethodCall(
   }
   if ((name === "on" || name === "once") && args.length === 2) {
     requireStatementPosition(lowerer, call, `socket.${name}(...)`);
+    // A JavaScript listener whose parameters are untyped registers through
+    // the socket's checked-dynamic handle, which hands it untyped values.
+    if (isJsSourceFile(ts.getSourceFileOfNode(call)) && untypedJsListener(lowerer, args[1]!)) {
+      return {
+        kind: "dynInvoke",
+        recv: lowerer.coerceToExpected(lowerer.lowerExpr(access.expression), DYN),
+        method: name,
+        calleeName: ts.getTextOfNode(access),
+        args: [
+          lowerer.lowerExprExpecting(args[0]!, DYN),
+          lowerer.lowerExprExpecting(args[1]!, DYN),
+        ],
+        type: DYN,
+        loc,
+      };
+    }
     const once = boolLit(name === "once", loc);
     const evT = lowerer.typeOf(args[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;

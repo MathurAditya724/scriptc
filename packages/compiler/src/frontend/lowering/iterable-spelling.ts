@@ -29,11 +29,12 @@ function iterableHeadText(expr: ts.Expression): string | null {
 /** V8's TypeError message for iterating a value that is not iterable:
  * `x is not iterable` for an identifier or property path, `f is not a
  * function or its return value is not iterable` for a call of one, and ""
- * for other expressions, which the runtime words by the value's kind. */
-export function notIterableSpelling(expr: ts.Expression): string {
+ * for other expressions, which the runtime words by the value's kind.
+ * for await words it with "async iterable". */
+export function notIterableSpelling(expr: ts.Expression, word = "iterable"): string {
   const name = iterableHeadText(expr);
-  if (name !== null) return `${name} is not iterable`;
+  if (name !== null) return `${name} is not ${word}`;
   const e = unwrapped(expr);
   const callee = ts.isCallExpression(e) ? iterableHeadText(e.expression) : null;
-  return callee !== null ? `${callee} is not a function or its return value is not iterable` : "";
+  return callee !== null ? `${callee} is not a function or its return value is not ${word}` : "";
 }
