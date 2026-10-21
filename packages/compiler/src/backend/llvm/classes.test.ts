@@ -7,6 +7,7 @@ import {
   mangleClassReleaseDirect,
   mangleClassRelease,
   mangleClassRetain,
+  mangleClassStruct,
   mangleClassTrace,
   mangleRecordRelease,
 } from "../mangle.js";
@@ -129,24 +130,63 @@ test("ProgramLifetime hierarchies are never freed and take no reference counts",
     expect(body(mangleClassRetain(cls)), cls).toMatch(/entry:\n {2}ret ptr %o\n}/);
     expect(body(mangleClassRelease(cls)), cls).toMatch(/entry:\n {2}ret void\n}/);
     // new: no collector header (no descriptor, no scr_cyc_alloc) and the
-    // program-lifetime count 2^31 under the class id (Node's preorder number
-    // 0 + 1, Leaf's 1 + 1), not SIZE_MAX (which means published).
+    // 32-bit header: the tag 0x70000000 and the class id (Node's preorder
+    // number 0 + 1, Leaf's 1 + 1), without a count.
     const nw = body(mangleClassNew(cls));
     const id = cls === "Node" ? 1 : 2;
-    expect(nw, cls).toContain(`store i64 ${id * 2 ** 32 + 2 ** 31}, ptr %o.vt`);
-    expect(nw, cls).not.toContain("store i64 -1, ptr %o");
+    expect(nw, cls).toContain(`store i32 ${0x70000000 + id}, ptr %o.vt`);
+    expect(nw, cls).not.toContain("store i64");
     expect(nw, cls).not.toContain("scr_cyc_alloc");
     expect(llvm, cls).not.toContain(`@${mangleClassTrace(cls)}.cyctype`);
     // The RC audit (sanitize builds) learns that the program keeps
     // program-lifetime objects; other builds emit nothing for it.
     expect(nw, cls).toContain("call void @scr_obj_lifetime_note(ptr %o)");
   }
+  expect(llvm).toContain(`%${mangleClassStruct("Leaf")} = type { i32, ptr }`);
   const plain = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false });
   expect(plain).not.toContain("scr_obj_lifetime_note");
   // The mortal Owner keeps its header, counts and possible-root step.
   expect(body(mangleClassNew("Owner"))).toContain("store i64 1, ptr %o");
   expect(body(mangleClassNew("Owner"))).toContain("scr_cyc_alloc");
   expect(body(mangleClassRelease("Owner"))).toContain("load i32, ptr %bufp");
+});
+
+test("ProgramLifetime classes pack their fields after a 32-bit header", () => {
+  const node = { kind: "object" as const, className: "Node" };
+  const leaf = { kind: "object" as const, className: "Leaf" };
+  const BOOL = { kind: "bool" as const };
+  const nodeFields = [
+    { name: "parent", type: node },
+    { name: "flag", type: BOOL },
+    { name: "weight", type: F64 },
+  ];
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [{ name: "main", params: [], returnType: VOID, locals: [], body: [], loc }],
+    classes: [
+      { name: "Node", fields: nodeFields, methods: [], loc },
+      {
+        name: "Leaf",
+        base: "Node",
+        fields: [...nodeFields, { name: "next", type: leaf }, { name: "mark", type: BOOL }],
+        methods: [],
+        loc,
+      },
+    ],
+    contracts: { programLifetime: ["Node"] },
+  };
+  const llvm = emitLlvmModule(mod, { pointerBits: 64 });
+  // Fields go widest first, each at the first offset that fits it. Node's
+  // weight (an int32 slot: nothing stores a fraction) takes the word the
+  // header shares (24 bytes, not 32); Leaf keeps Node's offsets and puts its
+  // bool next to Node's (32 bytes, not 48).
+  expect(llvm).toContain(`%${mangleClassStruct("Node")} = type { i32, i32, ptr, i8 }`);
+  expect(llvm).toContain(`%${mangleClassStruct("Leaf")} = type { i32, i32, ptr, i8, i8, ptr }`);
+  // Without the contract, the layout is the declared one.
+  const mortal = emitLlvmModule({ ...mod, contracts: {} }, { pointerBits: 64 });
+  expect(mortal).toContain(`%${mangleClassStruct("Leaf")} = type { i64, ptr, i8, i32, ptr, i8 }`);
 });
 
 test("published ProgramLifetime instances use the published mark every other object uses", () => {
@@ -212,19 +252,25 @@ test("published ProgramLifetime instances use the published mark every other obj
     contracts: { programLifetime: ["Node"] },
   };
   const llvm = emitLlvmModule(mod, { pointerBits: 64 });
-  // The walker marks each instance like a mortal object (SIZE_MAX, logged so
-  // a refusal restores the program-lifetime count); untraced, so it never
-  // leaves a collector buffer.
+  // The walker marks each instance by the top bit of its 32-bit header,
+  // logging the word so a refusal restores it; untraced, so it never leaves
+  // a collector buffer.
   expect(llvm).toContain("call void @scr_publish(ptr");
-  // Kind 4 (an object) | 0x100 (the rc word keeps a class id: the mark
-  // writes only the count).
-  expect(llvm).toMatch(/@scr_pub_mark\(ptr %ctx, ptr %o, i1 false, i32 260\)/);
-  // The frozen-object guard of the store tests the count against UINT32_MAX:
-  // an unpublished instance (2^31) stays writable.
+  // Kind 4 (an object) | 0x200 (the 32-bit header: the mark sets its top
+  // bit).
+  expect(llvm).toMatch(/@scr_pub_mark\(ptr %ctx, ptr %o, i1 false, i32 516\)/);
+  const plain = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false });
+  expect(plain).toContain("%mpub = or i32 %mrc, -2147483648");
+  // Pushing a reference skips one published before: a set top bit.
+  expect(llvm).toMatch(/%immortal0 = icmp slt i32 %rc0, 0/);
+  // The walker dispatches on the class id in the header's low 28 bits.
+  expect(llvm).toContain("%id = and i32 %idw, 268435455");
+  // The frozen-object guard of the store tests the top bit: an unpublished
+  // instance stays writable.
   const store =
     llvm.split(/^define /m).find((fn) => fn.includes("call void @scr_throw_published_field(")) ??
     "";
-  expect(store).toMatch(/icmp eq i32 %\S+, -1/);
+  expect(store).toMatch(/icmp slt i32 %\S+, 0/);
   expect(store).toContain("call void @scr_publish(ptr");
   // 32-bit targets use 2^31.
   const llvm32 = emitLlvmModule(mod, { pointerBits: 32 });

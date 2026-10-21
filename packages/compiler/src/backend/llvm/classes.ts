@@ -32,6 +32,7 @@ import {
 } from "../mangle.js";
 import { cycTypeDescriptor, emitObjectAlloc, emitObjectFree } from "./alloc.js";
 import { llvmCommentText } from "./common.js";
+import { INLINE_UNION_FIELD } from "./inline-unions.js";
 import { NullableRefFields } from "./nullable-fields.js";
 import type { Int32Slots } from "../../ir/int32-slots.js";
 import {
@@ -88,6 +89,15 @@ export class LlClassMeta {
    * bits, and the hierarchy's vtables are one array indexed by the id
    * (mangleVtArray). */
   idInRc = false;
+  /** A ProgramLifetime class with the 32-bit header (assignCompactLayouts):
+   * the i32 at offset 0 is compactHeaderWord, with the class id in place of
+   * the rc word's high half, and the fields are packed after it. */
+  compact = false;
+  /** Compact classes: the struct's elements by offset (the header, field
+   * -1, then the fields by their index in def.fields). */
+  compactElems: { offset: number; size: number; align: number; type: string; field: number }[] = [];
+  /** Compact classes: each field's GEP index, by its index in def.fields. */
+  compactSlots: number[] = [];
 
   constructor(readonly def: IrClassDef) {
     this.root = this;
@@ -371,6 +381,10 @@ export function classSlotWordIndex(meta: LlClassMeta): number {
 /** The GEP index where a class's own fields start: after the header words
  * and the slot word. */
 export function classFieldBase(meta: LlClassMeta): number {
+  if (meta.compact)
+    throw new InternalCompilerError(
+      `llvm emitter bug: compact class ${meta.def.name} packs its fields`,
+    );
   return headerEnd(meta) + (meta.threadSlot ? 1 : 0);
 }
 
@@ -387,7 +401,12 @@ export function classFieldIndex(meta: LlClassMeta, field: string): { index: numb
     throw new InternalCompilerError(
       `llvm emitter bug: unknown field ${field} on class ${meta.def.name}`,
     );
-  return { index: classFieldBase(meta) + idx, type: meta.def.fields[idx]!.type };
+  return { index: classFieldSlot(meta, idx), type: meta.def.fields[idx]!.type };
+}
+
+/** The GEP index of the field at `idx` in `meta.def.fields`. */
+export function classFieldSlot(meta: LlClassMeta, idx: number): number {
+  return meta.compact ? meta.compactSlots[idx]! : classFieldBase(meta) + idx;
 }
 
 /** Lines that release the ThreadSlots values of the object `%o` before it
@@ -472,8 +491,7 @@ export function classPreLines(
 ): string[] {
   if (meta.idInRc)
     return [
-      `  ${pre}.idp = getelementptr inbounds i8, ptr ${obj}, i64 ${CLASS_ID_OFFSET}`,
-      `  ${pre}.id = load i32, ptr ${pre}.idp`,
+      ...classIdLoadLines(meta, obj, `${pre}.id`, ""),
       `  ${pre}.n = add i32 ${pre}.id, -1 ; the class id is the preorder number + 1`,
       `  ${pre} = zext i32 ${pre}.n to ${sizeType}`,
     ];
@@ -499,11 +517,30 @@ export function classIdVtLines(
   const vtt = `%${mangleVtStruct(root.def.name)}`;
   const n = root.post - root.pre + 1;
   return [
-    `  ${t}idp = getelementptr inbounds i8, ptr ${obj}, i64 ${CLASS_ID_OFFSET}`,
-    `  ${t}id = load i32, ptr ${t}idp${group}`,
+    ...classIdLoadLines(meta, `${obj}`, `${t}id`, group),
     `  ${t}ix = sub i32 ${t}id, ${root.pre + 1}`,
     `  ${t}ix64 = zext i32 ${t}ix to i64`,
     `  ${vt} = getelementptr inbounds [${n} x ${vtt}], ptr @${mangleVtArray(root.def.name)}, i64 0, i64 ${t}ix64`,
+  ];
+}
+
+/** Lines that load the class id of the LlClassMeta.idInRc instance `obj`
+ * into the i32 `id`: the high half of the rc word, or the low 28 bits of a
+ * compact instance's header word (compactHeaderWord). */
+export function classIdLoadLines(
+  meta: LlClassMeta,
+  obj: string,
+  id: string,
+  group: string,
+): string[] {
+  if (meta.compact)
+    return [
+      `  ${id}.w = load i32, ptr ${obj}${group}`,
+      `  ${id} = and i32 ${id}.w, ${COMPACT_ID_MASK}`,
+    ];
+  return [
+    `  ${id}p = getelementptr inbounds i8, ptr ${obj}, i64 ${CLASS_ID_OFFSET}`,
+    `  ${id} = load i32, ptr ${id}p${group}`,
   ];
 }
 
@@ -520,6 +557,124 @@ export const CLASS_ID_OFFSET = 4;
  * the runtime can tell an object with a class id (scr_rc.h scr_rc_class_id). */
 export function classIdRcWord(meta: LlClassMeta, lifetime: boolean): string {
   return (BigInt(meta.pre + 1) * 2n ** 32n + (lifetime ? 2n ** 31n : 1n)).toString();
+}
+
+/** The 32-bit header of a compact class instance (LlClassMeta.compact):
+ * COMPACT_HEADER_TAG, the class id (classIdRcWord's preorder number + 1, 0
+ * outside a hierarchy) in the low 28 bits, and COMPACT_PUBLISHED once
+ * publication marks the object. No other object's count reaches
+ * 0x70000000, so the runtime reads a word of 0xf0000000 and up as published
+ * for every object (scr_rc.h SCR_RC_PUBLISHED). */
+export const COMPACT_HEADER_TAG = 0x70000000;
+export const COMPACT_PUBLISHED = 0x80000000;
+export const COMPACT_ID_MASK = 0x0fffffff;
+
+/** The header word a compact instance is created with. */
+export function compactHeaderWord(meta: LlClassMeta): number {
+  return COMPACT_HEADER_TAG | (meta.hierarchy ? meta.pre + 1 : 0);
+}
+
+/** Byte size and alignment of a class field's LLVM storage type. */
+function fieldStorage(type: string): { size: number; align: number } {
+  switch (type) {
+    case "i8":
+      return { size: 1, align: 1 };
+    case "i32":
+      return { size: 4, align: 4 };
+    case "ptr":
+    case "double":
+      return { size: 8, align: 8 };
+    case INLINE_UNION_FIELD:
+      return { size: 16, align: 8 };
+    default:
+      throw new InternalCompilerError(`llvm emitter bug: class field storage ${type}`);
+  }
+}
+
+/** The LLVM storage type of each of a class's flattened fields. */
+export function classFieldTypes(host: ShapeHost, cls: IrClassDef, int32?: Int32Slots): string[] {
+  // Whole-program int32 fields (int32-slots.ts) store the exact i32.
+  return cls.fields.map((f) =>
+    int32?.isField(cls.name, f.name)
+      ? "i32"
+      : llFieldType(f.type, host.inlineUnions.classField(cls.name, f.name)),
+  );
+}
+
+/** Gives the classes `compact` admits (whole hierarchies: the test is the
+ * root's) the 32-bit header and packed fields. A class keeps its base's
+ * field offsets, and places each of its own fields, widest first, at the
+ * first offset after the header that fits it: in a hole another field's
+ * alignment left, in the base's tail padding, or at the end. So 32-bit and
+ * smaller fields share 8-byte words. The struct lists the header and the
+ * fields by offset, which LLVM's layout of the type reproduces (checked). */
+export function assignCompactLayouts(
+  metaMap: ReadonlyMap<string, LlClassMeta>,
+  compact: (root: LlClassMeta) => boolean,
+  fieldTypes: (cls: IrClassDef) => string[],
+): void {
+  const byPre = [...metaMap.values()].sort((a, b) => a.pre - b.pre);
+  for (const meta of byPre) {
+    if (meta.def.runtime === true || !compact(meta.root)) continue;
+    const base = meta.base;
+    const inherited = base?.compactElems ?? [
+      { offset: 0, size: 4, align: 4, type: "i32", field: -1 },
+    ];
+    const baseCount = base?.def.fields.length ?? 0;
+    if (base !== null && (!base.compact || !sameFieldPrefix(base.def, meta.def)))
+      throw new InternalCompilerError(
+        `llvm emitter bug: compact class ${meta.def.name} does not extend its base's layout`,
+      );
+    const elems = inherited.map((e) => ({ ...e }));
+    const types = fieldTypes(meta.def);
+    const own = types
+      .map((type, field) => ({ type, field, ...fieldStorage(type) }))
+      .slice(baseCount)
+      .sort((a, b) => b.size - a.size || a.field - b.field);
+    for (const f of own) {
+      const sorted = [...elems].sort((a, b) => a.offset - b.offset);
+      let at = -1;
+      let cursor = 0;
+      for (const e of sorted) {
+        const start = alignTo(cursor, f.align);
+        if (start + f.size <= e.offset) {
+          at = start;
+          break;
+        }
+        cursor = Math.max(cursor, e.offset + e.size);
+      }
+      if (at < 0) at = alignTo(cursor, f.align);
+      elems.push({ offset: at, size: f.size, align: f.align, type: f.type, field: f.field });
+    }
+    elems.sort((a, b) => a.offset - b.offset);
+    // LLVM places each element at the next offset its alignment allows.
+    let end = 0;
+    for (const e of elems) {
+      if (alignTo(end, e.align) !== e.offset)
+        throw new InternalCompilerError(
+          `llvm emitter bug: compact layout of ${meta.def.name} is not LLVM's`,
+        );
+      end = e.offset + e.size;
+    }
+    const slots = new Array<number>(types.length).fill(-1);
+    elems.forEach((e, index) => {
+      if (e.field >= 0) slots[e.field] = index;
+    });
+    meta.compact = true;
+    meta.compactElems = elems;
+    meta.compactSlots = slots;
+  }
+}
+
+function alignTo(n: number, align: number): number {
+  return Math.ceil(n / align) * align;
+}
+
+function sameFieldPrefix(base: IrClassDef, cls: IrClassDef): boolean {
+  return (
+    base.fields.length <= cls.fields.length &&
+    base.fields.every((f, i) => cls.fields[i]!.name === f.name)
+  );
 }
 
 function undefFieldInits(
@@ -589,12 +744,17 @@ export function emitClassShapes(
 
   for (const cls of emitted) {
     const meta = metaMap.get(cls.name)!;
-    // Whole-program int32 fields (int32-slots.ts) store the exact i32.
-    const fieldTys = cls.fields.map((f) =>
-      int32?.isField(cls.name, f.name)
-        ? "i32"
-        : llFieldType(f.type, host.inlineUnions.classField(cls.name, f.name)),
-    );
+    if (meta.compact) {
+      typeDefs.push(
+        `%${mangleClassStruct(cls.name)} = type { ${meta.compactElems.map((e) => e.type).join(", ")} } ` +
+          `; class ${cls.name} (32-bit header) { ${meta.compactElems
+            .slice(1)
+            .map((e) => llvmCommentText(cls.fields[e.field]!.name))
+            .join("; ")} }`,
+      );
+      continue;
+    }
+    const fieldTys = classFieldTypes(host, cls, int32);
     // Subclasses of a runtime base embed its remaining prefix (the state
     // and display-name slots) between the vtable word and the field list;
     // stream subclasses add the stream-state pointer — upcasts to
@@ -718,7 +878,7 @@ export function emitClassShapes(
     const traced = host.tracedShapes.has(`object:${cls.name}`);
     const runtimePrefix = runtimePrefixOf(meta);
     const isStreamRooted = streamRooted(meta);
-    const fieldIndex = (i: number): number => classFieldBase(meta) + i;
+    const fieldIndex = (i: number): number => classFieldSlot(meta, i);
     // Teardown, trace and gcFree see each slot's storage type: a nullable
     // class field holds the instance pointer (NULL for the unit arm), and
     // every class retain/release/visit entry point is NULL-tolerant.
@@ -851,30 +1011,41 @@ export function emitClassShapes(
         ``,
       );
       // Direct release (the vtable entry): the class's own teardown. The
-      // caller already handled NULL/immortal.
-      const reld: string[] = [
-        `define internal void @${mangleClassReleaseDirect(cls.name)}(ptr %o) ${FN_ATTRS} { ; direct release ${cls.name}`,
-        `entry:`,
-        `  %rc = load ${count}, ptr %o`,
-        `  %n = sub ${count} %rc, 1`,
-        `  store ${count} %n, ptr %o`,
-        `  %dead = icmp eq ${count} %n, 0`,
-        `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
-        `free:`,
-      ];
-      if (traced) reld.push(...cycleDeadLines(host, "teardown"));
-      if (bounded) {
-        const destroy = `${mangleClassReleaseDirect(cls.name)}_destroy`;
-        const destroyBody: string[] = [];
-        teardown(destroyBody);
-        defs.push(...destroyDefinitions(destroy, destroyBody, chained), ``);
-        host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
-        reld.push(`  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`);
-      } else teardown(reld);
-      reld.push(`  br label %done`);
-      if (traced) reld.push(`root:`, ...cycleRootLines(host, "done"));
-      reld.push(`done:`, `  ret void`, `}`, ``);
-      defs.push(...reld);
+      // caller already handled NULL/immortal. A compact instance has no
+      // count: nothing releases it.
+      if (meta.compact) {
+        defs.push(
+          `define internal void @${mangleClassReleaseDirect(cls.name)}(ptr %o) ${FN_ATTRS} { ; direct release ${cls.name} (immortal)`,
+          `entry:`,
+          `  ret void`,
+          `}`,
+          ``,
+        );
+      } else {
+        const reld: string[] = [
+          `define internal void @${mangleClassReleaseDirect(cls.name)}(ptr %o) ${FN_ATTRS} { ; direct release ${cls.name}`,
+          `entry:`,
+          `  %rc = load ${count}, ptr %o`,
+          `  %n = sub ${count} %rc, 1`,
+          `  store ${count} %n, ptr %o`,
+          `  %dead = icmp eq ${count} %n, 0`,
+          `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
+          `free:`,
+        ];
+        if (traced) reld.push(...cycleDeadLines(host, "teardown"));
+        if (bounded) {
+          const destroy = `${mangleClassReleaseDirect(cls.name)}_destroy`;
+          const destroyBody: string[] = [];
+          teardown(destroyBody);
+          defs.push(...destroyDefinitions(destroy, destroyBody, chained), ``);
+          host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
+          reld.push(`  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`);
+        } else teardown(reld);
+        reld.push(`  br label %done`);
+        if (traced) reld.push(`root:`, ...cycleRootLines(host, "done"));
+        reld.push(`done:`, `  ret void`, `}`, ``);
+        defs.push(...reld);
+      }
     } else {
       const freeBody: string[] = [];
       teardown(freeBody);
@@ -930,7 +1101,18 @@ export function emitClassShapes(
           meta.hierarchy && !meta.idInRc ? 16 : 8,
         ),
       );
-    if (meta.idInRc) {
+    if (meta.compact && !meta.hierarchy)
+      nw.push(`  store i32 ${compactHeaderWord(meta)}, ptr %o ; no count (compactHeaderWord)`);
+    else if (meta.compact) {
+      // The header word: the class id and no count (compactHeaderWord).
+      // Only publication writes it, setting COMPACT_PUBLISHED, which the
+      // class id reads mask off, so they keep !invariant.group.
+      host.declare(`declare ptr @llvm.launder.invariant.group.p0(ptr)`);
+      nw.push(
+        `  %o.vt = call ptr @llvm.launder.invariant.group.p0(ptr %o)`,
+        `  store i32 ${compactHeaderWord(meta)}, ptr %o.vt ; class ${llvmCommentText(cls.name)} is ${meta.pre}`,
+      );
+    } else if (meta.idInRc) {
       // The class id in the high half of the rc word, the count in the low
       // half (classIdRcWord). It never changes while the object lives:
       // retains, releases and the runtime write only the low half.
