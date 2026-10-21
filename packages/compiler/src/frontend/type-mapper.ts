@@ -2459,6 +2459,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         return { kind: "classval", className: inst.className };
       }
     }
+    // A constructable declared in the program whose instances are not one
+    // program class's (`new () => unknown`, `abstract new () => S` over a
+    // record, a type that also names static members such as `{ readonly
+    // schema: unknown; new (): unknown }`, construct overloads): the class
+    // value rides the checked-dynamic tree, as an `unknown` slot already
+    // holds one. `new` through it and static reads dispatch at run time,
+    // and the constructed value checks into the signature's instance type.
+    // Lib and package constructables keep their fences.
+    if (
+      ctorSigs.length > 0 &&
+      checker.getCallSignatures(widened).length === 0 &&
+      (widened.getSymbol()?.declarations.length ?? 0) > 0 &&
+      widened.getSymbol()!.declarations.every((d) => ctx.isProgramFile(ts.getSourceFileOfNode(d)))
+    ) {
+      return DYN;
+    }
   }
   // Map<K, V>: a reference to the standard library's Map interface —
   // provenance, not the name (a user's own `interface Map` maps as a record
