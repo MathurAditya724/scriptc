@@ -210,6 +210,7 @@ import type {
   IrLocal,
   IrModule,
   IrWasmModule,
+  IrWasmUntranslated,
   IrParam,
   IrRecordShape,
   IrStmt,
@@ -1210,17 +1211,28 @@ export function lowerToIr(
     });
   // A program that uses the WebAssembly API carries every module the build
   // can see and translate (wasm/translate.ts); the rest fail at run time
-  // with the CompileError for untranslated bytes.
+  // with a CompileError, which names the reason for the modules the build
+  // saw but does not translate.
   if (result.module !== null && resultLowerer.usesWebAssembly) {
     const bytesByHash = new Map<string, Uint8Array>();
     const reports = discoverModules((sha256, bytes) => bytesByHash.set(sha256, bytes));
     const wasmModules: IrWasmModule[] = [];
+    const wasmUntranslated: IrWasmUntranslated[] = [];
     for (const report of reports) {
       const bytes = bytesByHash.get(report.sha256);
-      if (report.status !== "valid" || bytes === undefined) continue;
-      wasmModules.push({ sha256: report.sha256, bytes: encodeBase64(bytes) });
+      if (bytes === undefined) continue;
+      if (report.status === "valid") {
+        wasmModules.push({ sha256: report.sha256, bytes: encodeBase64(bytes) });
+        continue;
+      }
+      const reason =
+        report.status === "unsupported"
+          ? `it uses ${report.unsupported.join(", ")}, outside the translated WebAssembly feature set`
+          : `it is not a valid module: ${report.error ?? report.status}`;
+      wasmUntranslated.push({ sha256: report.sha256, size: bytes.length, reason });
     }
     result.module.wasmModules = wasmModules;
+    result.module.wasmUntranslated = wasmUntranslated;
     if (resultLowerer.usesWasmCustomSections) result.module.wasmCustomSections = true;
     timing("wasm-discovery", { modules: wasmModules.length });
   }
