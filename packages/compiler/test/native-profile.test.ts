@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -222,6 +222,27 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
     await expect(
       merge(join(dir, "out.profdata"), [join(dir, "not-a-profile")]),
     ).rejects.toMatchObject({ stderr: expect.stringContaining("profile_read_failed") });
+  });
+
+  test("merge-profiles leaves a link at the old temporary path untouched", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-merge-link-"));
+    dirs.push(dir);
+    const input = join(dir, "input.proftext");
+    await writeFile(input, ":ir\nf0\n# Func Hash:\n1\n# Num Counters:\n1\n# Counter Values:\n3\n");
+    const target = join(dir, "target");
+    await writeFile(target, "unchanged\n");
+    const output = join(dir, "out.profdata");
+    await symlink(target, `${output}.tmp`);
+    await merge(output, [input]);
+    expect(await readFile(target, "utf8")).toBe("unchanged\n");
+    expect((await lstat(`${output}.tmp`)).isSymbolicLink()).toBe(true);
+    expect((await lstat(output)).isFile()).toBe(true);
+    expect((await readFile(output)).subarray(0, 8)).toEqual(
+      Buffer.from([0xff, 0x6c, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x81]),
+    );
+    expect((await readdir(dir)).sort()).toEqual(
+      ["input.proftext", "out.profdata", "out.profdata.tmp", "target"].sort(),
+    );
   });
 
   describe.runIf(profileLinker !== null)("with the profile runtime", () => {

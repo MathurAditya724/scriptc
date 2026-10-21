@@ -66,16 +66,31 @@ int mergeProfiles(int Argc, char **Argv) {
       return reportError("profile_merge_failed", Path + ": " + RecordError);
   }
 
-  // Publish through a private sibling file, as emission does.
+  // Publish through a uniquely named sibling file, which createUniqueFile
+  // creates exclusively, as emission does.
   SmallString<256> Temporary(Output);
-  Temporary += ".tmp";
+  Temporary += ".tmp-%%%%%%";
+  int Fd = -1;
+  if (std::error_code EC = sys::fs::createUniqueFile(Temporary, Fd, Temporary))
+    return reportError("output_open_failed", EC.message());
   {
-    std::error_code EC;
-    raw_fd_ostream Stream(Temporary, EC, sys::fs::OF_None);
-    if (EC)
-      return reportError("output_open_failed", EC.message());
-    if (Error E = Writer.write(Stream))
-      return reportError("profile_write_failed", toString(std::move(E)));
+    raw_fd_ostream Stream(Fd, /*shouldClose=*/true);
+    Error WriteError = Writer.write(Stream);
+    Stream.flush();
+    std::string StreamError;
+    if (Stream.has_error()) {
+      StreamError = Stream.error().message();
+      Stream.clear_error();
+    }
+    if (WriteError) {
+      sys::fs::remove(Temporary);
+      return reportError("profile_write_failed",
+                         toString(std::move(WriteError)));
+    }
+    if (!StreamError.empty()) {
+      sys::fs::remove(Temporary);
+      return reportError("output_write_failed", StreamError);
+    }
   }
   if (std::error_code EC = sys::fs::rename(Temporary, Output)) {
     sys::fs::remove(Temporary);
