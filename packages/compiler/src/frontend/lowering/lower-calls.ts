@@ -4090,6 +4090,12 @@ const DYN_DISPATCH_METHODS = new Set([
   "prependOnceListener",
   "listeners",
   "listenerCount",
+  // The rest of EventEmitter.prototype, which compiled emitters answer
+  // through the class dispatch (class-dynamic-dispatch.ts).
+  "rawListeners",
+  "eventNames",
+  "setMaxListeners",
+  "getMaxListeners",
   "write",
   "end",
   "destroy",

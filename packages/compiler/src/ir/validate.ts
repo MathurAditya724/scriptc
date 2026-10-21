@@ -4080,6 +4080,8 @@ function validateFunction(
     const variadic =
       e.fn === "emitter.emit" ||
       e.fn === "emitter.emitFlex" ||
+      e.fn === "emitter.emitAny" ||
+      e.fn === "emitter.emitMixed" ||
       e.fn === "readable.new" ||
       e.fn === "writable.new" ||
       e.fn === "duplex.new" ||
@@ -5847,6 +5849,7 @@ function validateFunction(
         e.fn === "emitter.off" ||
         e.fn === "emitter.onDyn" ||
         e.fn === "emitter.onFlex" ||
+        e.fn === "emitter.onAny" ||
         e.fn === "stream.onDyn" ||
         e.fn === "emitter.offDyn" ||
         e.fn === "emitter.onData" ||
@@ -5901,14 +5904,27 @@ function validateFunction(
         if (!ok) err(`libCall emitter.listeners must return a func array`, e.loc);
         return true;
       }
-      if (e.fn === "emitter.emitFlex") {
+      if (e.fn === "emitter.emitFlex" || e.fn === "emitter.emitAny") {
         if (e.args.slice(2).some((arg) => arg.type.kind !== "dyn")) {
-          err("libCall emitter.emitFlex payloads must be checked-dynamic", e.loc);
+          err(`libCall ${e.fn} payloads must be checked-dynamic`, e.loc);
+        }
+      }
+      if (e.fn === "emitter.emitMixed") {
+        const count = e.args[2];
+        const k = count?.kind === "numLit" ? count.value : -1;
+        if (!Number.isInteger(k) || k < 0 || e.args.length < 3 + k) {
+          err("libCall emitter.emitMixed needs a literal argument count", e.loc);
+        } else if (e.args.slice(3, 3 + k).some((arg) => arg.type.kind !== "dyn")) {
+          err("libCall emitter.emitMixed untyped arguments must be checked-dynamic", e.loc);
         }
       }
       if (
         e.fn === "emitter.emit" ||
         e.fn === "emitter.emitFlex" ||
+        e.fn === "emitter.emitAny" ||
+        e.fn === "emitter.emitMixed" ||
+        e.fn === "emitter.hasTyped" ||
+        e.fn === "emitter.listenersDyn" ||
         e.fn === "emitter.count" ||
         e.fn === "emitter.getMax" ||
         e.fn === "emitter.ctor" ||
