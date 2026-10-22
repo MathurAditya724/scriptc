@@ -1,0 +1,238 @@
+// @hono/node-server 2.x (compiled from scriptc's built-in implementation)
+// serving a fetch handler: a raw HTTP client prints each exchange's status
+// line, wire-order headers (Date dropped) and body, covering buffered and
+// streamed bodies, header forms, cookies, request bodies, URL handling,
+// HEAD, empty statuses, and handler errors.
+import * as http from "node:http";
+import type { AddressInfo } from "node:net";
+import { getRequestListener, RequestError, serve } from "@hono/node-server";
+
+function delay(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function slowStream(parts: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let index = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      await delay(5);
+      if (index < parts.length) controller.enqueue(encoder.encode(parts[index++]!));
+      else controller.close();
+    },
+  });
+}
+
+function readyStream(parts: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const part of parts) controller.enqueue(encoder.encode(part));
+      controller.close();
+    },
+  });
+}
+
+async function handler(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  switch (url.pathname) {
+    case "/echo": {
+      const body = await request.text();
+      const headers = new Headers({ "content-type": "application/json" });
+      headers.set("x-echo", "yes");
+      return new Response(
+        JSON.stringify({
+          method: request.method,
+          url: request.url.replace(/:\d+\//, ":PORT/"),
+          type: request.headers.get("content-type"),
+          agent: request.headers.get("x-agent"),
+          body,
+        }),
+        { status: 201, headers },
+      );
+    }
+    case "/headers-object": {
+      const headers = new Headers();
+      headers.set("x-b", "2");
+      headers.set("X-A", "1");
+      headers.set("content-type", "text/html; charset=utf-8");
+      return new Response("<p>hi</p>", { status: 202, headers });
+    }
+    case "/cookies": {
+      const headers = new Headers();
+      headers.append("set-cookie", "a=1; Path=/");
+      headers.set("x-before", "b");
+      headers.append("set-cookie", "b=2; HttpOnly");
+      headers.set("content-type", "text/plain");
+      return new Response("cookies", { headers });
+    }
+    case "/no-content":
+      return new Response(null, { status: 204, headers: new Headers({ "x-empty": "1" }) });
+    case "/declared-length": {
+      const headers = new Headers({ "content-length": "5", "content-type": "text/plain" });
+      return new Response("12345", { headers });
+    }
+    case "/ready-stream": {
+      const headers = new Headers({ "content-type": "text/plain" });
+      return new Response(readyStream(["one ", "two"]), { headers });
+    }
+    case "/slow-stream": {
+      const headers = new Headers({ "content-type": "application/x-ndjson" });
+      return new Response(slowStream(['{"n":1}\n', '{"n":2}\n', '{"n":3}\n']), { headers });
+    }
+    case "/chunked-stream": {
+      const headers = new Headers({ "content-type": "text/event-stream", "transfer-encoding": "chunked" });
+      return new Response(readyStream(["data: a\n\n", "data: b\n\n"]), { headers });
+    }
+    case "/bytes": {
+      const headers = new Headers({ "content-type": "application/octet-stream" });
+      return new Response(new Uint8Array([104, 105, 33]), { headers });
+    }
+    case "/null-body": {
+      return new Response(null, { status: 404, headers: new Headers({ "x-missing": "yes" }) });
+    }
+    case "/reject":
+      throw new Error("handler failed");
+    case "/light-text":
+      return new Response("light");
+    case "/light-record":
+      return new Response("rec", { status: 201, headers: { "X-Custom": "a", "Content-Type": "text/html" } });
+    case "/light-json":
+      return Response.json({ ok: true, n: [1, 2] });
+    case "/light-touched": {
+      const r = new Response("touched");
+      r.headers.set("x-touched", "1");
+      return r;
+    }
+    case "/light-record-touched": {
+      const r = new Response("rt", { headers: { "X-Rec": "1" } });
+      r.headers.append("x-more", "2");
+      return r;
+    }
+    case "/materialized": {
+      const r = new Response("m", { headers: { "X-M": "1" } });
+      return new Response(r.body, r);
+    }
+    case "/light-stream":
+      return new Response(readyStream(["s1 ", "s2"]));
+    case "/light-null":
+      return new Response(null, { status: 202 });
+    case "/light-length":
+      return new Response("abc", { headers: { "Content-Length": "3" } });
+    case "/light-bytes":
+      return new Response(new Uint8Array([111, 107]));
+    default: {
+      const headers = new Headers({ "content-type": "text/plain; charset=UTF-8" });
+      return new Response(`path ${url.pathname}${url.search}`, { headers });
+    }
+  }
+}
+
+interface Exchange {
+  method: string;
+  path: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+function exchange(port: number, ex: Exchange): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const headers: Record<string, string> = { ...(ex.headers ?? {}) };
+    if (ex.body !== undefined) headers["content-length"] = String(Buffer.byteLength(ex.body));
+    const req = http.request(
+      { host: "127.0.0.1", port, method: ex.method, path: ex.path, headers: headers },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+        res.on("end", () => {
+          const lines: string[] = [`HTTP/${res.httpVersion} ${res.statusCode} ${res.statusMessage}`];
+          for (let i = 0; i < res.rawHeaders.length; i += 2) {
+            const name = res.rawHeaders[i]!;
+            if (name.toLowerCase() === "date") continue;
+            lines.push(`${name}: ${res.rawHeaders[i + 1]}`);
+          }
+          resolve(`### ${ex.method} ${ex.path}\n${lines.join("\n")}\n\n${Buffer.concat(chunks).toString("utf8")}\n`);
+        });
+      },
+    );
+    req.on("error", reject);
+    if (ex.body !== undefined) req.write(ex.body);
+    req.end();
+  });
+}
+
+const exchanges: Exchange[] = [
+  { method: "GET", path: "/plain?q=1" },
+  { method: "POST", path: "/echo", headers: { "content-type": "text/plain", "x-agent": "probe" }, body: "payload body" },
+  { method: "PUT", path: "/echo", headers: { "content-type": "application/json" }, body: '{"k":[1,2]}' },
+  { method: "GET", path: "/headers-object" },
+  { method: "GET", path: "/cookies" },
+  { method: "GET", path: "/no-content" },
+  { method: "GET", path: "/declared-length" },
+  { method: "GET", path: "/ready-stream" },
+  { method: "GET", path: "/slow-stream" },
+  { method: "GET", path: "/chunked-stream" },
+  { method: "GET", path: "/bytes" },
+  { method: "GET", path: "/null-body" },
+  { method: "HEAD", path: "/plain" },
+  { method: "GET", path: "/light-text" },
+  { method: "HEAD", path: "/light-text" },
+  { method: "GET", path: "/light-record" },
+  { method: "HEAD", path: "/light-record" },
+  { method: "GET", path: "/light-json" },
+  { method: "GET", path: "/light-touched" },
+  { method: "GET", path: "/light-record-touched" },
+  { method: "GET", path: "/materialized" },
+  { method: "GET", path: "/light-stream" },
+  { method: "GET", path: "/light-null" },
+  { method: "GET", path: "/light-length" },
+  { method: "GET", path: "/light-bytes" },
+  { method: "GET", path: "/reject" },
+  { method: "GET", path: "/a/../b/./c?x=%20y" },
+  { method: "GET", path: "/upper", headers: { host: "Example.COM:8080" } },
+  { method: "GET", path: "/bad-host", headers: { host: "bad host" } },
+  { method: "get", path: "/lower-method" },
+];
+
+const server = serve({ fetch: handler, port: 0, hostname: "127.0.0.1" }, (info: AddressInfo) => {
+  console.log("listening", info.family, info.address, typeof info.port);
+  void (async () => {
+    for (const ex of exchanges) console.log(await exchange(info.port, ex));
+    server.close(() => {
+      console.log("closed");
+      startSecond();
+    });
+  })();
+});
+
+// getRequestListener with an error handler, on a plain node:http server.
+const listener = getRequestListener(
+  async (request) => {
+    if (request.url.endsWith("/fail")) throw new RequestError("listener failure");
+    return new Response("ok", { headers: new Headers({ "content-type": "text/plain" }) });
+  },
+  {
+    errorHandler: (err) =>
+      new Response(`handled: ${err instanceof Error ? `${err.name} ${err.message}` : "?"}`, {
+        status: 503,
+        headers: new Headers({ "content-type": "text/plain" }),
+      }),
+  },
+);
+function startSecond(): void {
+  const second = http.createServer((req, res) => {
+    void listener(req, res);
+  });
+  second.listen(0, "127.0.0.1", () => {
+    const port = (second.address() as AddressInfo).port;
+    void (async () => {
+      console.log(await exchange(port, { method: "GET", path: "/ok" }));
+      console.log(await exchange(port, { method: "GET", path: "/fail" }));
+      second.close(() => console.log("second closed"));
+    })();
+  });
+}
