@@ -5310,6 +5310,32 @@ function validateFunction(
   }
 
   function checkLibSpecialCall(e: IrExpr & { kind: "libCall" }): boolean {
+    if (e.fn === "promise.fulfilledValue") {
+      const promise = e.args[0]?.type;
+      if (
+        promise?.kind !== "promise" ||
+        e.type.kind === "void" ||
+        isUnitType(e.type) ||
+        promise.inner.kind !== "void"
+      )
+        err(`libCall ${e.fn} must read a Promise<void> entry at a non-void type`, e.loc);
+      return true;
+    }
+    if (e.fn === "promise.allTuple") {
+      const [entries, build] = e.args;
+      if (
+        entries?.type.kind !== "array" ||
+        entries.type.elem.kind !== "promise" ||
+        entries.type.elem.inner.kind !== "void" ||
+        build?.kind !== "closure" ||
+        build.captures.length > 0 ||
+        build.type.kind !== "func" ||
+        e.type.kind !== "promise" ||
+        !typeEquals(build.type.ret, e.type.inner)
+      )
+        err(`libCall ${e.fn} must join Promise<void> entries into its builder's tuple`, e.loc);
+      return true;
+    }
     if (
       e.fn === "crypto.randomFillView" ||
       e.fn === "crypto.randomFillViewRest" ||

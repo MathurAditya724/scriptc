@@ -1839,6 +1839,12 @@ void scr_promise_all_store_ref(ScrArr *a, double i, ScrPromise *src) {
   scr_arr_set_ref(a, i, scr_promise_payload_ref(src));
 }
 
+/* The entry promise itself: Promise.all's tuple form reads each fulfilled
+ * entry at its own type once the combinator fulfills. */
+void scr_promise_all_store_promise(ScrArr *a, double i, ScrPromise *src) {
+  scr_arr_set_ref(a, i, scr_promise_retain(src));
+}
+
 /* Fulfillment payload accessors for the emitted race adapters — all
  * retained/by-value (the source keeps its settlement). */
 double scr_promise_payload_f64(ScrPromise *p) { return p->f64; }

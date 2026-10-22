@@ -5,6 +5,7 @@ import { emitTlsLibCall } from "./lib-tls.js";
 import { emitHttp2LibCall } from "./lib-http2.js";
 import { emitDatagramLibCall } from "./lib-datagram.js";
 import { emitTestLibCall } from "./lib-test.js";
+import { FN_ATTRS, arrNewCall, traceArg, vAdapters } from "./shapes.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 
@@ -235,6 +236,32 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const output = host.own({ name: result, type: e.type });
     host.emitPendingCheck();
     return output;
+  }
+  if (e.fn === "promise.allTuple") return emitPromiseAllTuple(host, e);
+  if (e.fn === "promise.fulfilledValue") {
+    // The payload of a fulfilled promise (borrowed operand): numbers and
+    // booleans by value, strings and references +1.
+    const promise = host.emitExpr(e.args[0]!);
+    const out = B.tmp();
+    switch (e.type.kind) {
+      case "f64":
+      case "procStream":
+        host.declare(`declare double @scr_promise_payload_f64(ptr)`);
+        B.line(`${out} = call double @scr_promise_payload_f64(ptr ${promise.name})`);
+        return { name: out, type: e.type };
+      case "bool":
+        host.declare(`declare zeroext i1 @scr_promise_payload_bool(ptr)`);
+        B.line(`${out} = call zeroext i1 @scr_promise_payload_bool(ptr ${promise.name})`);
+        return { name: out, type: e.type };
+      case "string":
+        host.declare(`declare ptr @scr_promise_payload_str(ptr)`);
+        B.line(`${out} = call ptr @scr_promise_payload_str(ptr ${promise.name}) ; +1`);
+        return host.own({ name: out, type: e.type });
+      default:
+        host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
+        B.line(`${out} = call ptr @scr_promise_payload_ref(ptr ${promise.name}) ; +1`);
+        return host.own({ name: out, type: e.type });
+    }
   }
   if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
     const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
@@ -877,6 +904,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "disposable":
     case "punycode":
     case "constants":
+    case "promise":
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
@@ -890,4 +918,64 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** Promise.all's tuple form (promise.allTuple): the combinator over the
+ * entries stores each fulfilled entry promise, and a settlement adapter on
+ * the combinator calls the builder with them and fulfills the result with
+ * the tuple inside the combinator's settlement; a rejection settles the
+ * result the same way. The combinator itself counts as handled. */
+function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
+  const B = host.B;
+  const build = e.args[1]!;
+  if (build.kind !== "closure" || e.type.kind !== "promise")
+    throw new InternalCompilerError("llvm emitter bug: promise.allTuple shape");
+  const entriesT = e.args[0]!.type;
+  const entries = host.emitExpr(e.args[0]!);
+  const tuple = e.type.inner;
+  const key = `allTuple:${build.fnName}`;
+  let adapter = host.resolveThunks.get(key);
+  if (adapter === undefined) {
+    adapter = `sc_all_tuple_${host.resolveThunks.size}`;
+    host.resolveThunks.set(key, adapter);
+    const rc = vAdapters(host.shapeHost, tuple);
+    host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
+    host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
+    host.resolveThunkDefs.push(
+      `define internal void @${adapter}(ptr %dst, ptr %src) ${FN_ATTRS} { ; Promise.all tuple`,
+      `entry:`,
+      `  %entries = call ptr @scr_promise_payload_ref(ptr %src) ; +1, moves into the builder`,
+      `  %tuple = call ptr @${host.callTarget(build.fnName)}(ptr %entries)`,
+      `  call void @scr_promise_fulfill_ref(ptr %dst, ptr %tuple, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, tuple)})`,
+      `  ret void`,
+      `}`,
+      ``,
+    );
+  }
+  host.declare(`declare ptr @scr_promise_all(ptr, ptr, ptr)`);
+  host.declare(`declare void @scr_promise_all_store_promise(ptr, double, ptr)`);
+  host.declare(`declare ptr @scr_promise_new()`);
+  host.declare(`declare void @scr_promise_race_add(ptr, ptr, ptr)`);
+  host.declare(`declare void @scr_promise_mark_handled(ptr)`);
+  host.declare(`declare void @scr_promise_release(ptr)`);
+  host.declare(`declare double @scr_arr_len(ptr)`);
+  if (entriesT.kind !== "array")
+    throw new InternalCompilerError("llvm emitter bug: promise.allTuple entries");
+  const len = B.tmp();
+  const cap = B.tmp();
+  B.line(`${len} = call double @scr_arr_len(ptr ${entries.name})`);
+  B.line(`${cap} = fptoui double ${len} to ${host.sizeType}`);
+  const values = B.tmp();
+  B.line(`${values} = ${arrNewCall(host.shapeHost, entriesT.elem, cap)}`);
+  host.own({ name: values, type: entriesT });
+  const all = B.tmp();
+  B.line(
+    `${all} = call ptr @scr_promise_all(ptr ${entries.name}, ptr ${values}, ptr @scr_promise_all_store_promise)`,
+  );
+  B.line(`call void @scr_promise_mark_handled(ptr ${all})`);
+  const result = B.tmp();
+  B.line(`${result} = call ptr @scr_promise_new()`);
+  B.line(`call void @scr_promise_race_add(ptr ${result}, ptr ${all}, ptr @${adapter})`);
+  B.line(`call void @scr_promise_release(ptr ${all})`);
+  return host.own({ name: result, type: e.type });
 }

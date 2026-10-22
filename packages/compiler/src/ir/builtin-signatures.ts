@@ -3139,6 +3139,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // or an optional Error | null slot (same success shape as fs.rename).
   "process.stdoutWriteBytesCb": { argTypes: [BYTES_U8, STRING, null], result: BOOL },
   "process.stderrWriteBytesCb": { argTypes: [BYTES_U8, STRING, null], result: BOOL },
+  /** The value of a FULFILLED promise, read without a microtask turn (+1
+   * for references): the tuple form of Promise.all reads its entries this
+   * way once the combinator fulfills, each entry widened to Promise<void>
+   * and read at the type it was built with (program-dependent). */
+  "promise.fulfilledValue": { argTypes: [null], result: VOID },
+  /** Promise.all's tuple form as a value: the entries (each widened to
+   * Promise<void>) join the runtime combinator, and when it fulfills the
+   * function reads the fulfilled entries into the tuple inside that
+   * settlement, so the result settles on the combinator's turn; a
+   * rejection settles it the same way. The result is the tuple's promise
+   * (program-dependent). */
+  "promise.allTuple": { argTypes: [null, null], result: VOID },
   "fsp.readFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: STRING } },
   "fsp.writeFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
   /** fs.promises.writeFile(path, data, { mode }): the settled-promise
