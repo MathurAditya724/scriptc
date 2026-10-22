@@ -49,6 +49,7 @@ import {
   STRING_CHAR_AT_INT_MARKER,
   STRING_CHAR_CODE_AT_DECL,
   STRING_CHAR_CODE_AT_INT_MARKER,
+  emitAsciiCharCode,
   STRING_UTF16_LEN_DECL,
 } from "./string-reads.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
@@ -319,8 +320,12 @@ export function emitStrIntrinsic(
       const t = B.tmp();
       const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
       if (index) {
-        host.declare(STRING_CHAR_CODE_AT_INT_MARKER);
         const wide = widenInteger(host, index);
+        // An enclosing loop version proved the string ASCII and the index
+        // below its length (bytes-loop-versions.ts).
+        if (host.bytesBounds.has(e))
+          return { name: emitAsciiCharCode(host, r.name, wide), type: e.type };
+        host.declare(STRING_CHAR_CODE_AT_INT_MARKER);
         B.line(`${t} = call double @sc_str_char_code_at_int(ptr ${r.name}, i64 ${wide})`);
         return { name: t, type: e.type };
       }

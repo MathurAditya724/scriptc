@@ -8,6 +8,7 @@ import { exactInteger, widenInteger } from "./integer-values.js";
 import { emitCountedLoopLimit, emitCountedLoopSafety } from "./counted-loops.js";
 import { emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
 import { f64Lit } from "./common.js";
+import { emitStringAsciiFlag, emitStringByteLength } from "./string-reads.js";
 
 type Node = IrExpr | IrStmt;
 type VarRef = IrExpr & { kind: "varRef" };
@@ -45,8 +46,9 @@ export interface BytesLoopVersion {
   /** Worker programs: typed-array accesses whose views the guard proves
    * thread-owned (no shared storage). */
   owned: ReadonlySet<Node>;
-  /** Root receiver bindings, read once before the loop. */
-  receivers: { ref: VarRef; global: boolean }[];
+  /** Root receiver bindings, read once before the loop; `string` marks a
+   * string whose `charCodeAt` reads the version covers. */
+  receivers: { ref: VarRef; global: boolean; string: boolean }[];
   /** Receivers the guard requires to have no shared storage. */
   ownedReceivers: number[];
   fixed: FixedCheck[];
@@ -80,6 +82,9 @@ export interface BytesLoopFacts {
   workers: boolean;
   /** Accesses already proved thread-owned by an enclosing version. */
   owned: ReadonlySet<Node>;
+  /** String bindings held as a slice of another string (string-slices.ts):
+   * they have no string header for the guard to read. */
+  scalarStrings: ReadonlySet<string>;
 }
 
 const MAX_COST = 400;
@@ -105,6 +110,12 @@ const INVARIANT_OPS = new Set(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>"])
  *   `view.getUint32(i * 4)`. An invariant without a proven integer range,
  *   such as `base` for `const base = r * cols`, must also be an exact
  *   integer between -2^32 and 2^32, which the guard tests.
+ *
+ * `s.charCodeAt(index)` of a string binding qualifies the same way. A
+ * string is immutable: its bytes, its length and the capacity-word bit that
+ * proves it ASCII (string-reads.ts) are fixed when it is built. The guard
+ * also requires that bit, so each UTF-16 unit is one byte and the length
+ * is the byte length, and the fast copy reads each unit with one byte load.
  *
  * In worker programs, every access of a view that may be shared tests its
  * shared storage. A view's storage is also fixed at construction, so the
@@ -196,7 +207,8 @@ export function matchBytesLoopVersion(
   };
   const resolving = new Set<string>();
   const root = (e: IrExpr): VarRef | null => {
-    if (e.kind !== "varRef" || e.type.kind !== "bytes") return null;
+    if (e.kind !== "varRef" || (e.type.kind !== "bytes" && e.type.kind !== "string")) return null;
+    if (facts.scalarStrings.has(e.localId)) return null;
     const init = temp(e.localId);
     if (init) {
       if (resolving.has(e.localId)) return null;
@@ -337,7 +349,7 @@ export function matchBytesLoopVersion(
       return sum + Math.max(Math.abs(r.min), Math.abs(r.max));
     }, 0);
 
-  const receivers: { ref: VarRef; global: boolean }[] = [];
+  const receivers: { ref: VarRef; global: boolean; string: boolean }[] = [];
   const receiverIndex = new Map<string, number>();
   const fixed = new Map<number, { check: FixedCheck; nodes: Node[] }>();
   const affineChecks = new Map<
@@ -349,7 +361,11 @@ export function matchBytesLoopVersion(
     if (index === undefined) {
       index = receivers.length;
       receiverIndex.set(ref.localId, index);
-      receivers.push({ ref, global: !facts.locals.has(ref.localId) });
+      receivers.push({
+        ref,
+        global: !facts.locals.has(ref.localId),
+        string: ref.type.kind === "string",
+      });
     }
     return index;
   };
@@ -359,7 +375,7 @@ export function matchBytesLoopVersion(
   const access = (node: Node, array: IrExpr, index: IrExpr, width: number): void => {
     const ref = root(array);
     if (!ref) return;
-    if (facts.workers && !facts.owned.has(node)) {
+    if (facts.workers && ref.type.kind === "bytes" && !facts.owned.has(node)) {
       const receiver = receiverOf(ref);
       const nodes = owned.get(receiver);
       if (nodes) nodes.push(node);
@@ -408,7 +424,8 @@ export function matchBytesLoopVersion(
       const numeric = byteNumberAccess(e);
       if (numeric) access(e, e.receiver, e.args[numeric.offsetArg]!, numeric.width);
       else if (e.method === "get" && e.args[0]) access(e, e.receiver, e.args[0], 1);
-    }
+    } else if (e.kind === "strIntrinsic" && e.method === "charCodeAt" && e.args[0])
+      access(e, e.receiver, e.args[0], 1);
     return everyExprChild(e, visitExpr, visitStmt);
   };
   const visitStmt = (s: IrStmt): boolean => {
@@ -535,14 +552,20 @@ export function emitBytesLoopVersionGuard(
     }
     return value;
   });
-  const lengths = receivers.map((receiver) => {
-    const len = emitBytesHeaderLength(host, receiver);
+  const lengths = receivers.map((receiver, index) => {
+    const len = version.receivers[index]!.string
+      ? emitStringByteLength(host, receiver)
+      : emitBytesHeaderLength(host, receiver);
     if (host.sizeType === "i64") return len;
     const wide = B.tmp();
     B.line(`${wide} = zext ${host.sizeType} ${len} to i64`);
     return wide;
   });
   const conditions: string[] = [];
+  // A string's byte length is its UTF-16 length when it is ASCII.
+  version.receivers.forEach(({ string }, index) => {
+    if (string) conditions.push(emitStringAsciiFlag(host, receivers[index]!));
+  });
   for (const index of version.ownedReceivers) {
     const owned = B.tmp();
     B.line(`${owned} = icmp eq ptr ${emitBytesSharedStorage(host, receivers[index]!)}, null`);
