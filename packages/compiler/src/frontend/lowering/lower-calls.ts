@@ -1542,9 +1542,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.fenceStaticReadableStreamMember(expr.expression, "call") ??
       lowerDisposableStackUseCall(lowerer, expr, expr.expression) ??
       lowerer.lowerStdlibMethodCall(expr, expr.expression) ??
-      // crypto.getRandomValues on the WebCrypto global (untyped in
-      // fallback builds, so before the dyn receiver path) or webcrypto.
-      lowerWebCryptoGetRandomValues(lowerer, expr, expr.expression) ??
+      // crypto.getRandomValues / randomUUID on the WebCrypto global
+      // (untyped in fallback builds, so before the dyn receiver path) or
+      // webcrypto.
+      lowerWebCryptoMethodCall(lowerer, expr, expr.expression) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
       lowerDynReceiverMethodCall(lowerer, expr, expr.expression) ??
@@ -10492,20 +10493,40 @@ export function lowerStaticNumberGlobal(
   return null;
 }
 
-/** `crypto.getRandomValues(view)` on the WebCrypto global or webcrypto. */
-function lowerWebCryptoGetRandomValues(
+/** `crypto.getRandomValues(view)` and `crypto.randomUUID()` on the
+ * WebCrypto global or webcrypto. Other argument counts (JavaScript only)
+ * invoke the dynamic object's method, which ignores extra arguments and
+ * throws Node's missing-argument TypeError. */
+function lowerWebCryptoMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
+  const member = access.name.text;
   if (
-    access.name.text !== "getRandomValues" ||
+    (member !== "getRandomValues" && member !== "randomUUID") ||
     call.questionDotToken ||
     access.questionDotToken ||
     !isWebCryptoReceiver(lowerer, access.expression)
   )
     return null;
-  return lowerCryptoGetRandomValues(lowerer, call);
+  const args = call.arguments.nodes;
+  if (member === "getRandomValues" && args.length === 1) {
+    return lowerCryptoGetRandomValues(lowerer, call);
+  }
+  if (member === "randomUUID" && args.length === 0) {
+    return { kind: "libCall", fn: "crypto.randomUUID", args: [], type: STRING, loc: locOf(call) };
+  }
+  if (args.some(ts.isSpreadElement)) return null;
+  return {
+    kind: "dynInvoke",
+    recv: lowerer.lowerExprExpecting(access.expression, DYN),
+    method: member,
+    calleeName: v8CalleeText(access),
+    args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc: locOf(call),
+  };
 }
 
 /** A then handler's promise-armed result (`.then(() => cached ?? load())`
