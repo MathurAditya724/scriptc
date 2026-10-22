@@ -1,5 +1,12 @@
 import { expect, test } from "vitest";
-import { F64, type IrExpr, type IrFunction, type IrStmt, type IrType } from "../../ir/ir.js";
+import {
+  F64,
+  KEY_ORDER_FIELD,
+  type IrExpr,
+  type IrFunction,
+  type IrStmt,
+  type IrType,
+} from "../../ir/ir.js";
 import { observeRecordLiteralRebuilds, transformExpr } from "../../ir/traverse.js";
 import { ShapeRegistry } from "../type-mapper.js";
 import {
@@ -21,7 +28,7 @@ interface Fixture {
   notes: KeyOrderNotes;
   record(fields: [string, IrType][], order: string[]): IrType & { kind: "record" };
   literal(type: IrType, keys: string[], segments?: KeyOrderSegment[]): IrExpr;
-  run(body: IrStmt[]): void;
+  run(body: IrStmt[]): IrFunction;
   order(type: IrType & { kind: "record" }): string[] | undefined;
 }
 
@@ -35,6 +42,14 @@ function fixture(): Fixture {
     classes: new Map(),
     armTag: (unionId: string, arm: IrType): number =>
       unionId === "u0" && arm.kind === "undefinedT" ? 1 : -1,
+    recordFieldPresent: (obj: IrExpr, shapeId: string, field: string): IrExpr => ({
+      kind: "recordHas",
+      obj,
+      shapeId,
+      field,
+      type: { kind: "bool" },
+      loc,
+    }),
   } as unknown as Lowerer;
   const record = (fields: [string, IrType][], order: string[]): IrType & { kind: "record" } => ({
     kind: "record",
@@ -55,14 +70,19 @@ function fixture(): Fixture {
       segments ?? keys.map((name) => ({ kind: "key", name, definite: true })),
     );
   };
-  const run = (body: IrStmt[]): void => {
+  const run = (body: IrStmt[]): IrFunction => {
     const fn: IrFunction = { name: "main", params: [], returnType: F64, locals: [], body, loc };
     applyKeyOrderWitnesses(lowerer, [fn]);
+    return fn;
   };
   const order = (type: IrType & { kind: "record" }): string[] | undefined =>
     shapes.get(type.shapeId)?.declaredOrder;
   return { lowerer, shapes, notes, record, literal, run, order };
 }
+
+/** The order index a literal stores (KEY_ORDER_FIELD), when it stores one. */
+const orderIndexOf = (lit: IrExpr): IrExpr | undefined =>
+  lit.kind === "recordLit" ? lit.fields.find((x) => x.name === KEY_ORDER_FIELD)?.value : undefined;
 
 const observe = (value: IrExpr): IrStmt => ({
   kind: "exprStmt",
@@ -109,7 +129,7 @@ test("literals that agree with the table leave the same array in place", () => {
   expect(f.notes.changed.size).toBe(0);
 });
 
-test("values built in two orders keep today's table", () => {
+test("values built in two orders each record their literal's order", () => {
   const f = fixture();
   const ab = f.record(
     [
@@ -118,8 +138,71 @@ test("values built in two orders keep today's table", () => {
     ],
     ["a", "b"],
   );
-  f.run([observe(f.literal(ab, ["b", "a"])), observe(f.literal(ab, ["a", "b"]))]);
+  const ba = f.literal(ab, ["b", "a"]);
+  const aOrder = f.literal(ab, ["a", "b"]);
+  f.run([observe(ba), observe(aOrder)]);
   expect(f.order(ab)).toEqual(["a", "b"]);
+  const shape = f.shapes.get(ab.shapeId)!;
+  expect(shape.orderVariants).toEqual([
+    ["a", "b"],
+    ["b", "a"],
+  ]);
+  expect(shape.fields.map((x) => x.name)).toEqual([KEY_ORDER_FIELD, "a", "b"]);
+  expect(orderIndexOf(ba)).toMatchObject({ kind: "numLit", value: 1 });
+  expect(orderIndexOf(aOrder)).toMatchObject({ kind: "numLit", value: 0 });
+});
+
+test("a copy of a value with orders stores its source's index", () => {
+  const f = fixture();
+  const abc = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["c", F64],
+    ],
+    ["a", "b", "c"],
+  );
+  const ab = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const read = (field: string): IrExpr => ({
+    kind: "recordGet",
+    obj: ref("x", abc),
+    shapeId: abc.shapeId,
+    field,
+    type: F64,
+    loc,
+  });
+  const rest = f.notes.copy(
+    {
+      kind: "recordLit",
+      fields: [
+        { name: "a", value: read("a") },
+        { name: "b", value: read("b") },
+      ],
+      type: ab,
+      loc,
+    },
+    abc.shapeId,
+  );
+  f.run([
+    decl("x", f.literal(abc, ["c", "b", "a"])),
+    observe(f.literal(abc, ["a", "b", "c"])),
+    observe(rest),
+  ]);
+  expect(f.shapes.get(ab.shapeId)!.orderVariants).toEqual([
+    ["a", "b"],
+    ["b", "a"],
+  ]);
+  expect(orderIndexOf(rest)).toMatchObject({
+    kind: "recordGet",
+    obj: { kind: "varRef", localId: "x" },
+    field: KEY_ORDER_FIELD,
+  });
 });
 
 test("an unobserved shape keeps today's table", () => {
@@ -307,7 +390,7 @@ test("straight-line writes of late-only keys keep program order", () => {
   expect(f.order(o)).toEqual(["id", "y", "x"]);
 });
 
-test("late-only keys written through different bindings keep today's table", () => {
+test("late-only keys written through different bindings move to the end per value", () => {
   const f = fixture();
   const o = f.record(
     [
@@ -324,9 +407,13 @@ test("late-only keys written through different bindings keep today's table", () 
     observe(ref("o", o)),
   ]);
   expect(f.order(o)).toEqual(["id", "x", "y"]);
+  expect(f.shapes.get(o.shapeId)!.orderVariants).toEqual([
+    ["id", "x", "y"],
+    ["id", "y", "x"],
+  ]);
 });
 
-test("a late-only key written in a loop over an outer binding keeps today's table", () => {
+test("a late-only key written in a loop guards the write with its move", () => {
   const f = fixture();
   const o = f.record(
     [
@@ -336,7 +423,7 @@ test("a late-only key written in a loop over an outer binding keeps today's tabl
     ],
     ["id", "x", "y"],
   );
-  f.run([
+  const body: IrStmt[] = [
     decl("o", f.literal(o, ["id"])),
     set(ref("o", o), "y"),
     {
@@ -346,11 +433,18 @@ test("a late-only key written in a loop over an outer binding keeps today's tabl
       loc,
     },
     observe(ref("o", o)),
-  ]);
+  ];
+  const fn = f.run(body);
   expect(f.order(o)).toEqual(["id", "x", "y"]);
+  const loop = fn.body.find((st) => st.kind === "while") as IrStmt & { kind: "while" };
+  const guarded = loop.body[0]!;
+  expect(guarded.kind).toBe("block");
+  const [move, write] = (guarded as IrStmt & { kind: "block" }).body;
+  expect(move).toMatchObject({ kind: "if", cond: { kind: "unary", op: "!" } });
+  expect(write).toMatchObject({ kind: "recordSet", field: "x" });
 });
 
-test("re-adding a key a literal creates earlier keeps today's table", () => {
+test("re-adding a key a literal creates earlier moves it to the end of that value", () => {
   const f = fixture();
   const o = f.record(
     [
@@ -369,4 +463,8 @@ test("re-adding a key a literal creates earlier keeps today's table", () => {
   };
   f.run([decl("o", f.literal(o, ["a", "b"])), del, set(ref("o", o), "a"), observe(ref("o", o))]);
   expect(f.order(o)).toEqual(["a", "b"]);
+  expect(f.shapes.get(o.shapeId)!.orderVariants).toEqual([
+    ["a", "b"],
+    ["b", "a"],
+  ]);
 });

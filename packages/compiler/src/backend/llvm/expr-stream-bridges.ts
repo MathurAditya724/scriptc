@@ -13,6 +13,8 @@ import {
   classFieldAttributesName,
   isClassOwnEnumerableFieldName,
   isDirentShape,
+  KEY_ORDER_FIELD,
+  shapeKeyOrders,
   isDynTypedRefType,
   isRefCounted,
   shapeHasAccessorSlots,
@@ -44,6 +46,7 @@ import type { NullableRefField } from "./nullable-fields.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
 import { recordMayKeepSource } from "./record-sources.js";
+import { emitPerKeyOrder } from "./key-orders.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
  * (the unit arm's immortal instance, or a fresh box around a retained
@@ -1054,52 +1057,68 @@ export function streamTypedRefMaterializeAdapter(
       const out = B.tmp();
       B.line(`${out} = call ptr @scr_dyn_new_obj()`);
       const byName = new Map(shape.fields.map((field) => [field.name, field]));
-      const order = shape.declaredOrder ?? shape.fields.map((field) => field.name);
-      const inOrder = new Set(order);
-      const fields = [
-        ...order.map((name) => byName.get(name)).filter((field) => field !== undefined),
-        ...shape.fields.filter((field) => !inOrder.has(field.name)),
-      ];
+      // A shape with orderVariants has one field list per key order; its
+      // order index is no key.
+      const orders = shapeKeyOrders(shape);
+      const fieldsOf = (order: readonly string[]): IrRecordShape["fields"][number][] => {
+        const inOrder = new Set(order);
+        return [
+          ...order.map((name) => byName.get(name)).filter((field) => field !== undefined),
+          ...shape.fields.filter(
+            (field) => !inOrder.has(field.name) && field.name !== KEY_ORDER_FIELD,
+          ),
+        ];
+      };
       // Published before the field converters, like the array hooks below.
       // A Dirent row reads through its finished view (the prototype and
       // the non-enumerable %dtype).
       const dirent = isDirentShape(shape);
-      if (!dirent && liveRecordOpsEligible(fields)) {
-        adapter.recordOps = `@${snapshot}_rops`;
-        liveRecordOps(host, t, snapshot, fields);
-      }
-      for (const field of fields) {
-        const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
-        const fieldPtr = B.tmp();
-        B.line(
-          `${fieldPtr} = getelementptr inbounds %${mangleRecordStruct(t.shapeId)}, ptr %p, i64 0, i32 ${index}`,
-        );
-        const fieldValue = loadStructField(
-          B,
-          host.sizeType,
-          fieldPtr,
-          field.type,
-          host.inlineUnions.record(field.type),
-        );
-        // An ABSENT optional field contributes no key.
-        const undefinedTag = undefinedArmTag(field.type, host.unionsById);
-        let skip: string | null = null;
-        if (undefinedTag >= 0 && field.type.kind === "union") {
-          const absent = host.fieldAbsentTestIn(B, fieldValue, field.type.unionId);
-          skip = B.newLabel("live.record.absent");
-          const set = B.newLabel("live.record.set");
-          B.condBr(absent, skip, set);
-          B.startBlock(set);
-        }
-        const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
-        B.line(
-          `call void @scr_dyn_obj_set(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
-        );
-        if (skip !== null) {
-          B.br(skip);
-          B.startBlock(skip);
+      if (!dirent && orders.every((order) => liveRecordOpsEligible(fieldsOf(order)))) {
+        if (orders.length === 1) {
+          adapter.recordOps = `@${snapshot}_rops`;
+          liveRecordOps(host, t, snapshot, fieldsOf(orders[0]!));
+        } else {
+          orders.forEach((order, i) =>
+            liveRecordOps(host, t, `${snapshot}_o${i}`, fieldsOf(order)),
+          );
+          adapter.recordBind = `${snapshot}_bind`;
+          liveRecordOrderBind(host, shape, snapshot);
         }
       }
+      emitPerKeyOrder(B, shape, host.nullableUnions.fieldBase(t.shapeId), "%p", (order) => {
+        for (const field of fieldsOf(order)) {
+          const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
+          const fieldPtr = B.tmp();
+          B.line(
+            `${fieldPtr} = getelementptr inbounds %${mangleRecordStruct(t.shapeId)}, ptr %p, i64 0, i32 ${index}`,
+          );
+          const fieldValue = loadStructField(
+            B,
+            host.sizeType,
+            fieldPtr,
+            field.type,
+            host.inlineUnions.record(field.type),
+          );
+          // An ABSENT optional field contributes no key.
+          const undefinedTag = undefinedArmTag(field.type, host.unionsById);
+          let skip: string | null = null;
+          if (undefinedTag >= 0 && field.type.kind === "union") {
+            const absent = host.fieldAbsentTestIn(B, fieldValue, field.type.unionId);
+            skip = B.newLabel("live.record.absent");
+            const set = B.newLabel("live.record.set");
+            B.condBr(absent, skip, set);
+            B.startBlock(set);
+          }
+          const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
+          B.line(
+            `call void @scr_dyn_obj_set(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
+          );
+          if (skip !== null) {
+            B.br(skip);
+            B.startBlock(skip);
+          }
+        }
+      });
       if (dirent) {
         host.declare(`declare void @scr_dyn_dirent_finish(ptr)`);
         B.line(`call void @scr_dyn_dirent_finish(ptr ${out})`);
@@ -1366,6 +1385,32 @@ function liveRecordOps(
   );
 }
 
+/** `@<snapshot>_bind(ptr capsule, ptr unused)` for a shape with
+ * orderVariants: binds the capsule the record ops of its value's key order
+ * (the `_o<i>_rops` tables liveRecordOps made). */
+function liveRecordOrderBind(
+  host: LlvmEmitterContext,
+  shape: IrRecordShape,
+  snapshot: string,
+): void {
+  host.declare(`declare void @scr_dyn_typed_ref_bind_record(ptr, ptr)`);
+  const B = new BlockBuilder();
+  // The capsule's native value (ScrDyn v.typed_ref.ptr, byte 16 on every
+  // target).
+  B.line(`%pp = getelementptr inbounds i8, ptr %c, i64 16`);
+  B.line(`%p = load ptr, ptr %pp`);
+  emitPerKeyOrder(B, shape, host.nullableUnions.fieldBase(shape.id), "%p", (_, i) => {
+    B.line(`call void @scr_dyn_typed_ref_bind_record(ptr %c, ptr @${snapshot}_o${i}_rops)`);
+  });
+  B.terminate(`ret void`);
+  host.resolveThunkDefs.push(
+    `define internal void @${snapshot}_bind(ptr %c, ptr %unused) ${FN_ATTRS} { ; live record ops by key order`,
+    B.render(),
+    `}`,
+    ``,
+  );
+}
+
 /** Compiled classes whose instance views have no prototype object. Runtime
  * classes and JavaScript classes with prototype data answer through their
  * own views. */
@@ -1437,7 +1482,9 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
  * records (1 array, 2 record, 3 class). */
 export function liveRefView(
   adapter: LlStreamTypedRefAdapter,
-): { bind: string; ops: string; code: 1 | 2 | 3 } | null {
+): { bind: string; ops: string; code: 1 | 2 | 3; defined?: true } | null {
+  if (adapter.recordBind !== undefined)
+    return { bind: adapter.recordBind, ops: "null", code: 2, defined: true };
   if (adapter.classOps !== undefined)
     return { bind: "scr_dyn_typed_ref_bind_class", ops: adapter.classOps, code: 3 };
   if (adapter.recordOps !== undefined)
@@ -1455,7 +1502,7 @@ export function bindLiveArrayOps(
 ): string[] {
   const view = liveRefView(adapter);
   if (view === null) return [];
-  host.declare(`declare void @${view.bind}(ptr, ptr)`);
+  if (view.defined !== true) host.declare(`declare void @${view.bind}(ptr, ptr)`);
   return [`call void @${view.bind}(ptr ${capsule}, ptr ${view.ops})`];
 }
 
