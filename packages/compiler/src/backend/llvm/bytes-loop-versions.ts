@@ -427,7 +427,6 @@ export function matchBytesLoopVersion(
     used.add(group.check.receiver);
     for (const node of group.nodes) bounds.add(node);
     for (const operand of group.operands) {
-      if (facts.ranges.get(operand)) continue;
       const shape = shapes.get(operand)!;
       const a = shape.counter * counterLow,
         b = shape.counter * counterHigh;
@@ -438,7 +437,14 @@ export function matchBytesLoopVersion(
         min += term.sign > 0 ? r.min : -r.max;
         max += term.sign > 0 ? r.max : -r.min;
       }
-      if (counterLow <= counterHigh) ranges.set(operand, { min, max });
+      if (counterLow > counterHigh) continue;
+      // The guard's bound on the counter can narrow a range the operand
+      // already has (a loop to a length proves only `i < 2^53`), so that
+      // `i * 4` in the fast copy is exact integer arithmetic.
+      const known = facts.ranges.get(operand);
+      if (!known) ranges.set(operand, { min, max });
+      else if (min > known.min || max < known.max)
+        ranges.set(operand, { min: Math.max(min, known.min), max: Math.min(max, known.max) });
     }
   }
   // Renumber the receivers the kept checks use.

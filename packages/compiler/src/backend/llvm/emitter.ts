@@ -1081,6 +1081,17 @@ export class LlEmitter {
     string,
     { slot: string; type: "i32" | "i64"; signed?: boolean; range?: { min: number; max: number } }
   >();
+  /** Constant number locals whose latest emitted declaration stored an
+   * exact integer beside the double, such as `const j = i * 4` in a
+   * typed-array loop version: an i64 slot and the integer's range. */
+  integerTemps = new Map<
+    string,
+    { slot: string; type: "i64"; signed: true; range: IntegerRange }
+  >();
+  /** Integer temps are kept only in optimized synchronous functions: an
+   * async or generator body resumes with its locals in its frame, which
+   * an entry alloca is not part of. */
+  integerTempsEnabled = false;
   countedLoopsEnabled = false;
   /** Speculative integer loops (speculative-integers.ts) run in this function. */
   speculativeLoopsEnabled = false;

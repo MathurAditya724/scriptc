@@ -128,6 +128,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.stableCaptureIds =
     fn.captures !== undefined ? emitter.lazyCaptures.stableCaptures(fn.name) : new Set();
   emitter.integerLoopBindings.clear();
+  emitter.integerTemps.clear();
+  emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   emitter.countedLoopsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   emitter.speculativeLoopsEnabled = emitter.countedLoopsEnabled;
   emitter.speculativeFunction = fn.name;
