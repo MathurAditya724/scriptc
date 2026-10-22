@@ -435,17 +435,25 @@ export class ChalkInstance {
   box: LevelBox;
   styler: Styler | undefined;
   isEmpty: boolean;
+  private readonly root: boolean;
   private readonly cache: (ChalkInstance | undefined)[] = [];
 
   constructor(box: LevelBox, styler: Styler | undefined, isEmpty: boolean, root: boolean) {
     this.box = box;
     this.styler = styler;
     this.isEmpty = isEmpty;
+    this.root = root;
     // One unconditional store: the field's definite assignment.
     this["%call"] = (...text: unknown[]): string =>
       root
         ? joinArguments(text)
         : applyStyle(this, text.length === 1 ? "" + String(text[0]) : joinArguments(text));
+  }
+
+  /** One string argument: the compiler calls this instead of `%call`
+   * (no variadic arguments to box). */
+  "%call1"(text: string): string {
+    return this.root ? text : applyStyle(this, text);
   }
 
   get level(): ColorSupportLevel {

@@ -1632,6 +1632,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // A getter returning a callable class instance (chalk's
       // `chalk.red("x")`): call through its `%call` field.
       if (callee.type.kind === "object") {
+        const direct = callableInstanceStringCall(lowerer, expr, callee, locOf(expr));
+        if (direct) return direct;
         callee = lowerer.hybridCallUnwrap(callee);
         if (callee.type.kind === "func") return lowerCallThroughValue(lowerer, expr, callee, locOf(expr));
       }
@@ -1886,9 +1888,45 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // a non-func IR type was already rejected while lowering the callee.
   // HYBRID (function-with-properties) values call through their %call slot.
   let callee = lowerer.lowerExpr(expr.expression);
+  {
+    const direct = callableInstanceStringCall(lowerer, expr, callee, loc);
+    if (direct) return direct;
+  }
   if (callee.type.kind === "record" || callee.type.kind === "object")
     callee = lowerer.hybridCallUnwrap(callee);
   return lowerCallThroughValue(lowerer, expr, callee, loc);
+}
+
+/** A callable class instance called with one string: its `%call1` method
+ * when the class has one (the chalk shim's typed fast path), skipping the
+ * variadic closure's checked-dynamic arguments. */
+function callableInstanceStringCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  callee: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (callee.type.kind !== "object" || expr.arguments.nodes.length !== 1) return null;
+  const arg = expr.arguments.nodes[0]!;
+  if (ts.isSpreadElement(arg)) return null;
+  const info = lowerer.classes.get(callee.type.className);
+  if (info === undefined || !info.fields.has("%call") || !lowerer.findMethodOn(info, "%call1"))
+    return null;
+  const value = lowerer.lowerExpr(arg);
+  if (value.type.kind === "string")
+    return lowerer.accessorCall(callee.type.className, "%call1", callee, [value], STRING, loc);
+  // Any other argument (a number behind a cast): the variadic closure,
+  // through the checked-dynamic call as lowerCallThroughValue would.
+  const closure = lowerer.hybridCallUnwrap(callee);
+  if (closure.type.kind !== "func") return null;
+  return {
+    kind: "dynCall",
+    callee: { kind: "dynFrom", value: closure, type: DYN, loc },
+    calleeName: ts.isIdentifier(expr.expression) ? expr.expression.text : "value",
+    args: [lowerer.coerceToExpected(value, DYN)],
+    type: DYN,
+    loc,
+  };
 }
 
 /** A call through an evaluated callee value: checked-dynamic callees,
@@ -9208,6 +9246,10 @@ export function lowerRecordFieldCall(
   // A HYBRID (function-with-properties) field is callable through its
   // reserved %call slot — `colors.blue("x")` where blue also carries
   // `.bold` (the chalk shape).
+  if (callee.type.kind === "object" && !init) {
+    const direct = callableInstanceStringCall(lowerer, call, callee, loc);
+    if (direct) return direct;
+  }
   if (callee.type.kind === "record" || callee.type.kind === "object")
     callee = lowerer.hybridCallUnwrap(callee);
   // Inferred JavaScript option records can retain checked callables in
