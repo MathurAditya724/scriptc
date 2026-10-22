@@ -17,6 +17,7 @@ const store = new AsyncLocalStorage();
 const lines = [];
 const log = (what) => lines.push(`${what}: ${store.getStore() ?? "none"}`);
 
+/** @returns {Promise<void>} */
 function httpScenario() {
   return new Promise((resolve) => {
     const server = store.run("create", () =>
@@ -56,6 +57,7 @@ function httpScenario() {
   });
 }
 
+/** @returns {Promise<void>} */
 function keepAliveScenario() {
   return new Promise((resolve) => {
     const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
@@ -88,6 +90,7 @@ const key = fs.readFileSync("tests/fixtures/server/certs/localhost-key.pem");
 const cert = fs.readFileSync("tests/fixtures/server/certs/localhost.pem");
 const ca = fs.readFileSync("tests/fixtures/server/certs/ca.pem", "utf8");
 
+/** @returns {Promise<void>} */
 function httpsScenario() {
   return new Promise((resolve) => {
     const server = https.createServer({ key, cert }, (req, res) => {
@@ -116,6 +119,7 @@ function httpsScenario() {
   });
 }
 
+/** @returns {Promise<void>} */
 function tlsScenario() {
   return new Promise((resolve) => {
     const server = tls.createServer({ key, cert }, (sock) => {

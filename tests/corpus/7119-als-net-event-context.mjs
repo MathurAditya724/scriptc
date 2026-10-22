@@ -15,6 +15,7 @@ const store = new AsyncLocalStorage();
 const lines = [];
 const log = (what) => lines.push(`${what}: ${store.getStore() ?? "none"}`);
 
+/** @returns {Promise<void>} */
 function echoScenario() {
   return new Promise((resolve) => {
     const server = store.run("create", () =>
@@ -61,6 +62,7 @@ function echoScenario() {
   });
 }
 
+/** @returns {Promise<void>} */
 function destroyScenario() {
   return new Promise((resolve) => {
     const server = net.createServer((sock) => sock.on("data", () => {}));
@@ -78,6 +80,7 @@ function destroyScenario() {
   });
 }
 
+/** @returns {Promise<void>} */
 function closeScenarios() {
   return new Promise((resolve) => {
     let pending = 3;
