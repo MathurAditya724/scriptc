@@ -133,6 +133,7 @@ import {
   STREAM_PROP_MEMBERS,
   STREAM_COMPLETION_CALLBACK_INDEX,
   UNDERSCORE_METHODS,
+  streamExtraCallbacks,
   lowerStreamNew,
   lowerStreamSuperCall,
   streamCtorShape,
@@ -2746,11 +2747,11 @@ export function collectClassShapeInner(
               `overriding the stream member '${name}' (the runtime owns the stream surface)`,
             );
           }
-          if (name === "_writev" || name === "_construct") {
+          if (name === "_writev" && !streamExtraCallbacks(streamBase.def.name).includes("writev")) {
             lowerer.unsupported(
               "SC1090",
               memberName,
-              `declaring '${name}' on a stream subclass (${name === "_writev" ? "batched writes are" : "deferred construction is"} not lowered — writes deliver one chunk at a time)`,
+              `declaring '_writev' on a ${streamBase.def.name.slice(1)} subclass (batched writes are supported on Writable and Duplex subclasses)`,
             );
           }
           const accepted = streamCtorShape(streamBase.def.name).accepted;
@@ -8987,8 +8988,9 @@ export function superCallStmt(
     // The SYNTHESIZED constructor of a ctor-less stream subclass:
     // super() with default options (underscore methods still bind; a
     // construction passing options requires a declared constructor —
-    // lowerNew fences that). Zero options ⇒ exactly one init stmt.
-    return lowerStreamSuperCall(
+    // lowerNew fences that). Zero options ⇒ the init stmt, then the
+    // class's _writev/_construct follow-ups.
+    const stmts = lowerStreamSuperCall(
       lowerer,
       info,
       base,
@@ -8996,7 +8998,8 @@ export function superCallStmt(
       thisLocal,
       loc,
       info.decl ?? info.ctor!,
-    )[0]!;
+    );
+    return stmts.length === 1 ? stmts[0]! : { kind: "block", body: stmts, loc };
   }
   lowerer.noteSuperConstructorEdge(`%${base.def.name}.constructor`);
   const call: IrStmt = {

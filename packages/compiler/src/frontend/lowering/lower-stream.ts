@@ -176,10 +176,25 @@ export const UNDERSCORE_METHODS: ReadonlyMap<string, string> = new Map([
   ["flush", "_flush"],
 ]);
 
+/** The option callbacks applied after construction rather than through
+ * the constructor's callback slots (option name → method name): construct
+ * on every stream class, and writev on the writable classes whose
+ * machinery hands it batches (Writable and Duplex). */
+export const STREAM_EXTRA_CALLBACKS: ReadonlyMap<string, string> = new Map([
+  ["construct", "_construct"],
+  ["writev", "_writev"],
+]);
+
+export function streamExtraCallbacks(cls: string): readonly string[] {
+  return cls === "%Writable" || cls === "%Duplex" ? ["construct", "writev"] : ["construct"];
+}
+
 /** The completion callback's parameter position in each underscore
  * method that takes one (cbTuples' "fn" positions). */
 export const STREAM_COMPLETION_CALLBACK_INDEX: ReadonlyMap<string, number> = new Map([
   ["_write", 2],
+  ["_writev", 1],
+  ["_construct", 0],
   ["_final", 0],
   ["_destroy", 1],
   ["_transform", 2],
@@ -317,9 +332,11 @@ function lowerStreamCallback(
     // (`string | null | undefined`) converts from the encoding argument's
     // value.
     if (
-      ((i === 0 && (chunkValues || widensInto(lowerer, fullTuple[0]!, funcType.params[0]!, loc))) ||
+      ((((i === 0 &&
+        (chunkValues || widensInto(lowerer, fullTuple[0]!, funcType.params[0]!, loc))) ||
         i === 1) &&
-      (which === "write" || which === "transform") &&
+        (which === "write" || which === "transform")) ||
+        (i === 0 && which === "writev")) &&
       funcType.params[i]!.kind !== "func" &&
       canConvertToDyn(
         funcType.params[i]!,
@@ -429,6 +446,16 @@ interface StreamOptions {
    * right after construction. */
   readableObject: boolean;
   writableObject: boolean;
+  /** decodeStrings: false (string writes stay strings), applied with
+   * stream.decodeStrings right after construction. */
+  decodeStringsOff: boolean;
+  /** A writable side's non-utf8 `defaultEncoding` as written, applied
+   * with writable.writeEncoding. */
+  writeEncoding: string | null;
+  /** The construct and writev callbacks (options or the class's
+   * _construct/_writev), applied with stream.setWritev and
+   * stream.setConstruct right after construction. */
+  extras: { name: string; cb: IrExpr }[];
   /** Present callbacks in canonical order with their flag bits. */
   flags: number;
   cbs: IrExpr[];
@@ -470,14 +497,19 @@ function streamObjectModes(
   return out;
 }
 
-/** Whether an options literal sets the writable side's object mode with a
- * `true` literal (objectMode, or writableObjectMode on a duplex stream).
- * Reports nothing: streamObjectModes fences the other value forms. */
+/** Whether an options literal makes the writable side hold values: its
+ * object mode set with a `true` literal (objectMode, or writableObjectMode
+ * on a duplex stream), or decodeStrings: false (strings stay strings).
+ * Reports nothing: the options parse fences the other value forms. */
 function literalWritesValues(opts: ts.ObjectLiteralExpression, duplexish: boolean): boolean {
   for (const prop of opts.properties?.nodes ?? []) {
     if (!ts.isPropertyAssignment(prop)) continue;
     const name =
       ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : null;
+    if (name === "decodeStrings") {
+      if (prop.initializer.kind !== ts.SyntaxKind.TrueKeyword) return true;
+      continue;
+    }
     if (name !== "objectMode" && !(duplexish && name === "writableObjectMode")) continue;
     if (prop.initializer.kind !== ts.SyntaxKind.FalseKeyword) return true;
   }
@@ -494,6 +526,8 @@ function cbTuples(lowerer: Lowerer): Record<string, (IrType | "fn")[]> {
     read: [F64],
     write: [BYTES, STRING, "fn"],
     final: ["fn"],
+    construct: ["fn"],
+    writev: [DYN, "fn"],
     destroy: [errorOrNull(lowerer), "fn"],
     transform: [BYTES, STRING, "fn"],
     flush: ["fn"],
@@ -734,9 +768,14 @@ function parseStreamOptions(
     signal: null,
     readableObject: false,
     writableObject: false,
+    decodeStringsOff: false,
+    writeEncoding: null,
+    extras: [],
     flags: 0,
     cbs: [],
   };
+  const extraNames = streamExtraCallbacks(`%${ctorName}`);
+  const writableClass = ctorName !== "Readable";
   const followed = followOptionsArg(lowerer, arg);
   const optsLit = followed === null ? undefined : followed;
   if (optsLit !== undefined && !ts.isObjectLiteralExpression(optsLit)) {
@@ -756,6 +795,12 @@ function parseStreamOptions(
   );
   out.readableObject = objectModes.readable;
   out.writableObject = objectModes.writable;
+  // the chunk an option callback receives can be another value than a
+  // Buffer (literalWritesValues), read before any callback lowers
+  const writesValues =
+    optsLit !== undefined &&
+    ts.isObjectLiteralExpression(optsLit) &&
+    literalWritesValues(optsLit, ctorName !== "Readable" && ctorName !== "Writable");
   if (out.readableObject) out.hwmR = numLit(16, loc);
   if (out.writableObject) out.hwmW = numLit(16, loc);
   const tuples = cbTuples(lowerer);
@@ -772,7 +817,7 @@ function parseStreamOptions(
       lowerer.unsupported("SC1090", prop, `computed or spread members in ${ctorName} options`);
     }
     // Callback members: shorthand methods and function-valued properties.
-    if (accepted.includes(name)) {
+    if (accepted.includes(name) || extraNames.includes(name)) {
       let fnNode: ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction | null = null;
       if (ts.isMethodDeclaration(prop)) fnNode = prop;
       else if (
@@ -823,7 +868,7 @@ function parseStreamOptions(
         });
         present.set(
           name,
-          lowerStreamCallback(lowerer, name, fnNode, thisType, tuple, out.writableObject),
+          lowerStreamCallback(lowerer, name, fnNode, thisType, tuple, writesValues),
         );
       } finally {
         if (pinned) lowerer.stageSourceTypes.delete(pinned);
@@ -872,11 +917,17 @@ function parseStreamOptions(
         // read up front (streamObjectModes)
         break;
       case "decodeStrings": {
+        // WritableState's `options.decodeStrings === false`; a Readable
+        // ignores the option
         if (value.kind === ts.SyntaxKind.TrueKeyword) break; // Node's default
+        if (value.kind === ts.SyntaxKind.FalseKeyword) {
+          if (writableClass) out.decodeStringsOff = true;
+          break;
+        }
         lowerer.noLowering(
-          `${ctorName} with decodeStrings: false`,
+          `${ctorName} with a runtime 'decodeStrings' value`,
           prop,
-          "chunks always decode to Buffers here (Node's default)",
+          "write 'decodeStrings: true' or 'decodeStrings: false'",
         );
         break;
       }
@@ -911,15 +962,20 @@ function parseStreamOptions(
             out.badEncoding = t.value;
             break;
           }
-          if (t.isStringLiteralType() && ctorName === "Readable") {
-            out.pushEncoding = knownBufEncoding(t.value)!;
+          if (t.isStringLiteralType()) {
+            // the readable side decodes push(string) with it, and the
+            // writable side encodes write(string) with it (the name as
+            // written reaches _write when decodeStrings is false)
+            if (ctorName !== "Writable" && !out.readableObject)
+              out.pushEncoding = knownBufEncoding(t.value)!;
+            if (writableClass) out.writeEncoding = t.value;
             break;
           }
         }
         lowerer.noLowering(
-          `the ${ctorName} option 'defaultEncoding'`,
+          `the ${ctorName} option 'defaultEncoding' with a runtime value`,
           prop,
-          "utf8 (the default) is the supported write-side string encoding",
+          "write the encoding as a string literal",
         );
         break;
       case "signal": {
@@ -980,18 +1036,13 @@ function parseStreamOptions(
         );
         break;
       }
-      case "construct":
-        lowerer.noLowering(
-          `the ${ctorName} option 'construct'`,
-          prop,
-          "deferred construction (_construct) is not lowered yet",
-        );
-        break;
       case "writev":
         lowerer.noLowering(
           `the ${ctorName} option 'writev'`,
           prop,
-          "batched writes (_writev) are not lowered yet — writes deliver one chunk at a time",
+          ctorName === "Readable"
+            ? "a Readable has no writable side"
+            : "batched writes on a Transform would bypass its transform — writev is supported on Writable and Duplex",
         );
         break;
       default:
@@ -1007,6 +1058,10 @@ function parseStreamOptions(
       out.flags |= 1 << i;
       out.cbs.push(cb);
     }
+  }
+  for (const name of extraNames) {
+    const cb = present.get(name) ?? fallbackCb?.(name) ?? null;
+    if (cb) out.extras.push({ name, cb });
   }
   return out;
 }
@@ -1029,6 +1084,9 @@ function streamCtorArgs(
   signal: IrExpr | null;
   readableObject: boolean;
   writableObject: boolean;
+  decodeStringsOff: boolean;
+  writeEncoding: string | null;
+  extras: { name: string; cb: IrExpr }[];
 } {
   const shape = streamCtorShape(cls);
   const o = parseStreamOptions(
@@ -1060,7 +1118,70 @@ function streamCtorArgs(
     signal: o.signal,
     readableObject: o.readableObject,
     writableObject: o.writableObject,
+    decodeStringsOff: o.decodeStringsOff,
+    writeEncoding: o.writeEncoding,
+    extras: o.extras,
   };
+}
+
+/** The follow-ups a stream's options apply over the fresh stream `recv`
+ * after the chained ones: decodeStrings, the writable defaultEncoding,
+ * then writev and construct (Node's constructors schedule construct
+ * last). */
+function streamOptionFollowUps(
+  parsed: {
+    decodeStringsOff: boolean;
+    writeEncoding: string | null;
+    extras: { name: string; cb: IrExpr }[];
+  },
+  recv: () => IrExpr,
+  thisType: IrType,
+  loc: SrcLoc,
+  writevFn: IrLibFn = "stream.setWritev",
+): IrStmt[] {
+  const out: IrStmt[] = [];
+  if (parsed.decodeStringsOff) {
+    out.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "stream.decodeStrings",
+        args: [recv(), boolLit(false, loc)],
+        type: thisType,
+        loc,
+      },
+      loc,
+    });
+  }
+  if (parsed.writeEncoding !== null) {
+    out.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "writable.writeEncoding",
+        args: [recv(), strLit(parsed.writeEncoding, loc)],
+        type: thisType,
+        loc,
+      },
+      loc,
+    });
+  }
+  for (const name of ["writev", "construct"]) {
+    const extra = parsed.extras.find((x) => x.name === name);
+    if (!extra) continue;
+    out.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: name === "writev" ? writevFn : "stream.setConstruct",
+        args: [recv(), extra.cb],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
+  }
+  return out;
 }
 
 /** `new Readable(opts?)` and friends — called from lowerNew once the
@@ -1137,12 +1258,29 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
       loc,
     };
   }
-  if (parsed.signal === null) return built;
-  // { signal }: addAbortSignal over the fresh stream (answers it +1).
+  if (parsed.signal !== null) {
+    // { signal }: addAbortSignal over the fresh stream (answers it +1).
+    built = {
+      kind: "libCall",
+      fn: "stream.addAbortSignal",
+      args: [built, parsed.signal],
+      type: thisType,
+      loc,
+    };
+  }
+  if (!parsed.decodeStringsOff && parsed.writeEncoding === null && parsed.extras.length === 0)
+    return built;
+  const fresh = lowerer.declareHiddenLocal("%stream", thisType);
+  const followUps = streamOptionFollowUps(
+    parsed,
+    () => varRef(fresh.id, thisType, loc),
+    thisType,
+    loc,
+  );
   return {
-    kind: "libCall",
-    fn: "stream.addAbortSignal",
-    args: [built, parsed.signal],
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: fresh.id, init: built, loc }, ...followUps],
+    result: varRef(fresh.id, thisType, loc),
     type: thisType,
     loc,
   };
@@ -1236,10 +1374,12 @@ function streamMethodWrapper(
     } else if (!typeEquals(got.type, want)) {
       // A write or transform encoding of another type (`string | null |
       // undefined`) converts from the encoding argument's value: an
-      // object-mode write passes undefined, null or the name.
+      // object-mode write passes undefined, null or the name. A chunk of
+      // another type (`string | Buffer` under decodeStrings: false)
+      // converts from the chunk's value.
       if (
-        i === 1 &&
-        (which === "write" || which === "transform") &&
+        (i === 1 || (i === 0 && (chunkValues || which === "writev"))) &&
+        (which === "write" || which === "transform" || which === "writev") &&
         got.type.kind !== "func" &&
         canConvertToDyn(
           got.type,
@@ -1262,8 +1402,7 @@ function streamMethodWrapper(
       // or throws a TypeError there; a byte-mode side's chunk is a Buffer.
       if (
         i === 0 &&
-        chunkValues &&
-        (which === "write" || which === "transform") &&
+        (which === "writev" || (chunkValues && (which === "write" || which === "transform"))) &&
         got.type.kind !== "func" &&
         canConvertToDyn(
           got.type,
@@ -1380,7 +1519,7 @@ export function lowerStreamSuperCall(
     (!ts.isObjectLiteralExpression(optsNode) ||
       literalWritesValues(optsNode, cls !== "%Readable" && cls !== "%Writable"));
   const fallback = (name: string): IrExpr | null => {
-    const methodName = UNDERSCORE_METHODS.get(name);
+    const methodName = UNDERSCORE_METHODS.get(name) ?? STREAM_EXTRA_CALLBACKS.get(name);
     return methodName
       ? streamMethodWrapper(lowerer, info, name, methodName, thisType, loc, blame, chunkValues)
       : null;
@@ -1401,6 +1540,13 @@ export function lowerStreamSuperCall(
           cbs.push(cb);
         }
       }
+      // The class's _writev and _construct ride the same way: an options
+      // writev or construct (applied by initDyn) wins.
+      const extras: { name: string; cb: IrExpr }[] = [];
+      for (const name of streamExtraCallbacks(cls)) {
+        const cb = fallback(name);
+        if (cb) extras.push({ name, cb });
+      }
       return [
         {
           kind: "exprStmt",
@@ -1413,6 +1559,13 @@ export function lowerStreamSuperCall(
           },
           loc,
         },
+        ...streamOptionFollowUps(
+          { decodeStringsOff: false, writeEncoding: null, extras },
+          thisRef,
+          thisType,
+          loc,
+          "stream.setWritevDefault",
+        ),
       ];
     }
   }
@@ -1499,6 +1652,7 @@ export function lowerStreamSuperCall(
       loc,
     });
   }
+  out.push(...streamOptionFollowUps(parsed, thisRef, thisType, loc));
   return out;
 }
 
@@ -1542,18 +1696,18 @@ export function lowerStreamUnderscoreAssign(
   const loc = locOf(expr);
   const cls = base.def.name;
   const clsName = cls.slice(1);
-  if (methodName === "_writev" || methodName === "_construct") {
+  if (methodName === "_construct") {
+    // Node's constructor reads _construct once; a later assignment has no
+    // effect there
     lowerer.noLowering(
       `assigning '${methodName}' on a ${clsName}`,
       expr.left,
-      methodName === "_writev"
-        ? "batched writes (_writev) are not lowered yet — writes deliver one chunk at a time"
-        : "deferred construction (_construct) is not lowered yet",
+      "declare _construct on the class or pass the construct option",
     );
   }
-  const which = optionByMethod.get(methodName)!;
+  const which = methodName === "_writev" ? "writev" : optionByMethod.get(methodName)!;
   const { accepted } = streamCtorShape(cls);
-  if (!accepted.includes(which)) {
+  if (!accepted.includes(which) && !streamExtraCallbacks(cls).includes(which)) {
     lowerer.noLowering(
       `assigning '${methodName}' on a ${clsName}`,
       expr.left,
@@ -1589,6 +1743,7 @@ export function lowerStreamUnderscoreAssign(
     destroy: "stream.setDestroy",
     transform: "stream.setTransform",
     flush: "stream.setFlush",
+    writev: "stream.setWritev",
   };
   return {
     kind: "exprStmt",
@@ -4616,18 +4771,20 @@ export function lowerStreamMethodCall(
   }
 
   if (member === "setDefaultEncoding") {
-    // The write-side default: utf8 IS the default — admit it; other
-    // encodings would change what write(string) means.
+    // The write-side default: lowercased and validated (ERR_UNKNOWN_ENCODING,
+    // thrown) at run time; answers the stream.
     requireSide(writableSide, "setDefaultEncoding");
-    const t = args[0] ? lowerer.typeOf(args[0]) : null;
-    if (t?.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8")) {
-      return lowerer.lowerExpr(access.expression);
-    }
-    lowerer.noLowering(
-      "setDefaultEncoding",
-      call,
-      "utf8 (the default, as a compile-time literal) is the supported write-side string encoding",
-    );
+    if (args.length > 1)
+      lowerer.noLowering(`setDefaultEncoding with ${args.length} arguments`, call);
+    const receiver = lowerer.lowerExpr(access.expression);
+    const enc = args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc);
+    return {
+      kind: "libCall",
+      fn: "writable.setDefaultEncoding",
+      args: [receiver, enc],
+      type: receiver.type,
+      loc,
+    };
   }
 
   return null;

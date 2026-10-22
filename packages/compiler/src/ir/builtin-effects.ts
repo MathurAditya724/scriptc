@@ -379,6 +379,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "writable.writeEnc",
   "writable.end",
   "writable.uncork",
+  "writable.setDefaultEncoding",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",

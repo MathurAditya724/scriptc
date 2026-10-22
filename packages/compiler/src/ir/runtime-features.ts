@@ -218,6 +218,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.stdioStream",
   "stream.chunkDone",
   "stream.objectMode",
+  "stream.decodeStrings",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",

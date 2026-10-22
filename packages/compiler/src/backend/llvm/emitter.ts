@@ -6111,7 +6111,10 @@ export class LlEmitter {
     return streamDataAdapter(this, cbT);
   }
 
-  streamDoneFnFor(kind: "w" | "f" | "d" | "t" | "l", doneT: IrType & { kind: "func" }): string {
+  streamDoneFnFor(
+    kind: "w" | "f" | "d" | "t" | "l" | "c",
+    doneT: IrType & { kind: "func" },
+  ): string {
     return streamDoneFnFor(this, kind, doneT);
   }
 
@@ -6135,7 +6138,7 @@ export class LlEmitter {
     return zlibBytesThunkFor(this, cbT);
   }
 
-  streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e", cbT: IrType): string {
+  streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e" | "c" | "v", cbT: IrType): string {
     return streamCbThunkFor(this, kind, cbT);
   }
 

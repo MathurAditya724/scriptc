@@ -3930,6 +3930,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.setDestroy": { argTypes: [null, null], result: VOID },
   "stream.setTransform": { argTypes: [null, null], result: VOID },
   "stream.setFlush": { argTypes: [null, null], result: VOID },
+  "stream.setConstruct": { argTypes: [null, null], result: VOID },
+  "stream.setWritev": { argTypes: [null, null], result: VOID },
+  "stream.setWritevDefault": { argTypes: [null, null], result: VOID },
   /** The dyn-options twins (a checked-dynamic options record — the JS
    * lane's `super(options)` forwarding and `new Readable(dynVar)`): the
    * option walk runs at RUNTIME with Node's reading rules. newDyn:
@@ -4056,6 +4059,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** The objectMode option's sides (readable, writable), applied right
    * after construction; answers the receiver (+1, the chaining shape). */
   "stream.objectMode": { argTypes: [null, BOOL, BOOL], result: VOID },
+  "stream.decodeStrings": { argTypes: [null, BOOL], result: VOID },
+  "writable.writeEncoding": { argTypes: [null, STRING], result: VOID },
+  "writable.setDefaultEncoding": { argTypes: [null, DYN], result: VOID },
   /** Whether a readable.nextChunkDyn step answered the end (the done
    * marker; an object-mode stream can yield undefined). */
   "stream.chunkDone": { argTypes: [DYN], result: BOOL },

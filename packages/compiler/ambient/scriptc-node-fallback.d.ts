@@ -7090,7 +7090,11 @@ declare module "stream" {
       encoding: string,
       callback: (error?: Error | null) => void,
     ): void;
-    writev?(this: Writable, chunks: unknown[], callback: (error?: Error | null) => void): void;
+    writev?(
+      this: Writable,
+      chunks: Array<{ chunk: any; encoding: string }>,
+      callback: (error?: Error | null) => void,
+    ): void;
     final?(this: Writable, callback: (error?: Error | null) => void): void;
     destroy?(this: Writable, error: Error | null, callback: (error?: Error | null) => void): void;
     construct?(this: Writable, callback: (error?: Error | null) => void): void;
@@ -7125,7 +7129,11 @@ declare module "stream" {
     readable?: boolean;
     writable?: boolean;
     defaultEncoding?: string;
-    writev?(this: Duplex, chunks: unknown[], callback: (error?: Error | null) => void): void;
+    writev?(
+      this: Duplex,
+      chunks: Array<{ chunk: any; encoding: string }>,
+      callback: (error?: Error | null) => void,
+    ): void;
     signal?: AbortSignal;
   }
   interface TransformOptions {
@@ -7209,6 +7217,36 @@ declare module "stream" {
       callback: (error?: Error | null) => void,
     ): void;
   } & ObjectModeFlag;
+
+  /* decodeStrings: false — a string write reaches write/transform as the
+   * string with its encoding (Buffers keep 'buffer'). */
+  interface StringWritableOptions extends Omit<WritableOptions, "decodeStrings" | "write"> {
+    decodeStrings: false;
+    write?(
+      this: Writable,
+      chunk: string | Buffer,
+      encoding: string,
+      callback: (error?: Error | null) => void,
+    ): void;
+  }
+  type StringDuplexOptions = Omit<DuplexOptions, "decodeStrings" | "write"> & {
+    decodeStrings: false;
+    write?(
+      this: Duplex,
+      chunk: string | Buffer,
+      encoding: string,
+      callback: (error?: Error | null) => void,
+    ): void;
+  };
+  type StringTransformOptions = Omit<TransformOptions, "decodeStrings" | "transform"> & {
+    decodeStrings: false;
+    transform?(
+      this: Transform,
+      chunk: string | Buffer,
+      encoding: string,
+      callback: (error?: Error | null, data?: Buffer | string) => void,
+    ): void;
+  };
 
   /* The operators' options: concurrency and highWaterMark bound map's
    * in-flight callbacks and queued results. */
@@ -7340,6 +7378,7 @@ declare module "stream" {
 
   class Writable extends EventEmitter {
     constructor(opts: ObjectWritableOptions);
+    constructor(opts: StringWritableOptions);
     constructor(opts?: WritableOptions);
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
@@ -7418,6 +7457,7 @@ declare module "stream" {
    * again. The lowering treats both halves as first-class. */
   class Duplex extends Readable {
     constructor(opts: ObjectDuplexOptions);
+    constructor(opts: StringDuplexOptions);
     constructor(opts?: DuplexOptions);
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
@@ -7517,6 +7557,7 @@ declare module "stream" {
 
   class Transform extends Duplex {
     constructor(opts: ObjectTransformOptions);
+    constructor(opts: StringTransformOptions);
     constructor(opts?: TransformOptions);
     /* The underscore-method surface (see Readable). */
     _transform(
@@ -7528,6 +7569,7 @@ declare module "stream" {
   }
   class PassThrough extends Transform {
     constructor(opts: ObjectTransformOptions);
+    constructor(opts: StringTransformOptions);
     constructor(opts?: TransformOptions);
   }
 

@@ -187,18 +187,24 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     e.fn === "stream.setFinal" ||
     e.fn === "stream.setDestroy" ||
     e.fn === "stream.setTransform" ||
-    e.fn === "stream.setFlush"
+    e.fn === "stream.setFlush" ||
+    e.fn === "stream.setConstruct" ||
+    e.fn === "stream.setWritev" ||
+    e.fn === "stream.setWritevDefault"
   ) {
     // The underscore-method assignment surface: the runtime slot swaps
     // its closure (+1 moves in) and invoke thunk — the next
     // _read/_write/... dispatch uses it, Node's timing.
-    const kindOf: Record<string, "r" | "w" | "f" | "d" | "t" | "l"> = {
+    const kindOf: Record<string, "r" | "w" | "f" | "d" | "t" | "l" | "c" | "v"> = {
       "stream.setRead": "r",
       "stream.setWrite": "w",
       "stream.setFinal": "f",
       "stream.setDestroy": "d",
       "stream.setTransform": "t",
       "stream.setFlush": "l",
+      "stream.setConstruct": "c",
+      "stream.setWritev": "v",
+      "stream.setWritevDefault": "v",
     };
     const symOf: Record<string, string> = {
       "stream.setRead": "scr_stream_set_read",
@@ -207,6 +213,9 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       "stream.setDestroy": "scr_stream_set_destroy",
       "stream.setTransform": "scr_stream_set_transform",
       "stream.setFlush": "scr_stream_set_flush",
+      "stream.setConstruct": "scr_stream_set_construct",
+      "stream.setWritev": "scr_stream_set_writev",
+      "stream.setWritevDefault": "scr_stream_set_writev_default",
     };
     const recv = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);

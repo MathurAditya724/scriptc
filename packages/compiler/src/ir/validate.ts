@@ -5494,6 +5494,10 @@ function validateFunction(
       e.fn === "stream.destroy" ||
       e.fn === "stream.destroyErr" ||
       e.fn === "stream.objectMode" ||
+      e.fn === "stream.decodeStrings" ||
+      e.fn === "stream.setConstruct" ||
+      e.fn === "stream.setWritev" ||
+      e.fn === "stream.setWritevDefault" ||
       e.fn === "stream.iteratorClose" ||
       e.fn === "stream.prop" ||
       e.fn === "stream.errored" ||
@@ -5785,6 +5789,9 @@ function validateFunction(
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
         e.fn === "stream.objectMode" ||
+        e.fn === "stream.decodeStrings" ||
+        e.fn === "writable.writeEncoding" ||
+        e.fn === "writable.setDefaultEncoding" ||
         e.fn === "stream.destroy" ||
         e.fn === "stream.destroyErr" ||
         e.fn === "stream.iteratorClose"

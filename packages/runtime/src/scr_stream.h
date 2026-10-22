@@ -65,6 +65,8 @@ typedef void (*ScrStreamReadInv)(ScrClosure *cb, ScrStream *s, double size);
 typedef void (*ScrStreamChunkInv)(ScrClosure *cb, ScrStream *s, ScrBytes *chunk);
 typedef void (*ScrStreamPlainInv)(ScrClosure *cb, ScrStream *s);
 typedef void (*ScrStreamErrInv)(ScrClosure *cb, ScrStream *s, ScrError *err);
+/* writev(chunks, callback): chunks is the batch's dyn array (borrowed). */
+typedef void (*ScrStreamWritevInv)(ScrClosure *cb, ScrStream *s, struct ScrDyn *chunks);
 
 /* Constructors (+1 result; option callbacks MOVE; NULL = absent). hwm < 0
  * means the byte default (65536 — Node 24's getDefaultHighWaterMark). */
@@ -512,6 +514,21 @@ void scr_stream_flush_done_value(ScrStream *s, ScrError *err, struct ScrDyn *v);
 void scr_stream_construct(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
 void scr_stream_construct_done(ScrStream *s, ScrError *err);
 void scr_stream_set_writev_concat(ScrStream *s);
+/* The user construct option / _construct method (scheduled now; cb
+ * moves), and the writev option / _writev method (cb moves). */
+void scr_stream_set_construct(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
+void scr_stream_set_writev(ScrStream *s, ScrClosure *cb, ScrStreamWritevInv inv);
+void scr_stream_set_writev_default(ScrStream *s, ScrClosure *cb, ScrStreamWritevInv inv);
+/* decodeStrings (false keeps string writes as strings), the writable
+ * defaultEncoding option (a known encoding, borrowed), and
+ * setDefaultEncoding (validated; answers the stream +1). The chaining
+ * forms answer the stream (+1). */
+void scr_stream_set_decode_strings(ScrStream *s, bool decode);
+ScrStream *scr_stream_decode_strings(ScrStream *s, bool decode);
+void scr_stream_set_write_encoding(ScrStream *s, ScrStr *enc);
+ScrStream *scr_stream_write_encoding(ScrStream *s, ScrStr *enc);
+ScrStream *scr_stream_set_default_encoding(ScrStream *s, struct ScrDyn *enc);
+ScrDyn *scr_stream_done_dyn_c(ScrClosure *clo, ScrDyn *const *args, size_t argc);
 /* The native state's extra operations: view adds its members to the
  * stream's untyped view and close is the view's close() (both NULL when
  * absent); aggregate builds aggregateTwoErrors' +1 AggregateError from the
