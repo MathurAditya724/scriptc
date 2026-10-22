@@ -3603,7 +3603,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "weakSet.new": { argTypes: [DYN], result: DYN },
   "dyn.fromEntries": { argTypes: [DYN], result: DYN },
   "bytes.constructor": { argTypes: [STRING], result: DYN },
-  "bytes.instanceOf": { argTypes: [DYN, DYN], result: BOOL },
+  "bytes.instanceOf": { argTypes: [DYN, DYN, STRING], result: BOOL },
   "bytes.construct": { argTypes: [DYN, DYN, STRING], result: DYN },
   /** The ambient receiver — JS `this` in a plain (non-method) function
    * body: the innermost binding the current firing/dispatch window

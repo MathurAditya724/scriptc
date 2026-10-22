@@ -3973,7 +3973,10 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
   return -1;
 }
 
-bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
+/* `value instanceof callee` for an untyped constructor value. `refusal`, when
+ * given, is the site's SC1090 message for a runtime constructor with no
+ * instance test. */
+bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal) {
   if (!callee || callee->kind != SCR_DYN_FUNC) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -4015,11 +4018,32 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
       scr_dyn_release(prototype);
       return found;
     }
+    bool undefined_prototype = prototype->kind == SCR_DYN_UNDEF;
     scr_dyn_release(prototype);
+    /* A function the program compiled with no prototype (an arrow function
+     * or a method): false for a primitive, and Node's TypeError for every
+     * object, typed arrays, native handles, promises and typed references
+     * included. The runtime's own constructors carry "native:" signatures. */
+    if (undefined_prototype && (!callee->v.fn.sig || strncmp(callee->v.fn.sig, "native:", 7) != 0)) {
+      if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_BOOL ||
+          value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT ||
+          value->kind == SCR_DYN_SYMBOL)
+        return false;
+      static const char message[] = "Function has non-object prototype 'undefined' in instanceof check";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return false;
+    }
+  }
+  if (refusal) {
+    scr_throw_error_msg_code(SCR_ERR_ERROR, refusal->data, refusal->len, "SC1090");
+    return false;
   }
   static const char message[] = "instanceof against this native constructor is not supported yet";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC1090");
   return false;
+}
+bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
+  return scr_bytes_instanceof_at(value, callee, NULL);
 }
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
   if (callee->kind == SCR_DYN_FUNC && scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo)

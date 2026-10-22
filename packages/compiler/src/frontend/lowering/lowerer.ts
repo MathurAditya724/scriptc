@@ -445,6 +445,7 @@ import {
   lowerNestedFunctionDecl,
   lowerLambda,
   lowerFunction,
+  blockedBodyDiagnostics,
 } from "./lower-functions.js";
 import { lowerArrayMethodCall } from "./containers/array-methods.js";
 import { type ArrayHofInfo, fuseArrayPipelines } from "./containers/array-pipelines.js";
@@ -1347,6 +1348,7 @@ export function lowerToIr(
   // travel with them: a failed statement is never left unexplained.
   const covered: LowerResult = {
     ...result,
+    diagnostics: [...result.diagnostics, ...remainder.reachedBlockedBodyDiagnostics],
     stats: { ...result.stats, statementsDynamic },
     unreached: {
       diagnostics: rem.diagnostics,
@@ -7462,7 +7464,10 @@ export class Lowerer {
         if (sig && !this.wantBody(sig.name)) continue;
         const fn = this.lowerFunction(decl);
         if (fn) functions.push(fn);
-        else if (this.countsSkips()) this.countSkippedBody(decl);
+        else if (this.countsSkips()) {
+          this.countSkippedBody(decl);
+          if (this.remainder) this.reportBlockedBody(decl);
+        }
       }
       for (const decl of fp.classDecls) {
         const info = this.classes.get(this.classNamer(decl));
@@ -7791,6 +7796,19 @@ export class Lowerer {
       this.bumpFileStat(file, "total");
       this.bumpFileStat(file, "failed");
     }
+  }
+
+  /** Coverage remainder: the body diagnostics of a function whose
+   * signature blocked (blockedBodyDiagnostics). A function reachable emit
+   * reached (its signature's diagnostics flushed there) reports them with
+   * the reached diagnostics; any other reports them as unreached. */
+  readonly reachedBlockedBodyDiagnostics: ScrDiagnostic[] = [];
+  private reportBlockedBody(decl: ts.FunctionDeclaration): void {
+    const diags = blockedBodyDiagnostics(this, decl);
+    const symbol = declSymbolOf(this, decl);
+    if (symbol && this.alreadyFlushed.has(symbol))
+      this.reachedBlockedBodyDiagnostics.push(...diags);
+    else for (const d of diags) this.pushDiag(d);
   }
 
   /** Whether run() counts a signature-blocked declaration in
