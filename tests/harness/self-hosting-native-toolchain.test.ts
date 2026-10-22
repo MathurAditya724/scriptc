@@ -48,6 +48,7 @@ const features: NativeLinkFeatures = {
   tlsCa: false,
   cipher: false,
   ecdh: false,
+  dh: false,
   pki: false,
   ed25519: false,
   webcrypto: false,

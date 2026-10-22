@@ -578,6 +578,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.cipherNew": "scr_crypto_cipher_new",
   "crypto.ecdhNew": "scr_crypto_ecdh_new",
   "crypto.ecdhConvertKey": "scr_crypto_ecdh_convert_key",
+  "crypto.dhNew": "scr_crypto_dh_new",
+  "crypto.dhGroupNew": "scr_crypto_dh_group_new",
   "crypto.hmacNewStr": "scr_crypto_hmac_new_str",
   "crypto.hmacNewBytes": "scr_crypto_hmac_new_bytes",
   "crypto.hashUpdateStr": "scr_crypto_hash_update_str",
