@@ -893,6 +893,9 @@ export function blockedBodyDiagnostics(
   lowerer.fnStack.push(ctx);
   let internal = false;
   try {
+    // A declared `this` parameter gives the body its receiver, as
+    // lowerFunction declares it.
+    if (decl.parameters.nodes.some(isThisParameter)) declareCallReceiver(lowerer, decl, false);
     for (const param of decl.parameters.nodes) {
       if (isThisParameter(param)) continue;
       const declaredParam = lowersCleanly(lowerer, () => {

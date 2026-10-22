@@ -3968,10 +3968,14 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
     bool undefined_prototype = prototype->kind == SCR_DYN_UNDEF;
     scr_dyn_release(prototype);
     /* A function the program compiled with no prototype (an arrow function
-     * or a method): Node's TypeError for an object, false for a primitive.
-     * The runtime's own constructors carry "native:" signatures. */
+     * or a method): false for a primitive, and Node's TypeError for every
+     * object, typed arrays, native handles, promises and typed references
+     * included. The runtime's own constructors carry "native:" signatures. */
     if (undefined_prototype && (!callee->v.fn.sig || strncmp(callee->v.fn.sig, "native:", 7) != 0)) {
-      if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_ARR && value->kind != SCR_DYN_FUNC) return false;
+      if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_BOOL ||
+          value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT ||
+          value->kind == SCR_DYN_SYMBOL)
+        return false;
       static const char message[] = "Function has non-object prototype 'undefined' in instanceof check";
       scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
       return false;

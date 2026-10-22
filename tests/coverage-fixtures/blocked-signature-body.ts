@@ -13,3 +13,7 @@ function unused(target: WeakRef<object>): number {
   return extra === undefined ? 0 : 1;
 }
 console.log(measure(new WeakRef({}), "abc"));
+// A declared `this` parameter gives the body its receiver.
+function described(this: { label: string }, target: WeakRef<object>): string {
+  return this.label + String(target);
+}
