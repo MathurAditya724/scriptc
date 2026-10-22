@@ -85,6 +85,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.runningExtrema = emitter.debug === null ? runningExtremumUpdates(fn) : new Set();
   emitter.currentConstantCallbacks =
     emitter.debug === null ? (emitter.constantCallbacks.get(fn.name) ?? new Map()) : new Map();
+  emitter.knownCallbacks.clear();
+  emitter.callbackVersionsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   // Preserve concrete source bindings for debugger inspection. Suspended
   // functions keep the established array lifetime across continuations.
   emitter.streamingSplitsEnabled = emitter.debug === null && !fn.async && !fn.generator;
