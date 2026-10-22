@@ -2110,6 +2110,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * surface — the handles are the same kinds. */
   "tls.createServer": { argTypes: [null, null], result: NETSERVER_T },
   "tls.createServerCb": { argTypes: [null, null, null], result: NETSERVER_T },
+  /** The SNICallback forms: (cert, key, SNICallback[, handler]). The
+   * callback is http2.createSecureServerSni's shape, a function or a
+   * function | undefined union. */
+  "tls.createServerSni": { argTypes: [null, null, null], result: NETSERVER_T },
+  "tls.createServerSniCb": { argTypes: [null, null, null, null], result: NETSERVER_T },
   // The runtime options records (divergence 66's stance): a dyn options
   // value whose members read at runtime; pemDyn extracts a runtime-valued
   // cert/key member (arg 1 is the precomposed fence label).
