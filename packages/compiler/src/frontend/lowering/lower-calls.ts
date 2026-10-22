@@ -173,6 +173,7 @@ import {
   stringWrapperToString,
   symbolFieldInfo,
   templateRawTextOf,
+  primitiveCtorClosure,
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
@@ -4343,7 +4344,25 @@ export function lowerDynDispatchMethodCall(
       }
     }
   }
+  // `String`, `Number` or `Boolean` as the callback of an array method
+  // (`values.map(String)` over an unknown array): the method calls it with
+  // each element, whatever its type, and cannot observe which function
+  // value it received, so it gets the constructor's form that converts any
+  // argument rather than the string-input form typed code stores.
+  const arrayCallbackReceiver =
+    ARRAY_CALLBACK_METHODS.has(method) &&
+    lowerer.checker.isArrayType(lowerer.typeOf(access.expression));
   const args = call.arguments.nodes.map((arg, i) => {
+    const primitive =
+      i === 0 && arrayCallbackReceiver && ts.isIdentifier(arg)
+        ? stdlibGlobalNameOf(lowerer, arg)
+        : null;
+    if (primitive === "String" || primitive === "Number" || primitive === "Boolean")
+      return lowerer.coerceInto(
+        arg,
+        primitiveCtorClosure(lowerer, primitive, locOf(arg), true),
+        DYN,
+      );
     if (i === 0 && predicate) return lowerer.coerceInto(arg, predicate, DYN);
     const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, arg);
     return undefinedArg
@@ -4360,6 +4379,21 @@ export function lowerDynDispatchMethodCall(
     loc: locOf(call),
   };
 }
+
+/** Array.prototype methods whose first argument is a callback they call
+ * with the elements. */
+const ARRAY_CALLBACK_METHODS = new Set([
+  "map",
+  "filter",
+  "forEach",
+  "some",
+  "every",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flatMap",
+]);
 
 /** Every String.prototype method name a typed or dyn string lowering
  * answers. */
