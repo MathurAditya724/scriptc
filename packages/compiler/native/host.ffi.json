@@ -8,6 +8,7 @@
     { "name": "compilerNativeWait", "symbol": "scriptc_native_wait", "params": ["i32"], "returns": "i32" },
     { "name": "compilerNativeLockOpen", "symbol": "scriptc_native_lock_open", "params": ["string"], "returns": "bool" },
     { "name": "compilerNativeLock", "symbol": "scriptc_native_lock", "params": [], "returns": "void" },
-    { "name": "compilerNativeUnlock", "symbol": "scriptc_native_unlock", "params": [], "returns": "void" }
+    { "name": "compilerNativeUnlock", "symbol": "scriptc_native_unlock", "params": [], "returns": "void" },
+    { "name": "compilerNativeBoundCycleGrowth", "symbol": "scriptc_native_bound_cycle_growth", "params": [], "returns": "void" }
   ]
 }

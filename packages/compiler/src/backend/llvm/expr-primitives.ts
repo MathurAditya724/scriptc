@@ -32,7 +32,7 @@ import {
   emitPowerOfTwoRemainder,
   emitSignedIntegerRemainder,
 } from "./integer-remainder.js";
-import { emitDenseArrayGet, emitDenseArrayState, slotWidth } from "./dense-array-access.js";
+import { denseSlotWidth, emitDenseArrayGet, emitDenseArrayState } from "./dense-array-access.js";
 import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
 
 export function emitLiteralExpr(
@@ -881,7 +881,7 @@ export function emitContainerExpr(
           buffer = B.tmp();
           B.entryAllocas.push(`${buffer} = alloca [${Math.min(e.elems.length, 64)} x i64]`);
         }
-        if (pending.length > 0) emitArrayValues(host, arr, acc, pending, false, buffer);
+        if (pending.length > 0) emitArrayValues(host, arr, acc, elem, pending, false, buffer);
         pending = [];
       };
       e.elems.forEach((el, i) => {
@@ -926,7 +926,7 @@ export function emitContainerExpr(
       }
       const bound = B.tmp();
       B.line(`${bound} = fsub double ${n.name}, ${f64Lit(1)}`);
-      B.countedLoop(bound, () => host.arrPush(arr, acc, fill), "ole");
+      B.countedLoop(bound, () => host.arrPush(arr, acc, fill, elem), "ole");
       return out;
     }
     case "arrayGet": {
@@ -964,7 +964,7 @@ export function emitContainerExpr(
         idx,
         e.index,
         "has",
-        slotWidth(elemAccess(e.arr.type.elem)),
+        denseSlotWidth(host, e.arr.type.elem),
       );
       return { name: t, type: e.type };
     }
@@ -979,7 +979,7 @@ export function emitContainerExpr(
         idx,
         e.index,
         "state",
-        slotWidth(elemAccess(e.arr.type.elem)),
+        denseSlotWidth(host, e.arr.type.elem),
       );
       return { name: t, type: e.type };
     }

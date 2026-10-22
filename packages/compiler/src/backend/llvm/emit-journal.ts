@@ -98,7 +98,6 @@ export class EmitJournal {
 export interface ChunkResult {
   readonly entries: readonly JournalEntry[];
   readonly flags: {
-    readonly usesCompactRefs: boolean;
     readonly usesCoroutines: boolean;
     readonly usesTimers: boolean;
     readonly usesGenSlots: boolean;

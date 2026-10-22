@@ -116,3 +116,18 @@ void scriptc_native_unlock(void) {
   if (scriptc_native_lock_fd >= 0) flock(scriptc_native_lock_fd, LOCK_UN);
 }
 #endif
+
+/* The runtime's growth cap for full cycle passes (scr_rc.h). */
+void scr_cyc_set_growth_cap(long cap);
+
+/* Bounds the cyclic garbage a build can hold to twice its live heap.
+ * Lowering a large program leaves hundreds of megabytes of cyclic garbage,
+ * and whether a scheduled full pass reclaims it before the build's peak
+ * depends on where the growth rule fires: with the default cap of 16, small
+ * changes to the compiler moved the peak of one build by 390 MB. With a cap
+ * of 2 a full pass runs once the heap has grown to three times its size
+ * after the last one; a cap of 1 bounds the garbage further but runs more
+ * passes over the live heap. SCR_CYCLE_GROWTH_CAP still overrides it. */
+void scriptc_native_bound_cycle_growth(void) {
+  scr_cyc_set_growth_cap(2);
+}

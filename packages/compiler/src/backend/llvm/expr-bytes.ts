@@ -455,11 +455,13 @@ export function emitToUint32(
     B.line(`${out} = select i1 ${ordered}, i32 ${low}, i32 0`);
     return out;
   }
+  // Below 2^63 in magnitude, the i64 conversion truncates exactly (every
+  // double above 2^53 is an integer), and its low 32 bits are ToUint32.
   const aboveMin = B.tmp();
   const belowMax = B.tmp();
   const fast = B.tmp();
-  B.line(`${aboveMin} = fcmp oge double ${value}, ${f64Lit(-9007199254740992)}`);
-  B.line(`${belowMax} = fcmp ole double ${value}, ${f64Lit(9007199254740992)}`);
+  B.line(`${aboveMin} = fcmp oge double ${value}, ${f64Lit(-9223372036854775808)}`);
+  B.line(`${belowMax} = fcmp olt double ${value}, ${f64Lit(9223372036854775808)}`);
   B.line(`${fast} = and i1 ${aboveMin}, ${belowMax}`);
 
   const fastLabel = B.newLabel("uint32.coerce.fast");
@@ -475,8 +477,8 @@ export function emitToUint32(
   B.br(done);
 
   B.startBlock(slowLabel);
-  // Only NaN, the infinities and magnitudes above 2^53 reach this block.
-  // Such a finite double is the integer mantissa * 2^shift with shift >= 1,
+  // Only NaN, the infinities and magnitudes from 2^63 reach this block.
+  // Such a finite double is the integer mantissa * 2^shift with shift >= 11,
   // so its low 32 bits are the shifted mantissa's (none once shift >= 64),
   // negated for a negative value. NaN and the infinities have the maximum
   // exponent, a shift of 972, and convert to 0 like ToUint32. Integer

@@ -30,8 +30,10 @@ declare function compilerNativeWait(pid: number): number;
 declare function compilerNativeLockOpen(path: string): boolean;
 declare function compilerNativeLock(): void;
 declare function compilerNativeUnlock(): void;
+declare function compilerNativeBoundCycleGrowth(): void;
 
 async function main(): Promise<number> {
+  compilerNativeBoundCycleGrowth();
   setFrontendDisposedHook(() => compilerNativeCollectCycles());
   if (process.platform !== "win32")
     processFork.primitives = {
