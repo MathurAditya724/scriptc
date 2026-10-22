@@ -1,8 +1,8 @@
 /* Hot dynamic-tier functions (SC6101, diagnostics/dynamic-tier.ts): the
  * functions of a program that compile to the dynamic tier (ir/tiers.ts) and
  * likely run often, so a build can name them. Without a profile, a function
- * counts as likely hot when a dynamic operation runs inside one of its
- * loops, when a loop calls it, or when it calls itself. Dynamic code that
+ * counts as likely hot when a dynamic operation runs on every iteration of
+ * one of its loops, when a loop calls it, or when it calls itself. Dynamic code that
  * runs once (setup code that reads an `any` configuration, for example)
  * stays quiet.
  *
@@ -21,8 +21,12 @@ import {
   type UntypedCause,
 } from "../../diagnostics/dynamic-tier.js";
 import type { IrExpr, IrFunction, IrModule, IrStmt, SrcLoc } from "../../ir/ir.js";
-import { dynamicOperationSites } from "../../ir/tiers.js";
-import { everyStmtList } from "../../ir/traverse.js";
+import {
+  dynamicOperationOf,
+  dynamicOperationSites,
+  type DynamicOperationSite,
+} from "../../ir/tiers.js";
+import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import { isCheckedJsSourceFile, isJsSourceFile } from "../program.js";
 import { isNodeModulesPath } from "../resolve.js";
@@ -46,30 +50,73 @@ export interface DynamicTierReport {
   packages: DynamicTierPackageCount[];
 }
 
-const LOOP_KINDS = new Set(["while", "doWhile", "for", "forOf"]);
-
-function within(loc: SrcLoc, spans: readonly SrcLoc[]): boolean {
-  return spans.some((s) => s.file === loc.file && s.start <= loc.start && loc.end <= s.end);
-}
-
 interface FunctionFacts {
-  loops: SrcLoc[];
-  /** Callee names of direct calls, with each call's location. */
-  calls: { callee: string; loc: SrcLoc }[];
+  /** Dynamic operations in the parts of the function's loops that run on
+   * every iteration. */
+  loopSites: DynamicOperationSite[];
+  /** Callee names of direct calls, and whether each runs on every
+   * iteration of a loop. */
+  calls: { callee: string; inLoop: boolean }[];
 }
 
+/** Walks a function body by structure: a loop's condition, update and body
+ * repeat, while a `for` loop's initializer and a `for...of` loop's iterable
+ * run once. (Locations cannot tell them apart: lowering may give a loop's
+ * repeated parts the whole statement's span.) */
 function factsOf(fn: IrFunction): FunctionFacts {
-  const facts: FunctionFacts = { loops: [], calls: [] };
-  everyStmtList(fn.body, {
-    stmt: (s: IrStmt) => {
-      if (LOOP_KINDS.has(s.kind)) facts.loops.push(s.loc);
-      return true;
-    },
-    expr: (e: IrExpr) => {
-      if (e.kind === "call") facts.calls.push({ callee: e.callee, loc: e.loc });
-      return true;
-    },
-  });
+  const facts: FunctionFacts = { loopSites: [], calls: [] };
+  const expr = (e: IrExpr, inLoop: boolean): void => {
+    if (inLoop) {
+      const operation = dynamicOperationOf(e);
+      if (operation !== null) facts.loopSites.push({ operation, loc: e.loc });
+    }
+    if (e.kind === "call") facts.calls.push({ callee: e.callee, inLoop });
+    everyExprChild(
+      e,
+      (child) => {
+        expr(child, inLoop);
+        return true;
+      },
+      (child) => {
+        stmt(child, inLoop);
+        return true;
+      },
+    );
+  };
+  const children = (s: IrStmt, inLoop: boolean): void => {
+    everyStmtChild(
+      s,
+      (child) => {
+        expr(child, inLoop);
+        return true;
+      },
+      (child) => {
+        stmt(child, inLoop);
+        return true;
+      },
+    );
+  };
+  const stmt = (s: IrStmt, inLoop: boolean): void => {
+    switch (s.kind) {
+      case "for":
+        if (s.init !== null) stmt(s.init, inLoop);
+        if (s.cond !== null) expr(s.cond, true);
+        if (s.update !== null) stmt(s.update, true);
+        for (const b of s.body) stmt(b, true);
+        return;
+      case "forOf":
+        expr(s.iterable, inLoop);
+        for (const b of s.body) stmt(b, true);
+        return;
+      case "while":
+      case "doWhile":
+        children(s, true);
+        return;
+      default:
+        children(s, inLoop);
+    }
+  };
+  for (const s of fn.body) stmt(s, false);
   return facts;
 }
 
@@ -202,7 +249,7 @@ export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTier
   const calledInLoop = new Set<string>();
   for (const fn of module.functions) {
     const f = facts.get(fn.name)!;
-    for (const call of f.calls) if (within(call.loc, f.loops)) calledInLoop.add(call.callee);
+    for (const call of f.calls) if (call.inLoop) calledInLoop.add(call.callee);
   }
   const hot: HotDynamicFunction[] = [];
   const packages = new Map<string, number>();
@@ -218,7 +265,7 @@ export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTier
     }
     const f = facts.get(fn.name)!;
     const sites = dynamicOperationSites(fn);
-    const inLoops = sites.filter((s) => within(s.loc, f.loops));
+    const inLoops = f.loopSites;
     const recursive = f.calls.some((c) => c.callee === fn.name);
     const reason: HotReason | null =
       inLoops.length > 0
@@ -231,7 +278,9 @@ export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTier
     if (reason === null) continue;
     // Only functions the source makes dynamic are named: ones dynamic for
     // operations without a static lowering would stay dynamic with more types.
-    const cause = causeOf(lowerer, [...inLoops, ...sites.filter((s) => !inLoops.includes(s))]);
+    const looped = new Set(inLoops.map((s) => `${s.loc.file}:${s.loc.start}:${s.loc.end}`));
+    const rest = sites.filter((s) => !looped.has(`${s.loc.file}:${s.loc.start}:${s.loc.end}`));
+    const cause = causeOf(lowerer, [...inLoops, ...rest]);
     if (cause === null) continue;
     hot.push({
       name: fn.name,
