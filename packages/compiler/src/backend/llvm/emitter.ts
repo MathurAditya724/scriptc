@@ -1190,6 +1190,9 @@ export class LlEmitter {
   int32Elements: ((arr: IrExpr) => boolean) | null = null;
   /** Sums whose result only feeds 32-bit conversions (wrapping-sums.ts). */
   wrappingSums = new Set<IrExpr>();
+  /** Number locals of the current function that hold exact integers or NaN
+   * (findIntegerOrNaNLocals in wrapping-sums.ts). */
+  integerOrNaNLocals: ReadonlyMap<string, IntegerRange> = new Map();
   byteWindowsEnabled = true;
   byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
   /** Typed-array loop versioning (bytes-loop-versions.ts) for the current
