@@ -386,6 +386,26 @@ function readOnlyBagBody(body: IrStmt[], orEmpty = false): IrStmt[] {
   return body;
 }
 
+/** `value` with the class branch's checked receiver (`p.0` as a dynamic
+ * value, possibly cast to the branch's class) replaced by `receiver`, the
+ * typed receiver of a per-class helper. */
+function withTypedReceiver(value: IrExpr, receiver: IrExpr): IrExpr {
+  const checked = (e: IrExpr): boolean =>
+    e.kind === "dynCheck" && e.value.kind === "varRef" && e.value.localId === "p.0";
+  return transformExpr(value, {
+    stmt: (stmt) => stmt,
+    expr: (expr) =>
+      (expr.kind === "downcast" &&
+        checked(expr.value) &&
+        expr.type.kind === "object" &&
+        receiver.type.kind === "object" &&
+        expr.type.className === receiver.type.className) ||
+      checked(expr)
+        ? receiver
+        : expr,
+  });
+}
+
 export function classPropertiesHelper(lowerer: Lowerer, loc: SrcLoc, readOnly = false): IrFunction {
   const name = readOnly ? READ_PROPERTIES : "%dyn.class.properties";
   const existing = lowerer.liftedFnNamed(name);
@@ -728,7 +748,11 @@ export class ClassDynamicDispatch {
   private readonly readPropertyBags: {
     helper: IrFunction;
     initialize: Extract<IrStmt, { kind: "fieldSet" }>;
+    orEmpty?: boolean;
   }[] = [];
+  /** Read-only bags of exactly one class (exactPropertyBag), by class and
+   * whether an absent bag reads as a fresh empty object. */
+  private readonly exactPropertyBags = new Map<string, IrFunction>();
   private readonly generated = new Set<IrFunction>();
   /** Protocol dispatch helpers and callee reads whose receivers normalize. */
   private readonly protocols: IrFunction[] = [];
@@ -2557,7 +2581,6 @@ export class ClassDynamicDispatch {
         if (dispatch.classes.has(plan.key) || !matching!.has(info)) continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.source.loc;
-        const value = varRef("p.0", DYN, loc);
         const { receiver, condition } = this.propertyReceiver(plan, loc);
         if (isClassCallback(lowerer, info, dispatch.source.method)) {
           const prototypeMethod = observedPrototypeMethod(
@@ -2567,7 +2590,7 @@ export class ClassDynamicDispatch {
             loc,
             receiver,
           );
-          const bag = this.readPropertyBagOrEmpty(lowerer, value, loc);
+          const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
           const methodKey: IrExpr = {
             kind: "strLit",
             value: dispatch.source.method,
@@ -2825,10 +2848,19 @@ export class ClassDynamicDispatch {
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const { receiver, condition } = this.propertyReceiver(plan, loc);
+        // The branch checks its receiver once: each use of the checked
+        // receiver would repeat the check.
+        const local = `receiver.${dispatch.fn.locals.length}`;
+        dispatch.fn.locals.push({
+          id: local,
+          name: "receiver",
+          type: receiver.type,
+          mutable: false,
+        });
         const before = lowerer.diags.length;
         let branch: IrStmt[];
         try {
-          branch = this.propertyBody(lowerer, dispatch, info, receiver);
+          branch = this.propertyBody(lowerer, dispatch, info, varRef(local, receiver.type, loc));
         } catch (error) {
           if (!(error instanceof PoisonError) || !info.decl) throw error;
           const fence = lowerer.deferToRuntimeFence(before, info.decl, { kind: "statement" });
@@ -2838,7 +2870,7 @@ export class ClassDynamicDispatch {
         dispatch.fn.body.unshift({
           kind: "if",
           cond: condition,
-          then: branch,
+          then: [{ kind: "varDecl", localId: local, init: receiver, loc }, ...branch],
           else_: null,
           loc,
         });
@@ -2938,11 +2970,7 @@ export class ClassDynamicDispatch {
             !info.fields.has(name) && observedPrototypeMethod(lowerer, info, name, loc, receiver);
           if (info.fields.has(name) || (dispatch.probe === "in" && !prototypeMethod)) {
             if (info.fields.has(name) && info.def.tracksOwnFields) {
-              const bag = this.readPropertyBagOrEmpty(
-                lowerer,
-                lowerer.coerceToExpected(receiver, DYN),
-                loc,
-              );
+              const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
               const symbol = symbolMemberKey(lowerer, info, name, loc);
               const fn =
                 dispatch.probe === "in"
@@ -2968,11 +2996,7 @@ export class ClassDynamicDispatch {
               { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
             ];
           }
-          const bag = this.readPropertyBagOrEmpty(
-            lowerer,
-            lowerer.coerceToExpected(receiver, DYN),
-            loc,
-          );
+          const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
           const symbol = name.startsWith("sym:") || name.startsWith("%symbol:");
           const fn =
             dispatch.probe === "in"
@@ -3042,9 +3066,8 @@ export class ClassDynamicDispatch {
           }
           const branches: IrStmt[] = [];
           if (!dispatch.write && !dispatch.reflect && !info.def.tracksOwnFields) {
-            const value = varRef("p.0", DYN, loc);
             const key = varRef("p.key", DYN, loc);
-            const bag = this.readPropertyBagOrEmpty(lowerer, value, loc);
+            const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
             branches.push({
               kind: "if",
               cond: {
@@ -4070,6 +4093,98 @@ export class ClassDynamicDispatch {
     return helper;
   }
 
+  /** The read-only bag a class branch reads for its receiver: the
+   * receiver's own field when the branch selected the receiver's exact
+   * class, otherwise the dispatch over every class (readPropertyBag, or
+   * readPropertyBagOrEmpty with `orEmpty`). */
+  private branchPropertyBag(
+    lowerer: Lowerer,
+    info: ClassInfo,
+    receiver: IrExpr,
+    orEmpty: boolean,
+    loc: SrcLoc,
+  ): IrExpr {
+    const helper = this.exactPropertyBag(lowerer, info, receiver, orEmpty, loc);
+    if (helper) return { kind: "call", callee: helper.name, args: [receiver], type: DYN, loc };
+    return orEmpty
+      ? this.readPropertyBagOrEmpty(lowerer, lowerer.coerceToExpected(receiver, DYN), loc)
+      : this.readPropertyBag(lowerer, receiver, loc);
+  }
+
+  /** `%class.branchProperties[OrEmpty]:<class>(receiver)`: the read-only bag of
+   * an instance of exactly `info`. A class branch of the dispatch helpers
+   * selects a canonical receiver (normalizeDispatches gives an instance its
+   * actual class's capsule), so its branch for `info` sees only instances
+   * of `info`; instances of its subclasses take their own branches. Such a
+   * receiver needs neither the dispatch over every class nor a boxed copy of
+   * itself. Null
+   * when `receiver` is not typed as `info`, when a runtime or builtin class
+   * in the family keeps its own property contract, or before the class has
+   * a bag. */
+  private exactPropertyBag(
+    lowerer: Lowerer,
+    info: ClassInfo,
+    receiver: IrExpr,
+    orEmpty: boolean,
+    loc: SrcLoc,
+  ): IrFunction | null {
+    const type = receiver.type;
+    if (type.kind !== "object" || type.className !== info.def.name) return null;
+    for (let current: ClassInfo | null = info; current; current = current.base)
+      if (
+        current.def.runtime ||
+        current.builtinEmitter ||
+        current.builtinStream ||
+        current.builtinError
+      )
+        return null;
+    const key = `${type.className}:${orEmpty}`;
+    const existing = this.exactPropertyBags.get(key);
+    if (existing) return existing;
+    const initializers = this.bagInitializers.get(type.className);
+    if (!initializers) return null;
+    const self = varRef("p.0", type, loc);
+    const bag: IrExpr = {
+      kind: "fieldGet",
+      obj: self,
+      className: type.className,
+      field: PROPERTY_BAG,
+      type: DYN,
+      loc,
+    };
+    const initialize: Extract<IrStmt, { kind: "fieldSet" }> = {
+      ...initializers[0]!,
+      obj: self,
+      value: withTypedReceiver(initializers[0]!.value, self),
+      loc,
+    };
+    const helper: IrFunction = {
+      name: `%class.branchProperties${orEmpty ? "OrEmpty" : ""}:${type.className}`,
+      params: [{ localId: "p.0", name: "value", type }],
+      returnType: DYN,
+      locals: [{ id: "p.0", name: "value", type, mutable: false }],
+      loc,
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "undefined", value: bag, type: BOOL, loc },
+          then: [initialize],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: bag, loc },
+      ],
+    };
+    // Initializers gain their prototype as subclasses become constructible;
+    // finalize then turns the lazy store into the read's result.
+    initializers.push(initialize);
+    this.exactPropertyBags.set(key, helper);
+    this.readPropertyBags.push({ helper, initialize, orEmpty });
+    this.generated.add(helper);
+    lowerer.liftedFns.push(helper);
+    return helper;
+  }
+
   /** The prototype a new property bag of `current` (or of the subclass the
    * receiver is) starts from, or null when `current` has no prototype data.
    * A class with constructible subclasses that have prototype data selects
@@ -4149,9 +4264,9 @@ export class ClassDynamicDispatch {
    * prototype-backed bag is produced for this read only. A published object
    * cannot take the store, and Node's reads never write. */
   finalize(lowerer?: Lowerer): void {
-    for (const { helper, initialize } of this.readPropertyBags) {
+    for (const { helper, initialize, orEmpty } of this.readPropertyBags) {
       const absent = helper.body[0];
-      if (isEmptyBag(initialize.value)) helper.body.shift();
+      if (isEmptyBag(initialize.value) && !orEmpty) helper.body.shift();
       else if (absent?.kind === "if")
         absent.then = [{ kind: "return", value: initialize.value, loc: initialize.loc }];
     }
@@ -4733,7 +4848,7 @@ export class ClassDynamicDispatch {
                 cond: this.readBagHas(
                   lowerer,
                   "dyn.hasKey",
-                  this.readPropertyBag(lowerer, receiver, loc),
+                  this.branchPropertyBag(lowerer, info, receiver, false, loc),
                   key,
                   loc,
                 ),
@@ -4748,7 +4863,7 @@ export class ClassDynamicDispatch {
           { kind: "return", value: null, loc },
         ];
       }
-      const bag = this.readPropertyBag(lowerer, receiver, loc);
+      const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
       return [
         {
           kind: "return",
@@ -4816,7 +4931,7 @@ export class ClassDynamicDispatch {
       ) {
         this.constructors.set(info.def.name, info);
         const cls = lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl), DYN);
-        const bag = this.readPropertyBag(lowerer, receiver, loc);
+        const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
         return [
           {
@@ -4894,7 +5009,7 @@ export class ClassDynamicDispatch {
           if (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:"))) {
             const prototypeMethod = observedPrototypeMethod(lowerer, info, name, loc, receiver);
             // Selecting the method must not give the object own storage.
-            const bag = this.readPropertyBag(lowerer, receiver, loc);
+            const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
             const key: IrExpr = symbol ?? { kind: "strLit", value: name, type: STRING, loc };
             body.push({
               kind: "if",
@@ -4962,7 +5077,7 @@ export class ClassDynamicDispatch {
       }
       if (!field && !accessor) {
         const instance = lowerer.coerceToExpected(receiver, DYN);
-        const bag = this.readPropertyBagOrEmpty(lowerer, instance, loc);
+        const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
         const own: IrExpr = {
           kind: "libCall",
@@ -5009,11 +5124,7 @@ export class ClassDynamicDispatch {
         (t.kind === "union" && (getUnion(t.unionId)?.arms.some(mutable) ?? false));
       if (boxed.kind === "dynFrom" && mutable(boxed.value.type)) boxed.liveRef = true;
       if (accessor) {
-        const bag = this.readPropertyBagOrEmpty(
-          lowerer,
-          lowerer.coerceToExpected(receiver, DYN),
-          loc,
-        );
+        const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
         return [
           {
@@ -5040,7 +5151,7 @@ export class ClassDynamicDispatch {
       }
       if (field && info.def.tracksOwnFields) {
         const instance = lowerer.coerceToExpected(receiver, DYN);
-        const bag = this.readPropertyBagOrEmpty(lowerer, instance, loc);
+        const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
         const symbol = symbolMemberKey(lowerer, info, name, loc);
         const key: IrExpr = symbol ?? { kind: "strLit", value: name, type: STRING, loc };
         return [
