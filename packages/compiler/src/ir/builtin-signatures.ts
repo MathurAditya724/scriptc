@@ -4625,6 +4625,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * lone surrogate as U+FFFD). Borrowed arg; owned (+1) string; never throws. */
   "text.decode": { argTypes: [BYTES_U8], result: STRING },
   "bytes.bufferSource": { argTypes: [DYN], result: BYTES_U8 },
+  /** Whether an error-first callback's Buffer result is absent: the zlib
+   * and crypto callback adapters pass NULL after an error. Borrowed arg;
+   * never throws. */
+  "bytes.isAbsent": { argTypes: [BYTES_U8], result: BOOL },
+  /** The absent Buffer result itself (NULL), where an error-path callback
+   * body passes its undefined result on into a Buffer slot. Owned (+1);
+   * never throws. */
+  "bytes.absent": { argTypes: [], result: BYTES_U8 },
   /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array
    * result (map and filter of a Buffer return a Buffer). */
   "bytes.copyBrand": { argTypes: [BYTES_U8, BYTES_U8], result: VOID },
