@@ -31,6 +31,7 @@ import {
   emitMapIterCount,
   emitMapIterEntry,
   emitMapIterSlot,
+  compactMapValues,
   mapEntryLayout,
   emitMapIterStart,
   emitNumberMapGetRef,
@@ -1065,8 +1066,10 @@ function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): st
   const kind = mapKeyKindNum(key, arms);
   const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
+  // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).
+  const valKind = compactMapValues(host, key, value) ? 3 : mapValKindNum(value);
   B.line(
-    `${m} = call ptr @scr_map_new(i32 ${kind}, i32 ${mapValKindNum(value)}, ptr ${collectionOps(host, key, value)})`,
+    `${m} = call ptr @scr_map_new(i32 ${kind}, i32 ${valKind}, ptr ${collectionOps(host, key, value)})`,
   );
   return m;
 }
@@ -1129,6 +1132,9 @@ export function emitMapLikeIntrinsic(
   const key = receiverType.kind === "map" ? receiverType.key : receiverType.elem;
   const kAcc = mapKeyAccess(key);
   const kTy = mapKeyParamType(kAcc);
+  // The map keeps compact values in 16-byte entries (SCR_MAP_VAL_CREF).
+  const compact = receiverType.kind === "map" && compactMapValues(host, key, receiverType.value);
+  const layout = mapEntryLayout(key, compact);
   const method = e.method;
   // A published Map or Set rejects mutation (the guard precedes the
   // operands, which each method evaluates itself).
@@ -1292,7 +1298,7 @@ export function emitMapLikeIntrinsic(
         if (numberKey !== null) {
           raw = emitNumberMapGetRef(host, r.name, numberKey, value);
         } else if (stringKey !== null) {
-          raw = emitStringMapGetRef(host, r.name, stringKey, value);
+          raw = emitStringMapGetRef(host, r.name, stringKey, value, compact);
         } else {
           host.declare(`declare ptr @scr_map_get_${kAcc}_ref(ptr, ${kTy})`);
           raw = B.tmp();
@@ -1370,7 +1376,7 @@ export function emitMapLikeIntrinsic(
         return host.wrapNullable(raw, raw, value, valueTag, e.type, undefTag);
       }
       if (stringKey !== null && isRefCounted(value)) {
-        const raw = emitStringMapGetRef(host, r.name, stringKey, value);
+        const raw = emitStringMapGetRef(host, r.name, stringKey, value, compact);
         return host.wrapNullable(raw, raw, value, valueTag, e.type, undefTag);
       }
       host.declare(`declare ptr @scr_map_get_${kAcc}_ref(ptr, ${kTy})`);
@@ -1418,7 +1424,8 @@ export function emitMapLikeIntrinsic(
     case "has": {
       const k = borrowInputs ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
       if (kAcc === "f64") return { name: emitNumberMapHas(host, r.name, k.name), type: e.type };
-      if (kAcc === "str") return { name: emitStringMapHas(host, r.name, k.name), type: e.type };
+      if (kAcc === "str")
+        return { name: emitStringMapHas(host, r.name, k.name, compact), type: e.type };
       host.declare(`declare zeroext i1 @scr_map_has_${kAcc}(ptr, ${kTy})`);
       const t = B.tmp();
       B.line(`${t} = call zeroext i1 @scr_map_has_${kAcc}(ptr ${r.name}, ${kTy} ${k.name})`);
@@ -1447,7 +1454,7 @@ export function emitMapLikeIntrinsic(
       return { name: emitMapIterStart(host, r.name), type: e.type };
     case "iterLive": {
       const i = host.emitExpr(e.args[0]!);
-      const entry = emitMapIterEntry(host, r.name, i.name, mapEntryLayout(key));
+      const entry = emitMapIterEntry(host, r.name, i.name, layout);
       const t = B.tmp();
       B.line(`${t} = icmp ne ptr ${entry}, null`);
       return { name: t, type: e.type };
@@ -1466,7 +1473,7 @@ export function emitMapLikeIntrinsic(
           kAcc === "str" ? "ref" : kAcc,
           key,
           { decl: `declare ${retTy} @${symbol}(ptr, double)`, symbol },
-          mapEntryLayout(key),
+          layout,
         );
         return host.own({ name: t, type: e.type });
       }
@@ -1493,7 +1500,7 @@ export function emitMapLikeIntrinsic(
           decl: `declare ${vAcc === "bool" ? "zeroext i1" : retTy} @${symbol}(ptr, double)`,
           symbol,
         },
-        mapEntryLayout(key),
+        layout,
       );
       return host.own({ name: t, type: e.type });
     }

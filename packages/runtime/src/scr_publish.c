@@ -249,12 +249,12 @@ void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val) {
               m->key_kind == SCR_MAP_KEY_BIGINT || m->key_kind == SCR_MAP_KEY_UNION_VALUE
           ? key
           : NULL;
-  ScrPubFn vfn = m->val_kind == SCR_MAP_VAL_REF ? val : NULL;
+  ScrPubFn vfn = m->val_kind == SCR_MAP_VAL_REF || m->val_kind == SCR_MAP_VAL_CREF ? val : NULL;
   for (size_t i = 0; i < m->nentries; i++) {
     if (!scr_map_entry_live(m, i)) continue; /* tombstone */
     const ScrMapEntry *e = scr_map_entry_at(m, i);
     if (kfn) scr_pub_slot(ctx, e->key, kfn);
-    if (vfn) scr_pub_slot(ctx, e->val, vfn);
+    if (vfn) scr_pub_slot(ctx, scr_map_entry_val(m, e), vfn);
   }
 }
 
