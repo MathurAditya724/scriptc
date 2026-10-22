@@ -2981,30 +2981,40 @@ static bool scr_jb_put_source_field(ScrJsonBuf *b, void *rec, const ScrRecordSou
  * a source, otherwise writes nothing and answers false. */
 static bool scr_dyn_key_is_index(const char *key, size_t len, double *out);
 
+typedef struct {
+  double index;
+  size_t entry;
+} ScrRecordSourceIntegerKey;
+
+static int scr_record_source_integer_cmp(const void *a, const void *b) {
+  double x = ((const ScrRecordSourceIntegerKey *)a)->index;
+  double y = ((const ScrRecordSourceIntegerKey *)b)->index;
+  return (x > y) - (x < y);
+}
+
 /* The entry indexes of `view` in JavaScript's own-key order: integer keys
  * ascending, then the other keys in insertion order. `out` holds len. */
 static void scr_record_source_key_order(const ScrDyn *view, size_t *out) {
-  size_t integers = 0;
-  for (size_t i = 0; i < view->v.obj.len; i++) {
-    double index;
+  size_t len = view->v.obj.len;
+  ScrRecordSourceIntegerKey small[64];
+  ScrRecordSourceIntegerKey *keys = len <= 64 ? small : malloc(len * sizeof *keys);
+  if (!keys) scr_json_oom();
+  size_t integers = 0, next = 0;
+  for (size_t i = 0; i < len; i++) {
     const ScrDynEntry *entry = &view->v.obj.entries[i];
-    if (!scr_dyn_key_is_index(entry->key, entry->key_len, &index)) continue;
-    size_t at = integers++;
-    for (; at > 0; at--) {
-      double before;
-      const ScrDynEntry *previous = &view->v.obj.entries[out[at - 1]];
-      scr_dyn_key_is_index(previous->key, previous->key_len, &before);
-      if (before < index) break;
-      out[at] = out[at - 1];
-    }
-    out[at] = i;
+    double index;
+    if (scr_dyn_key_is_index(entry->key, entry->key_len, &index))
+      keys[integers++] = (ScrRecordSourceIntegerKey){ index, i };
   }
-  size_t next = integers;
-  for (size_t i = 0; i < view->v.obj.len; i++) {
-    double index;
+  /* Integer keys are distinct, so the order is total. */
+  qsort(keys, integers, sizeof *keys, scr_record_source_integer_cmp);
+  for (size_t i = 0; i < integers; i++) out[next++] = keys[i].entry;
+  for (size_t i = 0; i < len; i++) {
     const ScrDynEntry *entry = &view->v.obj.entries[i];
+    double index;
     if (!scr_dyn_key_is_index(entry->key, entry->key_len, &index)) out[next++] = i;
   }
+  if (keys != small) free(keys);
 }
 
 bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
