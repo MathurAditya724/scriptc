@@ -147,6 +147,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       loc,
     };
   }
+  if (lowerer.isStdlibGlobal(expr.right, "FinalizationRegistry")) {
+    const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+    return { kind: "libCall", fn: "finalizationRegistry.is", args: [value], type: BOOL, loc };
+  }
   const rhsBuiltin = ts.isIdentifier(expr.right)
     ? lowerer.builtinImportOf(expr.right)
     : ts.isPropertyAccessExpression(expr.right)
@@ -1492,6 +1496,32 @@ export function lowerInExpression(
       loc,
     );
     if (helper) recv = { kind: "call", callee: helper, args: [recv], type: siteType, loc };
+  }
+  // A builtin class held as a brand record (TextEncoder, TextDecoder: only
+  // `%`-prefixed internal fields): its members are the class's prototype
+  // members, which the standard library declares, so `"encodeInto" in
+  // encoder` answers from the checker's type, plus Object.prototype's keys.
+  // The receiver evaluates for its effects.
+  if (recv.type.kind === "record") {
+    const shape = lowerer.shapes.get(recv.type.shapeId);
+    if (shape && shape.fields.length > 0 && shape.fields.every((f) => f.name.startsWith("%"))) {
+      const declared =
+        lowerer.checker.getPropertyOfType(lowerer.typeOf(expr.right), key) !== undefined;
+      const answer: IrExpr = {
+        kind: "boolLit",
+        value: declared || OBJECT_PROTOTYPE_KEYS.has(key),
+        type: BOOL,
+        loc,
+      };
+      if (recv.kind === "varRef") return answer;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: recv, loc }],
+        result: answer,
+        type: BOOL,
+        loc,
+      };
+    }
   }
   // Error-rooted receivers (builtin or user subclass — the isErrnoException
   // predicate's `err instanceof Error && "code" in err` shape): `code`

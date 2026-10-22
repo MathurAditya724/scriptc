@@ -3591,6 +3591,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "weakSet.is": { argTypes: [DYN], result: BOOL },
   "weakMap.new": { argTypes: [DYN], result: DYN },
   "weakSet.new": { argTypes: [DYN], result: DYN },
+  "finalizationRegistry.new": { argTypes: [DYN], result: DYN },
+  "finalizationRegistry.is": { argTypes: [DYN], result: BOOL },
   "dyn.fromEntries": { argTypes: [DYN], result: DYN },
   "bytes.constructor": { argTypes: [STRING], result: DYN },
   "bytes.instanceOf": { argTypes: [DYN, DYN], result: BOOL },

@@ -3155,6 +3155,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Native WeakMap keeps reference identities in checked-dynamic storage.
   // The runtime rejects reference kinds without a weak lifetime contract.
   if (isStdlibInterface("WeakMap") || isStdlibInterface("WeakSet")) return DYN;
+  // FinalizationRegistry is a native handle with register and unregister.
+  if (isStdlibInterface("FinalizationRegistry")) return DYN;
   // Set<T>: Map's sibling — same provenance rule and key domain.
   // Anything else stays unmapped;
   // the `new Set` lowering names the offending element type specifically.

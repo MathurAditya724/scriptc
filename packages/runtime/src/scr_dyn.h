@@ -169,6 +169,7 @@ typedef enum {
   X(FETCH_RESPONSE, 12) /* native static-fetch Response */ \
   X(FILE, 42) /* ScrBlob with a name — new File() */ \
   X(FILE_HANDLE, 17) /* fs/promises.FileHandle */ \
+  X(FINALIZATION_REGISTRY, 72) /* FinalizationRegistry (bookkeeping only) */ \
   X(GLOBAL, 22) /* native global object identity */ \
   X(H2_SESSION, 4) /* ScrH2Session — Http2Session (client & server) */ \
   X(H2_STREAM, 5) /* ScrH2Stream — Http2Stream (client & server) */ \
@@ -1066,6 +1067,8 @@ ScrDyn *scr_dyn_map_seed_entry(const ScrDyn *entry);
 bool scr_weak_map_is(const ScrDyn *value);
 bool scr_weak_set_is(const ScrDyn *value);
 ScrDyn *scr_weak_map_new(ScrDyn *entries);
+ScrDyn *scr_finalization_registry_new(ScrDyn *cleanup);
+bool scr_finalization_registry_is(const ScrDyn *value);
 ScrDyn *scr_weak_set_new(ScrDyn *values);
 ScrDyn *scr_dyn_from_entries(ScrDyn *entries);
 ScrDyn *scr_dyn_mark_snapshot(ScrDyn *value); /* consumes and returns +1 */

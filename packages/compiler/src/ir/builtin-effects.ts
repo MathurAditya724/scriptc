@@ -88,6 +88,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.unpipeDyn",
   "weakMap.new",
   "weakSet.new",
+  // Node's "cleanup must be callable" TypeError.
+  "finalizationRegistry.new",
   "dyn.fromEntries",
   "bytes.constructor",
   "bytes.instanceOf",
