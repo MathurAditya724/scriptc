@@ -481,7 +481,7 @@ export async function compileCInternal(
       const [compiler, runtimeHash, programBytes] = await Promise.all([
         resolvedTool(driver.argv[0] ?? "clang"),
         runtimeFingerprint(rtDir),
-        readFile(opts.cPath),
+        readFile(opts.cSourcePath ?? opts.cPath),
       ]);
       if (compiler !== null) {
         const effectiveCompiler =
@@ -861,7 +861,12 @@ export async function compileCInternal(
       );
     try {
       await materializeVendorPrerequisites(undefined, privateVendorRoot);
-      await buildExecutable((p) => p);
+      await buildExecutable(
+        (p) => p,
+        opts.cSourcePath === undefined
+          ? {}
+          : { programPath: opts.cSourcePath, compilerVisibleSource: opts.cPath },
+      );
     } finally {
       await rm(privateVendorRoot, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -896,7 +901,9 @@ export async function compileCInternal(
         localArtifact === null
           ? runtimeFingerprint(rtDir)
           : Promise.resolve(localArtifact.runtimeHash),
-        localArtifact === null ? readFile(opts.cPath) : Promise.resolve(localArtifact.programBytes),
+        localArtifact === null
+          ? readFile(opts.cSourcePath ?? opts.cPath)
+          : Promise.resolve(localArtifact.programBytes),
       ]);
       compileMetadataStamp =
         compileMetadataKey === null
@@ -965,7 +972,7 @@ export async function compileCInternal(
       Promise.all([
         ccVersion(driver.argv, toolchainEnv, true),
         runtimeFingerprint(rtDir),
-        readFile(opts.cPath),
+        readFile(opts.cSourcePath ?? opts.cPath),
       ]));
   } catch (error) {
     // A version/fingerprint probe is an optimization boundary. If the compiler
