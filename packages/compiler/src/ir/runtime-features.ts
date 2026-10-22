@@ -216,6 +216,8 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.stdioStream",
+  "stream.chunkDone",
+  "stream.objectMode",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",
