@@ -8538,11 +8538,38 @@ function superCallInStatementPosition(call: ts.CallExpression): boolean {
   for (;;) {
     const parent = node.parent;
     if (ts.isExpressionStatement(parent)) return true;
+    if (ts.isIfStatement(parent)) {
+      const lead = superConditionLead(parent.expression);
+      return lead !== null && call.pos >= lead.left.pos && call.end <= lead.left.end;
+    }
     const comma =
       ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken;
     if (!comma && !ts.isParenthesizedExpression(parent)) return false;
     node = parent;
   }
+}
+
+/** The comma chain of an `if` condition whose leading operands hold a
+ * super() call (`if (super(), r === 0) throw ...`, as minifiers join a
+ * super statement with the next test), or null. The if statement runs the
+ * chain's left operand as a statement first and tests its right operand,
+ * which is what the comma evaluates. */
+export function superConditionLead(cond: ts.Expression): ts.BinaryExpression | null {
+  let expr = cond;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isBinaryExpression(expr) || expr.operatorToken.kind !== ts.SyntaxKind.CommaToken)
+    return null;
+  const holdsSuperCall = (operand: ts.Expression): boolean => {
+    let e = operand;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isCallExpression(e)) return e.expression.kind === ts.SyntaxKind.SuperKeyword;
+    return (
+      ts.isBinaryExpression(e) &&
+      e.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+      (holdsSuperCall(e.left) || holdsSuperCall(e.right))
+    );
+  };
+  return holdsSuperCall(expr.left) ? expr : null;
 }
 
 /** Super statements initialize the base and then the derived fields on
