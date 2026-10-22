@@ -1553,6 +1553,16 @@ export const BUILTIN_MODULE_FNS: Record<
     createSecretKey: { fn: "crypto.createSecretKey", params: [DYN, DYN], result: DYN },
     generateKeySync: { fn: "crypto.generateKeySync", params: [DYN, DYN], result: DYN },
     generateKey: { fn: "crypto.generateKeyCb", params: [], result: VOID },
+    // Asymmetric keys and signatures (lowerPkiCall): checked-dynamic
+    // arguments, results converted to the call site's type.
+    createPrivateKey: { fn: "crypto.createPrivateKey", params: [DYN], result: DYN },
+    createPublicKey: { fn: "crypto.createPublicKey", params: [DYN], result: DYN },
+    createSign: { fn: "crypto.createSign", params: [DYN], result: DYN },
+    createVerify: { fn: "crypto.createVerify", params: [DYN], result: DYN },
+    generateKeyPairSync: { fn: "crypto.generateKeyPairSync", params: [], result: DYN },
+    generateKeyPair: { fn: "crypto.generateKeyPairCb", params: [], result: VOID },
+    sign: { fn: "crypto.signOneshot", params: [], result: DYN },
+    verify: { fn: "crypto.verifyOneshot", params: [], result: DYN },
     pbkdf2Sync: {
       fn: "crypto.pbkdf2",
       params: [BYTES_U8, BYTES_U8, F64, F64, STRING],
@@ -1574,6 +1584,18 @@ export const BUILTIN_MODULE_FNS: Record<
     // A checked-dynamic curve name; the result is a native ECDH handle
     // (lowerCreateEcdh).
     createECDH: { fn: "crypto.ecdhNew", params: [DYN], result: DYN },
+    // Checked-dynamic arguments; the result is a native DiffieHellman or
+    // DiffieHellmanGroup handle (lowerCreateDiffieHellman and
+    // lowerGetDiffieHellman).
+    createDiffieHellman: { fn: "crypto.dhNew", params: [DYN, DYN, DYN, DYN], result: DYN },
+    getDiffieHellman: { fn: "crypto.dhGroupNew", params: [DYN], result: DYN },
+    createDiffieHellmanGroup: { fn: "crypto.dhGroupNew", params: [DYN], result: DYN },
+    // Prime checks and generation (lowerPrimeCall): checked-dynamic
+    // arguments, results converted to the call site's type.
+    checkPrimeSync: { fn: "crypto.checkPrimeSync", params: [], result: DYN },
+    checkPrime: { fn: "crypto.checkPrimeCb", params: [], result: VOID },
+    generatePrimeSync: { fn: "crypto.generatePrimeSync", params: [], result: DYN },
+    generatePrime: { fn: "crypto.generatePrimeCb", params: [], result: VOID },
   },
   zlib: {
     // The default-options convenience family is special-cased in
@@ -2211,18 +2233,20 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "stdlib",
     name: "globalThis.crypto.subtle",
     fns: [
-      "webcrypto.importKey",
       "webcrypto.generateKey",
+      "webcrypto.importKey",
       "webcrypto.exportKey",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
+      "webcrypto.wrapKey",
+      "webcrypto.unwrapKey",
       "webcrypto.deriveBits",
       "webcrypto.deriveKey",
       "webcrypto.sign",
       "webcrypto.verify",
       "webcrypto.digest",
     ],
-    note: "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
+    note: "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
   },
   {
     id: "stdlib.webcrypto.CryptoKey",
@@ -3067,35 +3091,22 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   crypto: {
     ...Object.fromEntries(
-      [
-        "generateKeyPair",
-        "generateKeyPairSync",
-        "createPrivateKey",
-        "createPublicKey",
-        "createSign",
-        "createVerify",
-        "sign",
-        "verify",
-        "createDiffieHellman",
-        "createDiffieHellmanGroup",
-        "getDiffieHellman",
-        "diffieHellman",
-        "publicEncrypt",
-        "publicDecrypt",
-        "privateEncrypt",
-        "privateDecrypt",
-      ].map((m) => [
+      ["publicEncrypt", "publicDecrypt", "privateEncrypt", "privateDecrypt"].map((m) => [
         m,
-        "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and " +
-          "public and private KeyObjects — neither exists in the static runtime, so no faithful lowering " +
-          "can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics",
+        "RSA encryption has no lowering — the asymmetric crypto surface is " +
+          "RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, " +
+          "createSign, createVerify, createECDH, and createDiffieHellman",
       ]),
     ),
+    diffieHellman:
+      "crypto.diffieHellman takes DH, EC or X25519 KeyObjects and has no lowering; " +
+      "the objects of createDiffieHellman, getDiffieHellman and createECDH compute shared secrets",
     ...Object.fromEntries(
       ["getCipherInfo"].map((m) => [
         m,
         "cipher metadata has no lowering — createCipheriv and createDecipheriv support " +
-          "aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305",
+          "aes-128/192/256 in cbc, ctr, gcm, ecb, cfb, cfb8, cfb1, and ofb modes, des-ede3 and " +
+          "des-ede, chacha20, and chacha20-poly1305",
       ]),
     ),
     setFips:
@@ -3364,6 +3375,17 @@ export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined):
  *     tamper-guard prologue) registered in stdlibGlobalAliases;
  *   - a const binding of the Map or Set constructor (`const M = Map`,
  *     builtinClassAliasOf). */
+/** The symbol an identifier reads. A shorthand property's name (`{ Date }`)
+ * reads the binding of the same name, not the property it declares. */
+export function identifierReadSymbol(lowerer: Lowerer, expr: ts.Identifier): ts.Symbol | undefined {
+  if (expr.parent && ts.isShorthandPropertyAssignment(expr.parent) && expr.parent.name === expr)
+    return (
+      lowerer.checker.getShorthandAssignmentValueSymbol(expr.parent) ??
+      lowerer.checker.getSymbolAtLocation(expr)
+    );
+  return lowerer.checker.getSymbolAtLocation(expr);
+}
+
 export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
   if (ts.isParenthesizedExpression(expr)) return stdlibGlobalNameOf(lowerer, expr.expression);
   // The global-object detection chain (`typeof global < "u" ? global :
@@ -3375,7 +3397,7 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     return stdlibGlobalNameOf(lowerer, taken ? expr.whenTrue : expr.whenFalse);
   }
   if (ts.isIdentifier(expr)) {
-    const symbol = lowerer.checker.getSymbolAtLocation(expr);
+    const symbol = identifierReadSymbol(lowerer, expr);
     // `globalThis` itself: a reserved intrinsic — tsc rejects user
     // global bindings, but local parameters can shadow it. Its special
     // symbol has no ordinary declarations for the provenance check.

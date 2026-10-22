@@ -35,3 +35,10 @@ console.log(Object.keys(view as object).join(","));
 seen.note = "n";
 seen.name = "m";
 console.log(Object.keys(view as object).join(","), JSON.stringify(view));
+// The write goes to the object the receiver held before the value ran,
+// even when the value assigns the receiver's binding.
+let target: Item = { id: 6, count: 5 };
+const before = target;
+const after: Item = { count: 6, id: 7 };
+target.name = ((target = after), "moved");
+console.log(Object.keys(before).join(","), Object.keys(after).join(","), JSON.stringify(target));

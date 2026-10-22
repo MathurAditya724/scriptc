@@ -240,6 +240,36 @@ test("a synthesized construction pins today's table", () => {
   expect(f.order(ab)).toEqual(["a", "b"]);
 });
 
+test("a runtime builder typed by its use site pins today's table", () => {
+  const f = fixture();
+  const ab = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  // net.serverAddress's signature result is VOID: the call takes its record
+  // type from its use site, and the runtime builds the record in that order.
+  const built: IrExpr = { kind: "libCall", fn: "net.serverAddress", args: [], type: ab, loc };
+  f.run([observe(f.literal(ab, ["b", "a"])), observe(built)]);
+  expect(f.order(ab)).toEqual(["a", "b"]);
+});
+
+test("an always-throwing call typed as the record leaves its literals' order", () => {
+  const f = fixture();
+  const ab = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const thrown: IrExpr = { kind: "libCall", fn: "error.nodeThrow", args: [], type: ab, loc };
+  f.run([observe(f.literal(ab, ["b", "a"])), observe(thrown)]);
+  expect(f.order(ab)).toEqual(["b", "a"]);
+});
+
 test("a checked conversion alone pins today's table", () => {
   const f = fixture();
   const ab = f.record(
@@ -503,15 +533,18 @@ test("a moving write evaluates its value before it tests and moves the key", () 
   ]);
   const shape = f.shapes.get(o.shapeId)!;
   expect(shape.orderVariants).toBeDefined();
-  expect(shape.orderMoves).toBe(true);
   const block = fn.body[2] as IrStmt & { kind: "block" };
   expect(block.kind).toBe("block");
-  const [first, guard, written] = block.body;
+  // The receiver evaluates first, since the value may assign its binding.
+  const [receiver, first, guard, written] = block.body;
+  expect(receiver).toMatchObject({ kind: "varDecl", init: { kind: "varRef", localId: "o" } });
+  const target = (receiver as IrStmt & { kind: "varDecl" }).localId;
   expect(first).toMatchObject({ kind: "varDecl", init: { kind: "seqExpr" } });
   const local = (first as IrStmt & { kind: "varDecl" }).localId;
   expect(guard).toMatchObject({ kind: "if", cond: { kind: "unary", op: "!" } });
   expect(written).toMatchObject({
     kind: "recordSet",
+    obj: { kind: "varRef", localId: target },
     field: "x",
     value: { kind: "varRef", localId: local },
   });

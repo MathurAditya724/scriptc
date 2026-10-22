@@ -9225,6 +9225,10 @@ ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options
   if (key_object) {
     bytes = scr_bytes_new(SCR_BYTES_U8, (double)key_object_len);
     if (key_object_len) memcpy(bytes->data, key_object, key_object_len);
+  } else if (scr_crypto_is_key_object(key)) {
+    /* A private or public KeyObject: scr_pki.c reports Node's error. */
+    scr_crypto_reject_asymmetric_secret(key);
+    return NULL;
   } else if (key->kind == SCR_DYN_STR) {
     ScrStr *utf8 = encoding ? NULL : scr_str_new("utf8", 4);
     bytes = scr_bytes_from_str_checked(key->v.str, encoding ? encoding : utf8);
@@ -9856,9 +9860,15 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
   return key->data;
 }
 
-/* `value instanceof KeyObject`. */
+void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
+
+/* `value instanceof KeyObject`: a secret key, or a private or public key
+ * (scr_pki.c, matched by its handle tags so this unit does not link it). */
 bool scr_crypto_is_key_object(const ScrDyn *value) {
   size_t len;
+  if (value->kind == SCR_DYN_HANDLE &&
+      (value->v.handle.tag == SCR_DYNH_PRIVATE_KEY || value->v.handle.tag == SCR_DYNH_PUBLIC_KEY))
+    return true;
   return scr_key_object_bytes(value, &len) != NULL;
 }
 
@@ -12951,50 +12961,51 @@ static bool scr_set_to_arr_sparse(const ScrMap *s, ScrArr *out) {
 ScrArr *scr_set_to_arr_f64(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_F64, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
-    out->data[out->len] = scr_map_entry_at(s, i)->key;
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    out->data[out->len++] = scr_map_entry_at(s, i)->key;
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_bool(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_BOOL, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
-    scr_arr_dense_put(out, out->len, scr_map_entry_at(s, i)->key != 0);
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    scr_arr_dense_put(out, out->len++, scr_map_entry_at(s, i)->key != 0);
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_str(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
     scr_str_retain((ScrStr *)(uintptr_t)scr_map_entry_at(s, i)->key);
-    out->data[out->len] = scr_map_entry_at(s, i)->key;
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    out->data[out->len++] = scr_map_entry_at(s, i)->key;
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_ref(const ScrMap *s, const ScrArrOps *ops) {
   ScrArr *out = scr_arr_new_ops(ops, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
     ops->retain((void *)(uintptr_t)scr_map_entry_at(s, i)->key);
-    out->data[out->len] = scr_map_entry_at(s, i)->key;
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    scr_arr_dense_put(out, out->len, scr_map_entry_at(s, i)->key);
+    out->len++;
   }
+  scr_arr_refill(out);
   return out;
 }
 

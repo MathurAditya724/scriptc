@@ -147,6 +147,15 @@ export const WEBCRYPTO_DYN_TYPES: ReadonlySet<string> = new Set([
   "KeyAlgorithm",
   "HmacImportParams",
   "HmacKeyAlgorithm",
+  "CryptoKeyPair",
+  "EcKeyAlgorithm",
+  "RsaHashedKeyAlgorithm",
+  "EcKeyGenParams",
+  "EcKeyImportParams",
+  "EcdsaParams",
+  "RsaHashedKeyGenParams",
+  "RsaHashedImportParams",
+  "RsaPssParams",
   "HmacKeyGenParams",
   "AesKeyGenParams",
   "AesKeyAlgorithm",
@@ -157,6 +166,28 @@ export const WEBCRYPTO_DYN_TYPES: ReadonlySet<string> = new Set([
   "Pbkdf2Params",
   "HkdfParams",
   "AesDerivedKeyParams",
+]);
+
+/** node:crypto's key and signature option interfaces: the key functions,
+ * KeyObject.export and sign/verify take them as checked-dynamic arguments
+ * (scr_lib.c, scr_pki.c). */
+export const CRYPTO_KEY_OPTION_DYN_TYPES: ReadonlySet<string> = new Set([
+  "AsymmetricKeyExportOptions",
+  "ECKeyPairKeyObjectOptions",
+  "ECKeyPairOptions",
+  "ED25519KeyPairOptions",
+  "JsonWebKeyInput",
+  "JwkKeyExportOptions",
+  "KeyExportOptions",
+  "PrivateKeyInput",
+  "PublicKeyInput",
+  "RSAKeyPairKeyObjectOptions",
+  "RSAKeyPairOptions",
+  "SignKeyObjectInput",
+  "SignPrivateKeyInput",
+  "SigningOptions",
+  "VerifyKeyObjectInput",
+  "VerifyPublicKeyInput",
 ]);
 
 export const FETCH_AMBIENT_TYPES = [
@@ -3002,9 +3033,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return DYN;
   }
-  // node:crypto's KeyObject: secret keys are native handles (scr_lib.c)
-  // whose getters and methods dispatch through the handle. The JsonWebKey
-  // that export() returns is a plain checked-dynamic object.
+  // node:crypto's KeyObject: secret keys (scr_lib.c) and private and
+  // public keys (scr_pki.c) are native handles whose getters and methods
+  // dispatch through the handle. The JsonWebKey that export() returns is a
+  // plain checked-dynamic object.
   if (
     ((psym !== undefined && ts.symbolName(psym) === "KeyObject") ||
       (psym !== undefined && ts.symbolName(psym) === "JsonWebKey")) &&
@@ -3012,6 +3044,35 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  ) {
+    return DYN;
+  }
+  // node:crypto's key and signature options are plain checked-dynamic
+  // objects, so a value asserted to one (`opts as
+  // crypto.AsymmetricKeyExportOptions<"pem">`) reaches the call unchanged.
+  if (
+    psym !== undefined &&
+    CRYPTO_KEY_OPTION_DYN_TYPES.has(ts.symbolName(psym)) &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    return DYN;
+  }
+  // node:crypto's Sign and Verify (createSign/createVerify): native
+  // handles over the digest state (scr_pki.c).
+  if (
+    psym !== undefined &&
+    (ts.symbolName(psym) === "Sign" || ts.symbolName(psym) === "Verify") &&
+    psym.declarations.some(
+      (d) =>
+        ts.isClassDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
     )
   ) {
     return DYN;
@@ -3071,6 +3132,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return DYN;
+  }
+  // node:crypto DiffieHellman values, and @types/node's DiffieHellmanGroup
+  // alias over them, are native handles carried by the checked-dynamic
+  // representation; lowerDiffieHellmanCall dispatches their methods.
+  {
+    const dhSym = widened.getAliasSymbol() ?? psym;
+    if (
+      dhSym !== undefined &&
+      (ts.symbolName(dhSym) === "DiffieHellman" || ts.symbolName(dhSym) === "DiffieHellmanGroup") &&
+      dhSym.declarations.some(
+        (d) =>
+          (ts.isClassDeclaration(d) || ts.isTypeAliasDeclaration(d)) &&
+          ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+      )
+    ) {
+      return DYN;
+    }
   }
   // ReadonlyMap/ReadonlySet are the SAME runtime values as Map/Set — the
   // readonly-ness is a checker-only view (no mutating members on the
@@ -4281,6 +4359,41 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         ),
       };
     }
+  }
+  // crypto.generateKeyPairSync's results: KeyPairKeyObjectResult and
+  // KeyPairSyncResult<T1, T2> as { publicKey, privateKey } records over the
+  // mapped property types (KeyObjects, PEM strings or DER Buffers), in
+  // Node's key order.
+  if (
+    psym !== undefined &&
+    (ts.symbolName(psym) === "KeyPairKeyObjectResult" ||
+      ts.symbolName(psym) === "KeyPairSyncResult") &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    const field = (name: string): IrType | null => {
+      const prop = ctx.checker.getPropertyOfType(type, name);
+      return prop ? mapType(ctx.checker.getTypeOfSymbol(prop), ctx) : null;
+    };
+    const publicKey = field("publicKey");
+    const privateKey = field("privateKey");
+    if (!publicKey || !privateKey) return null;
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "privateKey", type: privateKey },
+          { name: "publicKey", type: publicKey },
+        ],
+        false,
+        undefined,
+        ["publicKey", "privateKey"],
+      ),
+    };
   }
   // crypto.X509Certificate — the Dirent-style data record: THREE visible
   // fields (fingerprint and the validFrom/validTo validity window, all
@@ -5744,6 +5857,41 @@ function constAssertedEmptyArrayProp(p: ts.Symbol): boolean {
   }
   if (!ts.isArrayLiteralExpression(init) || init.elements.nodes.length > 0) return false;
   return underConstAssertion(d);
+}
+
+/** A TypeScript property assignment `name: []` whose type is `never[]`. */
+function emptyNeverArrayProp(p: ts.Symbol, fieldTs: ts.Type, checker: ts.TypeChecker): boolean {
+  const d = p.valueDeclaration;
+  if (d === undefined || !ts.isPropertyAssignment(d)) return false;
+  if (isJsSourceFile(ts.getSourceFileOfNode(d))) return false;
+  if (!ts.isArrayLiteralExpression(d.initializer) || d.initializer.elements.nodes.length > 0)
+    return false;
+  return (
+    checker.isArrayType(fieldTs) &&
+    (checker.getTypeArguments(fieldTs as ts.TypeReference)[0]!.flags & ts.TypeFlags.Never) !== 0
+  );
+}
+
+/** A JavaScript object literal's property (`{ lastComponent: undefined }`,
+ * `{ user: null }`). Nothing checks a JavaScript file's later writes, which
+ * can store any value in it (`path.lastComponent = { ... }`), so a
+ * property whose only initializer is a unit holds the checked-dynamic value
+ * rather than the unit-only union. */
+function isUnitOnlyIr(t: IrType, ctx: TypeMapperCtx): boolean {
+  if (t.kind !== "union") return false;
+  const def = ctx.unions.get(t.unionId);
+  return def !== undefined && def.arms.every((arm) => isUnitType(arm));
+}
+
+function jsObjectLiteralProperty(p: ts.Symbol): boolean {
+  const d = p.valueDeclaration;
+  // `__proto__: null` sets the literal's prototype; it declares no property.
+  return (
+    d !== undefined &&
+    (ts.isPropertyAssignment(d) || ts.isShorthandPropertyAssignment(d)) &&
+    ts.symbolName(p) !== "__proto__" &&
+    isJsSourceFile(ts.getSourceFileOfNode(d))
+  );
 }
 
 function mapGenericAwaitedAlias(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
@@ -7782,6 +7930,14 @@ function mapRecordTypeInner(
       ) {
         pt = arrayOf(unitOnlyUnion(ctx.unions));
       }
+      // A TypeScript property initialized with an empty literal and typed
+      // `never[]` (`const out = { files: [] }`) holds no element, so it maps
+      // like the empty tuple: the unit-only element array, which a
+      // destination's typed array field (`files: string[]`) receives through
+      // the checked empty-array lift. never's f64 element would make it a
+      // `number[]` field.
+      if (pt?.kind === "array" && emptyNeverArrayProp(p, fieldTs, checker))
+        pt = arrayOf(unitOnlyUnion(ctx.unions));
       if (pt === null && (fieldTs.flags & ts.TypeFlags.Any) !== 0) pt = DYN;
       // An `any[]` field (`list: any[]` in an SDK's message type, also
       // optional or nullable) is the checked-dynamic array, exactly as
@@ -7805,6 +7961,7 @@ function mapRecordTypeInner(
       // omits the undefined arm exactly like an omitted optional.
       if (pt?.kind === "void" && isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam))
         pt = unitOnlyUnion(ctx.unions);
+      if (pt !== null && isUnitOnlyIr(pt, ctx) && jsObjectLiteralProperty(p)) pt = DYN;
       // dyn FIELDS map now (`{ v: unknown }`, `[string, unknown]` tuples):
       // the slot carries a dyn value exactly like an `unknown`-valued
       // overflow entry — same RC adapters, same dynFrom conversion on the

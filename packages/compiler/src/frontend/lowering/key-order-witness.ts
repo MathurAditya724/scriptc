@@ -57,6 +57,7 @@ import {
   transformStmtList,
 } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
+import { ALWAYS_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 
 /** The statements a key-order helper runs for record `ref`: `walks[0]`,
  * its walk over the shape's table, or, for a shape with orderVariants, a
@@ -357,7 +358,11 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         // Runtime surfaces (console, util.format, workers) that take a
         // record may walk its keys; runtime builders make new records.
         for (const arg of e.args) observedRoots.push(arg.type);
-        producedBy(e.type, true);
+        // An always-throwing call stands in for a value (`error.nodeThrow`
+        // in a narrowing ternary) and never produces one. Other calls
+        // whose signature result is VOID are typed by their use site and
+        // build the record at run time (`server.address()`).
+        if (!ALWAYS_THROW_LIB_FNS.has(e.fn)) producedBy(e.type, true);
         return;
       case "intrinsic":
         // Intrinsics hand back values built elsewhere, except allSettled's
@@ -1156,12 +1161,20 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     if (dropped.has(st.shapeId)) continue;
     const transitions = moves.get(st.shapeId)!.get(st.field)!;
     const loc = st.loc;
-    // A receiver other than a binding evaluates once, into a local.
+    // A receiver other than a binding evaluates once, into a local. So does
+    // a binding when the value evaluates first (below): the value may
+    // assign the binding, and the write still goes to the object the
+    // binding held before.
+    const pure =
+      st.value.kind === "numLit" ||
+      st.value.kind === "strLit" ||
+      st.value.kind === "boolLit" ||
+      st.value.kind === "varRef";
     let plain = st.obj;
     while (plain.kind === "unionNarrow" || plain.kind === "downcast") plain = plain.value;
     const prologue: IrStmt[] = [];
     let obj = st.obj;
-    if (plain.kind !== "varRef") {
+    if (plain.kind !== "varRef" || !pure) {
       const localId = `%keyOrderReceiver.${temporaries++}`;
       fn.locals.push({ id: localId, name: "%keyOrderReceiver", type: st.obj.type, mutable: false });
       prologue.push({ kind: "varDecl", localId, init: st.obj, loc });
@@ -1179,11 +1192,6 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     // The value evaluates before the key is tested and moved: it may add
     // other keys to the same value, which then come first.
     let value = st.value;
-    const pure =
-      value.kind === "numLit" ||
-      value.kind === "strLit" ||
-      value.kind === "boolLit" ||
-      value.kind === "varRef";
     if (!pure) {
       const localId = `%keyOrderValue.${temporaries++}`;
       fn.locals.push({ id: localId, name: "%keyOrderValue", type: value.type, mutable: false });
@@ -1241,6 +1249,5 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       tables.push(table);
     }
     shape.orderVariants = tables;
-    if (moves.has(id)) shape.orderMoves = true;
   }
 }

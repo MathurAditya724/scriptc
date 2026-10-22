@@ -61,6 +61,7 @@ import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
 import { LIB_FN_SIGS, pipelinePumpedRuns } from "./builtin-signatures.js";
+import { ALWAYS_THROW_LIB_FNS } from "./builtin-effects.js";
 
 /** The promisified crypto calls' value kinds besides checked-dynamic. */
 const CRYPTO_PROMISE_VALUES: Readonly<Record<string, "buffer" | "view" | "number" | "dyn">> = {
@@ -4109,6 +4110,7 @@ function validateFunction(
       e.fn === "writable.write" ||
       e.fn === "writable.writeStr" ||
       e.fn === "writable.writeU" ||
+      e.fn === "writable.writeEnc" ||
       e.fn === "writable.end" ||
       e.fn === "readable.unpipe" ||
       e.fn === "rl.create" ||
@@ -5344,32 +5346,8 @@ function validateFunction(
       const callback = e.args[e.args.length - 1]?.type;
       if (callback?.kind !== "func") err(`libCall ${e.fn} callback must be a function`, e.loc);
     }
-    if (e.fn === "global.undefRead") {
-      // Always throws — the result type is whatever the declared type
-      // of the undefined global mapped to (never materialized).
-      return true;
-    }
-    if (
-      e.fn === "error.nodeThrow" ||
-      e.fn === "error.argTypeThrow" ||
-      e.fn === "error.propTypeThrow" ||
-      e.fn === "fs.mkdtempChk" ||
-      e.fn === "fs.readFileChk" ||
-      e.fn === "fs.opendirChk" ||
-      e.fn === "fs.watchFileChk" ||
-      e.fn === "fs.lchmodChk" ||
-      e.fn === "fs.readChk" ||
-      e.fn === "fs.streamOptsChk" ||
-      e.fn === "net.connectOptsChk" ||
-      e.fn === "tls.caCertsChk"
-    ) {
-      // Always throws — the result type is the replaced expression's
-      // own (never materialized; the global.undefRead pattern). The
-      // fs Chk ladders qualify: every validation failure throws
-      // Node's typed error, and a full pass throws the trailing
-      // compiler-rendered fence.
-      return true;
-    }
+    // Always throws: the result type is never materialized.
+    if (ALWAYS_THROW_LIB_FNS.has(e.fn)) return true;
     if (e.fn === "error.new" || e.fn === "error.newOptions") {
       // Which builtin the runtime constructs is named by the result type.
       if (!isBuiltinErrorObject(e.type)) {
@@ -5492,6 +5470,7 @@ function validateFunction(
       e.fn.startsWith("passthrough.") ||
       e.fn === "stream.destroy" ||
       e.fn === "stream.destroyErr" ||
+      e.fn === "stream.objectMode" ||
       e.fn === "stream.iteratorClose" ||
       e.fn === "stream.prop" ||
       e.fn === "stream.errored" ||
@@ -5782,6 +5761,7 @@ function validateFunction(
         e.fn === "writable.end" ||
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
+        e.fn === "stream.objectMode" ||
         e.fn === "stream.destroy" ||
         e.fn === "stream.destroyErr" ||
         e.fn === "stream.iteratorClose"
@@ -5898,8 +5878,10 @@ function validateFunction(
         const chunkT = e.args[2]?.type;
         const ok =
           chunkT !== undefined &&
-          ((chunkT.kind === "bytes" && chunkT.elem === "u8") || chunkT.kind === "string");
-        if (!ok) err(`libCall emitter.emitData chunk must be bytes<u8> or string`, e.loc);
+          ((chunkT.kind === "bytes" && chunkT.elem === "u8") ||
+            chunkT.kind === "string" ||
+            chunkT.kind === "dyn");
+        if (!ok) err(`libCall emitter.emitData chunk must be bytes<u8>, string or dyn`, e.loc);
         if (e.type.kind !== "bool") err(`libCall emitter.emitData must be bool`, e.loc);
         return true;
       }

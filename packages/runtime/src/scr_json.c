@@ -1021,6 +1021,7 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/entries preserved */
       d->v.obj.region = NULL;
+      d->v.obj.class_name = NULL; /* a released class prototype's name */
       SCR_JS_SHAPE_RESET(d);
       if (d->v.obj.cap <= SCR_DYN_KEY_CACHE_SLOTS) {
         for (size_t i = 0; i < d->v.obj.cap; i++) {
@@ -1577,6 +1578,20 @@ ScrDyn *scr_dyn_iter_pack(const ScrDyn *src, const ScrStr *msg) {
 
 static ScrDyn *scr_native_iterator_drain(const ScrDyn *src);
 
+/* The values a collection constructor's iterable seed gives, in order: +1
+ * array, or NULL with the exception pending. A native iterator (a Map's
+ * keys(), a Set's values()) drains, which runs no program code; arrays,
+ * strings, typed arrays and collections pack; other iterables (a
+ * generator, an object with a Symbol.iterator method) step their
+ * iterator to the end, so their values are all taken before the
+ * constructor adds the first one. */
+static ScrDyn *scr_dyn_seed_values(const ScrDyn *src) {
+  if (src->kind == SCR_DYN_HANDLE &&
+      (src->v.handle.tag == SCR_DYNH_ITERATOR || scr_dyn_handle_ops_of(src)->iter_step))
+    return scr_native_iterator_drain(src);
+  return scr_dyn_destructure_rest(src, NULL);
+}
+
 /* The for-of-over-dyn pack accessors: the emitted index loop drives them
  * over a scr_dyn_iter_pack result (ARR by construction — the defensive
  * arms cover nothing reachable from that lowering). Never throw. */
@@ -1592,18 +1607,10 @@ ScrDyn *scr_dyn_map_seed_entries(const ScrDyn *src) {
     if (scr_exc_pending()) return NULL;
   }
   /* A native iterator (sp.entries(), a Map's entries()) or a handle that
-   * steps through live entries (URLSearchParams): producing its entries
-   * runs no program code, so draining them first is what the consumer
-   * observes. */
-  if (src->kind == SCR_DYN_HANDLE &&
-      (src->v.handle.tag == SCR_DYNH_ITERATOR || scr_dyn_handle_ops_of(src)->iter_step))
-    return scr_native_iterator_drain(src);
-  if (src->kind == SCR_DYN_HANDLE || src->kind == SCR_DYN_TYPED_REF) {
-    static const char message[] = "new Map(entries) over native non-array iterables has no lowering";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return NULL;
-  }
-  return scr_dyn_iter_pack(src, NULL);
+   * steps through live entries (URLSearchParams) drains; a Set, a
+   * generator or another iterable gives its values in order
+   * (scr_dyn_seed_values). */
+  return scr_dyn_seed_values(src);
 }
 
 ScrDyn *scr_dyn_map_seed_entry(const ScrDyn *entry) {
@@ -1812,6 +1819,55 @@ static void scr_builtin_object_prototype_cleanup(void) {
   ScrDyn *prototype = scr_builtin_object_prototype;
   scr_builtin_object_prototype = NULL;
   scr_dyn_release(prototype);
+}
+
+/* The error constructors as values (an error's `constructor`, and the
+ * globals in JavaScript): one interned function per constructor and thread,
+ * indexed like scr_error_vts, with the constructor's name and length.
+ * Calling one through the value is not supported yet, as for the other
+ * interned constructors (scr_dyn_global_constructor). */
+static const char *const scr_error_ctor_names[] = {
+    "Error", "TypeError", "RangeError", "SyntaxError", NULL,
+    "ReferenceError", "EvalError", "URIError", "AggregateError",
+};
+#define SCR_ERROR_CTORS (sizeof scr_error_ctor_names / sizeof scr_error_ctor_names[0])
+static SCR_TL ScrDyn *scr_error_ctor_values[SCR_ERROR_CTORS];
+static SCR_TL bool scr_error_ctors_registered;
+
+static void scr_error_ctors_cleanup(void) {
+  for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
+    scr_dyn_release(scr_error_ctor_values[i]);
+    scr_error_ctor_values[i] = NULL;
+  }
+}
+
+static ScrDyn *scr_error_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  char message[128];
+  int length = snprintf(message, sizeof message,
+                        "calling the %s constructor through a stored value is not supported yet",
+                        (const char *)closure->fn);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, "SC2020");
+  return NULL;
+}
+
+ScrDyn *scr_dyn_error_constructor(const char *name) {
+  for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
+    if (!scr_error_ctor_names[i] || strcmp(scr_error_ctor_names[i], name) != 0) continue;
+    if (!scr_error_ctors_registered) {
+      scr_error_ctors_registered = true;
+      scr_atexit(scr_error_ctors_cleanup);
+    }
+    if (!scr_error_ctor_values[i]) {
+      uint32_t length = strcmp(name, "AggregateError") == 0 ? 2 : 1;
+      scr_error_ctor_values[i] =
+          scr_dyn_new_func(scr_closure_new((void *)scr_error_ctor_names[i], 0), scr_error_ctor_call, length,
+                           "native:constructor", scr_error_ctor_names[i]);
+    }
+    return scr_dyn_retain(scr_error_ctor_values[i]);
+  }
+  return NULL;
 }
 
 ScrDyn *scr_dyn_object_prototype(void) {
@@ -3539,7 +3595,12 @@ bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key) {
 
 static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
   if (!d->v.typed_ref.record || d->v.typed_ref.materialized) return NULL;
-  return (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
+  const ScrDynTypedRecordOps *ops = (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
+  return ops && ops->select ? ops->select(d->v.typed_ref.ptr) : ops;
+}
+
+const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d) {
+  return d->kind == SCR_DYN_TYPED_REF ? scr_typed_ref_record_ops(d) : NULL;
 }
 
 static bool scr_typed_ref_record_field(const ScrDynTypedRecordOps *ops, const ScrStr *key,
@@ -3920,7 +3981,10 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
   return -1;
 }
 
-bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
+/* `value instanceof callee` for an untyped constructor value. `refusal`, when
+ * given, is the site's SC1090 message for a runtime constructor with no
+ * instance test. */
+bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal) {
   if (!callee || callee->kind != SCR_DYN_FUNC) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -3962,12 +4026,35 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
       scr_dyn_release(prototype);
       return found;
     }
+    bool undefined_prototype = prototype->kind == SCR_DYN_UNDEF;
     scr_dyn_release(prototype);
+    /* A function the program compiled with no prototype (an arrow function
+     * or a method): false for a primitive, and Node's TypeError for every
+     * object, typed arrays, native handles, promises and typed references
+     * included. The runtime's own constructors carry "native:" signatures. */
+    if (undefined_prototype && (!callee->v.fn.sig || strncmp(callee->v.fn.sig, "native:", 7) != 0)) {
+      if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_BOOL ||
+          value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT ||
+          value->kind == SCR_DYN_SYMBOL)
+        return false;
+      static const char message[] = "Function has non-object prototype 'undefined' in instanceof check";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return false;
+    }
+  }
+  if (refusal) {
+    scr_throw_error_msg_code(SCR_ERR_ERROR, refusal->data, refusal->len, "SC1090");
+    return false;
   }
   static const char message[] = "instanceof against this native constructor is not supported yet";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC1090");
   return false;
 }
+bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
+  return scr_bytes_instanceof_at(value, callee, NULL);
+}
+SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) = NULL;
+
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
   if (callee->kind == SCR_DYN_FUNC && scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo)
     return scr_array_ctor_call(callee->v.fn.clo, args->v.arr.items, args->v.arr.len);
@@ -3984,6 +4071,9 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
     scr_bytes_release(bytes);
     return result;
   }
+  ScrDyn *constructed = NULL;
+  if (scr_dyn_global_construct_fn && scr_dyn_global_construct_fn(callee, args, &constructed))
+    return constructed;
   ScrJsonBuf message;
   scr_jb_init(&message);
   scr_jb_write(&message, what->data, what->len);
@@ -4073,7 +4163,14 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
   /* A signature adapter reports the length of the function it adapts. */
   d->v.fn.arity = clo->identity != NULL ? clo->identity_length : arity;
   d->v.fn.class_obj = NULL;
+  d->v.fn.message = NULL;
   return d;
+}
+
+void scr_dyn_func_set_message(ScrDyn *fn, ScrDynThunk thunk, ScrDynMessageListener listener) {
+  /* scr_dyn_new_func answers an adapted function's original box, whose
+   * closure has other parameter types. */
+  if (fn && fn->kind == SCR_DYN_FUNC && fn->v.fn.thunk == thunk) fn->v.fn.message = listener;
 }
 
 /* A class is function-shaped for typeof and identity, but calling it without
@@ -4131,6 +4228,11 @@ ScrDyn *scr_dyn_class_prototype(ScrDyn *value, ScrDyn *base) {
   if (!cls->prototype_data) {
     ScrDyn *data = base->kind == SCR_DYN_UNDEF ? scr_dyn_new_obj() : scr_dyn_obj_create(base);
     if (!data) return NULL;
+    /* util.inspect prints an instance with its class's name: the class
+     * object's interned name, which is immortal. The prototype is owned by
+     * the class object and no registry keeps it alive, so evaluating a
+     * function-local class again releases the previous one's prototype. */
+    if (cls->name && cls->name->len) data->v.obj.class_name = cls->name->data;
     cls->prototype_data = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     scr_box_set_ref(cls->prototype_data, data);
   }
@@ -7951,6 +8053,17 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     return out;
   }
   case SCR_DYN_FUNC: {
+    /* The interned builtin constructors print with their names, as in Node
+     * (function Map() { [native code] }); other functions without a source
+     * text print the anonymous native form. */
+    if (d->v.fn.sig && strcmp(d->v.fn.sig, "native:constructor") == 0 && d->v.fn.name) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "function ");
+      scr_jb_puts(&b, d->v.fn.name);
+      scr_jb_puts(&b, "() { [native code] }");
+      return scr_jb_finish(&b);
+    }
     static const char f[] = "function () { [native code] }";
     return scr_str_new(f, sizeof f - 1);
   }
@@ -11943,21 +12056,18 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
   ScrDyn *own = scr_dyn_obj_get(d, key, key_len);
   if (own) return scr_dyn_retain(own);
   if (key_len == 11 && memcmp(key, "constructor", 11) == 0) {
-    static const char *const tokens[] = {
-        "[builtin Error]", "[builtin TypeError]",
-        "[builtin RangeError]", "[builtin SyntaxError]",
-        NULL, "[builtin ReferenceError]", "[builtin EvalError]", "[builtin URIError]",
-        "[builtin AggregateError]",
+    /* An error's constructor: the interned function value its global
+     * reads as (scr_dyn_error_constructor). */
+    static const char *const names[] = {
+        "Error", "TypeError", "RangeError", "SyntaxError", NULL,
+        "ReferenceError", "EvalError", "URIError", "AggregateError",
     };
     size_t hit = scr_errdyn_find(d, false);
     const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;
-    for (size_t kind = 0; vt && kind < sizeof tokens / sizeof tokens[0]; kind++) {
-      if (!tokens[kind]) continue;
+    for (size_t kind = 0; vt && kind < sizeof names / sizeof names[0]; kind++) {
+      if (!names[kind]) continue;
       if (vt != &scr_error_vts[kind]) continue;
-      ScrStr *token = scr_str_new(tokens[kind], strlen(tokens[kind]));
-      ScrDyn *result = scr_dyn_new_str(token);
-      scr_str_release(token);
-      return result;
+      return scr_dyn_error_constructor(names[kind]);
     }
   }
   return scr_dyn_retain(scr_dyn_undefined());
@@ -14768,7 +14878,7 @@ ScrDyn *scr_dyn_native_set(ScrMap *value) {
 ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
   ScrDyn *items = NULL;
   if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
-    items = scr_dyn_iter_pack(seed, NULL);
+    items = scr_dyn_seed_values(seed);
     if (!items) return NULL;
   }
   ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
@@ -14880,6 +14990,27 @@ ScrDyn *scr_dyn_native_map(ScrMap *value) {
   };
   scr_dyn_handle_install(SCR_DYNH_MAP, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_MAP);
+}
+
+ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed) {
+  ScrDyn *entries = scr_dyn_map_seed_entries(seed);
+  if (!entries) return NULL;
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_REF, &scr_map_dyn_map_ops);
+  for (size_t i = 0; i < entries->v.arr.len; i++) {
+    ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
+    if (!entry) break;
+    ScrDyn *key = scr_dyn_entry_read(entry, 0);
+    ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
+    scr_dyn_release(entry);
+    if (value) scr_map_dyn_set(map, key, value, false);
+    scr_dyn_release(key);
+    scr_dyn_release(value);
+    if (scr_exc_pending()) break;
+  }
+  scr_dyn_release(entries);
+  ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_native_map(map);
+  scr_map_release(map);
+  return result;
 }
 
 bool scr_dyn_native_map_is(const ScrDyn *value) {

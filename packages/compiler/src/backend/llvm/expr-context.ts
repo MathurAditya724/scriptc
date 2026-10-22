@@ -32,9 +32,6 @@ export interface LlStreamTypedRefAdapter {
   arrayOps?: string;
   /** `@sym` of the ScrDynTypedRecordOps table for live record capsules. */
   recordOps?: string;
-  /** For a shape with orderVariants: the defined function that binds a
-   * live record capsule the table of its value's key order. */
-  recordBind?: string;
   /** `@sym` of the ScrDynTypedClassOps table for class instance capsules. */
   classOps?: string;
 }

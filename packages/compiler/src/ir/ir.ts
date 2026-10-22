@@ -1673,10 +1673,6 @@ export interface IrRecordShape {
    * and every other construction leaves 0. Each key-order surface
    * dispatches on that field. */
   orderVariants?: string[][];
-  /** A shape with orderVariants whose values can change order after they
-   * are built: a write of an optional key a value lacks updates its
-   * KEY_ORDER_FIELD. */
-  orderMoves?: true;
 }
 
 /** The hidden field of a shape with orderVariants: the index of the value's
@@ -1965,8 +1961,18 @@ export type IrStmt =
    * RangeError from the runtime. `pop` marks the stores that implement
    * `pop()`: a frozen (published) array fails with pop's TypeError rather
    * than the length assignment's, and pop's `length = 0` store on an empty
-   * array is dropped unless the array may be frozen. */
-  | { kind: "arraySetLength"; arr: IrExpr; length: IrExpr; loc: SrcLoc; pop?: boolean }
+   * array is dropped unless the array may be frozen. `reserve` marks a
+   * capacity hint instead: dense storage for `length` elements of a fresh
+   * array that statements fill next, with no change to its length and no
+   * observable effect. */
+  | {
+      kind: "arraySetLength";
+      arr: IrExpr;
+      length: IrExpr;
+      loc: SrcLoc;
+      pop?: boolean;
+      reserve?: boolean;
+    }
   /** Write an explicit present `undefined` state without shrinking length. */
   | { kind: "arraySetUndefined"; arr: IrExpr; index: IrExpr; loc: SrcLoc }
   /** Delete an indexed/property slot without changing Array.length. */

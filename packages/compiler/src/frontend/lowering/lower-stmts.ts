@@ -139,6 +139,8 @@ import {
   bindingGenericFnAliasInfoOf,
   bindingGenericFnInfoOf,
   bindingGenericFnNodeOf,
+  genericBindingPresenceStore,
+  genericBindingStoredValue,
   implicitLocalFnInfoOf,
   implicitLocalFnNodeOf,
   implicitMethodCallInfersReturn,
@@ -1521,6 +1523,14 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     const info = lowerer.lowerClassExpressionInfo(stmt);
     const type: IrType = { kind: "classval", className: info.def.name };
     const local = lowerer.declareLocal(stmt.name, stmt.name.text, type, true);
+    // Static members of a function-local class run while the class value is
+    // built and may read the class by name: the class value assigns the
+    // binding before them.
+    if (info.localClass && (info.runtimeStatics || info.runtimePrototypeMembers))
+      return [
+        { kind: "varDecl", localId: local.id, init: null, loc: locOf(stmt) },
+        { kind: "exprStmt", expr: lowerer.lowerClassExpression(stmt, local), loc: locOf(stmt) },
+      ];
     const init = lowerer.lowerClassExpression(stmt);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(stmt) };
   }
@@ -3889,6 +3899,9 @@ function stdlibGlobalTokenDestructure(
   if (decl.initializer === undefined || !isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
   const globalName = stdlibGlobalNameOf(lowerer, decl.initializer);
   if (globalName === null) return null;
+  // `workerData` is a value (the data the worker was started with), not an
+  // API surface: its members destructure as any untyped value's do.
+  if (globalName === "workerData") return null;
   if (!ts.isObjectBindingPattern(decl.name)) {
     lowerer.unsupported(
       "SC1031",
@@ -4794,9 +4807,10 @@ export function lowerVarDeclList(
  * `never[]` or `any[]` and each later read by the elements written before
  * it, and reads inside closures as the unsettled array. When every read
  * with a settled element type maps to the same array type, the binding has
- * that type. When reads disagree or the binding is reassigned, it is
- * checked-dynamic, as the same binding is at module scope. Null for other
- * bindings. */
+ * that type. When reads disagree, a write (`xs.push(v)`, `xs.unshift(v)`,
+ * `xs.push(...values)`, `xs[i] = v`) stores a value that type's element does
+ * not hold, or the binding is reassigned, it is checked-dynamic, as the same
+ * binding is at module scope. Null for other bindings. */
 function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | null {
   if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return null;
   let initializer: ts.Expression = decl.initializer;
@@ -4818,6 +4832,9 @@ function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrTy
   };
   const scope = owner(decl);
   let result: IrType | null = null;
+  // The values the binding's writes store, checked against the element
+  // type once the reads settle it.
+  const written: ts.Expression[] = [];
   // The file's identifiers are indexed by name once (identifiersNamed), so
   // each binding resolves only the uses spelled like it.
   for (const node of identifiersNamed(lowerer, ts.getSourceFileOfNode(decl), decl.name.text)) {
@@ -4837,6 +4854,22 @@ function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrTy
       parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
       parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
     if (reassigned) return DYN;
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === target &&
+      (parent.name.text === "push" || parent.name.text === "unshift") &&
+      ts.isCallExpression(parent.parent) &&
+      parent.parent.expression === parent
+    )
+      written.push(...parent.parent.arguments.nodes);
+    else if (
+      ts.isElementAccessExpression(parent) &&
+      parent.expression === target &&
+      ts.isBinaryExpression(parent.parent) &&
+      parent.parent.left === parent &&
+      parent.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+    )
+      written.push(parent.parent.right);
     const t = lowerer.typeOf(node);
     if (unsettled(t)) continue;
     const mapped = lowerer.mapTypeOf(t);
@@ -4844,7 +4877,49 @@ function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrTy
       return DYN;
     result = mapped;
   }
-  return result ?? DYN;
+  if (result === null || result.kind !== "array") return DYN;
+  // The element types a write stores: its value's, or for a spread
+  // (`xs.push(...values)`) the source array's element or tuple's elements.
+  // Another spread source stores elements this check cannot see.
+  const storedTypes = (value: ts.Expression): ts.Type[] | null => {
+    if (!ts.isSpreadElement(value)) return [lowerer.typeOf(value)];
+    const source = lowerer.typeOf(value.expression);
+    if (lowerer.checker.isArrayType(source) || lowerer.checker.isTupleType(source))
+      return [...lowerer.checker.getTypeArguments(source as ts.TypeReference)];
+    return null;
+  };
+  for (const value of written) {
+    const stored = storedTypes(value);
+    if (stored === null) return DYN;
+    for (const type of stored) {
+      const t = lowerer.mapTypeOf(lowerer.checker.getBaseTypeOfLiteralType(type));
+      if (!t || (!typeEquals(t, result.elem) && lowerer.widthLiftPlan(t, result.elem) === null))
+        return DYN;
+    }
+  }
+  return result;
+}
+
+/** An unannotated alias of an evolving array binding whose reads disagree
+ * (`const alias = xs` between `xs.push(1)` and `xs.push("two")`): the
+ * checker types the alias by the elements written before it, but both names
+ * hold one array, so the alias takes the binding's checked-dynamic type and
+ * sees the later writes. Aliases of such an alias follow it. Null for other
+ * bindings. */
+function evolvingArrayAliasType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | null {
+  let current = decl;
+  for (let depth = 0; depth < 8; depth++) {
+    let initializer = current.initializer;
+    while (initializer !== undefined && ts.isParenthesizedExpression(initializer))
+      initializer = initializer.expression;
+    if (initializer === undefined || !ts.isIdentifier(initializer)) return null;
+    const source = lowerer.checker.getSymbolAtLocation(initializer)?.valueDeclaration;
+    if (source === undefined || !ts.isVariableDeclaration(source) || source.type) return null;
+    const evolved = evolvingArrayType(lowerer, source);
+    if (evolved !== null) return evolved.kind === "dyn" ? evolved : null;
+    current = source;
+  }
+  return null;
 }
 
 /** A single static type for an initializer-less JavaScript `let` whose
@@ -5113,8 +5188,19 @@ export function lowerVarDecl(
   {
     const gfnNode = bindingGenericFnNodeOf(decl) ?? bindingContextualGenericFnNodeOf(lowerer, decl);
     if (gfnNode) {
-      bindingGenericFnInfoOf(lowerer, decl, gfnNode);
-      return null;
+      const info = bindingGenericFnInfoOf(lowerer, decl, gfnNode);
+      // A nested function that lowered before this declaration read the
+      // binding as an ordinary TDZ box (predeclareForwardCapture); the
+      // declaration initializes it, so those reads see the function once
+      // it runs and a ReferenceError before.
+      const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+      const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
+      if (pre) {
+        lowerer.ctx.tdzPredeclared.delete(symbol!);
+        const value = genericBindingStoredValue(lowerer, decl, info);
+        return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(decl) };
+      }
+      return genericBindingPresenceStore(info, decl);
     }
   }
 
@@ -5549,7 +5635,7 @@ export function lowerVarDecl(
     !decl.type &&
     !isJsSourceFile(ts.getSourceFileOfNode(decl))
   ) {
-    const evolved = evolvingArrayType(lowerer, decl);
+    const evolved = evolvingArrayType(lowerer, decl) ?? evolvingArrayAliasType(lowerer, decl);
     if (evolved !== null) {
       type = evolved;
       init = lowerer.lowerExprExpecting(decl.initializer, evolved);
@@ -11468,11 +11554,13 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
           keysT,
           loc,
         );
+        // The overflow map's hashed key set answers presence directly; a
+        // fresh key list per visit would make the walk quadratic.
         const guard = (kRef: IrExpr): IrExpr => ({
-          kind: "arrIntrinsic",
-          method: "includes",
-          receiver: { kind: "recordOvfKeys", obj: recvRef(), shapeId, type: keysT, loc },
-          args: [kRef],
+          kind: "recordOvfHas",
+          obj: recvRef(),
+          shapeId,
+          key: kRef,
           type: BOOL,
           loc,
         });
