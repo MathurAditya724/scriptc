@@ -1252,6 +1252,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },
   "atomics.notify": { argTypes: [bytesOf("i32"), F64, F64], result: F64 },
   "atomics.op": { argTypes: [null, F64, F64, F64, F64], result: F64 },
+  "atomics.opDyn": { argTypes: [DYN, F64, F64, F64, F64], result: F64 },
+  "atomics.waitDyn": { argTypes: [DYN, F64, F64, F64], result: STRING },
+  "atomics.notifyDyn": { argTypes: [DYN, F64, F64], result: F64 },
   "worker.new": { argTypes: [F64, STRING, DYN], result: DYN },
   "worker.isMainThread": { argTypes: [], result: BOOL },
   "worker.threadId": { argTypes: [], result: F64 },
@@ -2925,6 +2928,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "buffer.poolFromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
   /** poolFromDyn that also copies an array crossing by reference. */
   "buffer.poolFromDynRef": { argTypes: [DYN, STRING], result: BYTES_U8 },
+  "buffer.poolFromDynOffset": { argTypes: [DYN, DYN], result: BYTES_U8 },
   "buffer.poolSize": { argTypes: [], result: F64 },
   "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
