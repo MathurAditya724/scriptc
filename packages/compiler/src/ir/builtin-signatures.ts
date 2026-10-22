@@ -1318,6 +1318,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64],
     result: SPAWNRES_T,
   },
+  /** cp.spawnSyncOpts with the `env` option: the trailing [k,v,...]
+   * pairs replace the child's environment (recordToEnvPairs). */
+  "cp.spawnSyncEnv": {
+    argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, arrayOf(STRING)],
+    result: SPAWNRES_T,
+  },
   /** cp.spawnSyncOpts with the stdio carried as a RUNTIME string —
    * "pipe" | "ignore" | "inherit", proven by the call site's TYPE (the
    * defaultRunner idiom `stdio: options?.stdio ?? "pipe"`); the runtime
