@@ -605,14 +605,23 @@ const STDIO_EXTENDED_NAMES: ReadonlySet<string> = new Set(["setEncoding", "resiz
 /** The libCall nodes the rules below test. */
 type LibCallNode = IrExpr & { kind: "libCall" };
 
+/** A condition over several nodes of the module (a WebCrypto call and an
+ * algorithm name): the scan's one walk shows it every expression, and the
+ * feature is set when `result` answers true after the walk. */
+interface RuleScan {
+  expr(node: IrExpr): void;
+  result(): boolean;
+}
+
 /** What makes a program need one optional runtime unit. The feature is set
  * when any condition holds: `initial` from the module's declarations, a
  * libCall named in `fns` or starting with one of `prefixes`, a libCall
- * `libCall` accepts, another expression node `expr` accepts, or a type
- * slot of one of the `types` kinds. A libCall or type that needs several
- * units appears in each unit's rule. */
+ * `libCall` accepts, another expression node `expr` accepts, a type slot of
+ * one of the `types` kinds, or a `scan` over the whole module. A libCall or
+ * type that needs several units appears in each unit's rule. */
 interface RuntimeFeatureRule {
   initial?: (mod: IrModule) => boolean;
+  scan?: () => RuleScan;
   fns?: readonly IrLibFn[];
   prefixes?: readonly string[];
   libCall?: (node: LibCallNode) => boolean;
@@ -650,17 +659,32 @@ const WEBCRYPTO_ASYMMETRIC_NAMES: ReadonlySet<string> = new Set([
 /** Whether a string literal in the module names Ed25519, without regard
  * to case ("ed25519" for node:crypto, "Ed25519" for WebCrypto): the
  * Ed25519 unit links then, alongside the pki unit. */
-export function moduleNamesEd25519(mod: IrModule): boolean {
+function ed25519NameScan(): RuleScan {
   let named = false;
-  everyModuleNode(mod, {
+  return {
     expr: (node) => {
-      if (node.kind === "strLit" && node.value.toLowerCase() === "ed25519") named = true;
-      return !named;
+      if (!named && node.kind === "strLit" && node.value.toLowerCase() === "ed25519") named = true;
     },
-    stmt: () => !named,
-    type: () => true,
-  });
-  return named;
+    result: () => named,
+  };
+}
+
+/** moduleUsesWebCryptoAsymmetric's condition as a runtime-feature scan. */
+function webCryptoAsymmetricScan(): RuleScan {
+  let webcrypto = false;
+  let named = false;
+  return {
+    expr: (node) => {
+      if (node.kind === "libCall" && node.fn.startsWith("webcrypto.")) webcrypto = true;
+      else if (
+        !named &&
+        node.kind === "strLit" &&
+        WEBCRYPTO_ASYMMETRIC_NAMES.has(node.value.toLowerCase())
+      )
+        named = true;
+    },
+    result: () => webcrypto && named,
+  };
 }
 
 /** Whether the module calls WebCrypto and a string literal in it names one
@@ -906,10 +930,10 @@ const RUNTIME_FEATURE_RULES = {
   perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
   /** scr_pki.c over the mbedTLS archive: asymmetric KeyObjects and
    * signatures. */
-  pki: rule({ initial: moduleUsesWebCryptoAsymmetric, fns: [...PKI_LIB_FNS] }),
+  pki: rule({ scan: webCryptoAsymmetricScan, fns: [...PKI_LIB_FNS] }),
   /** scr_ed25519.c (the vendored libsodium Ed25519), linked with pki: a
    * string literal in the module names Ed25519. */
-  ed25519: rule({ initial: moduleNamesEd25519 }),
+  ed25519: rule({ scan: ed25519NameScan }),
   processEvents: rule({ fns: [...PROCESS_EVENT_LIB_FNS, "util.styleText"], types: ["procStream"] }),
   /** scr_url_legacy.c parses and stringifies queries. */
   qs: rule({ fns: [...QS_LIB_FNS, ...LEGACY_URL_LIB_FNS] }),
@@ -1070,9 +1094,11 @@ for (const name of RUNTIME_FEATURE_NAMES) {
 
 function scanRuntimeFeatures(mod: IrModule, stopAt?: RuntimeFeatureName): RuntimeFeatures {
   const features = noRuntimeFeatures();
+  const scans: { name: RuntimeFeatureName; scan: RuleScan }[] = [];
   for (const name of RUNTIME_FEATURE_NAMES) {
-    const initial = ruleOf(name).initial;
+    const { initial, scan } = ruleOf(name);
     if (initial && initial(mod)) features[name] = true;
+    if (scan) scans.push({ name, scan: scan() });
   }
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   let tables: TypeTables | undefined;
@@ -1083,6 +1109,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: RuntimeFeatureName): Runtim
       classes: new Map((mod.classes ?? []).map((c) => [c.name, c])),
     });
   const expr = (node: IrExpr): boolean => {
+    for (let i = 0; i < scans.length; i++) scans[i]!.scan.expr(node);
     if (node.kind === "libCall") {
       const fn = node.fn;
       for (const name of FEATURES_BY_FN.get(fn) ?? []) features[name] = true;
@@ -1101,6 +1128,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: RuntimeFeatureName): Runtim
     return keepGoing();
   };
   if (keepGoing()) everyModuleNode(mod, { expr, stmt: keepGoing, type });
+  for (const { name, scan } of scans) if (scan.result()) features[name] = true;
   // Inline-cache sites of dynamic-tier functions use the tier's shapes
   // (scr_js_object.c, with the SCR_JS_TIER build of scr_json.c).
   if (!features.dynTier && mod.functions.some((fn) => fn.tier === "dynamic")) {
