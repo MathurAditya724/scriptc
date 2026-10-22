@@ -74,6 +74,22 @@ export function fieldKey(unit: string, field: string): string {
   return `${unit}\0${field}`;
 }
 
+/** The cycle unit of a class: `object:<root>`, the root of its hierarchy,
+ * as computeImmutableFields and computeTraced group classes. */
+export function hierarchyUnitOfClass(mod: IrModule): (className: string) => string {
+  const baseOf = new Map((mod.classes ?? []).map((c) => [c.name, c.base ?? null] as const));
+  const roots = new Map<string, string>();
+  return (name) => {
+    const known = roots.get(name);
+    if (known !== undefined) return `object:${known}`;
+    let cur = name;
+    for (let base = baseOf.get(cur); base !== null && base !== undefined; base = baseOf.get(cur))
+      cur = base;
+    roots.set(name, cur);
+    return `object:${cur}`;
+  };
+}
+
 export function computeCycleMutability(
   mod: IrModule,
   unitOfClass: (className: string) => string,
