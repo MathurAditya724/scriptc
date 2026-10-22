@@ -193,6 +193,30 @@ test("split-module refuses a module that links outside the checkout", () => {
   expect(stderr).toContain("refusing");
 });
 
+test("move-state refuses a state file that a branch commits as a link outside the checkout", () => {
+  const { dir, repo } = symlinkCheckout();
+  // The group file is listed under `create` and already exists as a link, so
+  // creation skips it and the move would append the state through the link.
+  symlinkSync("../../outside/linked.ts", join(repo, "src/host-state.ts"));
+  writeFileSync(join(dir, "state.template"), "");
+  const stderr = refused(
+    "move-state.mjs",
+    {
+      module: "src/host.ts",
+      class: "Host",
+      dir: "src",
+      create: { "host-state.ts": "state.template" },
+      groups: [
+        { file: "host-state.ts", key: "COUNTS", interfaceName: "Counts", fields: ["count"] },
+      ],
+    },
+    dir,
+    repo,
+  );
+  expect(stderr).toContain("refusing");
+  expect(readFileSync(join(dir, "outside/linked.ts"), "utf8")).toBe(outsideText);
+});
+
 test("move-state refuses to rewrite a file that links outside the checkout", () => {
   const { dir, repo } = symlinkCheckout();
   writeFileSync(join(repo, "src/host-state.ts"), "");
