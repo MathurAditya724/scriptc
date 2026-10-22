@@ -1058,7 +1058,9 @@ static bool sd_derives(const ScDh *d) {
 }
 
 /* computeSecret(key, inputEncoding, outputEncoding): key^priv mod p,
- * padded to the prime's length. */
+ * padded to the prime's length. A secret of 0, 1 or p - 1 is predictable
+ * (a peer key of small order, or a composite modulus), so it fails like
+ * OpenSSL's derivation does. */
 static ScrDyn *sd_compute_secret(ScDh *d, const ScrDyn *key, const ScrDyn *in_enc, const ScrDyn *out_enc) {
   ScrBytes *bytes = ca_key_bytes(SD_SUBJECT, key, in_enc);
   if (!bytes) return NULL;
@@ -1073,7 +1075,8 @@ static ScrDyn *sd_compute_secret(ScDh *d, const ScrDyn *key, const ScrDyn *in_en
     sd_throw(SCR_ERR_RANGE, "ERR_CRYPTO_INVALID_KEYLEN", "Supplied key is too small");
   } else if (mbedtls_mpi_cmp_mpi(&peer, &bound) >= 0) {
     sd_throw(SCR_ERR_RANGE, "ERR_CRYPTO_INVALID_KEYLEN", "Supplied key is too large");
-  } else if (!d->has_priv || (!d->group && !sd_derives(d)) || !sd_exp(&secret, &peer, &d->priv, &d->p)) {
+  } else if (!d->has_priv || (!d->group && !sd_derives(d)) || !sd_exp(&secret, &peer, &d->priv, &d->p) ||
+             mbedtls_mpi_cmp_int(&secret, 1) <= 0 || mbedtls_mpi_cmp_mpi(&secret, &bound) == 0) {
     sd_operation_failed("Failed to compute shared secret");
   } else {
     size_t len = mbedtls_mpi_size(&d->p);

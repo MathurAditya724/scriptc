@@ -145,3 +145,31 @@ attempt("p 23 generator 30", () =>
   loose(crypto.createDiffieHellman(Buffer.from([23]), 30).setPrivateKey(Buffer.from([2]))).generateKeys(),
 );
 attempt("p 9", () => loose(crypto.createDiffieHellman(Buffer.from([9])).setPrivateKey(Buffer.from([3]))).generateKeys());
+
+// Secrets of 0, 1 and p - 1 fail like any other derivation failure: a peer
+// key of order 3 or 6 modulo a prime with p ≡ 1 (mod 6), and a peer key
+// sharing the factor of a square modulus.
+const smooth = Buffer.from(
+  "ce306415e770bb1cde0380e3c5cf4e8110b5c8e82ca36b1d9074fa1e9d1ed41b0ae295f19288302647d2da0003fcac6fa21d8953afce2c30171844815ec7d6df",
+  "hex",
+);
+const orderThree = Buffer.from(
+  "6be4b47bb9f8143334dab6349ac191ef7208ae3d5e684a2c318d43acc45ebd2a27d79b075c6e14a4e6a75899d98ce05af71ef05e1869b1add76d1622ab5e7b1d",
+  "hex",
+);
+const orderSix = Buffer.from(
+  "624baf9a2d78a6e9a928caaf2b0dbc919ead1aaace3b20f15ee7b671d8c016f0e30afaea361a1b81612b81662a6fcc14aafe98f597647a823fab2e5eb3695bc2",
+  "hex",
+);
+function withPrivateKey(modulus, key) {
+  const dh = crypto.createDiffieHellman(modulus);
+  dh.setPrivateKey(Buffer.from([key]));
+  return dh;
+}
+attempt("secret 1", () => withPrivateKey(smooth, 3).computeSecret(orderThree).toString("hex"));
+attempt("secret p - 1", () => withPrivateKey(smooth, 3).computeSecret(orderSix).toString("hex"));
+attempt("secret of order 3, key 4", () => withPrivateKey(smooth, 4).computeSecret(orderThree).toString("hex").slice(0, 16));
+const factor = BigInt("0xdf22630cec2362c510f444af6784da7a3a714ed787eb3d6bf9158d18c087cc5d");
+const square = Buffer.from((factor * factor).toString(16).padStart(128, "0"), "hex");
+const factorKey = Buffer.from(factor.toString(16).padStart(128, "0"), "hex");
+attempt("secret 0", () => withPrivateKey(square, 2).computeSecret(factorKey).toString("hex"));
