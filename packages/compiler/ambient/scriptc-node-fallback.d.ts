@@ -6935,11 +6935,10 @@ declare module "node:events" {
  * write(chunk, enc, cb) {} })`, Duplex/Transform/PassThrough, push/read,
  * flowing vs paused, write/end backpressure + 'drain', pipe/unpipe, and
  * destroy — with Node's event orderings. Chunks are BYTES (Buffer), with
- * utf8 strings converted at push/write like Node; objectMode and
- * setEncoding are declared so uses fence at their sites with their own
- * words. `class My extends Readable` (the _read override form) is a
- * separate feature and fences at the class declaration. The runtime-fired
- * events carry per-class FORCED argument tuples ('data' is one Buffer,
+ * strings converted at push/write like Node, and any value on an
+ * object-mode side (objectMode, readableObjectMode, writableObjectMode —
+ * the object-mode constructor overloads come first). The runtime-fired
+ * events carry per-class FORCED argument tuples ('data' is one chunk,
  * 'error' one Error, 'pipe'/'unpipe' one Readable, the rest empty) — the
  * overloads below hand tsc the same contract so unannotated listener
  * parameters contextually type in .js sources. */
@@ -7045,6 +7044,51 @@ declare module "stream" {
     signal?: AbortSignal;
   }
 
+  /* Object-mode options (objectMode: true, or a Duplex's or Transform's
+   * readableObjectMode / writableObjectMode): chunks and completion data
+   * are any values, and an object-mode write's encoding argument reaches
+   * write/transform as passed (undefined when absent, null when a
+   * callback took its place). The constructors take these before the
+   * byte-mode options, so a byte-mode stream's callbacks keep Buffer
+   * chunks. */
+  type ObjectModeEncoding = string | null | undefined;
+  type ObjectModeFlag =
+    | { objectMode: true }
+    | { readableObjectMode: true }
+    | { writableObjectMode: true };
+  interface ObjectWritableOptions extends Omit<WritableOptions, "objectMode" | "write"> {
+    objectMode: true;
+    write?(
+      this: Writable,
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback: (error?: Error | null) => void,
+    ): void;
+  }
+  type ObjectDuplexOptions = Omit<DuplexOptions, "write"> & {
+    write?(
+      this: Duplex,
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback: (error?: Error | null) => void,
+    ): void;
+  } & ObjectModeFlag;
+  type ObjectTransformOptions = Omit<TransformOptions, "transform" | "flush" | "write"> & {
+    transform?(
+      this: Transform,
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback: (error?: Error | null, data?: any) => void,
+    ): void;
+    flush?(this: Transform, callback: (error?: Error | null, data?: any) => void): void;
+    write?(
+      this: Transform,
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback: (error?: Error | null) => void,
+    ): void;
+  } & ObjectModeFlag;
+
   /* The operators' options: concurrency and highWaterMark bound map's
    * in-flight callbacks and queued results. */
   interface ArrayOptions {
@@ -7064,7 +7108,10 @@ declare module "stream" {
     [Symbol.asyncIterator](): AsyncIterableIterator<any>;
     iterator(options?: { destroyOnReturn?: boolean }): AsyncIterableIterator<any>;
     push(chunk: Buffer | string | null, encoding?: string): boolean;
+    /* An object-mode stream's values. */
+    push(chunk: any, encoding?: string): boolean;
     unshift(chunk: Buffer | string, encoding?: string): void;
+    unshift(chunk: any, encoding?: string): void;
     read(size?: number): Buffer | null;
     pause(): this;
     resume(): this;
@@ -7171,6 +7218,7 @@ declare module "stream" {
   }
 
   class Writable extends EventEmitter {
+    constructor(opts: ObjectWritableOptions);
     constructor(opts?: WritableOptions);
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
@@ -7186,9 +7234,19 @@ declare module "stream" {
       encoding: string,
       callback?: (error?: Error | null) => void,
     ): boolean;
+    /* An object-mode stream's values (the encoding argument reaches
+     * _write as passed). */
+    write(chunk: any, callback?: (error?: Error | null) => void): boolean;
+    write(
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback?: (error?: Error | null) => void,
+    ): boolean;
     end(callback?: () => void): this;
     end(chunk: Buffer | string, callback?: () => void): this;
     end(chunk: Buffer | string, encoding: string, callback?: () => void): this;
+    end(chunk: any, callback?: () => void): this;
+    end(chunk: any, encoding: ObjectModeEncoding, callback?: () => void): this;
     cork(): void;
     uncork(): void;
     setDefaultEncoding(encoding: string): this;
@@ -7238,6 +7296,7 @@ declare module "stream" {
    * mirrors @types/node: extends Readable, the writable half declared
    * again. The lowering treats both halves as first-class. */
   class Duplex extends Readable {
+    constructor(opts: ObjectDuplexOptions);
     constructor(opts?: DuplexOptions);
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
@@ -7252,9 +7311,19 @@ declare module "stream" {
       encoding: string,
       callback?: (error?: Error | null) => void,
     ): boolean;
+    /* An object-mode stream's values (the encoding argument reaches
+     * _write as passed). */
+    write(chunk: any, callback?: (error?: Error | null) => void): boolean;
+    write(
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback?: (error?: Error | null) => void,
+    ): boolean;
     end(callback?: () => void): this;
     end(chunk: Buffer | string, callback?: () => void): this;
     end(chunk: Buffer | string, encoding: string, callback?: () => void): this;
+    end(chunk: any, callback?: () => void): this;
+    end(chunk: any, encoding: ObjectModeEncoding, callback?: () => void): this;
     cork(): void;
     uncork(): void;
     setDefaultEncoding(encoding: string): this;
@@ -7326,16 +7395,18 @@ declare module "stream" {
   }
 
   class Transform extends Duplex {
+    constructor(opts: ObjectTransformOptions);
     constructor(opts?: TransformOptions);
     /* The underscore-method surface (see Readable). */
     _transform(
       chunk: any,
       encoding: string,
-      callback: (error?: Error | null, data?: Buffer | string) => void,
+      callback: (error?: Error | null, data?: any) => void,
     ): void;
-    _flush(callback: (error?: Error | null, data?: Buffer | string) => void): void;
+    _flush(callback: (error?: Error | null, data?: any) => void): void;
   }
   class PassThrough extends Transform {
+    constructor(opts: ObjectTransformOptions);
     constructor(opts?: TransformOptions);
   }
 

@@ -339,7 +339,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: RUNTIME_PACK_MATRIX.target,
-      runtime_abi: { version: 25, marker: "scr_runtime_abi_v25" },
+      runtime_abi: { version: 26, marker: "scr_runtime_abi_v26" },
       compiler: {
         command: compiler,
         identity: compilerVersion,
