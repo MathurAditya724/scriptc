@@ -47,6 +47,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth);
 ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth);
 /* format's %s / rest-args twin: dyn strings pass verbatim. */
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth);
+ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth); /* %o: showHidden */
 void scr_insp_begin(double recurse);
 /* util.inspect's breakLength, compact (0 for false) and sorted for the
  * renders that follow; the call site restores the defaults (80, 3, false)

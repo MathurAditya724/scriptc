@@ -324,6 +324,9 @@ typedef struct {
 
 static SCR_TL InspSeenEnt *g_seen;
 static SCR_TL size_t g_nseen;
+/* util.format's %o (scr_insp_dyn_hidden): this render shows hidden own
+ * properties, like util.inspect's showHidden. */
+static SCR_TL bool g_show_hidden;
 static SCR_TL size_t g_seen_cap;
 /* Detection-numbered circular targets (persist across the call). */
 static SCR_TL const void *g_circ[64];
@@ -1375,18 +1378,25 @@ static ScrStr *scr_insp_dyn_collection(ScrDyn *d, double recurse, double depth, 
   return out;
 }
 
-/* An own enumerable symbol-keyed property of `d` (borrowed), or NULL. */
+/* An own symbol-keyed property of `d` (borrowed) this render shows, or
+ * NULL: enumerable ones, and under showHidden the non-enumerable ones too. */
 static ScrDynEntry *scr_insp_symbol_entry(ScrDyn *d, size_t i) {
   ScrDynEntry *ent = scr_dyn_own_symbol_entry(d, d->symbol_keys->v.arr.items[i]);
-  return ent && ent->enumerable ? ent : NULL;
+  return ent && (ent->enumerable || g_show_hidden) ? ent : NULL;
 }
 
 /* An ordinary object: `Name { key: value }` with its constructor name
  * `cls` (NULL for a plain object). Node's default view lists the own
  * enumerable string keys, then the own enumerable symbol keys. */
+/* An own entry this render shows: enumerable ones, and under showHidden
+ * the non-enumerable ones too (never the encoding's `%` markers). */
+static bool insp_obj_shows(const ScrDynEntry *ent) {
+  return ent->enumerable || (g_show_hidden && !(ent->key_len && ent->key[0] == '%'));
+}
+
 static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char *cls) {
   size_t shown = 0;
-  for (size_t i = 0; i < d->v.obj.len; i++) shown += d->v.obj.entries[i].enumerable;
+  for (size_t i = 0; i < d->v.obj.len; i++) shown += insp_obj_shows(&d->v.obj.entries[i]);
   size_t nsymbols = d->symbol_keys ? d->symbol_keys->v.arr.len : 0;
   for (size_t i = 0; i < nsymbols; i++) shown += scr_insp_symbol_entry(d, i) != NULL;
   if (shown == 0) {
@@ -1402,10 +1412,17 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
   scr_insp_begin(recurse + 1);
   for (size_t i = 0; i < d->v.obj.len; i++) {
     ScrDynEntry *ent = &d->v.obj.entries[i];
-    if (!ent->enumerable) continue;
+    if (!insp_obj_shows(ent)) continue;
     ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
     InspBuf eb = {0};
-    insp_key_into(&eb, ent->key, ent->key_len);
+    if (ent->enumerable) {
+      insp_key_into(&eb, ent->key, ent->key_len);
+    } else {
+      /* formatProperty's hidden key: the key's rendering in brackets. */
+      ib_char(&eb, '[');
+      insp_key_into(&eb, ent->key, ent->key_len);
+      ib_char(&eb, ']');
+    }
     ib_cstr(&eb, ": ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(val);
@@ -1419,7 +1436,10 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
     ScrStr *key = scr_insp_dyn(d->symbol_keys->v.arr.items[i], recurse + 1, depth);
     ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
     InspBuf eb = {0};
+    /* A hidden symbol key is bracketed like a hidden string key. */
+    if (!ent->enumerable) ib_char(&eb, '[');
     ib_bytes(&eb, key->data, key->len);
+    if (!ent->enumerable) ib_char(&eb, ']');
     ib_cstr(&eb, ": ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(key);
@@ -1480,8 +1500,114 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
   return out;
 }
 
+/* Node's function rendering: [Function: name] / [Function (anonymous)],
+ * and [class C extends B] / [class (anonymous)] for a class. The boxed
+ * name is the compiler's best-effort static spelling (SEMANTICS.md —
+ * reference-site naming). Enumerable own properties (a class's static
+ * fields, properties assigned to a function) follow in braces; past the
+ * depth limit such a function is [Function]. Borrows d; +1. */
+static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
+  const char *name = d->v.fn.name;
+  const ScrClassObj *cls = d->v.fn.class_obj;
+  ScrClosure *owner = scr_closure_identity(d->v.fn.clo);
+  ScrBox *props = owner->props ? owner->props : cls ? cls->static_data : NULL;
+  ScrDyn *table = props ? (ScrDyn *)scr_box_get_ref(props) : NULL; /* +1 */
+  InspBuf out = {0};
+  if (cls) {
+    ib_cstr(&out, "[class ");
+    ib_cstr(&out, name && name[0] ? name : "(anonymous)");
+    const ScrDyn *base = table ? table->prototype : NULL;
+    if (cls->base_name && cls->base_name->len) {
+      ib_cstr(&out, " extends ");
+      ib_bytes(&out, cls->base_name->data, cls->base_name->len);
+    } else if (base && base->kind == SCR_DYN_FUNC && base->v.fn.name && base->v.fn.name[0]) {
+      ib_cstr(&out, " extends ");
+      ib_cstr(&out, base->v.fn.name);
+    }
+    ib_char(&out, ']');
+  } else if (name && name[0]) {
+    ib_cstr(&out, "[Function: ");
+    ib_cstr(&out, name);
+    ib_char(&out, ']');
+  } else {
+    ib_cstr(&out, "[Function (anonymous)]");
+  }
+  ScrStr *tag = ib_take(&out);
+  if (cls && !props && cls->own_static_fields) {
+    /* Node prints the static fields after the tag; the class object
+     * does not hold them (the reflection fence's stance). */
+    scr_str_release(tag);
+    static const char message[] = "util.inspect of a class with static fields through unknown is not supported yet";
+    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    return scr_str_new("", 0);
+  }
+  size_t shown = 0;
+  if (table && table->kind == SCR_DYN_OBJ) {
+    for (size_t i = 0; i < table->v.obj.len; i++) shown += table->v.obj.entries[i].enumerable;
+    size_t nsymbols = table->symbol_keys ? table->symbol_keys->v.arr.len : 0;
+    for (size_t i = 0; i < nsymbols; i++) shown += scr_insp_symbol_entry(table, i) != NULL;
+  }
+  if (shown == 0) {
+    scr_dyn_release(table);
+    return tag;
+  }
+  if (recurse > depth) {
+    scr_dyn_release(table);
+    scr_str_release(tag);
+    return scr_str_new("[Function]", 10);
+  }
+  /* A function already on the traversal stack renders as [Circular *N],
+   * keyed by the closure every box of the function shares. */
+  double circular = scr_insp_circ_check(owner);
+  if (circular > 0) {
+    scr_dyn_release(table);
+    scr_str_release(tag);
+    return scr_insp_circular(circular);
+  }
+  char *prefix = malloc(tag->len + 1);
+  if (!prefix) scr_trap("scriptc: out of memory\n");
+  memcpy(prefix, tag->data, tag->len);
+  prefix[tag->len] = '\0';
+  scr_str_release(tag);
+  size_t nseen = g_nseen;
+  g_pending_seen = owner;
+  ScrStr *rendered = scr_insp_obj(table, recurse, depth, prefix);
+  g_pending_seen = NULL;
+  if (g_nseen > nseen) g_nseen = nseen;
+  free(prefix);
+  scr_dyn_release(table);
+  return rendered;
+}
+
+/* Under showHidden, the kinds whose hidden entries this inspector does not
+ * render (a function's length/name/prototype, an error's stack, a typed
+ * array's byte fields, a native handle's internals): the kind's name, NULL
+ * for the kinds it renders. */
+static const char *insp_hidden_refusal(const ScrDyn *d) {
+  switch (d->kind) {
+    case SCR_DYN_FUNC: return "function";
+    case SCR_DYN_BYTES: return d->buffer ? "Buffer" : d->v.bytes->is_data_view ? "DataView" : "typed array";
+    case SCR_DYN_OBJ: return scr_dyn_obj_get(d, "%error", 6) != NULL ? "Error" : NULL;
+    case SCR_DYN_HANDLE:
+      return d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_SET ||
+                     d->v.handle.tag == SCR_DYNH_DATE
+                 ? NULL
+                 : scr_dyn_handle_cls(d);
+    default: return NULL;
+  }
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
+  const char *refused = g_show_hidden ? insp_hidden_refusal(d) : NULL;
+  if (refused) {
+    InspBuf out = {0};
+    ib_cstr(&out, "util.format %o of ");
+    ib_cstr(&out, refused);
+    ib_cstr(&out, " values is not supported yet");
+    scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+    return scr_str_new("", 0);
+  }
   switch (d->kind) {
     case SCR_DYN_NULL:
       return scr_str_new("null", 4);
@@ -1499,14 +1625,14 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       return scr_insp_str(d->v.str);
     case SCR_DYN_ARR: {
       size_t len = d->v.arr.len;
-      if (len == 0) return scr_str_new("[]", 2);
+      if (len == 0 && !g_show_hidden) return scr_str_new("[]", 2);
       if (recurse > depth) return scr_str_new("[Array]", 7);
       scr_insp_begin(recurse + 1);
       /* Node's maxArrayLength (100) counts output entries; a run of holes
        * is one `<n empty items>` entry (formatSpecialArray). */
       const unsigned char *presence = d->v.arr.presence;
-      size_t i = 0;
-      for (size_t shown = 0; i < len && shown < 100; shown++) {
+      size_t i = 0, shown = 0;
+      for (; i < len && shown < 100; shown++) {
         if (presence && !presence[i]) {
           size_t next = i + 1;
           while (next < len && !presence[next]) next++;
@@ -1529,10 +1655,26 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_insp_entry(m, d->v.arr.items[i]->kind == SCR_DYN_NUM);
         scr_str_release(m);
       }
+      if (g_show_hidden) {
+        /* The own non-enumerable `length`, after the items. Node's
+         * grouping reads value[k] for every output position k, this one
+         * included. */
+        size_t at = shown + (more ? 1 : 0);
+        char line[48];
+        int n = snprintf(line, sizeof line, "[length]: %zu", len);
+        ScrStr *s = scr_str_new(line, (size_t)n);
+        scr_insp_entry(s, at < len && (!presence || presence[at]) &&
+                              d->v.arr.items[at]->kind == SCR_DYN_NUM);
+        scr_str_release(s);
+      }
       ScrStr *base = scr_str_new("", 0);
       ScrStr *b0 = scr_str_new("[", 1);
       ScrStr *b1 = scr_str_new("]", 1);
-      ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, more);
+      /* groupArrayElements leaves the last entry out of the grid when
+       * there are more than maxArrayLength (100) entries: the "... N more
+       * items" tail, or under showHidden the `[length]` entry. */
+      bool trailing = shown + (more ? 1 : 0) + (g_show_hidden ? 1 : 0) > 100;
+      ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, trailing);
       scr_str_release(base);
       scr_str_release(b0);
       scr_str_release(b1);
@@ -1549,21 +1691,8 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
        * the bare marker (where a plain object says [Object]). */
       return scr_insp_obj(d, recurse, depth, scr_dyn_class_name(d));
     }
-    case SCR_DYN_FUNC: {
-      /* Node's function rendering: [Function: name] / [Function
-       * (anonymous)]. The boxed name is the compiler's best-effort static
-       * spelling (SEMANTICS.md — reference-site naming). */
-      const char *name = d->v.fn.name;
-      InspBuf out = {0};
-      if (name && name[0]) {
-        ib_cstr(&out, "[Function: ");
-        ib_cstr(&out, name);
-        ib_char(&out, ']');
-      } else {
-        ib_cstr(&out, "[Function (anonymous)]");
-      }
-      return ib_take(&out);
-    }
+    case SCR_DYN_FUNC:
+      return scr_insp_dyn_func(d, recurse, depth);
     case SCR_DYN_HANDLE: {
       if (d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||
           d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
@@ -1732,6 +1861,16 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth) {
   if (d->kind == SCR_DYN_STR) return scr_str_retain(d->v.str);
   return scr_insp_dyn(d, 0, depth);
+}
+
+/* util.format's %o over a dyn value: util.inspect with showHidden at the
+ * given depth. */
+ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth) {
+  bool outer = g_show_hidden;
+  g_show_hidden = true;
+  ScrStr *out = scr_insp_dyn(d, 0, depth);
+  g_show_hidden = outer;
+  return out;
 }
 
 /* ── console.table cells ─────────────────────────────────────────────── */

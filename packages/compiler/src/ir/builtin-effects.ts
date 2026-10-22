@@ -174,6 +174,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  // A checked-dynamic value the inspector does not render (a promise, a
+  // URL, a RegExp) throws the 'not supported yet' Error.
+  "insp.dyn",
+  "insp.dynS",
+  // %o's showHidden walk refuses the kinds whose hidden entries it cannot
+  // render.
+  "insp.dynHidden",
   // diagnostics_channel: publish runs subscribers synchronously (a throw
   // propagates — the documented divergence from triggerUncaughtException);
   // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for

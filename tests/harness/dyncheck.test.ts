@@ -1278,4 +1278,92 @@ console.log("done", caught);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("done 100\n");
   });
+
+  test("an inspection refusal throws before console.log writes", async () => {
+    // A promise reached through `unknown` has no dynamic rendering; the
+    // refusal must stop the call, not print a partial line and continue.
+    const r = await compileAndRun(
+      "inspect-refusal-unwind",
+      `import { inspect } from "node:util";
+const p: unknown = Promise.resolve(3);
+function attempt(label: string, f: () => void): void {
+  try {
+    f();
+    console.log(label, "returned");
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+attempt("log", () => console.log("x", p));
+attempt("inspect", () => console.log(inspect(p).length));
+attempt("record", () => console.log({ a: p }));
+attempt("array", () => console.log([p]));
+console.log("before");
+console.log(p);
+console.log("after");
+`,
+    );
+    const refusal = "util.inspect of a promise value is not supported yet";
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(
+      ["log", "inspect", "record", "array"].map((l) => `${l} ${refusal}\n`).join("") + "before\n",
+    );
+    expect(r.stderr).toContain(`Uncaught Error: ${refusal}`);
+  });
+
+  test("inspecting a compiled class with static fields through unknown refuses", async () => {
+    // Node prints `[class S] { count: 3 }`; the class object does not
+    // carry compiled static fields, so the inspector refuses rather than
+    // print `[class S]`. A class without static fields still prints.
+    const r = await compileAndRun(
+      "inspect-class-statics",
+      `class Plain {}
+class S extends Plain {
+  static count = 3;
+}
+const plain: unknown = Plain;
+const s: unknown = S;
+console.log(plain);
+try {
+  console.log(s);
+} catch (e) {
+  console.log((e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "[class Plain]\nutil.inspect of a class with static fields through unknown is not supported yet\n",
+    );
+  });
+
+  test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {
+    // Node's showHidden adds a function's length/name/prototype, an
+    // error's stack and a typed array's byte fields; %o throws the 'not
+    // supported yet' Error for them instead of printing without them.
+    const r = await compileAndRun(
+      "format-o-hidden-refusals",
+      `import { format } from "node:util";
+function f(): void {}
+const values: [string, unknown][] = [["fn", f], ["err", new Error("e")], ["u8", new Uint8Array(1)], ["arr", [1]]];
+for (const [label, value] of values) {
+  try {
+    console.log(label, format("%o", value));
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "fn util.format %o of function values is not supported yet",
+        "err util.format %o of Error values is not supported yet",
+        "u8 util.format %o of typed array values is not supported yet",
+        "arr [ 1, [length]: 1 ]",
+        "",
+      ].join("\n"),
+    );
+  });
 });
