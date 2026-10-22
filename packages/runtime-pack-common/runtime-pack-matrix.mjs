@@ -149,6 +149,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
   ["scr_ecdh.c", "ecdh"],
+  ["scr_dh.c", "dh"],
   ["scr_wasm.c", "wasm"],
   ["scr_webcrypto.c", "webcrypto"],
   ["scr_fetch.c", "nativeFetch"],
@@ -212,7 +213,7 @@ export function createRuntimePackMatrix({
     { id: "quickjs", predicate: false },
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
-    { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh") },
+    { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh") },
   ];
   const matrix = withLibraryRuntimeFlavors(
     withWorkerRuntimeVariants({

@@ -215,6 +215,13 @@ export function moduleWasiUnavailableSurface(
         };
         return false;
       }
+      if (node.fn === "crypto.dhNew" || node.fn === "crypto.dhGroupNew") {
+        found = {
+          surface: "DiffieHellman (the wasm32-wasi runtime does not include the mbedTLS library)",
+          loc,
+        };
+        return false;
+      }
       if (node.fn === "os.networkInterfaces") {
         found = {
           surface: "network-interface enumeration (WASI Preview 1 has no interface API)",

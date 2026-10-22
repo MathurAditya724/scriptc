@@ -1574,6 +1574,12 @@ export const BUILTIN_MODULE_FNS: Record<
     // A checked-dynamic curve name; the result is a native ECDH handle
     // (lowerCreateEcdh).
     createECDH: { fn: "crypto.ecdhNew", params: [DYN], result: DYN },
+    // Checked-dynamic arguments; the result is a native DiffieHellman or
+    // DiffieHellmanGroup handle (lowerCreateDiffieHellman and
+    // lowerGetDiffieHellman).
+    createDiffieHellman: { fn: "crypto.dhNew", params: [DYN, DYN, DYN, DYN], result: DYN },
+    getDiffieHellman: { fn: "crypto.dhGroupNew", params: [DYN], result: DYN },
+    createDiffieHellmanGroup: { fn: "crypto.dhGroupNew", params: [DYN], result: DYN },
   },
   zlib: {
     // The default-options convenience family is special-cased in
@@ -3063,10 +3069,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
         "createVerify",
         "sign",
         "verify",
-        "createDiffieHellman",
-        "createDiffieHellmanGroup",
-        "getDiffieHellman",
-        "diffieHellman",
         "publicEncrypt",
         "publicDecrypt",
         "privateEncrypt",
@@ -3078,6 +3080,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
           "can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics",
       ]),
     ),
+    diffieHellman:
+      "crypto.diffieHellman takes asymmetric KeyObjects, which the static runtime does not have; " +
+      "the objects of createDiffieHellman, getDiffieHellman and createECDH compute shared secrets",
     ...Object.fromEntries(
       ["getCipherInfo"].map((m) => [
         m,

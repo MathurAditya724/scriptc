@@ -65,6 +65,7 @@ const native: EarlyExecutableNativeFeatures = {
   tlsCa: false,
   cipher: false,
   ecdh: false,
+  dh: false,
   webcrypto: false,
   perfLoop: false,
 };

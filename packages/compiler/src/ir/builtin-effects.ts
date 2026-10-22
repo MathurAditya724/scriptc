@@ -13,6 +13,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's curve, key, point, encoding and format errors.
   "crypto.ecdhNew",
   "crypto.ecdhConvertKey",
+  // Node's prime, generator, size, encoding and group-name errors.
+  "crypto.dhNew",
+  "crypto.dhGroupNew",
   // node:test's { timeout } and { concurrency } range checks.
   "test.register",
   "test.registerEmpty",

@@ -918,6 +918,53 @@ for (const run of [() => ecdh.getPublicKey.name, () => { ecdh.custom = 1; }]) {
   });
 });
 
+// DiffieHellman primes past mbedTLS's 8192-bit limit throw a coded SC2020
+// error, as do property reads other than verifyError, property writes, and
+// Object.prototype method calls on an untyped DiffieHellman.
+describe("DiffieHellman runtime refusals", () => {
+  test("primes longer than 8192 bits throw SC2020", async () => {
+    const r = await compileAndRun(
+      "dh-long-prime",
+      `import { createDiffieHellman } from "node:crypto";
+const prime = Buffer.alloc(1025, 0xff);
+for (const run of [() => createDiffieHellman(prime), () => createDiffieHellman(8193)]) {
+  try {
+    run();
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+}
+console.log(createDiffieHellman(Buffer.alloc(1024, 0xff)).verifyError);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    const message = "DiffieHellman primes longer than 8192 bits have no native implementation";
+    expect(r.stdout).toBe(`Error SC2020 ${message}\nError SC2020 ${message}\n1\n`);
+    expect(r.stderr).toBe("");
+  });
+
+  test("DiffieHellman property reads, writes and Object.prototype calls throw SC2020", async () => {
+    const r = await compileAndRun(
+      "dh-properties",
+      `const crypto = require("node:crypto");
+const dh = crypto.getDiffieHellman("modp1");
+console.log(dh.verifyError);
+for (const run of [() => dh.getPrime.name, () => { dh.verifyError = 1; }, () => dh.hasOwnProperty("verifyError")]) {
+  try {
+    run();
+  } catch (e) {
+    console.log(e.name, e.code);
+  }
+}
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("0\nError SC2020\nError SC2020\nError SC2020\n");
+  });
+});
+
 // Node formats an unknown output encoding with %s, which prints a
 // function's source text and calls a toString the encoding's class
 // defines. The cipher runtime has neither, so both throw a coded SC2020

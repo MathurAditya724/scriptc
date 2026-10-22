@@ -228,24 +228,42 @@ fenced.ts:105:1 - error SC2020: 'ECDH.computeSecret(key, encoding) with a Buffer
   104 | createECDH("sect163k1");
   105 | createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
       | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  106 | /* WebCrypto beyond the HMAC slice: @types/node declares the whole
+  106 | /* DiffieHellman's Object.prototype members, and crypto.diffieHellman over
 
   hint: Node reads the second argument as the key's input encoding and answers a Buffer; pass the output encoding third: computeSecret(key, undefined, encoding)
 
-fenced.ts:110:9 - error SC2020: 'crypto.subtle.encrypt' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:109:1 - error SC2020: 'DiffieHellman.toString' is part of the standard library types but has no scriptc lowering yet
 
-  109 | async function encryptWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
-  110 |   await crypto.subtle.encrypt({ name: "AES-GCM", iv: new Uint8Array(12) }, key, new Uint8Array(1));
+  108 | import { createDiffieHellman, diffieHellman, type KeyObject } from "node:crypto";
+  109 | createDiffieHellman(Buffer.from([23])).toString();
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  110 | declare const dhKey: KeyObject;
+
+  hint: generateKeys(), computeSecret(), getPrime(), getGenerator(), getPublicKey(), getPrivateKey(), setPublicKey(), setPrivateKey() and verifyError are supported
+
+fenced.ts:111:1 - error SC2020: 'crypto.diffieHellman' is typed by @types/node but has no scriptc lowering yet
+
+  110 | declare const dhKey: KeyObject;
+  111 | diffieHellman({ privateKey: dhKey, publicKey: dhKey });
+      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  112 | /* WebCrypto beyond the HMAC slice: @types/node declares the whole
+
+  hint: crypto.diffieHellman takes asymmetric KeyObjects, which the static runtime does not have; the objects of createDiffieHellman, getDiffieHellman and createECDH compute shared secrets
+
+fenced.ts:116:9 - error SC2020: 'crypto.subtle.encrypt' is part of the standard library types but has no scriptc lowering yet
+
+  115 | async function encryptWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
+  116 |   await crypto.subtle.encrypt({ name: "AES-GCM", iv: new Uint8Array(12) }, key, new Uint8Array(1));
       |         ^~~~~~~~~~~~~~~~~~~~~
-  111 | }
+  117 | }
 
   hint: the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
 
-fenced.ts:115:15 - error SC2020: 'navigator.hardwareConcurrency' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:121:15 - error SC2020: 'navigator.hardwareConcurrency' is typed by @types/node but has no scriptc lowering yet
 
-  114 |  * compile; the other members fence by name. */
-  115 | const cores = navigator.hardwareConcurrency;
+  120 |  * compile; the other members fence by name. */
+  121 | const cores = navigator.hardwareConcurrency;
       |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  116 | void cores;
+  122 | void cores;
 
   hint: of Node's navigator global only typeof navigator and navigator.userAgent compile

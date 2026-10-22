@@ -110,6 +110,7 @@ async function main(): Promise<number> {
               tls: false,
               cipher: false,
               ecdh: false,
+              dh: false,
               webcrypto: false,
               perfLoop: false,
               tlsCa: false,
