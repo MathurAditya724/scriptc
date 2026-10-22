@@ -37,6 +37,28 @@ test("comment-like text inside regular expressions is code", () => {
   ).toBe(false);
 });
 
+test("a regular expression can start after a statement that ends at its keyword or label", () => {
+  const loop = (body: string) => `a: for (;;) {\n${body}\n}\n`;
+  expect(
+    equivalent(loop("break\n/[//]/.test(x); c = 1;"), loop("break\n/[//]/.test(x); c = 2;")),
+  ).toBe(false);
+  expect(
+    equivalent(loop("break a\n/[//]/.test(x); c = 1;"), loop("break a\n/[//]/.test(x); c = 2;")),
+  ).toBe(false);
+  expect(
+    equivalent("debugger\n/[//]/.test(x); c = 1;\n", "debugger\n/[//]/.test(x); c = 2;\n"),
+  ).toBe(false);
+  // The next line's `x` is no label: it starts a new statement, and `/` divides.
+  expect(equivalent(loop("continue\nx / 2; // one"), loop("continue\nx / 2; // two"))).toBe(true);
+});
+
+test("whitespace outside ASCII is never equivalent", () => {
+  expect(
+    equivalent("return\u3000/[//]/.test(x); c = 1;\n", "return\u3000/[//]/.test(x); c = 2;\n"),
+  ).toBe(false);
+  expect(equivalent("const a = 1;\u00a0// one\n", "const a = 1;\u00a0// two\n")).toBe(false);
+});
+
 test("U+2028 and U+2029 end a line comment, so their files are never equivalent", () => {
   expect(equivalent("// a\u2028c = 1;\n", "// a\u2028c = 2;\n")).toBe(false);
   expect(equivalent("/* a\u2029*/ c = 1;\n", "/* b\u2029*/ c = 1;\n")).toBe(false);

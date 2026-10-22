@@ -19,10 +19,13 @@
  *   cannot tell which, so it gives up, as it does for escaped identifiers,
  *   which can spell keywords.
  * - Template literals track their `${` substitutions on a brace stack.
- * - JSX files, files that contain U+2028 or U+2029 anywhere (they end a
- *   line comment and separate lines for automatic semicolon insertion),
- *   and unterminated strings, comments, templates and regular expressions
- *   give up.
+ * - After `break`, `continue` and `debugger`, and after the label of a
+ *   `break` or `continue`, a `/` starts a regular expression: it can only
+ *   follow there once automatic semicolon insertion ends the statement.
+ * - JSX files, files that contain whitespace or a line terminator outside
+ *   ASCII anywhere (the identifier scan would take it as part of a word, and
+ *   U+2028 and U+2029 end a line comment), and unterminated strings,
+ *   comments, templates and regular expressions give up.
  *
  * Plain character scans keep the scanner free of Unicode property escapes:
  * any non-ASCII code unit outside strings, templates, regular expressions
@@ -54,6 +57,12 @@ const EXPRESSION_KEYWORDS = new Set([
   "default",
   "extends",
 ]);
+
+/** Statements that end at their keyword, or at the label after it. */
+const JUMP_KEYWORDS = new Set(["break", "continue", "debugger"]);
+
+/** Whitespace and line terminators outside ASCII. */
+const NON_ASCII_SPACE = /[\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/;
 
 /** Keywords whose parenthesized header is followed by a statement. */
 const HEADER_KEYWORDS = new Set(["if", "while", "for", "with"]);
@@ -120,7 +129,7 @@ function isSpace(code: number): boolean {
 /** The tokens of `source`, or null when the scanner cannot classify it. */
 function scan(path: string, source: string): Token[] | null {
   if (path.endsWith(".tsx") || path.endsWith(".jsx")) return null;
-  if (source.includes("\u2028") || source.includes("\u2029")) return null;
+  if (NON_ASCII_SPACE.test(source)) return null;
   const typeScript = isTypeScript(path);
   const tokens: Token[] = [];
   // Brace kinds: true for a template substitution, false otherwise.
@@ -128,14 +137,23 @@ function scan(path: string, source: string): Token[] | null {
   // Paren kinds: true for a statement header.
   const parens: boolean[] = [];
   let lineBreakBefore = false;
-  // The previous token and the one before it, and whether a `)` closed a
-  // statement header.
-  const last: { token: string | null; before: string | null } = { token: null, before: null };
+  // The previous token and the one before it, whether the previous token is
+  // the label of a `break` or `continue` on its line, and whether a `)`
+  // closed a statement header.
+  const last: { token: string | null; before: string | null; label: boolean } = {
+    token: null,
+    before: null,
+    label: false,
+  };
   let closedHeader = false;
   const push = (text: string, comment = false): void => {
     tokens.push({ text, comment, lineBreakBefore });
     lineBreakBefore = false;
     if (!comment) {
+      last.label =
+        (last.token === "break" || last.token === "continue") &&
+        !tokens[tokens.length - 1]!.lineBreakBefore &&
+        /^[A-Za-z_$]/.test(text);
       last.before = last.token;
       last.token = text;
     }
@@ -184,7 +202,6 @@ function scan(path: string, source: string): Token[] | null {
       index++;
       continue;
     }
-    if (code > 127 && (code === 0xa0 || code === 0xfeff)) return null;
     const next = source.charCodeAt(index + 1);
     // Comments.
     if (code === 47 && (next === 47 || next === 42)) {
@@ -276,7 +293,7 @@ function scan(path: string, source: string): Token[] | null {
       else if (before === "++" || before === "--") return null;
       else if (before === "]") regex = false;
       else if (/^[A-Za-z0-9_$\\]/.test(before) || before.charCodeAt(0) > 127)
-        regex = EXPRESSION_KEYWORDS.has(before);
+        regex = EXPRESSION_KEYWORDS.has(before) || JUMP_KEYWORDS.has(before) || last.label;
       else if (before.startsWith("'") || before.startsWith('"') || before.endsWith("`"))
         regex = false;
       else if (before.startsWith("/") && before.length > 1 && before !== "/=") regex = false;
