@@ -1,6 +1,6 @@
 import { typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
-import { BYTES_ELEM_NUM, SCR_ARR_FIELD, f64Lit, sizeToDouble } from "./common.js";
+import { BYTES_ELEM_NUM, SCR_ARR_FIELD, SCR_ARR_STATES, f64Lit, sizeToDouble } from "./common.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   INLINE_UNION_FIELD,
@@ -1780,6 +1780,32 @@ export class LlDyn {
             B.line(`store ${member.type} ${oldValue}, ptr ${checkedPtr}`);
           });
           if (t.kind !== "record") {
+            // Whether the dense slots carry states (SCR_ARR_STATES in
+            // `spare`) moves with them; the rest of `spare` stays.
+            const cachedSpare = B.tmp(),
+              checkedSpare = B.tmp();
+            const sparePtr = (array: string): string => {
+              const ptr = B.tmp();
+              B.line(
+                `${ptr} = getelementptr inbounds %ScrArr, ptr ${array}, i64 0, i32 ${SCR_ARR_FIELD.spare}`,
+              );
+              return ptr;
+            };
+            const cachedSparePtr = sparePtr(cached),
+              checkedSparePtr = sparePtr(checked);
+            B.line(`${cachedSpare} = load i16, ptr ${cachedSparePtr}`);
+            B.line(`${checkedSpare} = load i16, ptr ${checkedSparePtr}`);
+            const exchange = (own: string, other: string, ptr: string): void => {
+              const kept = B.tmp(),
+                moved = B.tmp(),
+                next = B.tmp();
+              B.line(`${kept} = and i16 ${own}, ${~SCR_ARR_STATES}`);
+              B.line(`${moved} = and i16 ${other}, ${SCR_ARR_STATES}`);
+              B.line(`${next} = or i16 ${kept}, ${moved}`);
+              B.line(`store i16 ${next}, ptr ${ptr}`);
+            };
+            exchange(cachedSpare, checkedSpare, cachedSparePtr);
+            exchange(checkedSpare, cachedSpare, checkedSparePtr);
             // Sparse slots and numeric properties live out of line; each
             // array keeps its own match metadata.
             host.declare("declare void @scr_arr_swap_indexed_ext(ptr, ptr)");
