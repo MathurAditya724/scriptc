@@ -29,3 +29,16 @@ const out = words.flatMap((s) => {
   return s.length > 0 ? s.toUpperCase() : [];
 });
 console.log(out, calls);
+
+// One union result type with an empty arm in one callback and a populated
+// array arm in another.
+const counts = [1, 2, 3];
+console.log(counts.flatMap((n) => (n % 2 ? n : [])), counts.flatMap((n) => (n % 2 ? n : [n, n])));
+
+// Array results keep present undefined elements, and an undefined result
+// appends itself.
+const withGaps: (number | undefined)[] = [4, undefined, 6];
+const maybe: (number | undefined)[] = [1, 2, undefined];
+console.log(maybe.flatMap((n) => (n === 2 ? withGaps : n)));
+const gaps: (string | undefined)[] = ["x", undefined];
+console.log(["a", "b"].flatMap((s) => (s === "b" ? gaps : s)));

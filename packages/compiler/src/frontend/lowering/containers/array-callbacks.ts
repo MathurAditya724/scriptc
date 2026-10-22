@@ -1588,9 +1588,10 @@ interface FlatMapUnionPlan {
   arms: ("spread" | "empty" | "value")[];
 }
 
-/** The plan for a callback returning `T | U[]`: every non-array arm and
- * every array arm's element must convert into the result's element type
- * without a check. Null when an arm does not. */
+/** The plan for a callback returning `T | U[]`: every non-array arm must
+ * convert into the result's element type without a check, and every
+ * array arm's element type must be the result's. Null when an arm does
+ * not. */
 function flatMapUnionPlan(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1623,7 +1624,9 @@ function flatMapUnionPlan(
   const plan: FlatMapUnionPlan["arms"] = [];
   for (const arm of arms) {
     if (arm.kind === "array" && emptyArms.some((e) => typeEquals(e, arm))) plan.push("empty");
-    else if (arm.kind === "array" && converts(arm.elem)) plan.push("spread");
+    // An array arm copies its elements as they are stored, a present
+    // undefined included, so its element type is the result's.
+    else if (arm.kind === "array" && typeEquals(arm.elem, outElem)) plan.push("spread");
     else if (arm.kind !== "array" && converts(arm)) plan.push("value");
     else return null;
   }
@@ -1642,7 +1645,9 @@ function flatMapUnionHelper(
   loc: SrcLoc,
   present: boolean,
 ): string {
-  const key = `flatMapUnion:${typeKey(elem)}:${typeKey(fnRet)}:${typeKey(plan.outElem)}:${arity}${present ? ":present" : ""}`;
+  // The plan is part of the key: one union result type can carry an empty
+  // `never[]` arm in one callback and a populated array arm in another.
+  const key = `flatMapUnion:${typeKey(elem)}:${typeKey(fnRet)}:${typeKey(plan.outElem)}:${plan.arms.join(",")}:${arity}${present ? ":present" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = `%arr.flatMap.${lowerer.arrHofHelpers.size}`;
@@ -1683,7 +1688,19 @@ function flatMapUnionHelper(
           lowerer,
           outRef(),
           outLength(),
-          lowerer.coerceToExpected(narrowed, plan.outElem),
+          lowerer.coerceToExpected(
+            // A unit arm's value is the unit itself, which has no
+            // narrowed representation.
+            isUnitType(arm)
+              ? {
+                  kind: "unitLit",
+                  unit: arm.kind === "nullT" ? "null" : "undefined",
+                  type: arm,
+                  loc,
+                }
+              : narrowed,
+            plan.outElem,
+          ),
           plan.outElem,
           loc,
         ),
@@ -1749,10 +1766,7 @@ function flatMapUnionHelper(
                 lowerer,
                 outRef(),
                 outLength(),
-                lowerer.coerceToExpected(
-                  varRef(itemId, arrayValueType(lowerer, innerT.elem), loc),
-                  plan.outElem,
-                ),
+                varRef(itemId, arrayValueType(lowerer, innerT.elem), loc),
                 plan.outElem,
                 loc,
               ),
