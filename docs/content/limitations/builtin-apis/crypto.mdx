@@ -20,6 +20,7 @@
   ECDH property reads and writes throw a coded SC2020 error.
   `createDiffieHellman`, `getDiffieHellman`, and `createDiffieHellmanGroup` support the modp1, modp2, modp5, and modp14 through modp18 groups, explicit primes and generators, and generated safe primes, on native targets, through `generateKeys()`, `computeSecret()`, `getPrime()`, `getGenerator()`, `getPublicKey()`, `getPrivateKey()`, `setPublicKey()`, `setPrivateKey()`, and `verifyError`, with Node's private key lengths, DH_check results, and errors; wasm32-wasi builds are refused.
   Primes longer than 8192 bits throw a coded SC2020 error; Node accepts primes up to 10000 bits for key generation and secrets.
+  `setPublicKey()` and `setPrivateKey()` keys longer than 80000 bytes, not counting leading zero bytes, throw a coded SC2020 error, as does a generator that long with a prime below 512 bits; Node accepts them.
   A call on a DiffieHellman value whose arguments no @types/node overload accepts, or whose output encoding is typed `any`, is refused at compile time, as are its `Object.prototype` methods; other property reads, and property writes, throw a coded SC2020 error.
   `Object.keys()` and `in` do not see a DiffieHellman's own `verifyError` property, and `JSON.stringify()` and `instanceof` are refused.
   After `createDiffieHellman(primeLength)` throws `Invalid DH parameters`, the next OpenSSL error Node throws can list the failed generation's errors in `opensslErrorStack`; errors in a compiled binary list only their own.

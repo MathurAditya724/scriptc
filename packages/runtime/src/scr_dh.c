@@ -17,7 +17,8 @@
  *     p ≡ 23 (mod 24) for the generator 2, p ≡ 59 (mod 60) for 5 and
  *     p ≡ 11 (mod 12) otherwise, as OpenSSL's dh_builtin_genparams does.
  * Primes longer than mbedTLS's 8192-bit limit throw a coded SC2020
- * error. All arguments are borrowed. */
+ * error, as do keys and generators past mbedTLS's 80000-byte limit (leading
+ * zero bytes aside). All arguments are borrowed. */
 #include "scr_runtime.h"
 
 #include <math.h>
@@ -38,6 +39,9 @@
 /* DH_MIN_MODULUS_BITS and OPENSSL_DH_MAX_MODULUS_BITS. */
 #define SD_MIN_MODULUS_BITS 512
 #define SD_MAX_MODULUS_BITS 10000
+
+/* The longest value an mbedtls_mpi holds, in bytes. */
+#define SD_MAX_VALUE_BYTES (MBEDTLS_MPI_MAX_LIMBS * sizeof(mbedtls_mpi_uint))
 
 /* DH_check result bits, as verifyError reports them. */
 enum {
@@ -171,6 +175,14 @@ static void sd_too_long(void) {
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
 }
 
+/* A key or generator past SD_MAX_VALUE_BYTES, which BN_bin2bn reads. */
+static void sd_value_too_long(void) {
+  char message[96];
+  int n = snprintf(message, sizeof message, "DiffieHellman values longer than %zu bytes have no native implementation",
+                   (size_t)SD_MAX_VALUE_BYTES);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, n < 0 ? 0 : (size_t)n, "SC2020");
+}
+
 /* validateInt32(value, name). */
 static bool sd_validate_int32(const char *name, double value) {
   bool integer = isfinite(value) && trunc(value) == value;
@@ -215,10 +227,10 @@ static bool sd_exp(mbedtls_mpi *out, const mbedtls_mpi *base, const mbedtls_mpi 
   MBEDTLS_MPI_CHK(mbedtls_mpi_lset(&step, 1));
   MBEDTLS_MPI_CHK(mbedtls_mpi_shift_l(&step, SD_DIGIT_BITS));
   for (size_t offset = 0; offset < ebits; offset += SD_DIGIT_BITS) {
-    MBEDTLS_MPI_CHK(mbedtls_mpi_copy(&digit, e));
-    MBEDTLS_MPI_CHK(mbedtls_mpi_shift_r(&digit, offset));
-    for (size_t bit = SD_DIGIT_BITS; bit < mbedtls_mpi_bitlen(&digit); bit++)
-      MBEDTLS_MPI_CHK(mbedtls_mpi_set_bit(&digit, bit, 0));
+    /* Bit by bit, so each digit costs its own width, not the exponent's. */
+    MBEDTLS_MPI_CHK(mbedtls_mpi_lset(&digit, 0));
+    for (size_t bit = 0; bit < SD_DIGIT_BITS && offset + bit < ebits; bit++)
+      if (mbedtls_mpi_get_bit(e, offset + bit)) MBEDTLS_MPI_CHK(mbedtls_mpi_set_bit(&digit, bit, 1));
     MBEDTLS_MPI_CHK(mbedtls_mpi_exp_mod(&term, &power, &digit, p, NULL));
     MBEDTLS_MPI_CHK(mbedtls_mpi_mul_mpi(&acc, &acc, &term));
     MBEDTLS_MPI_CHK(mbedtls_mpi_mod_mpi(&acc, &acc, p));
@@ -232,6 +244,36 @@ cleanup:
   mbedtls_mpi_free(&term);
   mbedtls_mpi_free(&step);
   return ret == 0;
+}
+
+/* Drops a big-endian value's leading zero bytes, which BN_bin2bn ignores
+ * but mbedtls_mpi_read_binary counts against SD_MAX_VALUE_BYTES. */
+static void sd_strip(const unsigned char **data, size_t *len) {
+  while (*len > 0 && **data == 0) {
+    (*data)++;
+    (*len)--;
+  }
+}
+
+/* BN_bin2bn: false when the value, without its leading zeros, is longer
+ * than SD_MAX_VALUE_BYTES. */
+static bool sd_read(mbedtls_mpi *x, const ScrBytes *bytes) {
+  const unsigned char *data = bytes->data;
+  size_t len = bytes->len;
+  sd_strip(&data, &len);
+  if (len > SD_MAX_VALUE_BYTES) return false;
+  if (mbedtls_mpi_read_binary(x, data, len) != 0) scr_trap("scriptc: out of memory\n");
+  return true;
+}
+
+/* BN_cmp over two big-endian values, for ones sd_read cannot hold. */
+static int sd_cmp_bytes(const ScrBytes *a, const ScrBytes *b) {
+  const unsigned char *a_data = a->data, *b_data = b->data;
+  size_t a_len = a->len, b_len = b->len;
+  sd_strip(&a_data, &a_len);
+  sd_strip(&b_data, &b_len);
+  if (a_len != b_len) return a_len < b_len ? -1 : 1;
+  return a_len ? memcmp(a_data, b_data, a_len) : 0;
 }
 
 /* A uniformly random number of exactly `bits` bits (the top bit set), and
@@ -872,12 +914,21 @@ static ScrDyn *sd_generate(double bits, const ScrBytes *generator_bytes, double 
 /* new DiffieHellman(prime, generator) over explicit parameters. */
 static ScrDyn *sd_from_prime(const ScrBytes *prime, const ScrBytes *generator_bytes, double generator) {
   ScDh *d = sd_alloc();
-  if (mbedtls_mpi_read_binary(&d->p, prime->data, prime->len) != 0) scr_trap("scriptc: out of memory\n");
-  if (generator_bytes) {
-    if (mbedtls_mpi_read_binary(&d->g, generator_bytes->data, generator_bytes->len) != 0)
-      scr_trap("scriptc: out of memory\n");
-  } else if (mbedtls_mpi_lset(&d->g, (mbedtls_mpi_sint)generator) != 0) {
-    scr_trap("scriptc: out of memory\n");
+  bool p_held = sd_read(&d->p, prime);
+  bool g_held = true;
+  if (generator_bytes) g_held = sd_read(&d->g, generator_bytes);
+  else if (mbedtls_mpi_lset(&d->g, (mbedtls_mpi_sint)generator) != 0) scr_trap("scriptc: out of memory\n");
+  if (!p_held || !g_held) {
+    /* A prime this long is past MBEDTLS_MPI_MAX_BITS, and a generator
+     * this long is at least a prime of SD_MIN_MODULUS_BITS. */
+    bool bad = g_held    ? mbedtls_mpi_cmp_int(&d->g, 2) < 0
+               : !p_held ? sd_cmp_bytes(generator_bytes, prime) >= 0
+                         : mbedtls_mpi_bitlen(&d->p) >= SD_MIN_MODULUS_BITS;
+    sd_release(d);
+    if (bad) sd_bad_generator();
+    else if (!p_held) sd_too_long();
+    else sd_value_too_long();
+    return NULL;
   }
   if (mbedtls_mpi_cmp_int(&d->g, 2) < 0 ||
       (mbedtls_mpi_bitlen(&d->p) >= SD_MIN_MODULUS_BITS && mbedtls_mpi_cmp_mpi(&d->g, &d->p) >= 0)) {
@@ -1057,10 +1108,27 @@ static bool sd_derives(const ScDh *d) {
   return mbedtls_mpi_cmp_int(&d->priv, 0) != 0 && bits >= SD_MIN_MODULUS_BITS && bits <= SD_MAX_MODULUS_BITS;
 }
 
+/* DH_check_pub_key's subgroup test: under a named group with its own q
+ * (the RFC 5114 groups), a peer key must have key^q mod p = 1. The safe
+ * prime groups' q is (p - 1) / 2, which OpenSSL does not test. */
+static bool sd_in_subgroup(const ScDh *d, const mbedtls_mpi *peer) {
+  if (!d->named || !d->named->q) return true;
+  mbedtls_mpi q, r;
+  mbedtls_mpi_init(&q);
+  mbedtls_mpi_init(&r);
+  if (mbedtls_mpi_read_binary(&q, d->named->q, d->named->q_len) != 0 || !sd_exp(&r, peer, &q, &d->p))
+    scr_trap("scriptc: out of memory\n");
+  bool in = mbedtls_mpi_cmp_int(&r, 1) == 0;
+  mbedtls_mpi_free(&q);
+  mbedtls_mpi_free(&r);
+  return in;
+}
+
 /* computeSecret(key, inputEncoding, outputEncoding): key^priv mod p,
- * padded to the prime's length. A secret of 0, 1 or p - 1 is predictable
- * (a peer key of small order, or a composite modulus), so it fails like
- * OpenSSL's derivation does. */
+ * padded to the prime's length. A key outside [2, p - 2], or outside a
+ * named group's order-q subgroup, is rejected as DH_check_pub_key does.
+ * A secret of 0, 1 or p - 1 is predictable (a peer key of small order,
+ * or a composite modulus), so it fails like OpenSSL's derivation does. */
 static ScrDyn *sd_compute_secret(ScDh *d, const ScrDyn *key, const ScrDyn *in_enc, const ScrDyn *out_enc) {
   ScrBytes *bytes = ca_key_bytes(SD_SUBJECT, key, in_enc);
   if (!bytes) return NULL;
@@ -1069,12 +1137,19 @@ static ScrDyn *sd_compute_secret(ScDh *d, const ScrDyn *key, const ScrDyn *in_en
   mbedtls_mpi_init(&peer);
   mbedtls_mpi_init(&bound);
   mbedtls_mpi_init(&secret);
-  if (mbedtls_mpi_read_binary(&peer, bytes->data, bytes->len) != 0 || mbedtls_mpi_sub_int(&bound, &d->p, 1) != 0)
+  /* A key longer than p, past its leading zeros, is above p - 1. */
+  const unsigned char *data = bytes->data;
+  size_t len = bytes->len;
+  sd_strip(&data, &len);
+  bool longer = len > mbedtls_mpi_size(&d->p);
+  if ((!longer && mbedtls_mpi_read_binary(&peer, data, len) != 0) || mbedtls_mpi_sub_int(&bound, &d->p, 1) != 0)
     scr_trap("scriptc: out of memory\n");
-  if (mbedtls_mpi_cmp_int(&peer, 1) <= 0) {
+  if (!longer && mbedtls_mpi_cmp_int(&peer, 1) <= 0) {
     sd_throw(SCR_ERR_RANGE, "ERR_CRYPTO_INVALID_KEYLEN", "Supplied key is too small");
-  } else if (mbedtls_mpi_cmp_mpi(&peer, &bound) >= 0) {
+  } else if (longer || mbedtls_mpi_cmp_mpi(&peer, &bound) >= 0) {
     sd_throw(SCR_ERR_RANGE, "ERR_CRYPTO_INVALID_KEYLEN", "Supplied key is too large");
+  } else if (!sd_in_subgroup(d, &peer)) {
+    sd_throw(SCR_ERR_RANGE, "ERR_CRYPTO_INVALID_KEYTYPE", "Supplied key is invalid");
   } else if (!d->has_priv || (!d->group && !sd_derives(d)) || !sd_exp(&secret, &peer, &d->priv, &d->p) ||
              mbedtls_mpi_cmp_int(&secret, 1) <= 0 || mbedtls_mpi_cmp_mpi(&secret, &bound) == 0) {
     sd_operation_failed("Failed to compute shared secret");
@@ -1103,9 +1178,13 @@ static ScrDyn *sd_get_value(const mbedtls_mpi *value, bool present, const char *
 static ScrDyn *sd_set_value(mbedtls_mpi *value, bool *present, ScrDyn *self, const ScrDyn *key, const ScrDyn *encoding) {
   ScrBytes *bytes = ca_key_bytes(SD_SUBJECT, key, encoding);
   if (!bytes) return NULL;
-  if (mbedtls_mpi_read_binary(value, bytes->data, bytes->len) != 0) scr_trap("scriptc: out of memory\n");
-  *present = true;
+  bool held = sd_read(value, bytes);
   scr_bytes_release(bytes);
+  if (!held) {
+    sd_value_too_long();
+    return NULL;
+  }
+  *present = true;
   return scr_dyn_retain(self);
 }
 
