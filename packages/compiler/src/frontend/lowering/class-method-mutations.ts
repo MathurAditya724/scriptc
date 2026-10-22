@@ -125,9 +125,12 @@ export function collectClassMethodMutations(
   };
   // Whether no function value can inhabit `type`. Primitives qualify, and so
   // do non-callable object types a function is not assignable to: one that
-  // requires a property functions lack, or a weak (all-optional) type that
+  // requires a property functions lack, a weak (all-optional) type that
   // shares no property with functions (TypeScript's weak-type rule rejects
-  // callable sources too).
+  // callable sources too), or a dictionary whose string index values are
+  // neither `any` nor a type parameter: a function type has no index
+  // signature, and only an `any` index admits a source without one (an
+  // instantiation can make a type parameter `any`).
   const functionFree = (type: ts.Type): boolean => {
     if (type.isUnionType()) return ts.constituentTypes(type).every(functionFree);
     if (
@@ -149,7 +152,14 @@ export function collectClassMethodMutations(
     )
       return false;
     const properties = lowerer.checker.getPropertiesOfType(type);
-    if (properties.length === 0) return false;
+    if (properties.length === 0)
+      return lowerer.checker
+        .getIndexInfosOfType(type)
+        .some(
+          (index) =>
+            (index.keyType.flags & ts.TypeFlags.StringLike) !== 0 &&
+            (index.type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Instantiable)) === 0,
+        );
     const required = properties.filter(
       (property) => (property.flags & ts.SymbolFlags.Optional) === 0,
     );

@@ -135,3 +135,45 @@ test("a reflection call with a well-known symbol key keeps checked dispatch", as
   const callers = await callersOf(`${range}${write}`, "%Range.sym:iterator");
   expect(callers.filter((name) => !name.startsWith("%method.value:"))).toEqual([]);
 });
+
+const groups = `
+class Tally {
+  n = 0;
+  add(): void { this.n++; }
+}
+interface Settings { groups: VALUE }
+function addGroup(settings: Settings, name: string): void {
+  settings.groups[name] = {};
+}
+const settings: Settings = { groups: {} };
+const tally = new Tally();
+addGroup(settings, String(tally.n));
+tally.add();
+console.log(tally.n, Object.keys(settings.groups));
+`;
+
+test("a computed write into a dictionary of dictionaries leaves method calls direct", async () => {
+  const source = groups.replace("VALUE", "Record<string, Record<string, string>>");
+  expect(await callersOf(source, "%dyn.class.properties")).toEqual([]);
+});
+
+test("a computed write into a dictionary that can hold functions keeps checked dispatch", async () => {
+  for (const value of [
+    "Record<string, Record<string, string> | (() => void)>",
+    "Record<string, Record<string, any>>",
+  ]) {
+    const source = groups.replace("VALUE", value);
+    expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+  }
+});
+
+test("a computed write into a generic dictionary of dictionaries keeps checked dispatch", async () => {
+  const source = groups
+    .replace(
+      "interface Settings { groups: VALUE }",
+      "interface Settings<T> { groups: Record<string, Record<string, T>> }",
+    )
+    .replace("function addGroup(settings: Settings,", "function addGroup<T>(settings: Settings<T>,")
+    .replace("const settings: Settings =", "const settings: Settings<string> =");
+  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+});

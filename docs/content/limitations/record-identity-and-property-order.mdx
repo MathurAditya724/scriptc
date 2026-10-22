@@ -1,6 +1,7 @@
 A record converted to a record type with a different set of properties, such as a narrower shape or one that adds optional properties, is copied.
 Mutations through the converted reference do not affect the original, and the copy is not `===` to it.
 Empty record layouts are also snapshots because they have no property storage.
+A class instance or record held as `{}`, `object` or `unknown` and then converted to a dictionary type such as `Record<string, string>` is copied as well; a dictionary of `unknown` values keeps the original object.
 `scriptc coverage` and `scriptc build` report `SC6001` where a copied value is then written or compared, whether the record was passed as an argument, stored in a typed binding, asserted with `as`, assigned to a typed binding later, or stored as an element of a typed array literal.
 
 Typed records with declared fields, indexed records, and arrays retain identity and mutations through native checked storage.

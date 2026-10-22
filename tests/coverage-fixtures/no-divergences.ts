@@ -1,6 +1,6 @@
 // Ordinary code: identity-preserving calls, declaration-ordered literals,
-// Latin-script comparisons, related-class casts, ISO dates and views of the
-// global object report no divergence.
+// Latin-script comparisons, related-class casts, ISO dates, views of the
+// global object and a dictionary held as `{}` report no divergence.
 interface Item {
   name: string;
   qty: number;
@@ -38,3 +38,10 @@ const COUNT = Symbol.for("no-divergences.count");
 const globalState = globalThis as { [COUNT]?: { n: number } };
 globalState[COUNT] = { n: 1 };
 console.log(globalState[COUNT]?.n);
+
+// A dictionary held as `{}` comes back out as itself.
+const counts: Record<string, string> = { a: "x" };
+const opaque: {} = counts;
+const again: Record<string, string> = opaque;
+again[counts["a"] ?? "a"] = "y";
+console.log(JSON.stringify(counts));
