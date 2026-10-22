@@ -47,24 +47,33 @@ test("a failed check finishes its iteration outside the ordinary copy", async ()
   const llvm = await emitLlvm(source);
   const fn = /^define internal double @sc_bf_scaled\([^]*?^}/m.exec(llvm)?.[0] ?? "";
   const order = labels(fn);
-  const slow = order.findIndex((l) => l.startsWith("spec.slow"));
-  const tail = order.findIndex((l) => l.startsWith("spec.tail"));
-  const fast = order.findIndex((l) => l.startsWith("spec.fast"));
-  expect(slow).toBeGreaterThanOrEqual(0);
-  expect(tail).toBeGreaterThan(slow);
-  expect(fast).toBeGreaterThan(tail);
-  // Every resume point is in the third copy, between its start and the
-  // fast copy, so the ordinary copy has one entry.
-  const resumes = order.flatMap((l, i) => (l.startsWith("spec.resume") ? [i] : []));
-  expect(resumes.length).toBeGreaterThan(0);
-  for (const i of resumes) {
-    expect(i).toBeGreaterThan(tail);
-    expect(i).toBeLessThan(fast);
+  // The loop may have several speculative sites (one in each copy of a
+  // dense-array loop). Each site emits its ordinary copy, its third copy
+  // and its fast copy in that order.
+  const slows = order.flatMap((l, i) => (l.startsWith("spec.slow") ? [i] : []));
+  expect(slows.length).toBeGreaterThan(0);
+  let resumes = 0;
+  for (const slow of slows) {
+    const next = (prefix: string): number =>
+      order.findIndex((l, i) => i > slow && l.startsWith(prefix));
+    const tail = next("spec.tail");
+    const fast = next("spec.fast");
+    expect(tail).toBeGreaterThan(slow);
+    expect(fast).toBeGreaterThan(tail);
+    // Every resume point of the site is in its third copy, between that
+    // copy's start and the fast copy, so the ordinary copy has one entry.
+    for (let i = slow + 1; i < fast; i++) {
+      if (!order[i]!.startsWith("spec.resume")) continue;
+      expect(i).toBeGreaterThan(tail);
+      resumes++;
+    }
+    // The third copy's header leaves for the ordinary copy's header.
+    const header = order[slow + 1]!;
+    const third = fn.slice(fn.indexOf(`\n${order[tail]}:`), fn.indexOf(`\n${order[fast]}:`));
+    expect(third).toContain(`br label %${header}`);
   }
-  // The third copy's header leaves for the ordinary copy's header.
-  const header = order[slow + 1]!;
-  const third = fn.slice(fn.indexOf(`\n${order[tail]}:`), fn.indexOf(`\n${order[fast]}:`));
-  expect(third).toContain(`br label %${header}`);
+  expect(resumes).toBe(order.filter((l) => l.startsWith("spec.resume")).length);
+  expect(resumes).toBeGreaterThan(0);
 });
 
 test("a loop site stops entering its fast copy after repeated bails", async () => {
