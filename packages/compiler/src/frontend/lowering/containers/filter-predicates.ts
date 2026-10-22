@@ -176,11 +176,41 @@ function conversionBody(
       };
       const value = converted(lowerer, read, own.type, field.type, loc);
       if (value === null) return null;
-      fields.push({ name: field.name, value });
+      fields.push({
+        name: field.name,
+        value: keepAbsence(lowerer, input, from.shapeId, field, value, loc),
+      });
     }
-    return [{ kind: "return", value: { kind: "recordLit", fields, type: to, loc }, loc }];
+    // The copy keeps the source's own keys in the source's order, as a width
+    // copy does (key-order-witness.ts).
+    const copy: IrExpr = { kind: "recordLit", fields, type: to, loc };
+    return [{ kind: "return", value: lowerer.keyOrder.copy(copy, from.shapeId), loc }];
   }
   return null;
+}
+
+/** A converted field value that keeps the source field's absence: an
+ * optional field the source object lacks stays absent in the copy rather
+ * than becoming a property that holds undefined. */
+function keepAbsence(
+  lowerer: Lowerer,
+  input: IrExpr,
+  shapeId: string,
+  field: { name: string; type: IrType },
+  value: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (field.type.kind !== "union") return value;
+  if (!lowerer.unions.get(field.type.unionId)?.arms.some((arm) => arm.kind === "undefinedT"))
+    return value;
+  return {
+    kind: "ternary",
+    cond: { kind: "recordHas", obj: input, shapeId, field: field.name, type: BOOL, loc },
+    then: value,
+    else_: { kind: "fieldAbsent", unionId: field.type.unionId, type: field.type, loc },
+    type: field.type,
+    loc,
+  };
 }
 
 /** A union value to one of its arms, or to a union of some of its arms:

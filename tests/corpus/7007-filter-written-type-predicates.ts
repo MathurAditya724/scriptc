@@ -85,3 +85,24 @@ function isText(v: string | undefined): v is string {
 }
 const maybe: (string | undefined)[] = ["a", undefined, "b"];
 console.log(maybe.filter(isText).join("-"));
+
+// Narrowing a record field keeps each object's own keys, in its own order,
+// and an optional field the object lacks stays absent.
+interface Row {
+  id: unknown;
+  note?: string;
+  label: string;
+}
+interface NumericRow {
+  id: number;
+  note?: string;
+  label: string;
+}
+const tableRows: Row[] = [
+  { label: "a", id: 1 },
+  { label: "b", id: "s" },
+  { label: "c", id: 3, note: "n" },
+];
+for (const row of tableRows.filter((r): r is NumericRow => typeof r.id === "number")) {
+  console.log(Object.keys(row).join(","), JSON.stringify(row), "note" in row, row.id + 1);
+}
