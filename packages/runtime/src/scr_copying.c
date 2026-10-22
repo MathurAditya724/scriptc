@@ -22,7 +22,7 @@ static bool copying_elem_is_ref(ScrElemKind kind) {
 }
 
 static ScrArr *copying_arr_new_like(const ScrArr *a, size_t cap) {
-  ScrArr *out = a->elem == SCR_ELEM_REF
+  ScrArr *out = a->elem == SCR_ELEM_REF || a->elem == SCR_ELEM_CREF
                     ? scr_arr_new_ops(scr_arr_ops(a), cap ? cap : 1)
                     : scr_arr_new(a->elem, cap ? cap : 1);
   out->len = cap;

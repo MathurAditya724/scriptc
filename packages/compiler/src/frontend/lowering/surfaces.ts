@@ -1590,6 +1590,12 @@ export const BUILTIN_MODULE_FNS: Record<
     createDiffieHellman: { fn: "crypto.dhNew", params: [DYN, DYN, DYN, DYN], result: DYN },
     getDiffieHellman: { fn: "crypto.dhGroupNew", params: [DYN], result: DYN },
     createDiffieHellmanGroup: { fn: "crypto.dhGroupNew", params: [DYN], result: DYN },
+    // Prime checks and generation (lowerPrimeCall): checked-dynamic
+    // arguments, results converted to the call site's type.
+    checkPrimeSync: { fn: "crypto.checkPrimeSync", params: [], result: DYN },
+    checkPrime: { fn: "crypto.checkPrimeCb", params: [], result: VOID },
+    generatePrimeSync: { fn: "crypto.generatePrimeSync", params: [], result: DYN },
+    generatePrime: { fn: "crypto.generatePrimeCb", params: [], result: VOID },
   },
   zlib: {
     // The default-options convenience family is special-cased in
@@ -3099,7 +3105,8 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       ["getCipherInfo"].map((m) => [
         m,
         "cipher metadata has no lowering — createCipheriv and createDecipheriv support " +
-          "aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305",
+          "aes-128/192/256 in cbc, ctr, gcm, ecb, cfb, cfb8, cfb1, and ofb modes, des-ede3 and " +
+          "des-ede, chacha20, and chacha20-poly1305",
       ]),
     ),
     setFips:
