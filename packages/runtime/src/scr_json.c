@@ -2724,18 +2724,22 @@ bool scr_record_source_has(const void *rec) {
   return scr_record_source_count && scr_record_source_find(rec) != NULL;
 }
 
-static void scr_record_source_disposed(void *rec) {
-  size_t bit = scr_record_source_filter_bit(rec);
-  if (!(scr_record_source_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)))) return;
-  ScrRecordSource *found = scr_record_source_find(rec);
-  if (!found) return;
+/* Drops the entry at `found` from the table, releasing its view. The table
+ * no longer refers to the view first, so a nested disposal that re-enters
+ * the dispose hook sees a consistent table. */
+static void scr_record_source_drop(ScrRecordSource *found) {
   ScrDyn *view = found->view;
   *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
   scr_record_source_count--;
   scr_record_source_deleted++;
-  /* The table no longer refers to the view, so a nested disposal that
-   * re-enters this hook sees a consistent table. */
   scr_dyn_release(view);
+}
+
+static void scr_record_source_disposed(void *rec) {
+  size_t bit = scr_record_source_filter_bit(rec);
+  if (!(scr_record_source_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)))) return;
+  ScrRecordSource *found = scr_record_source_find(rec);
+  if (found) scr_record_source_drop(found);
 }
 
 /* The single native dispose hook serves weak collections and the table
@@ -2878,6 +2882,20 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
   scr_record_source_put(&probe);
 }
 
+void scr_record_source_move(void *from, void *to) {
+  if (!scr_record_source_count) return;
+  ScrRecordSource *old = scr_record_source_find(to);
+  if (old) scr_record_source_drop(old);
+  ScrRecordSource *found = scr_record_source_find(from);
+  if (!found) return;
+  ScrRecordSource moved = *found;
+  *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
+  scr_record_source_count--;
+  scr_record_source_deleted++;
+  moved.rec = to;
+  scr_record_source_put(&moved);
+}
+
 /* Refreshes a retained record view: the view's own-key order, declared
  * values from the native snapshot (a declared key the record no longer has
  * drops), every other property as the view holds it, then declared fields
@@ -2961,6 +2979,34 @@ static bool scr_jb_put_source_field(ScrJsonBuf *b, void *rec, const ScrRecordSou
 
 /* The same in one lookup: writes the record and answers true when it kept
  * a source, otherwise writes nothing and answers false. */
+static bool scr_dyn_key_is_index(const char *key, size_t len, double *out);
+
+/* The entry indexes of `view` in JavaScript's own-key order: integer keys
+ * ascending, then the other keys in insertion order. `out` holds len. */
+static void scr_record_source_key_order(const ScrDyn *view, size_t *out) {
+  size_t integers = 0;
+  for (size_t i = 0; i < view->v.obj.len; i++) {
+    double index;
+    const ScrDynEntry *entry = &view->v.obj.entries[i];
+    if (!scr_dyn_key_is_index(entry->key, entry->key_len, &index)) continue;
+    size_t at = integers++;
+    for (; at > 0; at--) {
+      double before;
+      const ScrDynEntry *previous = &view->v.obj.entries[out[at - 1]];
+      scr_dyn_key_is_index(previous->key, previous->key_len, &before);
+      if (before < index) break;
+      out[at] = out[at - 1];
+    }
+    out[at] = i;
+  }
+  size_t next = integers;
+  for (size_t i = 0; i < view->v.obj.len; i++) {
+    double index;
+    const ScrDynEntry *entry = &view->v.obj.entries[i];
+    if (!scr_dyn_key_is_index(entry->key, entry->key_len, &index)) out[next++] = i;
+  }
+}
+
 bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
                               bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
   ScrRecordSource *found = scr_record_source_find(rec);
@@ -2981,13 +3027,24 @@ bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
   bool small[64] = { false };
   bool *seen = count <= 64 ? small : calloc(count, sizeof *seen);
   if (!seen) scr_json_oom();
+  /* Integer keys come first in JavaScript's own-key order; a view without
+   * any walks in insertion order. */
+  size_t order_small[64];
+  size_t *order = NULL;
+  for (size_t k = 0; k < view->v.obj.len && !order; k++) {
+    double index;
+    if (!scr_dyn_key_is_index(view->v.obj.entries[k].key, view->v.obj.entries[k].key_len, &index)) continue;
+    order = view->v.obj.len <= 64 ? order_small : malloc(view->v.obj.len * sizeof *order);
+    if (!order) scr_json_oom();
+    scr_record_source_key_order(view, order);
+  }
   /* Members whose writing cannot run program code are written in place.
    * The first member that can (an accessor, a toJSON method, a getter below
    * it) ends that loop: the remaining keys are taken first, as
    * SerializeJSONObject takes them before reading any value. */
   size_t i = 0;
   for (; i < view->v.obj.len && !scr_exc_pending(); i++) {
-    const ScrDynEntry *entry = &view->v.obj.entries[i];
+    const ScrDynEntry *entry = &view->v.obj.entries[order ? order[i] : i];
     size_t index = scr_record_source_index(&source, entry->key, entry->key_len);
     if (index < count) {
       if (!seen[index] && scr_jb_put_source_field(b, rec, &source, index, first, on_stack, field))
@@ -3007,7 +3064,7 @@ bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
   if (i < view->v.obj.len && !scr_exc_pending()) {
     ScrDyn *rest = scr_dyn_new_arr();
     for (size_t j = i; j < view->v.obj.len; j++) {
-      const ScrDynEntry *entry = &view->v.obj.entries[j];
+      const ScrDynEntry *entry = &view->v.obj.entries[order ? order[j] : j];
       if (!entry->enumerable && !scr_record_source_declared(&source, entry->key, entry->key_len)) continue;
       ScrStr *name = scr_str_new(entry->key, entry->key_len);
       scr_dyn_arr_push(rest, scr_dyn_new_str(name));
@@ -3032,6 +3089,7 @@ bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
       first = false;
   }
   if (seen != small) free(seen);
+  if (order && order != order_small) free(order);
   scr_dyn_release(view);
   scr_jb_putc(b, '}');
   if (entered) scr_jb_leave(b);
@@ -4552,7 +4610,6 @@ bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right) {
 static void scr_dyn_descriptor_fields_drop(ScrDyn **fields) {
   for (size_t i = 0; i < 6; i++) scr_dyn_release(fields[i]);
 }
-static bool scr_dyn_key_is_index(const char *key, size_t len, double *out);
 static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key);
 static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *key);
 
