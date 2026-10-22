@@ -2,7 +2,11 @@ import { everyModuleNode, everyStmtList, transformStmtList } from "../ir/travers
 import type { LlvmUnsupportedError } from "./llvm/emitter.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import { type IrModule, type SrcLoc } from "../ir/ir.js";
-import { moduleUsesFetch } from "../ir/runtime-features.js";
+import {
+  PKI_LIB_FNS,
+  moduleUsesFetch,
+  moduleUsesWebCryptoAsymmetric,
+} from "../ir/runtime-features.js";
 
 /** Reflection tables expose methods that the program never calls. On WASI,
  * keep their host-only implementations as explicit runtime refusals. Typed
@@ -208,10 +212,15 @@ export function moduleWasiUnavailableSurface(
         };
         return false;
       }
-      if (node.fn === "webcrypto.encrypt" || node.fn === "webcrypto.decrypt") {
+      if (
+        node.fn === "webcrypto.encrypt" ||
+        node.fn === "webcrypto.decrypt" ||
+        node.fn === "webcrypto.wrapKey" ||
+        node.fn === "webcrypto.unwrapKey"
+      ) {
         found = {
           surface:
-            "WebCrypto encrypt and decrypt (the wasm32-wasi runtime does not include the mbedTLS library)",
+            "WebCrypto encrypt, decrypt, wrapKey and unwrapKey (the wasm32-wasi runtime does not include the mbedTLS library)",
           loc,
         };
         return false;
@@ -219,6 +228,21 @@ export function moduleWasiUnavailableSurface(
       if (node.fn === "crypto.ecdhNew" || node.fn === "crypto.ecdhConvertKey") {
         found = {
           surface: "ECDH (the wasm32-wasi runtime does not include the mbedTLS library)",
+          loc,
+        };
+        return false;
+      }
+      if (node.fn === "crypto.dhNew" || node.fn === "crypto.dhGroupNew") {
+        found = {
+          surface: "DiffieHellman (the wasm32-wasi runtime does not include the mbedTLS library)",
+          loc,
+        };
+        return false;
+      }
+      if (PKI_LIB_FNS.has(node.fn)) {
+        found = {
+          surface:
+            "asymmetric keys and signatures (the wasm32-wasi runtime does not include the mbedTLS library)",
           loc,
         };
         return false;
@@ -248,6 +272,13 @@ export function moduleWasiUnavailableSurface(
 
   if (moduleUsesFetch(mod)) {
     return { surface: "network-backed fetch (WASI Preview 1 has no socket API)", loc: entryLoc };
+  }
+  if (moduleUsesWebCryptoAsymmetric(mod)) {
+    return {
+      surface:
+        "WebCrypto ECDSA and RSA (the wasm32-wasi runtime does not include the mbedTLS library)",
+      loc: entryLoc,
+    };
   }
   return null;
 }
