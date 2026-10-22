@@ -13,7 +13,7 @@ import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { ReferenceEffects } from "./reference-effects.js";
 import { SCR_ARR_FIELD, loadArrCount, scrArrStateAt } from "./common.js";
-import { exactInteger, widenInteger } from "./integer-values.js";
+import { indexInteger } from "./integer-values.js";
 import { READ_FALLBACK } from "./dense-array-access.js";
 
 export interface LocalArrayRead {
@@ -605,11 +605,11 @@ export function emitBorrowedArrayRead(
     return;
   }
   const index = host.emitExpr(read.index);
-  // A proven integer index (an int32 local, say) needs no double
-  // round-trip; a negative one compares above the capacity as unsigned.
-  const exact =
-    loopIndex === null && host.sizeType === "i64" ? exactInteger(host, index, read.index) : null;
-  const integerIndex = loopIndex ?? (exact ? widenInteger(host, exact) : null);
+  // A proven integer index (an int32 local, say), or a wide view exact at
+  // every index below the capacity, needs no double round-trip; a negative
+  // one compares above the capacity as unsigned.
+  const integerIndex =
+    loopIndex ?? (host.sizeType === "i64" ? indexInteger(host, index, read.index) : null);
   const slow = B.newLabel("borrow.array.slow"),
     join = B.newLabel("borrow.array.join");
   emitDenseReferenceArrayRead(
@@ -644,8 +644,12 @@ export function emitLocalArrayRead(
 ): { slot: string; type: IrType } | null {
   const B = host.B;
   const array = host.emitStableReceiver(read.array, [read.index]);
-  const integerIndex = inline ? host.emitIntegerLoopIndex(read.index) : null;
+  const loopIndex = inline ? host.emitIntegerLoopIndex(read.index) : null;
   const index = host.emitExpr(read.index);
+  // As in emitBorrowedArrayRead: an exact integer or wide view needs no
+  // round trip, and only the loop's own counter is an induction variable.
+  const integerIndex =
+    loopIndex ?? (inline && host.sizeType === "i64" ? indexInteger(host, index, read.index) : null);
   const nullable = read.type.kind === "union" ? host.nullableUnions.get(read.type.unionId) : null;
   if (nullable) {
     // A nullable union is the element pointer itself: borrowed from an
@@ -665,7 +669,7 @@ export function emitLocalArrayRead(
         array,
         index,
         integerIndex,
-        integerIndex !== null,
+        loopIndex !== null,
         store,
         no,
         slow,
@@ -726,7 +730,7 @@ export function emitLocalArrayRead(
       array,
       index,
       integerIndex,
-      integerIndex !== null,
+      loopIndex !== null,
       storeValue,
       no,
       slow,
