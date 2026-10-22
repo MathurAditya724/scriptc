@@ -40,6 +40,41 @@ export { helper };`),
   expect(exports.stars).toEqual(["./paging"]);
 });
 
+test("a local export of an imported name resolves like a re-export", () => {
+  const exports = npmStaticDeclarationExports(
+    parse(`import type { Kind } from "./kinds";
+import { type Shape as Form, helper } from "./kinds";
+export { Kind, Form as Outline, helper };`),
+  );
+  expect(exports.types).toEqual([]);
+  expect(exports.named).toEqual([
+    { exported: "Kind", local: "Kind", specifier: "./kinds" },
+    { exported: "Outline", local: "Shape", specifier: "./kinds" },
+    { exported: "helper", local: "helper", specifier: "./kinds" },
+  ]);
+});
+
+test("each declaration records whether it describes behavior and what it references", () => {
+  const { locals } = npmStaticDeclarationExports(
+    parse(`interface Row<T> { key: string; value: T; next?: Row<T>; tags: Tag[] }
+type Tag = "a" | "b";
+interface Counter { add(value: number): void }
+type Callback = (row: Row<string>) => void;
+type Keys = keyof Row<string>;
+interface Named extends Base { label: Label }`),
+  );
+  const shape = (name: string) => {
+    const d = locals.get(name)!;
+    return [d.behavior, [...d.references].sort()];
+  };
+  expect(shape("Row")).toEqual([false, ["Row", "Tag"]]);
+  expect(shape("Tag")).toEqual([false, []]);
+  expect(shape("Counter")).toEqual([true, []]);
+  expect(shape("Callback")[0]).toBe(true);
+  expect(shape("Keys")[0]).toBe(true);
+  expect(shape("Named")).toEqual([false, ["Base", "Label"]]);
+});
+
 test("a copy respells the relative specifiers it is told", () => {
   const sf = parse(`import type { Page } from "./paging";
 export * from './entries';
@@ -60,8 +95,22 @@ test("the typedef block re-exports each type with its parameters", () => {
   expect(
     npmStaticTypedefBlock(
       [
-        { name: "Mode", params: [], templates: [] },
-        { name: "Options", params: ["T", "U"], templates: ["{object} [T={}]", "[U=string]"] },
+        {
+          name: "Mode",
+          declared: "Mode",
+          params: [],
+          templates: [],
+          behavior: false,
+          references: [],
+        },
+        {
+          name: "Options",
+          declared: "Options",
+          params: ["T", "U"],
+          templates: ["{object} [T={}]", "[U=string]"],
+          behavior: false,
+          references: [],
+        },
       ],
       "./index.scriptc-types",
     ),

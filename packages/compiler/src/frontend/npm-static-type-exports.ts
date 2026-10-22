@@ -19,15 +19,21 @@
 import * as ts from "./ts7/syntax.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
 
-/** The suffix that replaces `.d.ts` in a copy's name. */
-export const NPM_STATIC_TYPES_SUFFIX = ".scriptc-types.d.ts";
-
-/** A type-only declaration: its name, its type parameters' names and their
- * JSDoc @template tag bodies. */
+/** A type-only declaration: its exported name, its name where it is
+ * declared, its type parameters' names and their JSDoc @template tag
+ * bodies, and what npmStaticDataShape needs to know. */
 export interface NpmStaticTypeDeclaration {
   name: string;
+  declared: string;
   params: readonly string[];
   templates: readonly string[];
+  /** The declaration's own syntax describes behavior or a computed type:
+   * a method, call or construct signature, a function or constructor
+   * type, an accessor, `typeof`, `import("...")`, a conditional, mapped,
+   * indexed-access or `keyof` type, or a qualified type name. */
+  behavior: boolean;
+  /** The type names it refers to, its own type parameters excepted. */
+  references: readonly string[];
 }
 
 /** What a declaration file declares and re-exports, by exported name. */
@@ -37,11 +43,17 @@ export interface NpmStaticDeclarationExports {
   /** Exported classes, functions, variables and namespaces: names the
    * JavaScript declares itself, or that are not type-only. */
   values: readonly string[];
-  /** `export { local as exported } from "specifier"` and local
-   * `export { a, b }` (specifier null). */
+  /** `export { local as exported } from "specifier"`, including a local
+   * `export { a }` of an imported name. */
   named: readonly { exported: string; local: string; specifier: string | null }[];
   /** `export * from "specifier"`. */
   stars: readonly string[];
+  /** Every interface, type alias and enum the file declares, by name. */
+  locals: ReadonlyMap<string, NpmStaticTypeDeclaration>;
+  /** The file's named imports: local name to imported name and specifier. */
+  imports: ReadonlyMap<string, { local: string; specifier: string }>;
+  /** Every class, function, namespace and variable the file declares. */
+  valueNames: ReadonlySet<string>;
 }
 
 function isExported(node: ts.Node): boolean {
@@ -60,6 +72,49 @@ function templatesOf(sf: ts.SourceFile, params: readonly ts.TypeParameterDeclara
   });
 }
 
+/** Syntax kinds of a type that describes behavior or is computed. */
+const BEHAVIOR_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.MethodSignature,
+  ts.SyntaxKind.CallSignature,
+  ts.SyntaxKind.ConstructSignature,
+  ts.SyntaxKind.FunctionType,
+  ts.SyntaxKind.ConstructorType,
+  ts.SyntaxKind.GetAccessor,
+  ts.SyntaxKind.SetAccessor,
+  ts.SyntaxKind.TypeQuery,
+  ts.SyntaxKind.ImportType,
+  ts.SyntaxKind.ConditionalType,
+  ts.SyntaxKind.MappedType,
+  ts.SyntaxKind.InferType,
+  ts.SyntaxKind.IndexedAccessType,
+  ts.SyntaxKind.ThisType,
+  ts.SyntaxKind.TypePredicate,
+  ts.SyntaxKind.TemplateLiteralType,
+]);
+
+/** The behavior flag and type references of an interface or type alias. */
+function shapeOf(
+  decl: ts.InterfaceDeclaration | ts.TypeAliasDeclaration,
+  params: readonly string[],
+): { behavior: boolean; references: string[] } {
+  let behavior = false;
+  const references = new Set<string>();
+  const refer = (name: ts.Node): void => {
+    if (ts.isIdentifier(name)) {
+      if (!params.includes(name.text)) references.add(name.text);
+    } else behavior = true; // a qualified name: a namespace member
+  };
+  ts.walkPreorder(decl, (n) => {
+    if (behavior) return "stop";
+    if (BEHAVIOR_KINDS.has(n.kind)) behavior = true;
+    else if (ts.isTypeOperatorNode(n) && n.operator === ts.SyntaxKind.KeyOfKeyword) behavior = true;
+    else if (ts.isTypeReferenceNode(n)) refer(n.typeName);
+    else if (ts.isExpressionWithTypeArguments(n)) refer(n.expression);
+    return undefined;
+  });
+  return { behavior, references: [...references] };
+}
+
 /** The exports of one declaration file. */
 export function npmStaticDeclarationExports(sf: ts.SourceFile): NpmStaticDeclarationExports {
   const types: NpmStaticTypeDeclaration[] = [];
@@ -68,19 +123,44 @@ export function npmStaticDeclarationExports(sf: ts.SourceFile): NpmStaticDeclara
   const stars: string[] = [];
   const localTypes = new Map<string, NpmStaticTypeDeclaration>();
   const localValues = new Set<string>();
+  // `import { A as B } from "./x"`: local name B is A of "./x".
+  const imported = new Map<string, { local: string; specifier: string }>();
   for (const stmt of sf.statements.nodes) {
     const exported = isExported(stmt);
-    if (ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) {
+    if (ts.isImportDeclaration(stmt)) {
+      const bindings = stmt.importClause?.namedBindings;
+      if (ts.isStringLiteral(stmt.moduleSpecifier) && bindings && ts.isNamedImports(bindings)) {
+        for (const e of bindings.elements.nodes) {
+          imported.set(e.name.text, {
+            local: (e.propertyName ?? e.name).text,
+            specifier: stmt.moduleSpecifier.text,
+          });
+        }
+      }
+    } else if (ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) {
       const params = stmt.typeParameters?.nodes ?? [];
-      const decl = {
+      const paramNames = params.map((p) => p.name.text);
+      const shape = shapeOf(stmt, paramNames);
+      const merged = localTypes.get(stmt.name.text); // interface merging
+      const decl: NpmStaticTypeDeclaration = {
         name: stmt.name.text,
-        params: params.map((p) => p.name.text),
+        declared: stmt.name.text,
+        params: paramNames,
         templates: templatesOf(sf, params),
+        behavior: shape.behavior || merged?.behavior === true,
+        references: [...shape.references, ...(merged?.references ?? [])],
       };
       localTypes.set(decl.name, decl);
-      if (exported) types.push(decl);
+      if (exported && merged === undefined) types.push(decl);
     } else if (ts.isEnumDeclaration(stmt)) {
-      const decl: NpmStaticTypeDeclaration = { name: stmt.name.text, params: [], templates: [] };
+      const decl: NpmStaticTypeDeclaration = {
+        name: stmt.name.text,
+        declared: stmt.name.text,
+        params: [],
+        templates: [],
+        behavior: false,
+        references: [],
+      };
       localTypes.set(decl.name, decl);
       if (exported) types.push(decl);
     } else if (
@@ -116,7 +196,9 @@ export function npmStaticDeclarationExports(sf: ts.SourceFile): NpmStaticDeclara
       }
     }
   }
-  // Local `export { a as b }` of the file's own declarations.
+  // Local `export { a as b }`: of the file's own declarations, or of a
+  // name it imports (`import type { A } from "./a"; export { A }`), which
+  // resolves like `export { A } from "./a"`.
   const resolvedNamed: typeof named = [];
   for (const n of named) {
     if (n.specifier !== null) {
@@ -124,10 +206,27 @@ export function npmStaticDeclarationExports(sf: ts.SourceFile): NpmStaticDeclara
       continue;
     }
     const local = localTypes.get(n.local);
+    const from = imported.get(n.local);
     if (local !== undefined) types.push({ ...local, name: n.exported });
     else if (localValues.has(n.local)) values.push(n.exported);
+    else if (from !== undefined) resolvedNamed.push({ exported: n.exported, ...from });
   }
-  return { types, values, named: resolvedNamed, stars };
+  // A merged interface's exported entry takes the merged flags.
+  const exportedTypes: NpmStaticTypeDeclaration[] = [];
+  for (const t of types) {
+    const local = localTypes.get(t.declared);
+    if (local === undefined) exportedTypes.push(t);
+    else exportedTypes.push({ ...local, name: t.name });
+  }
+  return {
+    types: exportedTypes,
+    values,
+    named: resolvedNamed,
+    stars,
+    locals: localTypes,
+    imports: imported,
+    valueNames: localValues,
+  };
 }
 
 /** The relative module specifiers of a declaration file's imports, exports

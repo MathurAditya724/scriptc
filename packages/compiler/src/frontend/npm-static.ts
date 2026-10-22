@@ -23,7 +23,6 @@ import {
   trackedRealpath,
 } from "./input-tracker.js";
 import { npmBuiltinAliasOf } from "./builtin-modules.js";
-import { NPM_STATIC_TYPES_SUFFIX } from "./npm-static-type-exports.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -55,6 +54,11 @@ export function npmStaticLexerVisibleNames(path: string): readonly string[] {
   return lexerNames.get(path.split("\\").join("/")) ?? [];
 }
 
+/** The suffix that replaces `.d.ts` in the name of a copy of an opted-in
+ * package's declaration file (npm-static-type-exports.ts). Defined here so
+ * this module does not depend on the syntax modules. */
+export const NPM_STATIC_TYPES_SUFFIX = ".scriptc-types.d.ts";
+
 /** Per runtime entry (forward slashes), the JSDoc typedefs that re-export
  * its package's type-only declarations (npm-static-type-exports.ts). */
 let typeExportTypedefs = new Map<string, string>();
@@ -69,6 +73,17 @@ export function setNpmStaticTypeExports(
   for (const [path, text] of copies) setVirtualSource(path, text);
   typeExportTypedefs = new Map(typedefs);
   rewriteCache.clear();
+}
+
+/** `text` (or the file's own text when null) with the typedefs of a
+ * package runtime entry appended: the entry re-exports the type-only
+ * declarations of the package's .d.ts, after every respelling, so
+ * positions stay. Null when `path` is no runtime entry and `text` is null. */
+function withTypeExportTypedefs(path: string, text: string | null): string | null {
+  const typedefs = typeExportTypedefs.get(path.split("\\").join("/"));
+  if (typedefs === undefined) return text;
+  const source = text ?? trackedReadFile(path);
+  return source === null ? text : `${source}\n${typedefs}\n`;
 }
 
 export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): void {
@@ -543,17 +558,13 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
         } catch {
           rewritten = null; // unreadable/unparseable: fall through untouched
         }
-        // The runtime entry re-exports the type-only declarations of the
-        // package's .d.ts, after every respelling, so positions stay.
-        const typedefs = typeExportTypedefs.get(path.split("\\").join("/"));
-        if (typedefs !== undefined) {
-          const text = rewritten ?? trackedReadFile(path);
-          if (text !== null) rewritten = `${text}\n${typedefs}\n`;
-        }
+        rewritten = withTypeExportTypedefs(path, rewritten);
         rewriteCache.set(path, rewritten);
         return rewritten ?? undefined;
       }
-      return undefined;
+      // Other runtime entries (`.mjs`) keep their text and gain only the
+      // typedefs.
+      return withTypeExportTypedefs(path, null) ?? undefined;
     },
     hideFile: (path) => {
       // The copies of the package's declaration files the typedefs name.

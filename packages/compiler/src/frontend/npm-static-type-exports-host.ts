@@ -5,10 +5,10 @@ import { dirname, relative, resolve as resolvePath } from "node:path";
 import { trackedFileExists, trackedReadFile } from "./input-tracker.js";
 import { resolveBareModule } from "./resolve.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
+import { NPM_STATIC_TYPES_SUFFIX } from "./npm-static.js";
 import type { FrontendServices } from "./services.js";
 import * as ts from "./ts7/syntax.js";
 import {
-  NPM_STATIC_TYPES_SUFFIX,
   npmStaticDeclarationCopy,
   npmStaticDeclarationExports,
   npmStaticDeclarationSpecifiers,
@@ -106,28 +106,37 @@ export function npmStaticTypeExportPlan(
     );
     for (const target of targets.values()) copy(target);
   };
-  // The exported type-only declarations of `file`, through its re-exports.
+  const exportsOf = new Map<string, NpmStaticDeclarationExports | null>();
+  const declarationExports = (file: string): NpmStaticDeclarationExports | null => {
+    let ex = exportsOf.get(file);
+    if (ex === undefined) {
+      const sf = parse(file);
+      ex = sf === null ? null : npmStaticDeclarationExports(sf);
+      exportsOf.set(file, ex);
+    }
+    return ex;
+  };
+  // The exported type-only declarations of `file`, through its re-exports,
+  // each with the file that declares it.
+  type Found = { decl: NpmStaticTypeDeclaration; file: string };
   const typesOf = (
     file: string,
     seen: Set<string>,
-  ): { types: Map<string, NpmStaticTypeDeclaration>; values: Set<string> } => {
-    const result = {
-      types: new Map<string, NpmStaticTypeDeclaration>(),
-      values: new Set<string>(),
-    };
+  ): { types: Map<string, Found>; values: Set<string> } => {
+    const result = { types: new Map<string, Found>(), values: new Set<string>() };
     if (seen.has(file)) return result;
     seen.add(file);
-    const sf = parse(file);
-    if (sf === null) return result;
-    const own: NpmStaticDeclarationExports = npmStaticDeclarationExports(sf);
-    for (const t of own.types) result.types.set(t.name, t);
+    const own = declarationExports(file);
+    if (own === null) return result;
+    for (const t of own.types) result.types.set(t.name, { decl: t, file });
     for (const v of own.values) result.values.add(v);
     for (const n of own.named) {
       const target = n.specifier === null ? null : declarationTargetOf(file, n.specifier);
       if (target === null) continue;
       const inner = typesOf(target, new Set(seen));
       const t = inner.types.get(n.local);
-      if (t !== undefined) result.types.set(n.exported, { ...t, name: n.exported });
+      if (t !== undefined)
+        result.types.set(n.exported, { ...t, decl: { ...t.decl, name: n.exported } });
       else if (inner.values.has(n.local)) result.values.add(n.exported);
     }
     for (const specifier of own.stars) {
@@ -139,6 +148,39 @@ export function npmStaticTypeExportPlan(
     }
     return result;
   };
+  // Whether `name`, as `file` sees it, is a data shape: an interface, type
+  // alias or enum whose syntax describes no behavior (npm-static-type-
+  // exports.ts) and whose referenced types are data shapes too. A name the
+  // package's declaration files do not declare is a global (`Array`,
+  // `Record`, `Date`); a class, a value or an import from another package
+  // is not a data shape.
+  const dataMemo = new Map<string, boolean>();
+  const isData = (file: string, name: string, visiting: Set<string>): boolean => {
+    const key = `${file}\0${name}`;
+    const memo = dataMemo.get(key);
+    if (memo !== undefined) return memo;
+    if (visiting.has(key)) return true; // a recursive shape
+    visiting.add(key);
+    const answer = ((): boolean => {
+      const ex = declarationExports(file);
+      if (ex === null) return false;
+      const local = ex.locals.get(name);
+      if (local !== undefined)
+        return !local.behavior && local.references.every((r) => isData(file, r, visiting));
+      if (ex.valueNames.has(name)) return false;
+      const from = ex.imports.get(name);
+      if (from !== undefined) {
+        const target = declarationTargetOf(file, from.specifier);
+        return target !== null && isData(target, from.local, visiting);
+      }
+      const reexport = typesOf(file, new Set()).types.get(name);
+      if (reexport !== undefined) return isData(reexport.file, reexport.decl.declared, visiting);
+      return true;
+    })();
+    visiting.delete(key);
+    dataMemo.set(key, answer);
+    return answer;
+  };
   for (const pkg of packages) {
     const declared = resolveBareModule(entryPath, pkg, "types-only");
     if (declared === null || declared.packageName !== pkg || !declared.typesFile.endsWith(".d.ts"))
@@ -149,9 +191,16 @@ export function npmStaticTypeExportPlan(
     if (runtimeText === null) continue;
     const { types, values } = typesOf(declared.typesFile, new Set());
     const declaredByRuntime = runtimeTypeNames(services, runtime.typesFile, runtimeText);
-    const exported = [...types.values()].filter(
-      (t) => !values.has(t.name) && !declaredByRuntime.has(t.name),
-    );
+    // Only data shapes: a type with methods describes the package's
+    // JavaScript objects, which stay as the JavaScript types them.
+    const exported = [...types.values()]
+      .filter(
+        ({ decl, file }) =>
+          !values.has(decl.name) &&
+          !declaredByRuntime.has(decl.name) &&
+          isData(file, decl.declared, new Set()),
+      )
+      .map(({ decl }) => decl);
     if (exported.length === 0) continue;
     copy(declared.typesFile);
     const specifier = specifierFor(runtime.typesFile, copyPathOf(declared.typesFile));

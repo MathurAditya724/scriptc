@@ -488,6 +488,19 @@ test("JavaScript builtin aliases keep their deferred value fence", async () => {
   );
 });
 
+test("types only a package's .d.ts declares stay static through re-exports and .mjs entries", () => {
+  // shape-kinds re-exports types its .d.ts entry imports; row-module's
+  // runtime entry is an .mjs file. Without their declared types the
+  // program's uses of Form, Kind and Row run in the dynamic tier (12
+  // statements); with them only the packages' own JavaScript and one
+  // arithmetic on a JavaScript return value do (4).
+  const { coverage } = analyze(
+    join(repoRoot, "tests/corpus/7004-package-declared-type-reexports/main.ts"),
+  );
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.stats.statementsDynamic).toBe(4);
+});
+
 test("any-typed checked-dynamic operators compile natively", () => {
   const file = join(repoRoot, "tests/corpus/2856-dynamic-any-local-operators.ts");
   const staticCoverage = analyze(file).coverage;
