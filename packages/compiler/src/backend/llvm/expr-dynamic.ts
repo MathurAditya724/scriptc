@@ -250,8 +250,10 @@ export function emitDynamicExpr(
       }
       // Buffer.prototype method names take their scr_bytes_dyn.c entry, which
       // runs them on Buffer receivers and dispatches any other receiver.
-      const invoke = DYN_BUFFER_METHODS.get(e.method) ?? "scr_dyn_invoke_prepared";
-      host.declare(`declare ptr @${invoke}(ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`);
+      // Each call passes its method name's id slot, so only the first call
+      // looks the name up.
+      const invoke = DYN_BUFFER_METHODS.get(e.method) ?? "scr_dyn_invoke_prepared_id";
+      host.declare(`declare ptr @${invoke}(ptr, ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`);
       let name = host.cstr(e.calleeName);
       if (e.calleeNameValue !== undefined) {
         const value = emitBorrowedInput(host, e.calleeNameValue);
@@ -260,7 +262,7 @@ export function emitDynamicExpr(
       }
       const t = B.tmp();
       B.line(
-        `${t} = call ptr @${invoke}(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name})`,
+        `${t} = call ptr @${invoke}(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${host.methodIdSlot(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name})`,
       );
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck();
@@ -1296,9 +1298,7 @@ function emitUnionEqWrappedScalar(
     B.startBlock(same);
     const eq = B.tmp();
     if (arm.kind === "f64") {
-      host.declare(`declare double @scr_union_get_f64(ptr)`);
-      const v = B.tmp();
-      B.line(`${v} = call double @scr_union_get_f64(ptr ${union.name})`);
+      const v = host.unionGetF64(union.name);
       if (e.sameValue) {
         host.declare(`declare zeroext i1 @scr_num_same_value(double, double)`);
         B.line(`${eq} = call zeroext i1 @scr_num_same_value(double ${v}, double ${plain.name})`);
@@ -1306,9 +1306,7 @@ function emitUnionEqWrappedScalar(
         B.line(`${eq} = fcmp oeq double ${v}, ${plain.name}`);
       }
     } else {
-      host.declare(`declare zeroext i1 @scr_union_get_bool(ptr)`);
-      const v = B.tmp();
-      B.line(`${v} = call zeroext i1 @scr_union_get_bool(ptr ${union.name})`);
+      const v = host.unionGetBool(union.name);
       B.line(`${eq} = icmp eq i1 ${v}, ${plain.name}`);
     }
     B.line(`store i1 ${eq}, ptr ${slot}`);
