@@ -496,10 +496,18 @@ function localClassResultInstance(
   const viaConstructorType = retTs.getSymbol()?.valueDeclaration !== resultClass;
   const returnType = withInstanceScope(lowerer, info, inst, () => {
     if (!viaConstructorType) return lowerer.mapTypeOf(retTs);
-    const classSymbol = resultClass.name
-      ? lowerer.checker.getSymbolAtLocation(resultClass.name)
-      : undefined;
-    return classSymbol ? lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(classSymbol)) : null;
+    // The local class's own constructor type: a class expression's type is
+    // its constructor type, named or not (`return class { ... } as Struct<S>`).
+    const classSymbol =
+      !ts.isClassExpression(resultClass) && resultClass.name
+        ? lowerer.checker.getSymbolAtLocation(resultClass.name)
+        : undefined;
+    const classType = ts.isClassExpression(resultClass)
+      ? lowerer.checker.getTypeAtLocation(resultClass)
+      : classSymbol
+        ? lowerer.checker.getTypeOfSymbol(classSymbol)
+        : undefined;
+    return classType ? lowerer.mapTypeOf(classType) : null;
   });
   if (!returnType) {
     fenceGenericSignatureResult(lowerer, expr, retTs);
@@ -646,11 +654,19 @@ function returnedLocalClass(lowerer: Lowerer, info: GenericFnInfo): ts.ClassLike
     if (ts.isClassExpression(expr)) return declaredInside(expr, info.decl) ? expr : null;
     if (!ts.isIdentifier(expr)) return null;
     const declaration = lowerer.checker.getSymbolAtLocation(expr)?.valueDeclaration;
-    return declaration &&
-      ts.isClassDeclaration(declaration) &&
-      declaredInside(declaration, info.decl)
-      ? declaration
-      : null;
+    if (!declaration || !declaredInside(declaration, info.decl)) return null;
+    if (ts.isClassDeclaration(declaration)) return declaration;
+    // A `const` bound to a class expression (`const C = class { ... }; return C`).
+    if (
+      ts.isVariableDeclaration(declaration) &&
+      ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const &&
+      declaration.initializer
+    ) {
+      let init: ts.Expression = declaration.initializer;
+      while (ts.isParenthesizedExpression(init)) init = init.expression;
+      if (ts.isClassExpression(init)) return init;
+    }
+    return null;
   };
   if (!ts.isBlock(body)) return classOf(body as ts.Expression);
   let found: ts.ClassLikeDeclaration | null = null;

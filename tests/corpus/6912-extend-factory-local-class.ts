@@ -65,3 +65,35 @@ function twice(n: number): number {
   return K.double() + K.quad();
 }
 console.log(twice(3), twice(5));
+
+// The factory returns an anonymous class expression, directly or through a
+// `const` binding.
+function anonymous<S>(value: S): Struct<S> {
+  return class {
+    static decode(_input: unknown): S {
+      return value;
+    }
+  } as unknown as Struct<S>;
+}
+class Anonymous extends anonymous({ tag: "anon" }) {}
+console.log(Anonymous.decode(null).tag);
+
+type Holder<T> = (new (held: T) => { held: T }) & { readonly seed: () => T };
+function holder<T>(initial: T): Holder<T> {
+  const Hold = class {
+    held: T;
+    constructor(held: T) {
+      this.held = held;
+    }
+    static seed(): T {
+      return initial;
+    }
+  };
+  return Hold;
+}
+class Boxed extends holder(7) {
+  twice(): number {
+    return this.held * 2;
+  }
+}
+console.log(new Boxed(4).twice(), Boxed.seed());
