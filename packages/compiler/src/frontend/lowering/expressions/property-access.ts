@@ -131,6 +131,7 @@ import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerEventStaticProperty } from "../builtins/numbers.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
+import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
 import { iteratorResultValueRead } from "../lower-generators.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
@@ -4006,6 +4007,8 @@ function lowerStreamObjectProperty(
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
+  const valueStream = lowerValueStreamProperty(lowerer, expr);
+  if (valueStream) return valueStream;
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (recvT?.kind !== "object") return null;
   const info = lowerer.classes.get(recvT.className);

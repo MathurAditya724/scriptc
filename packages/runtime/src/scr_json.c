@@ -37,6 +37,8 @@
 
 static SCR_TL ScrDyn *scr_builtin_object_prototype;
 
+SCR_TL const ScrHandleStreamHooks *scr_handle_stream_hooks;
+
 /* Constructor capsules expose identity and name/length, but do not model
  * per-class static property tables yet. Never report a fabricated empty view. */
 static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
@@ -4309,6 +4311,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
   d->v.handle.tag = tag;
   d->v.handle.traced = tag == SCR_DYNH_WEAK_MAP || tag == SCR_DYNH_WEAK_SET ||
       tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT || tag == SCR_DYNH_DISPOSABLE_STACK ||
+      tag == SCR_DYNH_CIPHER || tag == SCR_DYNH_DECIPHER ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
        ((ScrMap *)h)->traced != 0);
   return d;
