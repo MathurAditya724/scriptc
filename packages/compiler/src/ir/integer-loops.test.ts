@@ -525,4 +525,20 @@ test("counters stepped beside the tested one run as integers", () => {
   boxed.set("j", { ...vars.get("j")!, boxed: true });
   expect(matchIntegerCountedForLoop(comoving(number(10)), boxed)).toBeNull();
   expect(matchIntegerCountedForLoop(comoving(number(10), ref("i")), vars)).toBeNull();
+  // A driver span above 2^53 - 1 bounds no trip count. From -(2^53 - 1) to
+  // below 2^52 - 1 the span 3 * 2^52 - 3 rounds down to 3 * 2^52 - 4, which
+  // would put this follower's last value at 2^53 - 1 instead of 2^53.
+  const wide = comoving(number(2 ** 52 - 1), number(-(2 ** 52) + 3), {
+    kind: "block",
+    body: [step("i", "+"), step("j", "+")],
+    loc,
+  });
+  if (wide.init?.kind === "block" && wide.init.body[0]?.kind === "varDecl")
+    wide.init.body[0].init = number(-Number.MAX_SAFE_INTEGER);
+  expect(matchIntegerCountedForLoop(wide, vars)).toBeNull();
+  if (wide.init?.kind === "block" && wide.init.body[1]?.kind === "varDecl")
+    wide.init.body[1].init = ref("from");
+  expect(matchIntegerCountedForLoop(wide, vars)?.followers).toMatchObject([
+    { startGuarded: true, tripGuarded: true },
+  ]);
 });

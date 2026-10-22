@@ -269,10 +269,12 @@ export function matchIntegerCountedForLoop(
         };
   // On body entry k the driver holds `start + step * k`, so k is at most the
   // driver's span over |step|, and a follower holds its start plus its own
-  // step times k.
-  const trips = Math.floor(
-    (step > 0 ? range.max - startRange.min : startRange.max - range.min) / Math.abs(step),
-  );
+  // step times k. A span above 2^53 - 1 can round down, so it bounds no
+  // trip count. Below it the quotient rounds to at least its floor, and the
+  // follower's products and sums below are exact while they stay within
+  // ±(2^53 - 1) and round outside it otherwise.
+  const span = step > 0 ? range.max - startRange.min : startRange.max - range.min;
+  const trips = span <= Number.MAX_SAFE_INTEGER ? Math.floor(span / Math.abs(step)) : Infinity;
   const followers: IntegerLoopFollower[] = [];
   for (const id of counterIds) {
     if (id === local.id) continue;
