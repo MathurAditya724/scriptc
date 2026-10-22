@@ -120,6 +120,7 @@ const counted = (
   limitGuarded: false,
   startGuarded: false,
   guardLimit: 0,
+  followers: [],
   ...fields,
 });
 
