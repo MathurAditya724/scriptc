@@ -669,12 +669,17 @@ export function lowerPropertyAccessExpr(
         const declared = (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
           (p) => !isThisParameter(p),
         ).length;
-        return {
-          kind: "numLit",
-          value: Math.max(declared, contextualArgumentCount(lowerer, fn) ?? 0),
-          type: F64,
-          loc,
-        };
+        const count = Math.max(declared, contextualArgumentCount(lowerer, fn) ?? 0);
+        // Calls through the expression's own name pass the declared count,
+        // calls through the wider slot pass more: no constant answers both.
+        if (count > declared && referencesOwnName(lowerer, fn)) {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            "'arguments.length' in a function expression that is called both through its own name and through a function type with more parameters (the count varies per call)",
+          );
+        }
+        return { kind: "numLit", value: count, type: F64, loc };
       }
       lowerer.unsupported(
         "SC1090",
@@ -4440,6 +4445,27 @@ function lowerPromiseConstructorRead(
         };
   }
   return null;
+}
+
+/** Whether a named function expression refers to itself by name in its
+ * body (a recursive call, or the function escaping under its own name). */
+function referencesOwnName(lowerer: Lowerer, fn: ts.Node): boolean {
+  if (!ts.isFunctionExpression(fn) || fn.name === undefined || fn.body === undefined) return false;
+  const self = lowerer.checker.getSymbolAtLocation(fn.name);
+  if (self === undefined) return false;
+  const name = fn.name.text;
+  let found = false;
+  ts.walkPreorder(fn.body, (node) => {
+    if (found) return "stop";
+    if (
+      ts.isIdentifier(node) &&
+      node.text === name &&
+      lowerer.checker.getSymbolAtLocation(node) === self
+    )
+      found = true;
+    return undefined;
+  });
+  return found;
 }
 
 /** The argument count every caller passes a function expression whose
