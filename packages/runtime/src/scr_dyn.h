@@ -725,6 +725,9 @@ ScrDyn *scr_dyn_array_constructor(void);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+/* The interned function value of an error constructor ("TypeError"), or
+ * NULL for other names. */
+ScrDyn *scr_dyn_error_constructor(const char *name);
 /* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
  * as an interned dynamic function value: +1. */
 ScrDyn *scr_dyn_builtin_function(const ScrStr *name);

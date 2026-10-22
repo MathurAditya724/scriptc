@@ -4023,10 +4023,26 @@ function lowerStreamObjectProperty(
   return lowerStreamProperty(lowerer, expr, info);
 }
 
+/** The error constructors among GLOBAL_CONSTRUCTOR_VALUES. Their statics
+ * (`Error.stackTraceLimit`, `Error.captureStackTrace`) keep their own
+ * lowerings, so fenceBuiltinConstructorStaticRead leaves them alone. */
+const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+]);
+
 /** The builtin constructors JavaScript sources read as real function
  * values rather than identity tokens: the runtime interns one function per
  * constructor, and dynamic values answer `.constructor` with the same one,
- * so `o.constructor === Object` is an exact identity test. */
+ * so `o.constructor === Object` and `err.constructor === TypeError` are
+ * exact identity tests, and `err.constructor.name` is the constructor's
+ * name. */
 const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Object",
   "Function",
@@ -4037,6 +4053,7 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Promise",
   "WeakMap",
   "WeakSet",
+  ...ERROR_CONSTRUCTOR_VALUES,
 ]);
 
 /** The builtin global functions JavaScript sources read as interned
@@ -4179,6 +4196,7 @@ function fenceBuiltinConstructorStaticRead(
     symbol !== undefined &&
     ts.symbolName(symbol).endsWith("Constructor") &&
     GLOBAL_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
+    !ERROR_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
     lowerer.isStdlibSymbol(symbol)
   )
     lowerer.stdlibMemberFence(access);
