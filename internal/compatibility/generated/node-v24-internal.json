@@ -95421,7 +95421,10 @@
           "tests/corpus/2557-tls-ca-store.ts",
           "tests/corpus/2596-net-arg-ladders.cjs",
           "tests/corpus/6721-tls-alpn-protocols.ts",
-          "tests/corpus/6722-tls-min-max-version.ts"
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/7088-tls-socket-connect-tunnel.ts",
+          "tests/fixtures/node-types/tls-socket-wrap.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -96123,8 +96126,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tls.TLSSocket",
+        "tests": [
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/7088-tls-socket-connect-tunnel.ts",
+          "tests/fixtures/node-types/tls-socket-wrap.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96911,8 +96919,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.'secure'",
+        "tests": [
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/7088-tls-socket-connect-tunnel.ts",
+          "tests/fixtures/node-types/tls-socket-wrap.ts"
+        ]
       },
       "anchorSource": "exact"
     },

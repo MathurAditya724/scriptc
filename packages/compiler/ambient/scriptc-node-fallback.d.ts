@@ -4858,8 +4858,8 @@ declare module "net" {
      * unshift — read answers exactly n buffered bytes or null. */
     read(size?: number): Buffer | null;
     unshift(chunk: Uint8Array): void;
-    /* secureConnect/session are TLS-socket events declared on the shared
-     * socket surface (the lowering collapses TLSSocket onto this kind):
+    /* secureConnect/secure/session are TLS-socket events declared on the
+     * shared socket surface (the lowering collapses TLSSocket onto this kind):
      * the runtime gates on the transport, so a plain socket's
      * registration never fires — Node's exact split. 'session' fires
      * once with the serialized session (the received-ticket event). */
@@ -4867,7 +4867,15 @@ declare module "net" {
     /* After setEncoding the chunk is a string. */
     on(event: "data", listener: (chunk: string) => void): void;
     on(
-      event: "end" | "connect" | "ready" | "timeout" | "readable" | "finish" | "secureConnect",
+      event:
+        | "end"
+        | "connect"
+        | "ready"
+        | "timeout"
+        | "readable"
+        | "finish"
+        | "secureConnect"
+        | "secure",
       listener: () => void,
     ): void;
     on(event: "close", listener: (hadError: boolean) => void): void;
@@ -4883,7 +4891,15 @@ declare module "net" {
     /* After setEncoding the chunk is a string. */
     addListener(event: "data", listener: (chunk: string) => void): void;
     addListener(
-      event: "end" | "connect" | "ready" | "timeout" | "readable" | "finish" | "secureConnect",
+      event:
+        | "end"
+        | "connect"
+        | "ready"
+        | "timeout"
+        | "readable"
+        | "finish"
+        | "secureConnect"
+        | "secure",
       listener: () => void,
     ): void;
     addListener(event: "close", listener: (hadError: boolean) => void): void;
@@ -4898,7 +4914,15 @@ declare module "net" {
     /* After setEncoding the chunk is a string. */
     once(event: "data", listener: (chunk: string) => void): void;
     once(
-      event: "end" | "connect" | "ready" | "timeout" | "readable" | "finish" | "secureConnect",
+      event:
+        | "end"
+        | "connect"
+        | "ready"
+        | "timeout"
+        | "readable"
+        | "finish"
+        | "secureConnect"
+        | "secure",
       listener: () => void,
     ): void;
     once(event: "close", listener: (hadError: boolean) => void): void;
@@ -4949,9 +4973,10 @@ declare module "net" {
     on(event: "timeout", listener: (socket: Socket) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     /* The WebSocket handover: fires INSTEAD of 'request' for
-     * Connection: upgrade requests, with the raw socket + head bytes. */
+     * Connection: upgrade requests, with the raw socket + head bytes;
+     * 'connect' is its twin for CONNECT requests (HTTP tunneling). */
     on(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
     /* http.createServer(handler)'s event twin (a no-parser net server
@@ -4967,7 +4992,7 @@ declare module "net" {
     addListener(event: "timeout", listener: (socket: Socket) => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
     addListener(
@@ -4980,7 +5005,7 @@ declare module "net" {
     once(event: "timeout", listener: (socket: Socket) => void): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
     once(
@@ -5451,6 +5476,7 @@ declare module "tls" {
    * split — authorizationError is the verify-failure CODE STRING
    * (DEPTH_ZERO_SELF_SIGNED_CERT, ...), or null. */
   export interface TLSSocket extends Socket {
+    readonly encrypted: true;
     authorized: boolean;
     authorizationError: string | null;
     /* null before the handshake, then the negotiated protocol or false */
@@ -5462,6 +5488,21 @@ declare module "tls" {
     /* whether the handshake resumed a cached session */
     isSessionReused(): boolean;
   }
+  /** new tls.TLSSocket(socket, options): the server-mode wrap of an open
+   * socket (a server connection or an http CONNECT socket). The options
+   * record reads at runtime; isServer, cert, key, secureContext,
+   * ALPNProtocols, minVersion and maxVersion are implemented. */
+  export interface TLSSocketOptions {
+    isServer?: boolean;
+    cert?: string | Uint8Array;
+    key?: string | Uint8Array;
+    secureContext?: SecureContext;
+    ALPNProtocols?: string[] | Uint8Array;
+    minVersion?: string;
+    maxVersion?: string;
+    [option: string]: unknown;
+  }
+  export const TLSSocket: new (socket: Socket, options: TLSSocketOptions) => TLSSocket;
   export interface CipherNameAndProtocol {
     name: string;
     standardName: string;
@@ -5470,12 +5511,14 @@ declare module "tls" {
   export const DEFAULT_MIN_VERSION: string;
   export const DEFAULT_MAX_VERSION: string;
   /** tls.connect options — the RUNTIME options record (members read at
-   * runtime; port/host/rejectUnauthorized/ca/servername are the
+   * runtime; port/host/socket/rejectUnauthorized/ca/servername are the
    * honestly-implemented set, every other documented member throws the
    * runtime fence — the options-record stance's divergence-66 shape). */
   export interface ConnectionOptions {
     port?: number;
     host?: string;
+    /* an open socket to run the client handshake over */
+    socket?: Socket;
     rejectUnauthorized?: boolean;
     ca?: string | Uint8Array | ReadonlyArray<string | Uint8Array>;
     servername?: string;

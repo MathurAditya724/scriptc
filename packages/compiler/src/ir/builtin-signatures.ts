@@ -2182,6 +2182,20 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: VOID,
   },
   "tls.sockOnSession": { argTypes: [NETSOCKET_T, null, BOOL], result: VOID },
+  /** The 'secure' event: the handshake completed (after secureConnect on
+   * a client). Plain sockets never fire it. */
+  "tls.sockOnSecure": {
+    argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
+    result: VOID,
+  },
+  /** new tls.TLSSocket(socket, options) in server mode: a new TLS socket
+   * takes over the socket's connection (wrapSocketCtx passes a literal's
+   * secureContext member apart from the runtime options record). The
+   * record reads at runtime: isServer, cert, key, ALPNProtocols,
+   * minVersion and maxVersion are implemented, the client mode and other
+   * documented members throw the runtime fence. MAY THROW. */
+  "tls.wrapSocket": { argTypes: [NETSOCKET_T, DYN], result: NETSOCKET_T },
+  "tls.wrapSocketCtx": { argTypes: [NETSOCKET_T, DYN, SECURECTX_T], result: NETSOCKET_T },
   // createSecureContext({ cert, key }) mints the opaque SNI-answer handle.
   /** tls.createSecureContext({ cert, key }) — parses the PEM pair into an
    * opaque SecureContext handle (secureCtx kind) for SNI callbacks to

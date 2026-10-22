@@ -369,6 +369,7 @@
     { "chapter": "console", "signatures": ["Class: `Console`"], "status": "partial", "evidence": ["tests/corpus/4900-console-instances.ts", "tests/corpus/4901-console-instance-errors.ts"] },
     { "chapter": "tls", "signatures": ["`alpnProtocol` Type: {string|boolean|null}"], "status": "partial", "evidence": ["tests/corpus/6721-tls-alpn-protocols.ts"] },
     { "chapter": "tls", "signatures": ["`tlsSocket.getProtocol()`"], "status": "partial", "evidence": ["tests/corpus/6722-tls-min-max-version.ts"] },
+    { "chapter": "tls", "signatures": ["Class: `tls.TLSSocket`", "Event: `'secure'`"], "status": "partial", "evidence": ["tests/corpus/7087-tls-socket-wrap.ts", "tests/corpus/7088-tls-socket-connect-tunnel.ts", "tests/fixtures/node-types/tls-socket-wrap.ts"] },
     { "chapter": "webstreams", "signatures": ["`readableStream.values([options])`"], "status": "partial", "evidence": ["tests/corpus/2862-web-readable-async-iteration.ts"] },
     { "chapter": "webstreams", "signatures": ["`streamConsumers.text(stream)`", "`streamConsumers.json(stream)`", "`streamConsumers.buffer(stream)`"], "status": "partial", "evidence": ["tests/corpus/2629-stream-consumers.ts", "tests/corpus/2630-stream-consumers-errors.ts"] },
     { "chapter": "webstreams", "signatures": ["`streamConsumers.arrayBuffer(stream)`"], "status": "partial", "evidence": ["tests/corpus/4875-stream-consumers-array-buffer.ts"] },
