@@ -23,8 +23,9 @@ function fixture(source: string) {
   });
   const file = program.getSourceFile(entry)!;
   const lowerer = new Lowerer(program, file, [file]);
+  const analyze = () => earlyReadVarSymbols(lowerer, [file]);
   const early = () => {
-    const result = earlyReadVarSymbols(lowerer, [file]);
+    const result = analyze();
     const names: string[] = [];
     ts.walkPreorder(file, (node) => {
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
@@ -36,6 +37,7 @@ function fixture(source: string) {
   };
   return {
     file,
+    analyze,
     early,
     dispose() {
       program.dispose();
@@ -59,9 +61,10 @@ test("whole-file reference scans do not grow with the number of functions", () =
   try {
     const scans = fixtures.map((f) => {
       walk.mockClear();
-      expect(f.early()).toEqual([]);
+      expect(f.analyze().size).toBe(0);
       return walk.mock.calls.filter(([node]) => node === f.file).length;
     });
+    expect(scans[0]).toBeGreaterThan(0);
     expect(scans[1]).toBe(scans[0]);
   } finally {
     walk.mockRestore();

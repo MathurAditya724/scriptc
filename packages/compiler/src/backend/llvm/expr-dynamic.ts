@@ -28,7 +28,8 @@ import { elemAccess, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { emitUnionWiden } from "./expr-records.js";
-import { DYN_BUFFER_NUM_METHODS } from "../../ir/runtime-features.js";
+import { emitJsIcMethod, jsIcMethods } from "./js-ic.js";
+import { DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
   host: LlvmEmitterContext,
@@ -207,10 +208,16 @@ export function emitDynamicExpr(
       // pending exception.
       const recv = emitBorrowedInput(host, e.recv);
       host.declare(`declare ptr @scr_dyn_prepare_method(ptr, ptr)`);
-      const prepared = B.tmp();
-      B.line(
-        `${prepared} = call ptr @scr_dyn_prepare_method(ptr ${recv.name}, ptr ${host.cstr(e.method)})`,
-      );
+      let prepared: string;
+      if (jsIcMethods(host)) {
+        // Dynamic-tier code reads the method through the site's cache.
+        prepared = emitJsIcMethod(host, e, recv.name);
+      } else {
+        prepared = B.tmp();
+        B.line(
+          `${prepared} = call ptr @scr_dyn_prepare_method(ptr ${recv.name}, ptr ${host.cstr(e.method)})`,
+        );
+      }
       host.own({ name: prepared, type: { kind: "dyn" } });
       host.emitPendingCheck();
       const args = e.args.map((a) => emitBorrowedInput(host, a));
@@ -227,11 +234,9 @@ export function emitDynamicExpr(
         });
         argsPtr = arr;
       }
-      // Fixed-width Buffer method names take scr_bytes_dyn.c's entry, which
+      // Buffer.prototype method names take their scr_bytes_dyn.c entry, which
       // runs them on Buffer receivers and dispatches any other receiver.
-      const invoke = DYN_BUFFER_NUM_METHODS.has(e.method)
-        ? "scr_dyn_invoke_buffer_num"
-        : "scr_dyn_invoke_prepared";
+      const invoke = DYN_BUFFER_METHODS.get(e.method) ?? "scr_dyn_invoke_prepared";
       host.declare(`declare ptr @${invoke}(ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`);
       let name = host.cstr(e.calleeName);
       if (e.calleeNameValue !== undefined) {
@@ -339,7 +344,7 @@ export function emitDynamicExpr(
           const payload = host.unionPeek(u.name, def.id);
           const { ptr, type, inline } =
             arm.kind === "object"
-              ? host.classFieldPtr(payload, arm.className, e.field)
+              ? host.classFieldPtr(payload, arm.className, e.field, "compressed")
               : host.recordFieldPtr(payload, arm.shapeId, e.field);
           const nullable =
             arm.kind === "object" ? host.nullableFields.get(arm.className, e.field) : null;
@@ -1026,6 +1031,29 @@ export function emitDynamicExpr(
       const c = host.emitReadReceiver(e.value);
       if (e.test === "instanceof") {
         const t = emitCaughtInstanceof(host, c.name, e.className!);
+        if (e.negated !== true) return { name: t, type: e.type };
+        const n = B.tmp();
+        B.line(`${n} = xor i1 ${t}, true`);
+        return { name: n, type: e.type };
+      }
+      if (e.test === "dynamic") {
+        // A REF payload whose retain adapter is the dyn adapter (sc_cd's
+        // by-reference arm).
+        host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+        const kp = B.tmp(),
+          k = B.tmp(),
+          isRef = B.tmp(),
+          rp = B.tmp(),
+          r = B.tmp(),
+          isDyn = B.tmp(),
+          t = B.tmp();
+        B.line(`${kp} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 1`);
+        B.line(`${k} = load i32, ptr ${kp}`);
+        B.line(`${isRef} = icmp eq i32 ${k}, 4`);
+        B.line(`${rp} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 5`);
+        B.line(`${r} = load ptr, ptr ${rp}`);
+        B.line(`${isDyn} = icmp eq ptr ${r}, @scr_dyn_retain_v`);
+        B.line(`${t} = and i1 ${isRef}, ${isDyn}`);
         if (e.negated !== true) return { name: t, type: e.type };
         const n = B.tmp();
         B.line(`${n} = xor i1 ${t}, true`);

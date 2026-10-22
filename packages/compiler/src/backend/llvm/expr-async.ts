@@ -374,7 +374,7 @@ export function emitSerializationExpr(
       // falls back to exactly this route whenever the fast path declines.
       const parsed = e.value;
       if (!e.preserveRefs && parsed.kind === "libCall" && parsed.fn === "json.parse") {
-        const fused = host.dyn.jsonParseHelper(e.type, e.fallback === true);
+        const fused = host.dyn.jsonParseHelper(e.type);
         if (fused) {
           const text = emitBorrowedInput(host, parsed.args[0]!);
           const r = B.tmp();
@@ -400,12 +400,6 @@ export function emitSerializationExpr(
       B.line(
         `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${dynV.name}, ptr null)`,
       );
-      // A fallback site: a value that fails validation parks as the
-      // checked value instead of throwing (dynCheck.fallback).
-      if (e.fallback) {
-        host.declare(`declare zeroext i1 @scr_dyn_check_recover(ptr)`);
-        B.line(`call zeroext i1 @scr_dyn_check_recover(ptr ${dynV.name})`);
-      }
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck();
       return out;
@@ -907,6 +901,12 @@ export function emitAsyncExpr(
       // the callee's adopting entry. Past finally regions, the return has
       // already produced the promise (adoptedOperand).
       const adopted = e.adopt === true ? host.takeAdoptedOperand() : null;
+      // A stackless coroutine body runs the entries of `Promise.all` of
+      // never-suspending calls in place and takes Promise.all's turns.
+      if (adopted === null && e.value.kind === "intrinsic" && host.currentCoro?.kind === "async") {
+        const entries = host.inlinePromiseAllEntries(e.value);
+        if (entries !== null) return host.emitCoroInlinePromiseAll(entries, e.type);
+      }
       // A stackless coroutine body runs a never-suspending callee in place
       // and takes the await's turn itself.
       if (adopted === null && e.value.kind === "call" && host.inlineAwaitEligible(e.value.callee)) {
@@ -916,6 +916,22 @@ export function emitAsyncExpr(
           !host.callLifetimes.borrowed.has(e.value.callee)
         ) {
           return host.emitCoroInlineAwait(e.value, e.adopt === true);
+        }
+      }
+      // A stackless coroutine body awaits a stackless callee's fiber record
+      // instead of its promise.
+      if (
+        adopted === null &&
+        e.adopt !== true &&
+        e.value.kind === "call" &&
+        host.directAwaitEligible(e.value.callee)
+      ) {
+        const callee = host.fnByName.get(e.value.callee)!;
+        if (
+          typeEquals(callee.returnType, e.type) &&
+          !host.callLifetimes.borrowed.has(e.value.callee)
+        ) {
+          return host.emitCoroDirectAwait(e.value, e.type);
         }
       }
       if (adopted === null && e.value.kind === "call" && host.awaitCallEligible(e.value.callee)) {

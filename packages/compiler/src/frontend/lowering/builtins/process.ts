@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import { stdinKeypressListener } from "./readline.js";
 import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
 import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -304,19 +305,13 @@ export function isOptionalProcessVersionsRead(lowerer: Lowerer, node: ts.Node): 
   );
 }
 
-const mentionsVersions = new WeakMap<Lowerer, boolean>();
-
 /** Whether any implementation source spells `versions`. Programs that
  * never do skip the per-read checker queries above entirely. */
 function programMentionsVersions(lowerer: Lowerer): boolean {
-  let known = mentionsVersions.get(lowerer);
-  if (known === undefined) {
-    known = lowerer.program
-      .getImplementationSourceFiles()
-      .some((sf) => !sf.isDeclarationFile && sf.text.includes("versions"));
-    mentionsVersions.set(lowerer, known);
-  }
-  return known;
+  lowerer.mentionsProcessVersions ??= lowerer.program
+    .getImplementationSourceFiles()
+    .some((sf) => !sf.isDeclarationFile && sf.text.includes("versions"));
+  return lowerer.mentionsProcessVersions;
 }
 
 export function lowerProcessStreamProperty(
@@ -1567,7 +1562,7 @@ export function lowerProcessMethodCall(
     const key = `${prefix}usage.diff:${prevT.shapeId}:${t.shapeId}`;
     let helper = lowerer.valueHelpers.get(key);
     if (!helper) {
-      helper = `%${prefix}usage.diff.${lowerer.valueHelpers.size}`;
+      helper = keyedHelperName(lowerer, `%${prefix}usage.diff`, key);
       lowerer.valueHelpers.set(key, helper);
       const pRef: IrExpr = { kind: "varRef", localId: "p.0", type: prevT, loc };
       const fieldOf = (name: string): IrExpr => ({
@@ -1642,7 +1637,7 @@ export function lowerProcessMethodCall(
     const key = `process.memoryUsage:${t.shapeId}`;
     let helper = lowerer.valueHelpers.get(key);
     if (!helper) {
-      helper = `%process.memoryUsage.${lowerer.valueHelpers.size}`;
+      helper = keyedHelperName(lowerer, "%process.memoryUsage", key);
       lowerer.valueHelpers.set(key, helper);
       lowerer.liftedFns.push({
         name: helper,

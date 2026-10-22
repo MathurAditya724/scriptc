@@ -1,4 +1,5 @@
 import { THREADS_MODULE } from "../threads-import.js";
+import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { everyStmtList, everyTypeChild } from "../../ir/traverse.js";
@@ -122,6 +123,7 @@ import { streamClassAliasDecl } from "./lower-stream.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
+import { isPromisePrototypeRead } from "./expressions/property-access.js";
 import {
   collectNamespaceStmt,
   nsMemberIdentOf,
@@ -133,6 +135,7 @@ import { recordTextCodecClass } from "../../ir/ir.js";
 import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
 import type { ClassInfo } from "./lower-classes.js";
 import {
+  builtinRequireBaseOf,
   collectInheritedJsFieldWrites,
   collectVirtualJsMethods,
   decoratorNodesOf,
@@ -146,6 +149,7 @@ import { forkTargetPaths } from "../fork-target.js";
 import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { handleEventReaderPrelude } from "./lower-event-target.js";
+import { dateClassOperationPrelude } from "./builtins/date-classes.js";
 import { cjsAccessorSnapshotStores, jsHoldsDynObject } from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 
@@ -155,6 +159,49 @@ export interface FileParts {
   fnDecls: ts.FunctionDeclaration[];
   classDecls: ts.ClassDeclaration[];
   topStmts: ts.Statement[];
+}
+
+/** Preflight's module graph (LoadResult.moduleEdges), for the walks that
+ * append modules outside the startup order, and the set collecting the
+ * inline require() calls that close a cycle there. */
+export interface AppendGraph {
+  edges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
+  inlineCycleCalls?: Set<ts.Node>;
+}
+
+/** An appended module's edges: its import and export declarations, then
+ * the require() edges preflight resolved — a CommonJS file's only edges
+ * (the compiled CommonJS package a workspace module loaded on demand
+ * imports, and the sibling packages and files IT requires). */
+function appendedEdgesOf(
+  program: ts.Program,
+  graph: AppendGraph | undefined,
+): (sf: ts.SourceFile) => CycleEdge[] {
+  const cache = new Map<ts.SourceFile, CycleEdge[]>();
+  return (sf) => {
+    let out = cache.get(sf);
+    if (out !== undefined) return out;
+    out = orderedImportsOf(program, sf).flatMap(({ stmt, dep }) =>
+      dep !== null && dep !== sf
+        ? [{ dep, stmt: stmt as ts.ImportDeclaration | ts.ExportDeclaration }]
+        : [],
+    );
+    for (const e of graph?.edges?.get(sf) ?? [])
+      if (e.stmt === undefined && e.dep !== sf) out.push(e);
+    cache.set(sf, out);
+    return out;
+  };
+}
+
+/** Lazy inline requires run after their module's top level: their modules
+ * join the order afterwards, as in preflight's walk. */
+function visitLazyEdges(
+  sf: ts.SourceFile,
+  edgesOf: (sf: ts.SourceFile) => CycleEdge[],
+  state: ReadonlyMap<ts.SourceFile, "visiting" | "done">,
+  visit: (sf: ts.SourceFile) => void,
+): void {
+  for (const e of edgesOf(sf)) if (e.lazy === true && state.get(e.dep) === undefined) visit(e.dep);
 }
 
 /** Program modules selected by statically resolved child_process.fork()
@@ -167,8 +214,9 @@ export function appendForkModules(
   order: ts.SourceFile[],
   targets: ts.SourceFile[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
-  appendEntryModules(program, order, targets, forkTargetPaths(program, order), onCycle);
+  appendEntryModules(program, order, targets, forkTargetPaths(program, order), onCycle, graph);
 }
 
 export function appendWorkerModules(
@@ -176,8 +224,9 @@ export function appendWorkerModules(
   order: ts.SourceFile[],
   targets: ts.SourceFile[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
-  appendEntryModules(program, order, targets, workerTargetPaths(program, order), onCycle);
+  appendEntryModules(program, order, targets, workerTargetPaths(program, order), onCycle, graph);
 }
 
 function appendEntryModules(
@@ -186,6 +235,7 @@ function appendEntryModules(
   targets: ts.SourceFile[],
   paths: readonly string[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
   if (order.length === 0) return;
   const byPath = new Map(
@@ -195,22 +245,24 @@ function appendEntryModules(
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
   const stack: string[] = [];
-  const staticEdgesOf = (sf: ts.SourceFile): CycleEdge[] =>
-    orderedImportsOf(program, sf).flatMap(({ stmt, dep }) =>
-      dep !== null && dep !== sf
-        ? [{ dep, stmt: stmt as ts.ImportDeclaration | ts.ExportDeclaration }]
-        : [],
-    );
-  const cycleAdmissionReason = makeCycleAdmission(program, staticEdgesOf);
+  const staticEdgesOf = appendedEdgesOf(program, graph);
+  const cycleAdmissionReason = makeCycleAdmission(program, (sf) =>
+    staticEdgesOf(sf).filter((e) => e.call === undefined),
+  );
   const visit = (sf: ts.SourceFile): void => {
     const prior = state.get(sf);
     if (prior === "done") return;
     state.set(sf, "visiting");
     stack.push(sf.fileName);
     for (const edge of staticEdgesOf(sf)) {
+      if (edge.lazy === true) continue; // visited after this module completes
       const edgeState = state.get(edge.dep);
       if (edgeState === "done") continue;
       if (edgeState === "visiting") {
+        if (edge.call !== undefined) {
+          graph?.inlineCycleCalls?.add(edge.call);
+          continue;
+        }
         const reason = cycleAdmissionReason(sf, edge);
         if (reason !== null) {
           const cycleStart = stack.indexOf(edge.dep.fileName);
@@ -223,6 +275,7 @@ function appendEntryModules(
     stack.pop();
     state.set(sf, "done");
     added.push(sf);
+    visitLazyEdges(sf, staticEdgesOf, state, visit);
   };
 
   const knownTargets = new Set(targets);
@@ -318,27 +371,30 @@ export function appendDynamicImportModules(
   program: ts.Program,
   order: ts.SourceFile[],
   onCycle: (cycle: string, reason: string) => void,
+  graph?: AppendGraph,
 ): void {
   if (order.length === 0) return; // no preflight order — sites keep their fences
   const state = new Map<ts.SourceFile, "visiting" | "done">();
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
   const stack: string[] = [];
-  const staticEdgesOf = (sf: ts.SourceFile): CycleEdge[] =>
-    orderedImportsOf(program, sf).flatMap(({ stmt, dep }) =>
-      dep !== null && dep !== sf
-        ? [{ dep, stmt: stmt as ts.ImportDeclaration | ts.ExportDeclaration }]
-        : [],
-    );
-  const cycleAdmissionReason = makeCycleAdmission(program, staticEdgesOf);
+  const staticEdgesOf = appendedEdgesOf(program, graph);
+  const cycleAdmissionReason = makeCycleAdmission(program, (sf) =>
+    staticEdgesOf(sf).filter((e) => e.call === undefined),
+  );
   const visit = (sf: ts.SourceFile): void => {
     if (state.get(sf) !== undefined) return;
     state.set(sf, "visiting");
     stack.push(sf.fileName);
     for (const e of staticEdgesOf(sf)) {
+      if (e.lazy === true) continue; // visited after this module completes
       const s = state.get(e.dep);
       if (s === "done") continue;
       if (s === "visiting") {
+        if (e.call !== undefined) {
+          graph?.inlineCycleCalls?.add(e.call);
+          continue;
+        }
         // A back edge: Node answers it from the cache. Same admission
         // question as preflight's static walk, same fence when refused.
         const reason = cycleAdmissionReason(sf, e);
@@ -353,6 +409,7 @@ export function appendDynamicImportModules(
     stack.pop();
     state.set(sf, "done");
     added.push(sf);
+    visitLazyEdges(sf, staticEdgesOf, state, visit);
   };
   const scanned = new Set<ts.SourceFile>();
   for (;;) {
@@ -378,7 +435,8 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
       const heritage = decl.heritageClauses?.nodes.find(
         (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
       )?.types?.nodes[0]?.expression;
-      if (heritage && ts.isCallExpression(heritage)) computed.add(decl);
+      if (heritage && ts.isCallExpression(heritage) && !builtinRequireBaseOf(lowerer, heritage))
+        computed.add(decl);
     }
   // Descendants need the computed ancestor's completed layout before
   // their own fields and inherited methods can be collected.
@@ -992,7 +1050,8 @@ export function moduleArtifacts(
   }
   const reachable = lowerer.reachableForArtifacts ?? lowerer.reachable;
   return {
-    classes: [...lowerer.classes.values()]
+    classes: lowerer
+      .classesInTableOrder()
       .map((c) => c.def)
       .filter((def) => classNames.has(def.name))
       .map((def): IrClassDef => {
@@ -1017,8 +1076,14 @@ export function moduleArtifacts(
         else delete rest.abstractMethods;
         return rest;
       }),
-    records: lowerer.shapes.shapes.filter((r) => shapeIds.has(r.id)),
-    unions: lowerer.unions.unions.filter((u) => unionIds.has(u.id)),
+    // Ids come from what each shape and union is (keyedHelperName), so
+    // ordering by id gives every lowering order the same module.
+    records: lowerer.shapes.shapes
+      .filter((r) => shapeIds.has(r.id))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+    unions: lowerer.unions.unions
+      .filter((u) => unionIds.has(u.id))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   };
 }
 
@@ -1419,8 +1484,17 @@ export function collectGlobals(
           // common/tls's `exports.check = function (certs) {...}` —
           // keep func-ness with dyn pieces; everything else is dyn).
           const strict = lowerer.checker.getTypeOfSymbol(symbol);
-          const t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, nameNode, strict);
+          let t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, nameNode, strict);
           if (!t || t.kind === "void") lowerer.badType(typeNode, strict);
+          // An export typed as the empty object literal (tsc's enum output
+          // `exports.E || (exports.E = {})` after its `exports.E = void 0`
+          // preamble): TS's `{}` admits any later non-nullish value and the
+          // export is undefined until then, so it rides checked-dynamic
+          // storage like the same-shaped var binding (varBindingType).
+          if (t.kind === "record" && isJsSourceFile(sf)) {
+            const shape = lowerer.shapes.get(t.shapeId);
+            if (shape && shape.fields.length === 0 && !shape.indexValue && !shape.tuple) t = DYN;
+          }
           // An immutable export source shares its live storage and native
           // callable ABI. Mutable sources need a separate snapshot slot:
           // later writes to the binding do not change the exported value.
@@ -1611,7 +1685,7 @@ export function collectGlobals(
         }
         if (type.kind === "void") lowerer.badType(stmt.name, lowerer.typeOf(stmt.name));
         const g: IrGlobal = {
-          id: `%g.${tag}${nsPathPrefix(stmt)}%alias.${stmt.name.text}%${ts.tokenStartOfNode(stmt)}`,
+          id: `%g.${tag}${nsPathPrefix(lowerer, stmt)}%alias.${stmt.name.text}%${positionTag(lowerer, stmt)}`,
           name: stmt.name.text,
           type,
           mutable: false,
@@ -1688,7 +1762,7 @@ export function collectGlobals(
     // (`%g.e.A%B.x`), so `namespace A { export const x }` and a
     // top-level `const x` never collide; non-exported members add the
     // declaring block's position (block-local bindings).
-    const nsPrefix = nsPathPrefix(stmt, list.declarations.nodes[0]);
+    const nsPrefix = nsPathPrefix(lowerer, stmt, list.declarations.nodes[0]);
     for (const decl of list.declarations.nodes) {
       // --provenance-sources: an elided pure-annotated dead const in a
       // fetched source module registers no global (the statement
@@ -1978,19 +2052,24 @@ export function collectGlobals(
           // Builtin declarations do not always describe the concrete native
           // callable ABI. Preserve checked-native values in shared storage;
           // adapting the loader to (string) would replace its validation.
+          // An inferred Promise.prototype binding holds an ordinary object
+          // (isPromisePrototypeRead), in TypeScript as well.
           const initializer = decl.initializer ? stripTypeCasts(decl.initializer) : undefined;
           if (
-            isJsSourceFile(sf) &&
-            nameNode === decl.name &&
-            initializer &&
-            (isNativeBuiltinValueInitializer(lowerer, initializer) ||
-              (!decl.type &&
-                !hasJsTypeAnnotation(decl) &&
-                lowerer.mapTypeOf(lowerer.typeOf(nameNode))?.kind === "date") ||
-              (!decl.type &&
-                !hasJsTypeAnnotation(decl) &&
-                checkedGlobalReference(lowerer, initializer)) ||
-              stdlibGlobalNameOf(lowerer, initializer) === "globalThis")
+            (nameNode === decl.name &&
+              !decl.type &&
+              isPromisePrototypeRead(lowerer, decl.initializer)) ||
+            (isJsSourceFile(sf) &&
+              nameNode === decl.name &&
+              initializer &&
+              (isNativeBuiltinValueInitializer(lowerer, initializer) ||
+                (!decl.type &&
+                  !hasJsTypeAnnotation(decl) &&
+                  lowerer.mapTypeOf(lowerer.typeOf(nameNode))?.kind === "date") ||
+                (!decl.type &&
+                  !hasJsTypeAnnotation(decl) &&
+                  checkedGlobalReference(lowerer, initializer)) ||
+                stdlibGlobalNameOf(lowerer, initializer) === "globalThis"))
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
@@ -3305,6 +3384,7 @@ export function buildMain(lowerer: Lowerer): IrFunction {
     ...lowerer.mainPrelude,
     ...cjsModuleRegistryPrelude(lowerer, loc),
     ...handleEventReaderPrelude(lowerer, loc),
+    ...dateClassOperationPrelude(lowerer, loc),
   ];
   const roots = [lowerer.entry, ...lowerer.forkTargets, ...lowerer.workerTargets];
   const isAsync = roots.some((root) => lowerer.asyncInitFiles.has(root));
