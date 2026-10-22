@@ -1864,6 +1864,42 @@ function lowerFromSource(
   // SCR_FROM_DUPLEX
   const duplexFlag = duplex ? 32 : 0;
   const js = isJsSourceFile(ts.getSourceFileOfNode(call));
+  // A web ReadableStream is async iterable: from.js reads its iterator.
+  // (Duplex.from takes Readable.fromWeb of it instead.)
+  const webElem = srcNode ? staticReadableStreamElementType(lowerer, srcNode) : null;
+  if (srcNode && webElem !== null) {
+    if (duplex) {
+      lowerer.noLowering(
+        "Duplex.from over a web ReadableStream",
+        srcNode,
+        "Readable.from(stream) reads a web ReadableStream",
+      );
+    }
+    const source = lowerWebStreamSource(lowerer, srcNode, webElem, loc);
+    const helpers = source ? fromGenHelpers(lowerer, source.out, loc) : null;
+    const opts = optsNode ? fromOptions(lowerer, optsNode) : { flags: 0, hwm: null };
+    if (!source || !helpers || !opts || !fromGenChunk(lowerer, webElem)) {
+      lowerer.noLowering(
+        `Readable.from over a web ReadableStream of '${lowerer.fmt(webElem)}'`,
+        srcNode,
+      );
+    }
+    const hwm = opts!.hwm ? lowerer.lowerExprExpecting(opts!.hwm, F64) : numLit(0, loc);
+    const gen: IrExpr = {
+      kind: "callValue",
+      callee: source!.closure,
+      args: [],
+      type: source!.out,
+      loc,
+    };
+    return {
+      kind: "libCall",
+      fn: "readable.fromAsyncGen",
+      args: [gen, ...helpers!, numLit(opts!.flags, loc), hwm],
+      type,
+      loc,
+    };
+  }
   const srcT = srcNode ? lowerer.mapTypeOf(lowerer.typeOf(srcNode)) : null;
   const typedElem = (t: IrType | null | undefined): "string" | "bytes" | null =>
     t?.kind === "string" ? "string" : t?.kind === "bytes" && t.elem === "u8" ? "bytes" : null;
@@ -3120,6 +3156,8 @@ type SyncGenType = IrType & { kind: "generator" };
  * array, a string or a synchronous generator object), or null. */
 function iterableSourceType(lowerer: Lowerer, node: ts.Expression): IrType | null {
   if (pipelineStageFunction(lowerer, node) !== null) return null;
+  const webElem = staticReadableStreamElementType(lowerer, node);
+  if (webElem !== null) return webElem;
   let t: IrType | null;
   try {
     t = lowerer.mapTypeOf(lowerer.typeOf(node));
@@ -3139,12 +3177,245 @@ function iterableSourceType(lowerer: Lowerer, node: ts.Expression): IrType | nul
  * through an async-from-sync iterator, and an async generator that
  * yields the same elements resumes its consumer on the same ticks. Null
  * when the source has no such lowering. */
+/** A web ReadableStream source, as an async generator closure over its
+ * reader: each pass awaits reader.read() and yields the chunk, as the
+ * stream's async iterator does; leaving early cancels the stream (its
+ * iterator's return()), and the reader's lock is released either way. */
+function lowerWebStreamSource(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  elemT: IrType,
+  loc: SrcLoc,
+): { closure: IrExpr; out: SyncGenType } | null {
+  const resultT = genResultRecord(elemT, VOID, lowerer.shapes, lowerer.unions);
+  if (!resultT) return null;
+  const valueField = lowerer.shapes.get(resultT.shapeId)?.fields.find((f) => f.name === "value");
+  if (!valueField) return null;
+  const out: SyncGenType = {
+    kind: "generator",
+    async: true,
+    yieldT: elemT,
+    retT: VOID,
+    nextT: UNDEFINED_T,
+  };
+  const genResultT = genResultRecord(elemT, VOID, lowerer.shapes, lowerer.unions);
+  if (!genResultT) return null;
+  const value = lowerer.lowerExprExpecting(node, DYN);
+  const key = `webStreamSource:${typeKey(elemT)}`;
+  let maker = lowerer.valueHelpers.get(key);
+  if (!maker) {
+    maker = `%stream.webStreamSource.${lowerer.valueHelpers.size}`;
+    const genName = `${maker}.gen`;
+    const frame = new LiftedFrame(loc);
+    const srcId = frame.local("src", DYN, false);
+    const readerId = frame.local("reader", DYN, false);
+    const activeId = frame.local("active", BOOL, true);
+    const promiseT: IrType = { kind: "promise", inner: resultT };
+    const pId = frame.local("p", promiseT, false);
+    const rId = frame.local("r", resultT, false);
+    const reader = (): IrExpr => varRef(readerId, DYN, loc);
+    const r = (): IrExpr => varRef(rId, resultT, loc);
+    const setActive = (on: boolean): IrStmt => ({
+      kind: "assign",
+      localId: activeId,
+      value: { kind: "boolLit", value: on, type: BOOL, loc },
+      loc,
+    });
+    const extracted = extractIteratorValue(
+      lowerer,
+      elemT,
+      valueField.type,
+      {
+        kind: "recordGet",
+        obj: r(),
+        shapeId: resultT.shapeId,
+        field: "value",
+        type: valueField.type,
+        loc,
+      },
+      loc,
+    );
+    if (!extracted) return null;
+    const invoke = (method: string, args: IrExpr[], calleeName: string): IrExpr => ({
+      kind: "dynInvoke",
+      recv: reader(),
+      method,
+      calleeName,
+      args,
+      type: DYN,
+      loc,
+    });
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: readerId,
+        init: {
+          kind: "dynInvoke",
+          recv: varRef(srcId, DYN, loc),
+          method: "getReader",
+          calleeName: "ReadableStream async iterator",
+          args: [],
+          type: DYN,
+          loc,
+        },
+        loc,
+      },
+      {
+        kind: "varDecl",
+        localId: activeId,
+        init: { kind: "boolLit", value: false, type: BOOL, loc },
+        loc,
+      },
+      {
+        kind: "tryCatch",
+        tryBody: [
+          {
+            kind: "while",
+            cond: { kind: "boolLit", value: true, type: BOOL, loc },
+            body: [
+              setActive(false),
+              {
+                kind: "varDecl",
+                localId: pId,
+                init: {
+                  kind: "libCall",
+                  fn: "fetch.readerRead",
+                  args: [reader()],
+                  type: promiseT,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "varDecl",
+                localId: rId,
+                init: { kind: "awaitExpr", value: varRef(pId, promiseT, loc), type: resultT, loc },
+                loc,
+              },
+              {
+                kind: "if",
+                cond: {
+                  kind: "recordGet",
+                  obj: r(),
+                  shapeId: resultT.shapeId,
+                  field: "done",
+                  type: BOOL,
+                  loc,
+                },
+                then: [{ kind: "break", loc }],
+                else_: null,
+                loc,
+              },
+              setActive(true),
+              {
+                kind: "exprStmt",
+                expr: { kind: "yieldExpr", value: extracted, type: VOID, loc },
+                loc,
+              },
+            ],
+            loc,
+          },
+        ],
+        catchBody: null,
+        catchLocalId: null,
+        finallyBody: [
+          {
+            kind: "tryCatch",
+            tryBody: [
+              {
+                kind: "if",
+                cond: varRef(activeId, BOOL, loc),
+                then: [
+                  {
+                    kind: "exprStmt",
+                    expr: {
+                      kind: "libCall",
+                      fn: "async.awaitDyn",
+                      args: [
+                        invoke(
+                          "cancel",
+                          [dynUndefinedExpr(loc)],
+                          "ReadableStream async iterator return",
+                        ),
+                      ],
+                      type: DYN,
+                      loc,
+                    },
+                    loc,
+                  },
+                ],
+                else_: null,
+                loc,
+              },
+            ],
+            catchBody: null,
+            catchLocalId: null,
+            finallyBody: [
+              {
+                kind: "exprStmt",
+                expr: invoke("releaseLock", [], "ReadableStream async iterator releaseLock"),
+                loc,
+              },
+            ],
+            loc,
+          },
+        ],
+        loc,
+      },
+      { kind: "return", value: null, loc },
+    ];
+    const srcLocal = frame.locals.find((l) => l.id === srcId)!;
+    srcLocal.boxed = true;
+    lowerer.valueHelpers.set(key, maker);
+    lowerer.liftedFns.push({
+      name: genName,
+      params: [],
+      returnType: VOID,
+      async: true,
+      captures: [{ localId: srcId, name: "src", type: DYN }],
+      locals: frame.locals,
+      body,
+      generator: { yieldT: elemT, nextT: UNDEFINED_T, resultType: genResultT },
+      loc,
+    });
+    const makerSrc: IrLocal = { id: "src.0", name: "src", type: DYN, mutable: false, boxed: true };
+    lowerer.liftedFns.push({
+      name: maker,
+      params: [{ localId: makerSrc.id, name: makerSrc.name, type: DYN }],
+      returnType: funcOf([], out),
+      locals: [makerSrc],
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "closure",
+            fnName: genName,
+            captures: [makerSrc.id],
+            type: funcOf([], out),
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return {
+    closure: { kind: "call", callee: maker, args: [value], type: funcOf([], out), loc },
+    out,
+  };
+}
+
 function lowerIterableSource(
   lowerer: Lowerer,
   node: ts.Expression,
   fn: StageFunction | null,
   loc: SrcLoc,
 ): { closure: IrExpr; out: SyncGenType } | null {
+  if (fn === null) {
+    const webElem = staticReadableStreamElementType(lowerer, node);
+    if (webElem !== null) return lowerWebStreamSource(lowerer, node, webElem, loc);
+  }
   let value: IrExpr;
   if (fn !== null) {
     if (fn.parameters.nodes.length > 0) {
@@ -4004,15 +4275,20 @@ function lowerStreamCompose(lowerer: Lowerer, args: readonly ts.Expression[], lo
       loc,
     );
   }
-  for (const a of args) {
+  // A web ReadableStream first stage reads as an async iterable (the
+  // pipeline's source); elsewhere it would be Duplex.fromWeb of it.
+  for (let i = args.length === 1 ? 0 : 1; i < args.length; i++) {
+    const a = args[i]!;
     // (typeOf on a stage function's name would report what collecting its
     // declared signature deferred)
     if (pipelineStageFunction(lowerer, a) !== null) continue;
     if (staticReadableStreamElementType(lowerer, a) !== null) {
       lowerer.noLowering(
-        "compose with a web ReadableStream",
+        i === 0
+          ? "Duplex.from over a web ReadableStream"
+          : "compose with a web ReadableStream after the first stage",
         a,
-        "web streams do not convert to Node streams yet; compose Node streams, iterables or async generator functions",
+        "a web ReadableStream is supported as the first stage of compose or pipeline, and in Readable.from",
       );
     }
   }
