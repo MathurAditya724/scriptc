@@ -3596,7 +3596,7 @@ export class Lowerer {
         this.genericClassInstanceType(decl, ref, mapArgument),
       runtimeClassValue: (type) => runtimeClassValueOfType(this, type),
       localClassValue: (type) =>
-        this.instanceResultClass?.declared === type.id
+        this.instanceResultClass !== null && this.instanceResultClass.declared === type.id
           ? this.instanceResultClass.value
           : (this.localClassValueTypes.get(type.id) ?? null),
       mixinClassInstance: (decl) =>
