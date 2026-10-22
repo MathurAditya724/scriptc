@@ -8,6 +8,7 @@ import * as crypto from "node:crypto";
 import {
   PassThrough,
   Readable,
+  Transform,
   Writable,
   addAbortSignal,
   compose,
@@ -63,6 +64,43 @@ async function viaPipeAndForAwait(): Promise<void> {
   let text = "";
   for await (const chunk of chain) text += chunk;
   console.log("pipe + for await:", text);
+}
+
+async function viaPipeIntoTransform(): Promise<void> {
+  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+  const upper = new Transform({
+    transform(chunk: Buffer, _enc: string, cb: (err: Error | null, data?: Buffer) => void) {
+      cb(null, Buffer.from(chunk.toString("hex").toUpperCase()));
+    },
+  });
+  const out = cipher.pipe(upper);
+  console.log("pipe answers its destination:", out === upper);
+  cipher.end("into a transform");
+  let hex = "";
+  for await (const chunk of out) hex += chunk;
+  console.log("pipe into transform:", hex);
+}
+
+async function viaPipelineArgumentOrder(): Promise<void> {
+  const order: string[] = [];
+  const source = (): string[] => {
+    order.push("source");
+    return ["x", "y"];
+  };
+  const cipherStage = (): crypto.Cipheriv => {
+    order.push("cipher");
+    return crypto.createCipheriv("aes-256-ctr", key, iv);
+  };
+  const hash = crypto.createHash("sha256");
+  await pipelinePromise(
+    source(),
+    async function* (src: AsyncIterable<string>) {
+      for await (const chunk of src) yield chunk.toUpperCase();
+    },
+    cipherStage(),
+    hash,
+  );
+  console.log("pipeline argument order:", order.join(" "), hash.digest("hex"));
 }
 
 async function viaEvents(): Promise<void> {
@@ -176,6 +214,8 @@ async function main(): Promise<void> {
   await viaCallbackPipeline();
   await viaPromisePipeline();
   await viaPipeAndForAwait();
+  await viaPipeIntoTransform();
+  await viaPipelineArgumentOrder();
   await viaEvents();
   await gcm();
 }

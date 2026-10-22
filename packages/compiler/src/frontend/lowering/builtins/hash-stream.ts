@@ -82,7 +82,10 @@ export function lowerHashStreamCall(
   if (!isValueStream(lowerer, access.expression)) return null;
   const info = lowerer.classes.get(TRANSFORM_CLASS);
   if (!info) return null;
-  return withValueStreamReceiver(lowerer, access.expression, locOf(call), () =>
+  // pipe(dest) answers its destination, which may be a Transform too;
+  // the other members typed as the Transform answer `this`
+  const answersThis = name !== "pipe";
+  return withValueStreamReceiver(lowerer, access.expression, locOf(call), answersThis, () =>
     streamMember
       ? lowerStreamMethodCall(lowerer, call, access, info)
       : lowerEmitterMethodCall(lowerer, call, access, info),
@@ -98,19 +101,20 @@ export function lowerValueStreamProperty(
   if (expr.questionDotToken || !isValueStream(lowerer, expr.expression)) return null;
   const info = lowerer.classes.get(TRANSFORM_CLASS);
   if (!info) return null;
-  return withValueStreamReceiver(lowerer, expr.expression, locOf(expr), () =>
+  return withValueStreamReceiver(lowerer, expr.expression, locOf(expr), true, () =>
     lowerStreamProperty(lowerer, expr, info),
   );
 }
 
 /** Evaluates the value `receiver` names once into a hidden local and runs
- * `lower` with the receiver lowering to that value's Transform. A result
- * typed as the Transform (a member that answers `this`) answers the value
- * itself. */
+ * `lower` with the receiver lowering to that value's Transform. When
+ * `answersThis`, a result typed as the Transform (the member answered
+ * `this`) answers the value itself. */
 function withValueStreamReceiver(
   lowerer: Lowerer,
   receiver: ts.Expression,
   loc: SrcLoc,
+  answersThis: boolean,
   lower: () => IrExpr | null,
 ): IrExpr | null {
   const value = lowerer.lowerExpr(receiver);
@@ -124,7 +128,7 @@ function withValueStreamReceiver(
   }
   if (!lowered) return null;
   const answersStream =
-    lowered.type.kind === "object" && lowered.type.className === TRANSFORM_CLASS;
+    answersThis && lowered.type.kind === "object" && lowered.type.className === TRANSFORM_CLASS;
   const result: IrExpr = answersStream
     ? {
         kind: "seqExpr",

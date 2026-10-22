@@ -2935,6 +2935,10 @@ function lowerPipelineStages(
   // What the next function stage receives: null before the first stage,
   // else the previous stream's type or the previous stage's generator.
   let srcT: IrType | null = null;
+  // The streams and stages in argument order: the head lists all streams
+  // before all stages, so when a stage precedes a stream the arguments
+  // are bound to locals first, keeping JavaScript's evaluation order.
+  const argOrder: { list: IrExpr[]; index: number }[] = [];
   for (let j = 0; j < stageArgs.length; j++) {
     const arg = stageArgs[j]!;
     const fn = pipelineStageFunction(lowerer, arg);
@@ -2948,6 +2952,7 @@ function lowerPipelineStages(
       const source = lowerIterableSource(lowerer, arg, syncSourceFn ? fn : null, loc);
       if (source === null) lowerer.noLowering("pipeline over this source", arg);
       positions += 1;
+      argOrder.push({ list: stages, index: stages.length });
       stages.push(source!.closure);
       srcT = source!.out;
       continue;
@@ -2974,6 +2979,7 @@ function lowerPipelineStages(
         if (e instanceof StreamArgTypeThrow) lowerer.noLowering("pipeline over this value", arg);
         throw e;
       }
+      argOrder.push({ list: streams, index: streams.length });
       streams.push(stream);
       srcT = stream.type;
       continue;
@@ -3022,6 +3028,7 @@ function lowerPipelineStages(
       mask |= 1 << stages.length;
     }
     positions += 2 ** j;
+    argOrder.push({ list: stages, index: stages.length });
     stages.push(lowered.closure);
     if (lowered.out.kind === "promise") {
       dest = 2;
@@ -3048,6 +3055,20 @@ function lowerPipelineStages(
     }
     helperArgs.push(pipelineBoxHelper(lowerer, destPromise!, loc));
   }
+  const argDecls: IrStmt[] = [];
+  const firstStage = argOrder.findIndex((a) => a.list === stages);
+  if (firstStage >= 0 && argOrder.slice(firstStage).some((a) => a.list === streams)) {
+    for (const a of argOrder) {
+      const init = a.list[a.index]!;
+      const local = lowerer.declareHiddenLocal("%pipelineArg", init.type);
+      argDecls.push({ kind: "varDecl", localId: local.id, init, loc: init.loc });
+      a.list[a.index] = varRef(local.id, init.type, init.loc);
+    }
+  }
+  const bindArgs = (call: IrExpr): IrExpr =>
+    argDecls.length === 0
+      ? call
+      : { kind: "seqExpr", stmts: argDecls, result: call, type: call.type, loc };
   // SCR_PIPE_* flags: bits 1-2 the destination, bit 5 the signal and abort.
   const flags = (dest << 1) | (mask !== 0 ? 32 : 0);
   const head: IrExpr[] = [
@@ -3062,7 +3083,7 @@ function lowerPipelineStages(
   ];
   const last: IrType =
     dest === 2 ? { kind: "object", className: "%PassThrough" } : streams[streams.length - 1]!.type;
-  if (mask === 0) return { args: head, last, dest, destPromise, wrap: (call) => call };
+  if (mask === 0) return { args: head, last, dest, destPromise, wrap: bindArgs };
   // const ac = new AbortController(): its signal goes to the stages, and
   // finishImpl's ac.abort() runs through the abort closure.
   const ac = lowerer.declareHiddenLocal("%pipelineAbort", DYN);
@@ -3079,20 +3100,21 @@ function lowerPipelineStages(
     last,
     dest,
     destPromise,
-    wrap: (call) => ({
-      kind: "seqExpr",
-      stmts: [
-        {
-          kind: "varDecl",
-          localId: ac.id,
-          init: { kind: "libCall", fn: "fetch.abortControllerNew", args: [], type: DYN, loc },
-          loc,
-        },
-      ],
-      result: call,
-      type: call.type,
-      loc,
-    }),
+    wrap: (call) =>
+      bindArgs({
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: ac.id,
+            init: { kind: "libCall", fn: "fetch.abortControllerNew", args: [], type: DYN, loc },
+            loc,
+          },
+        ],
+        result: call,
+        type: call.type,
+        loc,
+      }),
   };
 }
 
