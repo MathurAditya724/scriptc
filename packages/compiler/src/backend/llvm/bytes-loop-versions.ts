@@ -988,11 +988,23 @@ export function emitBytesLoopVersionGuard(
     conditions.push(ok);
   }
   for (const counter of version.counters) {
-    const value = host.emitExpr(counter.ref).name;
-    conditions.push(emitExactIntegerTest(host, value, counter.min, SAFE).ok);
+    const value = host.emitExpr(counter.ref);
+    // A counter held as an integer (an int32 slot) is exact already and
+    // needs at most its lower bound tested.
+    const integer = exactInteger(host, value, counter.ref);
+    if (integer && integer.range.max <= SAFE) {
+      if (integer.range.min < counter.min) {
+        const ok = B.tmp();
+        B.line(`${ok} = icmp sge i64 ${widenInteger(host, integer)}, ${counter.min}`);
+        conditions.push(ok);
+      }
+    } else conditions.push(emitExactIntegerTest(host, value.name, counter.min, SAFE).ok);
     for (const wrap of counter.wrapBounds) {
+      const bound = host.emitExpr(wrap.bound);
+      const boundInteger = exactInteger(host, bound, wrap.bound);
+      if (boundInteger && boundInteger.range.max <= wrap.limit) continue;
       const ok = B.tmp();
-      B.line(`${ok} = fcmp ole double ${host.emitExpr(wrap.bound).name}, ${f64Lit(wrap.limit)}`);
+      B.line(`${ok} = fcmp ole double ${bound.name}, ${f64Lit(wrap.limit)}`);
       conditions.push(ok);
     }
   }
