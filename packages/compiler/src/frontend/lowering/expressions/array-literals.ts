@@ -58,6 +58,22 @@ export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean
   return false;
 }
 
+/** An empty TypeScript literal whose own type is `never[]`: tsc's type for
+ * `[]` with no contextual array type (`return []` in an async function,
+ * whose contextual type is `string[] | PromiseLike<string[]>`; `{ files: [] }`).
+ * It holds no element, as the empty tuple does, so it builds as the
+ * unit-only element array, and an array slot receives it through the
+ * checked empty-array lift. never's f64 element mapping would make it a
+ * `number[]`, which no `string[]` slot accepts. */
+function emptyNeverLiteral(lowerer: Lowerer, expr: ts.ArrayLiteralExpression): boolean {
+  if (expr.elements.nodes.length > 0 || isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
+  const own = lowerer.typeOf(expr);
+  return (
+    lowerer.checker.isArrayType(own) &&
+    (lowerer.checker.getTypeArguments(own as ts.TypeReference)[0]!.flags & ts.TypeFlags.Never) !== 0
+  );
+}
+
 /** `[a, b, c]`. The element type comes from the contextual type when tsc
  * has one (`const a: number[] = []`, arguments, nested literals) and from
  * the literal's own inferred type otherwise. A bare `[]` with no context
@@ -80,6 +96,8 @@ export function lowerArrayLiteral(
     ? lowerer.typeOf(expr)
     : (ctxType ?? lowerer.typeOf(expr));
   let mapped = expected ?? lowerer.mapTypeOf(tsType);
+  if (expected === undefined && ctxType === undefined && emptyNeverLiteral(lowerer, expr))
+    mapped = arrayOf(unitOnlyUnion(lowerer.unions));
   // Inferred JavaScript arrays can contain unrelated constructors with
   // structurally equal checker types. Their native class ABIs still differ.
   if (
@@ -131,11 +149,14 @@ export function lowerArrayLiteral(
   // the literal's own inferred type is the real tuple.
   if (!mapped || mapped.kind === "union" || mapped.kind === "dyn") {
     const ctxUnion = mapped?.kind === "union" ? mapped : null;
+    const ctxUnmapped = mapped === null;
     mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
     // The never-tainted own type carries no element information here
     // either (the JS story above) — only a contextual union's single
     // array arm below may still supply a static home.
     if (neverTaintedOwnJs) mapped = null;
+    if (ctxUnmapped && emptyNeverLiteral(lowerer, expr))
+      mapped = arrayOf(unitOnlyUnion(lowerer.unions));
     // An EMPTY literal in a union slot (`const t: string[] | undefined =
     // []`, the `[]` default argument against `string[] | undefined`) has
     // no useful own type — tsc infers `never[]`, whose f64-element

@@ -1584,6 +1584,18 @@ export const BUILTIN_MODULE_FNS: Record<
     // A checked-dynamic curve name; the result is a native ECDH handle
     // (lowerCreateEcdh).
     createECDH: { fn: "crypto.ecdhNew", params: [DYN], result: DYN },
+    // Checked-dynamic arguments; the result is a native DiffieHellman or
+    // DiffieHellmanGroup handle (lowerCreateDiffieHellman and
+    // lowerGetDiffieHellman).
+    createDiffieHellman: { fn: "crypto.dhNew", params: [DYN, DYN, DYN, DYN], result: DYN },
+    getDiffieHellman: { fn: "crypto.dhGroupNew", params: [DYN], result: DYN },
+    createDiffieHellmanGroup: { fn: "crypto.dhGroupNew", params: [DYN], result: DYN },
+    // Prime checks and generation (lowerPrimeCall): checked-dynamic
+    // arguments, results converted to the call site's type.
+    checkPrimeSync: { fn: "crypto.checkPrimeSync", params: [], result: DYN },
+    checkPrime: { fn: "crypto.checkPrimeCb", params: [], result: VOID },
+    generatePrimeSync: { fn: "crypto.generatePrimeSync", params: [], result: DYN },
+    generatePrime: { fn: "crypto.generatePrimeCb", params: [], result: VOID },
   },
   zlib: {
     // The default-options convenience family is special-cased in
@@ -2226,13 +2238,15 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
       "webcrypto.exportKey",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
+      "webcrypto.wrapKey",
+      "webcrypto.unwrapKey",
       "webcrypto.deriveBits",
       "webcrypto.deriveKey",
       "webcrypto.sign",
       "webcrypto.verify",
       "webcrypto.digest",
     ],
-    note: "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
+    note: "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
   },
   {
     id: "stdlib.webcrypto.CryptoKey",
@@ -3077,27 +3091,22 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   crypto: {
     ...Object.fromEntries(
-      [
-        "createDiffieHellman",
-        "createDiffieHellmanGroup",
-        "getDiffieHellman",
-        "diffieHellman",
-        "publicEncrypt",
-        "publicDecrypt",
-        "privateEncrypt",
-        "privateDecrypt",
-      ].map((m) => [
+      ["publicEncrypt", "publicDecrypt", "privateEncrypt", "privateDecrypt"].map((m) => [
         m,
-        "Diffie-Hellman and RSA encryption have no lowering — the asymmetric crypto surface is " +
+        "RSA encryption has no lowering — the asymmetric crypto surface is " +
           "RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, " +
-          "createSign, createVerify, and createECDH",
+          "createSign, createVerify, createECDH, and createDiffieHellman",
       ]),
     ),
+    diffieHellman:
+      "crypto.diffieHellman takes DH, EC or X25519 KeyObjects and has no lowering; " +
+      "the objects of createDiffieHellman, getDiffieHellman and createECDH compute shared secrets",
     ...Object.fromEntries(
       ["getCipherInfo"].map((m) => [
         m,
         "cipher metadata has no lowering — createCipheriv and createDecipheriv support " +
-          "aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305",
+          "aes-128/192/256 in cbc, ctr, gcm, ecb, cfb, cfb8, cfb1, and ofb modes, des-ede3 and " +
+          "des-ede, chacha20, and chacha20-poly1305",
       ]),
     ),
     setFips:

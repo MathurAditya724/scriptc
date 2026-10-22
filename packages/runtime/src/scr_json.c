@@ -1578,6 +1578,20 @@ ScrDyn *scr_dyn_iter_pack(const ScrDyn *src, const ScrStr *msg) {
 
 static ScrDyn *scr_native_iterator_drain(const ScrDyn *src);
 
+/* The values a collection constructor's iterable seed gives, in order: +1
+ * array, or NULL with the exception pending. A native iterator (a Map's
+ * keys(), a Set's values()) drains, which runs no program code; arrays,
+ * strings, typed arrays and collections pack; other iterables (a
+ * generator, an object with a Symbol.iterator method) step their
+ * iterator to the end, so their values are all taken before the
+ * constructor adds the first one. */
+static ScrDyn *scr_dyn_seed_values(const ScrDyn *src) {
+  if (src->kind == SCR_DYN_HANDLE &&
+      (src->v.handle.tag == SCR_DYNH_ITERATOR || scr_dyn_handle_ops_of(src)->iter_step))
+    return scr_native_iterator_drain(src);
+  return scr_dyn_destructure_rest(src, NULL);
+}
+
 /* The for-of-over-dyn pack accessors: the emitted index loop drives them
  * over a scr_dyn_iter_pack result (ARR by construction — the defensive
  * arms cover nothing reachable from that lowering). Never throw. */
@@ -1593,18 +1607,10 @@ ScrDyn *scr_dyn_map_seed_entries(const ScrDyn *src) {
     if (scr_exc_pending()) return NULL;
   }
   /* A native iterator (sp.entries(), a Map's entries()) or a handle that
-   * steps through live entries (URLSearchParams): producing its entries
-   * runs no program code, so draining them first is what the consumer
-   * observes. */
-  if (src->kind == SCR_DYN_HANDLE &&
-      (src->v.handle.tag == SCR_DYNH_ITERATOR || scr_dyn_handle_ops_of(src)->iter_step))
-    return scr_native_iterator_drain(src);
-  if (src->kind == SCR_DYN_HANDLE || src->kind == SCR_DYN_TYPED_REF) {
-    static const char message[] = "new Map(entries) over native non-array iterables has no lowering";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return NULL;
-  }
-  return scr_dyn_iter_pack(src, NULL);
+   * steps through live entries (URLSearchParams) drains; a Set, a
+   * generator or another iterable gives its values in order
+   * (scr_dyn_seed_values). */
+  return scr_dyn_seed_values(src);
 }
 
 ScrDyn *scr_dyn_map_seed_entry(const ScrDyn *entry) {
@@ -3592,6 +3598,10 @@ static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
   return (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
 }
 
+const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d) {
+  return d->kind == SCR_DYN_TYPED_REF ? scr_typed_ref_record_ops(d) : NULL;
+}
+
 static bool scr_typed_ref_record_field(const ScrDynTypedRecordOps *ops, const ScrStr *key,
                                        size_t *out) {
   /* Compiled reads pass the interned literal the field names also use. */
@@ -3970,7 +3980,10 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
   return -1;
 }
 
-bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
+/* `value instanceof callee` for an untyped constructor value. `refusal`, when
+ * given, is the site's SC1090 message for a runtime constructor with no
+ * instance test. */
+bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal) {
   if (!callee || callee->kind != SCR_DYN_FUNC) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -4012,11 +4025,32 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
       scr_dyn_release(prototype);
       return found;
     }
+    bool undefined_prototype = prototype->kind == SCR_DYN_UNDEF;
     scr_dyn_release(prototype);
+    /* A function the program compiled with no prototype (an arrow function
+     * or a method): false for a primitive, and Node's TypeError for every
+     * object, typed arrays, native handles, promises and typed references
+     * included. The runtime's own constructors carry "native:" signatures. */
+    if (undefined_prototype && (!callee->v.fn.sig || strncmp(callee->v.fn.sig, "native:", 7) != 0)) {
+      if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_BOOL ||
+          value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT ||
+          value->kind == SCR_DYN_SYMBOL)
+        return false;
+      static const char message[] = "Function has non-object prototype 'undefined' in instanceof check";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return false;
+    }
+  }
+  if (refusal) {
+    scr_throw_error_msg_code(SCR_ERR_ERROR, refusal->data, refusal->len, "SC1090");
+    return false;
   }
   static const char message[] = "instanceof against this native constructor is not supported yet";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC1090");
   return false;
+}
+bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
+  return scr_bytes_instanceof_at(value, callee, NULL);
 }
 SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) = NULL;
 
@@ -4128,7 +4162,14 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
   /* A signature adapter reports the length of the function it adapts. */
   d->v.fn.arity = clo->identity != NULL ? clo->identity_length : arity;
   d->v.fn.class_obj = NULL;
+  d->v.fn.message = NULL;
   return d;
+}
+
+void scr_dyn_func_set_message(ScrDyn *fn, ScrDynThunk thunk, ScrDynMessageListener listener) {
+  /* scr_dyn_new_func answers an adapted function's original box, whose
+   * closure has other parameter types. */
+  if (fn && fn->kind == SCR_DYN_FUNC && fn->v.fn.thunk == thunk) fn->v.fn.message = listener;
 }
 
 /* A class is function-shaped for typeof and identity, but calling it without
@@ -14836,7 +14877,7 @@ ScrDyn *scr_dyn_native_set(ScrMap *value) {
 ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
   ScrDyn *items = NULL;
   if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
-    items = scr_dyn_iter_pack(seed, NULL);
+    items = scr_dyn_seed_values(seed);
     if (!items) return NULL;
   }
   ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);

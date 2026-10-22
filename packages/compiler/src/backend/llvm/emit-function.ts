@@ -55,6 +55,8 @@ import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { f64Lit } from "./common.js";
 import { RESULT_ENTRY_PREFIX } from "./record-results.js";
 import { emitIntegerClone, emitIntegerDispatcher } from "./integer-clones.js";
+import { runningExtremumUpdates } from "./running-extrema.js";
+import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
 
 export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const B = new BlockBuilder();
@@ -81,8 +83,11 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     emitter.currentLocals.set(id, plain);
     emitter.lazyCaptureBoxes.set(id, "");
   }
+  emitter.runningExtrema = emitter.debug === null ? runningExtremumUpdates(fn) : new Set();
   emitter.currentConstantCallbacks =
     emitter.debug === null ? (emitter.constantCallbacks.get(fn.name) ?? new Map()) : new Map();
+  emitter.knownCallbacks.clear();
+  emitter.callbackVersionsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   // Preserve concrete source bindings for debugger inspection. Suspended
   // functions keep the established array lifetime across continuations.
   emitter.streamingSplitsEnabled = emitter.debug === null && !fn.async && !fn.generator;
@@ -229,6 +234,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerRanges = rangeFacts.ranges;
   emitter.integerLoopRanges = rangeFacts.loopRanges;
   emitter.int32Elements = slotFacts.elements ?? null;
+  emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
   emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
   emitter.bytesOwned = new Set();
   // Debug builds keep every number local a double for the debugger's
