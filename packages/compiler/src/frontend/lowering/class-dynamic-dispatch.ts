@@ -1,4 +1,5 @@
 import { primitiveConstructorOr } from "./lower-exprs.js";
+import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { constructedValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
@@ -466,6 +467,77 @@ function sortAdded(lowerer: Lowerer, set: Set<string>, from: number): void {
   for (const name of added) set.delete(name);
   for (const name of added) set.add(name);
 }
+
+/** The receivers of one property-receiver list (propertyReceivers) by the
+ * names that can make them answer a member, as positions in the list. A
+ * receiver whose root answers names of its own (an emitter, a stream, an
+ * EventTarget or a Date) is in `rooted` instead. */
+interface ReceiverIndex {
+  plans: readonly PropertyReceiver[];
+  /** By a method or generic method its base chain declares. */
+  methods: Map<string, number[]>;
+  /** By a method, generic method or accessor its base chain declares (an
+   * accessor under its property name), or a field it has. */
+  members: Map<string, number[]>;
+  rooted: number[];
+}
+
+function receiverIndex(lowerer: Lowerer, plans: readonly PropertyReceiver[]): ReceiverIndex {
+  const methods = new Map<string, number[]>();
+  const members = new Map<string, number[]>();
+  const rooted: number[] = [];
+  const add = (table: Map<string, number[]>, name: string, position: number): void => {
+    const positions = table.get(name);
+    if (positions === undefined) table.set(name, [position]);
+    else if (positions[positions.length - 1] !== position) positions.push(position);
+  };
+  plans.forEach(({ info }, position) => {
+    if (
+      emitterRooted(lowerer, info) ||
+      info.builtinStream !== undefined ||
+      eventTargetApiMembers(info) !== null ||
+      dateRootOf(info) !== null
+    ) {
+      rooted.push(position);
+      return;
+    }
+    for (let c: ClassInfo | null = info; c; c = c.base) {
+      for (const name of c.methods.keys()) {
+        add(methods, name, position);
+        add(
+          members,
+          name.startsWith("get:") || name.startsWith("set:") ? name.slice(4) : name,
+          position,
+        );
+      }
+      for (const name of c.genericMethods?.keys() ?? []) {
+        add(methods, name, position);
+        add(members, name, position);
+      }
+    }
+    for (const name of info.fields.keys()) add(members, name, position);
+  });
+  for (const table of [methods, members])
+    for (const positions of table.values()) positions.sort((a, b) => a - b);
+  return { plans, methods, members, rooted };
+}
+
+/** The ascending union of two ascending position lists. */
+function mergePositions(left: readonly number[], right: readonly number[]): number[] {
+  const out: number[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < left.length || j < right.length) {
+    const next =
+      j >= right.length || (i < left.length && left[i]! <= right[j]!) ? left[i++]! : right[j++]!;
+    if (out[out.length - 1] !== next) out.push(next);
+  }
+  return out;
+}
+
+/** SCRIPTC_CHECK_DISPATCH_CANDIDATES=1 checks every indexed receiver selection
+ * against a test of every receiver. */
+const CHECK_CANDIDATES = process.env["SCRIPTC_CHECK_DISPATCH_CANDIDATES"] === "1";
 
 export function classPropertiesHelper(lowerer: Lowerer, loc: SrcLoc, readOnly = false): IrFunction {
   const name = readOnly ? READ_PROPERTIES : "%dyn.class.properties";
@@ -1342,10 +1414,31 @@ export class ClassDynamicDispatch {
     }
     refreshDescriptorGuards(lowerer);
     const byMethod = new Map<string, ClassInfo[]>();
+    // A query asks every receiver about one name, and the program's dispatch
+    // sites ask about thousands: index the receivers by name once per list.
+    let index: ReceiverIndex | null = null;
+    const indexOf = (plans: readonly PropertyReceiver[]): ReceiverIndex =>
+      index?.plans === plans ? index : (index = receiverIndex(lowerer, plans));
+    /** The receivers of `plans` that can answer `name`, in list order: those
+     * `table` lists under it and the rooted ones. Emit-override
+     * specializations (`emit:<event>`) join a class's methods while bodies
+     * lower, so they keep every receiver. */
+    const receiversFor = (
+      plans: readonly PropertyReceiver[],
+      name: string,
+      table: "methods" | "members",
+    ): readonly PropertyReceiver[] => {
+      if (name.startsWith("emit:")) return plans;
+      const found = indexOf(plans);
+      return mergePositions(found[table].get(name) ?? [], found.rooted).map(
+        (position) => plans[position]!,
+      );
+    };
     const candidates = (method: string): ClassInfo[] => {
       const found = byMethod.get(method);
       if (found) return found;
-      const matching = this.propertyReceivers(lowerer, true).flatMap(({ info }) => {
+      const plans = this.propertyReceivers(lowerer, true);
+      const test = ({ info }: PropertyReceiver): ClassInfo[] => {
         if (!info || info.fields.has(method) || info.builtinError) return [];
         if (emitterRooted(lowerer, info) && EMITTER_METHODS.has(method)) return [info];
         if (
@@ -1364,7 +1457,13 @@ export class ClassDynamicDispatch {
         return findMethodOn(lowerer, info, method) || findGenericMethodOn(lowerer, info, method)
           ? [info]
           : [];
-      });
+      };
+      const matching = receiversFor(plans, method, "methods").flatMap(test);
+      if (CHECK_CANDIDATES) {
+        const every = plans.flatMap(test);
+        if (every.length !== matching.length || every.some((info, i) => info !== matching[i]))
+          throw new InternalCompilerError(`indexed candidates for ${method} differ`);
+      }
       byMethod.set(method, matching);
       return matching;
     };
@@ -2898,24 +2997,40 @@ export class ClassDynamicDispatch {
           });
           changed = true;
         }
-      for (const plan of this.propertyReceivers(lowerer, true)) {
+      // Only the receivers that declare or hold the name, and the rooted
+      // ones, can pass the test, except for names it decides on every
+      // receiver. Fields added while bodies lower (the property bag and the
+      // attribute words) have compiler names, which take every receiver.
+      const plans = this.propertyReceivers(lowerer, true);
+      const anyReceiver =
+        !isClassOwnEnumerableFieldName(dispatch.name) ||
+        dispatch.name === "constructor" ||
+        dispatch.name === "stack";
+      const skips = (plan: PropertyReceiver): boolean =>
+        !isClassOwnEnumerableFieldName(dispatch.name) ||
+        (!(plan.info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
+          !eventTargetInheritedMember(plan.info, dispatch.name) &&
+          !dateInheritedMember(lowerer, plan.info, dispatch.name) &&
+          !findMethodOn(lowerer, plan.info, dispatch.name) &&
+          !findGenericMethodOn(lowerer, plan.info, dispatch.name) &&
+          dispatch.name !== "constructor" &&
+          !plan.info.fields.has(dispatch.name) &&
+          !(dispatch.name === "stack" && lowerer.isSubclassOf(plan.info.def.name, "%Error")) &&
+          !findMethodOn(lowerer, plan.info, `get:${dispatch.name}`) &&
+          !findMethodOn(lowerer, plan.info, `set:${dispatch.name}`));
+      const selected = anyReceiver ? plans : receiversFor(plans, dispatch.name, "members");
+      if (
+        CHECK_CANDIDATES &&
+        plans.some(
+          (plan) => !dispatch.classes.has(plan.key) && !skips(plan) && !selected.includes(plan),
+        )
+      )
+        throw new InternalCompilerError(`indexed receivers for ${dispatch.name} differ`);
+      for (const plan of selected) {
         const { info } = plan;
         // Classes answered in an earlier pass skip the member lookups.
         if (dispatch.classes.has(plan.key)) continue;
-        if (
-          !isClassOwnEnumerableFieldName(dispatch.name) ||
-          (!(info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
-            !eventTargetInheritedMember(info, dispatch.name) &&
-            !dateInheritedMember(lowerer, info, dispatch.name) &&
-            !findMethodOn(lowerer, info, dispatch.name) &&
-            !findGenericMethodOn(lowerer, info, dispatch.name) &&
-            dispatch.name !== "constructor" &&
-            !info.fields.has(dispatch.name) &&
-            !(dispatch.name === "stack" && lowerer.isSubclassOf(info.def.name, "%Error")) &&
-            !findMethodOn(lowerer, info, `get:${dispatch.name}`) &&
-            !findMethodOn(lowerer, info, `set:${dispatch.name}`))
-        )
-          continue;
+        if (skips(plan)) continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const { receiver, condition } = this.propertyReceiver(plan, loc);
