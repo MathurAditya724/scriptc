@@ -5893,6 +5893,18 @@ function emptyNeverArrayProp(p: ts.Symbol, fieldTs: ts.Type, checker: ts.TypeChe
   );
 }
 
+/** A JavaScript object literal's property typed `never[]` (`{ issues: [] }`).
+ * Nothing checks a JavaScript file's later writes, which can push any value
+ * onto it (`ctx.common.issues.push(issue)`), so it holds the checked-dynamic
+ * array rather than never's f64 element array. */
+function jsNeverArrayProp(p: ts.Symbol, fieldTs: ts.Type, checker: ts.TypeChecker): boolean {
+  return (
+    jsObjectLiteralProperty(p) &&
+    checker.isArrayType(fieldTs) &&
+    (checker.getTypeArguments(fieldTs as ts.TypeReference)[0]!.flags & ts.TypeFlags.Never) !== 0
+  );
+}
+
 /** A JavaScript object literal's property (`{ lastComponent: undefined }`,
  * `{ user: null }`). Nothing checks a JavaScript file's later writes, which
  * can store any value in it (`path.lastComponent = { ... }`), so a
@@ -5904,6 +5916,12 @@ function isUnitOnlyIr(t: IrType, ctx: TypeMapperCtx): boolean {
   return def !== undefined && def.arms.every((arm) => isUnitType(arm));
 }
 
+/** A property a JavaScript object literal declares. The checker also adds
+ * each missing property, optional and `undefined`, to every literal of a
+ * union of literals (`{ _tag, value } | { _tag, error }` gains
+ * `error?: undefined` and `value?: undefined`); those keep their unit-only
+ * type, so a literal still converts to the one arm whose properties it
+ * has. */
 function jsObjectLiteralProperty(p: ts.Symbol): boolean {
   const d = p.valueDeclaration;
   // `__proto__: null` sets the literal's prototype; it declares no property.
@@ -5911,6 +5929,7 @@ function jsObjectLiteralProperty(p: ts.Symbol): boolean {
     d !== undefined &&
     (ts.isPropertyAssignment(d) || ts.isShorthandPropertyAssignment(d)) &&
     ts.symbolName(p) !== "__proto__" &&
+    (p.flags & ts.SymbolFlags.Optional) === 0 &&
     isJsSourceFile(ts.getSourceFileOfNode(d))
   );
 }
@@ -7983,6 +8002,7 @@ function mapRecordTypeInner(
       if (pt?.kind === "void" && isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam))
         pt = unitOnlyUnion(ctx.unions);
       if (pt !== null && isUnitOnlyIr(pt, ctx) && jsObjectLiteralProperty(p)) pt = DYN;
+      if (pt?.kind === "array" && jsNeverArrayProp(p, fieldTs, checker)) pt = DYN;
       // dyn FIELDS map now (`{ v: unknown }`, `[string, unknown]` tuples):
       // the slot carries a dyn value exactly like an `unknown`-valued
       // overflow entry — same RC adapters, same dynFrom conversion on the
