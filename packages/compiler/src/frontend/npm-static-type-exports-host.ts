@@ -154,32 +154,57 @@ export function npmStaticTypeExportPlan(
   // package's declaration files do not declare is a global (`Array`,
   // `Record`, `Date`); a class, a value or an import from another package
   // is not a data shape.
+  //
+  // `referencesOf` answers one name: null when it is not a data shape by
+  // itself, otherwise the names it refers to.
+  type Ref = { file: string; name: string };
+  const referencesOf = (file: string, name: string): Ref[] | null => {
+    const ex = declarationExports(file);
+    if (ex === null) return null;
+    const local = ex.locals.get(name);
+    if (local !== undefined)
+      return local.behavior ? null : local.references.map((r) => ({ file, name: r }));
+    if (ex.valueNames.has(name)) return null;
+    const from = ex.imports.get(name);
+    if (from !== undefined) {
+      const target = declarationTargetOf(file, from.specifier);
+      return target === null ? null : [{ file: target, name: from.local }];
+    }
+    const reexport = typesOf(file, new Set()).types.get(name);
+    if (reexport !== undefined) return [{ file: reexport.file, name: reexport.decl.declared }];
+    return [];
+  };
+  // A name is a data shape when every name reachable from it is one by
+  // itself. `isData` walks everything reachable before it records any name
+  // as a data shape, so a type in a reference cycle is not recorded while
+  // another type in the cycle is still unchecked.
   const dataMemo = new Map<string, boolean>();
-  const isData = (file: string, name: string, visiting: Set<string>): boolean => {
-    const key = `${file}\0${name}`;
-    const memo = dataMemo.get(key);
-    if (memo !== undefined) return memo;
-    if (visiting.has(key)) return true; // a recursive shape
-    visiting.add(key);
-    const answer = ((): boolean => {
-      const ex = declarationExports(file);
-      if (ex === null) return false;
-      const local = ex.locals.get(name);
-      if (local !== undefined)
-        return !local.behavior && local.references.every((r) => isData(file, r, visiting));
-      if (ex.valueNames.has(name)) return false;
-      const from = ex.imports.get(name);
-      if (from !== undefined) {
-        const target = declarationTargetOf(file, from.specifier);
-        return target !== null && isData(target, from.local, visiting);
+  const isData = (file: string, name: string): boolean => {
+    const keyOf = (ref: Ref): string => `${ref.file}\0${ref.name}`;
+    // Each reached name, by key, with the key of the name it was reached from.
+    const reachedFrom = new Map<string, string | null>([[keyOf({ file, name }), null]]);
+    const queue: Ref[] = [{ file, name }];
+    for (let i = 0; i < queue.length; i++) {
+      const ref = queue[i]!;
+      const key = keyOf(ref);
+      const memo = dataMemo.get(key);
+      if (memo === true) continue;
+      const next = memo === false ? null : referencesOf(ref.file, ref.name);
+      if (next === null) {
+        // Every name on the path to this one reaches a non-data type.
+        for (let k: string | null = key; k !== null; k = reachedFrom.get(k) ?? null)
+          dataMemo.set(k, false);
+        return false;
       }
-      const reexport = typesOf(file, new Set()).types.get(name);
-      if (reexport !== undefined) return isData(reexport.file, reexport.decl.declared, visiting);
-      return true;
-    })();
-    visiting.delete(key);
-    dataMemo.set(key, answer);
-    return answer;
+      for (const target of next) {
+        const targetKey = keyOf(target);
+        if (reachedFrom.has(targetKey)) continue;
+        reachedFrom.set(targetKey, key);
+        queue.push(target);
+      }
+    }
+    for (const key of reachedFrom.keys()) dataMemo.set(key, true);
+    return true;
   };
   for (const pkg of packages) {
     const declared = resolveBareModule(entryPath, pkg, "types-only");
@@ -198,7 +223,7 @@ export function npmStaticTypeExportPlan(
         ({ decl, file }) =>
           !values.has(decl.name) &&
           !declaredByRuntime.has(decl.name) &&
-          isData(file, decl.declared, new Set()),
+          isData(file, decl.declared),
       )
       .map(({ decl }) => decl);
     if (exported.length === 0) continue;
