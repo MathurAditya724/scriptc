@@ -218,7 +218,11 @@ class UdpTransport implements Transport {
     this.cacheDnsTtl = cacheDnsTtl;
     this.socket = dgram.createSocket("udp4");
     this.socket.unref();
-    this.socket.on("error", (err) => this.errors.emit(err));
+    // The listener captures the list, not the transport: a socket that is
+    // never closed keeps its listener, and a capture of `this` would make
+    // a cycle the reference counts cannot free at exit.
+    const errors = this.errors;
+    this.socket.on("error", (err) => errors.emit(err));
   }
   send(buf: Buffer, callback: SendCallback): void {
     if (!this.cacheDns) {
@@ -263,7 +267,11 @@ class TcpTransport implements Transport {
     this.socket = net.connect(port, host ?? "localhost");
     this.socket.setKeepAlive(true);
     this.socket.unref();
-    this.socket.on("error", (err) => this.errors.emit(err));
+    // The listener captures the list, not the transport: a socket that is
+    // never closed keeps its listener, and a capture of `this` would make
+    // a cycle the reference counts cannot free at exit.
+    const errors = this.errors;
+    this.socket.on("error", (err) => errors.emit(err));
   }
   send(buf: Buffer, callback: SendCallback): void {
     // The typed socket's write takes the data alone; the completion runs
