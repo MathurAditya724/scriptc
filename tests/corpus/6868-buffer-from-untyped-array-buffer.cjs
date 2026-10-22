@@ -23,7 +23,7 @@ if (isMainThread) {
   const offsets = new Map();
   offsets.set('storage', new ArrayBuffer(8));
   const storage = offsets.get('storage');
-  for (const offset of [2, 1.5, '3', NaN, null, undefined, true, 8, 9, -1, -0.5]) {
+  for (const offset of [2, 1.5, '3', NaN, null, undefined, true, 8, 9, -1, -0.5, -1.5, -1e21, -Number.MAX_VALUE, -Infinity]) {
     try {
       const view = Buffer.from(storage, offset);
       view.fill(offset === 2 ? 0x11 : 0);
