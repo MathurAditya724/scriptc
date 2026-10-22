@@ -80,7 +80,7 @@ export function npmStaticDeclarationExports(sf: ts.SourceFile): NpmStaticDeclara
       localTypes.set(decl.name, decl);
       if (exported) types.push(decl);
     } else if (ts.isEnumDeclaration(stmt)) {
-      const decl = { name: stmt.name.text, params: [], templates: [] };
+      const decl: NpmStaticTypeDeclaration = { name: stmt.name.text, params: [], templates: [] };
       localTypes.set(decl.name, decl);
       if (exported) types.push(decl);
     } else if (
