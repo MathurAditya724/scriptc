@@ -4669,6 +4669,24 @@ static void scr_dyn_named_prototypes_cleanup(void) {
   scr_dyn_named_count = scr_dyn_named_cap = 0;
 }
 
+/* Stamps prototype `p` with a copy of `name` (len bytes) and keeps it alive. */
+static void scr_dyn_stamp_prototype_name(ScrDyn *p, const char *name, size_t len) {
+  if (scr_dyn_named_count == scr_dyn_named_cap) {
+    if (scr_dyn_named_cap == 0) scr_atexit(scr_dyn_named_prototypes_cleanup);
+    size_t cap = scr_dyn_named_cap ? scr_dyn_named_cap * 2 : 8;
+    ScrDynNamedPrototype *grown = realloc(scr_dyn_named_prototypes, cap * sizeof *grown);
+    if (!grown) scr_json_oom();
+    scr_dyn_named_prototypes = grown;
+    scr_dyn_named_cap = cap;
+  }
+  char *copy = malloc(len + 1);
+  if (!copy) scr_json_oom();
+  memcpy(copy, name, len);
+  copy[len] = '\0';
+  p->v.obj.class_name = copy;
+  scr_dyn_named_prototypes[scr_dyn_named_count++] = (ScrDynNamedPrototype){ scr_dyn_retain(p), copy };
+}
+
 static void scr_dyn_name_prototype_chain(const ScrDyn *object) {
   for (ScrDyn *p = object->prototype; p; p = p->prototype) {
     if (p->kind != SCR_DYN_OBJ || p->v.obj.class_name) return;
@@ -4676,22 +4694,14 @@ static void scr_dyn_name_prototype_chain(const ScrDyn *object) {
     if (!entry || entry->accessor || !entry->value || entry->value->kind != SCR_DYN_FUNC) continue;
     const char *name = entry->value->v.fn.name;
     if (!name || !name[0]) continue;
-    if (scr_dyn_named_count == scr_dyn_named_cap) {
-      if (scr_dyn_named_cap == 0) scr_atexit(scr_dyn_named_prototypes_cleanup);
-      size_t cap = scr_dyn_named_cap ? scr_dyn_named_cap * 2 : 8;
-      ScrDynNamedPrototype *grown = realloc(scr_dyn_named_prototypes, cap * sizeof *grown);
-      if (!grown) scr_json_oom();
-      scr_dyn_named_prototypes = grown;
-      scr_dyn_named_cap = cap;
-    }
-    size_t len = strlen(name);
-    char *copy = malloc(len + 1);
-    if (!copy) scr_json_oom();
-    memcpy(copy, name, len + 1);
-    p->v.obj.class_name = copy;
-    scr_dyn_named_prototypes[scr_dyn_named_count++] = (ScrDynNamedPrototype){ scr_dyn_retain(p), copy };
+    scr_dyn_stamp_prototype_name(p, name, strlen(name));
     return;
   }
+}
+
+void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name) {
+  if (prototype->kind != SCR_DYN_OBJ || prototype->v.obj.class_name || name->len == 0) return;
+  scr_dyn_stamp_prototype_name(prototype, name->data, name->len);
 }
 
 /* Ordinary native function constructors retain their live prototype table.

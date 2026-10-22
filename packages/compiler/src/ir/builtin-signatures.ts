@@ -3666,6 +3666,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.bagGet": { argTypes: [DYN, STRING, DYN], result: DYN },
   "dyn.bagSet": { argTypes: [DYN, STRING, DYN, DYN], result: VOID },
   "dyn.objCreate": { argTypes: [DYN], result: DYN },
+  // Names a compiled class's prototype object (args[0]) after the class
+  // (args[1]) for util.inspect.
+  "dyn.nameClassPrototype": { argTypes: [DYN, STRING], result: VOID },
   "dyn.objCreateWithProperties": { argTypes: [DYN, DYN], result: DYN },
   "dyn.getPrototype": { argTypes: [DYN], result: DYN },
   "dyn.setPrototype": { argTypes: [DYN, DYN], result: DYN },
