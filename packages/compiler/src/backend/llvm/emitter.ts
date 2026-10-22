@@ -1075,6 +1075,17 @@ export class LlEmitter {
     string,
     { slot: string; type: "i32" | "i64"; signed?: boolean; range?: { min: number; max: number } }
   >();
+  /** Constant number locals whose latest emitted declaration stored an
+   * exact integer beside the double, such as `const j = i * 4` in a
+   * typed-array loop version: an i64 slot and the integer's range. */
+  integerTemps = new Map<
+    string,
+    { slot: string; type: "i64"; signed: true; range: IntegerRange }
+  >();
+  /** Integer temps are kept only in optimized synchronous functions: an
+   * async or generator body resumes with its locals in its frame, which
+   * an entry alloca is not part of. */
+  integerTempsEnabled = false;
   /** Speculative integer loops (speculative-integers.ts) run in this function. */
   speculativeLoopsEnabled = false;
   /** The fast copy of a speculative integer loop being emitted: its
@@ -1105,6 +1116,9 @@ export class LlEmitter {
   /** Sums whose result only feeds 32-bit conversions (wrapping-sums.ts). */
   wrappingSums = new Set<IrExpr>();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
+  /** Worker programs: typed-array accesses whose views an enclosing version
+   * guard proved thread-owned. */
+  bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
   integerViews = new Map<string, string>();
   /** Module globals the current function owns outright (initializer
    * bindings): their function-local slot, which stands in for the global. */
@@ -3816,6 +3830,8 @@ export class LlEmitter {
       ranges: this.integerRanges,
       initialized,
       proven: this.bytesBounds,
+      workers: this.mod.workers === true,
+      owned: this.bytesOwned,
     });
   }
 
@@ -6176,8 +6192,9 @@ export class LlEmitter {
     expr?: IrExpr,
     inBounds = false,
     invalidNaN = false,
+    owned = false,
   ): LlValue {
-    return emitBytesGet(this, elem, receiver, index, expr, inBounds, invalidNaN);
+    return emitBytesGet(this, elem, receiver, index, expr, inBounds, invalidNaN, owned);
   }
 
   emitToUint32(value: string, expr?: IrExpr, uint32?: string): string {
@@ -6240,8 +6257,9 @@ export class LlEmitter {
     indexExpr?: IrExpr,
     expr?: IrExpr,
     inBounds = false,
+    owned = false,
   ): void {
-    return emitBytesSet(this, elem, receiver, index, value, indexExpr, expr, inBounds);
+    return emitBytesSet(this, elem, receiver, index, value, indexExpr, expr, inBounds, owned);
   }
 
   emitBytesIntrinsic(e: IrExpr & { kind: "bytesIntrinsic" }): LlValue {
