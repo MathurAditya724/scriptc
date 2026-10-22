@@ -674,6 +674,32 @@ void scr_als_ctx_release(ScrAlsCtx *c) {
   free(c);
 }
 
+/* enterWith on the main stack lasts until that code returns to the loop,
+ * so the store does not reach callbacks scheduled without it: the loop
+ * clears the main slot when the main module's body returns, and an
+ * enterWith inside a callback the loop runs puts a tick that clears it at
+ * the front of the tick queue, so it runs as soon as that callback
+ * returns. A store that an async callee's prefix or a generator step
+ * enters becomes the caller's at scr_als_prefix_end and is cleared the
+ * same way. */
+static SCR_TL bool scr_loop_started = false;
+
+static void scr_als_main_clear(void) {
+  scr_als_ctx_release(scr_als_main_slot);
+  scr_als_main_slot = NULL;
+}
+
+static void scr_next_tick_raw_first(void (*fn)(void));
+
+/* A new store on the main slot: one a loop callback enters ends with it. */
+static void scr_als_main_entered(void) {
+  if (scr_loop_started) scr_next_tick_raw_first(scr_als_main_clear);
+}
+
+void scr_als_entered_with(void) {
+  if (SCR_ALS_SLOT() == &scr_als_main_slot) scr_als_main_entered();
+}
+
 /* The end of an async body's synchronous prefix: its first await, or its
  * end. Node runs that prefix inside the caller's execution, so a store it
  * entered (enterWith) is still the caller's store after the call; the body
@@ -685,6 +711,7 @@ static void scr_als_prefix_end(ScrFiber *f) {
   if (*slot != f->als) {
     scr_als_ctx_release(*slot);
     *slot = scr_als_ctx_retain(f->als);
+    if (f->als != NULL && slot == &scr_als_main_slot) scr_als_main_entered();
   }
 }
 
@@ -756,26 +783,6 @@ ScrDyn *scr_als_peek(double id) {
     }
   }
   return NULL;
-}
-
-/* enterWith on the main stack lasts until that code returns to the loop,
- * so the store does not reach callbacks scheduled without it: the loop
- * clears the main slot when the main module's body returns, and an
- * enterWith inside a callback the loop runs puts a tick that clears it at
- * the front of the tick queue, so it runs as soon as that callback
- * returns. */
-static SCR_TL bool scr_loop_started = false;
-
-static void scr_als_main_clear(void) {
-  scr_als_ctx_release(scr_als_main_slot);
-  scr_als_main_slot = NULL;
-}
-
-static void scr_next_tick_raw_first(void (*fn)(void));
-
-void scr_als_entered_with(void) {
-  if (scr_loop_started && SCR_ALS_SLOT() == &scr_als_main_slot)
-    scr_next_tick_raw_first(scr_als_main_clear);
 }
 
 static SCR_TL ScrCtx scr_loop_ctx; /* the main stack (scheduler home) */

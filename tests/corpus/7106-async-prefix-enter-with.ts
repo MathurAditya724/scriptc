@@ -3,7 +3,9 @@
 // after the call (Node's semantics), and the callee keeps it after its own
 // await; after the first await it stays inside the callee. Covers callees
 // that never suspend, stackless and fiber-backed callees, nested callees,
-// run() scopes inside the prefix, and calls without an await.
+// run() scopes inside the prefix, and calls without an await. A store that
+// an event-loop callback enters this way, or through a generator step, ends
+// with that callback and does not reach the next one.
 import { AsyncLocalStorage } from "node:async_hooks";
 
 const store = new AsyncLocalStorage<string>();
@@ -45,6 +47,33 @@ async function fibered(tag: string): Promise<number> {
   return n;
 }
 
+function* steps(): Generator<number, void, undefined> {
+  store.enterWith("generator-step");
+  yield 1;
+}
+function callbacks(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      void prefixThenAwait("9");
+      log.push(`timer after the call: ${current()}`);
+    }, 0);
+    setTimeout(() => {
+      log.push(`second timer: ${current()}`);
+      steps().next();
+      log.push(`second timer after a generator step: ${current()}`);
+    }, 0);
+    setTimeout(() => {
+      log.push(`third timer: ${current()}`);
+      void neverSuspends("10");
+      log.push(`third timer after the call: ${current()}`);
+    }, 0);
+    setTimeout(() => {
+      log.push(`last timer: ${current()}`);
+      resolve();
+    }, 0);
+  });
+}
+
 async function main(): Promise<void> {
   await store.run("A", async () => {
     await neverSuspends("1");
@@ -83,6 +112,8 @@ async function main(): Promise<void> {
     await fibered("8");
     log.push(`H after fibered: ${current()}`);
   });
+  await callbacks();
+  log.push(`main after the callbacks: ${current()}`);
   for (const line of log) console.log(line);
 }
 void main();
