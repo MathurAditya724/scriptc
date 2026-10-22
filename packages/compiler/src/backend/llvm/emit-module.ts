@@ -2,6 +2,10 @@
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { emitWasmModules } from "./wasm-modules.js";
 import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
+import { type ChunkResult, EmitJournal } from "./emit-journal.js";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { JS_IC_WORDS } from "./js-ic.js";
 import {
   mangleAsyncSpawn,
@@ -59,16 +63,147 @@ import { STRING_READ_HELPERS, stringScanDecl } from "./string-reads.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import { InternalCompilerError } from "../../errors.js";
 
+/** The function bodies emitted in `chunks` contiguous ranges, each by its
+ * own emitter (LlEmitter.chunkEmitter), then merged in function order: the
+ * text one emitter gives. */
+function emitFunctionsInChunks(emitter: LlEmitter, chunks: number): string[] {
+  const functions = emitter.mod.functions;
+  const size = Math.ceil(functions.length / chunks);
+  const ranges: { chunk: LlEmitter; texts: string[] }[] = [];
+  for (let start = 0; start < functions.length; start += size) {
+    const chunk = emitter.chunkEmitter();
+    const texts = functions.slice(start, start + size).map((fn) => {
+      const text = chunk.emitFunction(fn);
+      if (chunk.journal!.overclosed)
+        throw new Error(`llvm emitter bug: journal definition closed twice in ${fn.name}`);
+      if (chunk.journal!.unclosed.length > 0)
+        throw new Error(
+          `llvm emitter bug: unclosed journal definitions after ${fn.name}: ${chunk.journal!.unclosed.join(", ")}`,
+        );
+      return text;
+    });
+    ranges.push({ chunk, texts });
+  }
+  const fnDefs: string[] = [];
+  for (const { chunk, texts } of ranges) {
+    // The plain-data result a worker process would write, round-tripped.
+    const result = JSON.parse(JSON.stringify(chunk.chunkResult())) as ChunkResult;
+    const rename = emitter.mergeChunk(result);
+    for (const text of texts) {
+      const def = rename(text);
+      emitter.fnDefText.set(functions[fnDefs.length]!.name, def);
+      fnDefs.push(def);
+    }
+  }
+  return fnDefs;
+}
+
+/** Modules with fewer functions emit in one process: forking and merging
+ * would cost more than the workers save (SCRIPTC_EMIT_WORKER_FUNCTIONS
+ * lowers it, for tests). */
+function workerMinFunctions(): number {
+  const value = Number(process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] ?? "2000");
+  return Number.isFinite(value) && value > 0 ? value : 2000;
+}
+
+/** The function bodies emitted on forked worker processes, `workers` at a
+ * time: the function list splits into contiguous ranges, each emitted in
+ * its own process, which inherits this emitter as it is at the fork and
+ * records a journal (emit-journal.ts). Ranges merge in function order, so
+ * the text is the serial text. A range whose worker fails is emitted here
+ * when its turn comes. Null without fork primitives (Node, Windows, inside
+ * a worker) or when the module is small. */
+function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] | null {
+  const fork = emitter.targetOptions.forkPrimitives;
+  const functions = emitter.mod.functions;
+  if (fork === undefined || workers < 2) return null;
+  if (functions.length < workerMinFunctions()) return null;
+  // More ranges than workers: a range's merge overlaps the later ranges'
+  // emission, and a slow range holds back less.
+  const count = Math.min(functions.length, workers * 3);
+  const size = Math.ceil(functions.length / count);
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-emit-"));
+  const pids: number[] = [];
+  const start = (range: number): void => {
+    const pid = fork.fork();
+    if (pid === 0) {
+      let code = 1;
+      try {
+        emitter.journal = new EmitJournal();
+        const texts: string[] = [];
+        for (const fn of functions.slice(range * size, (range + 1) * size)) {
+          texts.push(emitter.emitFunction(fn));
+          relieveHeapPressure();
+        }
+        writeFileSync(join(dir, `${range}.json`), JSON.stringify(emitter.chunkResult()));
+        // Function text never holds NUL, so it separates the functions.
+        writeFileSync(join(dir, `${range}.ll`), texts.join("\0"));
+        code = 0;
+      } catch {
+        // The parent emits the range itself.
+      }
+      fork.exit(code);
+    }
+    pids.push(pid);
+  };
+  const fnDefs: string[] = [];
+  try {
+    for (let range = 0; range < Math.min(workers, count); range++) start(range);
+    for (let range = 0; range < count; range++) {
+      const pid = pids[range]!;
+      const status = pid > 0 ? fork.wait(pid) : -1;
+      // The next worker starts from this emitter as merged so far, which
+      // the journal allows: it records requests, not table contents.
+      const merged = status === 0 ? readRange(dir, range) : null;
+      const slice = functions.slice(range * size, (range + 1) * size);
+      if (merged !== null && merged.texts.length === slice.length) {
+        const rename = emitter.mergeChunk(merged.result);
+        slice.forEach((fn, index) => {
+          const def = rename(merged.texts[index]!);
+          emitter.fnDefText.set(fn.name, def);
+          fnDefs.push(def);
+        });
+      } else
+        for (const fn of slice) {
+          const def = emitter.emitFunction(fn);
+          emitter.fnDefText.set(fn.name, def);
+          fnDefs.push(def);
+          relieveHeapPressure();
+        }
+      if (pids.length < count) start(pids.length);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return fnDefs;
+}
+
+/** A worker's range result, or null when its files are missing. */
+function readRange(dir: string, range: number): { result: ChunkResult; texts: string[] } | null {
+  try {
+    const result = JSON.parse(readFileSync(join(dir, `${range}.json`), "utf8")) as ChunkResult;
+    const texts = readFileSync(join(dir, `${range}.ll`), "utf8").split("\0");
+    return { result, texts };
+  } catch {
+    return null;
+  }
+}
+
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
-  const fnDefs: string[] = [];
-  for (const fn of emitter.mod.functions) {
-    const def = emitter.emitFunction(fn);
-    fnDefs.push(def);
-    emitter.fnDefText.set(fn.name, def);
-    relieveHeapPressure();
-  }
+  const chunks = emitter.targetOptions.functionChunks ?? 1;
+  const fnDefs =
+    (chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
+    emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) ??
+    [];
+  if (fnDefs.length === 0)
+    for (const fn of emitter.mod.functions) {
+      const def = emitter.emitFunction(fn);
+      fnDefs.push(def);
+      emitter.fnDefText.set(fn.name, def);
+      relieveHeapPressure();
+    }
   emitter.selectStacklessAsync(fnDefs);
   const errorViews: string[] = [];
   for (const property of ["name", "message"])

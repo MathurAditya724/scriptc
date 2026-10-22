@@ -58,6 +58,7 @@ import {
   emitDenseArrayPush,
 } from "./dense-array-access.js";
 import { emitUnionWiden } from "./expr-records.js";
+import { registerReplay } from "./emit-journal.js";
 
 export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string {
   const key = typeKey(inner);
@@ -65,6 +66,7 @@ export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string
   if (!sym) {
     sym = mangleResolveThunk(host.resolveThunks.size);
     host.resolveThunks.set(key, sym);
+    host.journal?.allocated(sym, "resolveThunkFor", [inner]);
     const v = vAdapters(host.shapeHost, inner);
     host.declare(`declare void @scr_resolve_ref_impl(ptr, ptr, ptr, ptr, ptr)`);
     host.resolveThunkDefs.push(
@@ -75,6 +77,7 @@ export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string
       `}`,
       ``,
     );
+    host.journal?.built();
   }
   return sym;
 }
@@ -1539,3 +1542,5 @@ export function emitSetNew(host: LlvmEmitterContext, e: IrExpr & { kind: "setNew
   }
   return out;
 }
+
+registerReplay("resolveThunkFor", (host, args) => resolveThunkFor(host, args[0] as IrType));

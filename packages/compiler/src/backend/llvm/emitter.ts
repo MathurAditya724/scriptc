@@ -71,6 +71,13 @@ import {
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { addRecordResultEntries } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
+import {
+  type ChunkResult,
+  EmitJournal,
+  registerReplay,
+  renameChunk,
+  replayJournal,
+} from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { INT32_RANGE, type IntegerRange, type IntegerRanges } from "../../ir/integer-ranges.js";
@@ -392,9 +399,30 @@ export interface LlScopeEntry {
   lazy?: boolean;
 }
 
+/** Process primitives for forked emission workers. */
+export interface ForkPrimitives {
+  /** 0 in the worker, the worker's pid in the parent, -1 on failure. */
+  fork(): number;
+  /** Ends the worker without running exit handlers. */
+  exit(code: number): void;
+  /** The worker's exit status, 128 plus a signal number, or -1. */
+  wait(pid: number): number;
+}
+
 export interface LlvmTargetOptions {
   /** C ABI target; omitted direct emission uses the host ABI. */
   targetTriple?: string;
+  /** Emit the function bodies in this many contiguous ranges, each by its
+   * own emitter, and merge them in function order (emit-journal.ts). The
+   * output is the same as one emitter's. */
+  functionChunks?: number;
+  /** Emit the function bodies of a large module on this many forked worker
+   * processes at a time (emit-module.ts), forked with `forkPrimitives`. The
+   * output is the same as one emitter's. */
+  functionWorkers?: number;
+  /** The host's process primitives, where it can fork (the native
+   * compiler's). */
+  forkPrimitives?: ForkPrimitives | undefined;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
@@ -660,6 +688,7 @@ export class LlEmitter {
       tag = 2 + this.fieldAliasTags.size * 2;
       this.fieldAliasTags.set(field, tag);
     }
+    this.journal?.entry("tag", field, tag);
     this.fieldPointerTags.set(ptr, tag);
   }
 
@@ -672,6 +701,7 @@ export class LlEmitter {
       tag = 2 + this.fieldAliasTags.size * 2;
       this.fieldAliasTags.set(category, tag);
     }
+    this.journal?.entry("tag", category, tag);
     return `, !tbaa !${tag}`;
   }
 
@@ -1223,13 +1253,27 @@ export class LlEmitter {
   readonly chainSlots = new Map<string, LlValue>();
   logArgSlots = 0;
   readonly stackTraces: boolean;
+  /** The options this emitter was built with (chunk emitters reuse them). */
+  readonly targetOptions: LlvmTargetOptions;
+  /** Records the module-level effects of emitting a range of functions,
+   * which the emitter that merges the range replays (emit-journal.ts). Null
+   * when this emitter emits the whole module itself. */
+  journal: EmitJournal | null;
+  /** The emitter's hosts forward to `journal` (journal set, or workers). */
+  private readonly journaled: boolean;
   /** Stack-trace mode: functions no capture can include (no frame push). */
   readonly unframedFunctions: ReadonlySet<string>;
 
   constructor(
     readonly mod: IrModule,
     options: LlvmTargetOptions,
+    journal: EmitJournal | null = null,
   ) {
+    this.targetOptions = options;
+    this.journal = journal;
+    this.journaled =
+      journal !== null ||
+      ((options.functionWorkers ?? 1) > 1 && options.forkPrimitives !== undefined);
     this.stackTraces = observesStacks(mod);
     this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
     this.mockTimers = this.runtimeFeatures.mockTimers;
@@ -1476,6 +1520,20 @@ export class LlEmitter {
       }
     }
     this.shapeHost = {
+      // Journal hooks only on emitters that can emit ranges (chunk
+      // emitters, and emitters whose workers take a journal after the
+      // fork), so the host's optional calls cost nothing otherwise.
+      journalAllocated: !this.journaled
+        ? undefined
+        : (name, op, args) => this.journal?.allocated(name, op, args),
+      journalBuilt: !this.journaled ? undefined : () => this.journal?.built(),
+      journalOpened: !this.journaled ? undefined : (op) => this.journal?.opened(op),
+      journalUsed: !this.journaled
+        ? undefined
+        : (name, op, args) => this.journal?.used(name, op, args),
+      journalEntry: !this.journaled
+        ? undefined
+        : (table, key, value) => this.journal?.entry(table, key, value),
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
       tracedShapes: this.tracedShapes,
@@ -2348,6 +2406,7 @@ export class LlEmitter {
       };
       this.literals.set(text, lit);
     }
+    this.journal?.entry("literal", text, lit);
     const name = `@${lit.sym}`;
     this.immortalValues.add(name);
     return name;
@@ -2358,6 +2417,7 @@ export class LlEmitter {
   literalEquals(text: string): string {
     const literal = this.internLiteral(text);
     const name = `@sc_streq_${literal.slice("@sc_lit_".length)}`;
+    this.journal?.entry("literalEquality", text, name);
     if (!this.literalEqualities.has(text)) {
       this.literalEqualities.set(text, name);
       if (Buffer.byteLength(text, "utf8") > INLINE_LITERAL_BYTES) {
@@ -2384,6 +2444,7 @@ export class LlEmitter {
       lit = { sym: this.contentSymbol("sc_bigint_", key), value };
       this.bigintLiterals.set(key, lit);
     }
+    this.journal?.entry("bigint", key, { sym: lit.sym, value: lit.value.toString() });
     const name = `@${lit.sym}`;
     this.immortalValues.add(name);
     return name;
@@ -2397,6 +2458,7 @@ export class LlEmitter {
       c = { sym: this.contentSymbol("sc_cs_", text), len: Buffer.byteLength(text, "utf8") };
       this.cstrs.set(text, c);
     }
+    this.journal?.entry("cstr", text, c);
     return `@${c.sym}`;
   }
 
@@ -2413,6 +2475,7 @@ export class LlEmitter {
       sym = this.contentSymbol("sc_map_ops_", body);
       this.mapOpsConsts.set(body, sym);
     }
+    this.journal?.entry("mapOps", body, sym);
     return `@${sym}`;
   }
 
@@ -2439,6 +2502,7 @@ export class LlEmitter {
       sym = `sc_unit_${this.unitInstances.size}`;
       this.unitInstances.set(key, sym);
     }
+    this.journal?.entry("unit", key, sym);
     const name = `@${sym}`;
     this.immortalValues.add(name);
     return name;
@@ -2452,6 +2516,7 @@ export class LlEmitter {
       sym = `sc_retype_guard_${this.retypeGuards.size}`;
       this.retypeGuards.set(unionId, sym);
     }
+    this.journal?.entry("retype", unionId, sym);
     return `@${sym}`;
   }
 
@@ -2473,6 +2538,7 @@ export class LlEmitter {
       sym = `sc_absent_${this.absentInstances.size}`;
       this.absentInstances.set(unionId, sym);
     }
+    this.journal?.entry("absent", unionId, sym);
     const name = `@${sym}`;
     this.immortalValues.add(name);
     return name;
@@ -2520,6 +2586,7 @@ export class LlEmitter {
   }
 
   declare(decl: string): void {
+    this.journal?.entry("decl", decl, null);
     this.decls.add(decl);
   }
 
@@ -3640,6 +3707,7 @@ export class LlEmitter {
       const meta = this.classMetaOf(className);
       this.classObjs.set(className, { nameSym: this.internLiteral(classJsName(meta.def)) });
     }
+    this.journal?.entry("classObj", className, this.classObjs.get(className));
     return mangleClassObj(className);
   }
 
@@ -4345,6 +4413,191 @@ export class LlEmitter {
   }
   emitFunction(fn: IrFunction): string {
     return emitFunction(this, fn);
+  }
+
+  /** What this range emitter (chunkEmitter) hands the merging emitter, as
+   * plain data a worker process can write: its journal and the sets and
+   * flags its functions set. */
+  chunkResult(): ChunkResult {
+    return {
+      entries: this.journal!.entries,
+      flags: {
+        usesCompactRefs: this.usesCompactRefs,
+        usesCoroutines: this.usesCoroutines,
+        usesTimers: this.usesTimers,
+        usesGenSlots: this.usesGenSlots,
+        needsUnionNone: this.needsUnionNone,
+        needsNullableAbsent: this.needsNullableAbsent,
+        needsOom: this.needsOom,
+        needsBadTag: this.needsBadTag,
+        needsBadKey: this.needsBadKey,
+        needsRetainBox: this.needsRetainBox,
+      },
+      publishedNamesSym: this.publishedNamesSym,
+      rcHelpers: this.rcHelpers === null ? [] : [...this.rcHelpers],
+      immortalValues: [...this.immortalValues],
+      fnValues: [...this.fnValues],
+      arraySearchKinds: [...this.arraySearchKinds],
+      recordCloneShapes: [...this.recordCloneShapes],
+      awaitCallees: [...this.awaitCallees],
+      adoptCallees: [...this.adoptCallees],
+      directAwaitCallees: [...this.directAwaitCallees],
+      inlineAwaitCallees: [...this.inlineAwaitCallees],
+    };
+  }
+
+  /** Merges a range emitter's result (chunkResult) into this emitter, in
+   * the range's order, and answers the rename of the range's text to this
+   * emitter's numbered helpers. Ranges merge in function order. */
+  mergeChunk(chunk: ChunkResult): (text: string) => string {
+    const names = new Map<string, string>();
+    const tags = new Map<number, number>();
+    // The range's helpers and table entries first, in its order; then the
+    // sets and flags, which replayed definitions must find as serial
+    // emission left them (a helper set guards the declarations its first
+    // request adds).
+    replayJournal(this, chunk.entries, names, tags);
+    const flags = chunk.flags;
+    this.usesCompactRefs ||= flags.usesCompactRefs;
+    this.usesCoroutines ||= flags.usesCoroutines;
+    this.usesTimers ||= flags.usesTimers;
+    this.usesGenSlots ||= flags.usesGenSlots;
+    this.needsUnionNone ||= flags.needsUnionNone;
+    this.needsNullableAbsent ||= flags.needsNullableAbsent;
+    this.needsOom ||= flags.needsOom;
+    this.needsBadTag ||= flags.needsBadTag;
+    this.needsBadKey ||= flags.needsBadKey;
+    this.needsRetainBox ||= flags.needsRetainBox;
+    this.publishedNamesSym ??= chunk.publishedNamesSym;
+    if (this.rcHelpers !== null) for (const key of chunk.rcHelpers) this.rcHelpers.add(key);
+    for (const name of chunk.immortalValues) this.immortalValues.add(name);
+    for (const name of chunk.fnValues) this.fnValues.add(name);
+    for (const kind of chunk.arraySearchKinds) this.arraySearchKinds.add(kind as ArraySearchKind);
+    for (const shapeId of chunk.recordCloneShapes) this.recordCloneShapes.add(shapeId);
+    for (const name of chunk.awaitCallees) this.awaitCallees.add(name);
+    for (const name of chunk.adoptCallees) this.adoptCallees.add(name);
+    for (const name of chunk.directAwaitCallees) this.directAwaitCallees.add(name);
+    for (const name of chunk.inlineAwaitCallees) this.inlineAwaitCallees.add(name);
+    return renameChunk(names, tags);
+  }
+
+  /** Adds a content-named constant a chunk interned. Its symbol is this
+   * emitter's own: a digest collision retries in first-use order, which a
+   * chunk alone does not know. */
+  private addContentEntry<V extends { sym: string }>(
+    into: Map<string, V>,
+    key: string,
+    entry: V,
+    prefix: string,
+    names: Map<string, string>,
+  ): void {
+    let own = into.get(key);
+    if (own === undefined) {
+      own = { ...entry, sym: this.contentSymbol(prefix, key) };
+      into.set(key, own);
+    }
+    if (own.sym !== entry.sym) names.set(entry.sym, own.sym);
+  }
+
+  /** Applies a chunk's table entry (EmitJournal.entry) at its place in the
+   * chunk's order: a key this emitter lacks is added, numbered after its
+   * own entries where the table numbers them, and the chunk's name for it
+   * is renamed to this emitter's. */
+  applyJournalEntry(
+    table: string,
+    key: string,
+    value: unknown,
+    names: Map<string, string>,
+    tags: Map<number, number>,
+  ): void {
+    switch (table) {
+      case "decl":
+        this.decls.add(key);
+        return;
+      case "literal":
+        this.addContentEntry(
+          this.literals,
+          key,
+          value as { sym: string; len: number },
+          "sc_lit_",
+          names,
+        );
+        return;
+      case "literalEquality":
+        addEntry(this.literalEqualities, key, value as string);
+        return;
+      case "bigint":
+        {
+          const entry = value as { sym: string; value: string };
+          this.addContentEntry(
+            this.bigintLiterals,
+            key,
+            { sym: entry.sym, value: BigInt(entry.value) },
+            "sc_bigint_",
+            names,
+          );
+        }
+        return;
+      case "cstr":
+        this.addContentEntry(
+          this.cstrs,
+          key,
+          value as { sym: string; len: number },
+          "sc_cs_",
+          names,
+        );
+        return;
+      case "mapOps": {
+        let own = this.mapOpsConsts.get(key);
+        if (own === undefined) {
+          own = this.contentSymbol("sc_map_ops_", key);
+          this.mapOpsConsts.set(key, own);
+        }
+        if (own !== value) names.set(value as string, own);
+        return;
+      }
+      case "classObj":
+        addEntry(this.classObjs, key, value as { nameSym: string });
+        return;
+      case "retainWrapper":
+        addEntry(this.nullableUnions.retainWrappers, key, value as string);
+        return;
+      case "unit":
+        return addNumbered(this.unitInstances, key, value as string, "sc_unit_", names);
+      case "absent":
+        return addNumbered(this.absentInstances, key, value as string, "sc_absent_", names);
+      case "retype":
+        return addNumbered(this.retypeGuards, key, value as string, "sc_retype_guard_", names);
+      case "slots":
+        return addNumbered(this.threadSlotsBlocks, key, value as string, "@sc_slots_", names);
+      case "regex":
+        return addNumberedSymbol(this.regexInstances, key, value as never, "sc_re_", names);
+      case "templateStrings":
+        return addNumberedSymbol(
+          this.templateStringsInstances,
+          key,
+          value as never,
+          "sc_tsa_",
+          names,
+        );
+      case "tag": {
+        let own = this.fieldAliasTags.get(key);
+        if (own === undefined) {
+          own = 2 + this.fieldAliasTags.size * 2;
+          this.fieldAliasTags.set(key, own);
+        }
+        if (own !== value) tags.set(value as number, own);
+        return;
+      }
+      default:
+        throw new InternalCompilerError(`llvm emitter bug: no journal table ${table}`);
+    }
+  }
+
+  /** An emitter for a range of this module's functions: the same facts,
+   * empty module-level tables, and a journal of what the range adds. */
+  chunkEmitter(): LlEmitter {
+    return new LlEmitter(this.mod, { ...this.targetOptions, functionChunks: 1 }, new EmitJournal());
   }
 
   /** The double-ABI entry of a function with an i32 entry: every caller
@@ -5429,6 +5682,7 @@ export class LlEmitter {
       sym = `@sc_slots_${this.threadSlotsBlocks.size}`;
       this.threadSlotsBlocks.set(name, sym);
     }
+    this.journal?.entry("slots", name, sym);
     return sym;
   }
 
@@ -5578,6 +5832,20 @@ export class LlEmitter {
     if (this.publishWalkersCache !== null) return this.publishWalkersCache;
     const byPre = [...this.classMeta.values()].sort((a, b) => a.pre - b.pre);
     this.publishWalkersCache = new PublishWalkers({
+      // Journal hooks only on emitters that can emit ranges (chunk
+      // emitters, and emitters whose workers take a journal after the
+      // fork), so the host's optional calls cost nothing otherwise.
+      journalAllocated: !this.journaled
+        ? undefined
+        : (name, op, args) => this.journal?.allocated(name, op, args),
+      journalBuilt: !this.journaled ? undefined : () => this.journal?.built(),
+      journalOpened: !this.journaled ? undefined : (op) => this.journal?.opened(op),
+      journalUsed: !this.journaled
+        ? undefined
+        : (name, op, args) => this.journal?.used(name, op, args),
+      journalEntry: !this.journaled
+        ? undefined
+        : (table, key, value) => this.journal?.entry(table, key, value),
       declare: (decl) => this.declare(decl),
       cstr: (text) => this.cstr(text),
       sizeType: this.sizeType,
@@ -6064,12 +6332,27 @@ export class LlEmitter {
   }
 
   jsIcSite(): string {
-    return `@sc_js_ic_${this.jsIcSiteCount++}`;
+    const name = `@sc_js_ic_${this.jsIcSiteCount++}`;
+    this.journal?.site(name, "jsIcSite");
+    return name;
   }
 
   /** A fresh read-site cache for one constant-key dyn read. */
   dynReadIcSite(): string {
-    return `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
+    const name = `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
+    this.journal?.site(name, "dynReadIcSite");
+    return name;
+  }
+
+  /** A fresh speculative loop site: the global that counts its bailing
+   * entries in a row. */
+  speculativeLoopSite(): string {
+    const name = `@sc_spec_bails_${this.speculativeLoopSites++}`;
+    this.journal?.site(name, "speculativeLoopSite");
+    this.journal?.opened("speculativeLoopSite");
+    this.declare(`${name} = internal global i8 0`);
+    this.journal?.built();
+    return name;
   }
 
   dynKind(d: string): string {
@@ -6471,3 +6754,76 @@ export function adoptingAwaitOf(value: IrExpr | null): ExprOf<"awaitExpr"> | nul
   });
   return found;
 }
+
+/** Adds `key` to `into` when it lacks it. */
+function addEntry<V>(into: Map<string, V>, key: string, value: V): void {
+  if (!into.has(key)) into.set(key, value);
+}
+
+/** Adds `key` to a numbered table when it lacks it, numbering it after the
+ * table's own entries (`prefix` and its index), and records the rename of
+ * the chunk's `name` for it. */
+function addNumbered(
+  into: Map<string, string>,
+  key: string,
+  name: string,
+  prefix: string,
+  names: Map<string, string>,
+): void {
+  let own = into.get(key);
+  if (own === undefined) {
+    own = `${prefix}${into.size}`;
+    into.set(key, own);
+  }
+  if (own !== name) names.set(name.replace(/^@/, ""), own.replace(/^@/, ""));
+}
+
+/** addNumbered for entries that keep their numbered name in `sym`. */
+function addNumberedSymbol<V extends { sym: string }>(
+  into: Map<string, V>,
+  key: string,
+  entry: V,
+  prefix: string,
+  names: Map<string, string>,
+): void {
+  let own = into.get(key);
+  if (own === undefined) {
+    own = { ...entry, sym: `${prefix}${into.size}` };
+    into.set(key, own);
+  }
+  if (own.sym !== entry.sym) names.set(entry.sym, own.sym);
+}
+
+registerReplay("jsIcSite", (emitter) => emitter.jsIcSite());
+registerReplay("dynReadIcSite", (emitter) => emitter.dynReadIcSite());
+registerReplay("speculativeLoopSite", (emitter) => emitter.speculativeLoopSite());
+for (const op of [
+  "dyn.collectionDynOps",
+  "dyn.dynMatchHelper",
+  "dyn.jsonSchema",
+  "dyn.recordNameTable",
+  "dyn.jsonParseHelper",
+  "dyn.dynCheckHelper",
+  "dyn.toDynHelper",
+  "dyn.promiseDynAdapterHelper",
+  "dyn.dynFuncThunkHelper",
+  "dyn.dynFuncBoxHelper",
+  "dyn.dynFuncAdapterHelper",
+  "dyn.dynToStrHelper",
+  "dyn.dynIterNHelper",
+  "dyn.dynDestrCheckHelper",
+  "dyn.dynKeyGetHelper",
+  "dyn.dynComputedKeyGetHelper",
+  "dyn.caughtToDynHelper",
+  "dyn.messageListenerHelper",
+  "dyn.messageReaderHelper",
+])
+  registerReplay(op, (emitter, args) => emitter.dyn.replayHelper(op, args));
+for (const op of [
+  "walkers.jsonWriteHelper",
+  "walkers.recordFieldWriter",
+  "walkers.unionJoinHelper",
+])
+  registerReplay(op, (emitter, args) => emitter.walkers.replayHelper(op, args));
+for (const op of ["publish.walker", "publish.refusal"])
+  registerReplay(op, (emitter, args) => emitter.publishWalkers.replayHelper(op, args));

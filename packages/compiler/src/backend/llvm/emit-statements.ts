@@ -2095,8 +2095,7 @@ export function emitLoopCopies(
   // count. After SPECULATION_BAILS bailing entries in a row, the site runs
   // the ordinary copy only. The count is a hint: both copies give the same
   // results, and a race between workers loses at most an update.
-  const bails = `@scr.spec.bails.${emitter.speculativeLoopSites++}`;
-  emitter.declare(`${bails} = internal global i8 0`);
+  const bails = emitter.speculativeLoopSite();
   const count = B.tmp(),
     trying = B.tmp();
   B.line(`${count} = load atomic i8, ptr ${bails} unordered, align 1`);
