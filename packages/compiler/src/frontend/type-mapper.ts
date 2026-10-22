@@ -1844,10 +1844,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
   // reference needs native object identity, including var's undefined state.
   const intrinsic = type.getSymbol();
+  const isIntrinsicGlobal = (symbol: ts.Symbol | undefined): boolean =>
+    symbol !== undefined &&
+    ts.symbolName(symbol) === "globalThis" &&
+    symbol.declarations.length === 0;
+  if (isIntrinsicGlobal(intrinsic)) return DYN;
+  // `typeof globalThis & { key?: T }` (the global-singleton spelling) is the
+  // same global object with declared extra members.
   if (
-    intrinsic !== undefined &&
-    ts.symbolName(intrinsic) === "globalThis" &&
-    intrinsic.declarations.length === 0
+    type.isIntersectionType() &&
+    ts.constituentTypes(type).some((part) => isIntrinsicGlobal(part.getSymbol()))
   )
     return DYN;
   if (ctx.jsDynamicDeclaration !== undefined && intrinsic !== undefined) {
