@@ -1798,16 +1798,33 @@ export class LlEmitter {
     });
   }
 
+  /** Whether a fiberless body running on its caller's stack needs the
+   * frame scr_async_inline_enter/exit keep: it isolates the Error.stack
+   * frame chain, which only stack-observing programs push, and the
+   * AsyncLocalStorage context, which only programs that enter stores
+   * change (RuntimeFeatures asyncContext), as a fresh fiber would. Other
+   * programs run the body with a plain call. The frame also counts the
+   * bodies running on a fiber's stack for the runtime's trap on a fiberless
+   * body that suspends. */
+  get fiberlessFrames(): boolean {
+    return this.stackTraces || this.schedulesInContext;
+  }
+
   /** The spawn wrapper of a fiberless async function: runs the body on the
-   * caller's stack between scr_async_inline_enter/leave and settles the
-   * fresh promise from its outcome — the fiber trampoline's epilogue,
-   * without the fiber. */
+   * caller's stack (between scr_async_inline_enter/leave when
+   * fiberlessFrames) and settles a fresh promise from its outcome — the
+   * fiber trampoline's epilogue, without the fiber. */
   emitFiberlessAsyncSpawn(fn: IrFunction, spawnParams: string[]): string[] {
     const ret = fn.returnType;
     const retTy = this.llType(ret);
     const lifted = fn.captures !== undefined;
-    this.declare(`declare void @scr_async_inline_enter(ptr)`);
-    this.declare(`declare ptr @scr_async_inline_leave(ptr)`);
+    const framed = this.fiberlessFrames;
+    if (framed) {
+      this.declare(`declare void @scr_async_inline_enter(ptr)`);
+      this.declare(`declare ptr @scr_async_inline_leave(ptr)`);
+    } else {
+      this.declare(`declare ptr @scr_promise_new()`);
+    }
     this.declare(`declare void @scr_promise_reject_pending(ptr)`);
     if (lifted) {
       this.declare(`declare ptr @scr_closure_retain_v(ptr)`);
@@ -1817,15 +1834,17 @@ export class LlEmitter {
     const out = [
       `define internal ptr @${mangleAsyncSpawn(fn.name)}(${spawnParams.join(", ")}) ${FN_ATTRS} { ; fiberless ${fn.name}`,
       `entry:`,
-      `  %frame = alloca { ptr, ptr }`,
+      ...(framed ? [`  %frame = alloca { ptr, ptr }`] : []),
       // The fiber path holds +1 on a lifted environment for the body's
       // duration (packed, released by the trampoline); keep that lifetime.
       ...(lifted ? [`  %env = call ptr @scr_closure_retain_v(ptr %a0)`] : []),
-      `  call void @scr_async_inline_enter(ptr %frame)`,
+      ...(framed ? [`  call void @scr_async_inline_enter(ptr %frame)`] : []),
       retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`,
       ...(lifted ? [`  call void @scr_closure_release(ptr %a0)`] : []),
       ...this.pendingTestLines("%pend"),
-      `  %p = call ptr @scr_async_inline_leave(ptr %frame)`,
+      framed
+        ? `  %p = call ptr @scr_async_inline_leave(ptr %frame)`
+        : `  %p = call ptr @scr_promise_new()`,
       `  br i1 %pend, label %thrown, label %clean`,
       `clean:`,
       ...this.asyncFulfillLines(ret, "%p"),
@@ -1864,23 +1883,27 @@ export class LlEmitter {
   }
 
   /** The inline await entry of a fiberless async function (`sc_ai_*`): its
-   * body on the caller's stack between scr_async_inline_enter/exit, as in
-   * its spawn wrapper, returning the result and leaving a throw pending for
-   * the awaiting coroutine (emitCoroInlineAwait). */
+   * body on the caller's stack (between scr_async_inline_enter/exit when
+   * fiberlessFrames), as in its spawn wrapper, returning the result and
+   * leaving a throw pending for the awaiting coroutine (emitCoroInlineAwait). */
   emitAsyncInlineAwaitCall(fn: IrFunction): string[] {
     const retTy = this.llType(fn.returnType);
     const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
     const args = params.join(", ");
-    this.declare(`declare void @scr_async_inline_enter(ptr)`);
-    this.declare(`declare void @scr_async_inline_exit(ptr)`);
+    const framed = this.fiberlessFrames;
+    if (framed) {
+      this.declare(`declare void @scr_async_inline_enter(ptr)`);
+      this.declare(`declare void @scr_async_inline_exit(ptr)`);
+    }
     const bodyCall = `call ${retTy} @${mangleFunction(fn.name)}(${args})`;
     return [
       `define internal ${retTy} @${mangleAsyncInlineAwaitCall(fn.name)}(${args}) ${FN_ATTRS} { ; inline await ${fn.name}`,
       `entry:`,
-      `  %frame = alloca { ptr, ptr }`,
-      `  call void @scr_async_inline_enter(ptr %frame)`,
+      ...(framed
+        ? [`  %frame = alloca { ptr, ptr }`, `  call void @scr_async_inline_enter(ptr %frame)`]
+        : []),
       retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`,
-      `  call void @scr_async_inline_exit(ptr %frame)`,
+      ...(framed ? [`  call void @scr_async_inline_exit(ptr %frame)`] : []),
       retTy === "void" ? `  ret void` : `  ret ${retTy} %r`,
       `}`,
       ``,
