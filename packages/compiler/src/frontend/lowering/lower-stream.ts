@@ -3944,6 +3944,29 @@ function lowerStreamCompose(lowerer: Lowerer, args: readonly ts.Expression[], lo
 /* ── the Readable operators ──────────────────────────────────────────── */
 
 /** The Readable operators (scr_stream_ops.c — Node's operators.js). */
+/** A stream member's receiver, lowered: a value the checker types as a
+ * stream class whose lowering is checked-dynamic (a JavaScript binding
+ * that holds an untyped call's result) or a union (an element read)
+ * converts to that class, checked where the member runs. */
+function streamReceiverExpr(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind !== "dyn" && value.type.kind !== "union") return value;
+  let classT: IrType | null;
+  try {
+    classT = lowerer.mapTypeOf(lowerer.typeOf(node));
+  } catch {
+    return value;
+  }
+  if (
+    classT?.kind !== "object" ||
+    streamSidesOf(lowerer, lowerer.classes.get(classT.className)) === null
+  )
+    return value;
+  return value.type.kind === "dyn"
+    ? { kind: "dynCheck", value, type: classT, loc: value.loc }
+    : lowerer.coerceToExpected(value, classT);
+}
+
 export const STREAM_OPERATORS: ReadonlySet<string> = new Set([
   "map",
   "filter",
@@ -4066,7 +4089,7 @@ function lowerStreamOperator(
 ): IrExpr {
   const loc = locOf(call);
   const args = call.arguments.nodes;
-  const recv = lowerer.lowerExpr(access.expression);
+  const recv = streamReceiverExpr(lowerer, access.expression);
   const readable: IrType = { kind: "object", className: "%Readable" };
   const opts = (i: number): IrExpr =>
     lowerOperatorValue(lowerer, args[i], `${member} options`, loc, true);
@@ -4210,7 +4233,7 @@ function pipeIntoStdio(
 ): IrExpr {
   const loc = locOf(call);
   // JS order: the receiver, then the destination, then the options.
-  const receiverValue = lowerer.lowerExpr(access.expression);
+  const receiverValue = streamReceiverExpr(lowerer, access.expression);
   const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
   const stdio = lowerer.declareHiddenLocal("%pipeStdio", target.type);
   const options = call.arguments.nodes[1];
@@ -4332,7 +4355,7 @@ function pipeIntoDyn(
 ): IrExpr {
   const loc = locOf(call);
   noteUntypedStreamFlow(lowerer, null);
-  const receiverValue = lowerer.lowerExpr(access.expression);
+  const receiverValue = streamReceiverExpr(lowerer, access.expression);
   const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
   const destination = lowerer.declareHiddenLocal("%pipeDestination", target.type);
   const stmts: IrStmt[] = [
@@ -4621,7 +4644,7 @@ export function lowerStreamMethodCall(
             loc,
           );
         }
-        const receiver = lowerer.lowerExpr(access.expression);
+        const receiver = streamReceiverExpr(lowerer, access.expression);
         const chunk = lowerer.lowerExprExpecting(args[0]!, STRING);
         return {
           kind: "libCall",
@@ -4637,7 +4660,7 @@ export function lowerStreamMethodCall(
     if ((kind === "null" || kind === "union" || kind === "dyn") && member === "unshift") {
       // unshift(value): an object-mode stream's value at the front, null
       // the end of the stream, as Node's readableAddChunk takes them
-      const receiver = lowerer.lowerExpr(access.expression);
+      const receiver = streamReceiverExpr(lowerer, access.expression);
       const chunk = lowerer.lowerExprExpecting(args[0]!, DYN);
       return {
         kind: "libCall",
@@ -4647,7 +4670,7 @@ export function lowerStreamMethodCall(
         loc,
       };
     }
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     if (kind === "null") {
       return { kind: "libCall", fn: "readable.pushNull", args: [receiver], type: BOOL, loc };
     }
@@ -4700,7 +4723,7 @@ export function lowerStreamMethodCall(
   if (member === "read") {
     requireSide(readableSide, "read");
     if (args.length > 1) lowerer.noLowering(`read with ${args.length} arguments`, call);
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     const size = args[0] ? lowerer.lowerExprExpecting(args[0], F64) : numLit(-1, loc);
     const type: IrType = unionOf(lowerer, [BYTES, { kind: "nullT" }]);
     const read: IrExpr = {
@@ -4716,7 +4739,7 @@ export function lowerStreamMethodCall(
   if (member === "pause" || member === "resume") {
     requireSide(readableSide, member);
     if (args.length !== 0) lowerer.noLowering(`${member} with arguments`, call);
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     return {
       kind: "libCall",
       fn: member === "pause" ? "readable.pause" : "readable.resume",
@@ -4729,7 +4752,7 @@ export function lowerStreamMethodCall(
   if (member === "isPaused") {
     requireSide(readableSide, "isPaused");
     if (args.length !== 0) lowerer.noLowering(`isPaused with arguments`, call);
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     return { kind: "libCall", fn: "readable.isPaused", args: [receiver], type: BOOL, loc };
   }
 
@@ -4746,7 +4769,7 @@ export function lowerStreamMethodCall(
     // Transform, and pipe() answers the value itself (the receiver
     // evaluates first, as in JS).
     if (isValueStream(lowerer, args[0]!)) {
-      const receiverValue = lowerer.lowerExpr(access.expression);
+      const receiverValue = streamReceiverExpr(lowerer, access.expression);
       const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
       const hashValue = lowerer.lowerExpr(args[0]!);
       const hash = lowerer.declareHiddenLocal("%pipeHash", hashValue.type);
@@ -4796,7 +4819,7 @@ export function lowerStreamMethodCall(
       );
     }
     const end = pipeEndOption(lowerer, args[1], loc);
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     return {
       kind: "libCall",
       fn: generalPipe(lowerer, dst.type),
@@ -4809,7 +4832,7 @@ export function lowerStreamMethodCall(
   if (member === "unpipe") {
     requireSide(readableSide, "unpipe");
     if (args.length > 1) lowerer.noLowering(`unpipe with ${args.length} arguments`, call);
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     if (args[0] !== undefined) {
       const dst = lowerer.lowerExpr(args[0]);
       if (dst.type.kind === "dyn") return unpipeDyn(lowerer, receiver, dst, loc);
@@ -4870,7 +4893,7 @@ export function lowerStreamMethodCall(
 
   if (member === "destroy") {
     if (args.length > 1) lowerer.noLowering(`destroy with ${args.length} arguments`, call);
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     if (args[0] !== undefined) {
       const err = lowerer.lowerExpr(args[0]);
       const rootsAtError = (t: IrType): boolean => {
@@ -4923,7 +4946,7 @@ export function lowerStreamMethodCall(
     // the callback took its place (a byte-mode side encodes a string
     // chunk with it).
     const writeEnc = (encArg: ts.Expression | undefined, cbArg: ts.Expression | undefined) => {
-      const receiver = lowerer.lowerExpr(access.expression);
+      const receiver = streamReceiverExpr(lowerer, access.expression);
       const chunk = lowerer.lowerExprExpecting(args[0]!, DYN);
       const tail: IrExpr[] = [];
       if (encArg !== undefined) tail.push(lowerer.lowerExprExpecting(encArg, DYN));
@@ -4953,7 +4976,7 @@ export function lowerStreamMethodCall(
         }
         return writeEnc(args[1], undefined);
       }
-      const receiver = lowerer.lowerExpr(access.expression);
+      const receiver = streamReceiverExpr(lowerer, access.expression);
       const chunk = lowerer.lowerExprExpecting(args[0]!, DYN);
       return { kind: "libCall", fn: "writable.writeDyn", args: [receiver, chunk], type: BOOL, loc };
     }
@@ -4963,7 +4986,7 @@ export function lowerStreamMethodCall(
       // lowered value may have collapsed to one arm (checker narrowing) —
       // re-dispatch on its IR type.
       if (args.length > 1) lowerer.noLowering("write with a union chunk and more arguments", call);
-      const receiver = lowerer.lowerExpr(access.expression);
+      const receiver = streamReceiverExpr(lowerer, access.expression);
       const chunk = lowerer.lowerExpr(args[0]!);
       const fn =
         chunk.type.kind === "union"
@@ -4986,7 +5009,7 @@ export function lowerStreamMethodCall(
         return writeEnc(args[1], undefined);
       cbArg = args[1];
     }
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     const chunk =
       kind === "bytes"
         ? lowerer.lowerExprExpecting(args[0]!, BYTES)
@@ -5021,7 +5044,7 @@ export function lowerStreamMethodCall(
       encNode = args[1];
       cbArg = args[2];
     }
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     let flags = 0;
     const tail: IrExpr[] = [];
     if (chunkNode !== undefined) {
@@ -5068,7 +5091,7 @@ export function lowerStreamMethodCall(
   if (member === "cork" || member === "uncork") {
     requireSide(writableSide, member);
     if (args.length !== 0) lowerer.noLowering(`${member} with arguments`, call);
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     return {
       kind: "libCall",
       fn: member === "cork" ? "writable.cork" : "writable.uncork",
@@ -5088,7 +5111,7 @@ export function lowerStreamMethodCall(
       );
     }
     const enc = bufEncoding(lowerer, "setEncoding", args[0]!);
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     return {
       kind: "libCall",
       fn: "readable.setEncoding",
@@ -5104,7 +5127,7 @@ export function lowerStreamMethodCall(
     requireSide(writableSide, "setDefaultEncoding");
     if (args.length > 1)
       lowerer.noLowering(`setDefaultEncoding with ${args.length} arguments`, call);
-    const receiver = lowerer.lowerExpr(access.expression);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
     const enc = args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc);
     return {
       kind: "libCall",
@@ -5257,7 +5280,7 @@ export function lowerStreamProperty(
   const propCall = (type: IrType): IrExpr => ({
     kind: "libCall",
     fn: "stream.prop",
-    args: [lowerer.lowerExpr(expr.expression), strLit(name, loc)],
+    args: [streamReceiverExpr(lowerer, expr.expression), strLit(name, loc)],
     type,
     loc,
   });
@@ -5280,7 +5303,7 @@ export function lowerStreamProperty(
     const read: IrExpr = {
       kind: "libCall",
       fn: "readable.flowing",
-      args: [lowerer.lowerExpr(expr.expression)],
+      args: [streamReceiverExpr(lowerer, expr.expression)],
       type,
       loc,
     };
@@ -5294,7 +5317,7 @@ export function lowerStreamProperty(
     const read: IrExpr = {
       kind: "libCall",
       fn: "stream.errored",
-      args: [lowerer.lowerExpr(expr.expression)],
+      args: [streamReceiverExpr(lowerer, expr.expression)],
       type,
       loc,
     };

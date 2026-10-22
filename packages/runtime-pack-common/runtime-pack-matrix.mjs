@@ -129,6 +129,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dyn_handle_props.c", "handleProps"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
+  ["scr_dyn_for_await_stream.c", all("dynForAwait", "stream", "dynAsync")],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],
   // FileHandle streams reference both the stream unit and FileHandle.

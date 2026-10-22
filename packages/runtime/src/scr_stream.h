@@ -301,6 +301,14 @@ bool scr_stream_write_dyn(ScrStream *s, const ScrDyn *d, ScrClosure *cb); /* cb 
 bool scr_stream_write_enc(ScrStream *s, const ScrDyn *chunk, ScrDyn *enc, ScrClosure *cb);
 ScrPromise *scr_stream_next_chunk(ScrStream *s);
 ScrPromise *scr_stream_next_chunk_dyn(ScrStream *s);
+/* The same step resolving with an iterator result ({ value, done }). */
+ScrPromise *scr_stream_next_result_dyn(ScrStream *s);
+/* The native readable stream behind a checked-dynamic value (+1), or NULL. */
+ScrStream *scr_stream_native_readable_of_dyn(const struct ScrDyn *value);
+/* for await over a checked-dynamic value in a program with streams
+ * (scr_stream_ops.c): a native readable stream iterates as a typed loop
+ * does; any other value takes scr_dyn_async_iterator_open. */
+struct ScrDyn *scr_stream_dyn_async_iterator_open(struct ScrDyn *value, ScrStr *spell);
 /* node:stream/promises — the promise forms over the finished/pipeline
  * machinery above: a pending void promise the terminal watcher settles
  * (fulfilled on a clean finish, rejected with the finish status

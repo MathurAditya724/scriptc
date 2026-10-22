@@ -145,9 +145,12 @@ struct ScrStreamState {
     bool object_mode_opt;
     /* The parked for-await next() promise (at most one — the loop awaits
      * each chunk before asking again). next_dyn picks the resolution
-     * shape: a dyn boxed by tag (the JS lane), or bytes. */
+     * shape: a dyn boxed by tag (the JS lane), or bytes; next_result
+     * wraps the dyn in an iterator result ({ value, done }) for the
+     * checked-dynamic for-await protocol. */
     ScrPromise *next_waiter;
     bool next_dyn;
+    bool next_result;
     /* The iterator's own read() is calling _read: synchronous pushes
      * buffer, and the waiter takes the whole buffer afterwards (Node's
      * read() returns everything _read pushed). */
@@ -1226,7 +1229,15 @@ static void scr_stream_next_fulfill(ScrStreamState *st, ScrPromise *w /*moves*/,
     scr_promise_release(w);
     return;
   }
-  if (dyn) {
+  if (dyn && st->r.next_result) {
+    /* { value, done }: the value, or undefined at the end */
+    ScrDyn *result = scr_dyn_new_obj();
+    scr_dyn_obj_set(result, "value", 5,
+                    chunk == NULL ? scr_dyn_retain(scr_dyn_undefined())
+                                  : scr_stream_entry_box(chunk, kind));
+    scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(chunk == NULL));
+    payload = result;
+  } else if (dyn) {
     payload = chunk == NULL ? scr_stream_from_done() : scr_stream_entry_box(chunk, kind);
   } else {
     payload = chunk ? (ScrBytes *)chunk : scr_bytes_new(SCR_BYTES_U8, 0);
@@ -1352,11 +1363,12 @@ static void scr_stream_settle_next(ScrStream *s) {
   }
 }
 
-static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn) {
+static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn, bool result) {
   ScrStreamState *st = s->st;
   ScrPromise *p = scr_promise_new();
   if (!st->has_r) {
     st->r.next_dyn = dyn;
+    st->r.next_result = result;
     scr_stream_next_fulfill(st, scr_promise_retain(p), NULL, SCR_ENTRY_BYTES);
     return p;
   }
@@ -1368,6 +1380,7 @@ static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn) {
     return p;
   }
   st->r.next_dyn = dyn;
+  st->r.next_result = result;
   st->r.next_waiter = scr_promise_retain(p);
   st->r.next_parked = false;
   if (!st->r.next_started) {
@@ -1391,11 +1404,15 @@ ScrPromise *scr_stream_next_chunk(ScrStream *s) {
     scr_promise_reject_pending(p);
     return p;
   }
-  return scr_stream_next_chunk_impl(s, false);
+  return scr_stream_next_chunk_impl(s, false, false);
 }
 
 ScrPromise *scr_stream_next_chunk_dyn(ScrStream *s) {
-  return scr_stream_next_chunk_impl(s, true);
+  return scr_stream_next_chunk_impl(s, true, false);
+}
+
+ScrPromise *scr_stream_next_result_dyn(ScrStream *s) {
+  return scr_stream_next_chunk_impl(s, true, true);
 }
 
 /* ── Readable.from (array, string and Buffer sources) ─────────────────── */
@@ -7522,6 +7539,18 @@ static ScrStream *scr_stream_boxed(const ScrDyn *value) {
     return stream;
   value->v.typed_ref.release(stream);
   return NULL;
+}
+
+/* The native readable stream behind a checked-dynamic value (+1): a
+ * boxed stream or a Cipheriv/Decipheriv handle's Transform, or NULL. */
+ScrStream *scr_stream_native_readable_of_dyn(const ScrDyn *value) {
+  ScrStream *s = scr_stream_of_handle(value);
+  if (!s) s = scr_stream_boxed(value);
+  if (s && !s->st->has_r) {
+    scr_stream_release(s);
+    return NULL;
+  }
+  return s;
 }
 
 /* stream.handleStream: the stream of a value typed as a stream handle

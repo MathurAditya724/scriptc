@@ -281,6 +281,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // for await over checked-dynamic values that may hold native streams.
+  unit(
+    (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
+    "scr_dyn_for_await_stream.c",
+  ),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,

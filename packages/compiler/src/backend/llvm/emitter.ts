@@ -972,6 +972,11 @@ export class LlEmitter {
   get usesDynBuiltinStream(): boolean {
     return this.runtimeFeatures.dynBuiltinStream;
   }
+  /** A checked-dynamic for-await may hold a native stream: the program
+   * links the stream unit (and the dyn-async one the loop needs). */
+  get dynForAwaitStreams(): boolean {
+    return this.runtimeFeatures.stream && this.runtimeFeatures.dynAsync;
+  }
   /** Runtime-arm dispatchers for live union values. */
   readonly liveDynUnionRefAdapters = new Map<string, string>();
   readonly dynPromiseAdapters = new Map<string, string>();
