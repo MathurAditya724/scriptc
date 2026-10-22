@@ -46,6 +46,7 @@ import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
 
 import { isJsSourceFile, isNodeTypesPath } from "./program.js";
+import { isProvenanceSourceFile } from "./provenance-registry.js";
 import { functionCanReturnUndefined } from "./function-completion.js";
 import { accessorSlotProp, recordTextCodecClass } from "../ir/ir.js";
 // typeKey moved to ir/ir.ts (the backend needs it too, for per-type
@@ -2466,12 +2467,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // value rides the checked-dynamic tree, as an `unknown` slot already
     // holds one. `new` through it and static reads dispatch at run time,
     // and the constructed value checks into the signature's instance type.
-    // Lib and package constructables keep their fences.
+    // Lib and package constructables keep their fences, and so do those of
+    // fetched provenance sources (third-party code under its own policies:
+    // an unused `@__PURE__` const typed `{ new (): any }` elides there).
     if (
       ctorSigs.length > 0 &&
       checker.getCallSignatures(widened).length === 0 &&
       (widened.getSymbol()?.declarations.length ?? 0) > 0 &&
-      widened.getSymbol()!.declarations.every((d) => ctx.isProgramFile(ts.getSourceFileOfNode(d)))
+      widened.getSymbol()!.declarations.every((d) => {
+        const sf = ts.getSourceFileOfNode(d);
+        return ctx.isProgramFile(sf) && !isProvenanceSourceFile(sf.fileName);
+      })
     ) {
       return DYN;
     }
