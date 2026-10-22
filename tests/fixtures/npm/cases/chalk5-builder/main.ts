@@ -1,6 +1,7 @@
 // chalk 5 builders used as values (the package compiles from scriptc's
 // built-in shim): builders in function slots and arrays, styles picked at
-// run time, visible at level 0, chalkStderr, and the root's own call.
+// run time, builders in record fields called with any number of arguments,
+// visible at level 0, chalkStderr, and the root's own call.
 import chalk, { Chalk, chalkStderr, type ChalkInstance, type ForegroundColorName } from "chalk";
 
 const show = (label: string, value: string): void => {
@@ -36,6 +37,8 @@ const off = new Chalk({ level: 0 });
 show("visible off", off.visible("v") + "|" + off.red.visible("v") + "|" + off.red("plain"));
 show("root call", c("a", 1, true) + "|" + c() + "|" + c(undefined) + "|" + c(null, "n"));
 show("builder args", c.red(undefined) + "|" + c.red(null) + "|" + c.red(1, 2) + "|" + c.red());
+const theme = { error: c.red, note: c.bold.blue };
+show("field args", theme.error("a", "b") + "|" + theme.note("x", 1, true) + "|" + theme.error("one") + "|" + theme.error());
 show("multiline", c.cyan("one\r\ntwo\nthree"));
 show("stderr level", String(chalkStderr.level >= 0));
 show("rgb levels", [1, 2, 3].map((level) => new Chalk({ level: level as 1 | 2 | 3 }).rgb(255, 136, 0)("o")).join("|"));

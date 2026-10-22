@@ -9250,6 +9250,10 @@ export function lowerRecordFieldCall(
   if (callee.type.kind === "object" && !init) {
     const direct = callableInstanceStringCall(lowerer, call, callee, loc);
     if (direct) return direct;
+    // Other argument counts call the %call closure through its value, as
+    // a call on the builder itself does (`theme.error("a", "b")`).
+    const closure = lowerer.hybridCallUnwrap(callee);
+    if (closure !== callee) return lowerCallThroughValue(lowerer, call, closure, loc);
   }
   if (callee.type.kind === "record" || callee.type.kind === "object")
     callee = lowerer.hybridCallUnwrap(callee);

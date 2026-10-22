@@ -179,6 +179,8 @@ interface Transport {
   close(): void;
   onError(listener: (err: Error) => void): void;
   offError(listener: (err: Error) => void): void;
+  /** Emits 'error' on the socket, as hot-shots' `socket.emit('error')`. */
+  emitError(err: Error): void;
   onClose(listener: () => void): void;
 }
 
@@ -261,6 +263,9 @@ class UdpTransport implements Transport {
   offError(listener: (err: Error) => void): void {
     this.errors.remove(listener);
   }
+  emitError(err: Error): void {
+    this.errors.emit(err);
+  }
   onClose(listener: () => void): void {
     this.socket.on("close", listener);
   }
@@ -281,10 +286,10 @@ class TcpTransport implements Transport {
     this.socket.on("error", (err) => errors.emit(err));
   }
   send(buf: Buffer, callback: SendCallback): void {
-    // The typed socket's write takes the data alone; the completion runs
-    // on the next tick.
-    this.socket.write(addEol(buf));
-    process.nextTick(() => callback(null));
+    // hot-shots writes the line with the 'ascii' encoding, which encodes
+    // strings as 'latin1' does. The callback runs once the data is written,
+    // so a message held back by a full socket buffer stays in flight.
+    this.socket.write(Buffer.from(addEol(buf), "latin1"), (err) => callback(err ?? null));
   }
   close(): void {
     this.socket.destroy();
@@ -294,6 +299,9 @@ class TcpTransport implements Transport {
   }
   offError(listener: (err: Error) => void): void {
     this.errors.remove(listener);
+  }
+  emitError(err: Error): void {
+    this.errors.emit(err);
   }
   onClose(listener: () => void): void {
     this.socket.on("close", () => listener());
@@ -375,6 +383,9 @@ class UdsTransport implements Transport {
   }
   offError(listener: (err: Error) => void): void {
     this.errors.remove(listener);
+  }
+  emitError(err: Error): void {
+    this.errors.emit(err);
   }
   onClose(listener: () => void): void {
     this.closeListeners.push(listener);
@@ -999,6 +1010,10 @@ export class StatsD {
           handler(errFormatted);
         } else {
           console.error(String(errFormatted));
+          // hot-shots also emits the error on the current socket, where the
+          // uds reconnection handler listens; with no listener it throws.
+          const current = this.transport;
+          if (current !== null) current.emitError(errFormatted);
         }
       }
     };
