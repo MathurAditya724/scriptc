@@ -23,8 +23,10 @@ import { runCompilerTask } from "./task.js";
 
 declare function compilerNativePrivateDirectory(path: string, harden: boolean): boolean;
 declare function compilerNativeCollectCycles(): void;
+declare function compilerNativeBoundCycleGrowth(): void;
 
 async function main(): Promise<number> {
+  compilerNativeBoundCycleGrowth();
   setFrontendDisposedHook(() => compilerNativeCollectCycles());
   const manifestPath = process.env["SCRIPTC_TOOLCHAIN"] ?? process.execPath + ".json";
   let compiler: NativeCompiler | null = null;

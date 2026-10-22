@@ -176,6 +176,7 @@ import { emitDynamicExpr } from "./expr-dynamic.js";
 import { emitIntrinsicExpr, emitSerializationExpr, emitAsyncExpr } from "./expr-async.js";
 import { PublishWalkers } from "./publish.js";
 import { computeImmutableFields, stableGlobals, type ImmutableFields } from "../immutability.js";
+import { computeCycleMutability, hierarchyUnitOfClass } from "../cycle-mutability.js";
 import { computePublishedTypes, type PublishedTypes } from "../publication.js";
 import { emitExpr } from "./expr-dispatch.js";
 
@@ -1330,8 +1331,10 @@ export class LlEmitter {
     // and per async fiber; WASI, Windows and library builds have none.
     const triple = (options.targetTriple ?? "").toLowerCase();
     const windows = triple === "" ? process.platform === "win32" : triple.includes("windows");
+    this.publishedTypes = computePublishedTypes(mod);
     const mt = computeMayThrow(mod, {
       stackChecks: !this.wasi && mod.lib === undefined && !windows,
+      published: this.publishedTypes,
     });
     this.mayThrow = mt.fns;
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
@@ -1340,11 +1343,12 @@ export class LlEmitter {
     // runtime moves deep prefix nests to a fresh stack using the guard,
     // which Windows lacks.
     this.stacklessAsyncAllowed = this.stacklessGenerators && mod.lib === undefined && !windows;
-    this.publishedTypes = computePublishedTypes(mod);
     this.unframedFunctions = this.stackTraces
       ? captureFreeFunctions(mod, this.stackChecks, this.publishedTypes)
       : new Set();
-    this.immutableFields = computeImmutableFields(mod, dynamicStores);
+    // One field-mutability answer serves immutable fields and traced shapes.
+    const cycleMutability = computeCycleMutability(mod, hierarchyUnitOfClass(mod), dynamicStores);
+    this.immutableFields = computeImmutableFields(mod, dynamicStores, cycleMutability);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
     this.indirectMayThrow = mt.indirect || mod.workers === true;
     for (const cls of mod.classes ?? []) {
@@ -1469,7 +1473,7 @@ export class LlEmitter {
     this.receiverReaders = new AmbientReceiverReaders(this.fnByName);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     this.lazyCaptures = new LazyCaptures(this.fnByName);
-    const traced = computeTraced(mod, dynamicStores);
+    const traced = computeTraced(mod, dynamicStores, cycleMutability);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
     // A shape union's value is whichever record it holds, and the collector

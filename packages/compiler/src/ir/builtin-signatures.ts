@@ -1318,6 +1318,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64],
     result: SPAWNRES_T,
   },
+  /** cp.spawnSyncOpts with the `env` option: the trailing [k,v,...]
+   * pairs replace the child's environment (recordToEnvPairs). */
+  "cp.spawnSyncEnv": {
+    argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, arrayOf(STRING)],
+    result: SPAWNRES_T,
+  },
   /** cp.spawnSyncOpts with the stdio carried as a RUNTIME string —
    * "pipe" | "ignore" | "inherit", proven by the call site's TYPE (the
    * defaultRunner idiom `stdio: options?.stdio ?? "pipe"`); the runtime
@@ -1528,6 +1534,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   },
   "dgram.sendStr": { argTypes: [DGRAMSOCK_T, STRING, F64, STRING], result: VOID },
   "dgram.sendBytes": { argTypes: [DGRAMSOCK_T, BYTES_U8, F64, STRING], result: VOID },
+  /** Connected AF_UNIX datagram sockets for the hot-shots package shim
+   * (the unix-dgram addon's surface): fd or result >= 0, -errno on
+   * failure; send answers 1 when the socket would block. */
+  "dgram.unixSocket": { argTypes: [], result: F64 },
+  "dgram.unixConnect": { argTypes: [F64, STRING], result: F64 },
+  "dgram.unixSend": { argTypes: [F64, BYTES_U8], result: F64 },
+  "dgram.unixClose": { argTypes: [F64], result: F64 },
   /** The send argument-validation ladder over dyn arguments (Node's
    * signature shuffle: slice bounds, list/type contracts, port/address
    * validation, connected-state errors), then the send: lists, connected
