@@ -3201,6 +3201,20 @@ function lowerStringPrototypeCall(
   );
 }
 
+/** ToNumber of a union of strings, numbers, booleans, null and undefined, as
+ * `Number(value)` converts it; null for other types. Unary `+` takes it too:
+ * the two conversions differ only for BigInt, which such unions don't hold. */
+export function lowerPrimitiveUnionNumber(
+  lowerer: Lowerer,
+  arg: IrExpr,
+  node: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  return (
+    lowerOptionalStringNumber(lowerer, arg, loc) ?? lowerScalarUnionNumber(lowerer, arg, node, loc)
+  );
+}
+
 function lowerScalarUnionNumber(
   lowerer: Lowerer,
   arg: IrExpr,
