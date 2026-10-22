@@ -59,6 +59,7 @@ import {
 } from "./array-iteration.js";
 import { dynamicReceiverThrows } from "./dynamic-receivers.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
+import { checkedFilterNarrowing } from "./filter-predicates.js";
 
 /** `a.map(fn)` / `a.filter(fn)` / `a.forEach(fn)` desugar to a direct
  * call of a synthetic module function — one per method + element/result
@@ -123,10 +124,11 @@ export function lowerArrayHofCall(
     }
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
-  const outElem =
+  const filtered =
     method === "filter"
       ? filterResultElem(lowerer, call, argNode, elem, valueT, booleanFilter)
-      : callbackArrayElement(lowerer, call, fnRet);
+      : null;
+  const outElem = filtered !== null ? filtered.elem : callbackArrayElement(lowerer, call, fnRet);
   // A filter that re-tags its elements keeps the single union-typed visit.
   const fast =
     present || booleanFilter || (method === "filter" && !typeEquals(outElem, elem))
@@ -145,19 +147,33 @@ export function lowerArrayHofCall(
     present,
   );
   const resultType: IrType = method === "map" || method === "filter" ? arrayOf(outElem) : VOID;
-  return {
+  const result: IrExpr = {
     kind: "call",
     callee: helper,
     args: [receiver, fnArg, ...(fast ? [fast] : [])],
     type: resultType,
     loc,
   };
+  const narrowing = filtered?.narrowing ?? null;
+  if (narrowing === null) return result;
+  return {
+    kind: "call",
+    callee: narrowing.helper,
+    args: [result],
+    type: arrayOf(narrowing.elem),
+    loc,
+  };
 }
 
-/** The checker-selected element of a filter result, with the same trust
- * boundary as the historical narrowing filter: an inferred inline type
- * predicate may prove one source arm; a written predicate annotation may
- * not. Boolean is safe when every discarded arm is a nullish unit. */
+/** The element a filter keeps, and the checked conversion of the result
+ * to the checker's narrower element when the predicate does not prove it.
+ * An inferred inline type predicate proves one source arm, or a class
+ * view, so the loop keeps that type directly. A written predicate (`(p): p
+ * is Cat => ...`, a guard function passed as a value) is an assertion
+ * TypeScript does not check, and an inferred predicate that keeps several
+ * arms has no single arm to re-tag: the loop keeps the receiver's element
+ * and `narrowing` (checkedFilterNarrowing) converts each kept element.
+ * Boolean is safe when every discarded arm is a nullish unit. */
 function filterResultElem(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -165,7 +181,37 @@ function filterResultElem(
   elem: IrType,
   valueT: IrType,
   booleanFilter: boolean,
-): IrType {
+): { elem: IrType; narrowing: { helper: string; elem: IrType } | null } {
+  const kept = filterKeptElem(lowerer, call, argNode, elem, valueT, booleanFilter);
+  if (typeof kept !== "string") return { elem: kept, narrowing: null };
+  return { elem, narrowing: { helper: kept, elem: filterCheckerElem(lowerer, call, elem) } };
+}
+
+/** The checker's spelling of a filter result's element type. */
+function filterTypeText(lowerer: Lowerer, call: ts.CallExpression): string {
+  const result = lowerer.typeOf(call);
+  const element = lowerer.checker.isArrayType(result)
+    ? lowerer.checker.getTypeArguments(result as ts.TypeReference)[0]
+    : undefined;
+  return element === undefined ? "" : lowerer.checker.typeToString(element);
+}
+
+/** The checker's element of a filter result, or the receiver's when the
+ * filter introduces no refinement. */
+function filterCheckerElem(lowerer: Lowerer, call: ts.CallExpression, elem: IrType): IrType {
+  const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+  return result?.kind === "array" ? result.elem : elem;
+}
+
+/** filterResultElem's element, or the name of the checked narrowing helper. */
+function filterKeptElem(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  argNode: ts.Expression,
+  elem: IrType,
+  valueT: IrType,
+  booleanFilter: boolean,
+): IrType | string {
   const callT = lowerer.typeOf(call);
   const result = lowerer.mapTypeOf(callT);
   let outElem = result?.kind === "array" ? result.elem : elem;
@@ -191,23 +237,31 @@ function filterResultElem(
     "keep the receiver's element type instead — annotate the callback's return ': boolean' " +
     "(the checker then skips the predicate) or annotate the result with the receiver's own " +
     "element type — and narrow the elements after";
-  if (!booleanFilter) {
+  const written =
+    !booleanFilter &&
+    ((!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) ||
+      argNode.type !== undefined);
+  const narrowing = booleanFilter
+    ? null
+    : (): string | null =>
+        checkedFilterNarrowing(lowerer, elem, outElem, filterTypeText(lowerer, call), locOf(call));
+  if (written) {
+    const helper = narrowing!();
+    if (helper !== null) return helper;
     if (!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) {
       lowerer.unsupported(
         "SC1090",
         argNode,
-        `narrowing '.filter' through a callback VALUE (only an inline callback whose predicate ` +
-          `the checker inferred can re-tag — ${annotateEscape})`,
+        `narrowing '.filter' to '${lowerer.fmt(outElem)}' through a callback VALUE (no checked ` +
+          `conversion from '${lowerer.fmt(elem)}' — ${annotateEscape})`,
       );
     }
-    if (argNode.type) {
-      lowerer.unsupported(
-        "SC1090",
-        argNode,
-        `narrowing '.filter' with a hand-written type predicate (a written 'x is T' is an ` +
-          `unchecked assertion nothing validates at runtime — ${annotateEscape})`,
-      );
-    }
+    lowerer.unsupported(
+      "SC1090",
+      argNode,
+      `narrowing '.filter' to '${lowerer.fmt(outElem)}' with a hand-written type predicate (no ` +
+        `checked conversion from '${lowerer.fmt(elem)}' — ${annotateEscape})`,
+    );
   }
   const classRefinement =
     !booleanFilter && outElem.kind === "object" && canAssertClassValue(lowerer, valueT, outElem);
@@ -215,6 +269,8 @@ function filterResultElem(
     !classRefinement &&
     (valueT.kind !== "union" || lowerer.armTag(valueT.unionId, outElem) < 0)
   ) {
+    const helper = narrowing?.() ?? null;
+    if (helper !== null) return helper;
     const multiArm = outElem.kind === "union";
     lowerer.unsupported(
       "SC1090",
@@ -2650,6 +2706,7 @@ export function lowerTuplePredicateCall(
   // the value type an array find narrows from.
   let foundT: IrType = elem;
   let retag: string | null = null;
+  let narrowing: { helper: string; elem: IrType } | null = null;
   if (method === "filter") {
     // The element union is built in position order, so the checker's
     // result element can list the same arms in another order.
@@ -2660,9 +2717,11 @@ export function lowerTuplePredicateCall(
       checkerResult?.kind === "array" &&
       arms(checkerResult.elem).length === arms(elem).length &&
       arms(checkerResult.elem).every((arm) => arms(elem).some((other) => typeEquals(arm, other)));
-    outElem = unchanged
-      ? elem
-      : filterResultElem(lowerer, call, argNode, elem, elem, booleanFilter);
+    if (!unchanged) {
+      const filtered = filterResultElem(lowerer, call, argNode, elem, elem, booleanFilter);
+      outElem = filtered.elem;
+      narrowing = filtered.narrowing;
+    }
     resultT = arrayOf(outElem);
   } else if (method === "find") {
     resultT = lowerer.irTypeOf(call);
@@ -2795,5 +2854,19 @@ export function lowerTuplePredicateCall(
       loc,
     });
   }
-  return { kind: "call", callee: helper, args: [receiver, fnArg], type: resultT, loc };
+  const result: IrExpr = {
+    kind: "call",
+    callee: helper,
+    args: [receiver, fnArg],
+    type: resultT,
+    loc,
+  };
+  if (narrowing === null) return result;
+  return {
+    kind: "call",
+    callee: narrowing.helper,
+    args: [result],
+    type: arrayOf(narrowing.elem),
+    loc,
+  };
 }
