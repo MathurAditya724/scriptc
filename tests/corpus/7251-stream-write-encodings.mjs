@@ -62,4 +62,43 @@ sink.setDefaultEncoding("latin1");
 sink.write("é");
 sink.end("YQ==", "base64");
 
+// A typed array or DataView chunk reaches _write and _writev as a Buffer
+// over the same bytes (Stream._uint8ArrayToBuffer), also with
+// decodeStrings: false; in object mode it stays as it is.
+const views = new stream.Writable({
+  decodeStrings: false,
+  write(c, e, cb) {
+    log.push(`view ${Buffer.isBuffer(c)} ${e} ${c.toString()}`);
+    cb();
+  },
+});
+views.write(new Uint8Array([104, 105]));
+views.write(new Uint16Array([0x6a6b]));
+views.write(new DataView(new Uint8Array([108]).buffer));
+const batch = new stream.Writable({
+  writev(chunks, cb) {
+    log.push(`view batch ${chunks.map((c) => `${Buffer.isBuffer(c.chunk)}:${c.encoding}:${c.chunk}`).join(" ")}`);
+    cb();
+  },
+});
+batch.cork();
+batch.write(new Uint8Array([97]));
+batch.write(new Uint8Array([98]));
+batch.uncork();
+const source = new Uint8Array([1, 2]);
+new stream.Writable({
+  write(c, e, cb) {
+    log.push(`view plain ${Buffer.isBuffer(c)} ${e} ${c.buffer === source.buffer}`);
+    cb();
+  },
+}).write(source);
+new stream.Writable({
+  objectMode: true,
+  write(c, e, cb) {
+    log.push(`view object ${Buffer.isBuffer(c)} ${c instanceof Uint8Array}`);
+    cb();
+  },
+}).write(new Uint8Array([3]));
+log.push(`view source ${Buffer.isBuffer(source)}`);
+
 setTimeout(() => console.log(log.join("\n")), 5);

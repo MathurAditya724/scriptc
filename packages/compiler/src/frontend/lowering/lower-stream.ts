@@ -4352,6 +4352,10 @@ function duplexFromPair(
 ): IrExpr {
   const duplex: IrType = { kind: "object", className: "%Duplex" };
   const sides: { readable?: IrExpr; writable?: IrExpr } = {};
+  // The members in source order; when that is not (readable, writable),
+  // each value is bound to a local first, keeping the literal's
+  // evaluation order.
+  const members: { key: "readable" | "writable"; value: IrExpr }[] = [];
   for (const p of literal.properties.nodes) {
     const key =
       (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && ts.isIdentifier(p.name)
@@ -4379,19 +4383,51 @@ function duplexFromPair(
         : null;
     const wanted = key === "readable" ? "r" : "w";
     const direct = valueSides === "rw" || valueSides === wanted;
-    sides[key!] = direct
-      ? lowerStreamArg(lowerer, value, "compose")
-      : duplexFromBody(lowerer, value, loc);
+    members.push({
+      key: key!,
+      value: direct
+        ? lowerStreamArg(lowerer, value, "compose")
+        : duplexFromBody(lowerer, value, loc),
+    });
+  }
+  const decls: IrStmt[] = [];
+  const inOrder =
+    members.length <= 1 ||
+    (members.length === 2 && members[0]!.key === "readable" && members[1]!.key === "writable");
+  for (const m of members) {
+    if (inOrder) {
+      sides[m.key] = m.value;
+      continue;
+    }
+    const local = lowerer.declareHiddenLocal(`%duplex${m.key}`, m.value.type);
+    decls.push({ kind: "varDecl", localId: local.id, init: m.value, loc });
+    sides[m.key] = varRef(local.id, m.value.type, loc);
   }
   const { readable, writable } = sides;
-  if (readable && writable)
-    return {
+  if (readable && writable) {
+    const call: IrExpr = {
       kind: "libCall",
       fn: "stream.duplexifyPair",
       args: [readable, writable],
       type: duplex,
       loc,
     };
+    return decls.length > 0
+      ? { kind: "seqExpr", stmts: decls, result: call, type: duplex, loc }
+      : call;
+  }
+  if (decls.length > 0) {
+    // a repeated member: every value is evaluated, the last one is used
+    const one = readable ?? writable!;
+    const call: IrExpr = {
+      kind: "libCall",
+      fn: readable ? "stream.duplexifyReadable" : "stream.duplexifyWritable",
+      args: [one],
+      type: duplex,
+      loc,
+    };
+    return { kind: "seqExpr", stmts: decls, result: call, type: duplex, loc };
+  }
   if (readable)
     return { kind: "libCall", fn: "stream.duplexifyReadable", args: [readable], type: duplex, loc };
   if (writable)
@@ -4572,7 +4608,9 @@ function lowerOperatorCallback(
     takesOptions = node.parameters.nodes.length > maxParams;
   }
   const v = lowerer.lowerExpr(node);
-  if (v.type.kind === "dyn") return { fn: v, takesOptions };
+  // A checked-dynamic function's parameters are not known here: it gets
+  // the { signal } argument, as Node passes it to every callback.
+  if (v.type.kind === "dyn") return { fn: v, takesOptions: true };
   if (
     v.type.kind !== "func" &&
     isJsSourceFile(ts.getSourceFileOfNode(node)) &&

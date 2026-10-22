@@ -33,4 +33,9 @@ log.push(`forEach ${seen}`);
 log.push(String(await Readable.from([1, 2, 3]).some((n, { signal }) => n > 2 && !signal.aborted)));
 log.push(String(await Readable.from([1, 2, 3]).find((n, { signal }) => n > 1 && !signal.aborted)));
 log.push(String(await Readable.from([1, 2, 3]).every((n, { signal }) => n > 0 && !signal.aborted)));
+// A callback forwarded through an untyped parameter gets { signal } too.
+const mapWith = (fn) => Readable.from([1, 2]).map(fn).toArray();
+log.push(JSON.stringify(await mapWith((n, { signal }) => `${n}:${signal.aborted}`)));
+const reduceWith = (fn) => Readable.from([1, 2]).reduce(fn, 0);
+log.push(String(await reduceWith((acc, n, { signal }) => acc + n + (signal.aborted ? 10 : 0))));
 console.log(log.join("\n"));

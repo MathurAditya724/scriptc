@@ -36,4 +36,12 @@ killed.on("error", (e) => log.push(`killed error ${e.name}`));
 killed.on("close", () => log.push(`killed close ${killed.destroyed}`));
 killed.destroy();
 await new Promise((res) => setTimeout(res, 5));
+// The pair's members are evaluated in source order; a pair still open at
+// exit is left as it is.
+const order = [];
+const open = Duplex.from({
+  writable: (order.push("writable"), new Writable({ write(c, e, cb) { cb(); } })),
+  readable: (order.push("readable"), Readable.from(["x"])),
+});
+log.push(`pair order ${order.join(",")} ${open.readable} ${open.writable}`);
 console.log(log.join("\n"));

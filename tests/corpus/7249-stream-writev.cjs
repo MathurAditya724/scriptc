@@ -86,4 +86,41 @@ function viaConstructor(next) {
   });
 }
 
-viaLiteral(() => viaValue(() => viaConstructor(() => console.log(log.join("\n")))));
+// The writev option shadows the prototype's _writev: Node's constructor
+// assigns it to the instance (this._writev = options.writev).
+function viaOptionOverProto(next) {
+  function W(opts) {
+    stream.Writable.call(this, opts);
+  }
+  Object.setPrototypeOf(W.prototype, stream.Writable.prototype);
+  Object.setPrototypeOf(W, stream.Writable);
+  W.prototype._write = function (chunk, enc, cb) {
+    log.push("proto _write " + String(chunk));
+    cb();
+  };
+  W.prototype._writev = function (chunks, cb) {
+    log.push("proto _writev " + chunks.length);
+    cb();
+  };
+  // (built without a second `new` of a constructor function)
+  const w = Object.create(W.prototype);
+  W.call(w, {
+    writev(chunks, cb) {
+      log.push("option writev " + chunks.map((c) => String(c.chunk)).join(",") + " " + (this === w));
+      cb();
+    },
+  });
+  log.push("own _writev " + Object.prototype.hasOwnProperty.call(w, "_writev"));
+  w.cork();
+  w.write("a");
+  w.write("b");
+  w.uncork();
+  w.end(() => {
+    log.push("option end");
+    next();
+  });
+}
+
+viaLiteral(() =>
+  viaValue(() => viaConstructor(() => viaOptionOverProto(() => console.log(log.join("\n"))))),
+);

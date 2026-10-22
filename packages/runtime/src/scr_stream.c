@@ -4731,6 +4731,7 @@ typedef struct ScrDuplexify {
   ScrStream *r, *w;  /* +1 or NULL */
   ScrStream *d;      /* +1 until teardown */
   ScrClosure *drain_l, *finish_l, *readable_l, *end_l; /* +1, the listeners, or NULL */
+  ScrClosure *r_eos, *w_eos; /* +1: the eos listeners' cleanups, or NULL */
   bool readable, writable;
   bool ondrain, onfinish, onreadable;
   int onclose; /* _duplexify's onclose: undefined, null, or d's destroy callback */
@@ -4747,6 +4748,8 @@ static void *scr_dupx_retain_v(void *p) {
 static void scr_dupx_release_v(void *p) {
   ScrDuplexify *x = p;
   if (--x->rc > 0) return;
+  if (x->r_eos) scr_closure_release(x->r_eos);
+  if (x->w_eos) scr_closure_release(x->w_eos);
   if (x->r) scr_stream_release(x->r);
   if (x->w) scr_stream_release(x->w);
   free(x);
@@ -4767,9 +4770,13 @@ static void scr_dupx_on(ScrStream *s, const char *name, ScrClosure **slot, void 
   scr_str_release(n);
 }
 
-/* Drop the Duplex and the listeners on r and w. */
+/* Drop the Duplex and the listeners on r and w (the eos listeners stay
+ * registered; their cleanups, which hold the context, are dropped). */
 static void scr_dupx_teardown(ScrDuplexify *x) {
   if (!x->d) return;
+  if (x->r_eos) scr_closure_release(x->r_eos);
+  if (x->w_eos) scr_closure_release(x->w_eos);
+  x->r_eos = x->w_eos = NULL;
   if (x->w) {
     scr_compose_off(x->w, "drain", &x->drain_l);
     scr_compose_off(x->w, "finish", &x->finish_l);
@@ -4788,8 +4795,20 @@ static void scr_dupx_teardown(ScrDuplexify *x) {
   scr_dupx_release_v(x); /* the live list's reference */
 }
 
+/* At exit, a Duplexify still open also drops its eos listeners on r and
+ * w: they hold the context, which holds r and w. */
 static void scr_dupx_atexit(void) {
-  while (scr_dupx_live) scr_dupx_teardown(scr_dupx_live);
+  while (scr_dupx_live) {
+    ScrDuplexify *x = scr_dupx_live;
+    ScrClosure *eos[2] = {x->r_eos, x->w_eos};
+    x->r_eos = x->w_eos = NULL;
+    for (int i = 0; i < 2; i++) {
+      if (!eos[i]) continue;
+      ((void (*)(ScrClosure *))eos[i]->fn)(eos[i]);
+      scr_closure_release(eos[i]);
+    }
+    scr_dupx_teardown(x);
+  }
 }
 
 /* d's destroy callback: callback(err), then the context lets go. */
@@ -4974,14 +4993,12 @@ ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
   d->cls = "Duplexify";
   x->d = scr_stream_retain(d);
   if (x->writable) {
-    scr_closure_release(
-        scr_stream_finished(w, scr_dupx_closure((void *)&scr_dupx_w_eos, x), &scr_dupx_w_eos));
+    x->w_eos = scr_stream_finished(w, scr_dupx_closure((void *)&scr_dupx_w_eos, x), &scr_dupx_w_eos);
     scr_dupx_on(w, "drain", &x->drain_l, (void *)&scr_dupx_drain_l, x);
     scr_dupx_on(w, "finish", &x->finish_l, (void *)&scr_dupx_finish_l, x);
   }
   if (x->readable) {
-    scr_closure_release(
-        scr_stream_finished(r, scr_dupx_closure((void *)&scr_dupx_r_eos, x), &scr_dupx_r_eos));
+    x->r_eos = scr_stream_finished(r, scr_dupx_closure((void *)&scr_dupx_r_eos, x), &scr_dupx_r_eos);
     scr_dupx_on(r, "readable", &x->readable_l, (void *)&scr_dupx_readable_l, x);
     scr_dupx_on(r, "end", &x->end_l, (void *)&scr_dupx_end_l, x);
   }
@@ -6860,6 +6877,21 @@ bool scr_stream_write(ScrStream *s, ScrBytes *chunk, ScrClosure *cb) {
     ScrDyn *v = chunk->is_buffer ? scr_dyn_new_buffer(chunk) : scr_dyn_new_bytes(chunk);
     bool ret = scr_stream_write_value(s, v, cb);
     scr_dyn_release(v);
+    return ret;
+  }
+  if (!chunk->is_buffer) {
+    /* Writable's _write: a typed array or DataView chunk becomes a Buffer
+     * over the same bytes (Stream._uint8ArrayToBuffer), which _write,
+     * _writev and a decodeStrings: false queue receive. */
+    ScrBytes *b = scr_bytes_buffer_view(chunk, SCR_BYTES_U8, scr_bytes_byte_offset(chunk), true,
+                                        scr_bytes_byte_len(chunk));
+    if (!b) {
+      if (cb) scr_closure_release(cb);
+      return false;
+    }
+    b->is_buffer = true;
+    bool ret = scr_stream_write_buffer(s, b, cb);
+    scr_bytes_release(b);
     return ret;
   }
   return scr_stream_write_buffer(s, chunk, cb);

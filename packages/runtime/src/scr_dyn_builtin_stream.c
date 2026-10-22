@@ -899,7 +899,14 @@ static ScrDyn *bcs_construct(int kind, ScrDyn *self, ScrDyn *const *args, size_t
   bool failed = false;
   bool writes = kind != BCS_READABLE;
   bool transformish = kind == BCS_TRANSFORM || kind == BCS_PASSTHROUGH;
-  /* Node's constructors read _writev and _construct as they run */
+  ScrDyn *opts = bcs_arg(args, argc, 0);
+  /* Node's constructors assign options.writev and options.construct to
+   * the instance (this._writev = options.writev), then read _writev and
+   * _construct, so an option shadows the prototype's method. */
+  if (opts->kind == SCR_DYN_OBJ) {
+    if (writes && !transformish && !bcs_copy_option(self, opts, "writev", "_writev")) return NULL;
+    if (!bcs_copy_option(self, opts, "construct", "_construct")) return NULL;
+  }
   bool has_writev = writes && bcs_is_function(self, "_writev", &failed);
   if (has_writev && transformish) {
     bcs_unsupported("_writev on a constructor-function Transform is not supported yet");
@@ -907,7 +914,6 @@ static ScrDyn *bcs_construct(int kind, ScrDyn *self, ScrDyn *const *args, size_t
   }
   bool has_construct = !failed && bcs_is_function(self, "_construct", &failed);
   if (failed) return NULL;
-  ScrDyn *opts = bcs_arg(args, argc, 0);
   ScrStream *s = kind == BCS_READABLE   ? scr_stream_new_readable_dyn(opts)
                : kind == BCS_WRITABLE   ? scr_stream_new_writable_dyn(opts)
                : kind == BCS_DUPLEX     ? scr_stream_new_duplex_dyn(opts)
