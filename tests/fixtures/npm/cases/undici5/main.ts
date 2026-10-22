@@ -18,6 +18,7 @@ import {
   setGlobalDispatcher,
 } from "undici";
 import type { Dispatcher } from "undici";
+import { checkPeers } from "./peers.ts";
 
 const server = http.createServer((req, res) => {
   const url = req.url ?? "/";
@@ -80,6 +81,34 @@ channel("undici:request:trailers").subscribe((message) => {
   if (t !== undefined) console.log(`  [diag] ${t.label} done after ${t.dispatched} dispatch`);
 });
 
+// A transport's connection registry: sockets the wrapped connector dialed,
+// keyed weakly, and the client diagnostics messages that carry them.
+const dialed = new WeakMap<Socket, number>();
+const clientDiag = { beforeConnect: 0, connector: 0, connected: 0, sendHeaders: 0, known: 0, unknown: 0 };
+const noteSocket = (socket: Socket): void => {
+  const n = dialed.get(socket);
+  if (n === undefined) clientDiag.unknown++;
+  else clientDiag.known++;
+};
+channel("undici:client:beforeConnect").subscribe((message) => {
+  const { connector } = message as { connector: unknown };
+  clientDiag.beforeConnect++;
+  if (typeof connector === "function") clientDiag.connector++;
+});
+channel("undici:client:connected").subscribe((message) => {
+  const { socket, connectParams } = message as {
+    socket: Socket;
+    connectParams: { protocol: string; hostname: string };
+  };
+  clientDiag.connected++;
+  if (connectParams.protocol === "http:" && connectParams.hostname === "127.0.0.1") noteSocket(socket);
+});
+channel("undici:client:sendHeaders").subscribe((message) => {
+  const { socket, headers } = message as { socket: Socket; headers: string };
+  clientDiag.sendHeaders++;
+  if (headers.length > 0) noteSocket(socket);
+});
+
 /** A transport-style Agent: one Pool per origin built by the factory, a
  * wrapped connector, and a Client interceptor that marks dispatches. */
 class TracingAgent extends Agent {
@@ -101,7 +130,9 @@ class TracingAgent extends Agent {
           pipelining: 1,
           connect(options, callback) {
             opened++;
-            return connect(options, callback);
+            const socket = connect(options, callback);
+            dialed.set(socket, opened);
+            return socket;
           },
           interceptors: {
             Client: [
@@ -195,9 +226,11 @@ server.listen(0, "127.0.0.1", async () => {
   for (let i = 0; i < 4; i++) {
     const r = await request(`${origin}/r${i}`, { dispatcher: agent });
     await r.body.text();
-    await turn();
   }
   console.log("connections opened:", agent.connections);
+  console.log(
+    `client diagnostics: ${clientDiag.beforeConnect} before connect (${clientDiag.connector} with a connector), ${clientDiag.connected} connected, ${clientDiag.sendHeaders} send headers; ${clientDiag.known} carry a dialed socket, ${clientDiag.unknown} another`,
+  );
   console.log("stats:", agent.statsFor(origin));
 
   console.log("== Pool with a connection limit");
@@ -294,5 +327,6 @@ server.listen(0, "127.0.0.1", async () => {
 
   await agent.close();
   server.close();
+  await checkPeers();
   console.log("done");
 });

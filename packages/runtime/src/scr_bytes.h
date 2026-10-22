@@ -150,6 +150,10 @@ ScrStr *scr_strdec_write(const ScrStr *enc, double pending, const ScrBytes *chun
 double scr_strdec_next(const ScrStr *enc, double pending, const ScrBytes *chunk);
 ScrStr *scr_strdec_end(const ScrStr *enc, double pending);
 ScrStr *scr_strdec_encoding(const ScrDyn *enc); /* +1, or NULL with ERR_UNKNOWN_ENCODING pending */
+/* A Buffer encoding name known only at run time, Node's getEncodingOps: the
+ * canonical name of an encoding in any ASCII case (+1), or NULL with
+ * ERR_UNKNOWN_ENCODING ("Unknown encoding: <raw>") pending. Borrows raw. */
+ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw);
 
 /* `new Uint8Array(n)` / Buffer.alloc(n): zero-filled. n goes through
  * ToIndex like JS (NaN → 0, truncate toward zero; negative or > 2^53-1
@@ -161,6 +165,9 @@ ScrBytes *scr_bytes_raw_view(ScrBytes *bytes);
 ScrBytes *scr_bytes_as_buffer(ScrBytes *bytes); /* borrows; +1, Buffer factory only */
 /* Buffer.isBuffer over a typed view: the view's Buffer brand. Borrows. */
 bool scr_bytes_is_buffer(const ScrBytes *bytes);
+/* A fresh Uint8Array result of a Buffer's map or filter takes the Buffer
+ * brand (Node's species). Borrows both. */
+void scr_bytes_copy_brand(ScrBytes *dst, const ScrBytes *src);
 /* Views retain the root allocation; offsets are relative to its complete
  * byte storage, including when src is itself a subarray. */
 ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,

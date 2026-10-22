@@ -166,7 +166,6 @@ import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
   v8CalleeText,
-  lowerOptionalNumber,
   lowerPromiseAllTupleCall,
   lowerPromiseRejectCall,
   lowerToNumberArgument,
@@ -176,6 +175,7 @@ import {
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { lowerChildMethodValue, lowerChildPropertyCall } from "./handle-properties.js";
 import { classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import { structuralReadType } from "./class-unions.js";
@@ -1007,10 +1007,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // excludes shadowed names. parseInt's omitted radix completes
     // to 0 — the spec's "undefined" (base 10 with the 0x hex escape);
     // parseFloat lowers the STRING form only (Node would ToString other
-    // values — no static story); isNaN/isFinite's arguments are
-    // checker-pinned (or checked) to number, where the global's ToNumber
-    // coercion is the identity and the tests are Number.isNaN /
-    // Number.isFinite exactly (ms's `isFinite(val)` guard).
+    // values — no static story); isNaN/isFinite apply the global's
+    // ToNumber to any argument, then test like Number.isNaN /
+    // Number.isFinite.
     if (
       (expr.expression.text === "parseInt" ||
         expr.expression.text === "isNaN" ||
@@ -1129,18 +1128,14 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
     if (islFn && expr.arguments.nodes.length === islFn.args.length) {
       // The static forms above already took the exactly-typed argument
-      // (a string for parseFloat, a number for isFinite): name the
-      // argument type that refused the call, so the message states the
-      // condition rather than reading as if the global itself were
-      // unsupported.
+      // (a string for parseFloat): name the argument type that refused
+      // the call, so the message states the condition rather than
+      // reading as if the global itself were unsupported.
       const argText = loweredArgumentText(lowerer, expr.arguments.nodes[0]!);
-      const exact = expr.expression.text === "isFinite" ? "number" : "string";
       lowerer.refuseUnsupportedApi(
         `'${expr.expression.text}' with a '${argText}' argument`,
         expr,
-        exact === "string"
-          ? "only a string argument compiles statically: convert the argument explicitly first (for example String(x), or narrow the union)"
-          : "only a number argument compiles statically: narrow the argument to a number first",
+        "only a string argument compiles statically: convert the argument explicitly first (for example String(x), or narrow the union)",
       );
     }
   }
@@ -1463,6 +1458,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerCipherMethodCall(lowerer, expr, expr.expression) ??
       lowerFileHandleMethodCall(lowerer, expr, expr.expression) ??
       lowerDirMethodCall(lowerer, expr, expr.expression) ??
+      lowerChildPropertyCall(lowerer, expr, expr.expression) ??
       lowerer.lowerChildMethodCall(expr, expr.expression) ??
       // Piped child-output stream receivers — on/once("data" | "end").
       lowerChildStreamMethodCall(lowerer, expr, expr.expression) ??
@@ -1645,6 +1641,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         const t = ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr);
         if (t) return nsUndefRead(lowerer, ambientRoot.text, expr, t);
       }
+    }
+    {
+      const childCall = lowerChildPropertyCall(lowerer, expr, expr.expression, true);
+      if (childCall) return childCall;
     }
     // The lib fence's METHOD-CALL chokepoint: a stdlib-declared member
     // that every lowering above declined — an unlowered member
@@ -3201,6 +3201,20 @@ function lowerStringPrototypeCall(
   );
 }
 
+/** ToNumber of a union of strings, numbers, booleans, null and undefined, as
+ * `Number(value)` converts it; null for other types. Unary `+` takes it too:
+ * the two conversions differ only for BigInt, which such unions don't hold. */
+export function lowerPrimitiveUnionNumber(
+  lowerer: Lowerer,
+  arg: IrExpr,
+  node: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  return (
+    lowerOptionalStringNumber(lowerer, arg, loc) ?? lowerScalarUnionNumber(lowerer, arg, node, loc)
+  );
+}
+
 function lowerScalarUnionNumber(
   lowerer: Lowerer,
   arg: IrExpr,
@@ -3797,8 +3811,20 @@ function lowerDynReceiverMethodCall(
         )
     )
       return true;
+    // A standard-library member spelled as a function-typed property
+    // (undici-types declares Headers.append/forEach/... and the body mixin
+    // as `readonly append: (...) => void`; scriptc's own declarations use
+    // methods) is still the handle's native method: it takes the shared
+    // receiver dispatch below either way (which also calls a plain object's
+    // own member), so the lowering does not depend on which declaration
+    // file supplies the type.
+    const libMethod =
+      prop !== undefined &&
+      prop.declarations.length > 0 &&
+      prop.declarations.every((decl) => lowerer.isStdlibFile(decl.getSourceFile()));
     return (
       prop !== undefined &&
+      !libMethod &&
       prop.declarations.some(
         (decl) => ts.isPropertyDeclaration(decl) || ts.isPropertySignature(decl),
       )
@@ -4072,6 +4098,12 @@ const DYN_DISPATCH_METHODS = new Set([
   "prependOnceListener",
   "listeners",
   "listenerCount",
+  // The rest of EventEmitter.prototype, which compiled emitters answer
+  // through the class dispatch (class-dynamic-dispatch.ts).
+  "rawListeners",
+  "eventNames",
+  "setMaxListeners",
+  "getMaxListeners",
   "write",
   "end",
   "destroy",
@@ -7650,6 +7682,10 @@ function lowerObjectStaticCall(
         const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
         const rawSource = lowerer.lowerExpr(call.arguments.nodes[1]!);
         fenceSymbolFieldCopy(lowerer, call.arguments.nodes[1]!, rawSource.type);
+        let targetNode: ts.Expression = call.arguments.nodes[0]!;
+        while (ts.isParenthesizedExpression(targetNode)) targetNode = targetNode.expression;
+        if (ts.isObjectLiteralExpression(targetNode))
+          fenceClassCopyIntoFreshObject(lowerer, call, call.arguments.nodes[1]!, rawSource);
         const source = lowerer.coerceToExpected(rawSource, DYN);
         if (target.type.kind === "dyn" && source.type.kind === "dyn") {
           return { kind: "libCall", fn: "dyn.assign", args: [target, source], type: DYN, loc };
@@ -7803,25 +7839,8 @@ function lowerObjectStaticCall(
             const srcNode = spread ? argNode.expression : argNode;
             const rawSource = lowerer.lowerExpr(srcNode);
             fenceSymbolFieldCopy(lowerer, srcNode, rawSource.type, spread);
-            // A class instance copied into a fresh object
-            // (`Object.assign({}, instance)`): the result is a plain
-            // object holding the instance's own fields, never an
-            // instance, so a result the checker types as the class has
-            // no representation (the checked cast would throw).
-            if (
-              rawSource.type.kind === "object" &&
-              freshLiteralTarget &&
-              !ts.isExpressionStatement(call.parent)
-            ) {
-              const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
-              if (resultT !== null && resultT.kind === "object") {
-                lowerer.unsupported(
-                  "SC1090",
-                  srcNode,
-                  `Object.assign copying a '${lowerer.fmt(rawSource.type)}' instance into a fresh object typed as the class (the copy is a plain object holding the instance's own fields, not an instance — build the object literal from the fields you need)`,
-                );
-              }
-            }
+            if (freshLiteralTarget)
+              fenceClassCopyIntoFreshObject(lowerer, call, srcNode, rawSource);
             const src = lowerer.coerceToExpected(rawSource, DYN);
             if (src.type.kind !== "dyn") {
               ok = false;
@@ -8053,6 +8072,14 @@ function lowerObjectStaticCall(
             loc,
           };
     }
+    const fnIntegrity = functionIntegrity(
+      lowerer,
+      member,
+      value,
+      call.arguments.nodes[0]!,
+      locOf(call),
+    );
+    if (fnIntegrity) return fnIntegrity;
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
@@ -8136,6 +8163,8 @@ function lowerObjectStaticCall(
         )
     )
       return value;
+    const fnIntegrity = functionIntegrity(lowerer, "freeze", value, argNode, locOf(call));
+    if (fnIntegrity) return fnIntegrity;
     const integrity = lowerClassIntegrity(lowerer, call, "freeze", value);
     if (integrity) return integrity;
     lowerer.noLowering(
@@ -9399,7 +9428,9 @@ function lowerObjLitGenericMethodCall(
     ) {
       const value = tryLowerExpression(lowerer, access.expression);
       // Builtin function values held as checked-dynamic functions
-      // (String.fromCharCode, JSON.stringify) bind the same way.
+      // (String.fromCharCode, JSON.stringify) bind the same way, and so
+      // does a member that lowers to a checked-dynamic value (a native
+      // handle's method read in JavaScript).
       if (
         value &&
         (value.type.kind === "dyn" ||
@@ -9410,6 +9441,19 @@ function lowerObjLitGenericMethodCall(
         return {
           kind: "dynInvoke",
           recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
+          method: name,
+          calleeName: ts.getTextOfNode(access),
+          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          type: DYN,
+          loc,
+        };
+      }
+      const childMethod = lowerChildMethodValue(lowerer, access.expression);
+      if (childMethod && !call.arguments.nodes.some(ts.isSpreadElement)) {
+        const loc = locOf(call);
+        return {
+          kind: "dynInvoke",
+          recv: childMethod,
           method: name,
           calleeName: ts.getTextOfNode(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
@@ -10265,7 +10309,7 @@ export function lowerStaticNumberGlobal(
   args: readonly ts.Expression[],
   loc: SrcLoc,
 ): IrExpr | null {
-  if (name === "parseInt" || name === "isNaN") {
+  if (name === "parseInt" || name === "isNaN" || name === "isFinite") {
     const maxArgs = name === "parseInt" ? 2 : 1;
     if (args.length < 1 || args.length > maxArgs) {
       lowerer.noLowering(
@@ -10273,15 +10317,43 @@ export function lowerStaticNumberGlobal(
         call,
       );
     }
-    if (name === "isNaN") {
-      // The global's ToNumber turns a missing value into NaN.
+    if (name === "isNaN" || name === "isFinite") {
+      // The global's ToNumber turns a missing value into NaN, converts
+      // strings, booleans and null, and calls valueOf/toString on objects.
       const x = lowerToNumberArgument(lowerer, args[0]!);
-      return { kind: "libCall", fn: "num.isNaN", args: [x], type: BOOL, loc };
+      const fn = name === "isNaN" ? "num.isNaN" : "number.isFinite";
+      return { kind: "libCall", fn, args: [x], type: BOOL, loc };
     }
     const radix: IrExpr = args[1]
       ? lowerer.lowerExprExpecting(args[1], F64)
       : { kind: "numLit", value: 0, type: F64, loc };
-    const optional = optionalCallValue(lowerer, args[0]!);
+    let optional = optionalCallValue(lowerer, args[0]!);
+    let lowered: IrExpr | null = null;
+    // A possibly-missing or untyped text in JavaScript (`parseInt(process.
+    // env.PORT, 10)`): TypeScript rejects the call, Node parses the text
+    // of whatever arrives ("undefined").
+    if (optional === null && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const argT = lowerer.typeOf(args[0]!);
+      const parts = argT.isUnionType() ? ts.constituentTypes(argT) : [argT];
+      if (
+        parts.some(
+          (part) =>
+            (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Any)) !== 0,
+        )
+      ) {
+        const raw = lowerer.lowerExpr(args[0]!);
+        if (raw.type.kind === "union") {
+          optional = raw;
+          lowered = raw;
+        } else {
+          const text: IrExpr =
+            raw.type.kind === "dyn"
+              ? { kind: "libCall", fn: "dyn.toStringCoerce", args: [raw], type: STRING, loc }
+              : lowerer.coerceInto(args[0]!, raw, STRING);
+          return { kind: "libCall", fn: "num.parseInt", args: [text, radix], type: F64, loc };
+        }
+      }
+    }
     if (optional?.type.kind === "union") {
       const def = lowerer.unions.get(optional.type.unionId);
       const stringTag = def?.arms.findIndex((arm) => arm.kind === "string") ?? -1;
@@ -10380,35 +10452,34 @@ export function lowerStaticNumberGlobal(
         return { kind: "call", callee: helper, args: [optional, radix], type: F64, loc };
       }
     }
-    const s = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const s =
+      lowered !== null
+        ? lowerer.coerceInto(args[0]!, lowered, STRING)
+        : lowerer.lowerExprExpecting(args[0]!, STRING);
     return { kind: "libCall", fn: "num.parseInt", args: [s, radix], type: F64, loc };
   }
-  // STATIC parseFloat/isFinite over exactly-typed arguments —
-  // parseInt's siblings (num.parseFloat is ECMA 19.2.4's decimal-
-  // literal prefix parse in scr_string.c; a number-typed isFinite IS
-  // Number.isFinite — the global's ToNumber coercion is the identity
-  // there, ms's `isFinite(val)` guard). Other argument types retain
-  // their native coercion checks or the SC2012 refusal. The probe never
-  // emits — lowering is IR construction.
-  if ((name === "parseFloat" || name === "isFinite") && args.length === 1) {
-    if (name === "parseFloat") {
-      const optional = optionalCallValue(lowerer, args[0]!);
-      if (optional) {
-        const parsed = lowerOptionalStringNumber(
-          lowerer,
-          optional,
-          loc,
-          "num.parseFloat",
-          "parseFloat",
-        );
-        if (parsed) return parsed;
-      }
+  // STATIC parseFloat over string arguments — parseInt's sibling
+  // (num.parseFloat is ECMA 19.2.4's decimal-literal prefix parse in
+  // scr_string.c). Other argument types retain their native coercion
+  // checks or the SC2012 refusal. The probe never emits — lowering is IR
+  // construction.
+  if (name === "parseFloat" && args.length === 1) {
+    const optional = optionalCallValue(lowerer, args[0]!);
+    if (optional) {
+      const parsed = lowerOptionalStringNumber(
+        lowerer,
+        optional,
+        loc,
+        "num.parseFloat",
+        "parseFloat",
+      );
+      if (parsed) return parsed;
     }
     const probed = tryLowerExpression(lowerer, args[0]!);
-    if (name === "parseFloat" && probed?.type.kind === "string") {
+    if (probed?.type.kind === "string") {
       return { kind: "libCall", fn: "num.parseFloat", args: [probed], type: F64, loc };
     }
-    if (name === "parseFloat" && probed?.type.kind === "dyn") {
+    if (probed?.type.kind === "dyn") {
       return {
         kind: "libCall",
         fn: "num.parseFloat",
@@ -10416,20 +10487,6 @@ export function lowerStaticNumberGlobal(
         type: F64,
         loc,
       };
-    }
-    if (name === "isFinite" && probed?.type.kind === "f64") {
-      return { kind: "libCall", fn: "number.isFinite", args: [probed], type: BOOL, loc };
-    }
-    // A number the checker trusts but storage may hold missing (an
-    // out-of-range read): the global's ToNumber makes undefined NaN.
-    if (
-      name === "isFinite" &&
-      probed?.type.kind === "union" &&
-      lowerer.armTag(probed.type.unionId, UNDEFINED_T) >= 0 &&
-      lowerer.stripUndefinedArm(probed.type).kind === "f64"
-    ) {
-      const x = lowerOptionalNumber(lowerer, probed, loc, args[0]);
-      return { kind: "libCall", fn: "number.isFinite", args: [x], type: BOOL, loc };
     }
   }
   return null;
@@ -10576,4 +10633,76 @@ function lowerObjectAssignOntoError(lowerer: Lowerer, call: ts.CallExpression): 
     type: target.type,
     loc,
   };
+}
+
+/** `Object.freeze(fn)` and the other integrity operations on a function
+ * value: the function's checked-dynamic face holds its own properties (the
+ * ones a program assigns, `name`, `length`, `prototype`) and their
+ * integrity state, which the runtime keeps on its property table. The
+ * mutators answer the function itself; the queries answer from the table.
+ * Null for other values. */
+function functionIntegrity(
+  lowerer: Lowerer,
+  member: string,
+  value: IrExpr,
+  node: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (value.type.kind !== "func" || !lowerer.dynConvertible(value.type)) return null;
+  const operations = {
+    freeze: "dyn.freeze",
+    seal: "dyn.seal",
+    preventExtensions: "dyn.preventExtensions",
+    isSealed: "dyn.isSealed",
+    isExtensible: "dyn.isExtensible",
+  } as const;
+  if (!(member in operations)) return null;
+  const fn = operations[member as keyof typeof operations];
+  // The first operation on a function creates its property table, whose
+  // `name` comes from the box: give the box the function's JS name, as a
+  // closure flowing into any checked-dynamic slot gets.
+  const name = jsFuncNameOf(node, lowerer);
+  const boxed = (e: IrExpr): IrExpr => {
+    const box = lowerer.coerceToExpected(e, DYN);
+    return box.kind === "dynFrom" && name !== null ? { ...box, fnName: name } : box;
+  };
+  if (fn === "dyn.isSealed" || fn === "dyn.isExtensible") {
+    return { kind: "libCall", fn, args: [boxed(value)], type: BOOL, loc };
+  }
+  const held = lowerer.declareHiddenLocal("%integrityFn", value.type);
+  const ref = (): IrExpr => ({ kind: "varRef", localId: held.id, type: value.type, loc });
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: held.id, init: value, loc },
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn, args: [boxed(ref())], type: DYN, loc },
+        loc,
+      },
+    ],
+    result: ref(),
+    type: value.type,
+    loc,
+  };
+}
+
+/** A class instance copied into a fresh object (`Object.assign({},
+ * instance)`): the result is a plain object holding the instance's own
+ * fields, never an instance, so a result the checker types as the class has
+ * no representation (the checked cast would throw). */
+function fenceClassCopyIntoFreshObject(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  srcNode: ts.Expression,
+  rawSource: IrExpr,
+): void {
+  if (rawSource.type.kind !== "object" || ts.isExpressionStatement(call.parent)) return;
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (resultT === null || resultT.kind !== "object") return;
+  lowerer.unsupported(
+    "SC1090",
+    srcNode,
+    `Object.assign copying a '${lowerer.fmt(rawSource.type)}' instance into a fresh object typed as the class (the copy is a plain object holding the instance's own fields, not an instance — build the object literal from the fields you need)`,
+  );
 }

@@ -87,6 +87,10 @@ export interface GenericFnInfo {
    * defining literal must sit at module scope (no enclosing frame to
    * capture). */
   objectLiteral?: true;
+  /** A binding declared inside a function: each evaluation of the
+   * declaration makes a new function object in JavaScript, while the
+   * compiled instances are shared module functions, so only calls lower. */
+  functionScoped?: true;
   /** IMPLICIT-ANY monomorphization (npm-static JS): parallel to
    * decl.parameters — the param's own symbol when the slot is a BINDABLE
    * implicit-any parameter (untyped, identifier-named, never written in
@@ -1184,6 +1188,16 @@ export function lowerGenericFnValue(
     lowerer.noteEdge(inst.name);
     return { kind: "closure", fnName: inst.name, captures: [], type: funcType, loc };
   }
+  // Each call of the enclosing function makes a new function object for a
+  // binding declared inside it (`make() !== make()` when make returns
+  // it), which one shared compiled instance cannot give.
+  if (info.functionScoped) {
+    lowerer.unsupported(
+      "SC1090",
+      ref,
+      `generic arrow/function-expression bindings declared inside functions as values (each call of the enclosing function makes a new '${info.baseName}' function object, while its compiled instances are shared module functions — call '${info.baseName}' directly, or declare it at module scope)`,
+    );
+  }
   const fenceUnpinned: () => never = () =>
     lowerer.unsupported(
       "SC1090",
@@ -2210,29 +2224,54 @@ export function implicitLocalFnNodeOf(
     );
     if (redeclared) return null;
     if (!isConst && !bindingNeverReassigned(lowerer, sym, decl)) return null;
-    // The capture scan: instances are module functions with no frame.
-    let captures = false;
-    const scan = (n: ts.Node): void => {
-      if (captures) return;
-      if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword) {
-        // Arrow bodies see the ENCLOSING this; function expressions
-        // rebind their own — but a bare `this` there is untyped JS
-        // dynamism either way. Reject both, cheaply and soundly.
-        captures = true;
-        return;
-      }
-      if (ts.isIdentifier(n)) {
-        const s = lowerer.checker.getSymbolAtLocation(n);
-        const d = s ? s.valueDeclaration : undefined;
-        if (
-          d &&
-          ts.getSourceFileOfNode(d) === ts.getSourceFileOfNode(decl) &&
-          !(d.pos >= init.pos && d.end <= init.end)
-        ) {
-          // Declared outside the initializer, in this file: a capture
-          // exactly when some enclosing FUNCTION scope declares it —
-          // module-scope declarations are reachable from any module
-          // function.
+    // Instances are module functions with no frame.
+    return capturesEnclosingFrame(lowerer, init, decl, init.body) ? null : init;
+  };
+  const node = probe();
+  if (node === null) {
+    lowerer.implicitLocalFns.set(decl, null);
+    return null;
+  }
+  return node;
+}
+
+/** True when `fn`, bound by `decl`, uses its enclosing function's frame
+ * somewhere in `scope`: `this`, `super`, `arguments` or `new.target`, or
+ * a value or type declared in an enclosing function (a local, a parameter,
+ * an enclosing generic's type parameter). Module-scope declarations and
+ * the binding itself are reachable from the module functions the
+ * instances compile to. */
+function capturesEnclosingFrame(
+  lowerer: Lowerer,
+  fn: ts.FunctionExpression | ts.ArrowFunction,
+  decl: ts.VariableDeclaration,
+  scope: ts.Node,
+): boolean {
+  const file = ts.getSourceFileOfNode(decl);
+  const self = lowerer.checker.getSymbolAtLocation(decl.name);
+  let captures = false;
+  const scan = (n: ts.Node): void => {
+    if (captures) return;
+    if (
+      n.kind === ts.SyntaxKind.ThisKeyword ||
+      n.kind === ts.SyntaxKind.SuperKeyword ||
+      ts.isMetaProperty(n)
+    ) {
+      // Arrow bodies see the ENCLOSING this; function expressions
+      // rebind their own — but a bare `this` there is untyped JS
+      // dynamism either way. Reject both, cheaply and soundly.
+      captures = true;
+      return;
+    }
+    if (ts.isIdentifier(n)) {
+      const s = lowerer.checker.getSymbolAtLocation(n);
+      if (s === undefined) {
+        if (n.text === "arguments") captures = true;
+      } else if (s !== self) {
+        for (const d of s.declarations) {
+          if (ts.getSourceFileOfNode(d) !== file || (d.pos >= fn.pos && d.end <= fn.end)) continue;
+          // Declared outside the function, in this file: a capture
+          // exactly when some enclosing FUNCTION scope declares it.
           for (
             let p: ts.Node | undefined = d.parent;
             p !== undefined && !ts.isSourceFile(p);
@@ -2245,17 +2284,11 @@ export function implicitLocalFnNodeOf(
           }
         }
       }
-      ts.forEachChild(n, scan);
-    };
-    scan(init.body);
-    return captures ? null : init;
+    }
+    ts.forEachChild(n, scan);
   };
-  const node = probe();
-  if (node === null) {
-    lowerer.implicitLocalFns.set(decl, null);
-    return null;
-  }
-  return node;
+  scan(scope);
+  return captures;
 }
 
 /** Registers (or returns) the GenericFnInfo of a qualifying implicit-any
@@ -2468,17 +2501,24 @@ export function bindingGenericFnInfoOf(
   if (existing) return existing;
   const name = (decl.name as ts.Identifier).text;
   if (fnNode.asteriskToken) lowerer.unsupported("SC1071", fnNode);
+  // Inside a function, the compiled instances are module functions, so
+  // the initializer may not use the enclosing frame.
+  let functionScoped = false;
   for (
     let n: ts.Node | undefined = decl.parent;
     n !== undefined && !ts.isSourceFile(n);
     n = n.parent
   ) {
     if (ts.isFunctionLike(n)) {
-      lowerer.unsupported(
-        "SC1090",
-        fnNode,
-        `generic arrow/function-expression bindings declared inside functions (the compiled instantiations of '${name}' are module functions and cannot capture the enclosing frame — declare the binding at module scope)`,
-      );
+      if (capturesEnclosingFrame(lowerer, fnNode, decl, fnNode)) {
+        lowerer.unsupported(
+          "SC1090",
+          fnNode,
+          `generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of '${name}' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope)`,
+        );
+      }
+      functionScoped = true;
+      break;
     }
   }
   const sym = lowerer.checker.getSymbolAtLocation(decl.name);
@@ -2510,15 +2550,21 @@ export function bindingGenericFnInfoOf(
   }
   checkGenericParameterNames(lowerer, fnNode.parameters.nodes, true);
   const stmt = decl.parent?.parent; // declarator → list → statement (nsPathPrefix wants the statement)
+  // A binding in a function or block can share its name with another; its
+  // instances take the declaration's position.
+  const topLevel =
+    stmt?.parent !== undefined && (ts.isSourceFile(stmt.parent) || ts.isModuleBlock(stmt.parent));
   const info: GenericFnInfo = {
     decl: fnNode,
     baseName: name,
     qualifiedName: lowerer.qualify(
       ts.getSourceFileOfNode(decl),
-      nsPathPrefix(stmt ?? decl, decl) + name,
+      nsPathPrefix(stmt ?? decl, decl) +
+        (topLevel ? name : `${name}%l${ts.tokenStartOfNode(decl)}`),
     ),
     typeParams,
     instances: new Map(),
+    ...(functionScoped ? { functionScoped: true as const } : {}),
   };
   lowerer.bindingGenericFns.set(fnNode, info);
   lowerer.genericFnsBySymbol.set(sym, info);

@@ -678,6 +678,7 @@ void scr_net_server_release(ScrNetServer *s) {
 #ifdef SCR_RC_AUDIT
     scr_net_live--;
 #endif
+    scr_weak_dispose_inline(s); /* weak collections keyed by this socket or server */
     free(s);
   }
 }
@@ -724,6 +725,7 @@ void scr_net_sock_release(ScrNetSocket *s) {
 #ifdef SCR_RC_AUDIT
     scr_net_live--;
 #endif
+    scr_weak_dispose_inline(s); /* weak collections keyed by this socket or server */
     free(s);
   }
 }
@@ -4329,7 +4331,7 @@ ScrDyn *scr_net_block_list_private_ranges(void) {
                                          "::1/128", "169.254.0.0/16", "fe80::/10", "fc00::/7" };
     ScrDyn *arr = scr_dyn_new_arr();
     for (size_t i = 0; i < sizeof cidrs / sizeof cidrs[0]; i++) scr_dyn_arr_push(arr, scr_net_dyn_str(cidrs[i]));
-    ranges = scr_dyn_freeze(arr); /* +1 on the same array */
+    ranges = scr_dyn_freeze_data(arr); /* +1 on the same array */
     scr_dyn_release(arr);
     scr_net_private_ranges = ranges;
     scr_atexit(scr_net_private_ranges_cleanup);
@@ -5346,17 +5348,30 @@ static int scr_net_pollfd(void) {
   return scr_net_poller != NULL ? scrp_poller_fd(scr_net_poller) : -1;
 }
 
+bool scr_loop_io_take(void);
+bool scr_loop_io_more(void);
+void scr_loop_io_reopen(void);
+
 static void scr_net_dispatch(void) {
   if (!scr_net_servers && !scr_net_socks &&
       !scr_net_proto_pending()) {
     return;
   }
+  /* One poller drain per loop iteration (scr_loop_io_take); a full batch
+   * keeps draining within the phase's batch budget (scr_loop_io_more), like
+   * libuv's poll phase. Deferred emits (the sweep) still run on every
+   * call. */
+  bool may_drain = scr_loop_io_take();
   for (;;) {
     scr_net_sweep();
     if (scr_exc_pending()) return;
     if (scr_net_poller == NULL) return;
     ScrPollerEvent evs[64];
-    int n = scrp_drain(scr_net_poller, evs, 64);
+    int n = 0;
+    if (may_drain) {
+      n = scrp_drain(scr_net_poller, evs, 64);
+      may_drain = n == 64 && scr_loop_io_more();
+    }
     for (int i = 0; i < n; i++) {
       void *udata = evs[i].udata;
       if (!udata) continue;
@@ -5430,8 +5445,13 @@ static void scr_net_dispatch(void) {
       }
       if (scr_exc_pending()) return;
     }
-    if (!scr_net_flags_pending()) return;
-    if (scr_loop_has_ready()) return; /* microtasks interleave first */
+    if (!scr_net_flags_pending() && !may_drain) return;
+    if (scr_loop_has_ready()) {
+      /* microtasks interleave first; a full batch's rest drains on the
+       * next call, still within this poll phase */
+      if (may_drain) scr_loop_io_reopen();
+      return;
+    }
   }
 }
 

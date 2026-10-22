@@ -1,5 +1,3 @@
-import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
-import { fallbackTainted } from "./checked-fallback.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -137,6 +135,8 @@ export {
   lowerIncDecTarget,
   lowerPrefixUnary,
 } from "./expressions/updates.js";
+import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
+import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
 
 /** An assignable `obj.field` target — a class field, a record field, or a
@@ -271,25 +271,6 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // enclosing optChain — read the bind temp instead of re-lowering.
   const chainRecv = lowerer.chainRecvByNode.get(expr);
   if (chainRecv) return { ...chainRecv, loc };
-
-  // A failed checked value in a fallback tail: assertions check nothing
-  // (checked-fallback.ts).
-  if (
-    lowerer.fallbackTaint !== null &&
-    (ts.isAsExpression(expr) ||
-      ts.isTypeAssertion(expr) ||
-      ts.isNonNullExpression(expr) ||
-      ts.isSatisfiesExpression(expr)) &&
-    fallbackTainted(lowerer, expr.expression)
-  )
-    return lowerer.lowerExpr(expr.expression);
-  if (lowerer.fallbackTaint !== null && fallbackTainted(lowerer, expr)) {
-    if (ts.isObjectLiteralExpression(expr)) return lowerDynObjectLiteral(lowerer, expr);
-    if (ts.isArrayLiteralExpression(expr) && !expr.elements.nodes.some(ts.isSpreadElement)) {
-      const elems = expr.elements.nodes.map((el) => lowerer.lowerExprExpecting(el, DYN));
-      return { kind: "dynArrLit", elems, type: DYN, loc };
-    }
-  }
 
   // --external-types supplies CHECKER truth only. A value rooted in one
   // of those declarations has no runtime implementation in scriptc, so
@@ -658,9 +639,14 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // and answers itself. Thenable adoption stays unmodeled
       // (SEMANTICS.md).
       if (value.type.kind === "dyn") {
+        // A program that can define thenables adopts them (thenables.ts).
+        if (programMayDefineThenables(lowerer)) return awaitDynThenable(lowerer, value, loc);
         return { kind: "libCall", fn: "async.awaitDyn", args: [value], type: DYN, loc };
       }
 
+      if (awaitsChildThenable(lowerer, expr, value)) {
+        return awaitDynThenable(lowerer, lowerer.coerceToExpected(value, DYN), loc);
+      }
       // A TYPED non-promise operand (`await 42`, an awaited record):
       // JS awaits non-thenables through exactly one microtask turn and
       // yields the value itself — evaluate the operand, hop, answer it.
@@ -1096,6 +1082,8 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       loc: locOf(e),
     });
     if (presence !== null) return presence;
+    if (isTimerMethodPresence(lowerer, e))
+      return { kind: "boolLit", value: true, type: BOOL, loc: locOf(e) };
   }
   // Global detection (`typeof window < "u"`, `typeof self !==
   // "undefined" && …`): a condition whose typeof answers are static
@@ -1184,6 +1172,18 @@ function maybePromiseThenPresence(
     type: result.type,
     loc,
   };
+}
+
+/** `if (t.unref)` over a Node timer handle: the guard libraries write for
+ * runtimes whose timers lack the method (execa's kill timeout). Node's
+ * Timeout and Immediate always have it. */
+function isTimerMethodPresence(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  if (access.questionDotToken || !ts.isIdentifier(access.expression)) return false;
+  if (!["ref", "unref", "hasRef", "refresh"].includes(access.name.text)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(access.name);
+  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return false;
+  const owner = lowerer.typeOf(access.expression).getSymbol();
+  return owner !== undefined && ["Timeout", "Immediate"].includes(ts.symbolName(owner));
 }
 
 export function lowerPromiseThenPresence(
@@ -1420,9 +1420,83 @@ export function lowerOptionalNumber(
  * out-of-range read, a local or field holding one, or a hole — converts to
  * NaN instead of trusting the checker's number type. */
 export function lowerToNumberArgument(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const operand = numberOperand(lowerer, node);
+  return operand.convert ? operand.convert(operand.value) : operand.value;
+}
+
+/** The ToNumber arguments of one call (the Math functions,
+ * String.fromCharCode): Node evaluates every argument before it converts
+ * any. When an argument's conversion can run program code (valueOf or
+ * toString on a dynamic value) and a later argument follows, the arguments
+ * evaluate into temporaries first and convert in order after. `lowerOther`
+ * lowers an argument that takes no conversion (a spread's array), or returns
+ * null for a ToNumber argument; with temporaries, such an array is copied
+ * where it is evaluated, since JavaScript reads a spread's elements then,
+ * before a later conversion's valueOf could change them. Returns the
+ * temporaries' statements (empty when none are needed) and the converted
+ * values. */
+export function lowerToNumberArguments(
+  lowerer: Lowerer,
+  nodes: readonly ts.Expression[],
+  lowerOther?: (node: ts.Expression) => IrExpr | null,
+): { stmts: IrStmt[]; values: IrExpr[] } {
+  const operands = nodes.map((node): NumberOperand => {
+    const other = lowerOther?.(node);
+    return other
+      ? { value: other, convert: null, runsCode: false, spread: true }
+      : numberOperand(lowerer, node);
+  });
+  const late = operands.slice(0, -1).some((operand) => operand.runsCode);
+  if (!late) {
+    const values = operands.map((o) => (o.convert ? o.convert(o.value) : o.value));
+    return { stmts: [], values };
+  }
+  const stmts: IrStmt[] = [];
+  const values = operands.map((operand) => {
+    if (operand.value.kind === "numLit") return operand.value;
+    const temp = lowerer.declareHiddenLocal("%numberArgument", operand.value.type);
+    const loc = operand.value.loc;
+    const init: IrExpr =
+      operand.spread && operand.value.type.kind === "array"
+        ? {
+            kind: "arrIntrinsic",
+            method: "slice",
+            receiver: operand.value,
+            args: [numLit(0, loc), numLit(Infinity, loc)],
+            type: operand.value.type,
+            loc,
+          }
+        : operand.value;
+    stmts.push({ kind: "varDecl", localId: temp.id, init, loc });
+    const read = varRef(temp.id, operand.value.type, loc);
+    return operand.convert ? operand.convert(read) : read;
+  });
+  return { stmts, values };
+}
+
+/** An argument a ToNumber site lowers: its evaluated value and the
+ * conversion that makes it a number (null when the value already is one).
+ * `runsCode`: the conversion can call program code. `spread`: the value is
+ * a spread's array (lowerToNumberArguments' `lowerOther`). */
+interface NumberOperand {
+  value: IrExpr;
+  convert: ((value: IrExpr) => IrExpr) | null;
+  runsCode: boolean;
+  spread?: boolean;
+}
+
+function numberOperand(lowerer: Lowerer, node: ts.Expression): NumberOperand {
   let inner = node;
   while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
   const loc = locOf(inner);
+  const number = (value: IrExpr): NumberOperand => ({ value, convert: null, runsCode: false });
+  const dynToNumber = (value: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "dyn.toNumberCoerce",
+    args: [value],
+    type: F64,
+    loc,
+  });
   const isOptionalNumber = (value: IrExpr): boolean =>
     value.type.kind === "union" &&
     lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0 &&
@@ -1433,12 +1507,54 @@ export function lowerToNumberArgument(lowerer: Lowerer, node: ts.Expression): Ir
       ? lowerAbsenceProbe(lowerer, inner)
       : null;
   if (optional && isOptionalNumber(optional))
-    return lowerOptionalNumber(lowerer, optional, loc, inner);
-  // A conditional builds each branch for the destination.
-  if (ts.isConditionalExpression(inner)) return lowerer.lowerExprExpecting(node, F64);
+    return number(lowerOptionalNumber(lowerer, optional, loc, inner));
+  // A conditional with number branches builds each branch as a number;
+  // other branches box, and the value converts like any dynamic value.
+  if (ts.isConditionalExpression(inner)) {
+    const branch = (b: ts.Expression) => lowerer.mapTypeOf(lowerer.typeOf(b))?.kind;
+    if (branch(inner.whenTrue) === "f64" && branch(inner.whenFalse) === "f64")
+      return number(lowerer.lowerExprExpecting(node, F64));
+    return { value: lowerer.lowerExprExpecting(node, DYN), convert: dynToNumber, runsCode: true };
+  }
   const value = lowerer.lowerExpr(node);
-  if (isOptionalNumber(value)) return lowerOptionalNumber(lowerer, value, loc, inner);
-  return lowerer.coerceInto(node, value, F64);
+  if (isOptionalNumber(value)) return number(lowerOptionalNumber(lowerer, value, loc, inner));
+  // Other values convert with ToNumber: strings parse as numeric literals,
+  // booleans and null are numbers, and checked-dynamic values call
+  // valueOf/toString or throw Node's TypeError for a Symbol or BigInt.
+  const num = (n: number): IrExpr => ({ kind: "numLit", value: n, type: F64, loc });
+  const pure = (convert: (value: IrExpr) => IrExpr): NumberOperand => ({
+    value,
+    convert,
+    runsCode: false,
+  });
+  switch (value.type.kind) {
+    case "string":
+      return pure((v) => ({ kind: "libCall", fn: "num.fromString", args: [v], type: F64, loc }));
+    case "bool":
+      return pure((v) => ({
+        kind: "ternary",
+        cond: v,
+        then: num(1),
+        else_: num(0),
+        type: F64,
+        loc,
+      }));
+    case "nullT":
+      return pure((v) => defaultAfterUndefined(v, num(0)));
+    case "undefinedT":
+      return pure((v) => defaultAfterUndefined(v, num(NaN)));
+    case "dyn":
+      return { value, convert: dynToNumber, runsCode: true };
+    case "union":
+      if (lowerer.dynConvertible(value.type))
+        return {
+          value: lowerer.coerceToExpected(value, DYN),
+          convert: dynToNumber,
+          runsCode: true,
+        };
+      break;
+  }
+  return number(lowerer.coerceInto(node, value, F64));
 }
 
 /** The stored value of an identifier whose storage holds an undefined arm

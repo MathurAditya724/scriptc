@@ -26,12 +26,14 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `region-builds` | cpu | a watch-mode build loop over `LifetimeRegion`: each build binds a program in a new region and releases the previous one, which a cache keeps referenced for two builds |
 | `template-render` | cpu | template literals, escaping, `map`/`join` |
 | `thread-slots`, `thread-slots-cache` | cpu | worker threads reading one published type graph from an `InternTable` and keeping per-thread state for each type they visit: a `ThreadSlots` family, or a direct-mapped cache by id in front of a `Map` by id (the `-cache` entry); under Node.js both are per thread |
+| `typed-array-kernels` | cpu | element-wise loops that run to one typed array's length and index others at the same position: `Float64Array` axpy, `Float32Array` blend, `Uint8Array` mask, wrapping `Int32Array` add, RGBA to gray |
 | `typed-array-scan`, `typed-array-scan-workers` | cpu | element-by-element scan loops over `Uint8Array`, `Uint16Array`, `Int32Array` and `Float64Array`; the second entry is a worker-enabled executable (it can start a worker), so each access also checks for shared storage |
 | `unicode-lexer` | cpu | a hand-written lexer over a 2.7M-unit bundled module whose comments and strings are in several languages: `charCodeAt` scans, line starts |
 | `validate-errors` | cpu | throw/catch on a fraction of inputs, small call chains |
 | `value-objects` | cpu | small immutable records and class instances: vector helpers, method chains, particle updates |
 | `value-records` | cpu | records that hold strings, spread state updates and destructured tuples: token helpers, an immutable reducer, tuple returns |
 | `word-graph` | cpu | string-keyed Map/Set, BFS |
+| `worker-messages` | cpu | message round trips between the main thread and one worker: each posts a number and the other answers it, so every round trip is two messages and two wakeups of a waiting thread |
 | `cli-config` | startup | a `deploy-plan` CLI: read a ~110 KB JSON manifest, validate, interpolate env values, order 80 services into dependency waves, print a summary |
 | `http-api` | server | a `node:http` JSON API: routing, query parsing, a seeded catalog, per-cart state, typed JSON bodies, `ETag`/`If-None-Match`, auth and request-id headers |
 

@@ -20,6 +20,7 @@ import {
   setGlobalDispatcher,
 } from "undici";
 import type { Dispatcher } from "undici";
+import { checkPeers } from "./peers.ts";
 
 const server = http.createServer((req, res) => {
   const url = req.url ?? "/";
@@ -31,6 +32,12 @@ const server = http.createServer((req, res) => {
     res.end("cookies");
   } else if (url === "/slow") {
     setTimeout(() => res.end("late"), 1500);
+  } else if (url === "/stall-body") {
+    // Part of a body that never ends.
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.write("part");
+  } else if (url === "/trace") {
+    res.end(`x-trace ${req.headers["x-trace"] ?? "-"}`);
   } else if (url === "/missing") {
     res.statusCode = 404;
     res.setHeader("content-type", "application/json");
@@ -71,6 +78,28 @@ const byRequest = new WeakMap<object, Telemetry>();
 channel("undici:request:create").subscribe((message) => {
   const { request } = message as { request: object };
   if (current !== null) byRequest.set(request, current);
+  // Read as an untyped value, as a JavaScript instrumentation reads it.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const traced: any = request;
+  if (traced.path === "/trace") {
+    // A tracing instrumentation's header injection.
+    console.log(`  [diag] create completed ${traced.completed}, ${typeof traced.addHeader}`);
+    console.log(`  [diag] addHeader returns the request: ${traced.addHeader("x-trace", "span-1") === request}`);
+    console.log(`  [diag] headers ${JSON.stringify(traced.headers)}`);
+    try {
+      traced.addHeader("x-bad", "a\r\nb");
+    } catch (err) {
+      console.log(`  [diag] invalid header: ${describe(err)}`);
+    }
+    tracedRequests.add(request);
+  }
+});
+const tracedRequests = new Set<object>();
+channel("undici:request:trailers").subscribe((message) => {
+  const { request } = message as { request: object };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const traced: any = request;
+  if (tracedRequests.has(request)) console.log(`  [diag] trailers completed ${traced.completed}`);
 });
 channel("undici:request:headers").subscribe((message) => {
   const { request, response } = message as {
@@ -84,6 +113,34 @@ channel("undici:request:trailers").subscribe((message) => {
   const { request } = message as { request: object };
   const t = byRequest.get(request);
   if (t !== undefined) console.log(`  [diag] ${t.label} done after ${t.dispatched} dispatch`);
+});
+
+// A transport's connection registry: sockets the wrapped connector dialed,
+// keyed weakly, and the client diagnostics messages that carry them.
+const dialed = new WeakMap<Socket, number>();
+const clientDiag = { beforeConnect: 0, connector: 0, connected: 0, sendHeaders: 0, known: 0, unknown: 0 };
+const noteSocket = (socket: Socket): void => {
+  const n = dialed.get(socket);
+  if (n === undefined) clientDiag.unknown++;
+  else clientDiag.known++;
+};
+channel("undici:client:beforeConnect").subscribe((message) => {
+  const { connector } = message as { connector: unknown };
+  clientDiag.beforeConnect++;
+  if (typeof connector === "function") clientDiag.connector++;
+});
+channel("undici:client:connected").subscribe((message) => {
+  const { socket, connectParams } = message as {
+    socket: Socket;
+    connectParams: { protocol: string; hostname: string };
+  };
+  clientDiag.connected++;
+  if (connectParams.protocol === "http:" && connectParams.hostname === "127.0.0.1") noteSocket(socket);
+});
+channel("undici:client:sendHeaders").subscribe((message) => {
+  const { socket, headers } = message as { socket: Socket; headers: string };
+  clientDiag.sendHeaders++;
+  if (headers.length > 0) noteSocket(socket);
 });
 
 /** A transport-style Agent: one Pool per origin built by the factory, a
@@ -107,7 +164,9 @@ class TracingAgent extends Agent {
           pipelining: 1,
           connect(options, callback) {
             opened++;
-            return connect(options, callback);
+            const socket = connect(options, callback);
+            dialed.set(socket, opened);
+            return socket;
           },
           interceptors: {
             Client: [
@@ -201,9 +260,11 @@ server.listen(0, "127.0.0.1", async () => {
   for (let i = 0; i < 4; i++) {
     const r = await request(`${origin}/r${i}`, { dispatcher: agent });
     await r.body.text();
-    await turn();
   }
   console.log("connections opened:", agent.connections);
+  console.log(
+    `client diagnostics: ${clientDiag.beforeConnect} before connect (${clientDiag.connector} with a connector), ${clientDiag.connected} connected, ${clientDiag.sendHeaders} send headers; ${clientDiag.known} carry a dialed socket, ${clientDiag.unknown} another`,
+  );
   console.log("stats:", agent.statsFor(origin));
 
   console.log("== Pool with a connection limit");
@@ -323,6 +384,37 @@ server.listen(0, "127.0.0.1", async () => {
     );
   });
 
+  console.log("== diagnostics request headers");
+  const trace = await request(`${origin}/trace`, { dispatcher: agent });
+  console.log("traced body:", await trace.body.text());
+
+  console.log("== body timeout after a pause");
+  const stallAgent = new Agent();
+  await new Promise<void>((resolve) => {
+    stallAgent.dispatch(
+      { origin, path: "/stall-body", method: "GET", bodyTimeout: 100 },
+      {
+        onRequestStart() {},
+        onResponseStart(controller, statusCode) {
+          // Paused past bodyTimeout, then resumed: the timeout applies again.
+          console.log("paused response", statusCode);
+          controller.pause();
+          setTimeout(() => controller.resume(), 1500);
+        },
+        onResponseData() {},
+        onResponseEnd() {
+          console.log("stalled body ended");
+          resolve();
+        },
+        onResponseError(_controller, err) {
+          console.log("stalled body:", describe(err));
+          resolve();
+        },
+      },
+    );
+  });
+  await stallAgent.close();
+
   console.log("== fetch");
   const viaAgent = await fetch(`${origin}/json`, { dispatcher: agent });
   console.log("through agent:", viaAgent.status, viaAgent.statusText, viaAgent.headers.get("content-type"), await viaAgent.text());
@@ -364,5 +456,6 @@ server.listen(0, "127.0.0.1", async () => {
 
   await agent.close();
   server.close();
+  await checkPeers();
   console.log("done");
 });
