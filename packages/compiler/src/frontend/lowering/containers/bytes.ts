@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import { boolLit, dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { BUF_NUM_METHODS } from "./buffer-numeric-methods.js";
 import * as ts from "../../ts7/adapter.js";
@@ -77,7 +78,7 @@ function lowerBytesSortCall(
     const cacheKey = `bytes.${method}:${bytesT.elem}:${key}`;
     let helper = lowerer.arrHofHelpers.get(cacheKey);
     if (!helper) {
-      helper = `%bytes.${method}.${lowerer.arrHofHelpers.size}`;
+      helper = keyedHelperName(lowerer, `%bytes.${method}`, cacheKey);
       lowerer.arrHofHelpers.set(cacheKey, helper);
       lowerer.liftedFns.push(
         buildBytesSortFn(helper, bytesT, arity, hasComparator, copyFirst, order, loc),
@@ -270,7 +271,7 @@ function bytesCallbackHelper(
   const key = `bytes.${method}:${bytesT.elem}:${typeKey(resultT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = `%bytes.${method}.${lowerer.arrHofHelpers.size}`;
+  const name = keyedHelperName(lowerer, `%bytes.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
   const reduce = method === "reduce" || method === "reduceRight";
   const backward = method === "reduceRight" || method === "findLast" || method === "findLastIndex";
@@ -1077,11 +1078,20 @@ export function lowerBytesMethodCall(
     // Array-toString (comma join), a different operation: fenced.
     const declaredOnBuffer = (() => {
       const nameSym = lowerer.checker.getSymbolAtLocation(access.name);
-      return (
+      if (
         nameSym !== undefined &&
         nameSym.declarations.some(
           (d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer",
         )
+      )
+        return true;
+      // A receiver the lowering types as a Buffer where the checker says
+      // `any` (a JavaScript pipeline stage's chunk).
+      const receiverSym = lowerer.typeOf(access.expression).getSymbol();
+      return (
+        receiverSym !== undefined &&
+        ts.symbolName(receiverSym) === "Buffer" &&
+        receiverSym.declarations.some((d) => lowerer.isStdlibFile(ts.getSourceFileOfNode(d)))
       );
     })();
     if (receiverIr.elem !== "u8" || !declaredOnBuffer) {
@@ -1743,8 +1753,9 @@ function knownBufferProducer(
 
 /** Buffer.from over a checked-dynamic source and encoding, both already in
  * repeatable locals: Node's fromString takes utf8 for an absent, non-string
- * or empty encoding and throws ERR_UNKNOWN_ENCODING for an unknown name;
- * other sources ignore the encoding. */
+ * or empty encoding and throws ERR_UNKNOWN_ENCODING for an unknown name; an
+ * ArrayBuffer takes the second argument as its byte offset; other sources
+ * ignore it. */
 function dynBufferFromParts(source: IrExpr, encoding: IrExpr, loc: SrcLoc): IrExpr {
   const utf8: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
   const isString = (x: IrExpr): IrExpr => ({
@@ -1786,10 +1797,12 @@ function dynBufferFromParts(source: IrExpr, encoding: IrExpr, loc: SrcLoc): IrEx
       type: BYTES_U8,
       loc,
     },
+    // An ArrayBuffer takes the second argument as its byte offset
+    // (scr_buffer_from_dyn_offset_pooled); other values convert with utf8.
     else_: {
       kind: "libCall",
-      fn: "buffer.poolFromDynRef",
-      args: [source, utf8],
+      fn: "buffer.poolFromDynOffset",
+      args: [source, encoding],
       type: BYTES_U8,
       loc,
     },

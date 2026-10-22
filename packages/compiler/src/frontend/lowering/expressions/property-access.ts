@@ -1,4 +1,5 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
+import { keyedHelperName } from "../stable-names.js";
 import { staticallySelected } from "../static-typeof.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
@@ -135,6 +136,7 @@ import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerEventStaticProperty } from "../builtins/numbers.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
+import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
 import { iteratorResultValueRead } from "../lower-generators.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
@@ -166,6 +168,7 @@ import { lowerUnionFieldRead } from "./union-fields.js";
 import { errorPropertyRead } from "../error-methods.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/compression.js";
+import { isWebCryptoReceiver } from "../builtins/crypto.js";
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
 import { keyedFieldRead } from "./keyed-field-targets.js";
 import { promisePrototypeValue } from "../thenables.js";
@@ -864,8 +867,16 @@ export function lowerPropertyAccessExpr(
     if (runtimeOptionalClassField(lowerer, handled, expr)) return handled;
     return iteratorResultValueRead(lowerer, handled, expr) ?? lowerer.maybeNarrow(handled, expr);
   }
+  // `globalThis.crypto` is the WebCrypto object the bare `crypto` answers.
+  if (
+    !expr.questionDotToken &&
+    stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis" &&
+    stdlibGlobalNameOf(lowerer, expr) === "crypto"
+  ) {
+    return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+  }
   // `globalThis.<name>` that no lowering above claimed
-  // (globalThis.crypto, globalThis.SubtleCrypto, globalThis.localStorage
+  // (globalThis.SubtleCrypto, globalThis.localStorage
   // — the harness's capability-conditional knownGlobals adds): the
   // PROPERTY spelling of the identifier chokepoint's JS rule — a stdlib
   // global taken as a VALUE in a JavaScript source is the same opaque
@@ -2818,7 +2829,7 @@ export function lowerGroupsProjection(
   const key = `regexgroups:${shapeId}:${groups.map((g) => `${g.name}=${g.index}`).join(",")}:${recvKey}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%regex.groups.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%regex.groups", key);
     lowerer.valueHelpers.set(key, helper);
     const body: IrStmt[] = [];
     const locals: IrLocal[] = [{ id: "m.0", name: "m", type: recv.type, mutable: true }];
@@ -2994,6 +3005,9 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
     if (
       receiverIr?.kind !== "object" &&
       propSym &&
+      // The WebCrypto object's generic getRandomValues reads off its
+      // dynamic object.
+      !isWebCryptoReceiver(lowerer, expr.expression) &&
       isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(propSym), lowerer.checker) &&
       // CLASS members keep the class-path fences (a poisoned class's own
       // diagnostics, the bound-method fence above).
@@ -4060,6 +4074,8 @@ function lowerStreamObjectProperty(
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
+  const valueStream = lowerValueStreamProperty(lowerer, expr);
+  if (valueStream) return valueStream;
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (recvT?.kind !== "object") return null;
   const info = lowerer.classes.get(recvT.className);
@@ -4074,10 +4090,26 @@ function lowerStreamObjectProperty(
   return lowerStreamProperty(lowerer, expr, info);
 }
 
+/** The error constructors among GLOBAL_CONSTRUCTOR_VALUES. Their statics
+ * (`Error.stackTraceLimit`, `Error.captureStackTrace`) keep their own
+ * lowerings, so fenceBuiltinConstructorStaticRead leaves them alone. */
+const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+]);
+
 /** The builtin constructors JavaScript sources read as real function
  * values rather than identity tokens: the runtime interns one function per
  * constructor, and dynamic values answer `.constructor` with the same one,
- * so `o.constructor === Object` is an exact identity test. */
+ * so `o.constructor === Object` and `err.constructor === TypeError` are
+ * exact identity tests, and `err.constructor.name` is the constructor's
+ * name. */
 const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Object",
   "Function",
@@ -4088,6 +4120,7 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Promise",
   "WeakMap",
   "WeakSet",
+  ...ERROR_CONSTRUCTOR_VALUES,
 ]);
 
 /** The builtin global functions JavaScript sources read as interned
@@ -4230,6 +4263,7 @@ function fenceBuiltinConstructorStaticRead(
     symbol !== undefined &&
     ts.symbolName(symbol).endsWith("Constructor") &&
     GLOBAL_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
+    !ERROR_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
     lowerer.isStdlibSymbol(symbol)
   )
     lowerer.stdlibMemberFence(access);

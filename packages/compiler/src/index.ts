@@ -67,7 +67,11 @@ import {
   mobileTargetRefusal,
   resolveCc,
 } from "./backend/external-c.js";
-import { emitLlvmModuleSource, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
+import {
+  emitLlvmModuleSource,
+  LlvmUnsupportedError,
+  lowRegionTarget,
+} from "./backend/llvm/emitter.js";
 import { inlineRcOption } from "./backend/llvm/shapes.js";
 import {
   emitNativeArtifact,
@@ -782,6 +786,7 @@ async function prepareExecutableInput(
         wasi: buildPlatform === "wasi",
         runtimeAbiMarker: outputKind === "obj",
         objectAudit: opts.sanitize === true,
+        lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
         ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
         ...inlineRcOption(opts.optimization, opts.sanitize === true),
       });
@@ -848,6 +853,7 @@ async function prepareExecutableInput(
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
       objectAudit: opts.sanitize === true,
+      lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),

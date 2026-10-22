@@ -67,3 +67,12 @@ class Plain extends Date {}
 const fields = new Plain(2020, 0, 15, 10, 30);
 console.log(fields.getFullYear(), fields.getMonth(), fields.getDate(), fields.getHours(), fields.getMinutes());
 console.log(Plain.UTC(2000, 0, 1), Plain.parse("2000-01-01T00:00:00Z"), typeof Plain.now(), Object.keys(fields));
+
+// Date held as a value answers instanceof for subclass instances.
+const constructors = { date: Date };
+console.log(fields instanceof constructors.date, local instanceof constructors.date, {} instanceof constructors.date);
+
+// setTime evaluates every argument before it converts the first one.
+let base = 1000;
+const delayed = { valueOf: () => base };
+console.log(fields.setTime(delayed, (base = 2000)), fields.getTime());

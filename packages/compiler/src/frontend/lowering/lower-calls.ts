@@ -1,3 +1,4 @@
+import { keyedHelperName } from "./stable-names.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerDynStreamMemberCall } from "./dyn-streams.js";
@@ -172,6 +173,7 @@ import {
   stringWrapperToString,
   symbolFieldInfo,
   templateRawTextOf,
+  primitiveCtorClosure,
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
@@ -1547,9 +1549,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.fenceStaticReadableStreamMember(expr.expression, "call") ??
       lowerDisposableStackUseCall(lowerer, expr, expr.expression) ??
       lowerer.lowerStdlibMethodCall(expr, expr.expression) ??
-      // crypto.getRandomValues on the WebCrypto global (untyped in
-      // fallback builds, so before the dyn receiver path) or webcrypto.
-      lowerWebCryptoGetRandomValues(lowerer, expr, expr.expression) ??
+      // crypto.getRandomValues / randomUUID on the WebCrypto global
+      // (untyped in fallback builds, so before the dyn receiver path) or
+      // webcrypto.
+      lowerWebCryptoMethodCall(lowerer, expr, expr.expression) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
       lowerDynReceiverMethodCall(lowerer, expr, expr.expression) ??
@@ -2100,7 +2103,7 @@ function lowerOptionalNumberDefault(
   const key = `number.optionalDefault:${widened.unionId}:${dflt}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%number.optionalDefault.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%number.optionalDefault", key);
     lowerer.valueHelpers.set(key, helper);
     const input = varRef("value.0", widened, loc);
     lowerer.liftedFns.push({
@@ -2209,7 +2212,7 @@ function primitiveConversionHandler(
   const key = `then.${name}:${typeKey(inner)}`;
   let fnName = lowerer.arrHofHelpers.get(key);
   if (fnName === undefined) {
-    fnName = `%then.${name}.${lowerer.arrHofHelpers.size}`;
+    fnName = keyedHelperName(lowerer, `%then.${name}`, key);
     lowerer.arrHofHelpers.set(key, fnName);
     const value = varRef("v.0", inner, loc);
     let body: IrExpr;
@@ -2378,7 +2381,7 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
   const key = `bigint.scalar:${unionId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%bigint.scalar.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%bigint.scalar", key);
     lowerer.valueHelpers.set(key, helper);
     const value = varRef("value.0", arg.type, loc);
     const body: IrStmt[] = [];
@@ -3240,7 +3243,7 @@ function lowerScalarUnionNumber(
   const key = `number.scalar:${arg.type.unionId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%number.scalar.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%number.scalar", key);
     lowerer.valueHelpers.set(key, helper);
     const value = varRef("value.0", arg.type, loc);
     const nan: IrExpr = {
@@ -3285,7 +3288,7 @@ function lowerOptionalStringNumber(
   const key = `${label}.optionalString:${arg.type.unionId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%${label}.optionalString.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%${label}.optionalString`, key);
     lowerer.valueHelpers.set(key, helper);
     const value = varRef("value.0", arg.type, loc);
     lowerer.liftedFns.push({
@@ -4451,7 +4454,25 @@ export function lowerDynDispatchMethodCall(
       }
     }
   }
+  // `String`, `Number` or `Boolean` as the callback of an array method
+  // (`values.map(String)` over an unknown array): the method calls it with
+  // each element, whatever its type, and cannot observe which function
+  // value it received, so it gets the constructor's form that converts any
+  // argument rather than the string-input form typed code stores.
+  const arrayCallbackReceiver =
+    ARRAY_CALLBACK_METHODS.has(method) &&
+    lowerer.checker.isArrayType(lowerer.typeOf(access.expression));
   const args = call.arguments.nodes.map((arg, i) => {
+    const primitive =
+      i === 0 && arrayCallbackReceiver && ts.isIdentifier(arg)
+        ? stdlibGlobalNameOf(lowerer, arg)
+        : null;
+    if (primitive === "String" || primitive === "Number" || primitive === "Boolean")
+      return lowerer.coerceInto(
+        arg,
+        primitiveCtorClosure(lowerer, primitive, locOf(arg), true),
+        DYN,
+      );
     if (i === 0 && predicate) return lowerer.coerceInto(arg, predicate, DYN);
     const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, arg);
     return undefinedArg
@@ -4468,6 +4489,21 @@ export function lowerDynDispatchMethodCall(
     loc: locOf(call),
   };
 }
+
+/** Array.prototype methods whose first argument is a callback they call
+ * with the elements. */
+const ARRAY_CALLBACK_METHODS = new Set([
+  "map",
+  "filter",
+  "forEach",
+  "some",
+  "every",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flatMap",
+]);
 
 /** Every String.prototype method name a typed or dyn string lowering
  * answers. */
@@ -4839,7 +4875,7 @@ function lowerDefaultToStringCall(
   const key = `objToStr:${typeKey(recv.type)}${missing ? `:${missing}` : ""}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%obj.tostr.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%obj.tostr", key);
     lowerer.valueHelpers.set(key, helper);
     const o = varRef("o.0", recv.type, loc);
     lowerer.liftedFns.push({
@@ -5526,7 +5562,7 @@ function loweredTemplateStrings(
     const site = lowerer.globalsList.length;
     const globalId = `%g.templateStrings.${site}`;
     const readyId = `%g.templateStringsReady.${site}`;
-    getter = `%templateStrings.get.${lowerer.valueHelpers.size}`;
+    getter = keyedHelperName(lowerer, "%templateStrings.get", key);
     lowerer.valueHelpers.set(key, getter);
     lowerer.globalsList.push(
       { id: globalId, name: "%templateStrings", type, mutable: true },
@@ -5707,7 +5743,7 @@ export function lowerPromiseMethodCall(
     // IS the spec's identity/thrower/no-op substitution for all three
     // members. An argument expression, when present, is undefined/null
     // by construction — nothing to evaluate.
-    const fnName = `%fn${lowerer.lambdaCounter++}_${member}pass`;
+    const fnName = lowerer.closureName(loc, `_${member}pass`);
     const funcType: IrType & { kind: "func" } = { kind: "func", params: [promT], ret: promT };
     const fnCtx = newFnCtx(true, null, funcType, inner);
     fnCtx.isAsync = true;
@@ -5804,7 +5840,7 @@ export function lowerPromiseMethodCall(
       // Evaluate both callback expressions before the wrapper runs, in source order.
       const fulfilled = fulfilledAbsent ? null : boxHandler(fulfilledNode, true);
       const rejected = rejectedAbsent ? null : boxHandler(rejectedNode, false);
-      const fnName = `%fn${lowerer.lambdaCounter++}_then2`;
+      const fnName = lowerer.closureName(loc, "_then2");
       const paramTypes: IrType[] = [
         promT,
         ...(fulfilled ? [fulfilled.value.type] : []),
@@ -6053,7 +6089,7 @@ export function lowerPromiseMethodCall(
         );
       };
       const resultT: IrType & { kind: "promise" } = { kind: "promise", inner: DYN };
-      const fnName = `%fn${lowerer.lambdaCounter++}_then`;
+      const fnName = lowerer.closureName(loc, "_then");
       const funcType: IrType & { kind: "func" } = {
         kind: "func",
         params: [promT, DYN],
@@ -6148,7 +6184,7 @@ export function lowerPromiseMethodCall(
       );
     }
     const R = resultT.inner;
-    const fnName = `%fn${lowerer.lambdaCounter++}_then`;
+    const fnName = lowerer.closureName(loc, "_then");
     const funcType: IrType & { kind: "func" } = {
       kind: "func",
       params: [promT, cb.type],
@@ -6251,7 +6287,7 @@ export function lowerPromiseMethodCall(
         "finally callbacks with parameters or a return value (use () => { ... })",
       );
     }
-    const fnName = `%fn${lowerer.lambdaCounter++}_finally`;
+    const fnName = lowerer.closureName(loc, "_finally");
     const funcType: IrType & { kind: "func" } = {
       kind: "func",
       params: [promT, cb.type],
@@ -6354,7 +6390,7 @@ export function lowerPromiseMethodCall(
     }
     if (cb.type.kind === "dyn") {
       const resultT: IrType & { kind: "promise" } = { kind: "promise", inner: DYN };
-      const fnName = `%fn${lowerer.lambdaCounter++}_catchdyn`;
+      const fnName = lowerer.closureName(loc, "_catchdyn");
       const funcType: IrType & { kind: "func" } = {
         kind: "func",
         params: [promT, DYN],
@@ -6484,7 +6520,7 @@ export function lowerPromiseMethodCall(
     );
   }
   const R = resultT.inner;
-  const fnName = `%fn${lowerer.lambdaCounter++}_catch`;
+  const fnName = lowerer.closureName(loc, "_catch");
   const funcType: IrType & { kind: "func" } = { kind: "func", params: [promT], ret: resultT };
   const fnCtx = newFnCtx(true, null, funcType, R);
   fnCtx.isAsync = true;
@@ -6721,7 +6757,7 @@ function filterNarrowHelper(
   const key = `filterNarrow:${test}:${typeKey(elem)}:${typeKey(outElem)}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = `%arr.filterNarrow.${lowerer.arrHofHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%arr.filterNarrow", key);
   lowerer.arrHofHelpers.set(key, name);
 
   const arrT = arrayOf(elem);
@@ -6967,7 +7003,7 @@ export function recordKeysArrayCall(
   const key = `obj.keys:${argIr.shapeId}:${typeKey(resultT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%obj.keys.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%obj.keys", key);
     const ref: IrExpr = { kind: "varRef", localId: "r.0", type: argIr, loc };
     const outRef: IrExpr = { kind: "varRef", localId: "out.0", type: resultT, loc };
     lowerer.arrHofHelpers.set(key, helper);
@@ -7037,7 +7073,7 @@ function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): str
   const key = `obj.hasOwn:${shapeId}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const helper = `%obj.hasOwn.${lowerer.arrHofHelpers.size}`;
+  const helper = keyedHelperName(lowerer, "%obj.hasOwn", key);
   lowerer.arrHofHelpers.set(key, helper);
   const shape = lowerer.shapes.get(shapeId)!;
   const recT: IrType = { kind: "record", shapeId };
@@ -7122,7 +7158,7 @@ function classAssignHelper(
   const key = `obj.assignClass:${className}:${srcShapeId}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const helper = `%obj.assignClass.${lowerer.arrHofHelpers.size}`;
+  const helper = keyedHelperName(lowerer, "%obj.assignClass", key);
   lowerer.arrHofHelpers.set(key, helper);
   const sShape = lowerer.shapes.get(srcShapeId)!;
   const oT: IrType = { kind: "object", className };
@@ -7190,7 +7226,7 @@ function recordAssignHelper(
   const key = `obj.assign:${targetShapeId}:${srcShapeId}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const helper = `%obj.assign.${lowerer.arrHofHelpers.size}`;
+  const helper = keyedHelperName(lowerer, "%obj.assign", key);
   lowerer.arrHofHelpers.set(key, helper);
   const sShape = lowerer.shapes.get(srcShapeId)!;
   const tShape = lowerer.shapes.get(targetShapeId)!;
@@ -8647,7 +8683,7 @@ function lowerObjectStaticCall(
   const key = `obj.${member}:${argIr.shapeId}:${typeKey(resultT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%obj.${member}.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%obj.${member}`, key);
     const recT = argIr;
     const ref: IrExpr = { kind: "varRef", localId: "r.0", type: recT, loc };
     const outRef: IrExpr = { kind: "varRef", localId: "out.0", type: resultT, loc };
@@ -9283,7 +9319,7 @@ function lowerInlineArrowBind(
   const length = firstDefault < 0 ? arrow.parameters.nodes.length : firstDefault;
   const key = `arrow.bind:${typeKey(type)}:${length}`;
   const existing = lowerer.arrHofHelpers.get(key);
-  const name = existing ?? `%arrow.bind.${lowerer.arrHofHelpers.size}`;
+  const name = existing ?? keyedHelperName(lowerer, "%arrow.bind", key);
   if (!existing) {
     lowerer.arrHofHelpers.set(key, name);
     lowerer.freshClosureAdapters.add(name);
@@ -10216,7 +10252,7 @@ function lowerUnionObjectDynFieldCall(
   const receiverRef = varRef(receiverLocal.id, receiverT, loc);
   let helper = lowerer.unionCallHelpers.get(key);
   if (!helper) {
-    helper = `%union.call.${lowerer.unionCallHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%union.call", key);
     lowerer.unionCallHelpers.set(key, helper);
     const receiverRef = varRef("this.0", receiverT, loc);
     const branch = (plan: (typeof plans)[number]): IrStmt[] => {
@@ -10309,7 +10345,7 @@ function unionObjectMethodHelper(
   const key = `${receiverT.unionId}:${method}:${shapes.map((shape) => `${shape.mode}:${typeKey(shape.type)}`).join(",")}:${typeKey(resultT)}`;
   const existing = lowerer.unionCallHelpers.get(key);
   if (existing) return existing;
-  const name = `%union.call.${lowerer.unionCallHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%union.call", key);
   lowerer.unionCallHelpers.set(key, name);
   // A probe that catches a refusal while the body lowers must not leave
   // the name registered for a helper that was never emitted.
@@ -10503,7 +10539,7 @@ export function lowerStaticNumberGlobal(
         const key = `parseInt.optional:${unionT.unionId}`;
         let helper = lowerer.valueHelpers.get(key);
         if (!helper) {
-          helper = `%parseInt.optional.${lowerer.valueHelpers.size}`;
+          helper = keyedHelperName(lowerer, "%parseInt.optional", key);
           lowerer.valueHelpers.set(key, helper);
           const value: IrExpr = { kind: "varRef", localId: "value.0", type: unionT, loc };
           const radixRef: IrExpr = { kind: "varRef", localId: "radix.0", type: F64, loc };
@@ -10640,20 +10676,40 @@ export function lowerStaticNumberGlobal(
   return null;
 }
 
-/** `crypto.getRandomValues(view)` on the WebCrypto global or webcrypto. */
-function lowerWebCryptoGetRandomValues(
+/** `crypto.getRandomValues(view)` and `crypto.randomUUID()` on the
+ * WebCrypto global or webcrypto. Other argument counts (JavaScript only)
+ * invoke the dynamic object's method, which ignores extra arguments and
+ * throws Node's missing-argument TypeError. */
+function lowerWebCryptoMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
+  const member = access.name.text;
   if (
-    access.name.text !== "getRandomValues" ||
+    (member !== "getRandomValues" && member !== "randomUUID") ||
     call.questionDotToken ||
     access.questionDotToken ||
     !isWebCryptoReceiver(lowerer, access.expression)
   )
     return null;
-  return lowerCryptoGetRandomValues(lowerer, call);
+  const args = call.arguments.nodes;
+  if (member === "getRandomValues" && args.length === 1) {
+    return lowerCryptoGetRandomValues(lowerer, call);
+  }
+  if (member === "randomUUID" && args.length === 0) {
+    return { kind: "libCall", fn: "crypto.randomUUID", args: [], type: STRING, loc: locOf(call) };
+  }
+  if (args.some(ts.isSpreadElement)) return null;
+  return {
+    kind: "dynInvoke",
+    recv: lowerer.lowerExprExpecting(access.expression, DYN),
+    method: member,
+    calleeName: v8CalleeText(access),
+    args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc: locOf(call),
+  };
 }
 
 /** A then handler's promise-armed result (`.then(() => cached ?? load())`

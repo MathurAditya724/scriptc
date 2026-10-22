@@ -206,10 +206,8 @@ function instanceMethodCall(
   return result;
 }
 
-/** ToNumber of a call argument. */
-function numberArgument(lowerer: Lowerer, node: ts.Expression | undefined, loc: SrcLoc): IrExpr {
-  if (!node) return { kind: "numLit", value: Number.NaN, type: F64, loc };
-  const value = lowerer.lowerExpr(node);
+/** ToNumber of `value`, the lowered value of `node`. */
+function numberValue(lowerer: Lowerer, node: ts.Expression, value: IrExpr, loc: SrcLoc): IrExpr {
   if (value.type.kind === "f64") return value;
   if (value.type.kind === "dyn")
     return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [value], type: F64, loc };
@@ -251,25 +249,24 @@ export function lowerInheritedDateMethodCall(
     loc,
   });
   if (name === "setTime") {
+    // Every argument is evaluated before setTime converts the first one.
+    let ms: IrExpr = { kind: "numLit", value: Number.NaN, type: F64, loc };
+    if (args[0]) {
+      const first = lowerer.lowerExpr(args[0]);
+      const saved = lowerer.declareHiddenLocal("%dateArgument", first.type);
+      stmts.push({ kind: "varDecl", localId: saved.id, init: first, loc: locOf(args[0]) });
+      ms = numberValue(lowerer, args[0], varRef(saved.id, first.type, loc), loc);
+    }
+    for (const arg of args.slice(1))
+      stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc: locOf(arg) });
     const time = lowerer.declareHiddenLocal("%dateTime", DATE_T);
     stmts.push(
       {
         kind: "varDecl",
         localId: time.id,
-        init: {
-          kind: "libCall",
-          fn: "date.newMs",
-          args: [numberArgument(lowerer, args[0], loc)],
-          type: DATE_T,
-          loc,
-        },
+        init: { kind: "libCall", fn: "date.newMs", args: [ms], type: DATE_T, loc },
         loc,
       },
-      ...args.slice(1).map((arg): IrStmt => ({
-        kind: "exprStmt",
-        expr: lowerer.lowerExpr(arg),
-        loc: locOf(arg),
-      })),
       {
         kind: "fieldSet",
         obj: lowerer.upcastTo(value, root.def.name),
