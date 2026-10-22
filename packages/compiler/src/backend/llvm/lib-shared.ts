@@ -579,6 +579,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.ecdhNew": "scr_crypto_ecdh_new",
   "crypto.ecdhConvertKey": "scr_crypto_ecdh_convert_key",
   "crypto.dhNew": "scr_crypto_dh_new",
+  "crypto.checkPrimeSync": "scr_crypto_check_prime_sync",
+  "crypto.checkPrimeCb": "scr_crypto_check_prime_async",
+  "crypto.generatePrimeSync": "scr_crypto_generate_prime_sync",
+  "crypto.generatePrimeCb": "scr_crypto_generate_prime_async",
   "crypto.dhGroupNew": "scr_crypto_dh_group_new",
   "crypto.hmacNewStr": "scr_crypto_hmac_new_str",
   "crypto.hmacNewBytes": "scr_crypto_hmac_new_bytes",
@@ -1600,6 +1604,8 @@ export function mockTimerSym(
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "crypto.generateKeyPairCb",
+  "crypto.checkPrimeCb",
+  "crypto.generatePrimeCb",
   "process.emitWarning",
   // Constructor-function streams defer their events on the stream ticks.
   "dyn.builtinStreamClass",

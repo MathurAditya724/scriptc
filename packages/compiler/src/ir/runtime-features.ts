@@ -626,6 +626,16 @@ const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 /* The HTTP, HTTPS, HTTP/2 and TLS surfaces, which link the net unit. */
 const NET_PREFIXES: readonly string[] = ["net.", "http.", "tls.", "https.", "http2."];
 
+/** The scr_dh.c entry points (the dh unit). */
+export const DH_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "crypto.dhNew",
+  "crypto.dhGroupNew",
+  "crypto.checkPrimeSync",
+  "crypto.checkPrimeCb",
+  "crypto.generatePrimeSync",
+  "crypto.generatePrimeCb",
+]);
+
 /** The scr_pki.c entry points (the pki unit). */
 export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createPrivateKey",
@@ -820,9 +830,10 @@ const RUNTIME_FEATURE_RULES = {
    * process-warning unit, and unknown encodings and formats render through
    * the inspect unit. */
   ecdh: rule({ fns: ["crypto.ecdhNew", "crypto.ecdhConvertKey"] }),
-  /** scr_dh.c over the mbedTLS archive; unknown encodings render through
+  /** scr_dh.c over the mbedTLS archive, also for checkPrime and
+   * generatePrime; unknown encodings and argument values render through
    * the inspect unit. */
-  dh: rule({ fns: ["crypto.dhNew", "crypto.dhGroupNew"] }),
+  dh: rule({ fns: [...DH_LIB_FNS] }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -872,8 +883,7 @@ const RUNTIME_FEATURE_RULES = {
       "webcrypto.unwrapKey",
       "crypto.ecdhNew",
       "crypto.ecdhConvertKey",
-      "crypto.dhNew",
-      "crypto.dhGroupNew",
+      ...DH_LIB_FNS,
       ...BUILTIN_CLASS_LIB_FNS,
       ...UTIL_CALLABLE_LIB_FNS,
     ],
