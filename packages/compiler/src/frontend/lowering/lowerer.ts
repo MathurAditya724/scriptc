@@ -9294,6 +9294,21 @@ export class Lowerer {
    * type-mapper.ts's chalk-shape mapping — call paths and func-slot coercions
    * share it. */
   hybridCallUnwrap(expr: IrExpr): IrExpr {
+    // A callable CLASS instance: a class whose merged interface carries a
+    // call signature stores its call behavior in a `%call` field (the
+    // chalk package shim's builder). Calls read the field.
+    if (expr.type.kind === "object") {
+      const callType = this.classes.get(expr.type.className)?.fields.get("%call");
+      if (callType === undefined || callType.kind !== "func") return expr;
+      return {
+        kind: "fieldGet",
+        obj: expr,
+        className: expr.type.className,
+        field: "%call",
+        type: callType,
+        loc: expr.loc,
+      };
+    }
     if (expr.type.kind !== "record") return expr;
     const shape = this.shapes.get(expr.type.shapeId);
     const call = shape?.fields.find((f) => f.name === "%call");
@@ -9624,7 +9639,7 @@ export class Lowerer {
     // A HYBRID (function-with-properties) record flowing into a plain
     // func slot extracts its reserved %call field — the chalk shape's
     // "the value IS callable" half (type-mapper.ts's hybrid mapping).
-    if (expected.kind === "func" && expr.type.kind === "record") {
+    if (expected.kind === "func" && (expr.type.kind === "record" || expr.type.kind === "object")) {
       const un = this.hybridCallUnwrap(expr);
       if (un !== expr && typeEquals(un.type, expected)) return un;
     }

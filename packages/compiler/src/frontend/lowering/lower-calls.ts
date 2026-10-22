@@ -1619,7 +1619,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
     const accessorTarget = lowerer.fieldTarget(expr.expression);
     if (accessorTarget?.container === "accessor") {
-      const callee = lowerer.fieldGetExpr(accessorTarget, locOf(expr.expression), expr.expression);
+      let callee = lowerer.fieldGetExpr(accessorTarget, locOf(expr.expression), expr.expression);
+      // A getter returning a callable class instance (chalk's
+      // `chalk.red("x")`): call through its `%call` field.
+      if (callee.type.kind === "object") {
+        callee = lowerer.hybridCallUnwrap(callee);
+        if (callee.type.kind === "func") return lowerCallThroughValue(lowerer, expr, callee, locOf(expr));
+      }
       if (callee.type.kind === "func") {
         const args = completeFuncValueArgs(lowerer, expr, callee.type, locOf(expr));
         return { kind: "callValue", callee, args, type: callee.type.ret, loc: locOf(expr) };
@@ -1871,7 +1877,19 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // a non-func IR type was already rejected while lowering the callee.
   // HYBRID (function-with-properties) values call through their %call slot.
   let callee = lowerer.lowerExpr(expr.expression);
-  if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
+  if (callee.type.kind === "record" || callee.type.kind === "object")
+    callee = lowerer.hybridCallUnwrap(callee);
+  return lowerCallThroughValue(lowerer, expr, callee, loc);
+}
+
+/** A call through an evaluated callee value: checked-dynamic callees,
+ * function unions, typed-rest and runtime-arity closures. */
+function lowerCallThroughValue(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  callee: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
   // A CHECKED-DYNAMIC callee — `fn(a, b)` where fn is an implicit-any
   // JS binding (the mustCall body's `fn(...args)`), a dyn capture, or a
   // keyed read off a dyn value: the dynCall boundary. Arguments convert
@@ -9181,7 +9199,8 @@ export function lowerRecordFieldCall(
   // A HYBRID (function-with-properties) field is callable through its
   // reserved %call slot — `colors.blue("x")` where blue also carries
   // `.bold` (the chalk shape).
-  if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
+  if (callee.type.kind === "record" || callee.type.kind === "object")
+    callee = lowerer.hybridCallUnwrap(callee);
   // Inferred JavaScript option records can retain checked callables in
   // fields even when the checker only describes those members as any.
   // TypeScript reaches here for callable library types that are checked
