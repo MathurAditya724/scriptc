@@ -2907,7 +2907,6 @@ void scr_children_poll(void) {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -3112,21 +3111,23 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
 static char **scr_exec_envp(ScrArr *pairs);
 static void scr_exec_envp_free(char **envp);
 
-/* The executable `file` names when `envp` replaces the child's
- * environment, found as libuv finds it: a name with a '/' is used as
- * given; otherwise each entry of the replacement's PATH (an empty entry
- * is the current directory), or of the default path when the replacement
- * has no PATH, is tried in order. Relative candidates are checked from
- * `cwd`, the directory the child starts in (NULL: this process's). Returns
- * a malloc'd path, or NULL with *err set: EACCES when a candidate exists
- * but cannot run, else ENOENT. */
-static char *scr_spawn_path_lookup(const char *file, char *const *envp, const char *cwd,
-                                   int *err) {
-  if (strchr(file, '/')) {
-    char *copy = strdup(file);
-    if (!copy) scr_child_oom();
-    return copy;
-  }
+/* posix_spawnp for the child_process spawns. Without `envp` the command
+ * resolves on this process's PATH over `environ`. With `envp` (a
+ * replacement environment) it resolves the way Node's libuv runs execvp
+ * in the child: a name with a '/' runs as given; otherwise each entry of
+ * the replacement's PATH (an empty entry is the current directory), or of
+ * the default path when the replacement has no PATH, is tried in order,
+ * and a candidate whose exec fails with ENOENT, ENOTDIR or EACCES (a
+ * missing file, or a script whose interpreter is missing) moves on to the
+ * next entry. The last such failure is EACCES if any candidate was denied,
+ * else ENOENT. Relative entries are resolved by the child, which starts in
+ * `cwd`. Returns posix_spawn's error number. */
+static int scr_spawn_command(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
+                             const posix_spawnattr_t *attr, char *const *argv,
+                             char *const *envp, const char *cwd) {
+  (void)cwd; /* the file actions change into it before the exec */
+  if (envp == NULL) return posix_spawnp(pid, file, fa, attr, argv, environ);
+  if (strchr(file, '/')) return posix_spawn(pid, file, fa, attr, argv, envp);
   const char *path = "/usr/bin:/bin";
   for (char *const *e = envp; *e; e++) {
     if (strncmp(*e, "PATH=", 5) == 0) {
@@ -3135,7 +3136,6 @@ static char *scr_spawn_path_lookup(const char *file, char *const *envp, const ch
     }
   }
   size_t file_len = strlen(file);
-  size_t cwd_len = cwd ? strlen(cwd) : 0;
   bool denied = false;
   for (const char *dir = path;;) {
     const char *end = strchr(dir, ':');
@@ -3147,51 +3147,19 @@ static char *scr_spawn_path_lookup(const char *file, char *const *envp, const ch
     memcpy(candidate, prefix, prefix_len);
     candidate[prefix_len] = '/';
     memcpy(candidate + prefix_len + 1, file, file_len + 1);
-    char *checked = candidate;
-    if (cwd_len > 0 && candidate[0] != '/') {
-      checked = malloc(cwd_len + 1 + strlen(candidate) + 1);
-      if (!checked) scr_child_oom();
-      memcpy(checked, cwd, cwd_len);
-      checked[cwd_len] = '/';
-      strcpy(checked + cwd_len + 1, candidate);
-    }
-    struct stat st;
-    bool runs = false;
-    if (stat(checked, &st) == 0) {
-      runs = S_ISREG(st.st_mode) && access(checked, X_OK) == 0;
-      if (!runs) denied = true;
-    } else if (errno == EACCES) {
-      denied = true;
-    }
-    if (checked != candidate) free(checked);
-    if (runs) return candidate;
+    int err = posix_spawn(pid, candidate, fa, attr, argv, envp);
     free(candidate);
+    if (err == EACCES) denied = true;
+    else if (err != ENOENT && err != ENOTDIR) return err;
     if (!end) break;
     dir = end + 1;
   }
-  *err = denied ? EACCES : ENOENT;
-  return NULL;
-}
-
-/* posix_spawnp for the child_process spawns: with `envp` (a replacement
- * environment) the command resolves on that environment's PATH
- * (scr_spawn_path_lookup) as Node's does; without it, on this process's
- * PATH over `environ`. Returns posix_spawn's error number. */
-static int scr_spawn_command(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
-                             const posix_spawnattr_t *attr, char *const *argv,
-                             char *const *envp, const char *cwd) {
-  if (envp == NULL) return posix_spawnp(pid, file, fa, attr, argv, environ);
-  int err = 0;
-  char *resolved = scr_spawn_path_lookup(file, envp, cwd, &err);
-  if (!resolved) return err;
-  err = posix_spawn(pid, resolved, fa, attr, argv, envp);
-  free(resolved);
-  return err;
+  return denied ? EACCES : ENOENT;
 }
 
 /* env_pairs: NULL inherits the parent's environment; else [k,v,...]
  * replaces it, as Node's `env` option does, and the command is looked up
- * on the replacement's PATH (scr_spawn_path_lookup). */
+ * on the replacement's PATH (scr_spawn_command). */
 static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                          int killsig, int in_mode, int out_mode,
                                          int err_mode, ScrArr *env_pairs) {
