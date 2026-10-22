@@ -425,11 +425,13 @@ struct ScrDyn {
       void *source_identity;
       ScrDyn *(*source_access)(void *, bool materialize);
       struct ScrDynObjectIndex *index; /* optional wide-object lookup; owns no values */
-      /* On a runtime-built class prototype (e.g. url.Url.prototype): the
-       * constructor name (static text) util.inspect prints for objects
-       * inheriting from it (scr_dyn_class_name). NULL otherwise. Only
-       * prototypes that live until their thread exits set it, and they
-       * clear it before release, so freelist reuse never sees it. */
+      /* On a runtime-built class prototype (e.g. url.Url.prototype) and
+       * on a compiled class's prototype object: the constructor name
+       * (static or immortal text) util.inspect prints for objects
+       * inheriting from it (scr_dyn_class_name). NULL otherwise. Names
+       * that are copies live on prototypes that live until their thread
+       * exits, and those clear it before release; reuse of a freed object
+       * resets it (scr_dyn_alloc). */
       const char *class_name;
       struct ScrDynRegion *region; /* see ScrDynRegion */
       /* The dynamic tier's hidden class (scr_js_object.c): the transition
@@ -714,6 +716,9 @@ ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed);
 ScrDyn *scr_dyn_native_set(ScrMap *value); /* borrowed backing, +1 box */
 bool scr_dyn_native_set_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_map(ScrMap *value); /* borrowed backing, +1 box */
+/* `new Map(entries)` over a checked-dynamic seed: +1, or NULL with the
+ * exception pending. */
+ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed);
 bool scr_dyn_native_map_is(const ScrDyn *value);
 void scr_regex_reset_last_index(ScrRegex *re, double index);
 ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags);
@@ -935,6 +940,12 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
 bool scr_dyn_data_view_is(const ScrDyn *value);
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
+/* Installed by scr_dyn_invoke.c when it interns a builtin constructor value
+ * (scr_dyn_global_constructor): false when `callee` is not one of them;
+ * otherwise true with `new callee(...args)` in *result (+1, or NULL with
+ * the exception pending). */
+extern SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args,
+                                                  ScrDyn **result);
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key);
 /* The Buffer-flavored twin (stream chunks): string coercion/toString
  * decode utf8 instead of joining elements. */

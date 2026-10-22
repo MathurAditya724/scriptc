@@ -1021,6 +1021,7 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/entries preserved */
       d->v.obj.region = NULL;
+      d->v.obj.class_name = NULL; /* a released class prototype's name */
       SCR_JS_SHAPE_RESET(d);
       if (d->v.obj.cap <= SCR_DYN_KEY_CACHE_SLOTS) {
         for (size_t i = 0; i < d->v.obj.cap; i++) {
@@ -4051,6 +4052,8 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
 bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
   return scr_bytes_instanceof_at(value, callee, NULL);
 }
+SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) = NULL;
+
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
   if (callee->kind == SCR_DYN_FUNC && scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo)
     return scr_array_ctor_call(callee->v.fn.clo, args->v.arr.items, args->v.arr.len);
@@ -4067,6 +4070,9 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
     scr_bytes_release(bytes);
     return result;
   }
+  ScrDyn *constructed = NULL;
+  if (scr_dyn_global_construct_fn && scr_dyn_global_construct_fn(callee, args, &constructed))
+    return constructed;
   ScrJsonBuf message;
   scr_jb_init(&message);
   scr_jb_write(&message, what->data, what->len);
@@ -4221,6 +4227,11 @@ ScrDyn *scr_dyn_class_prototype(ScrDyn *value, ScrDyn *base) {
   if (!cls->prototype_data) {
     ScrDyn *data = base->kind == SCR_DYN_UNDEF ? scr_dyn_new_obj() : scr_dyn_obj_create(base);
     if (!data) return NULL;
+    /* util.inspect prints an instance with its class's name: the class
+     * object's interned name, which is immortal. The prototype is owned by
+     * the class object and no registry keeps it alive, so evaluating a
+     * function-local class again releases the previous one's prototype. */
+    if (cls->name && cls->name->len) data->v.obj.class_name = cls->name->data;
     cls->prototype_data = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     scr_box_set_ref(cls->prototype_data, data);
   }
@@ -14978,6 +14989,27 @@ ScrDyn *scr_dyn_native_map(ScrMap *value) {
   };
   scr_dyn_handle_install(SCR_DYNH_MAP, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_MAP);
+}
+
+ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed) {
+  ScrDyn *entries = scr_dyn_map_seed_entries(seed);
+  if (!entries) return NULL;
+  ScrMap *map = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_REF, &scr_map_dyn_map_ops);
+  for (size_t i = 0; i < entries->v.arr.len; i++) {
+    ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
+    if (!entry) break;
+    ScrDyn *key = scr_dyn_entry_read(entry, 0);
+    ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
+    scr_dyn_release(entry);
+    if (value) scr_map_dyn_set(map, key, value, false);
+    scr_dyn_release(key);
+    scr_dyn_release(value);
+    if (scr_exc_pending()) break;
+  }
+  scr_dyn_release(entries);
+  ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_native_map(map);
+  scr_map_release(map);
+  return result;
 }
 
 bool scr_dyn_native_map_is(const ScrDyn *value) {
