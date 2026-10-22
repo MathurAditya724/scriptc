@@ -407,9 +407,27 @@ function withTypedReceiver(value: IrExpr, receiver: IrExpr): IrExpr {
   });
 }
 
-/** Re-adds the entries of `set` after the first `from` sorted. */
-function sortAdded(set: Set<string>, from: number): void {
-  const added = [...set].slice(from).sort();
+/** Re-adds the classes of `set` after the first `from` in a fixed order:
+ * the program's classes by name, then the classes the runtime implements by
+ * name. The dispatch helpers add each class's branch in front of the
+ * earlier ones, so a runtime class's branch, which answers its methods for
+ * instances of the program's subclasses too, is tested before the
+ * subclasses' own branches. */
+function sortAdded(lowerer: Lowerer, set: Set<string>, from: number): void {
+  const runtime = (name: string): boolean => {
+    const info = lowerer.classes.get(name);
+    return !!(
+      info &&
+      (info.def.runtime || info.builtinEmitter || info.builtinStream || info.builtinError)
+    );
+  };
+  const added = [...set]
+    .slice(from)
+    .sort(
+      (left, right) =>
+        Number(runtime(left)) - Number(runtime(right)) ||
+        (left < right ? -1 : left > right ? 1 : 0),
+    );
   for (const name of added) set.delete(name);
   for (const name of added) set.add(name);
 }
@@ -932,10 +950,10 @@ export class ClassDynamicDispatch {
           return true;
         },
       });
-    // The classes this pass found join the tables by name, not in the order
-    // the scan met them.
-    sortAdded(this.boxed, boxedBefore);
-    sortAdded(this.boxedConstructors, boxedConstructorsBefore);
+    // The classes this pass found join the tables in a fixed order, not in
+    // the order the scan met them.
+    sortAdded(lowerer, this.boxed, boxedBefore);
+    sortAdded(lowerer, this.boxedConstructors, boxedConstructorsBefore);
     changed = this.caughtDispatch.dynamicPayloads(lowerer, caughtSites, this.boxed) || changed;
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);
