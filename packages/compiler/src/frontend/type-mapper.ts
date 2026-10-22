@@ -1,5 +1,5 @@
 import { InternalCompilerError } from "../errors.js";
-import { keyedHelperName } from "./lowering/stable-names.js";
+import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -393,13 +393,12 @@ export class ShapeRegistry {
 
   /** The shape id a back-reference to an in-progress type resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
-   * entry (empty fields) the outer frame finalizes. */
-  recursiveRef(t: ts.Type, description: string): string {
+   * entry (empty fields) the outer frame finalizes. `describe` names a new
+   * placeholder (recursiveTypeName). */
+  recursiveRef(t: ts.Type, describe: () => string): string {
     let id = this.recIds.get(t);
     if (id === undefined) {
-      id = keyedHelperName(this, "r", `recursive:${description}`, "");
-      if (this.byId.has(id))
-        throw new InternalCompilerError(`two recursive types share the description ${description}`);
+      id = recursivePlaceholderName(this, "r", describe(), (name) => this.byId.has(name));
       const shape: IrRecordShape = { id, fields: [] };
       this.byId.set(id, shape);
       this.shapes.push(shape);
@@ -546,15 +545,55 @@ export class ShapeRegistry {
   }
 }
 
-/** A recursive checker type's printed form and first declaration, which
- * name its placeholder whichever frame first reaches it. */
-function recursiveTypeName(t: ts.Type, ctx: Pick<TypeMapperCtx, "checker">): string {
+/** The id of a recursive placeholder described by `description`. Two
+ * different types can still share a description (recursiveTypeName stops
+ * after a few levels of type arguments); the later one takes the first free
+ * name with a numbered suffix. */
+function recursivePlaceholderName(
+  owner: KeyedNameOwner,
+  prefix: string,
+  description: string,
+  taken: (name: string) => boolean,
+): string {
+  let name = keyedHelperName(owner, prefix, `recursive:${description}`, "");
+  for (let n = 1; taken(name); n++)
+    name = keyedHelperName(owner, prefix, `recursive:${description}#${n}`, "");
+  return name;
+}
+
+/** How many levels of type arguments recursiveTypeName describes. */
+const RECURSIVE_NAME_DEPTH = 3;
+
+/** A recursive checker type's description, which names its placeholder
+ * whichever frame first reaches it: its printed form, the structural
+ * position of its first declaration, and the same for its type arguments
+ * (two instantiations print the same when their type arguments are type
+ * parameters or classes of the same name from different declarations). */
+function recursiveTypeName(
+  t: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "positionOf">,
+  depth = 0,
+): string {
   const symbol = t.getAliasSymbol() ?? t.getSymbol();
   const declaration = symbol?.declarations[0];
   const where = declaration
-    ? `${ts.getSourceFileOfNode(declaration).fileName}:${declaration.pos}`
+    ? (ctx.positionOf?.(declaration) ??
+      `${ts.getSourceFileOfNode(declaration).fileName}:${declaration.pos}`)
     : "";
-  return `${ctx.checker.typeToString(t)}@${where}`;
+  let description = `${ctx.checker.typeToString(t)}@${where}`;
+  if (depth < RECURSIVE_NAME_DEPTH) {
+    const aliasArguments =
+      t.getAliasSymbol() !== undefined ? (t.getAliasTypeArguments() ?? []) : [];
+    const typeArguments =
+      aliasArguments.length > 0
+        ? aliasArguments
+        : t.isTypeReference()
+          ? ctx.checker.getTypeArguments(t)
+          : [];
+    if (typeArguments.length > 0)
+      description += `<${typeArguments.map((arg) => recursiveTypeName(arg, ctx, depth + 1)).join(",")}>`;
+  }
+  return description;
 }
 
 /** The frontend's union interner — mirrors ShapeRegistry. A union's
@@ -585,13 +624,12 @@ export class UnionRegistry {
 
   /** The union id a back-reference to an in-progress union resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
-   * entry (empty arms) the outer frame finalizes. */
-  recursiveRef(t: ts.Type, description: string): string {
+   * entry (empty arms) the outer frame finalizes. `describe` names a new
+   * placeholder (recursiveTypeName). */
+  recursiveRef(t: ts.Type, describe: () => string): string {
     let id = this.recIds.get(t);
     if (id === undefined) {
-      id = keyedHelperName(this, "u", `recursive:${description}`, "");
-      if (this.byId.has(id))
-        throw new InternalCompilerError(`two recursive types share the description ${description}`);
+      id = recursivePlaceholderName(this, "u", describe(), (name) => this.byId.has(name));
       const def: IrUnionDef = { id, arms: [] };
       this.byId.set(id, def);
       this.unions.push(def);
@@ -1135,6 +1173,10 @@ export interface TypeMapperCtx {
    * empty object type rule in the object mapping). */
   emptyLiteralArm?: boolean;
   checker: ts.TypeChecker;
+  /** The structural position of a declaration (structural-positions.ts),
+   * which names recursive placeholders independently of where unrelated
+   * code sits. The Lowerer supplies it. */
+  positionOf?: (node: ts.Node) => string;
   /** JavaScript declarations whose instance or object-literal types only
    * the checked-dynamic representation holds (js-dynamic-objects.ts).
    * Absent when the program has none: every mapping is unchanged. */
@@ -4673,7 +4715,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (unions.inProgress.has(widened)) {
       return {
         kind: "union",
-        unionId: unions.recursiveRef(widened, recursiveTypeName(widened, ctx)),
+        unionId: unions.recursiveRef(widened, () => recursiveTypeName(widened, ctx)),
       };
     }
     unions.inProgress.add(widened);
@@ -7020,7 +7062,7 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (shapes.inProgress.has(widened)) {
     return {
       kind: "record",
-      shapeId: shapes.recursiveRef(widened, recursiveTypeName(widened, ctx)),
+      shapeId: shapes.recursiveRef(widened, () => recursiveTypeName(widened, ctx)),
     };
   }
   shapes.inProgress.add(widened);

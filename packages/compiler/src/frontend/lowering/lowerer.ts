@@ -3568,6 +3568,7 @@ export class Lowerer {
     this.checker = program.getTypeChecker();
     this.typeCtx = {
       checker: this.checker,
+      positionOf: (node) => this.positions.of(node),
       shapes: this.shapes,
       unions: this.unions,
       classNamer: this.classNamer,

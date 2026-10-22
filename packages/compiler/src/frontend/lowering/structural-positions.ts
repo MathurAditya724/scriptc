@@ -15,6 +15,8 @@ const ANCHOR_KINDS: ReadonlySet<number> = new Set<number>([
   ts.SyntaxKind.ModuleDeclaration,
   ts.SyntaxKind.EnumDeclaration,
   ts.SyntaxKind.Constructor,
+  ts.SyntaxKind.InterfaceDeclaration,
+  ts.SyntaxKind.TypeAliasDeclaration,
 ]);
 
 /** The name of `node` when it is a named declaration that anchors the
@@ -34,10 +36,10 @@ function anchorOf(node: ts.Node): ts.Node {
 
 /** Source positions that stay the same when code outside the enclosing
  * declaration changes. A node's structural position is its file, the chain
- * of enclosing named declarations (each with its ordinal among the
- * declarations of the same kind and name in its own anchor), and its
- * ordinal among the nodes of its kind whose nearest anchor is the same
- * declaration. Editing another declaration, or code nested in another
+ * of enclosing named declarations (each with its kind, its name and its
+ * ordinal among the declarations of the same kind and name in its own
+ * anchor), and its ordinal among the nodes of its kind whose nearest anchor
+ * is the same declaration. Editing another declaration, or code nested in another
  * named declaration of the same anchor, leaves the position unchanged. */
 export class StructuralPositions {
   /** Per anchor and key: the indices of the nodes with that key whose
@@ -75,8 +77,10 @@ export class StructuralPositions {
     if (ts.isSourceFile(anchor)) path = anchor.fileName;
     else {
       const parent = anchorOf(anchor);
-      const name = anchorName(anchor);
-      path = `${this.pathOf(parent)}/${name}#${this.ordinalIn(parent, anchor, `${anchor.kind}:${name}`)}`;
+      // The kind keeps declarations of one name apart: a getter and its
+      // setter, or a class and the namespace merged with it.
+      const key = `${anchor.kind}:${anchorName(anchor)}`;
+      path = `${this.pathOf(parent)}/${key}#${this.ordinalIn(parent, anchor, key)}`;
     }
     this.paths.set(anchor, path);
     return path;
