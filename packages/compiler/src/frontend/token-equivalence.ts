@@ -15,12 +15,14 @@
  *   annotations lowering reads).
  * - A `/` starts a regular expression or divides according to the token
  *   before it. After `)` it divides unless the parenthesis closes an `if`,
- *   `while`, `for`, or `with` header. After `}`, `++` or `--` the scanner
+ *   `while`, `for`, `for await`, or `with` header. After `}`, `++` or `--` the scanner
  *   cannot tell which, so it gives up, as it does for escaped identifiers,
  *   which can spell keywords.
  * - Template literals track their `${` substitutions on a brace stack.
- * - JSX files, unterminated strings, comments, templates and regular
- *   expressions, and any line terminator outside ASCII give up.
+ * - JSX files, files that contain U+2028 or U+2029 anywhere (they end a
+ *   line comment and separate lines for automatic semicolon insertion),
+ *   and unterminated strings, comments, templates and regular expressions
+ *   give up.
  *
  * Plain character scans keep the scanner free of Unicode property escapes:
  * any non-ASCII code unit outside strings, templates, regular expressions
@@ -118,6 +120,7 @@ function isSpace(code: number): boolean {
 /** The tokens of `source`, or null when the scanner cannot classify it. */
 function scan(path: string, source: string): Token[] | null {
   if (path.endsWith(".tsx") || path.endsWith(".jsx")) return null;
+  if (source.includes("\u2028") || source.includes("\u2029")) return null;
   const typeScript = isTypeScript(path);
   const tokens: Token[] = [];
   // Brace kinds: true for a template substitution, false otherwise.
@@ -125,13 +128,17 @@ function scan(path: string, source: string): Token[] | null {
   // Paren kinds: true for a statement header.
   const parens: boolean[] = [];
   let lineBreakBefore = false;
-  // The previous token, and whether a `)` closed a statement header.
-  const last: { token: string | null } = { token: null };
+  // The previous token and the one before it, and whether a `)` closed a
+  // statement header.
+  const last: { token: string | null; before: string | null } = { token: null, before: null };
   let closedHeader = false;
   const push = (text: string, comment = false): void => {
     tokens.push({ text, comment, lineBreakBefore });
     lineBreakBefore = false;
-    if (!comment) last.token = text;
+    if (!comment) {
+      last.before = last.token;
+      last.token = text;
+    }
   };
   let index = 0;
   const length = source.length;
@@ -162,6 +169,7 @@ function scan(path: string, source: string): Token[] | null {
         index = position;
         push(source.slice(start, position));
         braces.push(true);
+        last.before = last.token;
         last.token = "${";
         return true;
       }
@@ -176,8 +184,7 @@ function scan(path: string, source: string): Token[] | null {
       index++;
       continue;
     }
-    if (code > 127 && (code === 0x2028 || code === 0x2029 || code === 0xa0 || code === 0xfeff))
-      return null;
+    if (code > 127 && (code === 0xa0 || code === 0xfeff)) return null;
     const next = source.charCodeAt(index + 1);
     // Comments.
     if (code === 47 && (next === 47 || next === 42)) {
@@ -305,7 +312,10 @@ function scan(path: string, source: string): Token[] | null {
     }
     // Brackets.
     if (code === 40) {
-      parens.push(last.token !== null && HEADER_KEYWORDS.has(last.token));
+      parens.push(
+        last.token !== null &&
+          (HEADER_KEYWORDS.has(last.token) || (last.token === "await" && last.before === "for")),
+      );
       index++;
       push("(");
       closedHeader = false;

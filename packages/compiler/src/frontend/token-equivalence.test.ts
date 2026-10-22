@@ -28,6 +28,18 @@ test("comment-like text inside regular expressions is code", () => {
   );
   expect(equivalent("const q = a / b; // ratio\n", "const q = a / b; // the ratio\n")).toBe(true);
   expect(equivalent("return /a/; // one\n", "return /a/; // two\n")).toBe(true);
+  // A `for await` header closes like a `for` header.
+  expect(
+    equivalent(
+      "for await (const x of xs) /[//]/.test(x); c = 1;\n",
+      "for await (const x of xs) /[//]/.test(x); c = 2;\n",
+    ),
+  ).toBe(false);
+});
+
+test("U+2028 and U+2029 end a line comment, so their files are never equivalent", () => {
+  expect(equivalent("// a\u2028c = 1;\n", "// a\u2028c = 2;\n")).toBe(false);
+  expect(equivalent("/* a\u2029*/ c = 1;\n", "/* b\u2029*/ c = 1;\n")).toBe(false);
 });
 
 test("comments that can affect compilation are kept", () => {

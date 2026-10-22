@@ -114,7 +114,10 @@ function readFrontendCache(
  * that cannot affect compilation; see token-equivalence.ts). Equivalent
  * sources lower to the same IR apart from source locations, which only dev
  * builds' debug information and the serialized IR carry. Diagnostics carry
- * locations too, so an entry that reported warnings is rebuilt. */
+ * locations too, so an entry that reported warnings is rebuilt. A changed
+ * source whose raw text or line positions the frontend read (call-site text
+ * in messages, comptime callbacks, test locations) is rebuilt as well:
+ * frontendInputsSemanticallyMatch refuses its `text` probe. */
 function equivalentFrontendInput(
   stale: FrontendCacheEntry,
   options: CompileRequestOptions,

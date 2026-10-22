@@ -113,6 +113,36 @@ test("comment and whitespace edits reuse the frontend output a fresh build repro
   expect(edited.ok && edited.llvm).not.toBe(first.llvm);
 });
 
+test("a comment edit inside source text the output carries is rebuilt", () => {
+  const f = fixture();
+  // A failing assert(value) reports its call's source text.
+  const source = (call: string) =>
+    `import assert from "node:assert";\nexport const value = "first";\n${call};\n`;
+  writeFileSync(f.dependency, source("assert(value.length > 0)"));
+  const first = f.prepare();
+  expect(first.ok, JSON.stringify(first)).toBe(true);
+  if (!first.ok) return;
+  writeFileSync(f.dependency, source("assert(value.length > 0 /* checked */)"));
+  const edited = f.prepare();
+  expect(f.loads()).toBe(2);
+  expect(edited.ok && edited.llvm).not.toBe(first.llvm);
+});
+
+test("a whitespace edit that moves a reported source line is rebuilt", () => {
+  const f = fixture();
+  // node:test reports the file, line and column of each test.
+  const source = (gap: string) =>
+    `import { test } from "node:test";\nexport const value = "first";\n${gap}test("value", () => {});\n`;
+  writeFileSync(f.dependency, source(""));
+  const first = f.prepare();
+  expect(first.ok, JSON.stringify(first)).toBe(true);
+  if (!first.ok) return;
+  writeFileSync(f.dependency, source("\n"));
+  const edited = f.prepare();
+  expect(f.loads()).toBe(2);
+  expect(edited.ok && edited.llvm).not.toBe(first.llvm);
+});
+
 test("structurally invalid cached features cause a rebuild even with a valid digest", () => {
   const f = fixture();
   expect(f.prepare().ok).toBe(true);

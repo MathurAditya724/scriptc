@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { observeSourceText } from "./ts7/ast-node.js";
 
 /**
  * Filesystem observations made while constructing and lowering one frontend
@@ -16,7 +17,10 @@ export type FrontendInputProbe =
   | { op: "kind"; path: string; kind: "file" | "directory" | "other" | "missing" }
   | { op: "entries"; path: string; files: string[]; directories: string[] }
   | { op: "entries-error"; path: string }
-  | { op: "realpath"; path: string; target: string | null };
+  | { op: "realpath"; path: string; target: string | null }
+  /** The frontend's output depends on the file's raw text or line
+   * positions, not only on its tokens (observeSourceText). */
+  | { op: "text"; path: string };
 
 export interface FrontendInputSnapshot {
   version: 1;
@@ -105,6 +109,7 @@ export class FrontendInputTracker {
 
   record(probe: FrontendInputProbe): void {
     const key = `${probe.op}\0${probe.path}`;
+    if (probe.op === "text" && this.probes.has(key)) return;
     const previous = this.probes.get(key);
     if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(probe)) {
       // An input changed while this frontend was running.  The build may
@@ -157,6 +162,13 @@ export class FrontendInputTracker {
 function record(probe: FrontendInputProbe): void {
   (synchronousTracker ?? activeTracker.getStore())?.record(probe);
 }
+
+// Source text the frontend reads raw (call-site text in messages, comptime
+// callbacks, line numbers) changes with edits that keep the tokens.
+observeSourceText((fileName) => {
+  const tracker = synchronousTracker ?? activeTracker.getStore();
+  if (tracker !== undefined) tracker.record({ op: "text", path: resolve(fileName) });
+});
 
 /** Mark the active frontend as unsafe to persist because an exact host query
  * bypassed the tracked filesystem wrappers. No-op outside a frontend run. */
@@ -394,6 +406,9 @@ export function frontendInputsStillMatch(
           return probe.target === null;
         }
       }
+      case "text":
+        // The file probe of the same path checks its content.
+        return true;
     }
   });
 }
@@ -411,7 +426,11 @@ export function frontendInputsSemanticallyMatch(
 ): FrontendSemanticMatch | null {
   if (!validFrontendInputSnapshot(snapshot)) return null;
   const sourceProbes = new Map<string, Extract<FrontendInputProbe, { op: "file" }>>();
-  for (const probe of snapshot.probes) if (probe.op === "file") sourceProbes.set(probe.path, probe);
+  const rawText = new Set<string>();
+  for (const probe of snapshot.probes) {
+    if (probe.op === "file") sourceProbes.set(probe.path, probe);
+    else if (probe.op === "text") rawText.add(probe.path);
+  }
   for (const [path, previous] of previousSources) {
     if (sourceProbes.get(path)?.digest !== frontendSourceDigest(previous)) return null;
   }
@@ -436,8 +455,10 @@ export function frontendInputsSemanticallyMatch(
       probes.push(probe);
       continue;
     }
-    // One edit that is not equivalent already rules out the match.
-    if (!isSemanticEquivalent(probe.path, previous, current)) return null;
+    // One edit that is not equivalent already rules out the match, and so
+    // does any edit of a file whose raw text the frontend read.
+    if (rawText.has(probe.path) || !isSemanticEquivalent(probe.path, previous, current))
+      return null;
     changed.push({ path: probe.path, previous, current });
     probes.push({ ...probe, digest: currentDigest });
   }
@@ -488,6 +509,8 @@ export function validFrontendInputSnapshot(snapshot: unknown): snapshot is Front
         return true;
       case "realpath":
         return value.target === null || typeof value.target === "string";
+      case "text":
+        return true;
       default:
         return false;
     }
