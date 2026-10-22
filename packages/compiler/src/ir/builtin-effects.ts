@@ -1001,3 +1001,25 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createSign",
   "crypto.createVerify",
 ]);
+
+/** libCall members that always throw. Their result type is the replaced
+ * expression's own and is never materialized: global.undefRead's is the
+ * declared type of the undefined global; the others stand in for a value
+ * of the expression they replace. The fs Chk ladders qualify: every
+ * validation failure throws Node's typed error, and a full pass throws the
+ * trailing compiler-rendered fence. */
+export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "global.undefRead",
+  "error.nodeThrow",
+  "error.argTypeThrow",
+  "error.propTypeThrow",
+  "fs.mkdtempChk",
+  "fs.readFileChk",
+  "fs.opendirChk",
+  "fs.watchFileChk",
+  "fs.lchmodChk",
+  "fs.readChk",
+  "fs.streamOptsChk",
+  "net.connectOptsChk",
+  "tls.caCertsChk",
+]);
