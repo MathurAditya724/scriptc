@@ -35,6 +35,7 @@ import { emitClassMembershipHelper } from "./classes.js";
 import { type RegexMatcherCode, compileRegexMatcher } from "./regex-matchers.js";
 import {
   MAP_ITER_DECL,
+  MAP_SIZE_DECL,
   MAP_ITER_NUM_DECL,
   SCR_MAP_NUM_DEAD,
   NUMBER_MAP_ENTRY_DECL,
@@ -456,15 +457,17 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // RC fast paths test the traced byte (shapes.ts).
     ...(emitter.rcHelpers === null ? [] : [`%ScrMapRc = type { ${emitter.sizeType}, i8, i8, i8 }`]),
     // The complete ScrMap and its entries, read by the inline number-key
-    // lookup (sc_map_entry_f64) and the inline iteration steps
-    // (sc_map_iter_entry, sc_map_iter_entry_num): field 8 is the i32 entry
+    // lookup (sc_map_entry_f64), the inline iteration steps
+    // (sc_map_iter_entry, sc_map_iter_entry_num) and Map.size
+    // (sc_map_size): field 8 is the i32 entry count, field 9 the i32 live
     // count, field 10 the i64 absent-key filter, entries is field 11,
     // nbuckets and buckets fields 13 and 14, the direct index and its i32
     // length fields 15 and 16.
     ...(emitter.decls.has(NUMBER_MAP_ENTRY_DECL) ||
     emitter.decls.has(STRING_MAP_ENTRY_DECL) ||
     emitter.decls.has(MAP_ITER_DECL) ||
-    emitter.decls.has(MAP_ITER_NUM_DECL)
+    emitter.decls.has(MAP_ITER_NUM_DECL) ||
+    emitter.decls.has(MAP_SIZE_DECL)
       ? [
           `%ScrMapIx = type { ${emitter.sizeType}, i8, i8, i8, i8, i32, ptr, ptr, i32, i32, i64, ptr, i32, i32, ptr, ptr, i32, i32 }`,
         ]
@@ -1293,6 +1296,18 @@ export function helperDefs(emitter: LlEmitter): string[] {
       ``,
     );
   }
+  // Map.size and Set.size read the live entry count (scr_map_size).
+  if (emitter.decls.has(MAP_SIZE_DECL))
+    defs.push(
+      `define internal double @sc_map_size(ptr %m) ${FN_ATTRS} {`,
+      `entry:`,
+      `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 9`,
+      `  %n = load i32, ptr %np`,
+      `  %nf = uitofp i32 %n to double`,
+      `  ret double %nf`,
+      `}`,
+      ``,
+    );
   // String-key Map/Set lookups test the map's absent-key filter inline
   // (scr_map.c scr_map_filter_bits): a key whose two filter bits are not
   // both set is absent, so most misses on small and medium maps return

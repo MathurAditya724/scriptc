@@ -33,6 +33,7 @@ import {
   emitMapIterSlot,
   mapEntryLayout,
   emitMapIterStart,
+  emitMapSize,
   emitNumberMapGetRef,
   emitNumberMapGetScalar,
   emitNumberMapHas,
@@ -1426,12 +1427,8 @@ export function emitMapLikeIntrinsic(
       B.line(`${t} = call zeroext i1 @scr_map_delete_${kAcc}(ptr ${r.name}, ${kTy} ${k.name})`);
       return { name: t, type: e.type };
     }
-    case "size": {
-      host.declare(`declare double @scr_map_size(ptr)`);
-      const t = B.tmp();
-      B.line(`${t} = call double @scr_map_size(ptr ${r.name})`);
-      return { name: t, type: e.type };
-    }
+    case "size":
+      return { name: emitMapSize(host, r.name), type: e.type };
     case "clear":
       host.declare(`declare void @scr_map_clear(ptr)`);
       B.line(`call void @scr_map_clear(ptr ${r.name})`);

@@ -270,6 +270,16 @@ export function emitMapIterCount(host: LlvmEmitterContext, map: string): string 
   return count;
 }
 
+export const MAP_SIZE_DECL = "declare double @scr_map_size(ptr)";
+
+/** Map.size / Set.size: the live entry count, read inline (sc_map_size). */
+export function emitMapSize(host: LlvmEmitterContext, map: string): string {
+  host.declare(MAP_SIZE_DECL);
+  const size = host.B.tmp();
+  host.B.line(`${size} = call double @sc_map_size(ptr ${map})`);
+  return size;
+}
+
 /** The key (field 0) or value (field 1) of the live entry at an iteration
  * index, read inline: a number as double, a boolean as i1, and a string or
  * reference retained with `type`'s retain (+1), the adapter the collection
