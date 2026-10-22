@@ -18,6 +18,7 @@ import type {
 } from "./ir.js";
 import {
   arrayOf,
+  iterableArmsElem,
   BYTES_ELEMENT_NAME,
   BOOL,
   BYTES_U8,
@@ -801,7 +802,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         arm.kind === "union" ||
         arm.kind === "dyn" ||
         arm.kind === "date" ||
-        arm.kind === "generator"
+        (arm.kind === "generator" && iterableArmsElem(u.arms) === null)
       ) {
         errors.push({ message: `union ${u.id}: arm ${i} is ${arm.kind}`, loc: noLoc });
       }

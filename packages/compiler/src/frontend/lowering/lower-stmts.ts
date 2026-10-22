@@ -239,6 +239,7 @@ import { npmStaticPackageOfPath } from "../npm-static.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { classGeneratorIterable } from "./class-iterables.js";
+import { iterableUnionOf, lowerForOfIterable } from "./iterable-values.js";
 
 interface UsingRegistration {
   acquire: IrStmt[];
@@ -9637,6 +9638,10 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   }
   iterSrc ??= stmt.expression;
   let iterable = lowerer.lowerExpr(iterSrc);
+  {
+    const iterableUnion = iterableUnionOf(lowerer, iterable.type);
+    if (iterableUnion) return lowerForOfIterable(lowerer, stmt, iterable, iterableUnion, labels);
+  }
   let tupleSource: {
     shapeId: string;
     fields: { name: string; type: IrType }[];
