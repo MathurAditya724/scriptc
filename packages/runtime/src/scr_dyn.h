@@ -370,11 +370,13 @@ struct ScrDyn {
       void *source_identity;
       ScrDyn *(*source_access)(void *, bool materialize);
       struct ScrDynObjectIndex *index; /* optional wide-object lookup; owns no values */
-      /* On a runtime-built class prototype (e.g. url.Url.prototype): the
-       * constructor name (static text) util.inspect prints for objects
-       * inheriting from it (scr_dyn_class_name). NULL otherwise. Only
-       * prototypes that live until their thread exits set it, and they
-       * clear it before release, so freelist reuse never sees it. */
+      /* On a runtime-built class prototype (e.g. url.Url.prototype) and
+       * on a compiled class's prototype object: the constructor name
+       * (static or immortal text) util.inspect prints for objects
+       * inheriting from it (scr_dyn_class_name). NULL otherwise. Names
+       * that are copies live on prototypes that live until their thread
+       * exits, and those clear it before release; reuse of a freed object
+       * resets it (scr_dyn_alloc). */
       const char *class_name;
       struct ScrDynRegion *region; /* see ScrDynRegion */
       /* The dynamic tier's hidden class (scr_js_object.c): the transition

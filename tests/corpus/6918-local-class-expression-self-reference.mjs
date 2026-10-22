@@ -48,3 +48,14 @@ function factory(tag) {
 const T = factory("t");
 T.make();
 console.log(T.make().tag, T.count, factory("u").count);
+
+// The only reference to the name is a shorthand property.
+function packed() {
+  const K = class Packed {
+    static wrap() {
+      return { Packed };
+    }
+  };
+  return [K.wrap().Packed === K, K.wrap().Packed.name];
+}
+console.log(packed());

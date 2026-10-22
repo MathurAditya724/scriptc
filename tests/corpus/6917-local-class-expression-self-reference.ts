@@ -39,3 +39,15 @@ function nested(n: number) {
   return Outer.build(n).size();
 }
 console.log(nested(3));
+
+// The only reference to the name is a shorthand property.
+function registry(tag: string) {
+  return class Entry {
+    readonly tag = tag;
+    static table(): Record<string, unknown> {
+      return { Entry };
+    }
+  };
+}
+const Entry1 = registry("e");
+console.log(Entry1.table().Entry === Entry1, new Entry1().tag);

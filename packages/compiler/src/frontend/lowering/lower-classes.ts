@@ -184,6 +184,7 @@ import { constructionEscape } from "./construction-escapes.js";
 import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
 import { initializeRuntimeStatics, hasRuntimeStatics } from "./class-runtime-statics.js";
 import { reflectedClassStaticMethodValue } from "./class-method-values.js";
+import { identifierReadSymbol } from "./surfaces.js";
 
 export function returnsOnlyThis(member: ts.MethodDeclaration): boolean {
   const body = member.body;
@@ -6035,8 +6036,9 @@ export function lowerClassExpressionInfo(
 }
 
 /** True when a named class expression's body refers to the class value by
- * its own name (`class Box { static of() { return new Box(); } }`); type
- * annotations naming it (`again(): Box`) do not count. */
+ * its own name (`class Box { static of() { return new Box(); } }`, a
+ * shorthand property `{ Box }` included); type annotations naming it
+ * (`again(): Box`) do not count. */
 function classExpressionNamesItself(lowerer: Lowerer, expr: ts.ClassExpression): boolean {
   const name = expr.name;
   if (!name) return false;
@@ -6046,11 +6048,7 @@ function classExpressionNamesItself(lowerer: Lowerer, expr: ts.ClassExpression):
   for (const member of expr.members.nodes) {
     ts.walkPreorder(member, (n) => {
       if (found || ts.isTypeNode(n)) return "skip";
-      if (
-        ts.isIdentifier(n) &&
-        n.text === name.text &&
-        lowerer.checker.getSymbolAtLocation(n) === symbol
-      )
+      if (ts.isIdentifier(n) && n.text === name.text && identifierReadSymbol(lowerer, n) === symbol)
         found = true;
       return undefined;
     });

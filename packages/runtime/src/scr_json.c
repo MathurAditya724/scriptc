@@ -1021,6 +1021,7 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/entries preserved */
       d->v.obj.region = NULL;
+      d->v.obj.class_name = NULL; /* a released class prototype's name */
       SCR_JS_SHAPE_RESET(d);
       if (d->v.obj.cap <= SCR_DYN_KEY_CACHE_SLOTS) {
         for (size_t i = 0; i < d->v.obj.cap; i++) {
@@ -4185,13 +4186,11 @@ ScrDyn *scr_dyn_class_prototype(ScrDyn *value, ScrDyn *base) {
   if (!cls->prototype_data) {
     ScrDyn *data = base->kind == SCR_DYN_UNDEF ? scr_dyn_new_obj() : scr_dyn_obj_create(base);
     if (!data) return NULL;
-    /* util.inspect prints an instance with its class's name. */
-    const char *name = value->v.fn.name;
-    if (name && name[0]) {
-      ScrStr *class_name = scr_str_new(name, strlen(name));
-      scr_dyn_name_class_prototype(data, class_name);
-      scr_str_release(class_name);
-    }
+    /* util.inspect prints an instance with its class's name: the class
+     * object's interned name, which is immortal. The prototype is owned by
+     * the class object and no registry keeps it alive, so evaluating a
+     * function-local class again releases the previous one's prototype. */
+    if (cls->name && cls->name->len) data->v.obj.class_name = cls->name->data;
     cls->prototype_data = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     scr_box_set_ref(cls->prototype_data, data);
   }
