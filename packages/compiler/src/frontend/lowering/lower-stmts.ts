@@ -11484,11 +11484,13 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
           keysT,
           loc,
         );
+        // The overflow map's hashed key set answers presence directly; a
+        // fresh key list per visit would make the walk quadratic.
         const guard = (kRef: IrExpr): IrExpr => ({
-          kind: "arrIntrinsic",
-          method: "includes",
-          receiver: { kind: "recordOvfKeys", obj: recvRef(), shapeId, type: keysT, loc },
-          args: [kRef],
+          kind: "recordOvfHas",
+          obj: recvRef(),
+          shapeId,
+          key: kRef,
           type: BOOL,
           loc,
         });
