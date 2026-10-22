@@ -6887,9 +6887,18 @@ declare module "node:tty" {
 declare module "async_hooks" {
   /* AsyncLocalStorage: fiber-carried context snapshots — run/getStore/
    * exit/enterWith/disable lower onto the runtime's active-slot machinery
-   * (als.* libCalls); values cross as dyn values. */
+   * (als.* libCalls); values cross as dyn values. bind and snapshot bind
+   * functions to the active context; the options carry the store's
+   * default value and name. */
+  export interface AsyncLocalStorageOptions {
+    defaultValue?: any;
+    name?: string | undefined;
+  }
   export class AsyncLocalStorage<T = any> {
-    constructor();
+    constructor(options?: AsyncLocalStorageOptions);
+    static bind<Func extends (...args: any[]) => any>(fn: Func): Func;
+    static snapshot(): <R, TArgs extends any[]>(fn: (...args: TArgs) => R, ...args: TArgs) => R;
+    readonly name: string;
     run<R>(store: T, callback: (...args: any[]) => R, ...args: any[]): R;
     exit<R>(callback: (...args: any[]) => R, ...args: any[]): R;
     getStore(): T | undefined;

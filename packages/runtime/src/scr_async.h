@@ -198,6 +198,14 @@ void scr_als_disable(double id);
  * argument vector, restore (the finally). Result +1 or NULL pending. */
 ScrDyn *scr_als_run(double id, ScrDyn *value, ScrDyn *fn, ScrDyn *args);
 ScrDyn *scr_als_exit_run(double id, ScrDyn *fn, ScrDyn *args);
+/* new AsyncLocalStorage(options) (options borrowed; NaN with the exception
+ * pending for a non-object) and the name it carries (+1). */
+double scr_als_new_options(const ScrDyn *options);
+ScrDyn *scr_als_name(double id);
+/* AsyncLocalStorage.bind over a dyn function and the dyn completion
+ * callbacks (fn borrowed; +1), and AsyncLocalStorage.snapshot() (+1). */
+ScrDyn *scr_als_bind_dyn(ScrDyn *fn, bool always);
+ScrDyn *scr_als_snapshot(void);
 
 /* process.on/once('unhandledRejection', fn): dyn listeners dispatched
  * per never-observed rejection at the end of its nextTick/microtask
@@ -473,6 +481,13 @@ double scr_set_timeout_handle_als(ScrClosure *cb, double ms);
 double scr_set_immediate_als(ScrClosure *cb);
 void scr_next_tick_als(ScrClosure *cb);
 void scr_queue_microtask_als(ScrClosure *cb);
+/* A typed callback bound to the active context (scr_async.c): `thunk` is
+ * the compiler's per-signature entry, which brackets the call with
+ * scr_als_bound_target/enter/leave. cb moves in; the result is +1. */
+ScrClosure *scr_als_bind_closure(ScrClosure *cb, void *thunk, bool always);
+ScrClosure *scr_als_bound_target(ScrClosure *self);
+ScrAlsCtx *scr_als_bound_enter(ScrClosure *self);
+void scr_als_bound_leave(ScrAlsCtx *prev, ScrClosure *target);
 /* A successful process.stdout/stderr.write completion on that same queue.
  * The callback and its program-shaped Error | null adapter both MOVE into
  * the entry; the adapter is invoked with NULL (Node's success argument). */

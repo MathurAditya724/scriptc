@@ -4012,6 +4012,47 @@ double scr_set_immediate_als(ScrClosure *cb) { return scr_set_immediate(scr_als_
 void scr_next_tick_als(ScrClosure *cb) { scr_next_tick(scr_als_bind(cb)); }
 void scr_queue_microtask_als(ScrClosure *cb) { scr_queue_microtask(scr_als_bind(cb)); }
 
+/* A typed callback bound to the context active when it was bound: the
+ * completion callbacks of callback-style APIs in programs that use
+ * AsyncLocalStorage, and AsyncLocalStorage.bind. The bound closure's entry
+ * is a thunk the compiler emits per callback signature; it reads the
+ * target (scr_als_bound_target), enters the captured context
+ * (scr_als_bound_enter), calls the target with its own arguments and
+ * restores the caller's context (scr_als_bound_leave). With `always`
+ * false an empty context leaves the callback unbound, since the loop runs
+ * callbacks with an empty context; AsyncLocalStorage.bind passes true, so
+ * a bound function called later inside run() still sees no store. */
+ScrClosure *scr_als_bind_closure(ScrClosure *cb /*moves*/, void *thunk, bool always) {
+  ScrAlsCtx *active = *SCR_ALS_SLOT();
+  if (cb == NULL || (active == NULL && !always)) return cb;
+  ScrClosure *bound = scr_closure_new(thunk, 2);
+  bound->caps[0] = scr_box_new(SCR_BOX_FUNC);
+  scr_box_set_ref(bound->caps[0], cb);
+  bound->caps[1] = scr_box_new_obj(scr_als_ctx_retain_v, scr_als_ctx_release_v, NULL);
+  scr_box_set_ref(bound->caps[1], scr_als_ctx_retain(active));
+  return bound;
+}
+
+/* The bound target (+1, released by scr_als_bound_leave). */
+ScrClosure *scr_als_bound_target(ScrClosure *self) {
+  return scr_box_get_ref(self->caps[0]);
+}
+
+/* Enters the captured context; returns the caller's (owned). */
+ScrAlsCtx *scr_als_bound_enter(ScrClosure *self) {
+  ScrAlsCtx **slot = SCR_ALS_SLOT();
+  ScrAlsCtx *prev = *slot;
+  *slot = scr_box_get_ref(self->caps[1]); /* the slot owns this reference */
+  return prev;
+}
+
+/* Restores the caller's context, replacing whatever the target entered
+ * (an enterWith inside it), and releases the target. */
+void scr_als_bound_leave(ScrAlsCtx *prev, ScrClosure *target) {
+  scr_als_restore(prev);
+  scr_closure_release(target);
+}
+
 /* The checked-dynamic argument form (JS files — common.mustCall wrappers
  * and the suite's invalid-input probes): a non-function throws Node's
  * ERR_INVALID_ARG_TYPE synchronously; a function value is called with

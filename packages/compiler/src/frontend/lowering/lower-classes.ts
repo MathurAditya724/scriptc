@@ -1,3 +1,4 @@
+import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
 import {
   DATE_TIME_FIELD,
   dateRootOf,
@@ -10471,21 +10472,23 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       lowerer.badType(expr, tsType);
     }
     // `new AsyncLocalStorage()` (node:async_hooks): a fresh store id —
-    // an f64 handle (type-mapper.ts), the Channel story. Construction options
-    // ({ defaultValue, name }) have no lowering yet.
+    // an f64 handle (type-mapper.ts), the Channel story. The options form
+    // ({ defaultValue, name }) passes the options object as a dyn value.
     if (
       symbol !== null &&
       ts.symbolName(symbol) === "AsyncLocalStorage" &&
       lowerer.isStdlibSymbol(symbol)
     ) {
-      if ((expr.arguments?.nodes.length ?? 0) > 0) {
-        lowerer.noLowering(
-          "new AsyncLocalStorage(options)",
-          expr,
-          "the zero-argument constructor is the supported form (defaultValue/name options have no lowering yet)",
-        );
-      }
-      return { kind: "libCall", fn: "als.new", args: [], type: F64, loc };
+      const options = expr.arguments?.nodes[0];
+      if (options === undefined)
+        return { kind: "libCall", fn: "als.new", args: [], type: F64, loc };
+      return {
+        kind: "libCall",
+        fn: "als.newOptions",
+        args: [lowerAsyncLocalStorageOptions(lowerer, options)],
+        type: F64,
+        loc,
+      };
     }
     // `new Promise<T>((resolve) => ...)`: the ambient Promise constructor.
     if (symbol !== null && ts.symbolName(symbol) === "Promise" && lowerer.isStdlibSymbol(symbol)) {

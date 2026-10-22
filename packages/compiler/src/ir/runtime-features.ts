@@ -115,12 +115,16 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.measure",
   // Blob and File (scr_blob.c, linked with this unit, which boxes their
   // reads as dyn promises).
+  "als.bindCallbackDyn",
   "als.disable",
   "als.enterWith",
   "als.exitRun",
   "als.get",
+  "als.name",
   "als.new",
+  "als.newOptions",
   "als.run",
+  "als.snapshot",
   "blob.arrayBuffer",
   "blob.bytes",
   "blob.fileNew",

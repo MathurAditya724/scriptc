@@ -1387,7 +1387,10 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -1437,7 +1440,10 @@
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1510,7 +1516,10 @@
         "evidence": "compiler-dedicated:asyncLocalStorage.disable",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1537,7 +1546,10 @@
         "evidence": "compiler-dedicated:asyncLocalStorage.getStore",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1564,7 +1576,10 @@
         "evidence": "compiler-dedicated:asyncLocalStorage.enterWith",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1591,7 +1606,10 @@
         "evidence": "compiler-dedicated:asyncLocalStorage.run",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1618,7 +1636,10 @@
         "evidence": "compiler-dedicated:asyncLocalStorage.exit",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1922,6 +1943,9 @@
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
           "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -2484,7 +2508,10 @@
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
         ]
       },
       "anchorSource": "exact"

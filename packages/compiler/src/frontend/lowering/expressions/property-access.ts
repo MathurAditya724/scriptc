@@ -134,6 +134,7 @@ import {
 import { expandoMemberRead } from "../lower-expando.js";
 import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
+import { lowerAsyncLocalStorageProperty } from "../builtins/async-context.js";
 import { lowerEventStaticProperty } from "../builtins/numbers.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
 import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
@@ -814,6 +815,8 @@ export function lowerPropertyAccessExpr(
     // diagnostics_channel Channel receivers — name/hasSubscribers
     // over the f64 channel handle.
     lowerer.lowerDiagnosticsChannelProperty(expr) ??
+    // AsyncLocalStorage receivers — the name option.
+    lowerAsyncLocalStorageProperty(lowerer, expr) ??
     // readline Interface receivers — the history and option members
     // over the f64 interface handle.
     lowerReadlineProperty(lowerer, expr) ??
