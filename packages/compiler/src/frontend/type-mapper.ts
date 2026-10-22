@@ -2361,6 +2361,27 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const args = checker.getTypeArguments(ref);
     if (args.length === 0) return arrayOf(unitOnlyUnion(unions));
     if (tupleShape?.elementFlags === undefined) return null;
+    // A leading-required tuple ending in a rest element whose positions
+    // all share one type (`[string, ...string[]]`, the non-empty list)
+    // is an array of that type: every read, write and method behaves as
+    // the array's, and tsc already proves the required positions exist.
+    const flags = tupleShape.elementFlags;
+    if (
+      flags.length >= 2 &&
+      (flags[flags.length - 1]! & ts.ElementFlags.Rest) !== 0 &&
+      flags.slice(0, -1).every((f) => (f & ts.ElementFlags.Required) !== 0)
+    ) {
+      const elems = args.map((a) => mapType(a, ctx));
+      const first = elems[0];
+      if (
+        first &&
+        first.kind !== "void" &&
+        isSupportedArrayElem(first) &&
+        elems.every((e) => e !== null && typeEquals(e, first))
+      )
+        return arrayOf(first);
+      return null;
+    }
     // Optional/rest elements have no fixed native tuple layout.
     if (tupleShape.elementFlags.some((f) => !(f & ts.ElementFlags.Required))) {
       return null;
