@@ -5844,6 +5844,41 @@ function constAssertedEmptyArrayProp(p: ts.Symbol): boolean {
   return underConstAssertion(d);
 }
 
+/** A TypeScript property assignment `name: []` whose type is `never[]`. */
+function emptyNeverArrayProp(p: ts.Symbol, fieldTs: ts.Type, checker: ts.TypeChecker): boolean {
+  const d = p.valueDeclaration;
+  if (d === undefined || !ts.isPropertyAssignment(d)) return false;
+  if (isJsSourceFile(ts.getSourceFileOfNode(d))) return false;
+  if (!ts.isArrayLiteralExpression(d.initializer) || d.initializer.elements.nodes.length > 0)
+    return false;
+  return (
+    checker.isArrayType(fieldTs) &&
+    (checker.getTypeArguments(fieldTs as ts.TypeReference)[0]!.flags & ts.TypeFlags.Never) !== 0
+  );
+}
+
+/** A JavaScript object literal's property (`{ lastComponent: undefined }`,
+ * `{ user: null }`). Nothing checks a JavaScript file's later writes, which
+ * can store any value in it (`path.lastComponent = { ... }`), so a
+ * property whose only initializer is a unit holds the checked-dynamic value
+ * rather than the unit-only union. */
+function isUnitOnlyIr(t: IrType, ctx: TypeMapperCtx): boolean {
+  if (t.kind !== "union") return false;
+  const def = ctx.unions.get(t.unionId);
+  return def !== undefined && def.arms.every((arm) => isUnitType(arm));
+}
+
+function jsObjectLiteralProperty(p: ts.Symbol): boolean {
+  const d = p.valueDeclaration;
+  // `__proto__: null` sets the literal's prototype; it declares no property.
+  return (
+    d !== undefined &&
+    (ts.isPropertyAssignment(d) || ts.isShorthandPropertyAssignment(d)) &&
+    ts.symbolName(p) !== "__proto__" &&
+    isJsSourceFile(ts.getSourceFileOfNode(d))
+  );
+}
+
 function mapGenericAwaitedAlias(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { resolveTypeParam } = ctx;
   if (!resolveTypeParam) return null;
@@ -7880,6 +7915,14 @@ function mapRecordTypeInner(
       ) {
         pt = arrayOf(unitOnlyUnion(ctx.unions));
       }
+      // A TypeScript property initialized with an empty literal and typed
+      // `never[]` (`const out = { files: [] }`) holds no element, so it maps
+      // like the empty tuple: the unit-only element array, which a
+      // destination's typed array field (`files: string[]`) receives through
+      // the checked empty-array lift. never's f64 element would make it a
+      // `number[]` field.
+      if (pt?.kind === "array" && emptyNeverArrayProp(p, fieldTs, checker))
+        pt = arrayOf(unitOnlyUnion(ctx.unions));
       if (pt === null && (fieldTs.flags & ts.TypeFlags.Any) !== 0) pt = DYN;
       // An `any[]` field (`list: any[]` in an SDK's message type, also
       // optional or nullable) is the checked-dynamic array, exactly as
@@ -7903,6 +7946,7 @@ function mapRecordTypeInner(
       // omits the undefined arm exactly like an omitted optional.
       if (pt?.kind === "void" && isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam))
         pt = unitOnlyUnion(ctx.unions);
+      if (pt !== null && isUnitOnlyIr(pt, ctx) && jsObjectLiteralProperty(p)) pt = DYN;
       // dyn FIELDS map now (`{ v: unknown }`, `[string, unknown]` tuples):
       // the slot carries a dyn value exactly like an `unknown`-valued
       // overflow entry — same RC adapters, same dynFrom conversion on the
