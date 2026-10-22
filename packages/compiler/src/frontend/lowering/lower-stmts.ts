@@ -4800,9 +4800,9 @@ export function lowerVarDeclList(
  * it, and reads inside closures as the unsettled array. When every read
  * with a settled element type maps to the same array type, the binding has
  * that type. When reads disagree, a write (`xs.push(v)`, `xs.unshift(v)`,
- * `xs[i] = v`) stores a value that type's element does not hold, or the
- * binding is reassigned, it is checked-dynamic, as the same binding is at
- * module scope. Null for other bindings. */
+ * `xs.push(...values)`, `xs[i] = v`) stores a value that type's element does
+ * not hold, or the binding is reassigned, it is checked-dynamic, as the same
+ * binding is at module scope. Null for other bindings. */
 function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | null {
   if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return null;
   let initializer: ts.Expression = decl.initializer;
@@ -4870,11 +4870,24 @@ function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrTy
     result = mapped;
   }
   if (result === null || result.kind !== "array") return DYN;
+  // The element types a write stores: its value's, or for a spread
+  // (`xs.push(...values)`) the source array's element or tuple's elements.
+  // Another spread source stores elements this check cannot see.
+  const storedTypes = (value: ts.Expression): ts.Type[] | null => {
+    if (!ts.isSpreadElement(value)) return [lowerer.typeOf(value)];
+    const source = lowerer.typeOf(value.expression);
+    if (lowerer.checker.isArrayType(source) || lowerer.checker.isTupleType(source))
+      return [...lowerer.checker.getTypeArguments(source as ts.TypeReference)];
+    return null;
+  };
   for (const value of written) {
-    if (ts.isSpreadElement(value)) return DYN;
-    const t = lowerer.mapTypeOf(lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(value)));
-    if (!t || (!typeEquals(t, result.elem) && lowerer.widthLiftPlan(t, result.elem) === null))
-      return DYN;
+    const stored = storedTypes(value);
+    if (stored === null) return DYN;
+    for (const type of stored) {
+      const t = lowerer.mapTypeOf(lowerer.checker.getBaseTypeOfLiteralType(type));
+      if (!t || (!typeEquals(t, result.elem) && lowerer.widthLiftPlan(t, result.elem) === null))
+        return DYN;
+    }
   }
   return result;
 }

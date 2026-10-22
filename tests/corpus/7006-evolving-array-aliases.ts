@@ -68,3 +68,12 @@ console.log(chain());
 console.log(viaAlias(), "|", letAlias());
 console.log(nested(true), "|", nested(false), "|", elementWrite());
 console.log(agreeing(), "|", passed());
+
+function spreadSame(): number {
+  const xs = [];
+  xs.push(1);
+  const more = [2, 3];
+  xs.push(...more);
+  return xs.reduce((sum, v) => sum + v, 0);
+}
+console.log(spreadSame());
