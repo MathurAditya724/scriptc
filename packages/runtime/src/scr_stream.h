@@ -545,6 +545,20 @@ void scr_stream_set_writev_default(ScrStream *s, ScrClosure *cb, ScrStreamWritev
 ScrStream *scr_stream_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
                                       ScrClosure *read, ScrClosure *ret, ScrClosure *thr);
 ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
+/* Duplex.from over an async function (the compiled stage takes the source
+ * generator and answers its promise; source and the promise's box helper
+ * borrowed): a writable Duplexify whose final waits for the promise. +1. */
+ScrStream *scr_stream_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source, ScrClosure *box);
+/* Duplex.from over a Readable, a Writable, or a { readable, writable }
+ * pair (duplexify.js's _duplexify): a Duplexify that reads r and writes w
+ * (either NULL in scr_stream_duplexify; streams borrowed). +1. */
+ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w);
+ScrStream *scr_stream_duplexify_readable(ScrStream *r);
+ScrStream *scr_stream_duplexify_writable(ScrStream *w);
+ScrStream *scr_stream_duplexify_pair(ScrStream *r, ScrStream *w);
+/* Duplex.from(promise): a readable Duplexify of the promise's value. p and
+ * box (the compiler's promise → dyn promise helper) borrowed. +1. */
+ScrStream *scr_stream_duplex_from_promise(struct ScrPromise *p, ScrClosure *box);
 /* decodeStrings (false keeps string writes as strings), the writable
  * defaultEncoding option (a known encoding, borrowed), and
  * setDefaultEncoding (validated; answers the stream +1). The chaining

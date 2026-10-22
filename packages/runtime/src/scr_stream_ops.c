@@ -2042,7 +2042,7 @@ ScrStream *scr_stream_from_async_iter(ScrDyn *iter, double flags, double hwm) {
  * (the chunk, or the done marker), and ack() is fromAsyncGen's
  * `process.nextTick(cb)` followed by a fresh deferred. */
 
-enum { CHAN_NONE, CHAN_WRITE, CHAN_FINAL, CHAN_ABORT };
+enum { CHAN_NONE, CHAN_WRITE, CHAN_FINAL, CHAN_ABORT, CHAN_FINAL_ASYNC };
 
 typedef struct OpChan OpChan;
 struct OpChan {
@@ -2052,6 +2052,12 @@ struct OpChan {
   ScrPromise *resolve;  /* +1: the deferred a write or the final settles, NULL once settled */
   int settled;          /* CHAN_*: what settled the deferred, for ack() */
   bool aborted;         /* destroy ran (fromAsyncGen's ac.abort()) */
+  /* An async function body: its promise's then() (duplexify.js) settles
+   * `promise` there; the final waits for it. */
+  bool finalized;       /* final() has started */
+  bool body_settled;    /* the then() callbacks ran */
+  bool final_waiting;   /* the final's callback awaits the settlement */
+  ScrError *body_err;   /* +1: what awaiting the then() result throws, or NULL */
   OpChan *live_prev, *live_next;
 };
 
@@ -2059,6 +2065,7 @@ static SCR_TL OpChan *op_chan_live = NULL;
 
 static void op_chan_drop(OpObj *o) {
   OpChan *c = (OpChan *)o;
+  if (c->body_err) scr_error_release(c->body_err);
   if (c->d) scr_stream_release(c->d);
   if (c->promise) scr_promise_release(c->promise);
   if (c->resolve) scr_promise_release(c->resolve);
@@ -2136,10 +2143,49 @@ static ScrError *op_chan_abort_error(void) {
 
 /* After the source's await: process.nextTick(cb), then (unless done) the
  * aborted check and a fresh deferred. */
+static void op_chan_final_async_wait(OpChan *c);
+
+/* The final's completion after `await promise`: process.nextTick(cb, err) */
+static void op_chan_final_async_done(ScrClosure *job) {
+  OpChan *c = op_chan_of(job);
+  if (c->d) {
+    ScrError *err = c->body_err ? scr_error_retain(c->body_err) : NULL;
+    ScrStream *d = scr_stream_retain(c->d);
+    scr_stream_final_done(d, err);
+    scr_stream_release(d);
+  }
+  op_unref(c);
+}
+
+/* `await promise` resumed: the completion follows on the next tick */
+static void op_chan_final_async_resume(ScrClosure *job) {
+  OpChan *c = op_chan_of(job);
+  scr_next_tick(op_chan_closure((void *)&op_chan_final_async_done, c));
+  op_unref(c);
+}
+
+/* The final's async callback (run by the source's nextTick): it awaits
+ * the then() result, which may still be pending. */
+static void op_chan_final_async_tick(ScrClosure *job) {
+  OpChan *c = op_chan_of(job);
+  op_chan_final_async_wait(c);
+  op_unref(c);
+}
+
+static void op_chan_final_async_wait(OpChan *c) {
+  if (c->body_settled) scr_queue_microtask(op_chan_closure((void *)&op_chan_final_async_resume, c));
+  else c->final_waiting = true;
+}
+
 static void op_chan_ack_inv(ScrClosure *cb) {
   OpChan *c = op_chan_of(cb);
   int settled = c->settled;
   c->settled = CHAN_NONE;
+  if (settled == CHAN_FINAL_ASYNC) {
+    scr_next_tick(op_chan_closure((void *)&op_chan_final_async_tick, c));
+    op_unref(c);
+    return;
+  }
   if (c->d && (settled == CHAN_WRITE || settled == CHAN_FINAL)) {
     ScrClosure *tick = scr_closure_new((void *)&op_chan_done_tick, 2);
     tick->caps[0] = scr_box_new_obj(&scr_stream_retain_v, &scr_stream_release_v, &scr_stream_trace);
@@ -2258,6 +2304,126 @@ ScrStream *scr_stream_duplex_from_gen(ScrClosure *stage, ScrClosure *source, Scr
   c->live_next = op_chan_live;
   if (op_chan_live) op_chan_live->live_prev = c;
   op_chan_live = c; /* the reference c was created with */
+  return d;
+}
+
+/* ── Duplex.from(asyncFunction) ── duplexify.js: the function's promise
+ * must settle to a nullish value (else ERR_INVALID_RETURN_VALUE when the
+ * final awaits it), a return before the input was consumed destroys the
+ * Duplex, a rejection destroys it with the reason, and the Duplexify is
+ * writable only, its final waiting for the promise. */
+
+typedef ScrPromise *(*OpAsyncStageFn)(ScrClosure *, ScrGen *);
+typedef ScrDyn *(*OpBoxFn)(ScrClosure *, ScrPromise *);
+
+typedef struct {
+  OpChan *c;     /* +1 */
+  ScrDyn *boxed; /* +1, the function's promise boxed */
+} OpAsyncBody;
+
+static void op_async_body_entry(ScrFiber *fiber, void *arg) {
+  (void)fiber;
+  OpAsyncBody b = *(OpAsyncBody *)arg;
+  free(arg);
+  OpChan *c = b.c;
+  ScrDyn *v = scr_await_ref(b.boxed->v.promise); /* NULL: undefined */
+  ScrStream *d = c->d ? scr_stream_retain(c->d) : NULL;
+  if (!scr_exc_pending()) {
+    if (v && v->kind != SCR_DYN_NULL && v->kind != SCR_DYN_UNDEF) {
+      /* the then() callback throws: awaiting its result rejects */
+      char detail[160];
+      const char *got = scr_dyn_specific_type(v, detail, sizeof detail);
+      char msg[320];
+      int n = snprintf(msg, sizeof msg,
+                       "Expected nully to be returned from the \"body\" function but got %s.", got);
+      c->body_err = op_coded_error(SCR_ERR_TYPE, "ERR_INVALID_RETURN_VALUE", msg);
+      (void)n;
+    } else if (!c->finalized && d) {
+      /* returned without consuming the input: destroyer(d) */
+      ScrError *e = op_chan_abort_error();
+      scr_stream_release(scr_stream_destroy(d, e));
+      scr_error_release(e);
+    }
+    if (v) scr_dyn_release(v);
+  } else {
+    ScrCaught *caught = scr_exc_take();
+    ScrError *err = op_caught_error(caught);
+    scr_caught_release(caught);
+    if (d) scr_stream_release(scr_stream_destroy(d, err));
+    scr_error_release(err);
+  }
+  if (scr_exc_pending()) scr_exc_clear();
+  if (d) scr_stream_release(d);
+  c->body_settled = true;
+  if (c->final_waiting) {
+    c->final_waiting = false;
+    op_chan_final_async_wait(c);
+  }
+  op_unref(c);
+  scr_dyn_release(b.boxed);
+}
+
+/* Duplexify's final(cb) for an async function body: finalized, then
+ * fromAsyncGen's final with the awaiting callback */
+static void op_chan_final_async_inv(ScrClosure *cb, ScrStream *s) {
+  (void)s;
+  OpChan *c = op_chan_of(cb);
+  c->finalized = true;
+  op_chan_settle(c, scr_stream_from_done(), CHAN_FINAL_ASYNC);
+  op_unref(c);
+}
+
+/* fromAsyncGen's destroy alone (no from() iterator to close) */
+static void op_chan_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  OpChan *c = op_chan_of(cb);
+  c->aborted = true;
+  if (c->resolve) op_chan_settle(c, scr_stream_from_done(), CHAN_ABORT);
+  op_chan_retire(c);
+  op_unref(c);
+  scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
+}
+
+/* Duplex.from(fn) for an async function: the compiled stage (borrowed)
+ * takes the source generator and answers its promise; source and box
+ * (promise → dyn promise) borrowed. +1, or NULL with the function's throw
+ * pending. */
+ScrStream *scr_stream_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source, ScrClosure *box) {
+  op_sentinels_init();
+  static SCR_TL bool registered = false;
+  if (!registered) {
+    registered = true;
+    scr_atexit(op_chan_atexit);
+  }
+  OpChan *c = op_alloc(sizeof *c);
+  c->base.rc = 1;
+  c->base.drop = &op_chan_drop;
+  op_chan_defer(c);
+  ScrGen *src = ((OpSourceFn)source->fn)(source, op_chan_closure((void *)&op_chan_next_inv, c),
+                                         op_chan_closure((void *)&op_chan_ack_inv, c));
+  ScrPromise *p = scr_exc_pending() ? NULL : ((OpAsyncStageFn)stage->fn)(stage, src);
+  if (scr_exc_pending()) {
+    if (p) scr_promise_release(p);
+    op_unref(c);
+    return NULL;
+  }
+  /* Duplexify({ objectMode: true, readable: false, write, final, destroy }) */
+  ScrStream *d = scr_stream_new_duplex(16, 16, true, true, true, false, true, NULL, NULL,
+                                       op_chan_closure((void *)&op_chan_write_inv, c), &op_chan_write_inv,
+                                       op_chan_closure((void *)&op_chan_final_async_inv, c),
+                                       &op_chan_final_async_inv,
+                                       op_chan_closure((void *)&op_chan_destroy_inv, c), &op_chan_destroy_inv);
+  scr_stream_set_object_mode(d, true, true);
+  d->cls = "Duplexify";
+  c->d = scr_stream_retain(d);
+  c->live_next = op_chan_live;
+  if (op_chan_live) op_chan_live->live_prev = c;
+  op_chan_live = c; /* the reference c was created with */
+  /* value.then(onFulfilled, onRejected) */
+  OpAsyncBody *b = malloc(sizeof *b);
+  if (!b) op_oom();
+  b->c = op_ref(c);
+  b->boxed = ((OpBoxFn)box->fn)(box, p); /* p moves */
+  scr_promise_release(scr_async_spawn_after(b->boxed->v.promise, &op_async_body_entry, b));
   return d;
 }
 

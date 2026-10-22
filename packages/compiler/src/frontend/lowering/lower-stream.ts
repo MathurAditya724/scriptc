@@ -3772,11 +3772,11 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
   if (fn !== null) {
     const isAsync = (fn.modifiers?.nodes ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
     const isGen = !ts.isArrowFunction(fn) && fn.asteriskToken !== undefined;
-    if (!isAsync || !isGen) {
+    if (!isAsync) {
       lowerer.noLowering(
-        "Duplex.from over a function that is not an async generator function",
+        "Duplex.from over a function that is not async",
         node,
-        "write the body as async function* (source) { for await (const chunk of source) ... }",
+        "write the body as async function* (source) { ... } or async function (source) { ... }",
       );
     }
     if (fn.parameters.nodes.length > 1) {
@@ -3794,6 +3794,34 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
       nextT: UNDEFINED_T,
     };
     const lowered = lowerStageFunction(lowerer, fn, sourceT);
+    if (!isGen) {
+      // an async function: a writable Duplexify whose final waits for
+      // the function's promise
+      const asyncSource = duplexSourceHelper(lowerer, sourceT, loc);
+      const out = lowered.out;
+      if (out.kind !== "promise" || !asyncSource)
+        return lowerer.noLowering("Duplex.from over a function with this return type", node);
+      if (
+        out.inner.kind !== "void" &&
+        !canConvertToDyn(
+          out.inner,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      ) {
+        lowerer.noLowering(
+          `Duplex.from over a function resolving to '${lowerer.fmt(out.inner)}'`,
+          node,
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "stream.duplexFromAsyncFn",
+        args: [lowered.closure, asyncSource, pipelineBoxHelper(lowerer, out, loc)],
+        type: duplex,
+        loc,
+      };
+    }
     const helpers =
       lowered.out.kind === "generator" ? fromGenHelpers(lowerer, lowered.out, loc) : null;
     const source = duplexSourceHelper(lowerer, sourceT, loc);
@@ -3818,6 +3846,45 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
   }
   const bodySides =
     bodyT?.kind === "object" ? streamSidesOf(lowerer, lowerer.classes.get(bodyT.className)) : null;
+  let literal: ts.Expression = node;
+  while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
+  if (bodySides === null && ts.isObjectLiteralExpression(literal))
+    return duplexFromPair(lowerer, literal, loc);
+  if (bodyT?.kind === "promise") {
+    // a Duplexify that reads the promise's value
+    const valueT = bodyT.inner;
+    if (
+      valueT.kind !== "void" &&
+      !canConvertToDyn(
+        valueT,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    ) {
+      lowerer.noLowering(`Duplex.from over a promise of '${lowerer.fmt(valueT)}'`, node);
+    }
+    const promise = lowerer.lowerExpr(node);
+    if (promise.type.kind !== "promise") {
+      // a checked-dynamic promise (an untyped function's result)
+      return {
+        kind: "libCall",
+        fn: "stream.duplexFromDyn",
+        args: [lowerer.coerceToExpected(promise, DYN)],
+        type: { kind: "object", className: "%Duplex" },
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "stream.duplexFromPromise",
+      args: [
+        promise,
+        pipelineBoxHelper(lowerer, promise.type as IrType & { kind: "promise" }, loc),
+      ],
+      type: { kind: "object", className: "%Duplex" },
+      loc,
+    };
+  }
   if (bodySides === null) return lowerFromSource(lowerer, node, node, undefined, true);
   let stream: IrExpr;
   try {
@@ -3830,14 +3897,86 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
     stream.type.kind === "object"
       ? streamSidesOf(lowerer, lowerer.classes.get(stream.type.className))
       : null;
+  // _duplexify({ readable }) / _duplexify({ writable })
+  if (sides === "r" || sides === "w") {
+    return {
+      kind: "libCall",
+      fn: sides === "r" ? "stream.duplexifyReadable" : "stream.duplexifyWritable",
+      args: [stream],
+      type: duplex,
+      loc,
+    };
+  }
   if (sides !== "rw") {
     lowerer.noLowering(
-      `Duplex.from over a ${sides === "r" ? "Readable" : sides === "w" ? "Writable" : "value of this type"}`,
+      "Duplex.from over a value of this type",
       node,
-      "an async generator function, an array, a string, a generator, an async generator, or a Duplex, Transform or PassThrough is the lowered body",
+      "an async generator function, an iterable, a stream, or a { readable, writable } pair is the lowered body",
     );
   }
   return stream;
+}
+
+/** Duplex.from({ readable, writable }): each member that is a stream with
+ * that side is used as it is, any other member is Duplex.from of it, and
+ * the pair reads and writes through _duplexify (duplexify.js). The
+ * members evaluate in source order. */
+function duplexFromPair(
+  lowerer: Lowerer,
+  literal: ts.ObjectLiteralExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const duplex: IrType = { kind: "object", className: "%Duplex" };
+  const sides: { readable?: IrExpr; writable?: IrExpr } = {};
+  for (const p of literal.properties.nodes) {
+    const key =
+      (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && ts.isIdentifier(p.name)
+        ? p.name.text
+        : null;
+    if (key !== "readable" && key !== "writable") {
+      lowerer.noLowering(
+        "Duplex.from over an object with members other than readable and writable",
+        p,
+        "pass { readable, writable } with streams or Duplex.from bodies",
+      );
+    }
+    const value = ts.isShorthandPropertyAssignment(p)
+      ? (p.name as ts.Identifier)
+      : (p as ts.PropertyAssignment).initializer;
+    let valueT: IrType | null;
+    try {
+      valueT = lowerer.mapTypeOf(lowerer.typeOf(value));
+    } catch {
+      valueT = null;
+    }
+    const valueSides =
+      valueT?.kind === "object"
+        ? streamSidesOf(lowerer, lowerer.classes.get(valueT.className))
+        : null;
+    const wanted = key === "readable" ? "r" : "w";
+    const direct = valueSides === "rw" || valueSides === wanted;
+    sides[key!] = direct
+      ? lowerStreamArg(lowerer, value, "compose")
+      : duplexFromBody(lowerer, value, loc);
+  }
+  const { readable, writable } = sides;
+  if (readable && writable)
+    return {
+      kind: "libCall",
+      fn: "stream.duplexifyPair",
+      args: [readable, writable],
+      type: duplex,
+      loc,
+    };
+  if (readable)
+    return { kind: "libCall", fn: "stream.duplexifyReadable", args: [readable], type: duplex, loc };
+  if (writable)
+    return { kind: "libCall", fn: "stream.duplexifyWritable", args: [writable], type: duplex, loc };
+  return lowerer.noLowering(
+    "Duplex.from over an object with neither readable nor writable",
+    literal,
+    "pass { readable, writable } with streams or Duplex.from bodies",
+  );
 }
 
 /** The checker type of a stage's string or Buffer chunks, or null for

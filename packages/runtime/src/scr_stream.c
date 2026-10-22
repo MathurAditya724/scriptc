@@ -1769,18 +1769,26 @@ ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
 }
 
 /* Duplex.from(body) over a checked-dynamic body (duplexify.js): a native
- * Duplex answers itself, an iterable reads as Duplex.from does, and the
- * other bodies Node accepts (a lone Readable or Writable, a function, a
- * promise, a { readable, writable } pair) are not supported yet. */
+ * Duplex answers itself, a lone native Readable or Writable is wrapped, a
+ * promise reads as its value, an iterable reads as Duplex.from does, and
+ * the other bodies Node accepts (a function, a thenable, a { readable,
+ * writable } pair) are not supported yet. */
 static ScrStream *scr_stream_boxed(const ScrDyn *value);
+static ScrStream *scr_dupx_from_boxed(ScrDyn *boxed);
 
 ScrStream *scr_stream_duplex_from_dyn(ScrDyn *body) {
   ScrStream *native = scr_stream_of_handle(body); /* +1 */
   if (!native) native = scr_stream_boxed(body);   /* +1 */
-  if (native && native->st->has_r && native->st->has_w) return native;
-  bool unsupported = native != NULL;
-  if (native) scr_stream_release(native);
-  if (!unsupported && (body->kind == SCR_DYN_FUNC || body->kind == SCR_DYN_PROMISE)) unsupported = true;
+  if (native) {
+    if (native->st->has_r && native->st->has_w) return native;
+    /* _duplexify({ readable }) / _duplexify({ writable }) */
+    ScrStream *d = native->st->has_r ? scr_stream_duplexify(native, NULL)
+                                     : scr_stream_duplexify(NULL, native);
+    scr_stream_release(native);
+    return d;
+  }
+  if (body->kind == SCR_DYN_PROMISE) return scr_dupx_from_boxed(scr_dyn_retain(body));
+  bool unsupported = body->kind == SCR_DYN_FUNC;
   if (!unsupported && body->kind == SCR_DYN_OBJ) {
     static const char *const keys[] = {"then", "readable", "writable"};
     for (size_t i = 0; i < 3 && !unsupported; i++) {
@@ -4708,6 +4716,344 @@ ScrStream *scr_stream_compose_stages(double n, ScrStream **streams, double count
   ScrPipeStages fs = scr_pipe_stages_of(count, stages, positions, flags, mask, helpers, box, signal);
   return scr_stream_compose_impl((size_t)n, streams, &fs, abort);
 }
+
+/* ── Duplex.from over a stream or a { readable, writable } pair ─────────
+ * duplexify.js's _duplexify({ readable, writable }): a Duplexify that
+ * writes to w (write() answering false waits for 'drain'; final ends w and
+ * waits for its 'finish') and reads r through 'readable' and read(), with
+ * each side's end of stream (eos) finishing the Duplex. The readable and
+ * writable object modes follow r's and w's. */
+
+enum { SCR_DUPX_UNSET, SCR_DUPX_NULL, SCR_DUPX_WAIT };
+
+typedef struct ScrDuplexify {
+  size_t rc;
+  ScrStream *r, *w;  /* +1 or NULL */
+  ScrStream *d;      /* +1 until teardown */
+  ScrClosure *drain_l, *finish_l, *readable_l, *end_l; /* +1, the listeners, or NULL */
+  bool readable, writable;
+  bool ondrain, onfinish, onreadable;
+  int onclose; /* _duplexify's onclose: undefined, null, or d's destroy callback */
+  struct ScrDuplexify *live_prev, *live_next;
+} ScrDuplexify;
+
+static SCR_TL ScrDuplexify *scr_dupx_live = NULL;
+
+static void *scr_dupx_retain_v(void *p) {
+  ((ScrDuplexify *)p)->rc++;
+  return p;
+}
+
+static void scr_dupx_release_v(void *p) {
+  ScrDuplexify *x = p;
+  if (--x->rc > 0) return;
+  if (x->r) scr_stream_release(x->r);
+  if (x->w) scr_stream_release(x->w);
+  free(x);
+}
+
+static ScrClosure *scr_dupx_closure(void *fn, ScrDuplexify *x) {
+  ScrClosure *cl = scr_closure_new(fn, 1);
+  cl->caps[0] = scr_box_new_obj(&scr_dupx_retain_v, &scr_dupx_release_v, NULL);
+  scr_box_set_ref(cl->caps[0], scr_dupx_retain_v(x));
+  return cl;
+}
+
+static void scr_dupx_on(ScrStream *s, const char *name, ScrClosure **slot, void *fn, ScrDuplexify *x) {
+  ScrStr *n = scr_str_new(name, strlen(name));
+  *slot = scr_dupx_closure(fn, x);
+  scr_emitter_release(
+      scr_emitter_on((ScrEmitter *)s, n, scr_closure_retain(*slot), scr_ee_inv_fixed0, false, false));
+  scr_str_release(n);
+}
+
+/* Drop the Duplex and the listeners on r and w. */
+static void scr_dupx_teardown(ScrDuplexify *x) {
+  if (!x->d) return;
+  if (x->w) {
+    scr_compose_off(x->w, "drain", &x->drain_l);
+    scr_compose_off(x->w, "finish", &x->finish_l);
+  }
+  if (x->r) {
+    scr_compose_off(x->r, "readable", &x->readable_l);
+    scr_compose_off(x->r, "end", &x->end_l);
+  }
+  if (x->live_prev) x->live_prev->live_next = x->live_next;
+  else scr_dupx_live = x->live_next;
+  if (x->live_next) x->live_next->live_prev = x->live_prev;
+  x->live_prev = x->live_next = NULL;
+  ScrStream *d = x->d;
+  x->d = NULL;
+  scr_stream_release(d);
+  scr_dupx_release_v(x); /* the live list's reference */
+}
+
+static void scr_dupx_atexit(void) {
+  while (scr_dupx_live) scr_dupx_teardown(scr_dupx_live);
+}
+
+/* d's destroy callback: callback(err), then the context lets go. */
+static void scr_dupx_destroyed(ScrDuplexify *x, ScrError *err) {
+  ScrStream *d = scr_stream_retain(x->d);
+  scr_dupx_teardown(x);
+  scr_stream_destroy_done(d, err ? scr_error_retain(err) : NULL);
+  scr_stream_release(d);
+}
+
+/* onfinished(err): the pending destroy callback, else d.destroy(err) */
+static void scr_dupx_onfinished(ScrDuplexify *x, ScrError *err) {
+  int onclose = x->onclose;
+  x->onclose = SCR_DUPX_NULL;
+  if (!x->d) return;
+  if (onclose == SCR_DUPX_WAIT) {
+    scr_dupx_destroyed(x, err);
+  } else if (err) {
+    ScrStream *d = scr_stream_retain(x->d);
+    scr_stream_release(scr_stream_destroy(d, err));
+    scr_stream_release(d);
+  }
+}
+
+/* eos(w): writable = false; an error destroys r */
+static void scr_dupx_w_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  (void)s;
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  x->writable = false;
+  if (err && x->r) scr_stream_release(scr_stream_destroy(x->r, err));
+  scr_dupx_onfinished(x, err);
+  scr_dupx_release_v(x);
+}
+
+/* eos(r): readable = false; an error destroys w */
+static void scr_dupx_r_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  (void)s;
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  x->readable = false;
+  if (err && x->w) scr_stream_release(scr_stream_destroy(x->w, err));
+  scr_dupx_onfinished(x, err);
+  scr_dupx_release_v(x);
+}
+
+/* d._write: w.write(chunk) ? callback() : (ondrain = callback) */
+static void scr_dupx_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  bool ok = scr_stream_writes_values(s) ? scr_stream_write_dyn(x->w, (ScrDyn *)chunk, NULL)
+                                        : scr_stream_write(x->w, chunk, NULL);
+  if (ok) {
+    if (!scr_exc_pending()) scr_stream_write_done(s, NULL);
+  } else {
+    x->ondrain = true;
+  }
+  scr_dupx_release_v(x);
+}
+
+/* d._final: w.end(); onfinish = callback */
+static void scr_dupx_final_inv(ScrClosure *cb, ScrStream *s) {
+  (void)s;
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  ScrStream *r = scr_stream_end(x->w, NULL, NULL, NULL);
+  if (r) scr_stream_release(r);
+  x->onfinish = true;
+  scr_dupx_release_v(x);
+}
+
+static void scr_dupx_drain_l(ScrClosure *cb) {
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  if (x->ondrain && x->d) {
+    x->ondrain = false;
+    scr_stream_write_done(x->d, NULL);
+  }
+  scr_dupx_release_v(x);
+}
+
+static void scr_dupx_finish_l(ScrClosure *cb) {
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  if (x->onfinish && x->d) {
+    x->onfinish = false;
+    scr_stream_final_done(x->d, NULL);
+  }
+  scr_dupx_release_v(x);
+}
+
+/* d._read: push r.read() until it answers null (then wait for 'readable')
+ * or d is full */
+static void scr_dupx_pull(ScrDuplexify *x) {
+  ScrStream *d = x->d;
+  while (d && x->r) {
+    ScrEntryKind kind = SCR_ENTRY_BYTES;
+    void *chunk = scr_stream_read_n_kind(x->r, -1, &kind);
+    if (scr_exc_pending()) return;
+    if (!chunk) {
+      x->onreadable = true;
+      return;
+    }
+    bool more;
+    if (d->st->r.object_entries) {
+      more = scr_stream_add_entry(d, chunk, kind) > 0;
+    } else if (kind == SCR_ENTRY_STR) {
+      more = scr_stream_push_str(d, chunk);
+      scr_str_release(chunk);
+    } else if (kind == SCR_ENTRY_DYN) {
+      more = scr_stream_push_dyn(d, chunk);
+      scr_dyn_release(chunk);
+    } else {
+      more = scr_stream_push(d, chunk);
+      scr_bytes_release(chunk);
+    }
+    if (!more || scr_exc_pending()) return;
+  }
+}
+
+static void scr_dupx_read_inv(ScrClosure *cb, ScrStream *s, double size) {
+  (void)s;
+  (void)size;
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  x->onreadable = false;
+  scr_dupx_pull(x);
+  scr_dupx_release_v(x);
+}
+
+static void scr_dupx_readable_l(ScrClosure *cb) {
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  if (x->onreadable && x->d) {
+    x->onreadable = false;
+    scr_dupx_pull(x);
+  }
+  scr_dupx_release_v(x);
+}
+
+static void scr_dupx_end_l(ScrClosure *cb) {
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  if (x->d) scr_stream_push_null(x->d);
+  scr_dupx_release_v(x);
+}
+
+/* d._destroy */
+static void scr_dupx_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  (void)s;
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  ScrError *e = err ? scr_error_retain(err) : NULL;
+  if (!e && x->onclose != SCR_DUPX_NULL) e = scr_compose_abort_error();
+  x->onreadable = x->ondrain = x->onfinish = false;
+  if (x->onclose == SCR_DUPX_NULL) {
+    if (x->d) scr_dupx_destroyed(x, e);
+  } else {
+    x->onclose = SCR_DUPX_WAIT;
+    if (x->w && !x->w->st->destroyed) scr_stream_release(scr_stream_destroy(x->w, e));
+    if (x->r && !x->r->st->destroyed) scr_stream_release(scr_stream_destroy(x->r, e));
+  }
+  if (e) scr_error_release(e);
+  scr_dupx_release_v(x);
+}
+
+/* _duplexify({ readable: r, writable: w }): r and w borrowed, either NULL.
+ * +1. */
+ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
+  ScrDuplexify *x = calloc(1, sizeof *x);
+  if (!x) scr_stream_oom();
+  x->rc = 1;
+  x->r = r ? scr_stream_retain(r) : NULL;
+  x->w = w ? scr_stream_retain(w) : NULL;
+  x->onclose = SCR_DUPX_UNSET;
+  x->readable = r && scr_stream_prop(r, "readable") != 0;
+  x->writable = w && scr_stream_prop(w, "writable") != 0;
+  /* new Duplexify({ readableObjectMode, writableObjectMode, readable, writable }) */
+  bool r_object = r && r->st->has_r && r->st->r.object_entries;
+  bool w_object = w && w->st->has_w && w->st->w.object_mode;
+  ScrStream *d = scr_stream_new_duplex(
+      r_object ? 16 : -1, w_object ? 16 : -1, true, true, true, x->readable, x->writable,
+      x->readable ? scr_dupx_closure((void *)&scr_dupx_read_inv, x) : NULL,
+      x->readable ? &scr_dupx_read_inv : NULL,
+      x->writable ? scr_dupx_closure((void *)&scr_dupx_write_inv, x) : NULL,
+      x->writable ? &scr_dupx_write_inv : NULL,
+      x->writable ? scr_dupx_closure((void *)&scr_dupx_final_inv, x) : NULL,
+      x->writable ? &scr_dupx_final_inv : NULL,
+      scr_dupx_closure((void *)&scr_dupx_destroy_inv, x), &scr_dupx_destroy_inv);
+  if (r_object) d->st->r.object_entries = true;
+  if (w_object) scr_stream_set_object_mode(d, false, true);
+  d->cls = "Duplexify";
+  x->d = scr_stream_retain(d);
+  if (x->writable) {
+    scr_closure_release(
+        scr_stream_finished(w, scr_dupx_closure((void *)&scr_dupx_w_eos, x), &scr_dupx_w_eos));
+    scr_dupx_on(w, "drain", &x->drain_l, (void *)&scr_dupx_drain_l, x);
+    scr_dupx_on(w, "finish", &x->finish_l, (void *)&scr_dupx_finish_l, x);
+  }
+  if (x->readable) {
+    scr_closure_release(
+        scr_stream_finished(r, scr_dupx_closure((void *)&scr_dupx_r_eos, x), &scr_dupx_r_eos));
+    scr_dupx_on(r, "readable", &x->readable_l, (void *)&scr_dupx_readable_l, x);
+    scr_dupx_on(r, "end", &x->end_l, (void *)&scr_dupx_end_l, x);
+  }
+  static SCR_TL bool registered = false;
+  if (!registered) {
+    registered = true;
+    scr_atexit(scr_dupx_atexit);
+  }
+  x->live_next = scr_dupx_live;
+  if (scr_dupx_live) scr_dupx_live->live_prev = x;
+  scr_dupx_live = x; /* the reference x was created with */
+  return d;
+}
+
+/* Duplex.from(promise) (duplexify.js): a Duplexify({ objectMode: true,
+ * writable: false, read() {} }) that pushes the promise's value unless it
+ * is nullish, then ends; a rejection destroys it with the reason. */
+typedef struct {
+  ScrStream *d;  /* +1 */
+  ScrDyn *boxed; /* +1, the promise boxed */
+} ScrDupxPromise;
+
+static void scr_dupx_noop_read(ScrClosure *cb, ScrStream *s, double size) {
+  (void)cb;
+  (void)s;
+  (void)size;
+}
+
+static void scr_dupx_promise_entry(ScrFiber *fiber, void *arg) {
+  (void)fiber;
+  ScrDupxPromise p = *(ScrDupxPromise *)arg;
+  free(arg);
+  /* the boxed promise's payload is a dyn value (NULL: undefined) */
+  ScrDyn *v = scr_await_ref(p.boxed->v.promise);
+  if (!scr_exc_pending()) {
+    if (v && v->kind != SCR_DYN_NULL && v->kind != SCR_DYN_UNDEF) scr_stream_push_object(p.d, v);
+    if (!scr_exc_pending()) scr_stream_push_null(p.d);
+    if (scr_exc_pending()) scr_exc_clear();
+    if (v) scr_dyn_release(v);
+  } else {
+    ScrError *err = scr_pump_caught();
+    scr_stream_release(scr_stream_destroy(p.d, err));
+    if (scr_exc_pending()) scr_exc_clear();
+    scr_error_release(err);
+  }
+  scr_stream_release(p.d);
+  scr_dyn_release(p.boxed);
+}
+
+/* The readable Duplexify over a boxed promise (moves boxed). +1. */
+static ScrStream *scr_dupx_from_boxed(ScrDyn *boxed) {
+  ScrClosure *read = scr_closure_new((void *)&scr_dupx_noop_read, 0);
+  ScrStream *d = scr_stream_new_duplex(16, 16, true, true, true, true, false, read,
+                                       &scr_dupx_noop_read, NULL, NULL, NULL, NULL, NULL, NULL);
+  scr_stream_set_object_mode(d, true, true);
+  d->cls = "Duplexify";
+  ScrDupxPromise *ctx = malloc(sizeof *ctx);
+  if (!ctx) scr_stream_oom();
+  ctx->d = scr_stream_retain(d);
+  ctx->boxed = boxed;
+  scr_promise_release(scr_async_spawn_after(ctx->boxed->v.promise, &scr_dupx_promise_entry, ctx));
+  return d;
+}
+
+/* p and box borrowed (box: the compiler's promise → dyn promise helper). +1. */
+ScrStream *scr_stream_duplex_from_promise(ScrPromise *p, ScrClosure *box) {
+  return scr_dupx_from_boxed(((ScrPipeBoxFn)box->fn)(box, scr_promise_retain(p)));
+}
+
+ScrStream *scr_stream_duplexify_readable(ScrStream *r) { return scr_stream_duplexify(r, NULL); }
+ScrStream *scr_stream_duplexify_writable(ScrStream *w) { return scr_stream_duplexify(NULL, w); }
+ScrStream *scr_stream_duplexify_pair(ScrStream *r, ScrStream *w) { return scr_stream_duplexify(r, w); }
 
 /* ── node:stream/promises ─────────────────────────────────────────────
  * The promise forms ride the callback machinery above with a settling

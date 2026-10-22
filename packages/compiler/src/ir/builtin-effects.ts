@@ -384,6 +384,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "writable.setDefaultEncoding",
   "stream.duplexFromGen",
   "stream.duplexFromDyn",
+  "stream.duplexFromPromise",
+  "stream.duplexFromAsyncFn",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",

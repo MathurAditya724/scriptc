@@ -22,8 +22,9 @@
   `Readable.from` accepts `objectMode` and `highWaterMark` options.
   The `Readable` operators (`map`, `filter`, `forEach`, `toArray`, `some`, `find`, `every`, `flatMap`, `drop`, `take`, and `reduce`) accept `concurrency`, `highWaterMark`, and `signal` options; their callbacks take only the chunk, `map` returns strings or Buffers, and `flatMap` returns strings or arrays of them.
   `Duplex.from` accepts an async generator function, which reads what is written to the Duplex, a `Duplex`, `Transform` or `PassThrough`, which it returns, and the values `Readable.from` accepts, which give a Duplex that is not writable.
-  A lone `Readable` or `Writable`, a promise, a `{ readable, writable }` pair, a web stream, and a body function that declares the options argument are unsupported in `Duplex.from`.
-  `stream.compose` accepts streams and async generator functions in any position, and an array, a string, or a generator as the first stage; one stage is `Duplex.from` of it.
+  It also accepts a lone `Readable` or `Writable` and a `{ readable, writable }` pair, which the Duplex reads and writes through, a promise, whose value it reads, and an async function, which reads what is written and must resolve to `null` or `undefined`.
+  A web stream and a body function that declares the options argument are unsupported in `Duplex.from`.
+  `stream.compose` accepts streams and async generator functions in any position, an async function as the last stage, and an array, a string, or a generator as the first stage; one stage is `Duplex.from` of it.
   Web streams as compose stages are unsupported, and the `ERR_INVALID_ARG_VALUE` message for a stream that is no longer readable or writable names the stream's class instead of printing the stream.
   `readable.compose(stage, { signal })` is `stream.compose(readable, stage)` with the signal added; the options are an object literal whose `signal` is a variable or a property read.
   `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.

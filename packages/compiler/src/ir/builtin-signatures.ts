@@ -4069,6 +4069,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.decodeStrings": { argTypes: [null, BOOL], result: VOID },
   "stream.duplexFromGen": { argTypes: [null, null, null, null, null, null], result: VOID },
   "stream.duplexFromDyn": { argTypes: [DYN], result: VOID },
+  /** Duplex.from over a lone Readable or Writable, or a { readable,
+   * writable } pair of streams (duplexify.js's _duplexify). */
+  "stream.duplexifyReadable": { argTypes: [null], result: VOID },
+  "stream.duplexifyWritable": { argTypes: [null], result: VOID },
+  "stream.duplexifyPair": { argTypes: [null, null], result: VOID },
+  /** Duplex.from(promise): the promise and its box helper. */
+  "stream.duplexFromPromise": { argTypes: [null, null], result: VOID },
+  /** Duplex.from(asyncFunction): the stage, its source helper and the
+   * promise's box helper. */
+  "stream.duplexFromAsyncFn": { argTypes: [null, null, null], result: VOID },
   "writable.writeEncoding": { argTypes: [null, STRING], result: VOID },
   "writable.setDefaultEncoding": { argTypes: [null, DYN], result: VOID },
   /** Whether a readable.nextChunkDyn step answered the end (the done

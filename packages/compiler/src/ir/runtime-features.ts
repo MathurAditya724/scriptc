@@ -221,6 +221,11 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.decodeStrings",
   "stream.duplexFromGen",
   "stream.duplexFromDyn",
+  "stream.duplexFromPromise",
+  "stream.duplexFromAsyncFn",
+  "stream.duplexifyReadable",
+  "stream.duplexifyWritable",
+  "stream.duplexifyPair",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",
@@ -277,6 +282,8 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "readable.fromIter",
   "stream.duplexFromGen",
   "stream.duplexFromDyn",
+  "stream.duplexFromPromise",
+  "stream.duplexFromAsyncFn",
 ]);
 
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */

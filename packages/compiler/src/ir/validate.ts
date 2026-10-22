@@ -5499,6 +5499,11 @@ function validateFunction(
       e.fn === "stream.decodeStrings" ||
       e.fn === "stream.duplexFromGen" ||
       e.fn === "stream.duplexFromDyn" ||
+      e.fn === "stream.duplexifyReadable" ||
+      e.fn === "stream.duplexifyWritable" ||
+      e.fn === "stream.duplexifyPair" ||
+      e.fn === "stream.duplexFromPromise" ||
+      e.fn === "stream.duplexFromAsyncFn" ||
       e.fn === "stream.setConstruct" ||
       e.fn === "stream.setWritev" ||
       e.fn === "stream.setWritevDefault" ||
@@ -5554,7 +5559,30 @@ function validateFunction(
         }
         return true;
       }
-      if (e.fn === "stream.duplexFromGen" || e.fn === "stream.duplexFromDyn") {
+      if (e.fn === "stream.duplexFromPromise") {
+        // Duplex.from(promise): (promise, box) → a Duplex.
+        if (e.args[0]?.type.kind !== "promise" || e.args[1]?.type.kind !== "func")
+          err(`libCall ${e.fn} takes a promise and its box helper`, e.loc);
+        if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream class`, e.loc);
+        return true;
+      }
+      if (
+        e.fn === "stream.duplexifyReadable" ||
+        e.fn === "stream.duplexifyWritable" ||
+        e.fn === "stream.duplexifyPair"
+      ) {
+        // Duplex.from over streams: (r), (w) or (r, w) → a Duplex.
+        const want = e.fn === "stream.duplexifyPair" ? 2 : 1;
+        if (e.args.length !== want || !e.args.every((a) => isStreamObject(a.type)))
+          err(`libCall ${e.fn} takes ${want} stream argument(s)`, e.loc);
+        if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream class`, e.loc);
+        return true;
+      }
+      if (
+        e.fn === "stream.duplexFromGen" ||
+        e.fn === "stream.duplexFromDyn" ||
+        e.fn === "stream.duplexFromAsyncFn"
+      ) {
         // Duplex.from: (stage, source, helpers...) or (body) → a Duplex.
         if (!isStreamObject(e.type)) {
           err(`libCall ${e.fn} must return a stream class, got ${e.type.kind}`, e.loc);
