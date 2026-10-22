@@ -6119,14 +6119,16 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   // types as a primitive (`offset = match[3] || null`): JavaScript files
   // are checked without strict null checks, so the declared type does not
   // admit them.
-  const primitive = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+  // The declared type is mapped only when such a write exists.
   if (
-    (primitive?.kind === "string" || primitive?.kind === "f64" || primitive?.kind === "bool") &&
     candidates.some(
       (node) => node.operatorToken.kind === ts.SyntaxKind.EqualsToken && mayBeNullish(node.right),
     )
-  )
-    return true;
+  ) {
+    const primitive = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+    if (primitive?.kind === "string" || primitive?.kind === "f64" || primitive?.kind === "bool")
+      return true;
+  }
   // A plain JavaScript write of a value the declared type cannot hold (the
   // checker does not report it): buffer-crc32 replaces its number[] table
   // with `new Int32Array(table)`. Only a different representation counts;
