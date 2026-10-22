@@ -37,7 +37,7 @@
 
 static SCR_TL ScrDyn *scr_builtin_object_prototype;
 
-const ScrDateClassHooks *scr_date_class_hooks;
+const ScrDateClassHooks *scr_date_class_hooks = NULL;
 
 /* The checked-dynamic Error.prototype (scr_dyn_error_prototype) is not the
  * prototype of scriptc's Error instances, so a change to it would not reach
