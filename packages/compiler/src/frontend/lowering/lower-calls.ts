@@ -141,7 +141,7 @@ import {
   lowerCryptoHashMethodCall,
   lowerPromisifiedCryptoCall,
 } from "./builtins/crypto.js";
-import { lowerErrorIsErrorCall } from "./builtins/errors.js";
+import { lowerErrorCaptureStackTraceCall, lowerErrorIsErrorCall } from "./builtins/errors.js";
 import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
 import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
@@ -199,6 +199,11 @@ import {
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
 import { emitterRooted, lowerEmitterMethodCall } from "./lower-event-emitter.js";
 import { eventTargetApiMethod, lowerEventTargetMethodCall } from "./lower-event-target.js";
+import {
+  dateRootOf,
+  isDatePrototypeMethod,
+  lowerInheritedDateMethodCall,
+} from "./builtins/date-classes.js";
 import {
   lowerConsoleInstanceCall,
   lowerConsoleMethodCall,
@@ -1554,6 +1559,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.lowerFilterNarrowCall(expr, expr.expression) ??
       lowerArrayIsArrayCall(lowerer, expr, expr.expression) ??
       lowerErrorIsErrorCall(lowerer, expr, expr.expression) ??
+      lowerErrorCaptureStackTraceCall(lowerer, expr, expr.expression) ??
       lowerBigIntMethodCall(lowerer, expr, expr.expression) ??
       lowerSymbolStaticCall(lowerer, expr, expr.expression) ??
       lowerSymbolMethodCall(lowerer, expr, expr.expression) ??
@@ -3727,6 +3733,18 @@ function lowerDynReceiverMethodCall(
   // IS Node's semantics for every possible dyn value. Shared names would
   // need a receiver-kind dispatch — they keep the fence.
   if (DYN_STRING_ONLY_METHODS.has(access.name.text) && !ownCallable) {
+    // An object-typed receiver the member is missing from (a JavaScript
+    // module object whose members are assigned in a function body,
+    // `common.repeat(" ", n)`) holds a string or an object with that
+    // member: dispatch on the receiver's runtime kind.
+    if (
+      !checkerUntyped &&
+      (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 &&
+      !call.questionDotToken &&
+      !access.questionDotToken &&
+      !call.arguments.nodes.some(ts.isSpreadElement)
+    )
+      return lowerStringOrMemberCall(lowerer, call, access, recv);
     const checked = (): IrExpr => dynStringReceiver(lowerer, recv, access);
     return (
       lowerRegexMethodCall(lowerer, call, access, checked) ??
@@ -3927,6 +3945,98 @@ function lowerDynReceiverMethodCall(
       receiver,
       calleeName: ts.getTextOfNode(access),
       args,
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+}
+
+/** `value.name(...args)` on a dyn receiver that may be a string or an
+ * object: a string runs the String.prototype lowering, any other value
+ * calls its member. The member is read before the arguments are
+ * evaluated, and the arguments are evaluated once for either branch. */
+function lowerStringOrMemberCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  recv: IrExpr,
+): IrExpr {
+  const loc = locOf(call);
+  const receiverLocal = lowerer.declareHiddenLocal("%dynCallReceiver", DYN);
+  const receiver = varRef(receiverLocal.id, DYN, loc);
+  const isString: IrExpr = { kind: "dynTest", test: "string", value: receiver, type: BOOL, loc };
+  const calleeLocal = lowerer.declareHiddenLocal("%dynCallCallee", DYN);
+  const callee = varRef(calleeLocal.id, DYN, loc);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: receiverLocal.id, init: recv, loc },
+    {
+      kind: "varDecl",
+      localId: calleeLocal.id,
+      init: {
+        kind: "ternary",
+        cond: isString,
+        then: dynUndefinedExpr(loc),
+        else_: {
+          kind: "dynKeyGet",
+          key: { kind: "strLit", value: access.name.text, type: STRING, loc: locOf(access) },
+          value: receiver,
+          type: DYN,
+          loc: locOf(access),
+        },
+        type: DYN,
+        loc,
+      },
+      loc,
+    },
+  ];
+  const args = call.arguments.nodes.map((node) => {
+    const value = lowerer.lowerExpr(node);
+    const local = lowerer.declareHiddenLocal("%dynCallArg", value.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
+    return { node, value: varRef(local.id, value.type, value.loc) };
+  });
+  // String.prototype methods ignore arguments past the ones they read.
+  const arity = DYN_STRING_ONLY_ARITY[access.name.text] ?? call.arguments.nodes.length;
+  const stringReceiver = (): IrExpr => ({ kind: "dynCheck", value: receiver, type: STRING, loc });
+  const lowerString = (): IrExpr | null =>
+    (call.arguments.nodes.length <= arity
+      ? lowerRegexMethodCall(lowerer, call, access, stringReceiver)
+      : null) ??
+    lowerStringMethodCall(
+      lowerer,
+      call,
+      access,
+      stringReceiver,
+      call.arguments.nodes.slice(0, arity),
+    );
+  const stringCall = lowerer.withExpressionOverrides(args, lowerString);
+  const memberCall: IrExpr = {
+    kind: "dynCall",
+    callee,
+    receiver,
+    calleeName: ts.getTextOfNode(access),
+    args: args.map((arg) => lowerer.coerceToExpected(arg.value, DYN)),
+    type: DYN,
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "ternary",
+      cond: isString,
+      then: stringCall
+        ? lowerer.coerceToExpected(stringCall, DYN)
+        : nodeThrowExpr(
+            0,
+            "SC1090",
+            `method calls like '${ts.getTextOfNode(access)}' on a string are not supported yet [SC1090 at ${ts.getSourceFileOfNode(call).fileName}:${ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(call), ts.tokenStartOfNode(call)).line + 1}]`,
+            DYN,
+            loc,
+          ),
+      else_: memberCall,
       type: DYN,
       loc,
     },
@@ -4371,6 +4481,29 @@ function isStringMethodName(name: string): boolean {
     name === "lastIndexOf"
   );
 }
+
+/** How many arguments each DYN_STRING_ONLY_METHODS method reads. */
+const DYN_STRING_ONLY_ARITY: Readonly<Record<string, number>> = {
+  charCodeAt: 1,
+  charAt: 1,
+  startsWith: 2,
+  endsWith: 2,
+  substring: 2,
+  repeat: 1,
+  trim: 0,
+  trimStart: 0,
+  trimEnd: 0,
+  split: 2,
+  padStart: 2,
+  padEnd: 2,
+  toLowerCase: 0,
+  toUpperCase: 0,
+  replace: 2,
+  replaceAll: 2,
+  match: 1,
+  matchAll: 1,
+  search: 1,
+};
 
 /** STR_METHODS ∪ the regex-form names, MINUS everything Array (or any
  * other dyn kind's prototype) also declares. */
@@ -9670,6 +9803,10 @@ export function lowerObjectMethodCall(
   if (info && !found && eventTargetApiMethod(info, access.name.text)) {
     return lowerEventTargetMethodCall(lowerer, call, access, info, lowerReceiver());
   }
+  // The Date methods a class declared `extends Date` does not declare.
+  if (info && !found && dateRootOf(info) && isDatePrototypeMethod(access.name.text)) {
+    return lowerInheritedDateMethodCall(lowerer, call, access.name.text, info, lowerReceiver());
+  }
   // GENERIC methods (own type parameters) never enter the methods table:
   // they monomorphize per call site and dispatch statically
   // (lowerClassGenericMethodCall has the exactness rules).
@@ -10458,6 +10595,17 @@ export function lowerStaticNumberGlobal(
         : lowerer.lowerExprExpecting(args[0]!, STRING);
     return { kind: "libCall", fn: "num.parseInt", args: [s, radix], type: F64, loc };
   }
+  // parseFloat takes one argument; Node ignores the rest after evaluating
+  // them (`parseFloat(text, 10)`). Literal and identifier extras have
+  // nothing to evaluate.
+  if (
+    name === "parseFloat" &&
+    args.length > 1 &&
+    args
+      .slice(1)
+      .every((arg) => ts.isNumericLiteral(arg) || ts.isStringLiteral(arg) || ts.isIdentifier(arg))
+  )
+    return lowerStaticNumberGlobal(lowerer, name, call, args.slice(0, 1), loc);
   // STATIC parseFloat over string arguments — parseInt's sibling
   // (num.parseFloat is ECMA 19.2.4's decimal-literal prefix parse in
   // scr_string.c). Other argument types retain their native coercion

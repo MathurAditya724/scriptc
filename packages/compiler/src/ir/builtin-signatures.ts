@@ -272,6 +272,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeDateIs": { argTypes: [DYN], result: BOOL },
+  "dyn.nativeDateHandleIs": { argTypes: [DYN], result: BOOL },
   /** A builtin constructor (`Object`, `Date`, `RegExp`, `Map`, `Set`,
    * `Promise`, `WeakMap`, `WeakSet`) read as a JavaScript value: one
    * interned function per name, the same one dynamic values answer for
@@ -291,6 +292,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** `new Date(value)` in JavaScript: a string argument parses with V8's
    * full date parser; every other value constructs as date.nativeNew. */
   "date.nativeNewValue": { argTypes: [DYN], result: DYN },
+  "date.argumentsTime": { argTypes: [DYN], result: DATE_T },
+  "date.classOperation": { argTypes: [DYN, DYN], result: VOID },
   "date.checkedValue": { argTypes: [DYN], result: DATE_T },
   "dyn.nativeRegexIs": { argTypes: [DYN], result: BOOL },
   /** toString() on a checked-dynamic receiver: runtime kind dispatch
@@ -3646,6 +3649,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.arrayPrototype": { argTypes: [], result: DYN },
   "dyn.arrayConstructor": { argTypes: [], result: DYN },
   "dyn.objectPrototype": { argTypes: [], result: DYN },
+  "dyn.errorPrototype": { argTypes: [], result: DYN },
+  "dyn.inheritsErrorPrototype": { argTypes: [DYN], result: BOOL },
+  "dyn.errorCaptureStackTrace": { argTypes: [DYN], result: DYN },
+  "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
   "dyn.functionApply": { argTypes: [], result: DYN },
   "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
   "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
