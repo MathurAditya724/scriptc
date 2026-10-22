@@ -4762,6 +4762,7 @@ function lowerTlsServerOptions(
   let cert: IrExpr | null = null;
   let key: IrExpr | null = null;
   let sni: IrExpr | undefined;
+  let pendingSni: IrStmt | null = null;
   for (const prop of node.properties.nodes) {
     let initializer: ts.Expression | null;
     if (
@@ -4780,20 +4781,22 @@ function lowerTlsServerOptions(
     }
     const k = (prop.name as ts.Identifier | ts.StringLiteral).text;
     if (k === "SNICallback" && allowSni) {
-      // The callback is a value read (a function or a binding), so it may
-      // be read after cert and key without changing what the program sees.
-      if (initializer !== null && !sideEffectFreeOptionValue(initializer)) {
-        lowerer.noLowering(
-          `a ${what} SNICallback expression with side effects`,
-          prop,
-          "pass a function or a variable that holds one",
-        );
-      }
       const value =
         initializer !== null
           ? lowerer.lowerExpr(initializer)
           : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
-      sni = checkSniCallbackValue(lowerer, value, prop, what);
+      const checked = checkSniCallbackValue(lowerer, value, prop, what);
+      if (cert !== null && key !== null) {
+        sni = checked;
+      } else {
+        // The runtime call reads cert and key first. A cert or key entry
+        // after the callback can change the binding the callback reads,
+        // so the callback is saved ahead of the next of them, in source
+        // order.
+        const saved = lowerer.declareHiddenLocal("%sniCallback", checked.type);
+        pendingSni = { kind: "varDecl", localId: saved.id, init: checked, loc: locOf(prop) };
+        sni = varRef(saved.id, checked.type, locOf(prop));
+      }
       continue;
     }
     if (k !== "cert" && k !== "key") {
@@ -4856,6 +4859,10 @@ function lowerTlsServerOptions(
         prop,
         "cert/key are PEM strings or Buffers here",
       );
+    }
+    if (pendingSni !== null) {
+      v = { kind: "seqExpr", stmts: [pendingSni], result: v, type: v.type, loc };
+      pendingSni = null;
     }
     if (k === "cert") cert = v;
     else key = v;

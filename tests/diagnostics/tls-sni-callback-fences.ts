@@ -9,7 +9,5 @@ function makeSni(): (servername: string, cb: Answer) => void {
   return (_servername, cb) => cb(null, undefined);
 }
 
-// The callback expression has side effects.
-tls.createServer({ cert, key, SNICallback: makeSni() }, (socket) => socket.end());
 // SNICallback with options the runtime options walk reads.
 tls.createServer({ cert, key, ALPNProtocols: ["h2"], SNICallback: makeSni });

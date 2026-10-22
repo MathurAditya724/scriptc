@@ -33,6 +33,30 @@ const server = tls.createServer(
   },
 );
 
+// The callback is read where it appears, effects included: a later cert
+// initializer that reassigns its binding does not change the callback the
+// server uses.
+type Sni = (servername: string, cb: (err: Error | null, ctx?: tls.SecureContext) => void) => void;
+let chosen: Sni = (servername, cb) => {
+  console.log("first callback", servername);
+  cb(null, altContext);
+};
+const ordered = tls.createServer(
+  {
+    SNICallback: (console.log("read callback"), chosen),
+    cert: (console.log("read cert"),
+    (chosen = (servername, cb) => {
+      console.log("second callback", servername);
+      cb(null, undefined);
+    }),
+    cert),
+    key,
+  },
+  (socket) => {
+    socket.end("ordered");
+  },
+);
+
 function attempt(port: number, servername: string, next: () => void): void {
   let done = false;
   const finish = (line: string): void => {
@@ -58,7 +82,15 @@ server.listen(0, "127.0.0.1", () => {
   attempt(port, "localhost", () =>
     attempt(port, "alt.localhost", () =>
       attempt(port, "other.localhost", () =>
-        attempt(port, "fail.localhost", () => server.close(() => console.log("closed"))),
+        attempt(port, "fail.localhost", () =>
+          server.close(() => {
+            console.log("closed");
+            ordered.listen(0, "127.0.0.1", () => {
+              const orderedPort = (ordered.address() as net.AddressInfo).port;
+              attempt(orderedPort, "alt.localhost", () => ordered.close(() => console.log("ordered closed")));
+            });
+          }),
+        ),
       ),
     ),
   );
