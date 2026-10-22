@@ -918,6 +918,22 @@ export function emitAsyncExpr(
           return host.emitCoroInlineAwait(e.value, e.adopt === true);
         }
       }
+      // A stackless coroutine body awaits a stackless callee's fiber record
+      // instead of its promise.
+      if (
+        adopted === null &&
+        e.adopt !== true &&
+        e.value.kind === "call" &&
+        host.directAwaitEligible(e.value.callee)
+      ) {
+        const callee = host.fnByName.get(e.value.callee)!;
+        if (
+          typeEquals(callee.returnType, e.type) &&
+          !host.callLifetimes.borrowed.has(e.value.callee)
+        ) {
+          return host.emitCoroDirectAwait(e.value, e.type);
+        }
+      }
       if (adopted === null && e.value.kind === "call" && host.awaitCallEligible(e.value.callee)) {
         const callee = host.fnByName.get(e.value.callee)!;
         if (

@@ -183,10 +183,16 @@ test("bodies that suspend only at their own awaits compile to stackless coroutin
   const middle = definition(llvm, "sc_f_middle");
   expect(middle).toMatch(/^define internal double @sc_f_middle\(double [^)]*\) #1 /);
   // Each await prepares its continuation and suspends the coroutine, then
-  // extracts the settled result; nothing parks the stack it runs on.
-  expect(middle).toContain("call zeroext i1 @scr_coro_await_prepare(ptr");
-  expect(middle).toContain("call double @scr_coro_await_f64(ptr");
-  expect(middle).toContain("call ptr @sc_as_slow(double");
+  // extracts the settled result; nothing parks the stack it runs on. A
+  // stackless callee is awaited through its fiber record, without its
+  // promise (emitCoroDirectAwait).
+  expect(middle).toContain("call ptr @sc_dw_slow(double");
+  expect(middle).toContain("call zeroext i1 @scr_coro_direct_prepare(ptr");
+  expect(middle).toContain("call double @scr_coro_direct_f64(ptr");
+  expect(middle).not.toContain("@sc_as_slow(");
+  expect(definition(llvm, "sc_dw_slow")).toContain(
+    "call ptr @scr_async_spawn_direct(ptr @sc_tr_slow",
+  );
   // A callee that never suspends runs in place; the coroutine takes the
   // await's turn itself and awaits a rejected promise only on a throw.
   expect(middle).toContain("call double @sc_ai_leaf(double");
@@ -306,4 +312,42 @@ test("a stackless body runs Promise.all of never-suspending calls in place", asy
   const reused = definition(llvm, "sc_f_reused");
   expect(reused).toContain("call ptr @sc_as_leaf(double");
   expect(reused).toContain("@scr_promise_all(");
+});
+
+const directSource = `
+async function slow(x: number): Promise<number> {
+  await null;
+  return x + 1;
+}
+async function direct(x: number): Promise<number> {
+  return (await slow(x)) * 2;
+}
+async function adopting(x: number): Promise<number> {
+  return slow(x);
+}
+async function kept(x: number): Promise<number> {
+  const pending = slow(x);
+  await null;
+  return await pending;
+}
+async function main(): Promise<void> {
+  console.log((await direct(1)) + (await adopting(2)) + (await kept(3)));
+}
+void main();
+`;
+
+test("a stackless body awaits a stackless callee's fiber record instead of its promise", async () => {
+  const llvm = await emit(directSource);
+  const direct = definition(llvm, "sc_f_direct");
+  expect(direct).toContain("call ptr @sc_dw_slow(double");
+  expect(direct).toContain("call zeroext i1 @scr_coro_direct_prepare(ptr");
+  expect(direct).toContain("call double @scr_coro_direct_f64(ptr");
+  expect(direct).not.toContain("@scr_coro_await_prepare(");
+  // A returned call adopts the callee's promise, and a promise held in a
+  // local is a value: both keep the promise.
+  for (const symbol of ["sc_f_adopting", "sc_f_kept"]) {
+    const body = definition(llvm, symbol);
+    expect(body, symbol).toContain("call ptr @sc_as_slow(double");
+    expect(body, symbol).not.toContain("@sc_dw_slow(");
+  }
 });
