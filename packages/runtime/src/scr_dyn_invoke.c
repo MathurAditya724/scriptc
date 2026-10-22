@@ -724,7 +724,7 @@ static bool dyn_bytes_proto_real(int m) {
 }
 
 static ScrDyn *scr_dyn_invoke_impl(
-    ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc,
+    ScrDyn *recv, const char *method, int mid, ScrDyn *const *args, size_t argc,
     const char *what, ScrDyn *callback_recv);
 
 /* Live native arrays: the constant-time methods that loops call once per
@@ -796,13 +796,26 @@ ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method,
                        ScrDyn *const *args, size_t argc,
                        const char *what) {
-  return scr_dyn_invoke_impl(recv, method, args, argc, what, NULL);
+  return scr_dyn_invoke_impl(recv, method, dyn_method_of(method), args, argc, what, NULL);
+}
+
+ScrDyn *scr_dyn_invoke_prepared_id(ScrDyn *recv, ScrDyn *callee, const char *method,
+                                  int32_t *mid_slot, ScrDyn *const *args, size_t argc,
+                                  const char *what) {
+  if (callee) return scr_dyn_invoke_prepared(recv, callee, method, args, argc, what);
+  /* The slot is the call site's, shared by every thread: each writes the
+   * same id. */
+  int32_t mid = __atomic_load_n(mid_slot, __ATOMIC_RELAXED);
+  if (mid < 0) {
+    mid = dyn_method_of(method);
+    __atomic_store_n(mid_slot, mid, __ATOMIC_RELAXED);
+  }
+  return scr_dyn_invoke_impl(recv, method, mid, args, argc, what, NULL);
 }
 
 static ScrDyn *scr_dyn_invoke_impl(
-    ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc,
+    ScrDyn *recv, const char *method, int mid, ScrDyn *const *args, size_t argc,
     const char *what, ScrDyn *callback_recv) {
-  const int mid = dyn_method_of(method);
   if (recv->kind == SCR_DYN_UNDEF || recv->kind == SCR_DYN_NULL) {
     ScrJsonBuf b;
     scr_jb_init(&b);
@@ -874,7 +887,7 @@ static ScrDyn *scr_dyn_invoke_impl(
     bool mutates = materialized->kind == SCR_DYN_ARR &&
                    dyn_arr_proto_mutates(mid);
     ScrDyn *result = scr_dyn_invoke_impl(
-        materialized, method, args, argc, what, recv);
+        materialized, method, mid, args, argc, what, recv);
     if (mutates && !scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
     if (result == materialized) {
       scr_dyn_release(result);
