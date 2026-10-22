@@ -2095,6 +2095,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "array":
     case "map":
     case "set":
+    case "generator":
     case "regex":
     case "bytes":
     case "url":

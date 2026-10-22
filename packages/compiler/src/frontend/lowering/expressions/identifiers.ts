@@ -41,6 +41,7 @@ import {
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { runtimeOptionalReceiverRead } from "./narrowing.js";
+import { iterableUnionOf } from "../iterable-values.js";
 import { builtinGlobalValueAt } from "./property-access.js";
 import { varRef } from "../../../ir/build.js";
 import {
@@ -322,6 +323,16 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // value arm before routing the member/element operation so dynamic
       // keys and builtin record walkers do not see a union receiver.
       const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      // An optional Iterable proven present re-tags into the Iterable.
+      if (
+        g.type.kind === "union" &&
+        narrowed?.kind === "union" &&
+        narrowed.unionId !== g.type.unionId &&
+        iterableUnionOf(lowerer, narrowed)
+      ) {
+        const helper = lowerer.narrowedRetagHelper(expr, g.type.unionId, narrowed.unionId, loc);
+        if (helper) return { kind: "call", callee: helper, args: [ref], type: narrowed, loc };
+      }
       const arithmeticUnion =
         g.type.kind === "union" &&
         lowerer.unions.get(g.type.unionId)?.arms.length === 2 &&

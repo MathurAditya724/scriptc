@@ -24,6 +24,7 @@ import {
   isSupportedMapKey,
   isSupportedMapValue,
   isSupportedSetElem,
+  iterableArmsElem,
   isUnitType,
   mapOf,
   NULL_T,
@@ -3971,6 +3972,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ...channels,
     };
   }
+  // Iterable<T>: the iterable union (iterableUnionType) — the source value
+  // itself in its own arm, so an array stays the same multi-pass object and
+  // a generator stays single-pass.
+  if (isStdlibInterface("Iterable")) {
+    const arg = checker.getTypeArguments(widened as ts.TypeReference)[0];
+    const elem = arg ? mapType(arg, ctx) : null;
+    return elem ? iterableUnionType(elem, ctx.shapes, unions) : null;
+  }
   // IteratorResult<T, TReturn> — the checker's type of `g.next()` (an
   // alias for IteratorYieldResult<T> | IteratorReturnResult<TReturn>):
   // maps to the SAME interned record genResume answers, so `const r =
@@ -5025,7 +5034,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
             a.kind === "union" ||
             a.kind === "date" ||
             a.kind === "dyn" ||
-            a.kind === "generator",
+            // A generator arm only comes from an Iterable<T> (an optional
+            // one keeps its unit arms beside the iterable union's).
+            (a.kind === "generator" && iterableArmsElem(arms) === null),
         ) ||
         !maybePromiseUnionOk(parts, arms, ctx)
       ) {
@@ -6483,6 +6494,46 @@ function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | 
  * that could inhabit the extra arm. */
 export function unitOnlyUnion(unions: UnionRegistry): IrType {
   const arms = [NULL_T, UNDEFINED_T];
+  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  return { kind: "union", unionId: unions.intern(arms) };
+}
+
+/** `Iterable<T>`: a union whose arms are the sources that keep their own
+ * representation — `T[]`, a `Set<T>`, a `Map<K, V>` (T the `[K, V]`
+ * tuple), a string (T string) — and a generator over T, which also holds
+ * every other iterator (Map/Set and array iterators adapt into one). The
+ * generator arm marks the union as iterable (iterableArmsElem): no other
+ * union has one. Null when T has no array or generator form. */
+export function iterableUnionType(
+  elem: IrType,
+  shapes: ShapeRegistry,
+  unions: UnionRegistry,
+): IrType | null {
+  if (elem.kind === "void" || elem.kind === "generator" || !isSupportedArrayElem(elem)) return null;
+  if (!genResultRecord(elem, VOID, shapes, unions)) return null;
+  const arms: IrType[] = [
+    { kind: "array", elem },
+    { kind: "generator", yieldT: elem, retT: VOID, nextT: UNDEFINED_T },
+  ];
+  const elemArms = elem.kind === "union" ? unions.get(elem.unionId)?.arms : undefined;
+  if (isSupportedSetElem(elem, elemArms)) arms.push({ kind: "set", elem });
+  if (elem.kind === "string") arms.push(STRING);
+  if (elem.kind === "record") {
+    const shape = shapes.get(elem.shapeId);
+    const [k, v] = shape?.fields ?? [];
+    if (
+      shape?.tuple &&
+      shape.fields.length === 2 &&
+      k?.name === "0" &&
+      v?.name === "1" &&
+      isSupportedMapKey(
+        k.type,
+        k.type.kind === "union" ? unions.get(k.type.unionId)?.arms : undefined,
+      ) &&
+      isSupportedMapValue(v.type)
+    )
+      arms.push({ kind: "map", key: k.type, value: v.type });
+  }
   arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
   return { kind: "union", unionId: unions.intern(arms) };
 }
