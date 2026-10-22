@@ -868,6 +868,7 @@ void scr_dyn_proxy_unsupported(const char *operation);
 ScrDyn *scr_dyn_new_bytes(const ScrBytes *b);
 ScrDyn *scr_bytes_constructor(const ScrStr *name);
 bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee);
+bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal);
 bool scr_dyn_data_view_is(const ScrDyn *value);
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);

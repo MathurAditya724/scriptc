@@ -5731,6 +5731,19 @@ function constAssertedEmptyArrayProp(p: ts.Symbol): boolean {
   return underConstAssertion(d);
 }
 
+/** A TypeScript property assignment `name: []` whose type is `never[]`. */
+function emptyNeverArrayProp(p: ts.Symbol, fieldTs: ts.Type, checker: ts.TypeChecker): boolean {
+  const d = p.valueDeclaration;
+  if (d === undefined || !ts.isPropertyAssignment(d)) return false;
+  if (isJsSourceFile(ts.getSourceFileOfNode(d))) return false;
+  if (!ts.isArrayLiteralExpression(d.initializer) || d.initializer.elements.nodes.length > 0)
+    return false;
+  return (
+    checker.isArrayType(fieldTs) &&
+    (checker.getTypeArguments(fieldTs as ts.TypeReference)[0]!.flags & ts.TypeFlags.Never) !== 0
+  );
+}
+
 function mapGenericAwaitedAlias(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { resolveTypeParam } = ctx;
   if (!resolveTypeParam) return null;
@@ -7767,6 +7780,14 @@ function mapRecordTypeInner(
       ) {
         pt = arrayOf(unitOnlyUnion(ctx.unions));
       }
+      // A TypeScript property initialized with an empty literal and typed
+      // `never[]` (`const out = { files: [] }`) holds no element, so it maps
+      // like the empty tuple: the unit-only element array, which a
+      // destination's typed array field (`files: string[]`) receives through
+      // the checked empty-array lift. never's f64 element would make it a
+      // `number[]` field.
+      if (pt?.kind === "array" && emptyNeverArrayProp(p, fieldTs, checker))
+        pt = arrayOf(unitOnlyUnion(ctx.unions));
       if (pt === null && (fieldTs.flags & ts.TypeFlags.Any) !== 0) pt = DYN;
       // An `any[]` field (`list: any[]` in an SDK's message type, also
       // optional or nullable) is the checked-dynamic array, exactly as

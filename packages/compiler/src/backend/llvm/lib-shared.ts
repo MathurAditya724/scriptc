@@ -47,7 +47,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.fromEntries": "scr_dyn_from_entries",
   "bytes.constructor": "scr_bytes_constructor",
   "bytes.construct": "scr_bytes_construct",
-  "bytes.instanceOf": "scr_bytes_instanceof",
+  "bytes.instanceOf": "scr_bytes_instanceof_at",
   "arrayBuffer.constructor": "scr_array_buffer_constructor",
   "sharedArrayBuffer.new": "scr_shared_array_buffer_new",
   "sharedArrayBuffer.is": "scr_shared_array_buffer_is",
