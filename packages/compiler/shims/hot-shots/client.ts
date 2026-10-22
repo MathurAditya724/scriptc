@@ -542,7 +542,13 @@ export class StatsD {
 
   // ── stats functions ──
 
-  timing(stat: string | string[], time: number, sampleRate?: number, tags?: Tags, callback?: StatsCb): void;
+  timing(
+    stat: string | string[],
+    time: number,
+    sampleRate?: number,
+    tags?: Tags,
+    callback?: StatsCb,
+  ): void;
   timing(stat: string | string[], time: number, tags?: Tags, callback?: StatsCb): void;
   timing(stat: string | string[], time: number, callback?: StatsCb): void;
   timing(stat: string | string[], time: number, sampleRate?: number, callback?: StatsCb): void;
@@ -557,7 +563,13 @@ export class StatsD {
   }
 
   increment(stat: string, tags?: Tags): void;
-  increment(stat: string | string[], value: number, sampleRate?: number, tags?: Tags, callback?: StatsCb): void;
+  increment(
+    stat: string | string[],
+    value: number,
+    sampleRate?: number,
+    tags?: Tags,
+    callback?: StatsCb,
+  ): void;
   increment(stat: string | string[], value: number, tags?: Tags, callback?: StatsCb): void;
   increment(stat: string | string[], value: number, callback?: StatsCb): void;
   increment(stat: string | string[], value: number, sampleRate?: number, callback?: StatsCb): void;
@@ -580,7 +592,13 @@ export class StatsD {
   }
 
   decrement(stat: string, tags?: Tags): void;
-  decrement(stat: string | string[], value: number, sampleRate?: number, tags?: Tags, callback?: StatsCb): void;
+  decrement(
+    stat: string | string[],
+    value: number,
+    sampleRate?: number,
+    tags?: Tags,
+    callback?: StatsCb,
+  ): void;
   decrement(stat: string | string[], value: number, tags?: Tags, callback?: StatsCb): void;
   decrement(stat: string | string[], value: number, callback?: StatsCb): void;
   decrement(stat: string | string[], value: number, sampleRate?: number, callback?: StatsCb): void;
@@ -601,7 +619,13 @@ export class StatsD {
     this.sendAll(stat, -amount, "c", sampleRate, tagArg, callback);
   }
 
-  histogram(stat: string | string[], value: number, sampleRate?: number, tags?: Tags, callback?: StatsCb): void;
+  histogram(
+    stat: string | string[],
+    value: number,
+    sampleRate?: number,
+    tags?: Tags,
+    callback?: StatsCb,
+  ): void;
   histogram(stat: string | string[], value: number, tags?: Tags, callback?: StatsCb): void;
   histogram(stat: string | string[], value: number, callback?: StatsCb): void;
   histogram(stat: string | string[], value: number, sampleRate?: number, callback?: StatsCb): void;
@@ -615,10 +639,21 @@ export class StatsD {
     this.sendAll(stat, value, "h", sampleRate, tags, callback);
   }
 
-  distribution(stat: string | string[], value: number, sampleRate?: number, tags?: Tags, callback?: StatsCb): void;
+  distribution(
+    stat: string | string[],
+    value: number,
+    sampleRate?: number,
+    tags?: Tags,
+    callback?: StatsCb,
+  ): void;
   distribution(stat: string | string[], value: number, tags?: Tags, callback?: StatsCb): void;
   distribution(stat: string | string[], value: number, callback?: StatsCb): void;
-  distribution(stat: string | string[], value: number, sampleRate?: number, callback?: StatsCb): void;
+  distribution(
+    stat: string | string[],
+    value: number,
+    sampleRate?: number,
+    callback?: StatsCb,
+  ): void;
   distribution(
     stat: string | string[],
     value: number,
@@ -629,7 +664,13 @@ export class StatsD {
     this.sendAll(stat, value, "d", sampleRate, tags, callback);
   }
 
-  gauge(stat: string | string[], value: number, sampleRate?: number, tags?: Tags, callback?: StatsCb): void;
+  gauge(
+    stat: string | string[],
+    value: number,
+    sampleRate?: number,
+    tags?: Tags,
+    callback?: StatsCb,
+  ): void;
   gauge(stat: string | string[], value: number, tags?: Tags, callback?: StatsCb): void;
   gauge(stat: string | string[], value: number, callback?: StatsCb): void;
   gauge(stat: string | string[], value: number, sampleRate?: number, callback?: StatsCb): void;
@@ -643,10 +684,21 @@ export class StatsD {
     this.sendAll(stat, value, "g", sampleRate, tags, callback);
   }
 
-  set(stat: string | string[], value: number | string, sampleRate?: number, tags?: Tags, callback?: StatsCb): void;
+  set(
+    stat: string | string[],
+    value: number | string,
+    sampleRate?: number,
+    tags?: Tags,
+    callback?: StatsCb,
+  ): void;
   set(stat: string | string[], value: number | string, tags?: Tags, callback?: StatsCb): void;
   set(stat: string | string[], value: number | string, callback?: StatsCb): void;
-  set(stat: string | string[], value: number | string, sampleRate?: number, callback?: StatsCb): void;
+  set(
+    stat: string | string[],
+    value: number | string,
+    sampleRate?: number,
+    callback?: StatsCb,
+  ): void;
   set(
     stat: string | string[],
     value: number | string,
@@ -657,10 +709,21 @@ export class StatsD {
     this.sendAll(stat, value, "s", sampleRate, tags, callback);
   }
 
-  unique(stat: string | string[], value: number | string, sampleRate?: number, tags?: Tags, callback?: StatsCb): void;
+  unique(
+    stat: string | string[],
+    value: number | string,
+    sampleRate?: number,
+    tags?: Tags,
+    callback?: StatsCb,
+  ): void;
   unique(stat: string | string[], value: number | string, tags?: Tags, callback?: StatsCb): void;
   unique(stat: string | string[], value: number | string, callback?: StatsCb): void;
-  unique(stat: string | string[], value: number | string, sampleRate?: number, callback?: StatsCb): void;
+  unique(
+    stat: string | string[],
+    value: number | string,
+    sampleRate?: number,
+    callback?: StatsCb,
+  ): void;
   unique(
     stat: string | string[],
     value: number | string,

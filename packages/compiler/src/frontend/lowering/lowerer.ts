@@ -9656,7 +9656,10 @@ export class Lowerer {
           (id) => this.unions.get(id),
         )
       ) {
-        return this.coerceToExpected({ kind: "dynFrom", value: un, type: DYN, loc: un.loc }, expected);
+        return this.coerceToExpected(
+          { kind: "dynFrom", value: un, type: DYN, loc: un.loc },
+          expected,
+        );
       }
     }
     // A zero-param function whose RETURN is a wider record array than the

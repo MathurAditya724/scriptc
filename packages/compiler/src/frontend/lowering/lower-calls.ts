@@ -1635,7 +1635,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         const direct = callableInstanceStringCall(lowerer, expr, callee, locOf(expr));
         if (direct) return direct;
         callee = lowerer.hybridCallUnwrap(callee);
-        if (callee.type.kind === "func") return lowerCallThroughValue(lowerer, expr, callee, locOf(expr));
+        if (callee.type.kind === "func")
+          return lowerCallThroughValue(lowerer, expr, callee, locOf(expr));
       }
       if (callee.type.kind === "func") {
         const args = completeFuncValueArgs(lowerer, expr, callee.type, locOf(expr));

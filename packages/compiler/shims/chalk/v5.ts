@@ -138,10 +138,7 @@ export const backgroundColorNames: BackgroundColorName[] = [
   "bgCyanBright",
   "bgWhiteBright",
 ];
-export const colorNames: ColorName[] = [
-  ...foregroundColorNames,
-  ...backgroundColorNames,
-];
+export const colorNames: ColorName[] = [...foregroundColorNames, ...backgroundColorNames];
 export const modifiers: Modifiers[] = modifierNames;
 export const foregroundColors: ForegroundColor[] = foregroundColorNames;
 export const backgroundColors: BackgroundColor[] = backgroundColorNames;
@@ -151,14 +148,12 @@ const ESC = "\u001B[";
 
 /** Open and close codes, indexed by style id (the order of the getters). */
 const OPEN_CODES: number[] = [
-  0, 1, 2, 3, 4, 53, 7, 8, 9,
-  30, 31, 32, 33, 34, 35, 36, 37, 90, 90, 90, 91, 92, 93, 94, 95, 96, 97,
-  40, 41, 42, 43, 44, 45, 46, 47, 100, 100, 100, 101, 102, 103, 104, 105, 106, 107,
+  0, 1, 2, 3, 4, 53, 7, 8, 9, 30, 31, 32, 33, 34, 35, 36, 37, 90, 90, 90, 91, 92, 93, 94, 95, 96,
+  97, 40, 41, 42, 43, 44, 45, 46, 47, 100, 100, 100, 101, 102, 103, 104, 105, 106, 107,
 ];
 const CLOSE_CODES: number[] = [
-  0, 22, 22, 23, 24, 55, 27, 28, 29,
-  39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39,
-  49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49,
+  0, 22, 22, 23, 24, 55, 27, 28, 29, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39,
+  39, 39, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49,
 ];
 const VISIBLE = 45;
 
@@ -238,9 +233,19 @@ function hasFlag(flag: string): boolean {
 }
 
 let flagForceColor: number | undefined = undefined;
-if (hasFlag("no-color") || hasFlag("no-colors") || hasFlag("color=false") || hasFlag("color=never")) {
+if (
+  hasFlag("no-color") ||
+  hasFlag("no-colors") ||
+  hasFlag("color=false") ||
+  hasFlag("color=never")
+) {
   flagForceColor = 0;
-} else if (hasFlag("color") || hasFlag("colors") || hasFlag("color=true") || hasFlag("color=always")) {
+} else if (
+  hasFlag("color") ||
+  hasFlag("colors") ||
+  hasFlag("color=true") ||
+  hasFlag("color=always")
+) {
   flagForceColor = 1;
 }
 
@@ -277,7 +282,8 @@ function detectLevel(streamIsTTY: boolean): number {
   if (hasFlag("color=256")) return 2;
   if (inEnv("TF_BUILD") && inEnv("AGENT_NAME")) return 1;
   if (!streamIsTTY && forceColor === undefined) return 0;
-  const min = forceColor === undefined || forceColor === 0 || Number.isNaN(forceColor) ? 0 : forceColor;
+  const min =
+    forceColor === undefined || forceColor === 0 || Number.isNaN(forceColor) ? 0 : forceColor;
   const env = process.env;
   const term = env["TERM"];
   if (term === "dumb") return min;
@@ -388,7 +394,10 @@ function stringEncaseCRLFWithFirstIndex(
   do {
     const gotCR = string[index - 1] === "\r";
     returnValue +=
-      string.slice(endIndex, gotCR ? index - 1 : index) + prefix + (gotCR ? "\r\n" : "\n") + postfix;
+      string.slice(endIndex, gotCR ? index - 1 : index) +
+      prefix +
+      (gotCR ? "\r\n" : "\n") +
+      postfix;
     endIndex = index + 1;
     index = string.indexOf("\n", endIndex);
   } while (index !== -1);
@@ -426,12 +435,19 @@ function joinArguments(args: unknown[]): string {
 /** A chalk instance or one of its style chains: callable (chalk's call
  * signature merges in from the interface), with every style a cached
  * getter. */
+// The merge is the point: the interface gives instances chalk's call
+// signature, and the class's `%call` field implements it.
+// oxlint-disable-next-line typescript/no-unsafe-declaration-merging
 export interface ChalkInstance {
   (...text: unknown[]): string;
 }
 
+// oxlint-disable-next-line typescript/no-unsafe-declaration-merging
 export class ChalkInstance {
-  "%call": (...text: unknown[]) => string;
+  "%call": (...text: unknown[]) => string = (...text: unknown[]): string =>
+    this.root
+      ? joinArguments(text)
+      : applyStyle(this, text.length === 1 ? "" + String(text[0]) : joinArguments(text));
   box: LevelBox;
   styler: Styler | undefined;
   isEmpty: boolean;
@@ -443,11 +459,6 @@ export class ChalkInstance {
     this.styler = styler;
     this.isEmpty = isEmpty;
     this.root = root;
-    // One unconditional store: the field's definite assignment.
-    this["%call"] = (...text: unknown[]): string =>
-      root
-        ? joinArguments(text)
-        : applyStyle(this, text.length === 1 ? "" + String(text[0]) : joinArguments(text));
   }
 
   /** One string argument: the compiler calls this instead of `%call`
@@ -509,57 +520,153 @@ export class ChalkInstance {
     return this.model(ansi256Open(10, index), true);
   }
 
-  get reset(): ChalkInstance { return this.style(0); }
-  get bold(): ChalkInstance { return this.style(1); }
-  get dim(): ChalkInstance { return this.style(2); }
-  get italic(): ChalkInstance { return this.style(3); }
-  get underline(): ChalkInstance { return this.style(4); }
-  get overline(): ChalkInstance { return this.style(5); }
-  get inverse(): ChalkInstance { return this.style(6); }
-  get hidden(): ChalkInstance { return this.style(7); }
-  get strikethrough(): ChalkInstance { return this.style(8); }
-  get visible(): ChalkInstance { return this.style(VISIBLE); }
-  get black(): ChalkInstance { return this.style(9); }
-  get red(): ChalkInstance { return this.style(10); }
-  get green(): ChalkInstance { return this.style(11); }
-  get yellow(): ChalkInstance { return this.style(12); }
-  get blue(): ChalkInstance { return this.style(13); }
-  get magenta(): ChalkInstance { return this.style(14); }
-  get cyan(): ChalkInstance { return this.style(15); }
-  get white(): ChalkInstance { return this.style(16); }
-  get blackBright(): ChalkInstance { return this.style(17); }
-  get gray(): ChalkInstance { return this.style(18); }
-  get grey(): ChalkInstance { return this.style(19); }
-  get redBright(): ChalkInstance { return this.style(20); }
-  get greenBright(): ChalkInstance { return this.style(21); }
-  get yellowBright(): ChalkInstance { return this.style(22); }
-  get blueBright(): ChalkInstance { return this.style(23); }
-  get magentaBright(): ChalkInstance { return this.style(24); }
-  get cyanBright(): ChalkInstance { return this.style(25); }
-  get whiteBright(): ChalkInstance { return this.style(26); }
-  get bgBlack(): ChalkInstance { return this.style(27); }
-  get bgRed(): ChalkInstance { return this.style(28); }
-  get bgGreen(): ChalkInstance { return this.style(29); }
-  get bgYellow(): ChalkInstance { return this.style(30); }
-  get bgBlue(): ChalkInstance { return this.style(31); }
-  get bgMagenta(): ChalkInstance { return this.style(32); }
-  get bgCyan(): ChalkInstance { return this.style(33); }
-  get bgWhite(): ChalkInstance { return this.style(34); }
-  get bgBlackBright(): ChalkInstance { return this.style(35); }
-  get bgGray(): ChalkInstance { return this.style(36); }
-  get bgGrey(): ChalkInstance { return this.style(37); }
-  get bgRedBright(): ChalkInstance { return this.style(38); }
-  get bgGreenBright(): ChalkInstance { return this.style(39); }
-  get bgYellowBright(): ChalkInstance { return this.style(40); }
-  get bgBlueBright(): ChalkInstance { return this.style(41); }
-  get bgMagentaBright(): ChalkInstance { return this.style(42); }
-  get bgCyanBright(): ChalkInstance { return this.style(43); }
-  get bgWhiteBright(): ChalkInstance { return this.style(44); }
+  get reset(): ChalkInstance {
+    return this.style(0);
+  }
+  get bold(): ChalkInstance {
+    return this.style(1);
+  }
+  get dim(): ChalkInstance {
+    return this.style(2);
+  }
+  get italic(): ChalkInstance {
+    return this.style(3);
+  }
+  get underline(): ChalkInstance {
+    return this.style(4);
+  }
+  get overline(): ChalkInstance {
+    return this.style(5);
+  }
+  get inverse(): ChalkInstance {
+    return this.style(6);
+  }
+  get hidden(): ChalkInstance {
+    return this.style(7);
+  }
+  get strikethrough(): ChalkInstance {
+    return this.style(8);
+  }
+  get visible(): ChalkInstance {
+    return this.style(VISIBLE);
+  }
+  get black(): ChalkInstance {
+    return this.style(9);
+  }
+  get red(): ChalkInstance {
+    return this.style(10);
+  }
+  get green(): ChalkInstance {
+    return this.style(11);
+  }
+  get yellow(): ChalkInstance {
+    return this.style(12);
+  }
+  get blue(): ChalkInstance {
+    return this.style(13);
+  }
+  get magenta(): ChalkInstance {
+    return this.style(14);
+  }
+  get cyan(): ChalkInstance {
+    return this.style(15);
+  }
+  get white(): ChalkInstance {
+    return this.style(16);
+  }
+  get blackBright(): ChalkInstance {
+    return this.style(17);
+  }
+  get gray(): ChalkInstance {
+    return this.style(18);
+  }
+  get grey(): ChalkInstance {
+    return this.style(19);
+  }
+  get redBright(): ChalkInstance {
+    return this.style(20);
+  }
+  get greenBright(): ChalkInstance {
+    return this.style(21);
+  }
+  get yellowBright(): ChalkInstance {
+    return this.style(22);
+  }
+  get blueBright(): ChalkInstance {
+    return this.style(23);
+  }
+  get magentaBright(): ChalkInstance {
+    return this.style(24);
+  }
+  get cyanBright(): ChalkInstance {
+    return this.style(25);
+  }
+  get whiteBright(): ChalkInstance {
+    return this.style(26);
+  }
+  get bgBlack(): ChalkInstance {
+    return this.style(27);
+  }
+  get bgRed(): ChalkInstance {
+    return this.style(28);
+  }
+  get bgGreen(): ChalkInstance {
+    return this.style(29);
+  }
+  get bgYellow(): ChalkInstance {
+    return this.style(30);
+  }
+  get bgBlue(): ChalkInstance {
+    return this.style(31);
+  }
+  get bgMagenta(): ChalkInstance {
+    return this.style(32);
+  }
+  get bgCyan(): ChalkInstance {
+    return this.style(33);
+  }
+  get bgWhite(): ChalkInstance {
+    return this.style(34);
+  }
+  get bgBlackBright(): ChalkInstance {
+    return this.style(35);
+  }
+  get bgGray(): ChalkInstance {
+    return this.style(36);
+  }
+  get bgGrey(): ChalkInstance {
+    return this.style(37);
+  }
+  get bgRedBright(): ChalkInstance {
+    return this.style(38);
+  }
+  get bgGreenBright(): ChalkInstance {
+    return this.style(39);
+  }
+  get bgYellowBright(): ChalkInstance {
+    return this.style(40);
+  }
+  get bgBlueBright(): ChalkInstance {
+    return this.style(41);
+  }
+  get bgMagentaBright(): ChalkInstance {
+    return this.style(42);
+  }
+  get bgCyanBright(): ChalkInstance {
+    return this.style(43);
+  }
+  get bgWhiteBright(): ChalkInstance {
+    return this.style(44);
+  }
 }
 
 function optionsLevel(options: Options | undefined): number {
   const level = options === undefined ? undefined : options.level;
-  if (level !== undefined && level !== 0 && !(Number.isInteger(level) && level >= 0 && level <= 3)) {
+  if (
+    level !== undefined &&
+    level !== 0 &&
+    !(Number.isInteger(level) && level >= 0 && level <= 3)
+  ) {
     throw new Error("The `level` option should be an integer from 0 to 3");
   }
   if (level === undefined) return stdoutColor === false ? 0 : stdoutColor.level;

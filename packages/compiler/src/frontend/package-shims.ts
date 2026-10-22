@@ -72,7 +72,10 @@ interface ImplementationShim {
   variants?: readonly string[];
 }
 
-const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map<string, ImplementationShim>([
+const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map<
+  string,
+  ImplementationShim
+>([
   [
     "fs-extra",
     {
@@ -330,7 +333,8 @@ function shimOfDeclarationPath(path: string): { pkgDir: string; shim: Implementa
   for (const shim of IMPLEMENTATION_SHIMS.values()) {
     if (shim.typesFile === undefined) continue;
     const suffix = `/${shim.name}/${shim.typesFile}`;
-    if (path.endsWith(suffix)) return { pkgDir: path.slice(0, path.length - suffix.length + shim.name.length + 1), shim };
+    if (path.endsWith(suffix))
+      return { pkgDir: path.slice(0, path.length - suffix.length + shim.name.length + 1), shim };
   }
   return null;
 }
