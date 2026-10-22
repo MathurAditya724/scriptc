@@ -7668,6 +7668,10 @@ function lowerObjectStaticCall(
         const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
         const rawSource = lowerer.lowerExpr(call.arguments.nodes[1]!);
         fenceSymbolFieldCopy(lowerer, call.arguments.nodes[1]!, rawSource.type);
+        let targetNode: ts.Expression = call.arguments.nodes[0]!;
+        while (ts.isParenthesizedExpression(targetNode)) targetNode = targetNode.expression;
+        if (ts.isObjectLiteralExpression(targetNode))
+          fenceClassCopyIntoFreshObject(lowerer, call, call.arguments.nodes[1]!, rawSource);
         const source = lowerer.coerceToExpected(rawSource, DYN);
         if (target.type.kind === "dyn" && source.type.kind === "dyn") {
           return { kind: "libCall", fn: "dyn.assign", args: [target, source], type: DYN, loc };
@@ -7821,25 +7825,8 @@ function lowerObjectStaticCall(
             const srcNode = spread ? argNode.expression : argNode;
             const rawSource = lowerer.lowerExpr(srcNode);
             fenceSymbolFieldCopy(lowerer, srcNode, rawSource.type, spread);
-            // A class instance copied into a fresh object
-            // (`Object.assign({}, instance)`): the result is a plain
-            // object holding the instance's own fields, never an
-            // instance, so a result the checker types as the class has
-            // no representation (the checked cast would throw).
-            if (
-              rawSource.type.kind === "object" &&
-              freshLiteralTarget &&
-              !ts.isExpressionStatement(call.parent)
-            ) {
-              const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
-              if (resultT !== null && resultT.kind === "object") {
-                lowerer.unsupported(
-                  "SC1090",
-                  srcNode,
-                  `Object.assign copying a '${lowerer.fmt(rawSource.type)}' instance into a fresh object typed as the class (the copy is a plain object holding the instance's own fields, not an instance — build the object literal from the fields you need)`,
-                );
-              }
-            }
+            if (freshLiteralTarget)
+              fenceClassCopyIntoFreshObject(lowerer, call, srcNode, rawSource);
             const src = lowerer.coerceToExpected(rawSource, DYN);
             if (src.type.kind !== "dyn") {
               ok = false;
@@ -10684,4 +10671,24 @@ function functionIntegrity(
     type: value.type,
     loc,
   };
+}
+
+/** A class instance copied into a fresh object (`Object.assign({},
+ * instance)`): the result is a plain object holding the instance's own
+ * fields, never an instance, so a result the checker types as the class has
+ * no representation (the checked cast would throw). */
+function fenceClassCopyIntoFreshObject(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  srcNode: ts.Expression,
+  rawSource: IrExpr,
+): void {
+  if (rawSource.type.kind !== "object" || ts.isExpressionStatement(call.parent)) return;
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (resultT === null || resultT.kind !== "object") return;
+  lowerer.unsupported(
+    "SC1090",
+    srcNode,
+    `Object.assign copying a '${lowerer.fmt(rawSource.type)}' instance into a fresh object typed as the class (the copy is a plain object holding the instance's own fields, not an instance — build the object literal from the fields you need)`,
+  );
 }

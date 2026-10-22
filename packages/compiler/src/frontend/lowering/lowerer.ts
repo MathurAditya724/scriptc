@@ -9987,6 +9987,20 @@ export class Lowerer {
    * directly when the expression was already lowered. */
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
+    // An assertion's scalar check whose value goes straight back into a
+    // checked-dynamic slot (`process.loadEnvFile({} as unknown as string)`)
+    // keeps the original value: JavaScript erases assertions, so the check
+    // could only add a TypeError Node does not throw, and the slot holds
+    // the value either way.
+    if (expected.kind === "dyn" && expr.kind === "dynCheck" && expr.value.type.kind === "dyn") {
+      let source = node;
+      while (ts.isParenthesizedExpression(source)) source = source.expression;
+      if (
+        (ts.isAsExpression(source) || ts.isTypeAssertion(source)) &&
+        (expr.type.kind === "string" || expr.type.kind === "f64" || expr.type.kind === "bool")
+      )
+        return expr.value;
+    }
     // A union destination can accept the binding's tagged storage directly.
     // The checker's single-arm flow type can be stale after a callback writes
     // the binding. Extracting that arm and wrapping it again would discard the
