@@ -1910,9 +1910,11 @@ export function emitSwitch(emitter: LlEmitter, s: IrStmt & { kind: "switch" }): 
 /** The loop copies a callback loop version needs: the bindings the loop
  * calls that the constant-callback census resolves to one function, each
  * with that function's direct entry. Only small loops of optimized
- * synchronous functions, and only bindings declared before the loop that
- * an enclosing version has not already proved, qualify: the guard reads
- * each binding before the loop runs. */
+ * synchronous functions, and only bindings declared before the loop,
+ * qualify: the guard reads each binding before the loop runs. Versions do
+ * not nest: a loop inside either copy of a version (including the
+ * versioned loop itself, emitted again for each copy) keeps its calls as
+ * they are, so a loop nest is emitted at most twice. */
 function callbackVersionBindings(
   emitter: LlEmitter,
   s: IrStmt & { kind: "for" | "while" | "doWhile" },
@@ -1920,7 +1922,7 @@ function callbackVersionBindings(
   if (
     !emitter.callbackVersionsEnabled ||
     emitter.currentConstantCallbacks.size === 0 ||
-    emitter.callbackVersioning.has(s)
+    emitter.callbackVersioning.size > 0
   )
     return null;
   const found = new Map<string, { ref: IrExpr & { kind: "varRef" }; direct: string }>();
@@ -1930,12 +1932,7 @@ function callbackVersionBindings(
   const expr = (e: IrExpr): boolean => {
     if (++cost > MAX_CALLBACK_VERSION_COST) return false;
     if (e.kind === "assignExpr") bound.add(e.localId);
-    if (
-      e.kind === "callValue" &&
-      e.callee.kind === "varRef" &&
-      !emitter.knownCallbacks.has(e.callee.localId) &&
-      !found.has(e.callee.localId)
-    ) {
+    if (e.kind === "callValue" && e.callee.kind === "varRef" && !found.has(e.callee.localId)) {
       const local = emitter.currentLocals.get(e.callee.localId);
       const target =
         local && local.tdz !== true ? emitter.knownCallbackTarget(e.callee) : undefined;

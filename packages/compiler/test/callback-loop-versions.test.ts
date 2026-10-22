@@ -81,3 +81,34 @@ test("a callback declared in the loop body is not read before the loop", async (
   `);
   expect(llvm).not.toContain("callback.version");
 });
+
+test("loops inside a callback version are not versioned again", async () => {
+  // Each inner loop calls a callback a factory builds just before it; without
+  // the limit, every copy of a version would version the next loop again.
+  const llvm = await emitLlvm(`
+    function adder(k: number): (v: number) => number {
+      return (v: number) => v + k;
+    }
+    function nest(n: number, f: (v: number) => number): number {
+      let s = 0;
+      for (let i = 0; i < n; i++) {
+        s += f(i);
+        const g = adder(i);
+        for (let j = 0; j < n; j++) {
+          s += g(j);
+          const h = adder(j);
+          for (let k = 0; k < n; k++) s += h(k);
+        }
+      }
+      return s;
+    }
+    console.log(nest(3, (v) => v - 1), nest(2, (v) => v * 3));
+  `);
+  // One version for the outer loop of each compiled `nest`; its two copies
+  // keep the inner loops whole.
+  const versions = [...llvm.matchAll(/^define [^\n]*@sc_bf_nest[^]*?^}/gm)].map(
+    ([body]) => body.match(/^callback\.version\.fast\d+:$/gm)?.length ?? 0,
+  );
+  expect(versions.every((count) => count <= 1)).toBe(true);
+  expect(versions.some((count) => count === 1)).toBe(true);
+});
