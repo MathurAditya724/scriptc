@@ -364,6 +364,9 @@ typedef struct ScrDynTypedRecordOps {
    * for-in over a record with every field present (atomic slot). */
   ScrArr *keys;
 } ScrDynTypedRecordOps;
+/* A record capsule's ops while it answers from the native record (no view
+ * created yet), or NULL. */
+const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
 
 /* Prototype members of a compiled class seen as `unknown`, emitted per
  * class by the compiler: the string names of methods, getters and setters

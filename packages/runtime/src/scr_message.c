@@ -1,4 +1,5 @@
 #include "scr_message.h"
+#include "scr_mailbox.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,6 +73,7 @@ struct ScrMessage {
   bool storage; /* has STORAGE nodes */
   bool releases; /* has STORAGE, PORT or HANDLE nodes, which own resources */
   bool readable; /* see scr_message_readable */
+  ScrMailEvent event; /* the event that carries the message (scr_message_mail_event) */
 };
 
 typedef struct {
@@ -98,6 +100,10 @@ typedef struct {
  * and properties allocates only its block. */
 #define SCR_MESSAGE_INLINE 8
 
+/* How deep live records nest before the rest of a graph encodes through
+ * the visit stack (scr_message_value recurses for them). */
+#define SCR_MESSAGE_RECORD_DEPTH 32
+
 typedef struct {
   ScrMessageNode *nodes;
   ScrMessageVisit *visits;
@@ -121,6 +127,7 @@ typedef struct {
   bool storage;
   bool releases;
   bool shared; /* a node was reached twice */
+  size_t record_depth; /* live records being encoded from their fields */
   bool adopts; /* has PORT or HANDLE nodes */
   ScrMessageNode inline_nodes[SCR_MESSAGE_INLINE];
   ScrMessageVisit inline_visits[SCR_MESSAGE_INLINE];
@@ -148,6 +155,7 @@ static void scr_message_encoder_init(ScrMessageEncoder *encoder, const ScrDyn *t
   encoder->transfer = transfer;
   encoder->uncaught = uncaught;
   encoder->storage = encoder->releases = encoder->shared = encoder->adopts = false;
+  encoder->record_depth = 0;
 }
 
 static bool scr_message_listed(const ScrMessageEncoder *encoder, const ScrDyn *value) {
@@ -321,6 +329,10 @@ static ScrDyn *scr_message_uncaught_keys(const ScrDyn *view) {
   return keys;
 }
 
+static void scr_message_property(ScrMessageEncoder *encoder, size_t id,
+                                  const ScrStr *key, size_t value, bool hidden);
+static bool scr_message_drain(ScrMessageEncoder *encoder, size_t base);
+
 static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input) {
   bool uncaught = encoder->uncaught;
   encoder->uncaught = false;
@@ -381,6 +393,46 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     node->kind = SCR_MESSAGE_PUBLISHED;
     node->v.published = (ScrDyn *)input;
     return id;
+  }
+  /* A live record capsule (scr_dyn_typed_ref_bind_record) whose view was
+   * never created encodes its fields from the record: the view would hold
+   * exactly those keys, in that order, with the values its ops box. Nested
+   * records encode the same way up to a depth, then through their views
+   * and the visit stack. */
+  const ScrDynTypedRecordOps *record =
+      input->kind == SCR_DYN_TYPED_REF && encoder->record_depth < SCR_MESSAGE_RECORD_DEPTH
+          ? scr_dyn_typed_ref_live_record(input) : NULL;
+  if (record) {
+    encoder->visits[id].view = (ScrDyn *)input;
+    encoder->nodes[id].kind = SCR_MESSAGE_OBJECT;
+    void *rec = input->v.typed_ref.ptr;
+    encoder->record_depth++;
+    size_t result = id;
+    /* A field's value encodes completely, its containers' properties
+     * included, before the next field's: getters run in Node's order. */
+    size_t base = encoder->depth;
+    for (size_t i = 0; i < record->count; i++) {
+      if (!record->fixed && !record->has(rec, i)) continue;
+      ScrDyn *child = record->get(rec, i);
+      if (!child || scr_exc_pending()) {
+        scr_dyn_release(child);
+        result = SIZE_MAX;
+        break;
+      }
+      size_t next = scr_message_value(encoder, child);
+      scr_dyn_release(child);
+      if (next == SIZE_MAX) {
+        result = SIZE_MAX;
+        break;
+      }
+      scr_message_property(encoder, id, record->names[i], next, false);
+      if (encoder->depth > base && !scr_message_drain(encoder, base)) {
+        result = SIZE_MAX;
+        break;
+      }
+    }
+    encoder->record_depth--;
+    return result;
   }
   ScrDyn *value = input->kind == SCR_DYN_TYPED_REF
       ? scr_dyn_typed_ref_materialize(input) : (ScrDyn *)input;
@@ -756,8 +808,8 @@ static ScrMessage *scr_message_pack(ScrMessageEncoder *encoder) {
   ScrMessageProperty *slots = (ScrMessageProperty *)(nodes + count);
   ScrMessageTyped *records = (ScrMessageTyped *)(slots + properties);
   char *text = (char *)(records + typed);
-  *message = (ScrMessage){nodes, count, encoder->storage, encoder->releases,
-                         !encoder->shared && !encoder->adopts};
+  *message = (ScrMessage){.nodes = nodes, .count = count, .storage = encoder->storage,
+                          .releases = encoder->releases, .readable = !encoder->shared && !encoder->adopts};
   memcpy(nodes, encoder->nodes, count * sizeof(*nodes));
   if (typed) memcpy(records, encoder->typed, typed * sizeof(*records));
   size_t first = 0;
@@ -788,10 +840,11 @@ static ScrMessage *scr_message_pack(ScrMessageEncoder *encoder) {
   return message;
 }
 
-static ScrMessage *scr_message_encode_run(ScrMessageEncoder *encoder, const ScrDyn *value) {
-  ScrMessage *message = NULL;
-  if (scr_message_value(encoder, value) == SIZE_MAX) goto done;
-  while (encoder->depth && !scr_exc_pending()) {
+/* Encodes the properties of the containers on the visit stack above
+ * `base`, depth first, as Node's serializer visits them (getters run in
+ * that order). False when a property could not be read or encoded. */
+static bool scr_message_drain(ScrMessageEncoder *encoder, size_t base) {
+  while (encoder->depth > base && !scr_exc_pending()) {
     size_t id = encoder->stack[encoder->depth - 1];
     ScrMessageVisit *visit = &encoder->visits[id];
     if (visit->cursor == visit->keys->v.arr.len) { encoder->depth--; continue; }
@@ -799,7 +852,7 @@ static ScrMessage *scr_message_encode_run(ScrMessageEncoder *encoder, const ScrD
     bool error = encoder->nodes[id].kind == SCR_MESSAGE_ERROR;
     if (key->kind != SCR_DYN_STR || (!error && !scr_dyn_property_is_enumerable(visit->view, key->v.str))) continue;
     ScrDyn *child = scr_dyn_bag_get(visit->view, key->v.str, visit->view);
-    if (!child || scr_exc_pending()) { scr_dyn_release(child); break; }
+    if (!child || scr_exc_pending()) { scr_dyn_release(child); return false; }
     bool hidden = error;
     if (visit->uncaught) {
       /* Node keeps an uncaught Error's data properties except functions
@@ -810,10 +863,15 @@ static ScrMessage *scr_message_encode_run(ScrMessageEncoder *encoder, const ScrD
     }
     size_t next = scr_message_value(encoder, child);
     scr_dyn_release(child);
-    if (next == SIZE_MAX) break;
+    if (next == SIZE_MAX) return false;
     scr_message_property(encoder, id, key->v.str, next, hidden);
   }
-done:
+  return !scr_exc_pending();
+}
+
+static ScrMessage *scr_message_encode_run(ScrMessageEncoder *encoder, const ScrDyn *value) {
+  ScrMessage *message = NULL;
+  if (scr_message_value(encoder, value) != SIZE_MAX) scr_message_drain(encoder, 0);
   if (!scr_exc_pending()) message = scr_message_pack(encoder);
   else
     for (size_t i = 0; i < encoder->count; i++) scr_message_drop(&encoder->nodes[i]);
@@ -1002,6 +1060,11 @@ done:;
 }
 
 bool scr_message_readable(const ScrMessage *message) { return message->readable; }
+
+ScrMailEvent *scr_message_mail_event(ScrMessage *message) {
+  message->event = (ScrMailEvent){.message = message, .in_message = true};
+  return &message->event;
+}
 
 int32_t scr_message_kind(const ScrMessage *message, size_t node) { return message->nodes[node].kind; }
 

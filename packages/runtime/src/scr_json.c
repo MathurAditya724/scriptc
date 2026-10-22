@@ -3591,6 +3591,10 @@ static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
   return (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
 }
 
+const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d) {
+  return d->kind == SCR_DYN_TYPED_REF ? scr_typed_ref_record_ops(d) : NULL;
+}
+
 static bool scr_typed_ref_record_field(const ScrDynTypedRecordOps *ops, const ScrStr *key,
                                        size_t *out) {
   /* Compiled reads pass the interned literal the field names also use. */
