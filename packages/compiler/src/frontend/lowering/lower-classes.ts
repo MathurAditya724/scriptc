@@ -1,3 +1,4 @@
+import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
@@ -4663,7 +4664,7 @@ export function genericClassInstanceType(
     );
   }
   const ordinal = gci.instances.size;
-  const name = `${gci.family.def.name}%${ordinal}`;
+  const name = keyedHelperName(lowerer, `${gci.family.def.name}%`, key, "");
   const entry: { name: string; info: ClassInfo | null; poisoned?: boolean } = { name, info: null };
   gci.instances.set(key, entry);
   const bindings = new Map<ts.Symbol, IrType>();
@@ -7910,7 +7911,7 @@ export function classIteratorDrainCall(
   const key = `${cit.className}:${typeKey(outElem)}`;
   let name = lowerer.iterDrainHelpers.get(key);
   if (!name) {
-    name = `%iter.drain.${lowerer.iterDrainHelpers.size}`;
+    name = keyedHelperName(lowerer, "%iter.drain", key);
     lowerer.iterDrainHelpers.set(key, name);
     const recvT: IrType = { kind: "object", className: cit.className };
     const recvRef: IrExpr = { kind: "varRef", localId: "r.0", type: recvT, loc };
@@ -8024,7 +8025,7 @@ export function classIteratorRestDrainCall(
   const key = `it:${cit.iterT.className}`;
   let name = lowerer.iterDrainHelpers.get(key);
   if (!name) {
-    name = `%iter.drain.${lowerer.iterDrainHelpers.size}`;
+    name = keyedHelperName(lowerer, "%iter.drain", key);
     lowerer.iterDrainHelpers.set(key, name);
     const itRef: IrExpr = { kind: "varRef", localId: "it.0", type: cit.iterT, loc };
     const outRef: IrExpr = { kind: "varRef", localId: "out.0", type: outT, loc };
@@ -10532,7 +10533,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       const key = `x509.record:${isBytes ? "bytes" : "str"}`;
       let helper = lowerer.valueHelpers.get(key);
       if (!helper) {
-        helper = `%x509.record.${lowerer.valueHelpers.size}`;
+        helper = keyedHelperName(lowerer, "%x509.record", key);
         lowerer.valueHelpers.set(key, helper);
         const dataT = data.type;
         const dRef: IrExpr = { kind: "varRef", localId: "d.0", type: dataT, loc };
