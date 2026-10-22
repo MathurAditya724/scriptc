@@ -1972,7 +1972,8 @@ function lowerBufferStaticValue(
       const srcNode = args[0].expression;
       const srcIr = lowerer.mapTypeOf(lowerer.typeOf(srcNode));
       if (srcIr?.kind === "bytes") {
-        const receiver = lowerer.lowerExpr(srcNode);
+        // A JavaScript field can hold the typed array as a dynamic value.
+        const receiver = lowerer.lowerExprExpecting(srcNode, srcIr);
         const idxArgs = args.slice(1).map((a) => lowerer.lowerExprExpecting(a, F64));
         return {
           kind: "bytesIntrinsic",

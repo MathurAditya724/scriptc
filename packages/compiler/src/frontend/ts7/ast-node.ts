@@ -9,6 +9,7 @@ import {
 import { astLineOfPosition, astLineStarts, astSkipTrivia } from "./ast-text.js";
 import {
   AstWireFile,
+  PREORDER_LIST,
   parseAstNodeHandle,
   type AstFileReference,
   type AstNodeHandle,
@@ -361,6 +362,32 @@ export class AstNode {
     visitList?: (nodes: AstNodeList) => T,
   ): T | undefined {
     const wire = this.file.wire;
+    const tree = wire.preorder();
+    if (tree === null) return this.forEachLinkedChild(visitNode, visitList);
+    // In the checked preorder tree, the first child follows its parent and
+    // each later child starts where the previous child's subtree ends.
+    const kinds = tree.kinds;
+    const ends = tree.ends;
+    const stop = ends[this.index]!;
+    for (let index = this.index + 1; index < stop; index = ends[index]!) {
+      const kind = kinds[index]!;
+      if (kind === PREORDER_LIST) {
+        const result = this.visitChildList(index, visitNode, visitList);
+        if (result) return result;
+      } else if (kind !== AstKind.JSDoc) {
+        const result = visitNode(this.file.node(index));
+        if (result) return result;
+      }
+    }
+    return undefined;
+  }
+
+  /** forEachChild through the sibling and parent links. */
+  private forEachLinkedChild<T>(
+    visitNode: (node: AstNode) => T,
+    visitList?: (nodes: AstNodeList) => T,
+  ): T | undefined {
+    const wire = this.file.wire;
     // Walk the immutable sibling links directly. Repeated semantic scans
     // should not allocate and free a temporary child-index array per node.
     for (let index = wire.firstChild(this.index); index !== 0; index = wire.next(index)) {
@@ -368,20 +395,26 @@ export class AstNode {
         throw new AstDecodeError("sibling belongs to another parent");
       const kind = wire.kind(index);
       if (kind === KIND_NODE_LIST) {
-        const list = this.file.list(index);
-        if (visitList !== undefined) {
-          const result = visitList(list);
-          if (result) return result;
-        } else {
-          for (const node of list.nodes) {
-            const result = visitNode(node);
-            if (result) return result;
-          }
-        }
+        const result = this.visitChildList(index, visitNode, visitList);
+        if (result) return result;
       } else if (kind !== AstKind.JSDoc) {
         const result = visitNode(this.file.node(index));
         if (result) return result;
       }
+    }
+    return undefined;
+  }
+
+  private visitChildList<T>(
+    index: number,
+    visitNode: (node: AstNode) => T,
+    visitList?: (nodes: AstNodeList) => T,
+  ): T | undefined {
+    const list = this.file.list(index);
+    if (visitList !== undefined) return visitList(list);
+    for (const node of list.nodes) {
+      const result = visitNode(node);
+      if (result) return result;
     }
     return undefined;
   }

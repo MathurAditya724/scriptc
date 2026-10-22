@@ -2119,6 +2119,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * surface — the handles are the same kinds. */
   "tls.createServer": { argTypes: [null, null], result: NETSERVER_T },
   "tls.createServerCb": { argTypes: [null, null, null], result: NETSERVER_T },
+  /** The SNICallback forms: (cert, key, SNICallback[, handler]). The
+   * callback is http2.createSecureServerSni's shape, a function or a
+   * function | undefined union. */
+  "tls.createServerSni": { argTypes: [null, null, null], result: NETSERVER_T },
+  "tls.createServerSniCb": { argTypes: [null, null, null, null], result: NETSERVER_T },
   // The runtime options records (divergence 66's stance): a dyn options
   // value whose members read at runtime; pemDyn extracts a runtime-valued
   // cert/key member (arg 1 is the precomposed fence label).
@@ -3675,6 +3680,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.bagGet": { argTypes: [DYN, STRING, DYN], result: DYN },
   "dyn.bagSet": { argTypes: [DYN, STRING, DYN, DYN], result: VOID },
   "dyn.objCreate": { argTypes: [DYN], result: DYN },
+  // Names a compiled class's prototype object (args[0]) after the class
+  // (args[1]) for util.inspect.
+  "dyn.nameClassPrototype": { argTypes: [DYN, STRING], result: VOID },
   "dyn.objCreateWithProperties": { argTypes: [DYN, DYN], result: DYN },
   "dyn.getPrototype": { argTypes: [DYN], result: DYN },
   "dyn.setPrototype": { argTypes: [DYN, DYN], result: DYN },
@@ -3733,6 +3741,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "regex.groupParseInt": { argTypes: [arrayOf(STRING), F64, F64], result: F64 },
   // `.index` / `.input` (args[1]) of a match result. Borrowed; never throws.
   "regex.resultProp": { argTypes: [arrayOf(STRING), STRING], result: DYN },
+  // The string keys `for...in` visits on an array (args[0], any element
+  // type) after its indices. Borrowed; never throws.
+  "array.namedKeys": { argTypes: [null], result: arrayOf(STRING) },
+  // Whether the array (args[0]) still has the key (args[1]) from its
+  // namedKeys list. Borrowed; never throws.
+  "array.hasNamedKey": { argTypes: [null, STRING], result: BOOL },
   // node:events EventEmitter: receivers are emitter-hierarchy objects and
   // the chaining forms (on/off/removeAll/setMax) return the receiver's
   // own class — program-dependent object types, checked in the libCall
@@ -4625,6 +4639,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * lone surrogate as U+FFFD). Borrowed arg; owned (+1) string; never throws. */
   "text.decode": { argTypes: [BYTES_U8], result: STRING },
   "bytes.bufferSource": { argTypes: [DYN], result: BYTES_U8 },
+  /** Whether an error-first callback's Buffer result is absent: the zlib
+   * and crypto callback adapters pass NULL after an error. Borrowed arg;
+   * never throws. */
+  "bytes.isAbsent": { argTypes: [BYTES_U8], result: BOOL },
+  /** The absent Buffer result itself (NULL), where an error-path callback
+   * body passes its undefined result on into a Buffer slot. Owned (+1);
+   * never throws. */
+  "bytes.absent": { argTypes: [], result: BYTES_U8 },
   /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array
    * result (map and filter of a Buffer return a Buffer). */
   "bytes.copyBrand": { argTypes: [BYTES_U8, BYTES_U8], result: VOID },

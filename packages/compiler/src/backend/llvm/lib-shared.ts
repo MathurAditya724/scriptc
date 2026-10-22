@@ -1495,6 +1495,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.bagGet": "scr_dyn_bag_get",
   "dyn.bagSet": "scr_dyn_bag_set",
   "dyn.objCreate": "scr_dyn_obj_create",
+  "dyn.nameClassPrototype": "scr_dyn_name_class_prototype",
   "dyn.objCreateWithProperties": "scr_dyn_obj_create_with_properties",
   "dyn.getPrototype": "scr_dyn_get_prototype",
   "dyn.setPrototype": "scr_dyn_set_prototype",
@@ -1521,6 +1522,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "regex.groupNumber": "scr_regex_group_number",
   "regex.groupParseInt": "scr_regex_group_parse_int",
   "regex.resultProp": "scr_regex_result_prop",
+  "array.namedKeys": "scr_arr_named_keys",
+  "array.hasNamedKey": "scr_arr_has_named_key",
   // queueMicrotask's checked-dynamic form (borrowed dyn; a non-function
   // throws synchronously), the minted setImmediate value, and the
   // timers/promises immediate — all mark the loop live.

@@ -36,6 +36,7 @@ import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context
 import type { NullableRefField } from "./nullable-fields.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
+import { recordMayKeepSource } from "./record-sources.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
  * (the unit arm's immortal instance, or a fresh box around a retained
@@ -176,6 +177,7 @@ export function streamTypedRefCommitAdapter(
     const check = host.dyn.dynCheckHelper(t);
     host.declare(`declare void @scr_arr_release(ptr)`);
     host.declare(`declare void @scr_arr_outline(ptr)`);
+    host.declare(`declare void @scr_arr_adopt_view_properties(ptr, ptr, ptr)`);
     const lines = [
       `define internal void @${commit}(ptr %target, ptr %d) ${FN_ATTRS} { ; commit live stream element ${typeKey(t)}`,
       `entry:`,
@@ -183,6 +185,8 @@ export function streamTypedRefCommitAdapter(
       `  %missing = icmp eq ptr %next, null`,
       `  br i1 %missing, label %done, label %swap`,
       `swap:`,
+      // Properties move with the storage (in its out-of-line part).
+      `  call void @scr_arr_adopt_view_properties(ptr %next, ptr %d, ptr %target)`,
       // Inline slots live in each header's block; move them out first.
       `  call void @scr_arr_outline(ptr %target)`,
       `  call void @scr_arr_outline(ptr %next)`,
@@ -193,7 +197,10 @@ export function streamTypedRefCommitAdapter(
       { name: "cap", index: SCR_ARR_FIELD.cap, type: "i32" },
       { name: "data", index: SCR_ARR_FIELD.data, type: "ptr" },
       { name: "filled", index: SCR_ARR_FIELD.filled, type: "i32" },
-      { name: "ext", index: SCR_ARR_FIELD.ext, type: "ptr" },
+      // The out-of-line storage's pointer lives before the dense allocation
+      // and moves with data; its flag is in spare, whose element ops id the
+      // two arrays share.
+      { name: "spare", index: SCR_ARR_FIELD.spare, type: "i16" },
     ];
     for (const member of storageMembers) {
       lines.push(
@@ -533,6 +540,12 @@ export function streamTypedRefCommitAdapter(
       `  store ${member.type} %old${index}, ptr %np${index}`,
     );
   });
+  // The conversion kept the view's undeclared properties for %next. Shapes
+  // with accessor slots keep their accessors in the view instead.
+  if (recordMayKeepSource(shape) && !shapeHasAccessorSlots(shape)) {
+    host.declare(`declare void @scr_record_source_move(ptr, ptr)`);
+    lines.push(`  call void @scr_record_source_move(ptr %next, ptr %target)`);
+  }
   lines.push(
     `  call void ${releaseSym(host.shapeHost, t)}(ptr %next)`,
     `  br label %done`,
