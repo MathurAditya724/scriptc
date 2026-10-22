@@ -751,31 +751,35 @@ function lowerUndefinedResultBody(
     lowerer.suppressStats = true;
     lowerer.errorPathCopies++;
     try {
-      // Passed on into a Buffer slot, the result stays what the adapter
-      // passed: the Buffer, or the absent Buffer, which a callee with this
-      // entry test reads as undefined. (The copy that serves both paths
-      // reaches this with a Buffer.)
-      const body = transformStmtList(withKnownError(knownError, lowerBody), {
-        expr: (e) =>
-          e.kind === "dynCheck" &&
-          e.value.kind === "varRef" &&
-          e.value.localId === slot.id &&
-          e.type.kind === "bytes" &&
-          e.type.elem === "u8"
-            ? {
-                kind: "ternary",
-                cond: absent(),
-                then: { kind: "libCall", fn: "bytes.absent", args: [], type: e.type, loc: e.loc },
-                else_: varRef(param.id, param.type, e.loc),
-                type: e.type,
-                loc: e.loc,
-              }
-            : e,
+      const lowered = withKnownError(knownError, lowerBody);
+      if (lowerer.diags.length > diags || !readsSlotDynamically(lowered, slot.id))
+        throw new PoisonError();
+      // Passed on into a Buffer slot, the result is the Buffer it holds
+      // (the adapter's, or one the body assigned), or, while it holds
+      // undefined, the absent Buffer, which a callee with this entry test
+      // reads as undefined.
+      const guarded = new Set<IrExpr>();
+      return transformStmtList(lowered, {
+        expr: (e) => {
+          if (!isBufferCheckOf(e, slot.id) || guarded.has(e)) return e;
+          guarded.add(e);
+          return {
+            kind: "ternary",
+            cond: {
+              kind: "dynTest",
+              test: "undefined",
+              value: varRef(slot.id, DYN, e.loc),
+              type: BOOL,
+              loc: e.loc,
+            },
+            then: { kind: "libCall", fn: "bytes.absent", args: [], type: e.type, loc: e.loc },
+            else_: e,
+            type: e.type,
+            loc: e.loc,
+          };
+        },
         stmt: (stmt) => stmt,
       });
-      if (lowerer.diags.length > diags || !readsSlotDynamically(body, slot.id))
-        throw new PoisonError();
-      return body;
     } catch (error) {
       if (error instanceof InternalCompilerError) throw error;
       lowerer.diags.length = diags;
@@ -831,15 +835,26 @@ function lowerUndefinedResultBody(
 
 /** Whether the error-path copy reads the checked-dynamic result slot only as
  * a checked-dynamic value, never converted into a static slot (where Node
- * would hold undefined). */
+ * would hold undefined) other than a Buffer one. */
 function readsSlotDynamically(body: IrStmt[], slotId: string): boolean {
   const isSlot = (e: IrExpr): boolean => e.kind === "varRef" && e.localId === slotId;
   return everyStmtList(body, {
     expr: (e) => {
       if (isSlot(e)) return e.type.kind === "dyn";
-      if (e.kind === "dynCheck" && isSlot(e.value)) return false;
+      if (e.kind === "dynCheck" && isSlot(e.value)) return isBufferCheckOf(e, slotId);
       return true;
     },
     stmt: () => true,
   });
+}
+
+/** Whether `e` converts the result slot into a Buffer slot. */
+function isBufferCheckOf(e: IrExpr, slotId: string): boolean {
+  return (
+    e.kind === "dynCheck" &&
+    e.value.kind === "varRef" &&
+    e.value.localId === slotId &&
+    e.type.kind === "bytes" &&
+    e.type.elem === "u8"
+  );
 }

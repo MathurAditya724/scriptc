@@ -176,15 +176,24 @@ function namedRetry(): void {
   });
 }
 
+function shown(label: string, out: Buffer): void {
+  console.log(label, typeof out, out.toString());
+}
 function fallbackResult(): void {
-  // The body assigns a fallback Buffer to its result.
+  // The body assigns a fallback Buffer to its result, then passes the
+  // result on to typed functions.
   zlib.inflate(bad, (err, out) => {
     if (!out) out = Buffer.from("fallback");
     console.log("fallback", err?.code, typeof out, out.toString());
+    shown("fallback passed", out);
     zlib.inflate(good, (err2, out2) => {
       if (err2) out2 = Buffer.alloc(0);
       console.log("fallback nested", err2, out2.length);
-      step();
+      shown("fallback nested passed", out2);
+      zlib.inflate(bad, (err3, out3) => {
+        if (err3) out3 = Buffer.from("inner fallback");
+        sink(null, out3);
+      });
     });
   });
 }
