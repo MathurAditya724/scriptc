@@ -1493,6 +1493,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.bagGet": "scr_dyn_bag_get",
   "dyn.bagSet": "scr_dyn_bag_set",
   "dyn.objCreate": "scr_dyn_obj_create",
+  "dyn.nameClassPrototype": "scr_dyn_name_class_prototype",
   "dyn.objCreateWithProperties": "scr_dyn_obj_create_with_properties",
   "dyn.getPrototype": "scr_dyn_get_prototype",
   "dyn.setPrototype": "scr_dyn_set_prototype",

@@ -997,6 +997,9 @@ ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key);
 ScrDyn *scr_dyn_array_proto_call(ScrDyn *target, ScrStr *method, ScrDyn *args);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
 ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity */
+/* Names the prototype object of a compiled class `name` for util.inspect
+ * (Node prints the constructor's name), unless it already has a name. */
+void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name);
 /* Native arrays read their holes as undefined without consulting
  * Array.prototype, so storing an element on Array.prototype raises SC2020.
  * True (with the error pending) when `recv` is Array.prototype. */
