@@ -3983,6 +3983,7 @@ export class LlEmitter {
       proven: this.bytesBounds,
       workers: this.mod.workers === true,
       owned: this.bytesOwned,
+      scalarStrings: new Set(this.stringSlices.keys()),
     });
   }
 
