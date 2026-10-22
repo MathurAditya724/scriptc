@@ -900,8 +900,9 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         !integerLoop && !countedLoop && emitter.countedLoopsEnabled
           ? matchIntegerPairedForLoop(s, emitter.numericLocals, emitter.integerRanges)
           : null;
+      // Byte windows and dense loops reason about one counter.
       const window =
-        countedLoop && emitter.byteWindowsEnabled
+        countedLoop && countedLoop.followers.length === 0 && emitter.byteWindowsEnabled
           ? matchByteWindow(
               s,
               countedLoop,
@@ -919,7 +920,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               length: integerArrayLoop.limitReceiver as IrExpr & { kind: "varRef" },
               range: { min: 0, max: 4294967294 },
             }
-          : countedLoop && !countedLoop.guarded
+          : countedLoop && !countedLoop.guarded && countedLoop.followers.length === 0
             ? countedDenseShape(s, countedLoop)
             : null;
       const dense =
@@ -1051,6 +1052,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       let integerSlot: string | null = null;
       let countedLimit: string | null = null;
       const pairedSlots: string[] = [];
+      const followerSlots: string[] = [];
       if (integerLoop) {
         integerSlot = B.slot();
         B.entryAllocas.push(
@@ -1094,6 +1096,23 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               ? emitter.denseLoop.range
               : countedLoop.range,
         });
+        for (const follower of countedLoop.followers) {
+          const slot = B.slot();
+          B.entryAllocas.push(
+            `${slot} = alloca i64 ; integer induction ${emitter.currentLocals.get(follower.localId)!.name}`,
+          );
+          const value = emitter.emitExpr(follower.start);
+          const followerStart = B.tmp();
+          B.line(`${followerStart} = fptosi double ${value.name} to i64`);
+          B.line(`store i64 ${followerStart}, ptr ${slot}`);
+          followerSlots.push(slot);
+          emitter.integerLoopBindings.set(follower.localId, {
+            slot,
+            type: "i64",
+            signed: true,
+            range: follower.range,
+          });
+        }
         countedLimit = emitCountedLoopLimit(emitter, countedLoop);
       } else if (pairedLoop) {
         for (const counter of [pairedLoop.low, pairedLoop.high]) {
@@ -1234,6 +1253,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
             B.line(`${old} = load i64, ptr ${integerSlot}`);
             B.line(`${next} = add nsw i64 ${old}, ${countedLoop.step}`);
             B.line(`store i64 ${next}, ptr ${integerSlot}`);
+            countedLoop.followers.forEach((follower, i) => {
+              const was = B.tmp();
+              const now = B.tmp();
+              B.line(`${was} = load i64, ptr ${followerSlots[i]}`);
+              B.line(`${now} = add nsw i64 ${was}, ${follower.step}`);
+              B.line(`store i64 ${now}, ptr ${followerSlots[i]}`);
+            });
           } else if (pairedLoop) {
             [pairedLoop.low, pairedLoop.high].forEach((counter, i) => {
               const old = B.tmp();
@@ -1249,7 +1275,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       B.startBlock(le);
       emitter.releaseScope(emitter.scopes.pop()!);
       if (integerLoop) emitter.integerLoopBindings.delete(integerLoop.localId);
-      if (countedLoop) emitter.integerLoopBindings.delete(countedLoop.localId);
+      if (countedLoop) {
+        emitter.integerLoopBindings.delete(countedLoop.localId);
+        for (const follower of countedLoop.followers)
+          emitter.integerLoopBindings.delete(follower.localId);
+      }
       if (pairedLoop) {
         emitter.integerLoopBindings.delete(pairedLoop.low.localId);
         emitter.integerLoopBindings.delete(pairedLoop.high.localId);
