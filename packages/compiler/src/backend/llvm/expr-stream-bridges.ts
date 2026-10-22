@@ -1071,9 +1071,15 @@ export function streamTypedRefMaterializeAdapter(
       };
       // Published before the field converters, like the array hooks below.
       // A Dirent row reads through its finished view (the prototype and
-      // the non-enumerable %dtype).
+      // the non-enumerable %dtype). A capsule binds the ops of its value's
+      // order when it is built, so a shape whose values can change order
+      // later (orderMoves) reads through its view.
       const dirent = isDirentShape(shape);
-      if (!dirent && orders.every((order) => liveRecordOpsEligible(fieldsOf(order)))) {
+      if (
+        !dirent &&
+        shape.orderMoves === undefined &&
+        orders.every((order) => liveRecordOpsEligible(fieldsOf(order)))
+      ) {
         if (orders.length === 1) {
           adapter.recordOps = `@${snapshot}_rops`;
           liveRecordOps(host, t, snapshot, fieldsOf(orders[0]!));

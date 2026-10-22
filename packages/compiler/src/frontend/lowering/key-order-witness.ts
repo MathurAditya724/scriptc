@@ -768,7 +768,8 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   //    table, as before.
   // A write of an optional key a value lacks moves the key to the end of
   // the value's order, as in Node: the orders include every order such
-  // writes reach, and each write site updates the index first.
+  // writes reach, and each write site updates the index after it evaluates
+  // the value and before it writes the key.
   const MAX_ORDERS = 16;
   const unresolved = (id: string): boolean => result.get(id) === "unknown";
   /** `order` over every key of `table`: keys the order lacks follow it. */
@@ -808,6 +809,30 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       moving.add(w.field);
     }
     return [...moving];
+  };
+  /** `values[i]` for the order index `current` holds, as a chain of
+   * tests. */
+  const indexChain = (current: IrExpr, values: readonly number[], loc: SrcLoc): IrExpr => {
+    let out: IrExpr = { kind: "numLit", value: values[values.length - 1]!, type: F64, loc };
+    for (let i = values.length - 2; i >= 0; i--) {
+      if (out.kind === "numLit" && out.value === values[i]) continue;
+      out = {
+        kind: "ternary",
+        cond: {
+          kind: "bin",
+          op: "===",
+          left: current,
+          right: { kind: "numLit", value: i, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        then: { kind: "numLit", value: values[i]!, type: F64, loc },
+        else_: out,
+        type: F64,
+        loc,
+      };
+    }
+    return out;
   };
   const moves = new Map<string, Map<string, number[]>>();
   /** Adds to `orders` every order writes of `moving` keys reach from them
@@ -887,8 +912,17 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   // way: copies (rest bindings, width copies), or literals spreading the
   // value between the same explicit keys. Order i is the source's order i
   // over the shape's keys, after the keys before the spread and before
-  // the keys after it.
-  type Template = { source: string; prefix: string[]; suffix: string[] };
+  // the keys after it. A key after the spread that the source value may
+  // lack goes where the source has it, or after the source's keys when it
+  // has not: such a literal's orders are one per source order and set of
+  // those keys the source has, and `select.index[present][i]` is the order
+  // for source order i with the keys of bit set `present`.
+  type Template = {
+    source: string;
+    prefix: string[];
+    suffix: string[];
+    select?: { keys: string[]; index: number[][] };
+  };
   const templateOf = (segments: readonly KeyOrderSegment[], id: string): Template | null => {
     const prefix: string[] = [];
     const suffix: string[] = [];
@@ -924,11 +958,39 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const orders = variants.get(first.source);
     if (orders === undefined || mirrors.has(first.source)) continue;
     const table = tableOf(candidate.shape);
-    const mirrored = orders.map((o) => {
+    const tested = first.suffix.filter((k) => maybeAbsent(first.source, k));
+    if (tested.length > 4) continue;
+    const mirrorOf = (o: readonly string[], lacks: ReadonlySet<string>): string[] => {
       const order = [...first.prefix];
-      for (const k of [...o, ...first.suffix]) if (!order.includes(k)) order.push(k);
+      for (const k of o) if (!lacks.has(k) && !order.includes(k)) order.push(k);
+      for (const k of first.suffix) if (!order.includes(k)) order.push(k);
       return complete(order, table);
-    });
+    };
+    let mirrored: string[][];
+    let template: Template = first;
+    if (tested.length === 0) mirrored = orders.map((o) => mirrorOf(o, new Set()));
+    else {
+      mirrored = [];
+      const index: number[][] = [];
+      for (let present = 0; present < 1 << tested.length; present++) {
+        const lacks = new Set(tested.filter((_, j) => (present & (1 << j)) === 0));
+        const row: number[] = [];
+        for (const o of orders) {
+          const order = mirrorOf(o, lacks);
+          let i = indexOfOrder(mirrored, order);
+          if (i < 0) i = mirrored.push(order) - 1;
+          row.push(i);
+        }
+        index.push(row);
+      }
+      if (mirrored.length > MAX_ORDERS) continue;
+      template = {
+        source: first.source,
+        prefix: first.prefix,
+        suffix: first.suffix,
+        select: { keys: tested, index },
+      };
+    }
     if (!closeUnderMoves(id, mirrored, candidate.moving)) continue;
     if (mirrored.every((o) => sameOrder(o, mirrored[0]!))) {
       // Every order of the source agrees over these keys: one table.
@@ -940,7 +1002,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       continue;
     }
     variants.set(id, mirrored);
-    mirrors.set(id, first);
+    mirrors.set(id, template);
   }
   if (variants.size === 0) return;
 
@@ -995,7 +1057,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     if (segments !== undefined && mirror !== undefined) {
       const obj = copySource(lit, mirror.source);
       if (obj === null) return null;
-      return {
+      const sourceIndex: IrExpr = {
         kind: "recordGet",
         obj,
         shapeId: mirror.source,
@@ -1003,6 +1065,22 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         type: F64,
         loc: lit.loc,
       };
+      const select = mirror.select;
+      if (select === undefined) return sourceIndex;
+      // Tests the source for each key in turn, then picks by its index.
+      const pick = (j: number, present: number): IrExpr => {
+        if (j === select.keys.length)
+          return indexChain(sourceIndex, select.index[present]!, lit.loc);
+        return {
+          kind: "ternary",
+          cond: lowerer.recordFieldPresent(obj, mirror.source, select.keys[j]!, lit.loc),
+          then: pick(j + 1, present | (1 << j)),
+          else_: pick(j + 1, present),
+          type: F64,
+          loc: lit.loc,
+        };
+      };
+      return pick(0, 0);
     }
     if (segments !== undefined) {
       const order = literalOrder(segments);
@@ -1072,7 +1150,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       typeof index === "number" ? { kind: "numLit", value: index, type: F64, loc: lit.loc } : index;
     lit.fields.push({ name: KEY_ORDER_FIELD, value });
   }
-  let receivers = 0;
+  let temporaries = 0;
   const replacements = new Map<IrFunction, Map<IrStmt, IrStmt>>();
   for (const { st, fn } of writeSites) {
     if (dropped.has(st.shapeId)) continue;
@@ -1084,7 +1162,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const prologue: IrStmt[] = [];
     let obj = st.obj;
     if (plain.kind !== "varRef") {
-      const localId = `%keyOrderReceiver.${receivers++}`;
+      const localId = `%keyOrderReceiver.${temporaries++}`;
       fn.locals.push({ id: localId, name: "%keyOrderReceiver", type: st.obj.type, mutable: false });
       prologue.push({ kind: "varDecl", localId, init: st.obj, loc });
       obj = { kind: "varRef", localId, type: st.obj.type, loc };
@@ -1097,29 +1175,20 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       type: F64,
       loc,
     };
-    // transitions[i] for the current index i, as a chain of tests.
-    let next: IrExpr = {
-      kind: "numLit",
-      value: transitions[transitions.length - 1]!,
-      type: F64,
-      loc,
-    };
-    for (let i = transitions.length - 2; i >= 0; i--) {
-      next = {
-        kind: "ternary",
-        cond: {
-          kind: "bin",
-          op: "===",
-          left: current,
-          right: { kind: "numLit", value: i, type: F64, loc },
-          type: BOOL,
-          loc,
-        },
-        then: { kind: "numLit", value: transitions[i]!, type: F64, loc },
-        else_: next,
-        type: F64,
-        loc,
-      };
+    const next = indexChain(current, transitions, loc);
+    // The value evaluates before the key is tested and moved: it may add
+    // other keys to the same value, which then come first.
+    let value = st.value;
+    const pure =
+      value.kind === "numLit" ||
+      value.kind === "strLit" ||
+      value.kind === "boolLit" ||
+      value.kind === "varRef";
+    if (!pure) {
+      const localId = `%keyOrderValue.${temporaries++}`;
+      fn.locals.push({ id: localId, name: "%keyOrderValue", type: value.type, mutable: false });
+      prologue.push({ kind: "varDecl", localId, init: value, loc });
+      value = { kind: "varRef", localId, type: value.type, loc };
     }
     const absent: IrExpr = {
       kind: "unary",
@@ -1142,7 +1211,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       obj,
       shapeId: st.shapeId,
       field: st.field,
-      value: st.value,
+      value,
       loc,
     };
     const guard: IrStmt = { kind: "if", cond: absent, then: [update], else_: null, loc };
@@ -1172,5 +1241,6 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       tables.push(table);
     }
     shape.orderVariants = tables;
+    if (moves.has(id)) shape.orderMoves = true;
   }
 }

@@ -468,3 +468,111 @@ test("re-adding a key a literal creates earlier moves it to the end of that valu
     ["b", "a"],
   ]);
 });
+
+test("a moving write evaluates its value before it tests and moves the key", () => {
+  const f = fixture();
+  const o = f.record(
+    [
+      ["id", F64],
+      ["x", OPT],
+      ["y", OPT],
+    ],
+    ["id", "x", "y"],
+  );
+  // `o.x = ((o.y = 2), 3)`: y is created first.
+  const value: IrExpr = {
+    kind: "seqExpr",
+    stmts: [set(ref("o", o), "y")],
+    result: num(3),
+    type: F64,
+    loc,
+  };
+  const write: IrStmt = {
+    kind: "recordSet",
+    obj: ref("o", o),
+    shapeId: o.shapeId,
+    field: "x",
+    value,
+    loc,
+  };
+  const fn = f.run([
+    decl("o", f.literal(o, ["id"])),
+    observe(f.literal(o, ["x", "id"])),
+    write,
+    observe(ref("o", o)),
+  ]);
+  const shape = f.shapes.get(o.shapeId)!;
+  expect(shape.orderVariants).toBeDefined();
+  expect(shape.orderMoves).toBe(true);
+  const block = fn.body[2] as IrStmt & { kind: "block" };
+  expect(block.kind).toBe("block");
+  const [first, guard, written] = block.body;
+  expect(first).toMatchObject({ kind: "varDecl", init: { kind: "seqExpr" } });
+  const local = (first as IrStmt & { kind: "varDecl" }).localId;
+  expect(guard).toMatchObject({ kind: "if", cond: { kind: "unary", op: "!" } });
+  expect(written).toMatchObject({
+    kind: "recordSet",
+    field: "x",
+    value: { kind: "varRef", localId: local },
+  });
+  // The write inside the value moves y in its own block.
+  const init = (first as IrStmt & { kind: "varDecl" }).init as IrExpr & { kind: "seqExpr" };
+  expect(init.stmts[0]).toMatchObject({ kind: "block" });
+});
+
+test("a key after a spread that the source may lack picks its order from the source's keys", () => {
+  const f = fixture();
+  const s = f.record(
+    [
+      ["a", F64],
+      ["b", OPT],
+      ["c", OPT],
+    ],
+    ["a", "b", "c"],
+  );
+  const t = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["c", OPT],
+    ],
+    ["a", "b", "c"],
+  );
+  const read = (field: string): IrExpr => ({
+    kind: "recordGet",
+    obj: ref("x", s),
+    shapeId: s.shapeId,
+    field,
+    type: OPT,
+    loc,
+  });
+  // `{ ...x, b: 1 }`
+  const merged = f.notes.literal(
+    {
+      kind: "recordLit",
+      fields: [
+        { name: "a", value: read("a") },
+        { name: "c", value: read("c") },
+        { name: "b", value: num(1) },
+      ],
+      type: t,
+      loc,
+    },
+    [
+      { kind: "spread", shapeId: s.shapeId, maybeAbsent: false },
+      { kind: "key", name: "b", definite: true },
+    ],
+  );
+  f.run([decl("x", f.literal(s, ["c", "a"])), observe(f.literal(s, ["a", "c"])), observe(merged)]);
+  // b keeps its place in the source's order when the source has it, and
+  // follows the source's keys when it does not.
+  expect(f.shapes.get(t.shapeId)!.orderVariants).toEqual([
+    ["a", "c", "b"],
+    ["c", "a", "b"],
+    ["a", "b", "c"],
+  ]);
+  expect(orderIndexOf(merged)).toMatchObject({
+    kind: "ternary",
+    cond: { kind: "recordHas", obj: { kind: "varRef", localId: "x" }, field: "b" },
+  });
+});

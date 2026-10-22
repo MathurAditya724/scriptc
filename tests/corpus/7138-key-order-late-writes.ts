@@ -23,5 +23,15 @@ for (let i = 0; i < 2; i++) {
   console.log(Object.keys(built).join(","));
 }
 console.log(built);
-// d
-// e
+// A write's value runs first, so a key it adds comes before the written
+// key.
+const nested: Item = { count: 3, id: 4 };
+nested.name = ((nested.note = "first"), "second");
+console.log(Object.keys(nested).join(","), JSON.stringify(nested));
+// A value seen as a JavaScript value enumerates later writes in order.
+const seen: Item = { id: 5, count: 4 };
+const view: unknown = seen;
+console.log(Object.keys(view as object).join(","));
+seen.note = "n";
+seen.name = "m";
+console.log(Object.keys(view as object).join(","), JSON.stringify(view));

@@ -1673,6 +1673,10 @@ export interface IrRecordShape {
    * and every other construction leaves 0. Each key-order surface
    * dispatches on that field. */
   orderVariants?: string[][];
+  /** A shape with orderVariants whose values can change order after they
+   * are built: a write of an optional key a value lacks updates its
+   * KEY_ORDER_FIELD. */
+  orderMoves?: true;
 }
 
 /** The hidden field of a shape with orderVariants: the index of the value's
