@@ -262,3 +262,48 @@ void main();
     }
   }
 });
+
+const promiseAllSource = `
+async function leaf(x: number): Promise<number> {
+  return x + 1;
+}
+async function literal(x: number): Promise<number> {
+  const all: number[] = await Promise.all([leaf(x), leaf(x + 1)]);
+  return all[0]! + all[1]!;
+}
+async function local(x: number): Promise<number> {
+  const ps = [leaf(x), leaf(x + 1), leaf(x + 2)];
+  const all = await Promise.all(ps);
+  return all.length;
+}
+async function reused(x: number): Promise<number> {
+  const ps = [leaf(x)];
+  const all = await Promise.all(ps);
+  return all.length + ps.length;
+}
+async function main(): Promise<void> {
+  console.log((await literal(1)) + (await local(2)) + (await reused(3)));
+}
+void main();
+`;
+
+test("a stackless body runs Promise.all of never-suspending calls in place", async () => {
+  const llvm = await emit(promiseAllSource);
+  for (const [symbol, calls] of [
+    ["sc_f_literal", 2],
+    ["sc_f_local", 3],
+  ] as const) {
+    const body = definition(llvm, symbol);
+    // The entries run in place and fill the result array; one turn stands
+    // for Promise.all's reaction jobs and one for the await.
+    expect(body.match(/call double @sc_ai_leaf\(double/g)?.length, symbol).toBe(calls);
+    expect(body.match(/call zeroext i1 @scr_coro_hop_prepare\(ptr/g)?.length, symbol).toBe(2);
+    expect(body, symbol).toContain("call void @scr_promise_mark_handled(ptr");
+    expect(body, symbol).not.toContain("@scr_promise_all(");
+    expect(body, symbol).not.toContain("@sc_as_leaf(");
+  }
+  // A local the body reads again keeps its promises.
+  const reused = definition(llvm, "sc_f_reused");
+  expect(reused).toContain("call ptr @sc_as_leaf(double");
+  expect(reused).toContain("@scr_promise_all(");
+});
