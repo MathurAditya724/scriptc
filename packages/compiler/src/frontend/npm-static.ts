@@ -16,12 +16,14 @@ import {
 } from "./workspace-registry.js";
 import {
   clearVirtualSources,
+  isVirtualSource,
   setVirtualSource,
   trackedExists,
   trackedReadFile,
   trackedRealpath,
 } from "./input-tracker.js";
 import { npmBuiltinAliasOf } from "./builtin-modules.js";
+import { NPM_STATIC_TYPES_SUFFIX } from "./npm-static-type-exports.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -53,10 +55,27 @@ export function npmStaticLexerVisibleNames(path: string): readonly string[] {
   return lexerNames.get(path.split("\\").join("/")) ?? [];
 }
 
+/** Per runtime entry (forward slashes), the JSDoc typedefs that re-export
+ * its package's type-only declarations (npm-static-type-exports.ts). */
+let typeExportTypedefs = new Map<string, string>();
+
+/** Registers the copies of the opted-in packages' declaration files and the
+ * typedefs their runtime entries gain (after setNpmStaticPackages, which
+ * clears virtual sources). */
+export function setNpmStaticTypeExports(
+  copies: ReadonlyMap<string, string>,
+  typedefs: ReadonlyMap<string, string>,
+): void {
+  for (const [path, text] of copies) setVirtualSource(path, text);
+  typeExportTypedefs = new Map(typedefs);
+  rewriteCache.clear();
+}
+
 export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): void {
   // npm packages served as builtins (graceful-fs as fs) never compile
   // their JavaScript, even when named.
   activePackages = new Set([...packages].filter((name) => npmBuiltinAliasOf(name) === null));
+  typeExportTypedefs = new Map();
   declarationOverloads = new Map();
   declarationProperties = new Map();
   offenders.clear();
@@ -524,12 +543,21 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
         } catch {
           rewritten = null; // unreadable/unparseable: fall through untouched
         }
+        // The runtime entry re-exports the type-only declarations of the
+        // package's .d.ts, after every respelling, so positions stay.
+        const typedefs = typeExportTypedefs.get(path.split("\\").join("/"));
+        if (typedefs !== undefined) {
+          const text = rewritten ?? trackedReadFile(path);
+          if (text !== null) rewritten = `${text}\n${typedefs}\n`;
+        }
         rewriteCache.set(path, rewritten);
         return rewritten ?? undefined;
       }
       return undefined;
     },
     hideFile: (path) => {
+      // The copies of the package's declaration files the typedefs name.
+      if (path.endsWith(NPM_STATIC_TYPES_SUFFIX) && isVirtualSource(path)) return false;
       const target = shadowTargetOf(path);
       if (!target) return false;
       if (isBundledShimForwarder(path)) return false;
