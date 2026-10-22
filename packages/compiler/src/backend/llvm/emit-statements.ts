@@ -558,7 +558,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         emitter.emitPublishedFieldGuard(obj.name, null, s.field);
       const { ptr, type, inline } =
         s.kind === "fieldSet"
-          ? emitter.classFieldPtr(obj.name, s.className, s.field)
+          ? emitter.classFieldPtr(obj.name, s.className, s.field, "compressed")
           : emitter.recordFieldPtr(obj.name, s.shapeId, s.field);
       // A result-slot entry fills zeroed caller storage, each field once.
       if (

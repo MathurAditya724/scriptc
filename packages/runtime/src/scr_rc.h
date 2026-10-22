@@ -308,6 +308,30 @@ void scr_cyc_free(void *obj); /* frees the block, header included */
 
 void *scr_mem_realloc(void *p, size_t n);
 void *scr_rt_calloc(size_t n); /* emitted-code entry points */
+#if defined(__linux__) && SIZE_MAX > UINT32_MAX
+/* The program-lifetime region (scr_alloc.c): compact class instances of
+ * programs built for Linux without sanitizers (llvm/emitter.ts
+ * lowRegionTarget), which are never freed, at 8-byte aligned addresses below
+ * 32 GiB, so their fields can hold address >> 3 in 32 bits (0 is NULL).
+ * scr_plr_init reserves it before compiled code runs; scr_plr_alloc returns
+ * zeroed memory. */
+void scr_plr_init(void);
+void *scr_plr_alloc(size_t n);
+/* The calling script thread's part of the region: emitted allocation fast
+ * paths take [next, limit) in 8-byte multiples and call scr_plr_alloc when
+ * it is exhausted (llvm/classes.ts addresses both fields). */
+typedef struct ScrPlrChunk {
+  char *next;
+  char *limit;
+} ScrPlrChunk;
+#if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
+extern _Thread_local ScrPlrChunk scr_plr_chunk;
+#else
+extern ScrPlrChunk scr_plr_chunk;
+#endif
+_Static_assert(offsetof(ScrPlrChunk, next) == 0 && offsetof(ScrPlrChunk, limit) == 8,
+               "llvm/classes.ts addresses ScrPlrChunk fields at these offsets");
+#endif
 void scr_rt_free(void *p);
 /* Asks the allocator's pre-fault helper (scr_alloc.c) to fault the pages
  * of [lo, hi), aligned to 256 KiB, in ahead of use; builds without the

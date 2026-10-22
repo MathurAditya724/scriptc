@@ -266,6 +266,8 @@ import {
   classFieldTypes,
   classMembershipIntervals,
   classFieldIndex,
+  compactRefLoadLines,
+  compactRefStoreLines,
   classPreLines,
   classStructSym,
   programLifetimeClass,
@@ -423,6 +425,20 @@ export interface LlvmTargetOptions {
   /** Translated WebAssembly memories check bounds explicitly instead of
    * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
   wasmBoundsChecks?: boolean;
+  /** The executable can reserve its program-lifetime region below 32 GiB
+   * (lowRegionTarget): fields that refer to compact class instances then
+   * store the instance's address over 8 in 32 bits (classes.ts
+   * compactRefLoadLines). Elsewhere they keep 8-byte pointers. */
+  lowRegion?: boolean;
+}
+
+/** LlvmTargetOptions.lowRegion for an executable: Linux targets without
+ * sanitizers, whose address space below 32 GiB is free (ASan keeps its
+ * shadow memory there; other systems map their own images and libraries
+ * there). `platform` is a target platform (`linux`, `darwin`, `win32`,
+ * `wasi`). */
+export function lowRegionTarget(platform: string, sanitize: boolean): boolean {
+  return platform === "linux" && !sanitize;
 }
 
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
@@ -593,6 +609,13 @@ export class LlEmitter {
   integerArrayBindings = new Set<string>();
   readonly fieldAliasTags = new Map<string, number>();
   readonly fieldPointerTags = new Map<string, number>();
+  /** The field pointers (classFieldPtr) of this function whose fields hold
+   * 32-bit references to compact class instances (LlClassMeta.compressed):
+   * loadField/loadRef decode them and storeField/storeRef encode them. */
+  readonly compressedFieldPtrs = new Set<string>();
+  /** Whether a class has compressed fields: main reserves the region before
+   * compiled code runs (scr_plr_init). */
+  usesCompactRefs = false;
 
   /** Native class fields with different property names cannot occupy the
    * same slot of one object. Inherited views of the same property share a
@@ -1507,7 +1530,32 @@ export class LlEmitter {
         this.classMeta,
         (root) => programLifetimeClass(this.shapeHost, root) && !root.threadSlot,
         (cls) => classFieldTypes(this.shapeHost, cls, this.int32Slots),
+        // Executables whose region lies below 32 GiB hold compact class
+        // instances there (scr_plr_alloc), so fields referring to one store
+        // a 32-bit reference: the field's type, the class of a
+        // `C | undefined` or `C | null` pointer, or the reference arm of a
+        // nullable pointer field, is a compact class. `C | null | undefined`
+        // keeps the pointer: its null is a sentinel outside the region.
+        mod.lib === undefined && options.lowRegion === true
+          ? (cls, i, isCompact) => {
+              const f = cls.fields[i]!;
+              if (this.inlineUnions.classField(cls.name, f.name)) return false;
+              const t = f.type;
+              if (t.kind === "object") return isCompact(t.className);
+              if (t.kind !== "union") return false;
+              const single = this.nullableUnions.single(t.unionId);
+              if (single !== null)
+                return (
+                  single.nullTag < 0 &&
+                  single.arm.kind === "object" &&
+                  isCompact(single.arm.className)
+                );
+              const nullable = this.nullableFields.get(cls.name, f.name);
+              return nullable !== null && isCompact(nullable.arm.className);
+            }
+          : undefined,
       );
+    this.usesCompactRefs = [...this.classMeta.values()].some((m) => m.compressed.some(Boolean));
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -3217,15 +3265,47 @@ export class LlEmitter {
     objName: string,
     className: string,
     field: string,
-  ): { ptr: string; type: IrType; inline: boolean } {
+    refs: "pointer" | "compressed" = "pointer",
+  ): { ptr: string; type: IrType; inline: boolean; compressed: boolean } {
     const meta = this.classMetaOf(className);
-    const { index, type } = classFieldIndex(meta, field);
+    const { index, type, compressed } = classFieldIndex(meta, field, refs);
     const p = this.B.tmp();
     this.B.line(
       `${p} = getelementptr inbounds %${classStructSym(className)}, ptr ${objName}, i64 0, i32 ${index}`,
     );
     this.markFieldPointer(p, field);
-    return { ptr: p, type, inline: this.inlineUnions.classField(className, field) };
+    if (compressed) this.compressedFieldPtrs.add(p);
+    return { ptr: p, type, inline: this.inlineUnions.classField(className, field), compressed };
+  }
+
+  /** Loads the reference a field pointer addresses: a pointer, or the
+   * decoded 32-bit reference of a compressed field (compressedFieldPtrs).
+   * `tagged`: the load carries the field's alias tags. */
+  loadRef(ptr: string, tagged = true): string {
+    const B = this.B;
+    const v = B.tmp();
+    const tags = tagged ? this.fieldAliasAttachment(ptr) : "";
+    if (!this.compressedFieldPtrs.has(ptr)) {
+      B.line(`${v} = load ptr, ptr ${ptr}${tags}`);
+      return v;
+    }
+    const idx = B.tmp();
+    B.line(`${idx} = load i32, ptr ${ptr}${tags}`);
+    for (const line of compactRefLoadLines(idx, v, `${v}.r`)) B.line(line.trimStart());
+    return v;
+  }
+
+  /** Stores `value` (a pointer) through a field pointer: as is, or encoded
+   * as the 32-bit reference of a compressed field. */
+  storeRef(ptr: string, value: string): void {
+    const B = this.B;
+    if (!this.compressedFieldPtrs.has(ptr)) {
+      B.line(`store ptr ${value}, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
+      return;
+    }
+    const idx = B.tmp();
+    for (const line of compactRefStoreLines(value, idx, `${idx}.r`)) B.line(line.trimStart());
+    B.line(`store i32 ${idx}, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
   }
 
   /** The dynamic class's preorder number (borrowed object; the static class
@@ -3357,6 +3437,7 @@ export class LlEmitter {
       const { tag, bits } = loadInlineUnion(B, ptr);
       return stackUnionBox(B, this.sizeType, tag, bits);
     }
+    if (this.compressedFieldPtrs.has(ptr)) return this.loadRef(ptr);
     const fieldTy = llFieldType(t, false);
     const raw = B.tmp();
     B.line(`${raw} = load ${fieldTy}, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
@@ -3383,8 +3464,7 @@ export class LlEmitter {
   replaceField(ptr: string, type: IrType, inline: boolean, v: LlValue): void {
     if (!inline && isRefCounted(type)) {
       this.toHeap(v);
-      const old = this.B.tmp();
-      this.B.line(`${old} = load ptr, ptr ${ptr}`);
+      const old = this.loadRef(ptr, false);
       this.storeField(ptr, type, v.name, false);
       this.releaseHeap(old, type);
       return;
@@ -3406,6 +3486,10 @@ export class LlEmitter {
     if (inline) {
       const { tag, bits } = unionBoxBits(B, value, this.unionNoneRef());
       storeInlineUnion(B, ptr, tag, bits);
+      return;
+    }
+    if (this.compressedFieldPtrs.has(ptr)) {
+      this.storeRef(ptr, value);
       return;
     }
     const fieldTy = llFieldType(t, false);
@@ -5182,8 +5266,9 @@ export class LlEmitter {
               : [
                   {
                     name: f.name,
-                    index: classFieldIndex(meta, f.name).index,
+                    index: classFieldIndex(meta, f.name, "compressed").index,
                     type: this.nullableFields.storageType(className, f.name, f.type),
+                    compressed: classFieldIndex(meta, f.name, "compressed").compressed,
                   },
                 ],
           ),
@@ -5390,11 +5475,9 @@ export class LlEmitter {
   emitUnionProjection(e: IrExpr): LlValue {
     const nullable = this.nullableFieldGet(e);
     if (!nullable || e.kind !== "fieldGet") return this.emitReadReceiver(e);
-    const B = this.B;
     const receiver = this.emitReadReceiver(e.obj);
-    const { ptr } = this.classFieldPtr(receiver.name, e.className, e.field);
-    const p = B.tmp();
-    B.line(`${p} = load ptr, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
+    const { ptr } = this.classFieldPtr(receiver.name, e.className, e.field, "compressed");
+    const p = this.loadRef(ptr);
     return { name: this.stackNullableBox(p, nullable), type: e.type };
   }
 
@@ -5407,9 +5490,8 @@ export class LlEmitter {
     if (!nullable || e.kind !== "fieldGet")
       throw new InternalCompilerError("llvm emitter bug: owned nullable stack of non-field");
     const receiver = this.emitReadReceiver(e.obj);
-    const { ptr } = this.classFieldPtr(receiver.name, e.className, e.field);
-    const p = this.B.tmp();
-    this.B.line(`${p} = load ptr, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
+    const { ptr } = this.classFieldPtr(receiver.name, e.className, e.field, "compressed");
+    const p = this.loadRef(ptr);
     const owner = this.own({ name: this.retainFrame(p, nullable.arm), type: nullable.arm });
     return { box: this.stackNullableBox(owner.name, nullable), owner };
   }
@@ -5486,7 +5568,6 @@ export class LlEmitter {
     nullable: NullableRefField,
     value: IrExpr,
   ): void {
-    const B = this.B;
     let next: string;
     if (
       value.kind === "unionWrap" &&
@@ -5509,10 +5590,9 @@ export class LlEmitter {
     } else {
       next = this.unionToNullable(this.emitUnionProjection(value).name, nullable);
     }
-    const { ptr } = this.classFieldPtr(obj, className, field);
-    const old = B.tmp();
-    B.line(`${old} = load ptr, ptr ${ptr}`);
-    B.line(`store ptr ${next}, ptr ${ptr}${this.fieldAliasAttachment(ptr)}`);
+    const { ptr } = this.classFieldPtr(obj, className, field, "compressed");
+    const old = this.loadRef(ptr, false);
+    this.storeRef(ptr, next);
     this.releaseHeap(old, nullable.arm);
   }
 

@@ -153,6 +153,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
       : new Map();
   emitter.integerViews.clear();
   emitter.fieldPointerTags.clear();
+  emitter.compressedFieldPtrs.clear();
   emitter.integerArrayBindings.clear();
   emitter.loopArrayBorrows =
     emitter.debug === null
