@@ -53,3 +53,33 @@ try {
 } catch (error) {
   console.log("rejected", (error as Error).name);
 }
+
+// Fields that hold objects with getters: each field's value is read
+// completely, its getters included, before the next field's, as in Node.
+type Holder = { id: number; first: unknown; second: unknown };
+const reads: string[] = [];
+const getters: Holder = {
+  id: 1,
+  first: {
+    get a() {
+      reads.push("first.a");
+      return 1;
+    },
+    nested: {
+      get b() {
+        reads.push("first.nested.b");
+        return 2;
+      },
+    },
+  },
+  second: {
+    get c() {
+      reads.push("second.c");
+      return 3;
+    },
+  },
+};
+const { port1: getterPort, port2: getterSender } = new MessageChannel();
+getterSender.postMessage(getters);
+console.log("getter order", reads.join(","));
+getterPort.close();
