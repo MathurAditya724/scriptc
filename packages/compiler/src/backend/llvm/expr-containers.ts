@@ -102,13 +102,17 @@ export function tagInSet(
   return acc;
 }
 
+/** `element`: the array's element type, or null for arrays whose
+ * elements are not compact class references (dense-array-access.ts
+ * slotKind). */
 export function arrPush(
   host: LlvmEmitterContext,
   arr: string,
   acc: "f64" | "bool" | "ref",
   value: string,
+  element: IrType | null,
 ): string {
-  return emitDenseArrayPush(host, arr, acc, value);
+  return emitDenseArrayPush(host, arr, acc, element, value);
 }
 
 /** Move evaluated values through one bounded slot buffer per call site. */
@@ -116,6 +120,7 @@ export function emitArrayValues(
   host: LlvmEmitterContext,
   arr: string,
   acc: "f64" | "bool" | "ref",
+  element: IrType,
   values: LlValue[],
   prepend = false,
   sharedBuffer?: string,
@@ -129,7 +134,7 @@ export function emitArrayValues(
     return result;
   }
   if (values.length === 1) {
-    if (!prepend) return arrPush(host, arr, acc, values[0]!.name);
+    if (!prepend) return arrPush(host, arr, acc, values[0]!.name, element);
     const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
     host.declare(
       `declare double @scr_arr_unshift_${acc}(ptr, ${ty}${acc === "bool" ? " zeroext" : ""})`,
@@ -628,7 +633,7 @@ export function emitArrIntrinsic(
       // no-op zero-argument call.
       const vs = e.args.map((a) => host.emitExpr(a));
       host.emitPublishedArrayGuard(r.name, e.receiver.type, 1, f64Lit(0), f64Lit(vs.length));
-      return { name: emitArrayValues(host, r.name, acc, vs), type: e.type };
+      return { name: emitArrayValues(host, r.name, acc, elem, vs), type: e.type };
     }
     case "pushSpread": {
       // `a.push(...src)`: append src's elements in order (borrowed src,
@@ -660,7 +665,7 @@ export function emitArrIntrinsic(
       // from right to left so the final front order is source order.
       const vs = e.args.map((a) => host.emitExpr(a));
       host.emitPublishedArrayGuard(r.name, e.receiver.type, 4, f64Lit(0), f64Lit(vs.length));
-      return { name: emitArrayValues(host, r.name, acc, vs, true), type: e.type };
+      return { name: emitArrayValues(host, r.name, acc, elem, vs, true), type: e.type };
     }
     case "unshiftSpread": {
       // The runtime snapshots the borrowed source and handles self-spread.
@@ -702,7 +707,7 @@ export function emitArrIntrinsic(
       let slowLabel = "";
       if (method === "pop") {
         slowLabel = B.newLabel("remove.slow");
-        denseRaw = emitDenseArrayPop(host, r.name, acc, la, slowLabel);
+        denseRaw = emitDenseArrayPop(host, r.name, acc, elem, la, slowLabel);
         denseLabel = B.currentLabel();
         B.br(lp);
         B.startBlock(slowLabel);
@@ -771,7 +776,7 @@ export function emitArrIntrinsic(
       // by content, everything else by pointer). Strict equality. Arrays of
       // objects and strings scan inline (array-search.ts).
       const v = host.emitExpr(e.args[0]!);
-      const search = acc === "ref" ? arraySearchKind(elem) : null;
+      const search = acc === "ref" ? arraySearchKind(elem, host.compactArrayElem(elem)) : null;
       if (search !== null) {
         host.arraySearchKinds.add(search);
         const t = B.tmp();
@@ -789,7 +794,7 @@ export function emitArrIntrinsic(
       // Borrowed needle, SameValueZero (NaN matches NaN). For the inline
       // searches SameValueZero is strict equality.
       const v = host.emitExpr(e.args[0]!);
-      const search = acc === "ref" ? arraySearchKind(elem) : null;
+      const search = acc === "ref" ? arraySearchKind(elem, host.compactArrayElem(elem)) : null;
       if (search !== null) {
         host.arraySearchKinds.add(search);
         const at = B.tmp(),

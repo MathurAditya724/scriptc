@@ -199,6 +199,19 @@ static void scr_pub_slot(ScrPub *ctx, uint64_t slot, ScrPubFn fn) {
   if (fn) scr_pub_push(ctx, p, fn);
 }
 
+/* The elements of a compact reference array (SCR_ELEM_CREF): 4-byte dense
+ * slots, 8-byte pointers in the sparse entries. */
+static __attribute__((noinline)) void scr_pub_cref_elems(ScrArr *a, ScrPub *ctx, ScrPubFn fn) {
+  size_t dense = a->len < a->cap ? a->len : a->cap;
+  const uint32_t *refs = (const uint32_t *)a->data;
+  const uint8_t *states = scr_arr_states_end_w(a, sizeof(uint32_t));
+  for (size_t i = 0; i < dense; i++)
+    if (!states || *scr_arr_state_in(states, i)) scr_pub_slot(ctx, scr_cref_decode(refs[i]), fn);
+  if (scr_arr_ext_of(a))
+    for (size_t i = 0; i < scr_arr_ext_of(a)->sparse_len; i++)
+      if (scr_arr_ext_of(a)->sparse[i].state) scr_pub_slot(ctx, scr_arr_ext_of(a)->sparse[i].slot, fn);
+}
+
 void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem) {
   ScrArr *a = v;
   if (scr_arr_ext_of(a) && (scr_arr_ext_of(a)->props || scr_arr_ext_of(a)->metadata)) {
@@ -206,10 +219,15 @@ void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem) {
     return;
   }
   if (!scr_pub_mark(ctx, a, a->cyc != 0, SCR_PUB_KIND_ARRAY)) return;
+  if (__builtin_expect(a->elem == SCR_ELEM_CREF, 0)) {
+    scr_pub_cref_elems(a, ctx, elem);
+    return;
+  }
   ScrPubFn fn = a->elem == SCR_ELEM_STR ? scr_pub_str_fn : a->elem == SCR_ELEM_REF ? elem : NULL;
   if (!fn) return;
+  /* String and reference elements have 8-byte slots. */
   size_t dense = a->len < a->cap ? a->len : a->cap;
-  const uint8_t *states = scr_arr_states_end(a);
+  const uint8_t *states = scr_arr_states_end_w(a, sizeof(uint64_t));
   for (size_t i = 0; i < dense; i++)
     if (!states || *scr_arr_state_in(states, i)) scr_pub_slot(ctx, a->data[i], fn);
   if (scr_arr_ext_of(a))

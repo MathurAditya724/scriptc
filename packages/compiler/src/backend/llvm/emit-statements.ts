@@ -473,7 +473,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.startBlock(pop);
         const elem = s.arr.type.elem;
         const acc = elemAccess(elem);
-        const raw = emitDenseArrayPop(emitter, arr.name, acc, call, call);
+        const raw = emitDenseArrayPop(emitter, arr.name, acc, elem, call, call);
         if (acc === "ref" && isRefCounted(elem)) {
           const old = B.tmp();
           B.line(`${old} = inttoptr i64 ${raw} to ptr`);
