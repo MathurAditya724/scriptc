@@ -37,7 +37,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { emitDenseArrayGet, emitDenseArrayPop, emitDenseArraySet } from "./dense-array-access.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { f64Lit, llvmCommentText, loadArrCount, sizeToDouble } from "./common.js";
-import { RESULT_DST_ID, RESULT_ENTRY_PREFIX } from "./record-results.js";
+import { resultSlotStore } from "../result-slots.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
@@ -573,13 +573,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           ? emitter.classFieldPtr(obj.name, s.className, s.field, "compressed")
           : emitter.recordFieldPtr(obj.name, s.shapeId, s.field);
       // A result-slot entry fills zeroed caller storage, each field once.
-      if (
-        s.kind === "recordSet" &&
-        s.obj.kind === "varRef" &&
-        s.obj.localId === RESULT_DST_ID &&
-        emitter.currentFunctionName.startsWith(RESULT_ENTRY_PREFIX)
-      )
-        emitter.initField(ptr, type, inline, v);
+      if (resultSlotStore(emitter.currentFunctionName, s)) emitter.initField(ptr, type, inline, v);
       else emitter.replaceField(ptr, type, inline, v);
       if (
         s.kind === "fieldSet" &&
