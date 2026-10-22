@@ -905,6 +905,51 @@ listener.listen(0, () => {
   });
 });
 
+// With a secureContext, the TLSSocket's own options still apply: a truthy
+// requestCert, which asks for client certificates this runtime does not
+// verify, and SNICallback throw the fence instead of being dropped.
+describe("tls.TLSSocket socket options beside a secureContext", () => {
+  test("requestCert and SNICallback throw the fence", async () => {
+    const r = await compileAndRun(
+      "tls-socket-context-fences",
+      `import { readFileSync } from "node:fs";
+import * as net from "node:net";
+import * as tls from "node:tls";
+const certs = "tests/fixtures/server/certs";
+const cert = readFileSync(\`\${certs}/localhost.pem\`);
+const key = readFileSync(\`\${certs}/localhost-key.pem\`);
+const context = tls.createSecureContext({ cert, key });
+function report(label: string, run: () => void): void {
+  try {
+    run();
+    console.log(label, "no error");
+  } catch (error) {
+    console.log(label, (error as Error).message);
+  }
+}
+const listener = net.createServer((raw) => {
+  report("requestCert", () => new tls.TLSSocket(raw, { isServer: true, secureContext: context, requestCert: true, rejectUnauthorized: true }));
+  report("SNICallback", () => new tls.TLSSocket(raw, { isServer: true, secureContext: context, SNICallback: (name: string, cb: (err: Error | null, ctx?: tls.SecureContext) => void) => cb(null, context) }));
+  report("requestCert false", () => new tls.TLSSocket(raw, { isServer: true, secureContext: context, requestCert: false, rejectUnauthorized: true }).destroy());
+  listener.close();
+});
+listener.listen(0, () => {
+  const c = net.connect((listener.address() as net.AddressInfo).port, "localhost");
+  c.on("error", () => {});
+  c.on("close", () => console.log("client closed"));
+});
+`,
+    );
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "requestCert new tls.TLSSocket option 'requestCert' has no static lowering — client-certificate handshakes are not modeled (SEMANTICS.md divergence 55) — requestCert stays at Node's false default\n" +
+        "SNICallback new tls.TLSSocket option 'SNICallback' has no static lowering — isServer, cert, key, secureContext, ALPNProtocols, minVersion and maxVersion are the implemented members\n" +
+        "requestCert false no error\n" +
+        "client closed\n",
+    );
+  });
+});
+
 // A curve Node lists in crypto.getCurves() but the runtime does not
 // implement throws a coded SC2020 error naming the curve when the name is
 // computed; literal names are refused at compile time (node-types-fenced).

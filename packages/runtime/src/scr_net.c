@@ -5354,6 +5354,7 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
   scr_net_ls_drop(&sock->wcb_ls);
   scr_net_ls_drop(&sock->ready_ls);
   scr_net_ls_drop(&sock->lookup_ls);
+  if (sock->tops && sock->tops->settle) sock->tops->settle(sock->tctx);
   if (sock->pipe_dst) {
     scr_net_sock_release(sock->pipe_dst);
     sock->pipe_dst = NULL;

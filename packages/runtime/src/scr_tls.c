@@ -664,6 +664,7 @@ typedef struct ScrTlsSock {
   size_t head_len;
   /* the 'secure' event's listeners */
   ScrNetLs secure_ls;
+  bool settled; /* the socket closed: listeners added later never fire */
 } ScrTlsSock;
 
 /* checkServerIdentity for an IP literal: the address must be one of the
@@ -1237,6 +1238,17 @@ static void scr_tls_after_established(void *tctx) {
   scr_net_ls_drop(&t->secure_ls);
 }
 
+/* The closed socket settles: its 'secure' and 'session' listeners can no
+ * longer fire, and a listener that captures the socket would otherwise
+ * keep it, and this transport, alive (a handshake that fails never fires
+ * 'secure'). */
+static void scr_tls_settle(void *tctx) {
+  ScrTlsSock *t = (ScrTlsSock *)tctx;
+  t->settled = true;
+  scr_net_ls_drop(&t->secure_ls);
+  scr_net_ls_drop(&t->session_ls);
+}
+
 static const ScrNetTransportOps SCR_TLS_OPS = {
   .xread = scr_tls_xread,
   .xwrite = scr_tls_xwrite,
@@ -1245,6 +1257,7 @@ static const ScrNetTransportOps SCR_TLS_OPS = {
   .pending = scr_tls_pending,
   .shutdown_write = scr_tls_shutdown_write,
   .free = scr_tls_free,
+  .settle = scr_tls_settle,
   .after_established = scr_tls_after_established,
 };
 
@@ -2202,6 +2215,29 @@ static const char *const SCR_TLS_WRAP_FENCED_OPTIONS[] = {
   "server", "session", "requestOCSP", "pskCallback", "enableTrace", NULL,
 };
 
+/* The socket-level options of a wrap that serves a secureContext, which
+ * the server-options walk would otherwise check: requestCert (client
+ * certificates are not modeled), SNICallback and ALPNCallback fence.
+ * False with the exception pending. */
+static bool scr_tls_wrap_socket_opts_check(const ScrDyn *record, const char *api) {
+  for (size_t i = 0; record != NULL && i < record->v.obj.len; i++) {
+    const ScrDynEntry *e = &record->v.obj.entries[i];
+    if (e->value->kind == SCR_DYN_UNDEF) continue;
+    if (strcmp(e->key, "requestCert") == 0) {
+      if (!scr_tls_dyn_truthy(e->value)) continue;
+      scr_tls_opt_fence(api, "requestCert",
+                        "client-certificate handshakes are not modeled (SEMANTICS.md divergence 55) — requestCert stays at Node's false default");
+      return false;
+    }
+    if (strcmp(e->key, "SNICallback") == 0 || strcmp(e->key, "ALPNCallback") == 0) {
+      scr_tls_opt_fence(api, e->key,
+                        "isServer, cert, key, secureContext, ALPNProtocols, minVersion and maxVersion are the implemented members");
+      return false;
+    }
+  }
+  return true;
+}
+
 ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrowed*/,
                                   ScrSecureCtx *ctx /*borrowed, nullable*/) {
   static const char api[] = "new tls.TLSSocket";
@@ -2233,12 +2269,17 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
     return NULL;
   }
   /* Node serves a secureContext as it is: the record's cert, key and
-   * other context options are not read then */
+   * other context options are not read then. The socket's own options
+   * still apply, so the ones without a lowering fence either way:
+   * requestCert asks for a client certificate this runtime cannot
+   * verify. */
   int min_version = 12, max_version = 13;
   ScrBytes *cert = NULL, *key = NULL;
   if (ctx == NULL) {
     if (!scr_tls_versions_dyn(record, &min_version, &max_version)) return NULL;
     if (!scr_tls_srv_opts_walk_ex(record, api, &cert, &key, true)) return NULL;
+  } else if (!scr_tls_wrap_socket_opts_check(record, api)) {
+    return NULL;
   }
   char **alpn = NULL;
   const ScrDyn *protocols = record != NULL ? scr_dyn_obj_get(record, "ALPNProtocols", 13) : NULL;
@@ -2867,7 +2908,7 @@ void scr_tls_sock_on_secure_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, b
  * handshake comes too late, as in Node. */
 void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  if (t == NULL || t->established) {
+  if (t == NULL || t->established || t->settled) {
     scr_closure_release(cb);
     return;
   }
@@ -2878,6 +2919,10 @@ void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn
   ScrTlsSock *t = scr_tls_sock_of(s);
   if (t == NULL) {
     scr_closure_release(cb); /* a plain socket never fires it, like Node */
+    return;
+  }
+  if (t->settled) {
+    scr_closure_release(cb);
     return;
   }
   scr_net_ls_add(&t->session_ls, cb, fn, once);

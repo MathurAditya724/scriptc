@@ -354,6 +354,9 @@ typedef struct ScrNetTransportOps {
   /* nullable: runs after the established socket's 'connect' listeners
    * (the TLS 'secure' event, which Node emits after secureConnect) */
   void (*after_established)(void *tctx);
+  /* nullable: runs when the closed socket settles, after its own
+   * listeners drop; the transport drops the listeners it holds */
+  void (*settle)(void *tctx);
 } ScrNetTransportOps;
 void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, void *tctx);
 /* new tls.TLSSocket(socket) and tls.connect({ socket }): a fresh socket
