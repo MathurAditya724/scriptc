@@ -200,6 +200,10 @@ test("identity bitwise forms over a proven int32 return the operand's number", (
   }
   // Unproven operands keep the full ToInt32; other operators still compute.
   expect(body("unknown_or")).toContain("uint32.coerce.slow");
+  // The i64 conversion covers every magnitude below 2^63; only NaN, the
+  // infinities and larger magnitudes take the slow block.
+  expect(body("unknown_or")).toMatch(/ = fcmp oge double %\S+, 0xC3E0000000000000$/m);
+  expect(body("unknown_or")).toMatch(/ = fcmp olt double %\S+, 0x43E0000000000000$/m);
   expect(body("length_and")).toMatch(/ = and i32 .*, 255$/m);
 });
 

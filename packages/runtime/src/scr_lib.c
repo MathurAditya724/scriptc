@@ -13002,7 +13002,8 @@ ScrArr *scr_set_to_arr_ref(const ScrMap *s, const ScrArrOps *ops) {
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
     ops->retain((void *)(uintptr_t)scr_map_entry_at(s, i)->key);
-    out->data[out->len++] = scr_map_entry_at(s, i)->key;
+    scr_arr_dense_put(out, out->len, scr_map_entry_at(s, i)->key);
+    out->len++;
   }
   scr_arr_refill(out);
   return out;
