@@ -125,6 +125,24 @@ const view: unknown[] = items;
 console.log(view.length, items.findIndex((item) => weigh(item) > 1));
 `);
   expect(signature(read, "weigh")).toBe("weigh(Item): f64");
+  // Standard library functions that take arrays as `any` only read them.
+  const readers = await lower(`${ITEM}
+const items: Item[] = [new Item(1)];
+console.log(items.length, JSON.stringify(items));
+const values: unknown[] = [1];
+values[3] = 2;
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(readers, "weigh")).toBe("weigh(Item): f64");
+  // A store through a Record type is not a store through a view.
+  const record = await lower(`${ITEM}
+const items: Item[] = [new Item(1)];
+const view: unknown = items;
+const bag: Record<string, unknown> = {};
+bag["3"] = view;
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(record, "weigh")).toBe("weigh(Item): f64");
 });
 
 test("holes that only their owning slot can observe stay out of callbacks", async () => {

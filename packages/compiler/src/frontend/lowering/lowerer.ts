@@ -6312,6 +6312,27 @@ export class Lowerer {
     // Element ABIs of the native arrays a value converted to a dynamic type
     // can reach: the conversion keeps each such array as a live view, so
     // stores through the dynamic value write the native storage.
+    // A standard library function only reads an array argument it takes as
+    // `any` (console.log, JSON.stringify, String), except the reflective
+    // writes: Object.assign and defineProperty, Reflect.set and the like,
+    // and Array.prototype methods through call or apply.
+    const reflectiveWriters = new Set([
+      "assign",
+      "defineProperty",
+      "defineProperties",
+      "setPrototypeOf",
+      "set",
+      "apply",
+      "call",
+    ]);
+    const standardLibraryReader = (node: ts.CallExpression | ts.NewExpression): boolean =>
+      panicSafe(() => {
+        const callee = peel(node.expression);
+        if (ts.isPropertyAccessExpression(callee) && reflectiveWriters.has(callee.name.text))
+          return false;
+        const declaration = this.checker.getResolvedSignature(node)?.declaration;
+        return declaration !== undefined && this.isStdlibFile(ts.getSourceFileOfNode(declaration));
+      }, false);
     const collectNativeViews = (): Set<string> => {
       const keys = new Set<string>();
       const seen = new Set<string>();
@@ -6376,8 +6397,9 @@ export class Lowerer {
         else if (ts.isReturnStatement(node) && node.expression)
           flow(node.expression, contextualOrNull(node.expression));
         else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-          for (const arg of node.arguments?.nodes ?? [])
-            flow(ts.isSpreadElement(arg) ? arg.expression : arg, contextualOrNull(arg));
+          if (!standardLibraryReader(node))
+            for (const arg of node.arguments?.nodes ?? [])
+              flow(ts.isSpreadElement(arg) ? arg.expression : arg, contextualOrNull(arg));
         } else if (ts.isPropertyAssignment(node))
           flow(node.initializer, contextualOrNull(node.initializer));
         else if (ts.isShorthandPropertyAssignment(node)) {
@@ -6398,14 +6420,17 @@ export class Lowerer {
         });
       return keys;
     };
+    // A receiver typed `any`, `unknown` or an array of either can be a live
+    // view of a native array. A receiver of another type (`Worker[]`,
+    // `Record<string, unknown>`) is one only after a lying assertion, even
+    // when its values are dynamic.
     const dynamicType = (type: ts.Type): boolean => {
       if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
-      if (this.checker.isArrayType(type) && !this.checker.isTupleType(type)) {
-        const element = this.checker.getTypeArguments(type as ts.TypeReference)[0];
-        if (element && (element.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0)
-          return true;
-      }
-      return panicSafe(() => this.mapTypeOf(type)?.kind === "dyn", false);
+      if (!this.checker.isArrayType(type) || this.checker.isTupleType(type)) return false;
+      const element = this.checker.getTypeArguments(type as ts.TypeReference)[0];
+      return (
+        element !== undefined && (element.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+      );
     };
     const elementStates = new ArrayElementStates({
       isDynamicArray: (node) => {
