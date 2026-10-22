@@ -847,8 +847,9 @@ try {
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
       "Error SC2020 The cipher 'aes-128-ccm' has no native implementation; the supported ciphers are " +
-        "aes-128-cbc, aes-192-cbc, aes-256-cbc, aes-128-ctr, aes-192-ctr, aes-256-ctr, aes-128-gcm, " +
-        "aes-192-gcm, aes-256-gcm and chacha20-poly1305\n" +
+        "aes-128, aes-192 and aes-256 in cbc, ctr, gcm, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede3 in " +
+        "cbc, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede in cbc, ecb, cfb and ofb modes, chacha20 and " +
+        "chacha20-poly1305\n" +
         "Error ERR_CRYPTO_UNKNOWN_CIPHER Unknown cipher\n",
     );
     expect(r.stderr).toBe("");
