@@ -2820,6 +2820,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** getDiffieHellman(groupName) and createDiffieHellmanGroup(name): a
    * native DiffieHellmanGroup handle. */
   "crypto.dhGroupNew": { argTypes: [DYN], result: DYN },
+  /** checkPrimeSync(candidate, options) and generatePrimeSync(size,
+   * options) over checked-dynamic arguments (scr_dh.c): a boolean, and an
+   * ArrayBuffer or bigint, as checked-dynamic results. The Cb forms take
+   * the callback and whether its error parameter takes null for Node's
+   * undefined, and call it in a later macrotask; Node's argument errors
+   * throw (may-throw). */
+  "crypto.checkPrimeSync": { argTypes: [DYN, DYN], result: DYN },
+  "crypto.checkPrimeCb": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+  "crypto.generatePrimeSync": { argTypes: [DYN, DYN], result: DYN },
+  "crypto.generatePrimeCb": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
   "crypto.hmacNewStr": { argTypes: [STRING, STRING], result: CRYPTOHMAC_T },
   "crypto.hmacNewBytes": { argTypes: [STRING, BYTES_U8], result: CRYPTOHMAC_T },
   "crypto.hashUpdateStr": { argTypes: [CRYPTOHASH_T, STRING], result: CRYPTOHASH_T },

@@ -16,6 +16,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's prime, generator, size, encoding and group-name errors.
   "crypto.dhNew",
   "crypto.dhGroupNew",
+  // Node's candidate, size, options, add and rem errors, and OpenSSL's
+  // generation errors.
+  "crypto.checkPrimeSync",
+  "crypto.checkPrimeCb",
+  "crypto.generatePrimeSync",
+  "crypto.generatePrimeCb",
   // node:test's { timeout } and { concurrency } range checks.
   "test.register",
   "test.registerEmpty",
