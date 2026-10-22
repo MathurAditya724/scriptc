@@ -266,6 +266,9 @@ ScrDyn *scr_stream_done_dyn_l(ScrClosure *clo, ScrDyn *const *args, size_t argc)
 /* The readable surface. push/unshift borrow their chunk (strings convert
  * utf8, Node's decodeStrings default); push answers the below-hwm bool. */
 bool scr_stream_push(ScrStream *s, ScrBytes *chunk);
+/* readable.push(chunk) from a program: a non-Buffer view becomes a Buffer
+ * over the same bytes in byte mode. */
+bool scr_stream_push_view(ScrStream *s, ScrBytes *chunk);
 bool scr_stream_push_str(ScrStream *s, ScrStr *str);
 /* push(chunk, enc): the per-call literal encoding (canonical); overrides
  * the stream's defaultEncoding. Borrows both. */
@@ -545,6 +548,10 @@ void scr_stream_set_writev_default(ScrStream *s, ScrClosure *cb, ScrStreamWritev
 ScrStream *scr_stream_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
                                       ScrClosure *read, ScrClosure *ret, ScrClosure *thr);
 ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
+/* Readable.fromWeb(readableStream, { objectMode, highWaterMark, encoding })
+ * (scr_stream_from_web.c): hwm < 0 is the mode's default, encoding NULL or
+ * a known name; web and encoding borrowed. +1, or NULL with the error. */
+ScrStream *scr_stream_readable_from_web(struct ScrDyn *web, bool object_mode, double hwm, ScrStr *encoding);
 /* Duplex.from over an async function (the compiled stage takes the source
  * generator and answers its promise; source and the promise's box helper
  * borrowed): a writable Duplexify whose final waits for the promise. +1. */

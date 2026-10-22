@@ -1121,7 +1121,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // chaining forms answer the receiver +1. The throwing members
   // (listeners and option callbacks run synchronously inside) ride the
   // generic pending check; loop liveness rides USES_TIMERS_LIB_FNS.
-  "readable.push": "scr_stream_push",
+  "readable.push": "scr_stream_push_view",
   "readable.pushStr": "scr_stream_push_str",
   "readable.pushStrEnc": "scr_stream_push_str_enc",
   "readable.pushEncoding": "scr_stream_set_push_encoding",
@@ -1134,6 +1134,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.duplexifyPair": "scr_stream_duplexify_pair",
   "stream.duplexFromPromise": "scr_stream_duplex_from_promise",
   "stream.duplexFromAsyncFn": "scr_stream_duplex_from_async_fn",
+  "fetch.readableFromWeb": "scr_stream_readable_from_web",
   "writable.writeEncoding": "scr_stream_write_encoding",
   "writable.setDefaultEncoding": "scr_stream_set_default_encoding",
   "stream.chunkDone": "scr_stream_chunk_done",
@@ -1747,6 +1748,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "stream.duplexifyPair",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
+  "fetch.readableFromWeb",
   "stream.setWritev",
   "stream.setWritevDefault",
   "process.activeResources",

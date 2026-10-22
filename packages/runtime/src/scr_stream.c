@@ -1129,7 +1129,7 @@ bool scr_stream_push_dyn(ScrStream *s, const ScrDyn *d) {
   switch (d->kind) {
   case SCR_DYN_BYTES: {
     ScrBytes *b = scr_bytes_raw_view(d->v.bytes);
-    bool r = scr_stream_push(s, b);
+    bool r = scr_stream_push_view(s, b);
     scr_bytes_release(b);
     return r;
   }
@@ -6345,6 +6345,23 @@ ScrDyn *scr_stream_chunk_encoding_value(ScrStream *s) {
 /* ── the readable surface ─────────────────────────────────────────────── */
 
 bool scr_stream_push(ScrStream *s, ScrBytes *chunk) {
+  return scr_stream_add_chunk(s, chunk, false);
+}
+
+/* readable.push(chunk) from a program: in byte mode another
+ * ArrayBufferView becomes a Buffer over the same bytes
+ * (Stream._uint8ArrayToBuffer); the runtime's own producers push Buffers
+ * through scr_stream_push. */
+bool scr_stream_push_view(ScrStream *s, ScrBytes *chunk) {
+  if (chunk && !chunk->is_buffer && !(s->st->has_r && s->st->r.object_entries)) {
+    ScrBytes *b = scr_bytes_buffer_view(chunk, SCR_BYTES_U8, scr_bytes_byte_offset(chunk), true,
+                                        scr_bytes_byte_len(chunk));
+    if (!b) return false;
+    b->is_buffer = true;
+    bool r = scr_stream_add_chunk(s, b, false);
+    scr_bytes_release(b);
+    return r;
+  }
   return scr_stream_add_chunk(s, chunk, false);
 }
 

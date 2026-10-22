@@ -337,6 +337,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  // Readable.fromWeb reads a web ReadableStream through its reader.
+  unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */

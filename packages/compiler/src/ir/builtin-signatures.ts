@@ -170,6 +170,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fetch.streamFrom": { argTypes: [null], result: DYN },
   // The chunk/result record depends on ReadableStream<T>; validated by validate.ts.
   "fetch.readerRead": { argTypes: [DYN], result: VOID },
+  /** Readable.fromWeb (scr_stream_from_web.c): the stream, objectMode,
+   * highWaterMark (< 0: the mode's default) and encoding ("": none). */
+  "fetch.readableFromWeb": { argTypes: [DYN, BOOL, F64, STRING], result: VOID },
   "json.parse": { argTypes: [STRING], result: DYN },
   "json.parseReviver": { argTypes: [STRING, DYN], result: DYN },
   "json.stringifyReplacer": { argTypes: [DYN, DYN, STRING], result: DYN },

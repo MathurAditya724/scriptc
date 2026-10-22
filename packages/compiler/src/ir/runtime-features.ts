@@ -223,6 +223,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
+  "fetch.readableFromWeb",
   "stream.duplexifyReadable",
   "stream.duplexifyWritable",
   "stream.duplexifyPair",

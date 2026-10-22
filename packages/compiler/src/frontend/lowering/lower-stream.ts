@@ -1814,6 +1814,7 @@ export function lowerStreamStaticCall(
       }
     }
   }
+  if (member === "fromWeb" && cls === "%Readable") return lowerReadableFromWeb(lowerer, call, loc);
   if (member !== "from") {
     lowerer.noLowering(`${cls.slice(1)}.${member}`, call);
   }
@@ -1846,6 +1847,112 @@ export function lowerStreamStaticCall(
   return lowerFromSource(lowerer, call, args[0], args[1], false);
 }
 
+/** Readable.fromWeb(readableStream, options): Node's adapter over the web
+ * stream's reader (scr_stream_from_web.c). The options are an object
+ * literal: objectMode a boolean literal, highWaterMark a number, encoding
+ * a literal name, and signal a variable or property read, applied with
+ * addAbortSignal as the constructors do. */
+function lowerReadableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = call.arguments.nodes;
+  const readable: IrType = { kind: "object", className: "%Readable" };
+  if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
+    lowerer.noLowering(
+      `Readable.fromWeb with ${args.length} arguments`,
+      call,
+      "the supported form is Readable.fromWeb(readableStream, options)",
+    );
+  }
+  const web = lowerer.lowerExprExpecting(args[0]!, DYN);
+  let objectMode = false;
+  let hwm: IrExpr = numLit(-1, loc);
+  let encoding = "";
+  let signal: IrExpr | null = null;
+  const options = args[1];
+  if (options !== undefined) {
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "Readable.fromWeb options that are not an object literal",
+        options,
+        "pass { objectMode, highWaterMark, encoding, signal } as an object literal",
+      );
+    }
+    for (const p of options.properties.nodes) {
+      const key =
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+        ts.isIdentifier(p.name)
+          ? p.name.text
+          : null;
+      const value =
+        key === null
+          ? null
+          : ts.isShorthandPropertyAssignment(p)
+            ? (p.name as ts.Identifier)
+            : (p as ts.PropertyAssignment).initializer;
+      if (key === "objectMode" && value) {
+        if (value.kind === ts.SyntaxKind.TrueKeyword) objectMode = true;
+        else if (value.kind !== ts.SyntaxKind.FalseKeyword)
+          lowerer.noLowering(
+            "the Readable.fromWeb option 'objectMode' with this value",
+            p,
+            "write true or false",
+          );
+        continue;
+      }
+      if (key === "highWaterMark" && value) {
+        hwm = lowerer.lowerExprExpecting(value, F64);
+        continue;
+      }
+      if (key === "encoding" && value) {
+        const t = lowerer.typeOf(value);
+        if (t.isStringLiteralType() && knownBufEncoding(t.value) === undefined) {
+          return nodeThrowExpr(
+            1,
+            "ERR_INVALID_ARG_VALUE",
+            `The property 'options.encoding' is invalid. Received '${t.value}'`,
+            readable,
+            loc,
+          );
+        }
+        encoding = bufEncoding(lowerer, "the Readable.fromWeb option 'encoding'", value);
+        continue;
+      }
+      if (key === "signal" && value) {
+        if (!sideEffectFreeOptionValue(value) && !pureRead(value)) {
+          lowerer.noLowering(
+            "the Readable.fromWeb option 'signal' with this value",
+            p,
+            "pass a variable or property read (const signal = controller.signal)",
+          );
+        }
+        signal = lowerer.lowerExprExpecting(value, DYN);
+        continue;
+      }
+      lowerer.noLowering(
+        key === null
+          ? "Readable.fromWeb options with this member"
+          : `the Readable.fromWeb option '${key}'`,
+        p,
+        "objectMode, highWaterMark, encoding and signal are the Readable.fromWeb options",
+      );
+    }
+  }
+  const built: IrExpr = {
+    kind: "libCall",
+    fn: "fetch.readableFromWeb",
+    args: [web, boolLit(objectMode, loc), hwm, strLit(encoding, loc)],
+    type: readable,
+    loc,
+  };
+  if (signal === null) return built;
+  return {
+    kind: "libCall",
+    fn: "stream.addAbortSignal",
+    args: [built, signal],
+    type: readable,
+    loc,
+  };
+}
+
 /** Readable.from(source, options), and for Duplex.from over an iterable
  * (duplex) duplexify.js's from(Duplexify, body, { objectMode: true,
  * writable: false }): the same builders with SCR_FROM_DUPLEX, answering a
@@ -1865,16 +1972,24 @@ function lowerFromSource(
   const duplexFlag = duplex ? 32 : 0;
   const js = isJsSourceFile(ts.getSourceFileOfNode(call));
   // A web ReadableStream is async iterable: from.js reads its iterator.
-  // (Duplex.from takes Readable.fromWeb of it instead.)
+  // Duplex.from takes _duplexify({ readable: Readable.fromWeb(body) }).
   const webElem = srcNode ? staticReadableStreamElementType(lowerer, srcNode) : null;
+  if (srcNode && webElem !== null && duplex) {
+    const fromWeb: IrExpr = {
+      kind: "libCall",
+      fn: "fetch.readableFromWeb",
+      args: [
+        lowerer.lowerExprExpecting(srcNode, DYN),
+        boolLit(false, loc),
+        numLit(-1, loc),
+        strLit("", loc),
+      ],
+      type: { kind: "object", className: "%Readable" },
+      loc,
+    };
+    return { kind: "libCall", fn: "stream.duplexifyReadable", args: [fromWeb], type, loc };
+  }
   if (srcNode && webElem !== null) {
-    if (duplex) {
-      lowerer.noLowering(
-        "Duplex.from over a web ReadableStream",
-        srcNode,
-        "Readable.from(stream) reads a web ReadableStream",
-      );
-    }
     const source = lowerWebStreamSource(lowerer, srcNode, webElem, loc);
     const helpers = source ? fromGenHelpers(lowerer, source.out, loc) : null;
     const opts = optsNode ? fromOptions(lowerer, optsNode) : { flags: 0, hwm: null };
@@ -4276,17 +4391,16 @@ function lowerStreamCompose(lowerer: Lowerer, args: readonly ts.Expression[], lo
     );
   }
   // A web ReadableStream first stage reads as an async iterable (the
-  // pipeline's source); elsewhere it would be Duplex.fromWeb of it.
-  for (let i = args.length === 1 ? 0 : 1; i < args.length; i++) {
+  // pipeline's source), and alone it is Duplex.from of it; a later stage
+  // would be Duplex.fromWeb of it.
+  for (let i = 1; i < args.length; i++) {
     const a = args[i]!;
     // (typeOf on a stage function's name would report what collecting its
     // declared signature deferred)
     if (pipelineStageFunction(lowerer, a) !== null) continue;
     if (staticReadableStreamElementType(lowerer, a) !== null) {
       lowerer.noLowering(
-        i === 0
-          ? "Duplex.from over a web ReadableStream"
-          : "compose with a web ReadableStream after the first stage",
+        "compose with a web ReadableStream after the first stage",
         a,
         "a web ReadableStream is supported as the first stage of compose or pipeline, and in Readable.from",
       );

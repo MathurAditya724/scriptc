@@ -7290,6 +7290,16 @@ declare module "stream" {
     readonly destroyed: boolean;
     readonly errored: Error | null;
     static from(iterable: unknown, options?: ReadableOptions): Readable;
+    /* A Readable over a web ReadableStream's reader. */
+    static fromWeb(
+      readableStream: globalThis.ReadableStream,
+      options?: {
+        encoding?: string;
+        highWaterMark?: number;
+        objectMode?: boolean;
+        signal?: AbortSignal;
+      },
+    ): Readable;
     /* The Readable operators: chunks are strings or Buffers, map and
      * flatMap callbacks return strings or Buffers (flatMap: arrays of
      * them, or strings), and callbacks that declare the options argument

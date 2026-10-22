@@ -161,6 +161,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // WebCrypto's AES ciphers run over the cipher feature's mbedTLS archive.
   ["scr_webcrypto_aes.c", all("cipher", "webcrypto")],
   ["scr_fetch.c", "nativeFetch"],
+  ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
 export function variantsFor(source) {
