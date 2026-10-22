@@ -8354,11 +8354,15 @@ function lowerObjectStaticCall(
       probed?.type.kind === "union" &&
       isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       lowerer.dynConvertible(probed.type);
+    // An array walks its live view: the present indices, then its numeric
+    // and named properties.
+    const isArray = probed?.type.kind === "array" && lowerer.dynConvertible(probed.type);
     if (
       isDyn ||
       isPrimitive ||
       isFunction ||
       isJsUnion ||
+      isArray ||
       (probed && isDynTypedRefType(probed.type))
     ) {
       const fn =
@@ -8368,7 +8372,14 @@ function lowerObjectStaticCall(
             ? "dyn.objValues"
             : "dyn.objEntries";
       let v = lowerer.lowerExpr(argNode);
-      if (v.type.kind !== "dyn") v = { kind: "dynFrom", value: v, type: DYN, loc: locOf(call) };
+      if (v.type.kind !== "dyn")
+        v = {
+          kind: "dynFrom",
+          value: v,
+          ...(isArray ? { liveRef: true as const } : {}),
+          type: DYN,
+          loc: locOf(call),
+        };
       // In TypeScript the keys come back as a native string[] and the
       // entries as a native [string, any][]: the checker keeps every later
       // write to the arrays well typed. JavaScript may store anything into

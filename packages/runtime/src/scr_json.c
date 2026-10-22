@@ -3241,6 +3241,43 @@ ScrDyn *scr_dyn_class_view_unavailable(void *ptr) {
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
+void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry) {
+  ScrStr *key = scr_str_new(entry->key, entry->key_len);
+  if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
+    scr_dyn_key_set(target, key, entry->value);
+  } else {
+    /* Properties defined through a view keep their attributes. */
+    ScrDyn *name = scr_dyn_new_str(key);
+    ScrDyn *descriptor = scr_dyn_own_descriptor(source, key);
+    if (descriptor) scr_dyn_release(scr_dyn_define_property(target, name, descriptor));
+    scr_dyn_release(descriptor);
+    scr_dyn_release(name);
+  }
+  scr_str_release(key);
+}
+
+static ScrDyn *scr_typed_ref_numeric_property(const ScrDyn *d, double key);
+
+/* A live array's view lists the native numeric properties first, then the
+ * named properties the snapshot copied from the array's metadata. */
+static void scr_typed_ref_view_numeric_properties(const ScrDyn *capsule, ScrDyn *view) {
+  const ScrDynTypedArrayOps *ops = scr_dyn_typed_ref_array_ops(capsule);
+  ScrArr *arr = capsule->v.typed_ref.ptr;
+  const ScrArrExt *x = ops ? scr_arr_ext_of(arr) : NULL;
+  if (!x || x->prop_len == 0 || view->kind != SCR_DYN_ARR) return;
+  ScrDyn *named = view->v.arr.properties;
+  view->v.arr.properties = NULL;
+  for (size_t i = 0; i < x->prop_len; i++) {
+    double number;
+    if (!scr_arr_numeric_key(x->props[i].key, x->props[i].key_len, &number)) continue;
+    ScrDyn *value = scr_typed_ref_numeric_property(capsule, number);
+    if (value) scr_dyn_arr_named_put(view, x->props[i].key, x->props[i].key_len, value);
+  }
+  if (!named) return;
+  for (size_t i = 0; i < named->v.obj.len; i++) scr_dyn_copy_entry(view, named, &named->v.obj.entries[i]);
+  scr_dyn_release(named);
+}
+
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
   ScrDyn *capsule = (ScrDyn *)d;
   ScrDyn *fresh = capsule->v.typed_ref.materialize(capsule->v.typed_ref.ptr);
@@ -3248,6 +3285,7 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     scr_dyn_release(fresh);
     return scr_dyn_retain(scr_dyn_undefined());
   }
+  scr_typed_ref_view_numeric_properties(capsule, fresh);
   if (!capsule->v.typed_ref.materialized) {
     capsule->v.typed_ref.materialized = fresh;
   } else {
@@ -3467,6 +3505,16 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   return out;
 }
 
+/* A numeric property of a live array ("-1", "1.5"): +1, or NULL when the
+ * native array has none. */
+static ScrDyn *scr_typed_ref_numeric_property(const ScrDyn *d, double key) {
+  ScrArr *arr = d->v.typed_ref.ptr;
+  double state = scr_arr_state(arr, key);
+  if (state == (double)SCR_ARR_VALUE) return scr_dyn_typed_ref_array_ops(d)->get(arr, key);
+  if (state == (double)SCR_ARR_UNDEFINED) return scr_dyn_retain(scr_dyn_undefined());
+  return NULL;
+}
+
 ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
   if (d->v.typed_ref.record) return scr_typed_ref_record_get(d, key);
   if (scr_event_ref_hooks) {
@@ -3475,6 +3523,8 @@ ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
   }
   if (!scr_dyn_typed_ref_array_ops(d)) return NULL;
   if (scr_typed_ref_is_length(key)) return scr_dyn_new_num((double)((ScrArr *)d->v.typed_ref.ptr)->len);
+  double number;
+  if (scr_arr_numeric_key(key->data, key->len, &number)) return scr_typed_ref_numeric_property(d, number);
   size_t index;
   if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return NULL;
   return scr_dyn_typed_ref_element(d, index);
@@ -3484,6 +3534,9 @@ ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
 static bool scr_typed_ref_array_has_own(const ScrDyn *d, const ScrStr *key) {
   if (!scr_dyn_typed_ref_array_ops(d)) return false;
   if (scr_typed_ref_is_length(key)) return true;
+  double number;
+  if (scr_arr_numeric_key(key->data, key->len, &number))
+    return scr_arr_state(d->v.typed_ref.ptr, number) != (double)SCR_ARR_HOLE;
   size_t index;
   if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return false;
   ScrArr *arr = d->v.typed_ref.ptr;
@@ -3496,6 +3549,22 @@ static bool scr_typed_ref_array_has_own(const ScrDyn *d, const ScrStr *key) {
 static bool scr_typed_ref_array_set(ScrDyn *d, const ScrStr *key, const ScrDyn *value) {
   const ScrDynTypedArrayOps *ops = scr_dyn_typed_ref_array_ops(d);
   if (!ops || !ops->set) return false;
+  /* Numeric properties live in the native array's property table, which
+   * holds values of the element type. */
+  double number;
+  if (scr_arr_numeric_key(key->data, key->len, &number)) {
+    if (ops->set(d->v.typed_ref.ptr, number, value)) return true;
+    ScrStr *kind = scr_dyn_typeof(value);
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_jb_puts(&message, "expected the array's element type at $[");
+    scr_jb_write(&message, key->data, key->len);
+    scr_jb_puts(&message, "], got ");
+    scr_jb_write(&message, kind->data, kind->len);
+    scr_str_release(kind);
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+    return true;
+  }
   size_t index;
   if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return false;
   ScrArr *arr = d->v.typed_ref.ptr;
@@ -6341,6 +6410,16 @@ static bool scr_dyn_fn_property_fence(const ScrStr *key) {
 }
 
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
+  if (target->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(target) && key->kind == SCR_DYN_STR) {
+    /* A native array's numeric properties ("-1", "1.5") live in its
+     * property table, which holds values without attributes. */
+    double number;
+    if (scr_arr_numeric_key(key->v.str->data, key->v.str->len, &number)) {
+      static const char message[] = "Object.defineProperty on a numeric property of a native array is not supported yet";
+      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+      return NULL;
+    }
+  }
   if (target->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(target);
     ScrDyn *defined = scr_exc_pending() ? NULL : scr_dyn_define_property(view, key, descriptor);
