@@ -48,6 +48,13 @@ const unnamed = new AsyncLocalStorage<number>();
 console.log(JSON.stringify(unnamed.name), unnamed.getStore());
 const empty = new AsyncLocalStorage<number>({});
 console.log(JSON.stringify(empty.name), empty.getStore());
+// A class instance's fields are options too.
+class StoreOptions {
+  defaultValue = 7;
+  name = "from-class";
+}
+const fromClass = new AsyncLocalStorage<number>(new StoreOptions());
+console.log(fromClass.name, fromClass.getStore());
 
 // Bound functions and snapshots carry the context across asynchronous work.
 const later = store.run("timer", () => AsyncLocalStorage.bind(() => store.getStore()));

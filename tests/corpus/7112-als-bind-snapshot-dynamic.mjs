@@ -43,6 +43,49 @@ console.log(named.name, named.getStore());
 named.run(5, () => console.log(named.getStore()));
 console.log(new AsyncLocalStorage(undefined).name === "");
 
+// The options are read as JavaScript reads properties: inherited values
+// and getters count, defaultValue is read once and name twice, and the
+// name becomes a string.
+const inherited = new AsyncLocalStorage(Object.create({ defaultValue: "inherited", name: "proto" }));
+console.log(inherited.getStore(), inherited.name);
+const reads = [];
+const viaGetters = new AsyncLocalStorage({
+  get defaultValue() {
+    reads.push("defaultValue");
+    return "getter";
+  },
+  get name() {
+    reads.push("name");
+    return "getter-name";
+  },
+});
+console.log(viaGetters.getStore(), viaGetters.name, reads.join(","));
+const coerced = [5, null, { toString: () => "object" }].map((name) => new AsyncLocalStorage({ name }).name);
+console.log(JSON.stringify(coerced));
+for (const options of [
+  {
+    get defaultValue() {
+      throw new Error("from a getter");
+    },
+  },
+  { name: Symbol("s") },
+]) {
+  try {
+    new AsyncLocalStorage(options);
+    console.log("constructed");
+  } catch (error) {
+    console.log(error.name, error.message);
+  }
+}
+
+// A snapshot calls its callback with an undefined receiver, also when the
+// snapshot itself is called as a method.
+const kind = function () {
+  return this === undefined ? "undefined" : typeof this;
+};
+const holder = { snap, tag: "holder" };
+console.log(snap(kind), holder.snap(kind), snap.call({ tag: "receiver" }, kind));
+
 // An untyped callback runs in the stores of its call.
 store.run("readFile", () =>
   readFile(import.meta.filename, "utf8", (error, text) =>

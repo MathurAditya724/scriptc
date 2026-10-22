@@ -71,17 +71,61 @@ double scr_als_new(void) {
   return ++scr_als_counter;
 }
 
+/* options[key] as JavaScript reads it (+1, or NULL with the exception
+ * pending): inherited properties and getters included. A class instance
+ * reads its own fields through its snapshot; a member its class declares
+ * (a getter or a method) has no runtime view here and is refused. */
+static ScrDyn *scr_als_option(ScrDyn *options, const char *key, size_t key_len) {
+  ScrStr *name = scr_str_new(key, key_len);
+  if (options->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_class_has(options, name)) {
+    char message[160];
+    snprintf(message, sizeof message,
+             "AsyncLocalStorage options whose class declares '%s' are not supported yet", key);
+    scr_str_release(name);
+    scr_throw_error_msg(SCR_ERR_ERROR, message, strlen(message));
+    return NULL;
+  }
+  ScrDyn *key_value = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *value = scr_dyn_reflect_get(options, key_value, options);
+  scr_dyn_release(key_value);
+  if (value == NULL && !scr_exc_pending()) value = scr_dyn_retain(scr_dyn_undefined());
+  return value;
+}
+
 /* new AsyncLocalStorage(options): Node validates that options is an
- * object, then keeps options.defaultValue and options.name. NaN with the
- * exception pending when options is not an object. */
+ * object, then reads options.defaultValue once and options.name twice
+ * (whether it is defined, then its value), keeping String(name). NaN with
+ * the exception pending when options is not an object or a read throws. */
 double scr_als_new_options(const ScrDyn *options) {
   if (options->kind == SCR_DYN_UNDEF) return scr_als_new();
-  /* A typed record or class instance reads through its snapshot. */
-  ScrDyn *snapshot = options->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(options) : NULL;
-  if (snapshot) options = snapshot;
-  if (options->kind != SCR_DYN_OBJ) {
+  if (options->kind != SCR_DYN_OBJ && options->kind != SCR_DYN_TYPED_REF && options->kind != SCR_DYN_PROXY) {
     scr_dyn_arg_type_fail("options", "of type object", options);
-    scr_dyn_release(snapshot);
+    return NAN;
+  }
+  ScrDyn *value = scr_als_option((ScrDyn *)options, "defaultValue", 12);
+  if (!value) return NAN;
+  ScrDyn *name = scr_als_option((ScrDyn *)options, "name", 4);
+  if (name && name->kind != SCR_DYN_UNDEF) {
+    scr_dyn_release(name);
+    name = scr_als_option((ScrDyn *)options, "name", 4);
+    if (name && name->kind == SCR_DYN_SYMBOL) {
+      static const char message[] = "Cannot convert a Symbol value to a string";
+      scr_dyn_release(name);
+      name = NULL;
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    } else if (name) {
+      ScrStr *text = scr_dyn_string_coerce_js(name);
+      scr_dyn_release(name);
+      name = text ? scr_dyn_new_str(text) : NULL;
+      scr_str_release(text);
+    }
+  } else {
+    scr_dyn_release(name);
+    name = scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (!name) {
+    scr_dyn_release(value);
     return NAN;
   }
   double id = scr_als_new();
@@ -94,12 +138,9 @@ double scr_als_new_options(const ScrDyn *options) {
     scr_als_options = grown;
     scr_als_options_len = len;
   }
-  ScrDyn *value = scr_dyn_obj_get(options, "defaultValue", 12);
-  ScrDyn *name = scr_dyn_obj_get(options, "name", 4);
-  scr_als_options[index].default_value = scr_dyn_retain(value ? value : scr_dyn_undefined());
-  scr_als_options[index].name =
-      name && name->kind != SCR_DYN_UNDEF ? scr_dyn_retain(name) : NULL;
-  scr_dyn_release(snapshot);
+  scr_als_options[index].default_value = value; /* the read's +1 moves */
+  scr_als_options[index].name = name->kind != SCR_DYN_UNDEF ? name : NULL;
+  if (name->kind == SCR_DYN_UNDEF) scr_dyn_release(name);
   return id;
 }
 
@@ -235,7 +276,10 @@ static ScrDyn *scr_als_snapshot_call(ScrClosure *self, ScrDyn *const *args, size
   ScrAlsCtx **slot = SCR_ALS_SLOT();
   ScrAlsCtx *prev = *slot;
   *slot = scr_box_get_ref(self->caps[0]); /* the slot owns this reference */
+  /* Node applies cb to an undefined receiver, whatever the runner's own. */
+  scr_dyn_this_push_dyn(scr_dyn_undefined());
   ScrDyn *result = scr_dyn_call(cb, args + 1, argc - 1, "callback");
+  scr_dyn_this_pop();
   scr_als_restore(prev);
   return result;
 }
