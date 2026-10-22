@@ -414,11 +414,13 @@ export interface LlvmTargetOptions {
   targetTriple?: string;
   /** Emit the function bodies in this many contiguous ranges, each by its
    * own emitter, and merge them in function order (emit-journal.ts). The
-   * output is the same as one emitter's. */
+   * output is the same as one emitter's. Debug builds (`debugSources`)
+   * emit in one emitter. */
   functionChunks?: number;
   /** Emit the function bodies of a large module on this many forked worker
    * processes at a time (emit-module.ts), forked with `forkPrimitives`. The
-   * output is the same as one emitter's. */
+   * output is the same as one emitter's. Debug builds (`debugSources`)
+   * emit in one emitter. */
   functionWorkers?: number;
   /** The host's process primitives, where it can fork (the native
    * compiler's). */
@@ -1273,7 +1275,9 @@ export class LlEmitter {
     this.journal = journal;
     this.journaled =
       journal !== null ||
-      ((options.functionWorkers ?? 1) > 1 && options.forkPrimitives !== undefined);
+      ((options.functionWorkers ?? 1) > 1 &&
+        options.forkPrimitives !== undefined &&
+        options.debugSources === undefined);
     this.stackTraces = observesStacks(mod);
     this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
     this.mockTimers = this.runtimeFeatures.mockTimers;

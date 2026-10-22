@@ -192,10 +192,13 @@ function readRange(dir: string, range: number): { result: ChunkResult; texts: st
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
+  // Debug metadata is numbered per emitter and not journaled, so a debug
+  // build emits every body here.
+  const ranges = emitter.debug === null;
   const chunks = emitter.targetOptions.functionChunks ?? 1;
   const fnDefs =
-    (chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
-    emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) ??
+    (ranges && chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
+    (ranges ? emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) : null) ??
     [];
   if (fnDefs.length === 0)
     for (const fn of emitter.mod.functions) {

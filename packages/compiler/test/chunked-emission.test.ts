@@ -67,3 +67,56 @@ test("function bodies emitted in chunks merge into the text one emitter gives", 
     await rm(dir, { recursive: true, force: true });
   }
 }, 600_000);
+
+// Debug metadata is numbered per emitter (debug-info.ts) and not journaled:
+// a debug build emits its function bodies in one emitter.
+test("debug builds emit function bodies serially, with every metadata reference defined", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-chunked-debug-"));
+  const minFunctions = process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"];
+  try {
+    const corpus = join(import.meta.dirname, "../../../tests/corpus/3066-source-debugging");
+    const entry = join(corpus, "main.ts");
+    const outPath = join(dir, "main.ir.json");
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath,
+      outputKind: "ir",
+      optimization: "dev",
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const ir = await readFile(outPath, "utf8");
+    const debugSources = new Map<string, string>();
+    for (const name of ["main.ts", "helper.ts"])
+      debugSources.set(join(corpus, name), await readFile(join(corpus, name), "utf8"));
+    const options: LlvmTargetOptions = { debugSources };
+    const serial = text(emitLlvmModuleSource(deserializeModule(ir), options));
+    expect(serial).toContain("!DILocation");
+
+    let forks = 0;
+    process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] = "1";
+    const forkPrimitives = {
+      fork: (): number => {
+        forks++;
+        return -1;
+      },
+      exit: (): void => {},
+      wait: (): number => -1,
+    };
+    for (const variant of [
+      { functionChunks: 3 },
+      { functionWorkers: 4, forkPrimitives },
+    ] satisfies LlvmTargetOptions[]) {
+      const emitted = text(emitLlvmModuleSource(deserializeModule(ir), { ...options, ...variant }));
+      expect(emitted === serial, JSON.stringify(Object.keys(variant))).toBe(true);
+      const defined = new Set([...emitted.matchAll(/^(![0-9]+) = /gm)].map((m) => m[1]));
+      const referenced = new Set([...emitted.matchAll(/(![0-9]+)\b/g)].map((m) => m[1]));
+      expect([...referenced].filter((id) => !defined.has(id))).toEqual([]);
+    }
+    expect(forks).toBe(0);
+  } finally {
+    if (minFunctions === undefined) delete process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"];
+    else process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] = minFunctions;
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 120_000);
