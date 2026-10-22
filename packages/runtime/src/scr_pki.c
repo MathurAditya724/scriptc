@@ -12,6 +12,8 @@
  * All arguments are borrowed. */
 #include "scr_runtime.h"
 
+#include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,14 +39,41 @@ static void sp_throw(int kind, const char *code, const char *message) {
   scr_throw_error_msg_code(kind, message, strlen(message), code);
 }
 
+void scr_pki_throw_fmt(int kind, const char *code, const char *fmt, ...) {
+  va_list ap, sized;
+  va_start(ap, fmt);
+  va_copy(sized, ap);
+  int n = vsnprintf(NULL, 0, fmt, sized);
+  va_end(sized);
+  if (n < 0) n = 0;
+  char *message = malloc((size_t)n + 1);
+  if (!message) scr_trap("scriptc: out of memory\n");
+  vsnprintf(message, (size_t)n + 1, fmt, ap);
+  va_end(ap);
+  if (code) scr_throw_error_msg_code(kind, message, (size_t)n, code);
+  else scr_throw_error_msg(kind, message, (size_t)n);
+  free(message);
+}
+
+/* The "Received" text of Node's ERR_INVALID_ARG_VALUE and ERR_OUT_OF_RANGE
+ * messages: a string as util.inspect quotes it (cut at 128 UTF-16 units
+ * plus "..."), a number as ERR_OUT_OF_RANGE prints it when `range`, any
+ * other value as its sketch. +1. */
+static ScrStr *sp_received(const ScrDyn *got, bool range) {
+  if (got->kind == SCR_DYN_STR) return scr_str_inspect_quoted(got->v.str, true);
+  char text[96];
+  if (range && got->kind == SCR_DYN_NUM) return scr_str_new(text, scr_num_received(got->v.num, text));
+  const char *lite = scr_dyn_inspect_lite(got, text, sizeof text);
+  return scr_str_new(lite, strlen(lite));
+}
+
 /* ERR_INVALID_ARG_VALUE for an option ("The property 'options.type' is
  * invalid. Received 'spki'"). */
 static void sp_property_invalid(const char *name, const ScrDyn *got) {
-  char lite[96];
-  char message[256];
-  int n = snprintf(message, sizeof message, "The property '%s' is invalid. Received %s", name,
-                   scr_dyn_inspect_lite(got, lite, sizeof lite));
-  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_VALUE");
+  ScrStr *received = sp_received(got, false);
+  scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_INVALID_ARG_VALUE", "The property '%s' is invalid. Received %.*s", name,
+                    (int)received->len, received->data);
+  scr_str_release(received);
 }
 
 static void sp_unsupported_input(void) {
@@ -53,10 +82,8 @@ static void sp_unsupported_input(void) {
 
 /* The coded refusal for a form this runtime does not implement. */
 static void sp_not_supported(const char *what) {
-  char message[256];
-  int n = snprintf(message, sizeof message,
-                   "'%s' is part of the standard library types but has no scriptc lowering yet", what);
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)n, "SC2020");
+  scr_pki_throw_fmt(SCR_ERR_ERROR, "SC2020", "'%s' is part of the standard library types but has no scriptc lowering yet",
+                    what);
 }
 
 static int sp_random(void *state, unsigned char *out, size_t len) {
@@ -1066,9 +1093,7 @@ static ScrDyn *sp_key_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *
     sp_not_supported("KeyObject.toCryptoKey");
     return NULL;
   }
-  char message[160];
-  int n = snprintf(message, sizeof message, "%s is not a function", what);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "%s is not a function", what);
   return NULL;
 }
 
@@ -1093,10 +1118,8 @@ static bool sp_key_set(void *h, const char *name, size_t len, const ScrDyn *valu
                            ? "AsymmetricKeyObject"
                            : NULL;
   if (!holder) return false;
-  char message[160];
-  int n = snprintf(message, sizeof message, "Cannot set property %.*s of #<%s> which has only a getter",
-                   (int)len, name, holder);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "Cannot set property %.*s of #<%s> which has only a getter", (int)len, name,
+                    holder);
   return true;
 }
 
@@ -1210,12 +1233,11 @@ static SpKey *sp_generate(const ScrDyn *type, const ScrDyn *options) {
   bool other = false;
   for (size_t i = 0; i < sizeof known / sizeof known[0]; i++) other = other || sp_is_str(type, known[i]);
   if (!rsa && !ec && !ed && !other) {
-    char lite[96];
-    char message[200];
-    int n = snprintf(message, sizeof message,
-                     "The argument 'type' must be a supported key type. Received %s",
-                     scr_dyn_inspect_lite(type, lite, sizeof lite));
-    scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_VALUE");
+    ScrStr *received = sp_received(type, false);
+    scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_INVALID_ARG_VALUE",
+                      "The argument 'type' must be a supported key type. Received %.*s", (int)received->len,
+                      received->data);
+    scr_str_release(received);
     return NULL;
   }
   /* The ed25519 options are optional. */
@@ -1252,14 +1274,15 @@ static SpKey *sp_generate(const ScrDyn *type, const ScrDyn *options) {
       return NULL;
     }
     double b = bits->v.num;
-    if (b != b || b < 0 || b > 4294967295.0 || b != (double)(uint64_t)b) {
+    /* validateUint32: an integer first, then the range. */
+    bool integer = isfinite(b) && trunc(b) == b;
+    if (!integer || b < 0 || b > 4294967295.0) {
       sp_key_release(k);
-      char message[160];
-      char lite[64];
-      int n = snprintf(message, sizeof message,
-                       "The value of \"options.modulusLength\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
-                       scr_dyn_inspect_lite(bits, lite, sizeof lite));
-      scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)n, "ERR_OUT_OF_RANGE");
+      ScrStr *received = sp_received(bits, true);
+      scr_pki_throw_fmt(SCR_ERR_RANGE, "ERR_OUT_OF_RANGE",
+                        "The value of \"options.modulusLength\" is out of range. It must be %s. Received %.*s",
+                        integer ? ">= 0 && <= 4294967295" : "an integer", (int)received->len, received->data);
+      scr_str_release(received);
       return NULL;
     }
     const ScrDyn *exp = sp_opt(options, "publicExponent");
@@ -1404,10 +1427,15 @@ static bool sp_algorithm(const ScrDyn *alg, mbedtls_md_type_t *md) {
     return false;
   }
   if (!sp_digest_of(alg->v.str, md)) {
-    char message[160];
-    int n = snprintf(message, sizeof message, "Invalid digest: %.*s", (int)alg->v.str->len,
-                     alg->v.str->data);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_CRYPTO_INVALID_DIGEST");
+    /* The whole name, at any length and with any bytes, as in Node. */
+    static const char prefix[] = "Invalid digest: ";
+    size_t len = sizeof prefix - 1 + alg->v.str->len;
+    char *message = malloc(len);
+    if (!message) scr_trap("scriptc: out of memory\n");
+    memcpy(message, prefix, sizeof prefix - 1);
+    memcpy(message + sizeof prefix - 1, alg->v.str->data, alg->v.str->len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, len, "ERR_CRYPTO_INVALID_DIGEST");
+    free(message);
     return false;
   }
   return true;
@@ -1799,9 +1827,7 @@ static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDy
     sp_key_release(k.key);
     return scr_dyn_new_bool(ok);
   }
-  char message[160];
-  int n = snprintf(message, sizeof message, "%s is not a function", what);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "%s is not a function", what);
   return NULL;
 }
 

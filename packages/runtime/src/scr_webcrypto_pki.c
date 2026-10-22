@@ -115,10 +115,8 @@ static bool sw_key_set(void *h, const char *name, size_t len, const ScrDyn *valu
   if (!sw_name_is(name, len, "type") && !sw_name_is(name, len, "extractable") &&
       !sw_name_is(name, len, "algorithm") && !sw_name_is(name, len, "usages"))
     return false;
-  char message[128];
-  int n = snprintf(message, sizeof message, "Cannot set property %.*s of #<CryptoKey> which has only a getter",
-                   (int)len, name);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "Cannot set property %.*s of #<CryptoKey> which has only a getter", (int)len,
+                    name);
   return true;
 }
 
@@ -129,9 +127,7 @@ static ScrDyn *sw_key_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *
   (void)args;
   (void)argc;
   if (strcmp(method, "toString") == 0) return scr_wc_cstr("[object CryptoKey]");
-  char message[160];
-  int n = snprintf(message, sizeof message, "%s is not a function", what);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "%s is not a function", what);
   return NULL;
 }
 

@@ -80,6 +80,9 @@ const ecSignature = ecSigner.sign({ key: ec, dsaEncoding: "ieee-p1363" });
 attempt("chained", () => crypto.createVerify("sha512").update("chained").verify({ key: ecPublic, dsaEncoding: "ieee-p1363" }, ecSignature));
 
 attempt("invalid digest", () => crypto.sign("nope", data, rsa));
+const longDigest = "unknown-digest-".repeat(40);
+attempt("long digest", () => crypto.sign(longDigest, data, rsa));
+attempt("long verify digest", () => crypto.verify(longDigest, data, rsaPublic, Buffer.alloc(64)));
 attempt("public key signs", () => crypto.sign("sha256", data, rsaPublic));
 attempt("invalid createSign", () => crypto.createSign("nope"));
 attempt("invalid dsaEncoding", () => crypto.sign("sha256", data, { key: ec, dsaEncoding: "x" as "der" }));

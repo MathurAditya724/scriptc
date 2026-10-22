@@ -12,6 +12,10 @@
 
 typedef struct SpKey ScrPkiKey;
 
+/* Throws an error of `kind` (with `code`, or none for NULL) whose message
+ * is the printf format's whole output, at any length. */
+void scr_pki_throw_fmt(int kind, const char *code, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+
 /* The Ed25519 arithmetic (scr_ed25519.c), installed at startup in
  * programs that name Ed25519; NULL otherwise. Keys are the 32-byte seed
  * and the 32-byte encoded public point. */

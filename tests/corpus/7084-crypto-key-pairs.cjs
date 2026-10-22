@@ -50,6 +50,20 @@ attempt("unknown curve", () => crypto.generateKeyPairSync("ec", { namedCurve: "n
 attempt("bad encoding format", () => crypto.generateKeyPairSync("ec", { namedCurve: "P-256", publicKeyEncoding: { type: "spki", format: "xml" } }));
 attempt("bad encoding type", () => crypto.generateKeyPairSync("ec", { namedCurve: "P-256", privateKeyEncoding: { type: "spki", format: "pem" } }));
 attempt("encoding not object", () => crypto.generateKeyPairSync("ec", { namedCurve: "P-256", publicKeyEncoding: "pem" }));
+// Error messages hold the whole text at any length, and received values
+// render as Node's validators print them.
+attempt("long type", () => crypto.generateKeyPairSync("unknown-type-".repeat(20), {}));
+attempt("long encoding type", () => crypto.generateKeyPairSync("ec", { namedCurve: "P-256", publicKeyEncoding: { type: "z".repeat(300), format: "pem" } }));
+attempt("quoted encoding type", () => crypto.generateKeyPairSync("ec", { namedCurve: "P-256", publicKeyEncoding: { type: "it's\n", format: "pem" } }));
+attempt("huge modulusLength", () => crypto.generateKeyPairSync("rsa", { modulusLength: 2 ** 40 }));
+attempt("fractional modulusLength", () => crypto.generateKeyPairSync("rsa", { modulusLength: 1.5 }));
+attempt("NaN modulusLength", () => crypto.generateKeyPairSync("rsa", { modulusLength: NaN }));
+const key = rsa.privateKey;
+attempt("long method", () => key.aMethodNameLongEnoughThatTheWholeMessageRunsPastOneHundredAndSixtyBytesOnceTheReceiverTextAndTheSuffixAreIncluded());
+attempt("getter", () => {
+  "use strict";
+  key.asymmetricKeyType = "ec";
+});
 
 let returned = false;
 crypto.generateKeyPair("ec", { namedCurve: "P-384" }, (err, publicKey, privateKey) => {
