@@ -41,3 +41,20 @@ const labels: Record<string, string> = { first: "a", ...{ zeta: "z", alpha: "a" 
 console.log(Object.entries(labels).map(([k, v]) => k + "=" + v).join(" "));
 const flags: { [key: string]: boolean } = { ...counts, mid: true, zeta: false, alpha: true };
 console.log(JSON.stringify(flags));
+
+// A source whose values are built in another order than its interface
+// declares: the spread follows the order the values are built in.
+interface Span {
+  start: number;
+  end: number;
+  label?: string;
+}
+function span(start: number, size: number, label?: string): Span {
+  return label === undefined ? { end: start + size, start } : { label, end: start + size, start };
+}
+const spans: Record<string, number | string> = { ...span(1, 4), step: 2 };
+console.log(Object.keys(spans).join(","), JSON.stringify(spans));
+const named: Record<string, number | string> = { first: 0, ...span(5, 2, "w"), last: 9 };
+console.log(Object.keys(named).join(","), JSON.stringify(named));
+const both: Record<string, number> = { ...counts, ...{ end: 3, start: 1 }, mid: 7 };
+console.log(Object.keys(both).join(","), JSON.stringify(both));

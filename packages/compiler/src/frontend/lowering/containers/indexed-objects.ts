@@ -1589,16 +1589,12 @@ export function lowerIndexMergeHelper(
     // own planned lift (absent optionals skip — the unset convention);
     // no overflow exists to walk.
     if (plan.fields !== null) {
-      // Keys enter in DECLARATION order, as the object's own keys do
-      // (declaredOrder omits internal '%'-fields, which never copy).
+      // Keys enter in the source's enumeration order, as its own keys do.
+      // That order settles only after lowering (key-order witnesses), so
+      // the writes go into one block that a finalizer orders.
       lowerer.keyOrder.observed.add(from.id);
-      const orderedFields = from.declaredOrder
-        ? from.declaredOrder.flatMap((n) => {
-            const f = from.fields.find((x) => x.name === n);
-            return f ? [f] : [];
-          })
-        : from.fields;
-      for (const ff of orderedFields) {
+      const fieldStmts = new Map<string, IrStmt>();
+      for (const ff of from.fields) {
         const lift = plan.fields.get(ff.name)!;
         const raw: IrExpr = {
           kind: "recordGet",
@@ -1623,7 +1619,8 @@ export function lowerIndexMergeHelper(
           overflowOnly: true,
           loc,
         };
-        body.push(
+        fieldStmts.set(
+          ff.name,
           utag >= 0 && ff.type.kind === "union"
             ? {
                 kind: "if",
@@ -1635,6 +1632,17 @@ export function lowerIndexMergeHelper(
             : write,
         );
       }
+      // declaredOrder omits internal '%'-fields, which never copy.
+      const ordered = (shape: IrRecordShape): IrStmt[] =>
+        (shape.declaredOrder ?? shape.fields.map((f) => f.name)).flatMap((field) => {
+          const stmt = fieldStmts.get(field);
+          return stmt ? [stmt] : [];
+        });
+      const group: IrStmt & { kind: "block" } = { kind: "block", body: ordered(from), loc };
+      lowerer.shapeOrderHelperFinalizers.push(() => {
+        group.body = ordered(lowerer.shapes.get(plan.shapeId) ?? from);
+      });
+      body.push(group);
       return;
     }
     const fIv = from.indexValue!;
