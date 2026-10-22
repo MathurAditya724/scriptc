@@ -97,6 +97,63 @@ test("split-methods keeps an import a staying method uses as a shorthand propert
   expect(diagnostics(dir)).toEqual([]);
 });
 
+/** An oxfmt.config.ts that records it ran by writing `marker`. */
+const recordingConfig = (marker: string): string =>
+  [
+    'import { writeFileSync } from "node:fs";',
+    `writeFileSync(${JSON.stringify(marker)}, "ran");`,
+    "export default {};",
+    "",
+  ].join("\n");
+
+test("split-methods formats with the tools checkout's configuration, not the branch's", () => {
+  const dir = checkout({
+    "src/host.ts": [
+      "export class Host {",
+      "  value = 1;",
+      "  moved(): number {",
+      "    return this.value + 1;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"),
+    "split.json": JSON.stringify({
+      module: "src/host.ts",
+      class: "Host",
+      methods: { "moved.ts": ["moved"] },
+    }),
+  });
+  const markers = [join(dir, "root-config-ran"), join(dir, "nested-config-ran")];
+  writeFileSync(join(dir, "oxfmt.config.ts"), recordingConfig(markers[0]!));
+  writeFileSync(join(dir, "src/oxfmt.config.ts"), recordingConfig(markers[1]!));
+  run("split-methods.mjs", ["apply", join(dir, "split.json")], dir);
+  expect(readFileSync(join(dir, "src/moved.ts"), "utf8")).toContain("export function moved");
+  for (const marker of markers) expect(existsSync(marker)).toBe(false);
+});
+
+test("move-state formats with the tools checkout's configuration, not the branch's", () => {
+  const dir = checkout({
+    "src/host.ts":
+      "export class Host {\n  count = 0;\n  moved(): number {\n    return this.count + 1;\n  }\n}\n",
+    "state.template": "",
+    "split.json": JSON.stringify({
+      module: "src/host.ts",
+      class: "Host",
+      dir: "src",
+      create: { "host-state.ts": "state.template" },
+      groups: [
+        { file: "host-state.ts", key: "COUNTS", interfaceName: "Counts", fields: ["count"] },
+      ],
+    }),
+  });
+  const markers = [join(dir, "root-config-ran"), join(dir, "nested-config-ran")];
+  writeFileSync(join(dir, "oxfmt.config.ts"), recordingConfig(markers[0]!));
+  writeFileSync(join(dir, "src/oxfmt.config.ts"), recordingConfig(markers[1]!));
+  run("move-state.mjs", ["apply", join(dir, "split.json")], dir);
+  expect(readFileSync(join(dir, "src/host.ts"), "utf8")).toContain("COUNTS.of(this).count");
+  for (const marker of markers) expect(existsSync(marker)).toBe(false);
+});
+
 test("split-module imports a moved class's local base class as a value", () => {
   const dir = checkout({
     "src/shapes.ts": [

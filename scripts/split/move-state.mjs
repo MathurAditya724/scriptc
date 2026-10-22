@@ -26,8 +26,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
 import { confine } from "./confine.mjs";
+import { formatFiles } from "./format.mjs";
 
 const [command, configPath, ...flags] = process.argv.slice(2);
 if (command !== "apply") throw new Error("usage: move-state.mjs apply <config.json>");
@@ -199,8 +199,7 @@ for (const r of config.replacements ?? []) {
   checkout.write(path, text.split(r.find).join(r.replace));
   touched.add(path);
 }
-const oxfmt = join(toolsDir, "node_modules/.bin/oxfmt");
-execFileSync(oxfmt, [...touched], { cwd: repo, stdio: "inherit" });
+formatFiles(toolsDir, [...touched], { cwd: repo, stdio: "inherit" });
 if (skipped) console.warn(`${skipped} replacement(s) skipped`);
 console.log(
   `moved ${config.groups.map((g) => g.present.length).reduce((a, b) => a + b, 0)} fields; rewrote ${touched.size} files`,

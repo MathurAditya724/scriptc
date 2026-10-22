@@ -39,8 +39,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, posix } from "node:path";
 import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
 import { confine, confineHost } from "./confine.mjs";
+import { formatFiles } from "./format.mjs";
 
 const [command, configPath, ...flags] = process.argv.slice(2);
 const config = JSON.parse(readFileSync(configPath, "utf8"));
@@ -533,10 +533,7 @@ function apply() {
   // Format what changed with the tools checkout's oxfmt, so the split and
   // every rehome of it are formatted the same way.
   const touched = [modulePath, ...[...files.keys()].map((f) => join(moduleDir, f))];
-  execFileSync(join(toolsDir, "node_modules/.bin/oxfmt"), touched, {
-    cwd: repo,
-    stdio: ["ignore", "ignore", "inherit"],
-  });
+  formatFiles(toolsDir, touched, { cwd: repo, stdio: ["ignore", "ignore", "inherit"] });
   for (const [file, entry] of files) console.log(`${file}: ${entry.decls.length} declarations`);
 }
 

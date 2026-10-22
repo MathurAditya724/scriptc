@@ -23,8 +23,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, posix } from "node:path";
 import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
 import { confine, confineHost } from "./confine.mjs";
+import { formatFiles } from "./format.mjs";
 
 const [command, configPath, ...flags] = process.argv.slice(2);
 if (command !== "apply") throw new Error("usage: split-methods.mjs apply <config.json>");
@@ -413,8 +413,5 @@ const touched = [
   modulePath,
   ...[...files].filter(([, e]) => e.decls.length).map(([f]) => join(moduleDir, f)),
 ];
-execFileSync(join(toolsDir, "node_modules/.bin/oxfmt"), touched, {
-  cwd: repo,
-  stdio: ["ignore", "ignore", "inherit"],
-});
+formatFiles(toolsDir, touched, { cwd: repo, stdio: ["ignore", "ignore", "inherit"] });
 console.log(`${moved} methods moved; ${publicize.size} members reached through host`);

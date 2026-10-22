@@ -29,6 +29,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { confine } from "./confine.mjs";
+import { formatFiles } from "./format.mjs";
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -173,10 +174,7 @@ try {
         splitFiles.has(file) &&
         resolveImportConflicts(confine(resultDir), join(resultDir, file))
       ) {
-        execFileSync(join(tools, "node_modules/.bin/oxfmt"), [file], {
-          cwd: resultDir,
-          stdio: ["ignore", "ignore", "inherit"],
-        });
+        formatFiles(tools, [file], { cwd: resultDir, stdio: ["ignore", "ignore", "inherit"] });
         gitIn(resultDir, "add", file);
         console.log(`${file}: import conflicts resolved to both sides' imports`);
       }
