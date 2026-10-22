@@ -20,6 +20,7 @@ import {
 import { TIER_MODES, type TierMode } from "../frontend/tier-analysis.js";
 import { buildEnvelope } from "../diagnostics/envelope.js";
 import { renderWarnings } from "../diagnostics/render.js";
+import { isPerformanceCode, renderPerformanceWarnings } from "../diagnostics/dynamic-tier.js";
 import { isNativeOptimization } from "../backend/optimization.js";
 import { setProvenanceSources } from "../frontend/provenance-registry.js";
 import type { CliHost, NativeCacheWarmProfile } from "./host.js";
@@ -299,6 +300,11 @@ async function main(args: string[], host: CliHost): Promise<number> {
       `unknown --fail-on value "${failOnRaw}" (supported: ${COVERAGE_FAIL_ON.join(", ")})\n\n${USAGE}`,
     );
   }
+  // --no-dynamic-tier-warning leaves out SC6101 (diagnostics/dynamic-tier.ts).
+  const dynamicTierWarning = values["dynamic-tier-warning"] !== false;
+  if (failOnRaw === "dynamic" && !dynamicTierWarning) {
+    fail(`--fail-on=dynamic checks the warning --no-dynamic-tier-warning leaves out\n\n${USAGE}`);
+  }
   if (failOnRaw !== undefined && command !== "coverage") {
     fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
   }
@@ -485,6 +491,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(wasmFiles.length > 0 ? { wasm: wasmFiles } : {}),
       ...(nodeIslands !== undefined ? { nodeIslands } : {}),
     });
+    if (!dynamicTierWarning) delete coverage.performance;
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.
       const envelope = coverageEnvelope(coverage, {
@@ -583,7 +590,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
       process.stderr.write(`\n${n} error${n === 1 ? "" : "s"}.\n`);
       throw new CliExit(1);
     }
-    const warnings = result.warnings ?? [];
+    const warnings = (result.warnings ?? []).filter(
+      (d) => dynamicTierWarning || !isPerformanceCode(d.code),
+    );
     if (printDiagnostics) {
       diagnosticsEnvelope = buildEnvelope({
         compilerVersion: host.version(),
@@ -596,12 +605,20 @@ async function main(args: string[], host: CliHost): Promise<number> {
       });
     } else if (warnings.length > 0 && command === "build") {
       // Divergence warnings never fail a build; they explain where the
-      // native program can behave differently from Node. `run` keeps
-      // stderr for the program's own output.
+      // native program can behave differently from Node. The performance
+      // warning names likely-hot functions that use untyped values. `run`
+      // keeps stderr for the program's own output.
       const color = process.stderr.isTTY ?? false;
-      process.stderr.write(
-        renderWarnings(warnings, result.sourceTexts ?? new Map(), { color }) + "\n",
-      );
+      const divergences = warnings.filter((d) => !isPerformanceCode(d.code));
+      const performance = warnings.filter((d) => isPerformanceCode(d.code));
+      if (divergences.length > 0)
+        process.stderr.write(
+          renderWarnings(divergences, result.sourceTexts ?? new Map(), { color }) + "\n",
+        );
+      if (performance.length > 0) {
+        if (divergences.length > 0) process.stderr.write("\n");
+        process.stderr.write(renderPerformanceWarnings(performance) + "\n");
+      }
     }
     if (result.artifact.kind === "exe") {
       if (!values["keep-llvm"]) rmSync(result.artifact.translationUnitPath, { force: true });

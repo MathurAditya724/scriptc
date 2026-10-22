@@ -31,12 +31,13 @@ Options:
                      (native-link-info implies --emit=obj and never links;
                      diagnostics prints the versioned JSON diagnostics
                      envelope for build and coverage)
-      --fail-on <blockers|divergences|node-islands|eager-node-islands|island-gaps>
+      --fail-on <blockers|divergences|dynamic|node-islands|eager-node-islands|island-gaps>
                      coverage only: exit 1 when the entry path has blockers
                      (a build would fail), or also when it has Node
-                     divergences, any Node island (eager-node-islands is the
-                     same until deferred evaluation lands), or a gap island
-                     (a package scriptc should compile but cannot yet)
+                     divergences, likely-hot functions that use untyped
+                     values (SC6101), any Node island (eager-node-islands is
+                     the same until deferred evaluation lands), or a gap
+                     island (a package scriptc should compile but cannot yet)
       --backend <b>  code generator (llvm)
       --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev
@@ -102,6 +103,9 @@ Options:
                      values and the bindings, fields, functions, classes and
                      modules the dynamic tier would take over, with the
                      refusal behind each; a name shows only that unit's chain
+      --no-dynamic-tier-warning
+                     build and coverage: leave out SC6101, the warning that
+                     names likely-hot functions that use untyped values
       --node-islands <auto|explicit|off>
                      Node island policy (default: auto): npm packages outside
                      the native subset run in Node automatically; explicit
@@ -155,6 +159,7 @@ export const CLI_OPTIONS = {
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },
   "explain-dynamic": { type: "string" },
+  "dynamic-tier-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },
   "node-islands": { type: "string" },
   "node-island": { type: "string", multiple: true },

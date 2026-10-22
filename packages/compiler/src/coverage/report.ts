@@ -51,6 +51,10 @@ export interface CoverageInput {
    * the program compiles, but these sites can behave differently natively.
    * Never blockers; `--fail-on=divergences` opts into failing on them. */
   divergences?: ScrDiagnostic[];
+  /** The performance warning (SC6101): likely-hot functions the source
+   * leaves untyped. Never blockers; `--fail-on=dynamic` opts into failing
+   * on it. */
+  performance?: ScrDiagnostic[];
   /** Each dependency's native compilation outcome, with the first refusal
    * reason for a refused package. */
   npmStatic?: NpmStaticStatus[];
@@ -375,6 +379,17 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     );
     renderRows(groupBlockers(divergences), YELLOW);
   };
+  // The performance warning: its message names the functions.
+  const performance = input.performance ?? [];
+  const renderPerformance = () => {
+    for (const d of performance) {
+      out.push("");
+      const [head, ...rest] = d.message.split("\n");
+      out.push(`  ${c(YELLOW, "untyped and likely hot")}   ${head}`);
+      for (const line of rest) out.push(`  ${line}`);
+      if (d.hint !== undefined) out.push(`    ${c(DIM, `hint: ${d.hint}`)}`);
+    }
+  };
 
   const unreachedDiags = [...(un?.diagnostics ?? []), ...(un?.runtimeFences ?? [])];
   if (failed === 0 && input.diagnostics.length === 0 && unreachedDiags.length === 0) {
@@ -383,6 +398,7 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       out.push("");
       renderDivergences();
     }
+    renderPerformance();
     return out.join("\n");
   }
 
@@ -423,6 +439,7 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     out.push("");
     renderDivergences();
   }
+  renderPerformance();
   return out.join("\n");
 }
 
@@ -491,10 +508,12 @@ function displayPath(file: string, root: string | undefined): string {
 }
 
 /** What `coverage --fail-on` checks: reached blockers (they fail a build)
- * and, optionally, divergences. Unreached blockers never fail. */
+ * and, optionally, divergences, the performance warning or Node islands.
+ * Unreached blockers never fail. */
 export type CoverageFailOn =
   | "blockers"
   | "divergences"
+  | "dynamic"
   | "node-islands"
   | "eager-node-islands"
   | "island-gaps";
@@ -502,6 +521,7 @@ export type CoverageFailOn =
 export const COVERAGE_FAIL_ON: readonly CoverageFailOn[] = [
   "blockers",
   "divergences",
+  "dynamic",
   "node-islands",
   "eager-node-islands",
   "island-gaps",
@@ -517,6 +537,7 @@ export function coveragePasses(input: CoverageInput, failOn?: CoverageFailOn): b
   // runtime fences build (the statement throws only if it executes).
   if (input.diagnostics.length > 0) return false;
   if (failOn === "divergences" && (input.divergences?.length ?? 0) > 0) return false;
+  if (failOn === "dynamic" && (input.performance?.length ?? 0) > 0) return false;
   // The Node island gates (report-only islands count: they are what a
   // build would choose). Every island evaluates eagerly until deferred
   // evaluation lands, so eager-node-islands equals node-islands for now.
@@ -557,6 +578,7 @@ export function coverageEnvelope(
     add(input.unreached?.diagnostics, "unreached");
     add(input.unreached?.runtimeFences, "deferred");
     add(input.divergences, "reached");
+    add(input.performance, "reached");
   }
   const un = input.unreached;
   const total = input.stats.statementsTotal + (un?.stats.statementsTotal ?? 0);

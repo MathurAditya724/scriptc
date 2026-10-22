@@ -1,3 +1,4 @@
+import { relieveHeapPressure } from "../../heap-pressure.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
 import { JsIcSites } from "../../ir/js-ic.js";
@@ -54,11 +55,7 @@ import {
   VOID,
   classJsName,
 } from "../../ir/ir.js";
-import {
-  moduleRuntimeFeatures,
-  moduleUsesDynBuiltinStream,
-  moduleUsesMockTimers,
-} from "../../ir/runtime-features.js";
+import { moduleRuntimeFeatures, type RuntimeFeatures } from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { type DenseArrayLoop } from "./dense-array-loops.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
@@ -264,7 +261,9 @@ import {
   emitLibCall,
 } from "./lib-dispatch.js";
 import {
+  assignCompactLayouts,
   buildClassGraph,
+  classFieldTypes,
   classMembershipIntervals,
   classFieldIndex,
   classPreLines,
@@ -460,6 +459,8 @@ export function emitLlvmModuleSource(
   input: IrModule,
   options: LlvmTargetOptions = {},
 ): string | readonly string[] {
+  // IR validation, contracts and the frontend's disposal run after lowering without checks.
+  relieveHeapPressure(true);
   const mod = unshareNodes(input);
   const parts = new LlEmitter(
     options.debugSources === undefined
@@ -879,13 +880,16 @@ export class LlEmitter {
   /** The program calls mock.timers members (moduleUsesMockTimers): timer
    * calls emit scr_test.c's mock-aware entry points. */
   readonly mockTimers: boolean;
-  private schedulesInContextValue: boolean | undefined = undefined;
+  private runtimeFeaturesValue: RuntimeFeatures | undefined;
+  /** The module's runtime features (moduleRuntimeFeatures), found with one
+   * walk of the module the first time any of them is read. */
+  get runtimeFeatures(): RuntimeFeatures {
+    return (this.runtimeFeaturesValue ??= moduleRuntimeFeatures(this.mod));
+  }
   /** Whether timer and tick scheduling goes through the *_als entry
    * points (RuntimeFeatures asyncContext). */
   get schedulesInContext(): boolean {
-    if (this.schedulesInContextValue === undefined)
-      this.schedulesInContextValue = moduleRuntimeFeatures(this.mod).asyncContext;
-    return this.schedulesInContextValue;
+    return this.runtimeFeatures.asyncContext;
   }
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
@@ -901,10 +905,9 @@ export class LlEmitter {
   /** Identity-preserving static→dyn capsules for program classes and Web
    * APIs whose values remain directly observable. */
   readonly liveDynRefAdapters = new Map<string, LlStreamTypedRefAdapter>();
-  private dynBuiltinStreamUse: boolean | undefined;
   /** See moduleUsesDynBuiltinStream. */
   get usesDynBuiltinStream(): boolean {
-    return (this.dynBuiltinStreamUse ??= moduleUsesDynBuiltinStream(this.mod));
+    return this.runtimeFeatures.dynBuiltinStream;
   }
   /** Runtime-arm dispatchers for live union values. */
   readonly liveDynUnionRefAdapters = new Map<string, string>();
@@ -1141,7 +1144,7 @@ export class LlEmitter {
   ) {
     this.stackTraces = observesStacks(mod);
     this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
-    this.mockTimers = moduleUsesMockTimers(mod);
+    this.mockTimers = this.runtimeFeatures.mockTimers;
     this.debug =
       options.debugSources === undefined
         ? null
@@ -1154,14 +1157,18 @@ export class LlEmitter {
           );
     this.constantNumericTables = findConstantNumericTables(mod);
     this.initializerBindings = findInitializerBindings(mod);
-    this.int32Slots = analyzeInt32Slots(mod);
+    // One walk finds the dynamic field stores every analysis below consults.
     const dynamicStores = dynamicFieldStores(mod);
+    this.int32Slots = analyzeInt32Slots(mod, {
+      dynamicStores,
+      initializerBindings: this.initializerBindings,
+    });
     this.liveViewsReadOnly =
       mod.lib === undefined && !dynamicStores.all && dynamicStores.names.size === 0;
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
-    this.finalFields = analyzeFinalFields(mod);
+    this.finalFields = analyzeFinalFields(mod, false, dynamicStores);
     this.sizeType = options.pointerBits === 32 ? "i32" : "i64";
     this.ffiExtendNarrowIntegers =
       options.wasi === true || ffiExtendsNarrowIntegers(options.targetTriple);
@@ -1231,7 +1238,7 @@ export class LlEmitter {
     this.unframedFunctions = this.stackTraces
       ? captureFreeFunctions(mod, this.stackChecks, this.publishedTypes)
       : new Set();
-    this.immutableFields = computeImmutableFields(mod);
+    this.immutableFields = computeImmutableFields(mod, dynamicStores);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
     this.indirectMayThrow = mt.indirect || mod.workers === true;
     for (const cls of mod.classes ?? []) {
@@ -1356,7 +1363,7 @@ export class LlEmitter {
     this.receiverReaders = new AmbientReceiverReaders(this.fnByName);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     this.lazyCaptures = new LazyCaptures(this.fnByName);
-    const traced = computeTraced(mod);
+    const traced = computeTraced(mod, dynamicStores);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
     // A shape union's value is whichever record it holds, and the collector
@@ -1492,6 +1499,15 @@ export class LlEmitter {
         classDefinitions: (cls, sizeOf) => regions.classDefs(cls, sizeOf),
       };
     }
+    // ProgramLifetime hierarchies count nothing: their instances get the
+    // 32-bit header and packed fields (classes.ts LlClassMeta.compact),
+    // except where regions count them or a slot word follows the header.
+    if (this.sizeType === "i64" && mod.lifetimeRegions !== true)
+      assignCompactLayouts(
+        this.classMeta,
+        (root) => programLifetimeClass(this.shapeHost, root) && !root.threadSlot,
+        (cls) => classFieldTypes(this.shapeHost, cls, this.int32Slots),
+      );
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -2480,8 +2496,14 @@ export class LlEmitter {
    * releases the dummy (NULL for refcounted kinds) harmlessly. A scalar
    * call result of the function's return type may be passed as the unwind's
    * dummy value (see emitUnwind). `poll` marks a worker termination poll
-   * (function entry or loop budget), whose test must stay ordered. */
-  emitPendingCheck(passThrough?: { name: string; type: IrType }, poll = false): void {
+   * (function entry or loop budget), whose test must stay ordered. A
+   * `guard` (an i1) limits the test to the paths where it is true: false
+   * where the joined call could not have left anything pending. */
+  emitPendingCheck(
+    passThrough?: { name: string; type: IrType },
+    poll = false,
+    guard?: string,
+  ): void {
     const through =
       passThrough !== undefined &&
       this.llType(passThrough.type) === this.llType(this.currentReturnType) &&
@@ -2490,6 +2512,13 @@ export class LlEmitter {
         : undefined;
     const B = this.B;
     if (B.isTerminated()) return;
+    let skip: string | undefined;
+    if (guard !== undefined) {
+      const test = B.newLabel("exc.t");
+      skip = B.newLabel("exc.n");
+      B.condBr(guard, test, skip);
+      B.startBlock(test);
+    }
     if (this.mod.lib !== undefined) {
       this.declare(`declare zeroext i1 @scr_exc_pending()`);
       const p = B.tmp();
@@ -2500,6 +2529,10 @@ export class LlEmitter {
       B.startBlock(lu);
       this.emitUnwind(through);
       B.startBlock(lk);
+      if (skip !== undefined) {
+        B.br(skip);
+        B.startBlock(skip);
+      }
       return;
     }
     // Executables test the active exception cell's kind inline (its first
@@ -2572,6 +2605,10 @@ export class LlEmitter {
     B.startBlock(lu);
     this.emitUnwind(through);
     B.startBlock(lk);
+    if (skip !== undefined) {
+      B.br(skip);
+      B.startBlock(skip);
+    }
   }
 
   /** After a runtime call that ALWAYS leaves an exception pending (the
@@ -5114,6 +5151,7 @@ export class LlEmitter {
           post: meta.post,
           runtimeRooted: meta.root.def.runtime === true,
           idInRc: meta.idInRc,
+          compact: meta.compact,
           // Inline scalar-union fields are plain bits: nothing to push.
           fields: meta.def.fields.flatMap((f) =>
             this.inlineUnions.classField(className, f.name)
@@ -5154,15 +5192,21 @@ export class LlEmitter {
 
   /** Branches on "`obj` is published" (rc == SIZE_MAX, or a count of
    * UINT32_MAX in the low half for `count` i32: classes.ts
-   * LlClassMeta.idInRc); leaves the builder in the cold block and answers
-   * the continuation label. */
-  private emitPublishedTest(obj: string, count: "i32" | "i64" = this.sizeType): string {
+   * LlClassMeta.idInRc, or the top bit of a compact header word for
+   * "compact": classes.ts COMPACT_PUBLISHED); leaves the builder in the cold
+   * block and answers the continuation label. */
+  private emitPublishedTest(obj: string, count: "i32" | "i64" | "compact" = this.sizeType): string {
     const B = this.B;
     const rc = B.tmp(),
       frozen = B.tmp(),
       expected = B.tmp();
-    B.line(`${rc} = load ${count}, ptr ${obj}`);
-    B.line(`${frozen} = icmp eq ${count} ${rc}, -1`);
+    if (count === "compact") {
+      B.line(`${rc} = load i32, ptr ${obj}`);
+      B.line(`${frozen} = icmp slt i32 ${rc}, 0`);
+    } else {
+      B.line(`${rc} = load ${count}, ptr ${obj}`);
+      B.line(`${frozen} = icmp eq ${count} ${rc}, -1`);
+    }
     this.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
     B.line(`${expected} = call i1 @llvm.expect.i1(i1 ${frozen}, i1 false)`);
     const cold = B.newLabel("pub.frozen"),
@@ -5203,7 +5247,10 @@ export class LlEmitter {
     if (className !== null && !published.classGuarded(className)) return;
     const B = this.B;
     const meta = className === null ? undefined : this.classMeta.get(className);
-    const ok = this.emitPublishedTest(obj, meta?.idInRc === true ? "i32" : this.sizeType);
+    const ok = this.emitPublishedTest(
+      obj,
+      meta?.compact === true ? "compact" : meta?.idInRc === true ? "i32" : this.sizeType,
+    );
     let owner: string;
     if (meta === undefined) owner = this.cstr("Object");
     else if (!meta.hierarchy) owner = this.cstr(meta.def.jsName ?? meta.def.name);

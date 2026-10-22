@@ -40,6 +40,7 @@ export interface CachedCoverage {
   runtimeFences?: ScrDiagnostic[];
   unreached?: { stats: LowerStats; diagnostics: ScrDiagnostic[]; runtimeFences?: ScrDiagnostic[] };
   divergences?: ScrDiagnostic[];
+  performance?: ScrDiagnostic[];
   npmStatic?: NpmStaticStatus[];
   wasmModules?: WasmModuleReport[];
   nodeIslands?: NodeIslandReport;
@@ -156,6 +157,7 @@ function cacheable(coverage: AnalyzeResult["coverage"]): CachedCoverage | null {
   if (coverage.runtimeFences !== undefined) out.runtimeFences = coverage.runtimeFences;
   if (coverage.unreached !== undefined) out.unreached = coverage.unreached;
   if (coverage.divergences !== undefined) out.divergences = coverage.divergences;
+  if (coverage.performance !== undefined) out.performance = coverage.performance;
   if (coverage.npmStatic !== undefined) out.npmStatic = coverage.npmStatic;
   if (coverage.wasmModules !== undefined) out.wasmModules = coverage.wasmModules;
   if (coverage.nodeIslands !== undefined) out.nodeIslands = coverage.nodeIslands;
@@ -174,6 +176,7 @@ function restore(cached: CachedCoverage, sources: CachedSource[]): AnalyzeResult
   if (cached.runtimeFences !== undefined) coverage.runtimeFences = cached.runtimeFences;
   if (cached.unreached !== undefined) coverage.unreached = cached.unreached;
   if (cached.divergences !== undefined) coverage.divergences = cached.divergences;
+  if (cached.performance !== undefined) coverage.performance = cached.performance;
   if (cached.npmStatic !== undefined) coverage.npmStatic = cached.npmStatic;
   if (cached.wasmModules !== undefined) coverage.wasmModules = cached.wasmModules;
   if (cached.nodeIslands !== undefined) coverage.nodeIslands = cached.nodeIslands;
