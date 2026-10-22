@@ -849,10 +849,7 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
       lowerer.genericFnsBySymbol.set(symbol, {
         decl,
         baseName: nameText,
-        qualifiedName: lowerer.qualify(
-          ts.getSourceFileOfNode(decl),
-          nsPathPrefix(lowerer, decl) + nameText,
-        ),
+        qualifiedName: lowerer.qualify(ts.getSourceFileOfNode(decl), nsPathPrefix(decl) + nameText),
         typeParams: [],
         instances: new Map(),
         implicitParams: implicit,
@@ -900,7 +897,7 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
     // "%default" spelling ('%' cannot appear in a user identifier).
     name: lowerer.qualify(
       ts.getSourceFileOfNode(decl),
-      nsPathPrefix(lowerer, decl) + (decl.name?.text ?? "%default"),
+      nsPathPrefix(decl) + (decl.name?.text ?? "%default"),
     ),
     params,
     returnType,

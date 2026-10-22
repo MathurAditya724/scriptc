@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { buildUnionNarrow, unionNarrowFailureMessage } from "../union-narrow.js";
 import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
 import { nodeThrowExpr } from "../../../ir/build.js";
@@ -148,7 +147,7 @@ export function strandedUnitTrap(
   const key = `strandunit:${typeKey(expected)}:${expr.type.kind}`;
   let name = lowerer.coercions.retags.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%unit.strand", key);
+    name = `%unit.strand.${lowerer.coercions.retags.size}`;
     lowerer.coercions.retags.set(key, name);
     lowerer.liftedFns.push({
       name,
@@ -228,7 +227,7 @@ export function strandedCoercionTrap(
   const key = `strand:${expected.unionId}:${typeKey(src)}`;
   let name = lowerer.coercions.retags.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%union.strand", key);
+    name = `%union.strand.${lowerer.coercions.retags.size}`;
     lowerer.coercions.retags.set(key, name);
     const toT: IrType = { kind: "union", unionId: expected.unionId };
     lowerer.liftedFns.push({
@@ -276,7 +275,7 @@ export function recordUnionWrapHelper(
   const key = `recordWrap:${source.shapeId}:${toId}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%record.wrap", key);
+  const name = `%record.wrap.${lowerer.coercions.retags.size}`;
   lowerer.coercions.retags.set(key, name);
   lowerer.liftedFns.push(
     buildRecordUnionWrap(name, source, to, plan, loc, (lift, value, dst) =>
@@ -308,7 +307,7 @@ export function recordUnionRouteHelper(
     (from, dst) => lowerer.widthLiftPlan(from, dst),
   );
   if (!plan) return null;
-  const name = keyedHelperName(lowerer, "%record.route", key);
+  const name = `%record.route.${lowerer.coercions.retags.size}`;
   lowerer.coercions.retags.set(key, name);
   lowerer.liftedFns.push(
     buildRecordUnionWrap(name, source, to, plan, loc, (lift, value, dst) =>
@@ -353,7 +352,7 @@ export function unionRetagHelper(
   });
   const key = `${fromId}:${toId}:${stranded.join(".")}`;
   const existing = lowerer.coercions.retags.get(key);
-  const name = existing ?? keyedHelperName(lowerer, "%union.retag", key);
+  const name = existing ?? `%union.retag.${lowerer.coercions.retags.size}`;
   if (!existing) {
     lowerer.coercions.retags.set(key, name);
     lowerer.liftedFns.push(
@@ -411,7 +410,7 @@ export function narrowedArmHelper(
     lowerer.coercions.checkedNarrows.add(existing);
     return existing;
   }
-  const name = keyedHelperName(lowerer, "%union.narrow", key);
+  const name = `%union.narrow.${lowerer.coercions.narrows.size}`;
   lowerer.coercions.narrows.set(key, name);
   lowerer.coercions.checkedNarrows.add(name);
   const fn = buildUnionNarrow(name, from, target, loc, (type) => lowerer.fmt(type));
@@ -588,7 +587,7 @@ export function deferredReadHelper(
   const key = `deferred:${fromId}:${tag}`;
   const existing = lowerer.coercions.narrows.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%deferred.read", key);
+  const name = `%deferred.read.${lowerer.coercions.narrows.size}`;
   lowerer.coercions.narrows.set(key, name);
   const dflt: IrExpr =
     target.kind === "bool"

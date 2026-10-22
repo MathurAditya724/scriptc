@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { nodeThrowExpr, countedFor, strLit, varRef, dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
@@ -293,7 +292,7 @@ function searchParamsFromTuples(
   const key = `sp.fromTuples:${row.shapeId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%sp.fromTuples", key);
+    helper = `%sp.fromTuples.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, helper);
     const pairsT = init.type;
     const sp = (): IrExpr => varRef("sp.0", SEARCH_PARAMS_T, loc);
@@ -373,7 +372,7 @@ function lowerOptionalStringSearchParams(
   const key = `sp.optionalString:${init.type.unionId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%sp.optionalString", key);
+    helper = `%sp.optionalString.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, helper);
     const value = varRef("init.0", init.type, loc);
     lowerer.liftedFns.push({
@@ -679,7 +678,7 @@ function lowerSpForEachCall(
   const key = `${arity}:${typeKey(fnRet)}`;
   let helper = lowerer.spHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%sp.forEach", key);
+    helper = `%sp.forEach.${lowerer.spHofHelpers.size}`;
     lowerer.spHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildSpForEachFn(helper, arity, fnRet, loc));
   }

@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { generatorDrain } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
 import { liftedFreshSpread } from "../coercions/fresh-spread.js";
@@ -257,7 +256,7 @@ function appendWidenedArrayValues(
   const key = `insertValues:${typeKey(sourceType.elem)}:${typeKey(elem)}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%arr.insertValues", key);
+    name = `%arr.insertValues.${lowerer.arrHofHelpers.size}`;
     lowerer.arrHofHelpers.set(key, name);
     const outType = arrayOf(elem);
     const valueType = arrayValueType(lowerer, source.type.elem);
@@ -1036,7 +1035,7 @@ export function lowerArrayFromCall(
       const key = `fromArray:${typeKey(arrT.elem)}:${typeKey(outElem)}:${typeKey(fnRet)}:${arity}`;
       let helper = lowerer.arrHofHelpers.get(key);
       if (!helper) {
-        helper = keyedHelperName(lowerer, "%arr.fromArray", key);
+        helper = `%arr.fromArray.${lowerer.arrHofHelpers.size}`;
         lowerer.arrHofHelpers.set(key, helper);
         lowerer.liftedFns.push(
           buildArrayFromArrayFn(lowerer, helper, arrT.elem, outElem, fnRet, arity, loc),
@@ -1123,7 +1122,7 @@ export function lowerArrayFromCall(
   const key = `fromLen:${typeKey(fnRet)}:${arity}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%arr.fromLen", key);
+    helper = `%arr.fromLen.${lowerer.arrHofHelpers.size}`;
     lowerer.arrHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildArrayFromLenFn(helper, fnRet, arity, loc));
   }

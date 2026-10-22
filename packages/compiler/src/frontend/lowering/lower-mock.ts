@@ -17,7 +17,6 @@
  * writes the original back on restore(). Each mock registers a closure
  * that calls its restore() with its tracker (scr_test.c): the module's
  * `mock`, or the test's t.mock, which is reset when the test ends. */
-import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
@@ -137,7 +136,7 @@ function liftOnce(
   const key = `mock.${role}:${owner}`;
   const existing = lowerer.assertHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, `%mock.${role}`, key);
+  const name = `%mock.${role}.${lowerer.assertHelpers.size}`;
   lowerer.assertHelpers.set(key, name);
   build(name);
   return name;

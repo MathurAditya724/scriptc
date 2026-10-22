@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { boolLit, countedFor, numLit, varRef } from "../../../ir/build.js";
 import {
   BOOL,
@@ -852,7 +851,7 @@ class PipelineFusion {
     if (!built) return null;
     let name = this.helpers.get(built.key);
     if (!name) {
-      name = keyedHelperName(this.lowerer, "%arr.fused", built.key);
+      name = `%arr.fused.${this.helpers.size}`;
       this.helpers.set(built.key, name);
       this.added.push({ ...built.fn, name });
     }

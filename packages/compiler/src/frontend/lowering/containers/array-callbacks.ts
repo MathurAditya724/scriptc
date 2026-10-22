@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { boolLit, countedFor, numLit, varRef } from "../../../ir/build.js";
 import { transformStmtList } from "../../../ir/traverse.js";
 import type { ScrDiagnostic } from "../../../diagnostics/diagnostic.js";
@@ -507,7 +506,7 @@ function arrayHofHelper(
   const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}:${typeKey(outElem)}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, `%arr.${method}`, key);
+  const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   lowerer.arrHofInfo.set(name, { method, elem, fnRet, arity, outElem, present, split: !!fastT });
   const fn = buildArrayHofFn(
@@ -620,7 +619,7 @@ function arrayUnionHofHelper(
   const key = `union:${method}:${receiverT.unionId}:${typeKey(callbackT)}:${typeKey(resultT)}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%arr.union", key);
+  const name = `%arr.union.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   const receiver = varRef("a.0", receiverT, loc);
   const callback = varRef("f.0", callbackT, loc);
@@ -1205,7 +1204,7 @@ function findHelper(
   const key = `${method}:${typeKey(elem)}:${typeKey(resultT)}:${typeKey(fnRet)}:${arity}${site}${present ? ":present" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, `%arr.${method}`, key);
+  const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   const arrT = arrayOf(elem);
   const valueT = callbackValueType(lowerer, elem, present);
@@ -1305,7 +1304,7 @@ function findIndexHelper(
   const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, `%arr.${method}`, key);
+  const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   if (!last)
     lowerer.arrHofInfo.set(name, {
@@ -1389,7 +1388,7 @@ function someEveryHelper(
   const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, `%arr.${method}`, key);
+  const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   lowerer.arrHofInfo.set(name, {
     method,
@@ -1588,7 +1587,7 @@ function flatMapHelper(
   const key = `flatMap:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}${present ? ":present" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%arr.flatMap", key);
+  const name = `%arr.flatMap.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   lowerer.arrHofInfo.set(name, {
     method: "flatMapArray",
@@ -1830,7 +1829,7 @@ function reduceHelper(
   const key = `${method}:${typeKey(elem)}:${typeKey(accT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : "seed"}${site}${fastT ? ":split" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, `%arr.${method}`, key);
+  const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   if (method === "reduce")
     lowerer.arrHofInfo.set(name, {
@@ -2122,7 +2121,7 @@ export function lowerArraySortCall(
   const key = `${method}:${typeKey(elem)}:${arity}${native ? ":native" : ""}${keyed ? `:keyed${order}${reads ? `:field${reads.length}` : ""}` : ""}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, `%arr.${method}`, key);
+    helper = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
     lowerer.arrHofHelpers.set(key, helper);
     const undefinedTag = elem.kind === "union" ? lowerer.armTag(elem.unionId, UNDEFINED_T) : -1;
     lowerer.liftedFns.push(
@@ -2168,7 +2167,7 @@ function sortKeyReader(
   const cacheKey = `sortKey:${typeKey(elem)}:${sortKeysId(reads.map((read) => ({ order: 1, read })))}`;
   let reader = lowerer.arrHofHelpers.get(cacheKey);
   if (!reader) {
-    reader = keyedHelperName(lowerer, "%arr.sortKey", cacheKey);
+    reader = `%arr.sortKey.${lowerer.arrHofHelpers.size}`;
     lowerer.arrHofHelpers.set(cacheKey, reader);
     lowerer.liftedFns.push(buildSortKeyFn(reader, elem, reads, loc));
   }
@@ -2309,7 +2308,7 @@ function dynFlatMapHelper(lowerer: Lowerer, elemT: IrType, arity: number, loc: S
   const key = `dynflatmap:${typeKey(elemT)}:${arity}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%dyn.flatmap", key);
+  const name = `%dyn.flatmap.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   lowerer.liftedFns.push(buildDynFlatMapFn(name, elemT, arity, loc));
   return name;
@@ -2482,7 +2481,7 @@ function dynFilterHelper(lowerer: Lowerer, elemT: IrType, arity: number, loc: Sr
   const key = `dynfilter:${typeKey(elemT)}:${arity}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%dyn.filter", key);
+  const name = `%dyn.filter.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   lowerer.liftedFns.push(buildDynFilterFn(name, elemT, arity, loc));
   return name;
@@ -2677,7 +2676,7 @@ export function lowerTuplePredicateCall(
   const key = `tuple.${method}:${typeKey(receiver.type)}:${typeKey(fnArg.type)}:${typeKey(resultT)}:${arity}${callbackSite(fnArg)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, `%tuple.${method}`, key);
+    helper = `%tuple.${method}.${lowerer.arrHofHelpers.size}`;
     lowerer.arrHofHelpers.set(key, helper);
     const v = varRef("v.0", elem, loc);
     const out = varRef("out.0", resultT, loc);

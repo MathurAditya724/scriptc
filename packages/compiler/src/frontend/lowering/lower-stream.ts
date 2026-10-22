@@ -1,4 +1,3 @@
-import { keyedHelperName } from "./stable-names.js";
 import { nodeThrowExpr, boolLit, numLit, strLit } from "../../ir/build.js";
 import { hashStreamOf, isHashValueType } from "./builtins/hash-stream.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -312,7 +311,7 @@ function lowerStreamCallback(
       );
     }
   }
-  const fnName = lowerer.closureName(loc, `_${which}cb`);
+  const fnName = `%fn${lowerer.lambdaCounter++}_${which}cb`;
   const fnCtx = newFnCtx(true, null, funcType, funcType.ret);
   lowerer.fnStack.push(fnCtx);
   try {
@@ -1145,7 +1144,7 @@ function streamMethodWrapper(
     paramTypes.push(got.type);
   }
   const ret = found.sig.ret;
-  const fnName = lowerer.closureName(loc, `_${which}vt`);
+  const fnName = `%fn${lowerer.lambdaCounter++}_${which}vt`;
   const funcType = funcOf([thisType, ...paramTypes], ret);
   lowerer.fnStack.push(newFnCtx(true, null, funcType, ret));
   try {
@@ -1691,7 +1690,7 @@ function fromGenHelpers(
     const key = `streamFromGen:${role}:${typeKey(gen)}`;
     let name = lowerer.valueHelpers.get(key);
     if (!name) {
-      name = keyedHelperName(lowerer, `%stream.fromGen.${role}`, key);
+      name = `%stream.fromGen.${role}.${lowerer.valueHelpers.size}`;
       lowerer.valueHelpers.set(key, name);
       lowerer.liftedFns.push({
         name,
@@ -1780,7 +1779,7 @@ function classIteratorObject(
   const key = `streamFromIter:${cit.iterT.className}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%stream.fromIter", key);
+    name = `%stream.fromIter.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     const nextName = `${name}.next`;
     const nextT = funcOf([], DYN);
@@ -1941,7 +1940,7 @@ function classAsyncIteratorObject(
   const key = `streamFromAsyncIter:${cit.className}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%stream.fromAsyncIter", key);
+    name = `%stream.fromAsyncIter.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     const it: IrLocal = { id: "it.0", name: "it", type: cit.iterT, mutable: false, boxed: true };
     const src: IrLocal = {
@@ -2895,7 +2894,7 @@ function pipelineBoxHelper(
   const key = `pipelineBox:${typeKey(promiseT)}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%stream.pipelineBox", key);
+    name = `%stream.pipelineBox.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,
@@ -2922,7 +2921,7 @@ function pipelineAbortHelper(lowerer: Lowerer, ac: IrExpr, loc: SrcLoc): IrExpr 
   let name = lowerer.valueHelpers.get(key);
   const abortT = funcOf([], VOID);
   if (!name) {
-    name = keyedHelperName(lowerer, "%stream.pipelineAbort", key);
+    name = `%stream.pipelineAbort.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     const acLocal: IrLocal = { id: "ac.0", name: "ac", type: DYN, mutable: false, boxed: true };
     const acRef = varRef(acLocal.id, DYN, loc);

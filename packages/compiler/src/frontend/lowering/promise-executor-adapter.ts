@@ -1,4 +1,3 @@
-import { keyedHelperName } from "./stable-names.js";
 import { varRef } from "../../ir/build.js";
 import {
   type IrExpr,
@@ -41,7 +40,7 @@ export function adaptPromiseExecutor(
   const key = `promise.executor:${typeKey(execT)}:${typeKey(inner)}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (name === undefined) {
-    name = keyedHelperName(lowerer, "%promise.executor", key);
+    name = `%promise.executor.${lowerer.arrHofHelpers.size}`;
     lowerer.arrHofHelpers.set(key, name);
     const impl = `${name}.impl`;
     const captured: IrLocal = { id: "f.0", name: "f", type: execT, mutable: false, boxed: true };

@@ -1,4 +1,3 @@
-import { keyedHelperName } from "./stable-names.js";
 import {
   dynUndefinedExpr,
   boolLit,
@@ -269,7 +268,7 @@ function errorInspectHelper(
   const key = `insp.userError:${typeKey(t)}`;
   const existing = lowerer.inspectHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%util.insp", key);
+  const name = `%util.insp.${lowerer.inspectHelpers.size}`;
   lowerer.inspectHelpers.set(key, name);
   const v = (): IrExpr => varRef("v.0", t, loc);
   const r = (): IrExpr => varRef("r.0", F64, loc);
@@ -1146,7 +1145,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   const key = `insp:${typeKey(t)}`;
   const existing = lowerer.inspectHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%util.insp", key);
+  const name = `%util.insp.${lowerer.inspectHelpers.size}`;
   lowerer.inspectHelpers.set(key, name);
 
   const v = (): IrExpr => varRef("v.0", t, loc);
@@ -2075,7 +2074,7 @@ function formatUnionHelper(
   const existing = lowerer.inspectHelpers.get(key);
   if (existing) return existing;
   const loc = helperLoc(site);
-  const name = keyedHelperName(lowerer, "%util.fmtv", key);
+  const name = `%util.fmtv.${lowerer.inspectHelpers.size}`;
   lowerer.inspectHelpers.set(key, name);
   const def = lowerer.unions.get(t.unionId);
   if (!def) throw new InternalCompilerError(`format value over unknown union ${t.unionId}`);

@@ -139,8 +139,7 @@ describe("checker and synthesized optional union identity", () => {
         nullable.arms.filter((arm) => arm.kind !== "nullT" && arm.kind !== "undefinedT"),
       ),
     ).toBe(required.unionId);
-    // Cases follow the arms, which are ordered by their type keys.
-    expect(nullable.discriminant!.cases.map((entry) => entry.values).sort()).toEqual([
+    expect(nullable.discriminant!.cases.map((entry) => entry.values)).toEqual([
       ["a", "alias"],
       ["b"],
     ]);

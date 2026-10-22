@@ -1,4 +1,3 @@
-import { keyedHelperName } from "./stable-names.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -2275,11 +2274,7 @@ export function cjsAccessorSnapshotOf(
   if (!lexerVisibleAccessors(ts.getSourceFileOfNode(getter)).includes(getter)) return null;
   const call = cjsAccessorCall(lowerer, getter, locOf(getter));
   if (call === null) return null;
-  const at = locOf(getter);
-  const snapshot = {
-    id: keyedHelperName(lowerer, "%g.cjsSnapshot", `${at.file}:${at.start}:${at.end}`),
-    type: call.type,
-  };
+  const snapshot = { id: `%g.cjsSnapshot.${lowerer.cjsAccessorSnapshots.size}`, type: call.type };
   lowerer.globalsList.push({
     id: snapshot.id,
     name: "%cjsSnapshot",
@@ -2304,7 +2299,7 @@ export function cjsAccessorSnapshotStores(
   if (getters.length === 0) return [];
   let readyId = lowerer.cjsSnapshotReady.get(dep);
   if (readyId === undefined) {
-    readyId = keyedHelperName(lowerer, "%g.cjsSnapshotReady", dep.fileName);
+    readyId = `%g.cjsSnapshotReady.${lowerer.cjsSnapshotReady.size}`;
     lowerer.globalsList.push({ id: readyId, name: "%cjsSnapshotReady", type: BOOL, mutable: true });
     lowerer.cjsSnapshotReady.set(dep, readyId);
   }

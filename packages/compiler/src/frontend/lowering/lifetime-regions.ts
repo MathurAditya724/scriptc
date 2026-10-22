@@ -14,7 +14,6 @@
  * Any other use of the class or its methods as values is refused. The
  * module is marked lifetimeRegions, which moves every ProgramLifetime
  * class into counted regions. */
-import { keyedHelperName } from "./stable-names.js";
 import { F64, VOID, funcOf, typeKey } from "../../ir/ir.js";
 import type { IrExpr, IrFunction, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
@@ -153,7 +152,7 @@ function runHelper(lowerer: Lowerer, fnType: IrType & { kind: "func" }, loc: Src
   const key = typeKey(fnType);
   const known = lowerer.regionRunHelpers.get(key);
   if (known !== undefined) return known;
-  const name = keyedHelperName(lowerer, `%${LIFETIME_REGION_CLASS}.run`, key);
+  const name = `%${LIFETIME_REGION_CLASS}.run.${lowerer.regionRunHelpers.size}`;
   lowerer.regionRunHelpers.set(key, name);
   const regionT = lifetimeRegionType(lowerer);
   const ret = fnType.ret;

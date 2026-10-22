@@ -1,4 +1,3 @@
-import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
 import { BOOL, typeKey, type IrExpr, type IrStmt, type IrType } from "../../ir/ir.js";
 import { nodeThrowExpr, varRef } from "../../ir/build.js";
@@ -133,7 +132,7 @@ export function narrowClassUnion(
   const key = `classUnion:${source.className}:${target.unionId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%class.union", key);
+    helper = `%class.union.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, helper);
     const input = varRef("value.0", source, loc);
     // Rank by ancestry before sorting: returning zero for unrelated pairs

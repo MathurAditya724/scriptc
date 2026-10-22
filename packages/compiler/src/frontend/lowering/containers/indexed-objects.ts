@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import { objectEnumerationReceiver } from "../object-enumeration-receiver.js";
@@ -185,7 +184,7 @@ export function objectIterOverIndexShape(
   const key = `obj.${member}:ovf:${argIr.shapeId}:${typeKey(resultT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, `%obj.${member}`, key);
+    helper = `%obj.${member}.${lowerer.arrHofHelpers.size}`;
 
     const outRef = varRef("out.0", resultT, loc);
     const rRef = varRef("r.0", argIr, loc);
@@ -609,7 +608,7 @@ function lowerTypedObjectFromEntriesCall(
   const key = `obj.fromEntries:${argIr.elem.shapeId}:${resultT.shapeId}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%obj.fromEntries", key);
+    helper = `%obj.fromEntries.${lowerer.arrHofHelpers.size}`;
 
     const tupleT = argIr.elem as IrType & { kind: "record" };
     const tRef = varRef("t.0", tupleT, loc);
@@ -713,7 +712,7 @@ function lowerFromEntriesStringRows(
   const key = `obj.fromEntries:strrows:${resultT.shapeId}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%obj.fromEntries", key);
+    helper = `%obj.fromEntries.${lowerer.arrHofHelpers.size}`;
 
     const tRef = varRef("t.0", rowT, loc);
     const rowLen: IrExpr = {
@@ -932,7 +931,7 @@ export function lowerRecordOvfCaptureHelper(
   const key = `ovf:${fromId}:${toId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%rec.capture", key);
+  const name = `%rec.capture.${lowerer.valueHelpers.size}`;
   lowerer.valueHelpers.set(key, name);
   const fromT: IrType = { kind: "record", shapeId: fromId };
   const toT: IrType = { kind: "record", shapeId: toId };
@@ -1205,7 +1204,7 @@ export function lowerObjectAssignIndexShape(
     const key = `assign:${targetIr.shapeId}:${plan.fromId}`;
     const existing = lowerer.valueHelpers.get(key);
     if (existing) return existing;
-    const name = keyedHelperName(lowerer, "%obj.assign", key);
+    const name = `%obj.assign.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     const toT: IrType = { kind: "record", shapeId: targetIr.shapeId };
     const fromT: IrType = { kind: "record", shapeId: plan.fromId };
@@ -1475,7 +1474,7 @@ export function lowerIndexMergeHelper(
       .join(",");
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%rec.merge", key);
+  const name = `%rec.merge.${lowerer.valueHelpers.size}`;
   lowerer.valueHelpers.set(key, name);
   const toT: IrType = { kind: "record", shapeId: toId };
   const ksT = arrayOf(STRING);
@@ -1806,7 +1805,7 @@ export function lowerEnvToPairsHelper(
   const key = `env.pairs:${shapeId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%env.pairs", key);
+  const name = `%env.pairs.${lowerer.valueHelpers.size}`;
   lowerer.valueHelpers.set(key, name);
   const recT: IrType = { kind: "record", shapeId };
   const arrT = arrayOf(STRING);

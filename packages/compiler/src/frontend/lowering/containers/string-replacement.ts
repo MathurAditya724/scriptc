@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
 import {
   BOOL,
@@ -163,7 +162,7 @@ function lowerStringReplacementValues(
   const key = `str.${method}:${typeKey(replacement.type)}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, `%str.${method}`, key);
+    helper = `%str.${method}.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, helper);
     const subject = varRef("s.0", STRING, loc);
     const needle = varRef("search.0", STRING, loc);

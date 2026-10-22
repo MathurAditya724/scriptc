@@ -9,7 +9,6 @@ import {
   type SrcLoc,
   typeEquals,
 } from "../../ir/ir.js";
-import { keyedHelperName } from "./stable-names.js";
 import { numLit, varRef } from "../../ir/build.js";
 import { typeKey } from "../type-mapper.js";
 import type { Lowerer } from "./lowerer.js";
@@ -126,7 +125,7 @@ export function lowerArrayFill(
     writeNull;
   let name = lowerer.arrHofHelpers.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%arr.fill", key);
+    name = "%arr.fill." + lowerer.arrHofHelpers.size;
     lowerer.arrHofHelpers.set(key, name);
     const a = varRef("a.0", arrType, loc);
     const n = varRef("n.0", F64, loc);

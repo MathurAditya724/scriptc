@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { boolLit, dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { BUF_NUM_METHODS } from "./buffer-numeric-methods.js";
 import * as ts from "../../ts7/adapter.js";
@@ -78,7 +77,7 @@ function lowerBytesSortCall(
     const cacheKey = `bytes.${method}:${bytesT.elem}:${key}`;
     let helper = lowerer.arrHofHelpers.get(cacheKey);
     if (!helper) {
-      helper = keyedHelperName(lowerer, `%bytes.${method}`, cacheKey);
+      helper = `%bytes.${method}.${lowerer.arrHofHelpers.size}`;
       lowerer.arrHofHelpers.set(cacheKey, helper);
       lowerer.liftedFns.push(
         buildBytesSortFn(helper, bytesT, arity, hasComparator, copyFirst, order, loc),
@@ -271,7 +270,7 @@ function bytesCallbackHelper(
   const key = `bytes.${method}:${bytesT.elem}:${typeKey(resultT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, `%bytes.${method}`, key);
+  const name = `%bytes.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   const reduce = method === "reduce" || method === "reduceRight";
   const backward = method === "reduceRight" || method === "findLast" || method === "findLastIndex";
