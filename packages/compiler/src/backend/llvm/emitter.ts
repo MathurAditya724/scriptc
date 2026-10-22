@@ -3862,7 +3862,7 @@ export class LlEmitter {
   /** A binding's storage: a module global, a plain local slot, or a boxed
    * local (the slot holds the capture BOX; access goes through it). */
   matchBytesLoopVersion(
-    s: IrStmt & { kind: "for" },
+    s: IrStmt & { kind: "for" | "while" },
     counted: IntegerCountedForLoop | null,
   ): ReturnType<typeof matchBytesLoopVersion> {
     const fn = this.bytesLoopFunction;
