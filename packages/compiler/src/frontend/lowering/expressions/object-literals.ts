@@ -3328,6 +3328,9 @@ export function lowerShorthandValue(
       }
       return lowerer.classValueRef(classInfo, propName);
     }
+    // A standard-library global (`{ Date }`): the value the long form
+    // `{ Date: Date }` reads.
+    if (lowerer.isStdlibSymbol(resolved)) return lowerer.lowerExpr(propName);
   }
   lowerer.rejectUnresolvedSymbol(
     symbol

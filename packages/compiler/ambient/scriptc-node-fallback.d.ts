@@ -3171,7 +3171,8 @@ declare module "crypto" {
     callback: (error: Error | null, buffer: Buffer) => void,
   ): void;
   export type BinaryLike = string | ArrayBuffer | ArrayBufferView;
-  /* Cipheriv/Decipheriv: aes-128/192/256 in cbc, ctr, and gcm modes and
+  /* Cipheriv/Decipheriv: aes-128/192/256 in cbc, ctr, gcm, ecb, cfb, cfb8,
+   * cfb1, and ofb modes, des-ede3 and des-ede, chacha20, and
    * chacha20-poly1305. Both are Transforms: written chunks go through
    * update(), and the end pushes final(). */
   export type CipherGCMTypes = "aes-128-gcm" | "aes-192-gcm" | "aes-256-gcm";
@@ -3351,6 +3352,61 @@ declare module "crypto" {
   ): DiffieHellman;
   export function getDiffieHellman(groupName: string): DiffieHellmanGroup;
   export function createDiffieHellmanGroup(name: string): DiffieHellmanGroup;
+  export type LargeNumberLike = ArrayBufferView | SharedArrayBuffer | ArrayBuffer | bigint;
+  export interface GeneratePrimeOptions {
+    add?: LargeNumberLike | undefined;
+    rem?: LargeNumberLike | undefined;
+    safe?: boolean | undefined;
+    bigint?: boolean | undefined;
+  }
+  export interface GeneratePrimeOptionsBigInt extends GeneratePrimeOptions {
+    bigint: true;
+  }
+  export interface GeneratePrimeOptionsArrayBuffer extends GeneratePrimeOptions {
+    bigint?: false | undefined;
+  }
+  export function generatePrime(
+    size: number,
+    callback: (err: Error | null, prime: ArrayBuffer) => void,
+  ): void;
+  export function generatePrime(
+    size: number,
+    options: GeneratePrimeOptionsBigInt,
+    callback: (err: Error | null, prime: bigint) => void,
+  ): void;
+  export function generatePrime(
+    size: number,
+    options: GeneratePrimeOptionsArrayBuffer,
+    callback: (err: Error | null, prime: ArrayBuffer) => void,
+  ): void;
+  export function generatePrime(
+    size: number,
+    options: GeneratePrimeOptions,
+    callback: (err: Error | null, prime: ArrayBuffer | bigint) => void,
+  ): void;
+  export function generatePrimeSync(size: number): ArrayBuffer;
+  export function generatePrimeSync(size: number, options: GeneratePrimeOptionsBigInt): bigint;
+  export function generatePrimeSync(
+    size: number,
+    options: GeneratePrimeOptionsArrayBuffer,
+  ): ArrayBuffer;
+  export function generatePrimeSync(
+    size: number,
+    options: GeneratePrimeOptions,
+  ): ArrayBuffer | bigint;
+  export interface CheckPrimeOptions {
+    checks?: number | undefined;
+  }
+  export function checkPrime(
+    value: LargeNumberLike,
+    callback: (err: Error | null, result: boolean) => void,
+  ): void;
+  export function checkPrime(
+    value: LargeNumberLike,
+    options: CheckPrimeOptions,
+    callback: (err: Error | null, result: boolean) => void,
+  ): void;
+  export function checkPrimeSync(candidate: LargeNumberLike, options?: CheckPrimeOptions): boolean;
   export interface ScryptOptions {
     N?: number;
     r?: number;
@@ -3512,7 +3568,8 @@ declare module "child_process" {
    * killSignal at the deadline and the result carries error: ETIMEDOUT +
    * the signal, never a throw), killSignal (a signal NAME literal),
    * stdio ("ignore"/"inherit"/"pipe" or a 3-tuple of those — captures
-   * read "" for non-piped streams), and windowsHide (a POSIX no-op). */
+   * read "" for non-piped streams), env (replaces the child's
+   * environment), and windowsHide (a POSIX no-op). */
   export function spawnSync(
     command: string,
     args?: string[],
@@ -3521,6 +3578,7 @@ declare module "child_process" {
       timeout?: number;
       killSignal?: string;
       stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
+      env?: { [k: string]: string | undefined };
       windowsHide?: boolean;
     },
   ): SpawnSyncReturns;

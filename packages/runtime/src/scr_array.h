@@ -43,6 +43,11 @@ typedef enum {
    * constant descriptor per element type, stored once per array; every
    * array is still monomorphic (one element type, one set of entry points). */
   SCR_ELEM_REF,
+  /* An SCR_ELEM_REF type whose elements are compact class instances in the
+   * program-lifetime region (SCR_ARR_OPS_COMPACT): 4-byte slots holding the
+   * address over 8, 0 for NULL. Compact instances are never counted or
+   * traced, so these arrays retain, release and trace nothing. */
+  SCR_ELEM_CREF,
 } ScrElemKind;
 
 typedef enum {
@@ -63,7 +68,26 @@ typedef struct ScrArrOps {
   /* Registry id (scr_arr_ops_table), 0 until scr_arr_ops_register assigns
    * it on the first array of the type. Descriptors are writable for it. */
   uint32_t id;
+  /* SCR_ARR_OPS_*. On 64-bit targets the field takes the struct's former
+   * tail padding, so descriptors emitted without it read 0 here; on 32-bit
+   * targets it lies past their end and is never read (scr_arr_ops_compact). */
+  uint32_t flags;
 } ScrArrOps;
+
+/* The elements are compact class instances in the program-lifetime region:
+ * arrays of the type are SCR_ELEM_CREF (llvm/shapes.ts arrOps). */
+#define SCR_ARR_OPS_COMPACT 1u
+
+/* Whether `ops` describes compact class elements. Compact instances exist
+ * only on 64-bit targets. */
+static inline bool scr_arr_ops_compact(const ScrArrOps *ops) {
+#if UINTPTR_MAX > 0xffffffffu
+  return (ops->flags & SCR_ARR_OPS_COMPACT) != 0;
+#else
+  (void)ops;
+  return false;
+#endif
+}
 
 typedef struct ScrArr {
   size_t rc; /* SIZE_MAX = immortal (unused for arrays; kept per convention) */
@@ -84,7 +108,7 @@ typedef struct ScrArr {
   /* The low SCR_ARR_OPS_SHIFT bits: storage flags (SCR_ARR_INLINE_SLOTS,
    * SCR_ARR_HEAD_ROOM, SCR_ARR_UNSHIFTED, SCR_ARR_HAS_EXT). The rest: the
    * registry id of the element type's ops (scr_arr_ops), 0 for every kind
-   * but SCR_ELEM_REF. */
+   * but SCR_ELEM_REF and SCR_ELEM_CREF. */
   uint16_t spare;
   /* A lower bound on the hole-free prefix: filled <= len, filled <= cap,
    * and every dense state below it is SCR_ARR_VALUE. Element reads below
@@ -93,10 +117,12 @@ typedef struct ScrArr {
    * undefined) or move states below it lowers it first (scr_arr_cut);
    * 0 is always valid. */
   uint32_t filled;
-  /* Dense values: `cap` 8-byte slots, or `cap` bytes for SCR_ELEM_BOOL
-   * (scr_arr_slot_width), followed in the same allocation by one state byte
-   * per slot in reverse slot order (scr_arr_states_end). Sparse entries and properties keep 8-byte
-   * slots for every kind; a bool slot is 0 or 1 wherever it lives. Rarely
+  /* Dense values: `cap` 8-byte slots, `cap` bytes for SCR_ELEM_BOOL or
+   * `cap` 4-byte slots for SCR_ELEM_CREF (scr_arr_slot_width), followed in
+   * the same allocation by one state byte per slot in reverse slot order
+   * (scr_arr_states_end). Sparse entries and properties keep 8-byte slots
+   * for every kind; a bool slot is 0 or 1 wherever it lives, and a CREF
+   * slot's 8-byte form is the pointer (scr_arr_dense_get). Rarely
    * used storage (sparse indices, noncanonical numeric properties,
    * match-result metadata) lives out of line, and an array that has it
    * (SCR_ARR_HAS_EXT) keeps a pointer to it in the word before the dense
@@ -190,16 +216,24 @@ static inline uint32_t scr_arr_ops_id(const ScrArrOps *ops) {
 /* The element ops of an array whose ops have no registry id. */
 const ScrArrOps *scr_arr_ops_overflow(const ScrArr *a);
 
-/* The element ops of `a`: NULL for every kind but SCR_ELEM_REF. */
+/* The element ops of `a`: NULL for every kind but SCR_ELEM_REF and
+ * SCR_ELEM_CREF. */
 static inline const ScrArrOps *scr_arr_ops(const ScrArr *a) {
   uint32_t id = (uint32_t)a->spare >> SCR_ARR_OPS_SHIFT;
   if (__builtin_expect(id == SCR_ARR_OPS_OVERFLOW, 0)) return scr_arr_ops_overflow(a);
   return scr_arr_ops_table[id];
 }
 
+/* Bytes per dense value slot of element kind `elem`. */
+static inline size_t scr_elem_slot_width(uint8_t elem) {
+  if (elem == SCR_ELEM_BOOL) return 1;
+  if (__builtin_expect(elem == SCR_ELEM_CREF, 0)) return sizeof(uint32_t);
+  return sizeof(uint64_t);
+}
+
 /* Bytes per dense value slot. */
 static inline size_t scr_arr_slot_width(const ScrArr *a) {
-  return a->elem == SCR_ELEM_BOOL ? 1 : sizeof(uint64_t);
+  return scr_elem_slot_width(a->elem);
 }
 
 /* The dense states, one byte per slot, share the values' allocation (inline
@@ -233,14 +267,23 @@ static inline uint8_t *scr_arr_state_run(const ScrArr *a, size_t from, size_t co
   return scr_arr_states_end(a) - from - count;
 }
 
+/* A CREF slot's pointer, and the slot of a pointer (NULL or a compact
+ * instance below 32 GiB). */
+static inline uint64_t scr_cref_decode(uint32_t ref) { return (uint64_t)ref << 3; }
+static inline uint32_t scr_cref_encode(uint64_t slot) { return (uint32_t)(slot >> 3); }
+
 /* The dense value at `index` (< cap) as an 8-byte slot, and its store. */
 static inline uint64_t scr_arr_dense_get(const ScrArr *a, size_t index) {
   if (a->elem == SCR_ELEM_BOOL) return ((const uint8_t *)a->data)[index];
+  if (__builtin_expect(a->elem == SCR_ELEM_CREF, 0))
+    return scr_cref_decode(((const uint32_t *)a->data)[index]);
   return a->data[index];
 }
 
 static inline void scr_arr_dense_put(ScrArr *a, size_t index, uint64_t slot) {
   if (a->elem == SCR_ELEM_BOOL) ((uint8_t *)a->data)[index] = (uint8_t)slot;
+  else if (__builtin_expect(a->elem == SCR_ELEM_CREF, 0))
+    ((uint32_t *)a->data)[index] = scr_cref_encode(slot);
   else a->data[index] = slot;
 }
 
