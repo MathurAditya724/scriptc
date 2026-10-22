@@ -1299,8 +1299,19 @@ ScrBytes *scr_buffer_concat_len_dyn(const ScrDyn *list, double total) {
   return scr_buffer_concat_dyn_impl(list, total, true);
 }
 
+/* Buffer.from(arrayBuffer) over a checked value: a Buffer over all of the
+ * ArrayBuffer or SharedArrayBuffer that shares its memory, as in Node. A
+ * second argument would be the byte offset, and an encoding name converts
+ * to NaN, which is offset 0. */
+static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage) {
+  ScrBytes *out = scr_bytes_buffer_view(storage->v.handle.ptr, SCR_BYTES_U8, 0, false, 0);
+  if (out) out->is_buffer = true;
+  return out;
+}
+
 ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
   if (value->kind == SCR_DYN_STR) return scr_bytes_from_str(value->v.str, encoding);
+  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value);
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(SCR_BYTES_U8, value->v.bytes);
   if (value->kind == SCR_DYN_ARR) {
     return scr_buffer_from_array_like(value, (double)value->v.arr.len);
@@ -1344,6 +1355,8 @@ ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding
   if (value->kind == SCR_DYN_STR) return scr_buffer_from_str(value->v.str, encoding);
   if (value->kind == SCR_DYN_BYTES && !value->v.bytes->is_data_view)
     return scr_buffer_from_bytes(value->v.bytes);
+  /* A view of an ArrayBuffer shares its memory, so it never comes from the pool. */
+  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value);
   ScrBytes *out = scr_buffer_from_dyn(value, encoding);
   if (!out) return NULL;
   out->is_buffer = true;
