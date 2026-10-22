@@ -945,12 +945,25 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.startBlock(done);
         break;
       }
-      const version =
+      const versionable =
         emitter.bytesLoopVersionsEnabled &&
         emitter.bytesLoopVersioning.size < MAX_BYTES_LOOP_VERSION_DEPTH &&
-        !emitter.bytesLoopVersioning.has(s)
-          ? emitter.matchBytesLoopVersion(s, countedLoop)
-          : null;
+        !emitter.bytesLoopVersioning.has(s);
+      // A loop to a typed array's or an array's length keeps its integer
+      // induction. Its counted form only gives the version guard the
+      // counter's iteration space, so the guard also covers accesses of
+      // other typed arrays at the counter, such as `x[i]` and `y[i]` in
+      // `for (let i = 0; i < out.length; i++) out[i] = x[i] * y[i]`.
+      const versionCounted =
+        versionable && !countedLoop && integerLoop && emitter.countedLoopsEnabled
+          ? matchIntegerCountedForLoop(
+              s,
+              emitter.numericLocals,
+              emitter.integerRanges,
+              emitter.unaliasedArrays,
+            )
+          : countedLoop;
+      const version = versionable ? emitter.matchBytesLoopVersion(s, versionCounted) : null;
       if (version) {
         const fast = B.newLabel("bytes.version.fast"),
           slow = B.newLabel("bytes.version.slow"),
