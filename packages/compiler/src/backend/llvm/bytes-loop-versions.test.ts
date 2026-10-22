@@ -177,6 +177,11 @@ test("statically ranged indices compare one constant with the length", () => {
   ]);
   expect(version.affine).toEqual([]);
   expect(version.counted).toBeNull();
+  // A uint32 index (an array counter's range) gets no guard: no typed array
+  // in practice has 2^31 elements.
+  const wide = bin(">>>", bin("^", ref("i"), ref("k")), num(0));
+  const unbounded = counted([set(ref("out", f64s), num(0), get(ref("table", i32s), wide))]);
+  expect(match(fn([unbounded]), unbounded)!.fixed).toEqual([{ receiver: 0, end: 0 }]);
 });
 
 test("scaled counters and body temps resolve to their receiver and index", () => {
@@ -356,6 +361,63 @@ test("index temps of a version's counter are integers in the fast copy", () => {
   expect(fast).not.toContain("fmul");
   expect(fast).not.toContain("fptosi");
   expect(fast).not.toContain("bytes.index");
+});
+
+test("while loop counters below a bound version their accesses", () => {
+  // while (i < n) { out[i] = src[i + 1]; i = i + 1 }
+  const step: IrStmt = { kind: "assign", localId: "i", value: bin("+", ref("i"), num(1)), loc };
+  const whileLoop = (body: IrStmt[]): IrStmt & { kind: "while" } => ({
+    kind: "while",
+    cond: { kind: "bin", op: "<", left: ref("i"), right: ref("n"), type: BOOL, loc },
+    body,
+    loc,
+  });
+  const copy = whileLoop([
+    set(ref("out", f64s), ref("i"), get(ref("src", f64s), bin("+", ref("i"), num(1)))),
+    step,
+  ]);
+  const declared = (loop: IrStmt): IrFunction =>
+    fn([{ kind: "varDecl", localId: "i", init: ref("k"), loc }, loop]);
+  const versionOf = (loop: IrStmt & { kind: "while" }): BytesLoopVersion | null => {
+    const f = declared(loop);
+    const ranges = analyzeIntegerRanges(f);
+    return matchBytesLoopVersion(loop, null, {
+      locals: new Map(f.locals.map((l) => [l.id, l])),
+      invariantGlobals: new Set(),
+      captured: new Set(),
+      ranges,
+      initialized: findInitializedByteLoopBindings(f).get(loop) ?? new Set(),
+      proven: new Set(),
+      workers: false,
+      owned: new Set(),
+    });
+  };
+  const version = versionOf(copy)!;
+  expect(version.bounds.size).toBe(2);
+  expect(version.bounded.map((c) => [version.receivers[c.receiver]!.ref, c.slack])).toEqual([
+    [ref("out", f64s), 0],
+    [ref("src", f64s), 1],
+  ]);
+  // `out[i]` needs `i` to start at 0 or above (`src[i + 1]` only at -1).
+  expect(version.counters.map((c) => [c.ref.kind === "varRef" && c.ref.localId, c.min])).toEqual([
+    ["i", 0],
+  ]);
+  // An access after the counter advances in the same pass stays checked.
+  const advanced = whileLoop([step, set(ref("out", f64s), ref("i"), num(0))]);
+  expect(versionOf(advanced)).toBeNull();
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "__main",
+    functions: [
+      { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+      declared(copy),
+    ],
+  };
+  const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(body)![0];
+  expect(fast).not.toContain("bytes.index");
+  expect(body.slice(0, body.indexOf(fast))).toContain("bytes.index.invalid");
 });
 
 test("Float16Array accesses version in elements and share the element tag", () => {
