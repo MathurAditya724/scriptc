@@ -6,6 +6,10 @@ export interface CcOptions {
    * LLVM backend's .ll — clang compiles IR text natively on the same
    * command line, so both ride this one seat. */
   cPath: string;
+  /** Where the program TU's bytes are read from, when that is not `cPath`: an invocation-private
+   * copy that a concurrent build of another program cannot replace. `cPath` stays the spelling
+   * clang sees (`__FILE__`, debug file names) and the one cache keys name. */
+  cSourcePath?: string;
   /** Path of the native executable to produce. */
   outPath: string;
   /** Additional identity for a translation unit whose complete non-system
