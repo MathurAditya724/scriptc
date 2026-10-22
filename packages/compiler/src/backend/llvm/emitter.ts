@@ -1,3 +1,4 @@
+import { relieveHeapPressure } from "../../heap-pressure.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
 import { JsIcSites } from "../../ir/js-ic.js";
@@ -458,6 +459,8 @@ export function emitLlvmModuleSource(
   input: IrModule,
   options: LlvmTargetOptions = {},
 ): string | readonly string[] {
+  // IR validation, contracts and the frontend's disposal run after lowering without checks.
+  relieveHeapPressure(true);
   const mod = unshareNodes(input);
   const parts = new LlEmitter(
     options.debugSources === undefined
@@ -2493,8 +2496,14 @@ export class LlEmitter {
    * releases the dummy (NULL for refcounted kinds) harmlessly. A scalar
    * call result of the function's return type may be passed as the unwind's
    * dummy value (see emitUnwind). `poll` marks a worker termination poll
-   * (function entry or loop budget), whose test must stay ordered. */
-  emitPendingCheck(passThrough?: { name: string; type: IrType }, poll = false): void {
+   * (function entry or loop budget), whose test must stay ordered. A
+   * `guard` (an i1) limits the test to the paths where it is true: false
+   * where the joined call could not have left anything pending. */
+  emitPendingCheck(
+    passThrough?: { name: string; type: IrType },
+    poll = false,
+    guard?: string,
+  ): void {
     const through =
       passThrough !== undefined &&
       this.llType(passThrough.type) === this.llType(this.currentReturnType) &&
@@ -2503,6 +2512,13 @@ export class LlEmitter {
         : undefined;
     const B = this.B;
     if (B.isTerminated()) return;
+    let skip: string | undefined;
+    if (guard !== undefined) {
+      const test = B.newLabel("exc.t");
+      skip = B.newLabel("exc.n");
+      B.condBr(guard, test, skip);
+      B.startBlock(test);
+    }
     if (this.mod.lib !== undefined) {
       this.declare(`declare zeroext i1 @scr_exc_pending()`);
       const p = B.tmp();
@@ -2513,6 +2529,10 @@ export class LlEmitter {
       B.startBlock(lu);
       this.emitUnwind(through);
       B.startBlock(lk);
+      if (skip !== undefined) {
+        B.br(skip);
+        B.startBlock(skip);
+      }
       return;
     }
     // Executables test the active exception cell's kind inline (its first
@@ -2585,6 +2605,10 @@ export class LlEmitter {
     B.startBlock(lu);
     this.emitUnwind(through);
     B.startBlock(lk);
+    if (skip !== undefined) {
+      B.br(skip);
+      B.startBlock(skip);
+    }
   }
 
   /** After a runtime call that ALWAYS leaves an exception pending (the

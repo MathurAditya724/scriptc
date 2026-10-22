@@ -1054,7 +1054,8 @@ export function moduleArtifacts(
   }
   const reachable = lowerer.reachableForArtifacts ?? lowerer.reachable;
   return {
-    classes: [...lowerer.classes.values()]
+    classes: lowerer
+      .classesInTableOrder()
       .map((c) => c.def)
       .filter((def) => classNames.has(def.name))
       .map((def): IrClassDef => {

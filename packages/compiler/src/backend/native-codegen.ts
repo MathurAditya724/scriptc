@@ -111,8 +111,6 @@ export interface NativeCodegenOptions {
   cacheRoot?: string | null;
   /** Program partitions, written to nativePartitionPaths(outputPath). */
   partitions?: number;
-  /** Runtime bitcode whose small functions the helper imports for inlining. */
-  importBitcode?: { paths: readonly string[]; digests: readonly string[] };
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
 }
@@ -339,11 +337,6 @@ function cacheKey(
     .update("\0")
     .update(options.sourcePath)
     .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
-    .update(
-      options.importBitcode === undefined
-        ? ""
-        : `\0import:${options.importBitcode.digests.join(",")}`,
-    )
     .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
     .digest("hex");
 }
@@ -482,7 +475,6 @@ export async function emitNativeArtifact(
       "json",
       "--source-path",
       options.sourcePath,
-      ...(options.importBitcode?.paths ?? []).flatMap((path) => ["--import-bitcode", path]),
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
       ...nativeProfileHelperArgs(options.profile),
     ]);

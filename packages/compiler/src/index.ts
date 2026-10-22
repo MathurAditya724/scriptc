@@ -82,7 +82,7 @@ import { privateSiblingPath } from "./backend/build-cache.js";
 import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./backend/targets.js";
 import { windowsSubsystemLinkerArgs, type WindowsSubsystem } from "./backend/targets.js";
 import { createNativeLinkInfo } from "./backend/native-link-info.js";
-import { RuntimePackError, loadRuntimeBitcode } from "./backend/runtime-pack.js";
+import { RuntimePackError } from "./backend/runtime-pack.js";
 import { createNativeLinkPlan } from "./backend/link-plan.js";
 import {
   nativeProfileKey,
@@ -159,6 +159,7 @@ import {
   type EarlyExecutableNativeFeatures,
 } from "./executable/executable-cache.js";
 import { compilerImplementationIdentity } from "./library/compiler-self-identity.js";
+import { isPerformanceCode } from "./diagnostics/dynamic-tier.js";
 
 export const VERSION = "0.0.1";
 
@@ -182,6 +183,7 @@ export {
 } from "./backend/external-c.js";
 export { warmNativeCaches } from "./backend/warm-cache.js";
 export { mergeNativeProfiles as mergeProfiles } from "./backend/native-codegen.js";
+export { collectGarbageUnderHeapPressure } from "./heap-collection.js";
 export {
   ANDROID_MIN_API,
   IPHONEOS_MIN_VERSION,
@@ -455,6 +457,15 @@ interface CompileWarningSink {
   sourceTexts: Map<string, string> | null;
 }
 
+/** The build's performance warnings (SC61xx), stored with its cache entry
+ * so a cache hit repeats them. */
+function performanceWarnings(sink: CompileWarningSink | undefined): {
+  performance?: ScrDiagnostic[];
+} {
+  const performance = (sink?.warnings ?? []).filter((d) => isPerformanceCode(d.code));
+  return performance.length === 0 ? {} : { performance };
+}
+
 function withCompileWarnings<T extends CompileRequestResult>(
   result: T,
   sink: CompileWarningSink,
@@ -637,7 +648,6 @@ async function emitNativeProgramObject(
   entryPath: string,
   opts: CompileRequestOptions,
   llvm: LlvmInput,
-  features: EarlyExecutableNativeFeatures,
   profile: NativeProfileOptions | undefined,
 ): Promise<NativeProgramObject> {
   const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
@@ -651,24 +661,6 @@ async function emitNativeProgramObject(
   const llvmBytes = llvmInputBytes(llvm);
   const partitions =
     opts.nativeProgramObject === true || target === null ? 1 : nativeProgramPartitions(llvmBytes);
-  // Optimized programs import small runtime functions from the bitcode of
-  // the exact runtime units they link, so LLVM can inline across the
-  // boundary. Release units ship only the bodies that need none of their
-  // unit-local state, which keeps the import cheap; speed units promote
-  // that state and offer more. Every partition reads the bitcode again, so
-  // release imports only into programs small enough for one partition: in
-  // larger ones the build-time and size cost outgrows the gain.
-  const runtimeBitcode =
-    opts.sanitize !== true &&
-    target !== null &&
-    (opts.optimization === "speed" ||
-      (opts.optimization !== "dev" && nativeProgramPartitions(llvmBytes) === 1))
-      ? await loadRuntimeBitcode({
-          target,
-          features,
-          optimization: opts.optimization === "speed" ? "speed" : "release",
-        })
-      : null;
   try {
     const artifact = await emitNativeArtifact({
       outputPath: linkPath,
@@ -678,16 +670,13 @@ async function emitNativeProgramObject(
       optimization: opts.optimization === "dev" ? "0" : "2",
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
-      ...(runtimeBitcode === null
-        ? {}
-        : { importBitcode: { paths: runtimeBitcode.paths, digests: runtimeBitcode.digests } }),
       ...(profile === undefined ? {} : { profile }),
     });
     return {
       linkPath,
       partitionPaths: artifact.outputPaths.slice(1),
       artifactPath,
-      dependencies: [...artifact.dependencies, ...(runtimeBitcode?.dependencies ?? [])],
+      dependencies: artifact.dependencies,
     };
   } catch (error) {
     await removeNativeProgramObject(linkPath, nativePartitionPaths(linkPath, partitions));
@@ -1457,6 +1446,12 @@ async function compileTracked(
           sourceTexts: new Map(),
         };
     }
+    // A cached build repeats its performance warning (SC6101): the code it
+    // names is just as untyped as when it was built.
+    if (warningSink !== undefined && earlyHit.performance !== undefined) {
+      warningSink.warnings = earlyHit.performance;
+      warningSink.sourceTexts = new Map();
+    }
     const executableCacheOptions = earlyCacheOptions;
     // Route/proof metadata is independently evictable. A full-compiler
     // fallback that still finds the validated payload repairs that lightweight
@@ -1497,7 +1492,6 @@ async function compileTracked(
           // A large program's LLVM exceeds the engine's string limit as one
           // string; the emitter takes it in parts, as on a cold build.
           await readTextParts(earlyHit.llvmPath),
-          earlyHit.native,
           profile,
         );
         nativeInputPath = nativeProgramObject.linkPath;
@@ -1613,13 +1607,7 @@ async function compileTracked(
         );
       }
       try {
-        nativeProgramObject = await emitNativeProgramObject(
-          entryPath,
-          opts,
-          llvmSource,
-          nativeFeatures,
-          profile,
-        );
+        nativeProgramObject = await emitNativeProgramObject(entryPath, opts, llvmSource, profile);
         timing("native-object");
         await recordEarlyExecutableNativeBuild(cacheRoot, executableCacheOptions).catch(
           () => undefined,
@@ -1653,6 +1641,7 @@ async function compileTracked(
               nativeDependencies: dependencies,
               frontend: frontendInputs.snapshot(),
               ...(irPath === undefined ? {} : { irPath }),
+              ...performanceWarnings(warningSink),
             });
             publishedExecutable = true;
           },
@@ -1694,6 +1683,7 @@ async function compileTracked(
       executableRestored: false,
       frontend: frontendInputs.snapshot(),
       ...(irPath === undefined ? {} : { irPath }),
+      ...performanceWarnings(warningSink),
     }).catch(() => undefined);
   }
   await pruneBuildCache(cacheRoot);
