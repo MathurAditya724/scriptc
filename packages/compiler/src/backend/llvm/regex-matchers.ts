@@ -589,6 +589,90 @@ function firstOf(node: RxNode): FirstInfo {
   }
 }
 
+/** Positions the start filter tests and alternatives it keeps. */
+const PREFIX_LENGTH = 8;
+const PREFIX_ALTERNATIVES = 8;
+
+/** The character sets a match's first characters must belong to: every
+ * match of the node begins with the characters of some entry of `alts`,
+ * one set per character. `complete` means every match is exactly as long as
+ * its entry (so a following node continues the sequences). Null when the
+ * node gives no usable condition (an alternative that can start with
+ * anything, or too many alternatives). Assertions add no characters: the
+ * result stays a necessary condition. */
+interface Prefix {
+  alts: CharSet[][];
+  complete: boolean;
+}
+
+/** Each head followed by each tail, cut to PREFIX_LENGTH sets; null past
+ * PREFIX_ALTERNATIVES entries. */
+function crossPrefixes(heads: CharSet[][], tails: CharSet[][]): CharSet[][] | null {
+  if (heads.length * tails.length > PREFIX_ALTERNATIVES) return null;
+  const out: CharSet[][] = [];
+  for (const head of heads)
+    for (const tail of tails) out.push([...head, ...tail].slice(0, PREFIX_LENGTH));
+  return out;
+}
+
+/** Whether no entry was cut at PREFIX_LENGTH. */
+function uncut(alts: CharSet[][]): boolean {
+  return alts.every((alt) => alt.length < PREFIX_LENGTH);
+}
+
+function prefixOf(node: RxNode): Prefix | null {
+  switch (node.kind) {
+    case "set":
+      return { alts: [[node.set]], complete: true };
+    case "assert":
+      return { alts: [[]], complete: true };
+    case "cap":
+      return prefixOf(node.body);
+    case "alt": {
+      const alts: CharSet[][] = [];
+      let complete = true;
+      for (const alt of node.alts) {
+        const p = prefixOf(alt);
+        if (p === null) return null;
+        alts.push(...p.alts);
+        complete &&= p.complete;
+      }
+      return alts.length <= PREFIX_ALTERNATIVES ? { alts, complete } : null;
+    }
+    case "seq": {
+      let alts: CharSet[][] = [[]];
+      for (const item of node.items) {
+        const p = prefixOf(item);
+        if (p === null) return { alts, complete: false };
+        const joined = crossPrefixes(alts, p.alts);
+        if (joined === null) return { alts, complete: false };
+        alts = joined;
+        if (!p.complete || !uncut(alts)) return { alts, complete: false };
+      }
+      return { alts, complete: true };
+    }
+    case "rep": {
+      if (node.max === 0) return { alts: [[]], complete: true };
+      if (node.min === 0) return { alts: [[]], complete: false };
+      const body = prefixOf(node.body);
+      if (body === null) return null;
+      // The first `min` iterations are required; they extend the sequences
+      // while the body has a fixed length.
+      let alts = body.alts;
+      let covered = 1;
+      while (covered < node.min && body.complete && uncut(alts)) {
+        const joined = crossPrefixes(alts, body.alts);
+        if (joined === null) break;
+        alts = joined;
+        covered++;
+      }
+      const complete =
+        body.complete && covered === node.min && node.min === node.max && uncut(alts);
+      return { alts, complete };
+    }
+  }
+}
+
 /** Whether a node can match without consuming (assertions included). */
 function canMatchEmpty(node: RxNode): boolean {
   switch (node.kind) {
@@ -721,16 +805,74 @@ class RxGen {
     return wide;
   }
 
+  /** The vector plans of a start filter (prefixOf): per alternative, the
+   * plans of its first sets up to the first set without one. Null unless
+   * every alternative keeps at least two positions, where the filter is
+   * more selective than the first character alone. */
+  prefixPlans(prefix: Prefix | null): { ranges: number[][]; negate: boolean }[][] | null {
+    if (prefix === null || !this.vector) return null;
+    const plans: { ranges: number[][]; negate: boolean }[][] = [];
+    for (const alt of prefix.alts) {
+      const row: { ranges: number[][]; negate: boolean }[] = [];
+      for (const set of alt) {
+        const plan = this.vectorPlan(set);
+        if (plan === null) break;
+        row.push(plan);
+      }
+      if (row.length < 2) return null;
+      plans.push(row);
+    }
+    return plans.length === 0 ? null : plans;
+  }
+
+  /** Start positions s[index..index+16) where some alternative of the
+   * filter matches its first sets: an i16 mask. */
+  testPrefix(plans: { ranges: number[][]; negate: boolean }[][], index: string): string {
+    let any = "";
+    for (const row of plans) {
+      let all = "";
+      for (let k = 0; k < row.length; k++) {
+        let at = index;
+        if (k > 0) {
+          at = this.tmp();
+          this.line(`${at} = add i32 ${index}, ${k}`);
+        }
+        const bits = this.testVector(row[k]!, at);
+        if (all === "") all = bits;
+        else {
+          const both = this.tmp();
+          this.line(`${both} = and i16 ${all}, ${bits}`);
+          all = both;
+        }
+      }
+      if (any === "") any = all;
+      else {
+        const either = this.tmp();
+        this.line(`${either} = or i16 ${any}, ${all}`);
+        any = either;
+      }
+    }
+    return any;
+  }
+
   /** The first-character search: from %at, store the next position whose
-   * character is in `set` and branch to %attempt, or branch to %nomatch. */
-  emitSeek(set: CharSet): void {
+   * character is in `set` and branch to %attempt, or branch to %nomatch.
+   * With a start filter (`prefix`), the vector loop tests the filter's
+   * first sets of each alternative at 16 start positions at once and stops
+   * only where one of them matches all of its sets; a match can start
+   * nowhere else, so the attempts that remain are the ones that can
+   * succeed, in the same order. */
+  emitSeek(set: CharSet, prefix: Prefix | null = null): void {
     this.block("seek");
     const a = this.tmp();
     this.line(`${a} = load i32, ptr %at`);
+    const filter = this.prefixPlans(prefix);
     const plan = this.vectorPlan(set);
+    // The filter reads s[i + reach + 15] at its farthest.
+    const reach = filter === null ? 0 : Math.max(...filter.map((row) => row.length)) - 1;
     let from = "seek",
       start = a;
-    if (plan !== null) {
+    if (plan !== null || filter !== null) {
       const head = this.label("vsh"),
         load = this.label("vsl"),
         next = this.label("vsn"),
@@ -743,10 +885,16 @@ class RxGen {
         fits = this.tmp();
       this.line(`${i} = phi i32 [ ${a}, %seek ], [ ${i16}, %${next} ]`);
       this.line(`${i16} = add i32 ${i}, 16`);
-      this.line(`${fits} = icmp sle i32 ${i16}, %len`);
+      if (reach === 0) {
+        this.line(`${fits} = icmp sle i32 ${i16}, %len`);
+      } else {
+        const last = this.tmp();
+        this.line(`${last} = add i32 ${i16}, ${reach}`);
+        this.line(`${fits} = icmp sle i32 ${last}, %len`);
+      }
       this.line(`br i1 ${fits}, label %${load}, label %${tail}`);
       this.block(load);
-      const mask = this.testVector(plan, i),
+      const mask = filter !== null ? this.testPrefix(filter, i) : this.testVector(plan!, i),
         any = this.tmp();
       this.line(`${any} = icmp ne i16 ${mask}, 0`);
       this.line(`br i1 ${any}, label %${hit}, label %${next}`);
@@ -1769,7 +1917,10 @@ export function compileRegexMatcher(
       fn.push(`  store i32 %off.n, ptr %at`);
       fn.push(`  br label %attempt`);
     } else {
-      gen.emitSeek(first.set);
+      // A start filter over the first few characters (a single first byte
+      // keeps memchr).
+      const prefix = prefixOf(root);
+      gen.emitSeek(first.set, gen.prefixPlans(prefix) === null ? null : prefix);
     }
   }
 
