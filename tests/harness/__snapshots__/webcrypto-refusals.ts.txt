@@ -1,17 +1,17 @@
-webcrypto-refusals.ts:5:16 - error SC2020: 'crypto.subtle as a value' is part of the standard library types but has no scriptc lowering yet
+webcrypto-refusals.ts:6:16 - error SC2020: 'crypto.subtle as a value' is part of the standard library types but has no scriptc lowering yet
 
-  4 | // (node-types/fenced.ts pins their fence under @types/node).
-  5 | const subtle = crypto.subtle;
+  5 | // (node-types/fenced.ts pins their fence under @types/node).
+  6 | const subtle = crypto.subtle;
     |                ^~~~~~~~~~~~~
-  6 | console.log(typeof subtle);
+  7 | console.log(typeof subtle);
 
-  hint: the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
+  hint: the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC or AES-CTR, deriveBits and deriveKey with PBKDF2 or HKDF, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
 
-webcrypto-refusals.ts:8:20 - error SC2020: 'crypto.subtle.sign as a value' is part of the standard library types but has no scriptc lowering yet
+webcrypto-refusals.ts:9:20 - error SC2020: 'crypto.subtle.sign as a value' is part of the standard library types but has no scriptc lowering yet
 
-  7 | 
-  8 | console.log(typeof crypto.subtle.sign);
-    |                    ^~~~~~~~~~~~~~~~~~
-  9 | 
+   8 | 
+   9 | console.log(typeof crypto.subtle.sign);
+     |                    ^~~~~~~~~~~~~~~~~~
+  10 | 
 
-  hint: the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
+  hint: the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC or AES-CTR, deriveBits and deriveKey with PBKDF2 or HKDF, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle

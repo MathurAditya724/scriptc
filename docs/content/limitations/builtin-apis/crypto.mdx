@@ -8,7 +8,10 @@
   `randomFill`, `randomFillSync` (every view kind and ArrayBuffer), `randomInt`, `randomUUID`, and `randomUUIDv7` follow Node 24.22, including callback timing; a `randomInt` callback whose error parameter is typed `Error | null` receives `null` where Node passes `undefined`.
   Scrypt supports its default parameters, numeric options, aliases, and memory limit.
   Both KDFs accept strings, Buffers, numeric typed arrays, DataViews, and fixed-length ArrayBuffers.
-  `createCipheriv` and `createDecipheriv` support aes-128, aes-192, and aes-256 in CBC, CTR, and GCM modes and chacha20-poly1305, on native targets, through `update()`, `final()`, `setAAD()`, `setAutoPadding()`, `getAuthTag()`, and `setAuthTag()`; other ciphers, cipher streams, and wasm32-wasi builds are refused.
+  `createCipheriv` and `createDecipheriv` support aes-128, aes-192, and aes-256 in CBC, CTR, and GCM modes and chacha20-poly1305, on native targets, through `update()`, `final()`, `setAAD()`, `setAutoPadding()`, `getAuthTag()`, and `setAuthTag()`; other ciphers and wasm32-wasi builds are refused.
+  Cipheriv and Decipheriv values are also Transforms: they can be written, piped into, used as `pipeline()` stages, read, iterated with `for await`, and listened to, and their stream properties read as in Node; written chunks go through `update()`, and the end pushes `final()` or reports its error through `'error'`.
+  Through `unknown` and `any` slots and untyped JavaScript, in a program that uses streams, their stream properties and their `on`, `once`, `off`, `pipe`, `unpipe`, `read`, `pause`, `resume`, `setEncoding`, `write`, `end`, `destroy`, `cork`, and `uncork` members work; `write` and `end` take no encoding or callback there, and the other stream members throw a coded SC2020 error.
+  Hash, Hmac, Cipheriv, and Decipheriv streams count a written string's bytes in `writableLength`, where Node counts the string's length.
   Decrypting chacha20-poly1305 without an authentication tag fails in `final()`; Node 24.22 returns unverified plaintext.
   After `update()` fails, for example past the AES-GCM limit of 2^36 - 32 bytes per message, every later call on that cipher throws; Node still lets `final()` run.
   An output encoding that is a function or an instance of a class defining `toString` throws a coded SC2020 error.
@@ -25,7 +28,10 @@
   Encrypted private keys (`passphrase`, `cipher`), the other key types (`rsa-pss`, `dsa`, `ed448`, `x25519`, and the rest), and wasm32-wasi builds throw a coded SC2020 error or are refused.
   Comparing keys of different types with `equals()` answers false; Node also leaves an OpenSSL error queued, which a later key operation can report.
   Diffie-Hellman and `publicEncrypt`/`privateDecrypt` remain unsupported.
-  WebCrypto's `crypto.subtle` supports HMAC keys imported from `raw` with `sign` and `verify`, SHA-1 and SHA-2 `digest`, and `generateKey`, `importKey`, `exportKey`, `sign`, and `verify` for ECDSA (P-256, P-384, and P-521), Ed25519, RSASSA-PKCS1-v1_5, and RSA-PSS, with the `spki`, `pkcs8`, and `jwk` formats and `raw` for ECDSA and Ed25519 public keys.
-  The methods are called on `crypto.subtle` directly; other methods, algorithms, and SHA-3 digests throw a coded SC2020 error, and ECDSA, Ed25519, and RSA are refused in wasm32-wasi builds.
+  The WebCrypto `crypto` global, which node:crypto also exports as `webcrypto`, supports `randomUUID()` and `getRandomValues()`, also read as values from untyped JavaScript.
+  Its `subtle` object, also node:crypto's `subtle` export, supports `generateKey()` and `exportKey()` for HMAC and AES keys, `importKey()` for HMAC, AES, PBKDF2, and HKDF keys, `encrypt()` and `decrypt()` with AES-GCM, AES-CBC, and AES-CTR on native targets, `deriveBits()` and `deriveKey()` with PBKDF2 and HKDF, HMAC `sign()` and `verify()`, and SHA-1 and SHA-2 `digest()`.
+  Secret keys import and export in the `raw`, `raw-secret`, and `jwk` formats.
+  `generateKey()`, `importKey()`, `exportKey()`, `sign()`, and `verify()` also support ECDSA (P-256, P-384, and P-521), Ed25519, RSASSA-PKCS1-v1_5, and RSA-PSS, with the `spki`, `pkcs8`, and `jwk` formats and `raw` for ECDSA and Ed25519 public keys; ECDSA, Ed25519, and RSA are refused in wasm32-wasi builds.
   ECDSA, Ed25519, and RSA link when a string literal in the program names the algorithm; a name built only at run time throws a coded SC2020 error.
+  Other SubtleCrypto methods, algorithms, and key formats are refused or throw a coded SC2020 error.
   Native derivations finish before their deferred callbacks, so computation blocks the caller.

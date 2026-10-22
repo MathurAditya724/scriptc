@@ -1252,6 +1252,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },
   "atomics.notify": { argTypes: [bytesOf("i32"), F64, F64], result: F64 },
   "atomics.op": { argTypes: [null, F64, F64, F64, F64], result: F64 },
+  "atomics.opDyn": { argTypes: [DYN, F64, F64, F64, F64], result: F64 },
+  "atomics.waitDyn": { argTypes: [DYN, F64, F64, F64], result: STRING },
+  "atomics.notifyDyn": { argTypes: [DYN, F64, F64], result: F64 },
   "worker.new": { argTypes: [F64, STRING, DYN], result: DYN },
   "worker.isMainThread": { argTypes: [], result: BOOL },
   "worker.threadId": { argTypes: [], result: F64 },
@@ -2712,6 +2715,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [DYN, STRING],
     result: { kind: "object", className: "%Duplex" },
   },
+  /** The Transform a Cipheriv or Decipheriv reads and writes as a stream
+   * (+1, created on first use and owned by the cipher). */
+  "stream.handleStream": {
+    argTypes: [DYN],
+    result: { kind: "object", className: "%Transform" },
+  },
   /** Checked-dynamic stream slots (dyn-streams.ts): the native stream a
    * checked-dynamic value boxes (+1) — a runtime stream with the readable
    * (1) or writable (2) side — or null for any other value. Never throws;
@@ -2848,10 +2857,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "webcrypto.generateKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.importKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.exportKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.encrypt": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.decrypt": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.deriveBits": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.deriveKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.verify": { argTypes: [DYN], result: { kind: "promise", inner: BOOL } },
   "webcrypto.digest": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.isCryptoKey": { argTypes: [DYN], result: BOOL },
+  "webcrypto.object": { argTypes: [], result: DYN },
   "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
   "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
   "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
@@ -2920,6 +2934,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "buffer.poolFromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
   /** poolFromDyn that also copies an array crossing by reference. */
   "buffer.poolFromDynRef": { argTypes: [DYN, STRING], result: BYTES_U8 },
+  "buffer.poolFromDynOffset": { argTypes: [DYN, DYN], result: BYTES_U8 },
   "buffer.poolSize": { argTypes: [], result: F64 },
   "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
@@ -3938,14 +3953,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.finishedOpts": { argTypes: [null, F64, F64, BOOL, null], result: VOID },
   "stream.finishedOptsSignal": { argTypes: [null, F64, F64, BOOL, DYN, null], result: VOID },
   "sp.pipeline": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
-  /** pipeline with a run of function stages: [n, at, k, flags, mask,
-   * s1..sn, stage1..stagek, (next, read, return)?, box?, (signal,
-   * abort)?] (+ the callback for the stream.* forms): the user's stage
-   * functions, the frontend's helpers over the pumped generator or a
-   * promise destination's box, and the pipeline's AbortSignal with its
-   * abort closure; flags names which groups are present
-   * (scr_stream_pipeline_stages). A promise destination's promise type is
-   * sp.pipelineStages' result. */
+  /** pipeline with function stages: [n, k, positions, flags, mask,
+   * s1..sn, stage1..stagek, helpers..., box?, (signal, abort)?] (+ the
+   * callback for the stream.* forms): the user's stage functions at the
+   * positions the bitmask names, the frontend's (next, read, return)
+   * helpers for each pumped generator (pipelinePumpedRuns) and a promise
+   * destination's box, and the pipeline's AbortSignal with its abort
+   * closure; flags bits 1-2 give the destination kind and bit 5 the
+   * signal group (scr_stream_pipeline_stages). A promise destination's
+   * promise type is sp.pipelineStages' result. */
   "sp.pipelineStages": {
     argTypes: [F64, F64, F64, F64, F64],
     result: { kind: "promise", inner: VOID },
@@ -4749,3 +4765,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
 
 /** A builtin name exists exactly when its runtime signature exists. */
 export type IrLibFn = keyof typeof LIB_FN_SIGS;
+
+/** The function-stage runs of a pipeline of `total` stages that a stream
+ * follows (positions bit j: stage j is a function): each pumps its last
+ * generator into that stream through one (next, read, return) triple. */
+export function pipelinePumpedRuns(total: number, positions: number): number {
+  let runs = 0;
+  for (let j = 0; j + 1 < total; j++) {
+    if (Math.floor(positions / 2 ** j) % 2 === 1 && Math.floor(positions / 2 ** (j + 1)) % 2 === 0)
+      runs++;
+  }
+  return runs;
+}

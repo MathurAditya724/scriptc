@@ -2224,18 +2224,22 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
       "webcrypto.generateKey",
       "webcrypto.importKey",
       "webcrypto.exportKey",
+      "webcrypto.encrypt",
+      "webcrypto.decrypt",
+      "webcrypto.deriveBits",
+      "webcrypto.deriveKey",
       "webcrypto.sign",
       "webcrypto.verify",
       "webcrypto.digest",
     ],
-    note: "importKey('raw') for HMAC keys, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
+    note: "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
   },
   {
     id: "stdlib.webcrypto.CryptoKey",
     kind: "stdlib",
     name: "CryptoKey",
     fns: ["webcrypto.isCryptoKey"],
-    note: "secret HMAC keys with type, extractable, algorithm and usages, and instanceof CryptoKey",
+    note: "secret HMAC, AES, PBKDF2 and HKDF keys with type, extractable, algorithm and usages, and instanceof CryptoKey",
   },
   {
     id: "stdlib.atomics",
@@ -3097,9 +3101,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
     setFips:
       "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
       "in a non-FIPS build — getFips() answers 0 here",
-    webcrypto:
-      "the WebCrypto object has no lowering — the lowered crypto surface is randomUUID, " +
-      "randomBytes, and the createHash chain",
   },
   zlib: {
     brotliCompressSync: BROTLI_HINT,

@@ -42,19 +42,15 @@ import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
   matchIntegerCountedForLoop,
-  matchIntegerPairedForLoop,
 } from "../../ir/integer-loops.js";
 import { emitByteWindowGuard, matchByteWindow } from "./byte-windows.js";
 import { countedDenseShape, emitDenseLoopGuard, matchDenseArrayLoop } from "./dense-array-loops.js";
-import {
-  emitCountedLoopLimit,
-  emitCountedLoopSafety,
-  emitPairedLoopSafety,
-} from "./counted-loops.js";
+import { emitCountedLoopLimit, emitCountedLoopSafety } from "./counted-loops.js";
 import { emitBytesLoopVersionGuard } from "./bytes-loop-versions.js";
 import { mangleLocal } from "../mangle.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlValue } from "./expr-context.js";
+import { widenInteger } from "./integer-values.js";
 import { SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { emitLiteralSwitch } from "./switch-dispatch.js";
 import {
@@ -272,6 +268,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       else emitter.toFrame(v);
       B.line(`store ${emitter.llType(b.type)} ${v.name}, ptr ${b.slot}`);
       emitter.storeIntegerView(s.localId, v, s.init);
+      storeIntegerTemp(emitter, s.localId, b, v);
       if (isRefCounted(b.type)) {
         emitter.scopes[emitter.scopes.length - 1]!.push({ slot: b.slot, type: b.type });
         emitter.noteLastUseMove(s, b);
@@ -871,12 +868,6 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               emitter.unaliasedArrays,
             )
           : null;
-      // Two counters closing in on each other (`lo++, hi--`) take the same
-      // integer storage as a counted loop's one.
-      const pairedLoop =
-        !integerLoop && !countedLoop && emitter.countedLoopsEnabled
-          ? matchIntegerPairedForLoop(s, emitter.numericLocals, emitter.integerRanges)
-          : null;
       const window =
         countedLoop && emitter.byteWindowsEnabled
           ? matchByteWindow(
@@ -1009,10 +1000,8 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       let countedJoin: string | null = null;
-      if ((countedLoop?.guarded && !emitter.provenCountedGuards.has(s)) || pairedLoop?.guarded) {
-        const safe = countedLoop
-          ? emitCountedLoopSafety(emitter, countedLoop)
-          : emitPairedLoopSafety(emitter, pairedLoop!);
+      if (countedLoop?.guarded && !emitter.provenCountedGuards.has(s)) {
+        const safe = emitCountedLoopSafety(emitter, countedLoop);
         const fast = B.newLabel("counted.fast");
         const slow = B.newLabel("counted.slow");
         countedJoin = B.newLabel("counted.done");
@@ -1027,7 +1016,6 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       emitter.scopes.push([]);
       let integerSlot: string | null = null;
       let countedLimit: string | null = null;
-      const pairedSlots: string[] = [];
       if (integerLoop) {
         integerSlot = B.slot();
         B.entryAllocas.push(
@@ -1072,24 +1060,6 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               : countedLoop.range,
         });
         countedLimit = emitCountedLoopLimit(emitter, countedLoop);
-      } else if (pairedLoop) {
-        for (const counter of [pairedLoop.low, pairedLoop.high]) {
-          const slot = B.slot();
-          B.entryAllocas.push(
-            `${slot} = alloca i64 ; integer induction ${emitter.currentLocals.get(counter.localId)!.name}`,
-          );
-          const value = emitter.emitExpr(counter.start);
-          const start = B.tmp();
-          B.line(`${start} = fptosi double ${value.name} to i64`);
-          B.line(`store i64 ${start}, ptr ${slot}`);
-          pairedSlots.push(slot);
-          emitter.integerLoopBindings.set(counter.localId, {
-            slot,
-            type: "i64",
-            signed: true,
-            range: pairedLoop.range,
-          });
-        }
       } else if (s.init) {
         // A multi-declarator head shares the loop's scope. Emitting its
         // IR block as an ordinary block would release captured/ref locals
@@ -1171,14 +1141,6 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
             `${inBounds} = icmp ${countedLoop.step > 0 ? "slt" : "sgt"} i64 ${index}, ${countedLimit}`,
           );
           B.condBr(inBounds, lb, exit);
-        } else if (pairedLoop) {
-          const low = B.tmp(),
-            high = B.tmp(),
-            open = B.tmp();
-          B.line(`${low} = load i64, ptr ${pairedSlots[0]}`);
-          B.line(`${high} = load i64, ptr ${pairedSlots[1]}`);
-          B.line(`${open} = icmp ${pairedLoop.inclusive ? "sle" : "slt"} i64 ${low}, ${high}`);
-          B.condBr(open, lb, exit);
         } else if (s.cond) B.condBr(emitter.emitCondition(s.cond), lb, exit);
         else B.br(lb);
         B.startBlock(lb);
@@ -1210,14 +1172,6 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
             B.line(`${old} = load i64, ptr ${integerSlot}`);
             B.line(`${next} = add nsw i64 ${old}, ${countedLoop.step}`);
             B.line(`store i64 ${next}, ptr ${integerSlot}`);
-          } else if (pairedLoop) {
-            [pairedLoop.low, pairedLoop.high].forEach((counter, i) => {
-              const old = B.tmp();
-              const next = B.tmp();
-              B.line(`${old} = load i64, ptr ${pairedSlots[i]}`);
-              B.line(`${next} = add nsw i64 ${old}, ${counter.step}`);
-              B.line(`store i64 ${next}, ptr ${pairedSlots[i]}`);
-            });
           } else if (s.update) emitter.emitStmt(s.update);
           B.br(lc);
         }
@@ -1226,10 +1180,6 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       emitter.releaseScope(emitter.scopes.pop()!);
       if (integerLoop) emitter.integerLoopBindings.delete(integerLoop.localId);
       if (countedLoop) emitter.integerLoopBindings.delete(countedLoop.localId);
-      if (pairedLoop) {
-        emitter.integerLoopBindings.delete(pairedLoop.low.localId);
-        emitter.integerLoopBindings.delete(pairedLoop.high.localId);
-      }
       if (integerArrayLoop) emitter.integerArrayBindings.delete(integerArrayLoop.localId);
       if (countedJoin) {
         B.br(countedJoin);
@@ -1596,6 +1546,48 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
  * Abrupt completions inside tryBody/catchBody ride the finallyStack:
  * returns inline copies at the return site, while break/continue use the
  * shared region walk before branching to their resolved target. */
+/** A constant number local whose initializer has an exact integer form
+ * (such as `const j = i * 4` in a typed-array loop version) keeps that
+ * integer in an i64 slot beside the double, so reads such as `px[j + 1]`
+ * index with integer arithmetic instead of converting the double back.
+ * Every other declaration of the local drops the integer: the same
+ * declaration is emitted once per loop copy, and a copy must not read the
+ * integer another copy stored. */
+function storeIntegerTemp(
+  emitter: LlEmitter,
+  localId: string,
+  b: ReturnType<LlEmitter["binding"]>,
+  v: LlValue,
+): void {
+  const local = b.local;
+  if (
+    !emitter.integerTempsEnabled ||
+    b.kind !== "local" ||
+    !local ||
+    local.type.kind !== "f64" ||
+    local.mutable ||
+    local.tdz === true ||
+    emitter.captureIds.has(localId) ||
+    !v.integer
+  ) {
+    emitter.integerTemps.delete(localId);
+    return;
+  }
+  const B = emitter.B;
+  let slot = emitter.integerTemps.get(localId)?.slot;
+  if (slot === undefined) {
+    slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i64 ; integer ${local.name}`);
+  }
+  B.line(`store i64 ${widenInteger(emitter, v.integer)}, ptr ${slot}`);
+  emitter.integerTemps.set(localId, {
+    slot,
+    type: "i64",
+    signed: true,
+    range: v.integer.range,
+  });
+}
+
 export function emitTryCatch(emitter: LlEmitter, s: IrStmt & { kind: "tryCatch" }): void {
   const B = emitter.B;
   const hasCatch = s.catchBody !== null;

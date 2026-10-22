@@ -25,6 +25,7 @@ process.env.SCRIPTC_RUNTIME_PACK_CONFIG = JSON.stringify({
     "scr_pki.c",
     "scr_webcrypto_pki.c",
     "scr_ed25519.c",
+    "scr_webcrypto_aes.c",
     "scr_wasm.c",
     "scr_fetch.c",
   ],

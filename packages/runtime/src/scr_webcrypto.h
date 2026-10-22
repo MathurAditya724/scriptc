@@ -9,7 +9,16 @@
 
 #define SCR_WC_COUNT(names) (sizeof(names) / sizeof((names)[0]))
 
-enum { SCR_WC_USAGE_SIGN = 1u << 2, SCR_WC_USAGE_VERIFY = 1u << 3 };
+enum {
+  SCR_WC_USAGE_ENCRYPT = 1u << 0,
+  SCR_WC_USAGE_DECRYPT = 1u << 1,
+  SCR_WC_USAGE_SIGN = 1u << 2,
+  SCR_WC_USAGE_VERIFY = 1u << 3,
+  SCR_WC_USAGE_DERIVE_KEY = 1u << 4,
+  SCR_WC_USAGE_DERIVE_BITS = 1u << 5,
+  SCR_WC_USAGE_WRAP_KEY = 1u << 6,
+  SCR_WC_USAGE_UNWRAP_KEY = 1u << 7,
+};
 
 /* Node's canonical usage order; the bit is the index. */
 extern const char *const scr_wc_usages[12];
