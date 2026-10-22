@@ -1577,6 +1577,20 @@ ScrDyn *scr_dyn_iter_pack(const ScrDyn *src, const ScrStr *msg) {
 
 static ScrDyn *scr_native_iterator_drain(const ScrDyn *src);
 
+/* The values a collection constructor's iterable seed gives, in order: +1
+ * array, or NULL with the exception pending. A native iterator (a Map's
+ * keys(), a Set's values()) drains, which runs no program code; arrays,
+ * strings, typed arrays and collections pack; other iterables (a
+ * generator, an object with a Symbol.iterator method) step their
+ * iterator to the end, so their values are all taken before the
+ * constructor adds the first one. */
+static ScrDyn *scr_dyn_seed_values(const ScrDyn *src) {
+  if (src->kind == SCR_DYN_HANDLE &&
+      (src->v.handle.tag == SCR_DYNH_ITERATOR || scr_dyn_handle_ops_of(src)->iter_step))
+    return scr_native_iterator_drain(src);
+  return scr_dyn_destructure_rest(src, NULL);
+}
+
 /* The for-of-over-dyn pack accessors: the emitted index loop drives them
  * over a scr_dyn_iter_pack result (ARR by construction — the defensive
  * arms cover nothing reachable from that lowering). Never throw. */
@@ -1592,18 +1606,10 @@ ScrDyn *scr_dyn_map_seed_entries(const ScrDyn *src) {
     if (scr_exc_pending()) return NULL;
   }
   /* A native iterator (sp.entries(), a Map's entries()) or a handle that
-   * steps through live entries (URLSearchParams): producing its entries
-   * runs no program code, so draining them first is what the consumer
-   * observes. */
-  if (src->kind == SCR_DYN_HANDLE &&
-      (src->v.handle.tag == SCR_DYNH_ITERATOR || scr_dyn_handle_ops_of(src)->iter_step))
-    return scr_native_iterator_drain(src);
-  if (src->kind == SCR_DYN_HANDLE || src->kind == SCR_DYN_TYPED_REF) {
-    static const char message[] = "new Map(entries) over native non-array iterables has no lowering";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return NULL;
-  }
-  return scr_dyn_iter_pack(src, NULL);
+   * steps through live entries (URLSearchParams) drains; a Set, a
+   * generator or another iterable gives its values in order
+   * (scr_dyn_seed_values). */
+  return scr_dyn_seed_values(src);
 }
 
 ScrDyn *scr_dyn_map_seed_entry(const ScrDyn *entry) {
@@ -14836,7 +14842,7 @@ ScrDyn *scr_dyn_native_set(ScrMap *value) {
 ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
   ScrDyn *items = NULL;
   if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
-    items = scr_dyn_iter_pack(seed, NULL);
+    items = scr_dyn_seed_values(seed);
     if (!items) return NULL;
   }
   ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
