@@ -230,6 +230,7 @@ import {
   arrayOf,
   BOOL,
   canAdaptDynFuncTo,
+  canBoxFuncIntoDyn,
   canDynCheckTo,
   canConvertToDyn,
   DYN,
@@ -9642,6 +9643,21 @@ export class Lowerer {
     if (expected.kind === "func" && (expr.type.kind === "record" || expr.type.kind === "object")) {
       const un = this.hybridCallUnwrap(expr);
       if (un !== expr && typeEquals(un.type, expected)) return un;
+      // A callable class instance (the chalk shim's variadic builder) in a
+      // narrower function slot: its call closure crosses the checked
+      // function boundary, which adapts the arity.
+      if (
+        un !== expr &&
+        expr.type.kind === "object" &&
+        un.type.kind === "func" &&
+        canBoxFuncIntoDyn(
+          un.type,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        )
+      ) {
+        return this.coerceToExpected({ kind: "dynFrom", value: un, type: DYN, loc: un.loc }, expected);
+      }
     }
     // A zero-param function whose RETURN is a wider record array than the
     // slot's (`getRoutes: () => cachedRoutes` against `() => Narrow[]`):
