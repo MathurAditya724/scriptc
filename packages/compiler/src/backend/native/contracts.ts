@@ -123,9 +123,9 @@ export interface CcOptions {
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
-  /** Fixed-width Buffer methods called on checked-dynamic values:
+  /** Buffer.prototype methods called on checked-dynamic values:
    * compiles scr_bytes_dyn.c. */
-  dynBufferNum?: boolean;
+  dynBuffer?: boolean;
   /** Builtin functions read as values: compiles scr_builtin_values.c. */
   builtinValues?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
@@ -243,8 +243,9 @@ export interface CcOptions {
    * The unit also compiles whenever `tls` does — scr_tls.c consults its
    * default-set override and shared Windows-certificate enumerator. */
   tlsCa?: boolean;
-  /** crypto.createCipheriv/createDecipheriv: compiles scr_cipher.c and links
-   * the mbedTLS archive (shared with tls). */
+  /** crypto.createCipheriv/createDecipheriv and WebCrypto's encrypt and
+   * decrypt: compiles scr_cipher.c (and, with webcrypto,
+   * scr_webcrypto_aes.c) and links the mbedTLS archive (shared with tls). */
   cipher?: boolean;
   /** crypto.createECDH and ECDH.convertKey: compiles scr_ecdh.c and links
    * the mbedTLS archive (shared with tls). */
@@ -321,6 +322,9 @@ export interface LibArchiveOptions {
   threadInstances?: boolean;
   /** IR-detected link gates (the compileC precedent, refusal-narrowed). */
   dynInvoke?: boolean;
+  /** Buffer.prototype methods on checked-dynamic values: scr_bytes_dyn.c,
+   * with dynInvoke. */
+  dynBuffer?: boolean;
   /** See CompileOptions.dynTier: the scr_js_* units. */
   dynTier?: boolean;
   regex?: boolean;

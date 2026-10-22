@@ -80,6 +80,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "procStream.write",
   "child.stdioStream",
   "stream.unboxDyn",
+  "stream.handleStream",
   "stream.pipeDyn",
   "stream.unpipeDyn",
   "weakMap.new",
@@ -97,6 +98,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "atomics.op",
   "atomics.wait",
   "atomics.notify",
+  "atomics.opDyn",
+  "atomics.waitDyn",
+  "atomics.notifyDyn",
   "arrayBuffer.byteLengthGetter",
   "arrayBuffer.viewU8C",
   "arrayBuffer.viewI8",
@@ -238,12 +242,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // 'error' has no listener, Node's unhandled-'error' contract.
   "emitter.emit",
   "emitter.emitFlex",
+  "emitter.emitAny",
+  "emitter.emitMixed",
+  "emitter.listenersDyn",
   "emitter.emitError",
   "emitter.on",
   "emitter.off",
   "emitter.checkListener",
   "emitter.onDyn",
   "emitter.onFlex",
+  "emitter.onAny",
   "emitter.offDyn",
   "emitter.onData",
   "emitter.onDataDyn",
@@ -530,6 +538,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "date.nativeNew",
   "date.nativeNewFields",
   "date.nativeNewValue",
+  "date.argumentsTime",
   "date.checkedValue",
   "util.parseArgs",
   "util.parseEnv",
@@ -597,6 +606,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
   "dyn.setPrototype",
+  // Error.captureStackTrace: Node's TypeError for a primitive target, and
+  // the error string conversion of name and message
+  "dyn.errorCaptureStackTrace",
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
@@ -783,6 +795,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromArray",
   "buffer.poolFromDyn",
   "buffer.poolFromDynRef",
+  "buffer.poolFromDynOffset",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",

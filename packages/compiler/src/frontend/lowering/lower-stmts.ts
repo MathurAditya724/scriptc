@@ -3,6 +3,7 @@ import { declaredMemberOf, isPromisePrototypeRead } from "./expressions/property
 import { hostsAll } from "./expressions/hosted-narrowing.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream } from "./dyn-streams.js";
+import { lowerForAwaitValueStream } from "./builtins/hash-stream.js";
 import { lowerChildPropertyWrite } from "./handle-properties.js";
 import {
   matchAllRowsReadByElements,
@@ -159,7 +160,7 @@ import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
-import { genericIfaceBindingKeepsClass } from "./lower-classes.js";
+import { genericIfaceBindingKeepsClass, superConditionLead } from "./lower-classes.js";
 import { lowerStreamUnderscoreAssign, streamClassAliasDecl } from "./lower-stream.js";
 import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
@@ -1537,43 +1538,48 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     return lowerer.lowerDefaultExport(stmt);
   }
   if (ts.isIfStatement(stmt)) {
-    const cond = lowerer.lowerCondition(stmt.expression);
+    // `if (super(), test)`: the super call runs as a statement, then the
+    // test decides.
+    const lead = superConditionLead(stmt.expression);
+    const leading = lead ? lowerer.lowerExprStatement(lead.left) : null;
+    const test = lead ? lead.right : stmt.expression;
+    const cond = lowerer.lowerCondition(test);
     // A global-detection condition (static-typeof.ts) folds; its untaken
     // arm is code Node never runs and does not lower, unless it declares a
     // hoisted binding.
-    const decided = staticCondition(lowerer, stmt.expression);
+    const decided = staticCondition(lowerer, test);
     if (decided !== null) {
       const taken = decided ? stmt.thenStatement : stmt.elseStatement;
       const untaken = decided ? stmt.elseStatement : stmt.thenStatement;
       if (untaken === undefined || !declaresHoistedBinding(untaken)) {
         const arm = taken === undefined ? [] : lowerer.lowerScopedBlock(taken);
-        return decided
+        const folded: IrStmt = decided
           ? { kind: "if", cond, then: arm, else_: null, loc: locOf(stmt) }
           : { kind: "if", cond, then: [], else_: arm, loc: locOf(stmt) };
+        return leading ? { kind: "block", body: [leading, folded], loc: locOf(stmt) } : folded;
       }
     }
     // Aliased-typeof narrows (ms's `var type = typeof val` guard): the
     // then-branch lowers under what a TRUE condition proves, the
     // else-branch under a FALSE one — the var/let alias narrowing the
     // checker only performs for consts (aliasTypeofNarrows).
-    const then = lowerer.narrowingAliases(aliasTypeofNarrows(lowerer, stmt.expression, true), () =>
-      withRuntimeOptionalNarrowed(lowerer, runtimeOptionalTrueIds(lowerer, stmt.expression), () =>
+    const then = lowerer.narrowingAliases(aliasTypeofNarrows(lowerer, test, true), () =>
+      withRuntimeOptionalNarrowed(lowerer, runtimeOptionalTrueIds(lowerer, test), () =>
         lowerer.lowerScopedBlock(stmt.thenStatement),
       ),
     );
     const else_ = stmt.elseStatement
-      ? lowerer.narrowingAliases(aliasTypeofNarrows(lowerer, stmt.expression, false), () =>
-          withRuntimeOptionalNarrowed(
-            lowerer,
-            runtimeOptionalGuardIds(lowerer, stmt.expression, false),
-            () => lowerer.lowerScopedBlock(stmt.elseStatement!),
+      ? lowerer.narrowingAliases(aliasTypeofNarrows(lowerer, test, false), () =>
+          withRuntimeOptionalNarrowed(lowerer, runtimeOptionalGuardIds(lowerer, test, false), () =>
+            lowerer.lowerScopedBlock(stmt.elseStatement!),
           ),
         )
       : null;
     for (const local of falsyExitRuntimeOptionalLocals(lowerer, stmt)) {
       lowerer.runtimeOptionalLocals.delete(lowerer.runtimeOptionalRootOf(local));
     }
-    return { kind: "if", cond, then, else_, loc: locOf(stmt) };
+    const lowered: IrStmt = { kind: "if", cond, then, else_, loc: locOf(stmt) };
+    return leading ? { kind: "block", body: [leading, lowered], loc: locOf(stmt) } : lowered;
   }
   if (ts.isWhileStatement(stmt)) {
     const labels = lowerer.takeLabels();
@@ -3959,9 +3965,13 @@ function stdlibGlobalTokenDestructure(
       const canonical = ts.symbolName(member) === "global" ? "globalThis" : ts.symbolName(member);
       token = `[builtin ${canonical}]`;
       alias = canonical;
-      // Builtin constructors read as their interned function values, the
-      // same values the bare and `globalThis.X` spellings read.
-      value = builtinGlobalValue(canonical, locOf(el), true);
+      // Builtin constructors read as their interned function values, and
+      // crypto as the WebCrypto object: the same values the bare and
+      // `globalThis.X` spellings read.
+      value =
+        canonical === "crypto"
+          ? { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc: locOf(el) }
+          : builtinGlobalValue(canonical, locOf(el), true);
     } else if (globalName === "console" && !CONSOLE_CALL_MEMBERS.has(propName)) {
       token = `[builtin console.${propName}]`;
     } else if (TOKEN_OPAQUE_GLOBALS.has(globalName)) {
@@ -6105,6 +6115,20 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
     )
   )
     return true;
+  // A write that can store null or undefined into a binding the checker
+  // types as a primitive (`offset = match[3] || null`): JavaScript files
+  // are checked without strict null checks, so the declared type does not
+  // admit them.
+  // The declared type is mapped only when such a write exists.
+  if (
+    candidates.some(
+      (node) => node.operatorToken.kind === ts.SyntaxKind.EqualsToken && mayBeNullish(node.right),
+    )
+  ) {
+    const primitive = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+    if (primitive?.kind === "string" || primitive?.kind === "f64" || primitive?.kind === "bool")
+      return true;
+  }
   // A plain JavaScript write of a value the declared type cannot hold (the
   // checker does not report it): buffer-crc32 replaces its number[] table
   // with `new Int32Array(table)`. Only a different representation counts;
@@ -6133,6 +6157,31 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
       (written.kind !== declared.kind || written.kind === "bytes")
     );
   });
+}
+
+/** Whether `node` can evaluate to null or undefined by its form: the
+ * literals, `void`, and conditional or logical expressions with such an
+ * operand in result position. */
+function mayBeNullish(node: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (node.kind === ts.SyntaxKind.NullKeyword || ts.isVoidExpression(node)) return true;
+  if (ts.isIdentifier(node)) return node.text === "undefined";
+  if (ts.isConditionalExpression(node))
+    return mayBeNullish(node.whenTrue) || mayBeNullish(node.whenFalse);
+  if (ts.isBinaryExpression(node)) {
+    const op = node.operatorToken.kind;
+    if (
+      op === ts.SyntaxKind.BarBarToken ||
+      op === ts.SyntaxKind.QuestionQuestionToken ||
+      op === ts.SyntaxKind.AmpersandAmpersandToken
+    )
+      return (
+        mayBeNullish(node.right) ||
+        (op === ts.SyntaxKind.AmpersandAmpersandToken && mayBeNullish(node.left))
+      );
+    if (op === ts.SyntaxKind.CommaToken) return mayBeNullish(node.right);
+  }
+  return false;
 }
 
 function immediatelyGuardedAbsenceProbe(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
@@ -7555,8 +7604,9 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         // (closures box), the runtime sets the member on OBJ receivers
         // and throws Node's TypeErrors on the rest. The receiver is
         // PROBED (tryLowerExpression) and claimed exactly when it lowers to
-        // dyn; typed receivers keep their own lowerings and fences.
-        if (!expr.left.questionDotToken) {
+        // dyn; typed receivers keep their own lowerings and fences. A
+        // private name is the field of its class (fieldTarget).
+        if (!expr.left.questionDotToken && !ts.isPrivateIdentifier(expr.left.name)) {
           const recv = tryLowerExpression(lowerer, expr.left.expression);
           if (recv && recv.type.kind === "dyn") {
             const loc = locOf(expr);
@@ -9385,10 +9435,11 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     ) {
       return lowerForAwaitStdin(lowerer, stmt);
     }
-    // A checked-dynamic NodeJS.ReadableStream iterates its native stream.
-    const dynStream = lowerForAwaitDynStream(lowerer, stmt, () =>
-      lowerForAwaitBuiltin(lowerer, stmt),
-    );
+    // A checked-dynamic NodeJS.ReadableStream iterates its native stream,
+    // and a Hash, Hmac, Cipheriv or Decipheriv iterates its Transform.
+    const dynStream =
+      lowerForAwaitDynStream(lowerer, stmt, () => lowerForAwaitBuiltin(lowerer, stmt)) ??
+      lowerForAwaitValueStream(lowerer, stmt, () => lowerForAwaitBuiltin(lowerer, stmt));
     if (dynStream) return dynStream;
     const builtin = lowerForAwaitBuiltin(lowerer, stmt);
     if (builtin) return builtin;
@@ -11594,10 +11645,23 @@ function lowerForInArray(
   try {
     const arr = lowerer.declareHiddenLocal("%inarr", arrExpr.type);
     const len = lowerer.declareHiddenLocal("%inlen", F64);
+    const keysT: IrType = { kind: "array", elem: STRING };
+    const keys = lowerer.declareHiddenLocal("%inkeys", keysT);
+    const total = lowerer.declareHiddenLocal("%intotal", F64);
     const i = lowerer.declareHiddenLocal("%ini", F64);
     i.mutable = true;
     const arrRef = (): IrExpr => ({ kind: "varRef", localId: arr.id, type: arrExpr.type, loc });
+    const keysRef = (): IrExpr => ({ kind: "varRef", localId: keys.id, type: keysT, loc });
+    const lenRef = (): IrExpr => ({ kind: "varRef", localId: len.id, type: F64, loc });
     const iRef = (): IrExpr => ({ kind: "varRef", localId: i.id, type: F64, loc });
+    const isIndex = (): IrExpr => ({
+      kind: "bin",
+      op: "<",
+      left: iRef(),
+      right: lenRef(),
+      type: BOOL,
+      loc,
+    });
     const liveLen = (): IrExpr => ({
       kind: "arrIntrinsic",
       method: "length",
@@ -11606,7 +11670,52 @@ function lowerForInArray(
       type: F64,
       loc,
     });
-    const keyInit: IrExpr = { kind: "toString", operand: iRef(), type: STRING, loc };
+    // Indices first, then the named keys the array had when the loop began.
+    const namedKey = (): IrExpr => ({
+      kind: "arrayGet",
+      arr: keysRef(),
+      index: { kind: "bin", op: "-", left: iRef(), right: lenRef(), type: F64, loc },
+      type: STRING,
+      loc,
+    });
+    const keyInit: IrExpr = {
+      kind: "ternary",
+      cond: isIndex(),
+      then: { kind: "toString", operand: iRef(), type: STRING, loc },
+      else_: namedKey(),
+      type: STRING,
+      loc,
+    };
+    // An index is visited while it is below the live length and not a hole,
+    // a named key while the array still has it.
+    const visits: IrExpr = {
+      kind: "ternary",
+      cond: isIndex(),
+      then: {
+        kind: "logical",
+        op: "&&",
+        left: { kind: "bin", op: "<", left: iRef(), right: liveLen(), type: BOOL, loc },
+        right: {
+          kind: "bin",
+          op: "!==",
+          left: { kind: "arrayState", arr: arrRef(), index: iRef(), type: F64, loc },
+          right: { kind: "numLit", value: 0, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      else_: {
+        kind: "libCall",
+        fn: "array.hasNamedKey",
+        args: [arrRef(), namedKey()],
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
 
     // The three binding forms, sharing the per-visit key declaration.
     let keyDecl: IrStmt;
@@ -11671,6 +11780,32 @@ function lowerForInArray(
         { kind: "varDecl", localId: arr.id, init: arrExpr, loc },
         { kind: "varDecl", localId: len.id, init: liveLen(), loc },
         {
+          kind: "varDecl",
+          localId: keys.id,
+          init: { kind: "libCall", fn: "array.namedKeys", args: [arrRef()], type: keysT, loc },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: total.id,
+          init: {
+            kind: "bin",
+            op: "+",
+            left: lenRef(),
+            right: {
+              kind: "arrIntrinsic",
+              method: "length",
+              receiver: keysRef(),
+              args: [],
+              type: F64,
+              loc,
+            },
+            type: F64,
+            loc,
+          },
+          loc,
+        },
+        {
           kind: "for",
           init: {
             kind: "varDecl",
@@ -11682,7 +11817,7 @@ function lowerForInArray(
             kind: "bin",
             op: "<",
             left: iRef(),
-            right: { kind: "varRef", localId: len.id, type: F64, loc },
+            right: { kind: "varRef", localId: total.id, type: F64, loc },
             type: BOOL,
             loc,
           },
@@ -11702,7 +11837,7 @@ function lowerForInArray(
           body: [
             {
               kind: "if",
-              cond: { kind: "bin", op: "<", left: iRef(), right: liveLen(), type: BOOL, loc },
+              cond: visits,
               then: [keyDecl, ...writes, ...body],
               else_: null,
               loc,

@@ -10,9 +10,7 @@ import {
 import { everyModuleNode } from "./traverse.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
 
-/** The fixed-width Buffer read/write method names (both "UInt" and "Uint"
- * spellings) a checked-dynamic method call routes to scr_bytes_dyn.c. */
-export const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
+const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
   ["read", "write"].flatMap((rw) => [
     ...["UInt", "Uint"].flatMap((u) =>
       ["8", "16LE", "16BE", "32LE", "32BE"].map((w) => `${rw}${u}${w}`),
@@ -31,6 +29,45 @@ export const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
   ]),
 );
 
+/** Buffer.prototype members scr_bytes_dyn.c refuses on Buffer receivers. */
+const DYN_BUFFER_REFUSED_METHODS: readonly string[] = [
+  ...["read", "write"].flatMap((rw) => [
+    ...["UIntLE", "UIntBE", "UintLE", "UintBE", "IntLE", "IntBE"].map((n) => `${rw}${n}`),
+    ...["BigUInt64", "BigUint64", "BigInt64"].flatMap((n) => [`${rw}${n}LE`, `${rw}${n}BE`]),
+  ]),
+  ...["ascii", "base64", "base64url", "latin1", "hex", "ucs2", "utf8"].flatMap((enc) => [
+    `${enc}Slice`,
+    `${enc}Write`,
+  ]),
+  "inspect",
+];
+
+/** The scr_bytes_dyn.c entry, one per method family, that a checked-dynamic
+ * call of a Buffer.prototype method name routes to: the fixed-width reads and
+ * writes (both "UInt" and "Uint" spellings), write, fill, toString, the
+ * searches, and the other Buffer-only members. Each runs the method on a
+ * Buffer receiver and gives any other receiver the ordinary dispatch. */
+export const DYN_BUFFER_METHODS: ReadonlyMap<string, string> = new Map([
+  ...[...DYN_BUFFER_NUM_METHODS].map((m): [string, string] => [m, "scr_dyn_invoke_buffer_num"]),
+  ["write", "scr_dyn_invoke_buffer_write"],
+  ["fill", "scr_dyn_invoke_buffer_fill"],
+  ["toString", "scr_dyn_invoke_buffer_to_string"],
+  ...["indexOf", "lastIndexOf", "includes"].map((m): [string, string] => [
+    m,
+    "scr_dyn_invoke_buffer_search",
+  ]),
+  ...[
+    "toJSON",
+    "equals",
+    "compare",
+    "copy",
+    "swap16",
+    "swap32",
+    "swap64",
+    ...DYN_BUFFER_REFUSED_METHODS,
+  ].map((m): [string, string] => [m, "scr_dyn_invoke_buffer"]),
+]);
+
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // DEP0040 rides the dyn-async unit's warning machinery.
   "async.awaitDyn",
@@ -38,6 +75,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.propsInstall",
   "child.propsResolve",
   "crypto.native",
+  // The crypto global's object extends crypto.native's.
+  "webcrypto.object",
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
@@ -200,6 +239,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.prop",
   "stream.stdioWritable",
   "stream.unboxDyn",
+  "stream.handleStream",
   "stream.unpipeDyn",
   "stream.workerStdio",
 ]);
@@ -611,8 +651,9 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
-   * inspect unit. */
-  cipher: rule({ fns: ["crypto.cipherNew"] }),
+   * inspect unit. WebCrypto's encrypt and decrypt (scr_webcrypto_aes.c)
+   * link the same archive. */
+  cipher: rule({ fns: ["crypto.cipherNew", "webcrypto.encrypt", "webcrypto.decrypt"] }),
   copying: rule({
     expr: (node, _tables) =>
       (node.kind === "arrIntrinsic" && COPYING_ARR_METHODS.has(node.method)) ||
@@ -639,12 +680,15 @@ const RUNTIME_FEATURE_RULES = {
       ),
     // The legacy url functions, crypto.createCipheriv and
     // ecdh.setPublicKey emit their deprecation warnings through the
-    // dyn-async unit; scr_wasm.c boxes its handles and promises through it.
+    // dyn-async unit (WebCrypto's encrypt and decrypt link scr_cipher.c
+    // too); scr_wasm.c boxes its handles and promises through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
+      "webcrypto.encrypt",
+      "webcrypto.decrypt",
       "crypto.ecdhNew",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
@@ -695,10 +739,10 @@ const RUNTIME_FEATURE_RULES = {
   handleProps: rule({ fns: ["child.propsInstall"] }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
-  /** Fixed-width Buffer read/write methods called on checked-dynamic
-   * values (scr_bytes_dyn.c). */
-  dynBufferNum: rule({
-    expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_NUM_METHODS.has(node.method),
+  /** Buffer.prototype methods called on checked-dynamic values
+   * (scr_bytes_dyn.c). */
+  dynBuffer: rule({
+    expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_METHODS.has(node.method),
   }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({ fns: ["buffer.byteLenValue", "buffer.allocValue", "fs.realpathValue"] }),
@@ -751,6 +795,8 @@ const RUNTIME_FEATURE_RULES = {
       "global.native",
       "util.styleText",
       "crypto.cipherNew",
+      "webcrypto.encrypt",
+      "webcrypto.decrypt",
       "crypto.ecdhNew",
       "crypto.ecdhConvertKey",
       ...BUILTIN_CLASS_LIB_FNS,
@@ -899,7 +945,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     dynForAwait: false,
-    dynBufferNum: false,
+    dynBuffer: false,
     builtinValues: false,
     symbol: false,
     tls: false,

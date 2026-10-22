@@ -30,17 +30,22 @@ afterAll(async () => {
 });
 
 sourceLibraryTest.each([
-  { dynInvoke: false, dynTier: false },
-  { dynInvoke: true, dynTier: false },
-  { dynInvoke: false, dynTier: true },
-  { dynInvoke: true, dynTier: true },
+  { dynInvoke: false, dynTier: false, dynBuffer: false },
+  { dynInvoke: true, dynTier: false, dynBuffer: false },
+  { dynInvoke: false, dynTier: true, dynBuffer: false },
+  { dynInvoke: true, dynTier: true, dynBuffer: false },
+  { dynInvoke: false, dynTier: false, dynBuffer: true },
+  { dynInvoke: true, dynTier: false, dynBuffer: true },
+  { dynInvoke: false, dynTier: true, dynBuffer: true },
+  { dynInvoke: true, dynTier: true, dynBuffer: true },
 ])(
-  "source library selects optional units for dynInvoke=$dynInvoke and dynTier=$dynTier",
-  async ({ dynInvoke, dynTier }) => {
-    const outPath = join(directory, `probe-${dynInvoke}-${dynTier}.a`);
-    await compileLibArchive({ cPath, outPath, dynInvoke, dynTier, sanitize: true });
+  "source library selects optional units for dynInvoke=$dynInvoke, dynTier=$dynTier and dynBuffer=$dynBuffer",
+  async ({ dynInvoke, dynTier, dynBuffer }) => {
+    const outPath = join(directory, `probe-${dynInvoke}-${dynTier}-${dynBuffer}.a`);
+    await compileLibArchive({ cPath, outPath, dynInvoke, dynTier, dynBuffer, sanitize: true });
     const archive = await readFile(outPath);
     expect(archive.includes(Buffer.from("scr_dyn_typed_array_proto_set"))).toBe(dynInvoke);
     expect(archive.includes(Buffer.from("scr_js_load_probe"))).toBe(dynTier);
+    expect(archive.includes(Buffer.from("scr_dyn_invoke_buffer_num"))).toBe(dynInvoke && dynBuffer);
   },
 );
