@@ -1,4 +1,5 @@
 import { InternalCompilerError } from "../errors.js";
+import { keyedHelperName } from "./lowering/stable-names.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -252,6 +253,8 @@ function comparePriority(left: DeclaredOrderPriority, right: DeclaredOrderPriori
 export class ShapeRegistry {
   /** Existing layouts change only when a recursive placeholder closes. */
   revision = 0;
+  /** Each shape id with a second hash of its key (keyedHelperName). */
+  readonly keyedNameKeys = new Map<string, number>();
   private readonly byKey = new Map<string, string>();
   private readonly byId = new Map<string, IrRecordShape>();
   /** Historical emit-order rank of the declaration-order metadata each
@@ -270,7 +273,7 @@ export class ShapeRegistry {
    * writer after all priority candidates have closed. */
   private readonly derivedDeclaredOrderFinalizers: (() => void)[] = [];
   private currentDeclaredOrderPriority: DeclaredOrderPriority = [0, 0];
-  /** All interned shapes in first-seen (`r0`, `r1`, ...) order. */
+  /** All interned shapes in first-seen order. */
   readonly shapes: IrRecordShape[] = [];
   /** ts.Types currently being mapped — a BACK-REFERENCE to one of these is
    * the recursive knot (`interface TreeNode { children: TreeNode[] }`):
@@ -391,10 +394,12 @@ export class ShapeRegistry {
   /** The shape id a back-reference to an in-progress type resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
    * entry (empty fields) the outer frame finalizes. */
-  recursiveRef(t: ts.Type): string {
+  recursiveRef(t: ts.Type, description: string): string {
     let id = this.recIds.get(t);
     if (id === undefined) {
-      id = `r${this.shapes.length}`;
+      id = keyedHelperName(this, "r", `recursive:${description}`, "");
+      if (this.byId.has(id))
+        throw new InternalCompilerError(`two recursive types share the description ${description}`);
       const shape: IrRecordShape = { id, fields: [] };
       this.byId.set(id, shape);
       this.shapes.push(shape);
@@ -463,7 +468,7 @@ export class ShapeRegistry {
     const key = this.keyOf(fields, tuple, indexValue);
     let id = this.byKey.get(key);
     if (id === undefined) {
-      id = `r${this.shapes.length}`;
+      id = keyedHelperName(this, "r", key, "");
       const shape: IrRecordShape = {
         id,
         fields,
@@ -541,6 +546,17 @@ export class ShapeRegistry {
   }
 }
 
+/** A recursive checker type's printed form and first declaration, which
+ * name its placeholder whichever frame first reaches it. */
+function recursiveTypeName(t: ts.Type, ctx: Pick<TypeMapperCtx, "checker">): string {
+  const symbol = t.getAliasSymbol() ?? t.getSymbol();
+  const declaration = symbol?.declarations[0];
+  const where = declaration
+    ? `${ts.getSourceFileOfNode(declaration).fileName}:${declaration.pos}`
+    : "";
+  return `${ctx.checker.typeToString(t)}@${where}`;
+}
+
 /** The frontend's union interner — mirrors ShapeRegistry. A union's
  * canonical identity includes its typeKey-sorted arms and literal
  * discriminator contract. An arm's index in that list IS its runtime tag.
@@ -548,10 +564,12 @@ export class ShapeRegistry {
 export class UnionRegistry {
   /** Existing arm/discriminator contracts change when a placeholder closes. */
   revision = 0;
+  /** Each union id with a second hash of its key (keyedHelperName). */
+  readonly keyedNameKeys = new Map<string, number>();
   private readonly byKey = new Map<string, string>();
   private readonly byId = new Map<string, IrUnionDef>();
   private readonly armTags = new Map<string, Map<string, number[]>>();
-  /** All interned unions in first-seen (`u0`, `u1`, ...) order. */
+  /** All interned unions in first-seen order. */
   readonly unions: IrUnionDef[] = [];
   /** ts.Types currently being mapped — a back-reference to one is the
    * recursive knot passing through a union (`type Tree = Leaf | Branch`
@@ -568,10 +586,12 @@ export class UnionRegistry {
   /** The union id a back-reference to an in-progress union resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
    * entry (empty arms) the outer frame finalizes. */
-  recursiveRef(t: ts.Type): string {
+  recursiveRef(t: ts.Type, description: string): string {
     let id = this.recIds.get(t);
     if (id === undefined) {
-      id = `u${this.unions.length}`;
+      id = keyedHelperName(this, "u", `recursive:${description}`, "");
+      if (this.byId.has(id))
+        throw new InternalCompilerError(`two recursive types share the description ${description}`);
       const def: IrUnionDef = { id, arms: [] };
       this.byId.set(id, def);
       this.unions.push(def);
@@ -621,7 +641,7 @@ export class UnionRegistry {
     const key = JSON.stringify([arms.map(typeKey), discriminant]);
     let id = this.byKey.get(key);
     if (id === undefined) {
-      id = `u${this.unions.length}`;
+      id = keyedHelperName(this, "u", key, "");
       const def: IrUnionDef = { id, arms, ...(discriminant ? { discriminant } : {}) };
       this.byKey.set(key, id);
       this.byId.set(id, def);
@@ -4651,7 +4671,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const knownRecursive = unions.recursiveUnionFor(widened);
     if (knownRecursive !== undefined) return { kind: "union", unionId: knownRecursive };
     if (unions.inProgress.has(widened)) {
-      return { kind: "union", unionId: unions.recursiveRef(widened) };
+      return {
+        kind: "union",
+        unionId: unions.recursiveRef(widened, recursiveTypeName(widened, ctx)),
+      };
     }
     unions.inProgress.add(widened);
     const sensitivityAtEntry = contextResolutions;
@@ -6995,7 +7018,10 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // frame completes (finalizeRecursive below). Backends represent records
   // as heap references, so the self-reference is an ordinary pointer.
   if (shapes.inProgress.has(widened)) {
-    return { kind: "record", shapeId: shapes.recursiveRef(widened) };
+    return {
+      kind: "record",
+      shapeId: shapes.recursiveRef(widened, recursiveTypeName(widened, ctx)),
+    };
   }
   shapes.inProgress.add(widened);
   const sensitivityAtEntry = contextResolutions;
