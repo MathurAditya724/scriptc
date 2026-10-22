@@ -72,6 +72,7 @@ import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { addRecordResultEntries } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
+import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { INT32_RANGE, type IntegerRange, type IntegerRanges } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
@@ -442,6 +443,14 @@ export function lowRegionTarget(platform: string, sanitize: boolean): boolean {
   return platform === "linux" && !sanitize;
 }
 
+/** Function versions on loop-bounding number parameters
+ * (ir/parameter-versions.ts). Library builds have no int32 entries, and a
+ * module that observes call stacks could see the version's frame. */
+function versionParameters(mod: IrModule): IrModule {
+  if (mod.lib !== undefined || observesStacks(mod)) return mod;
+  return versionLoopBoundParameters(mod, mangleFunction);
+}
+
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
@@ -449,20 +458,22 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
   // Keep source storage intact for debugger inspection in dev builds.
   return new LlEmitter(
     options.debugSources === undefined
-      ? addRecordResultEntries(
-          scalarizeNumericRecords(
-            specializeCallbackCalls(
-              specializeNumericCalls(
-                foldConstantGlobals(
-                  copyStableCaptures(
-                    resolveSelfCaptures(
-                      hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+      ? versionParameters(
+          addRecordResultEntries(
+            scalarizeNumericRecords(
+              specializeCallbackCalls(
+                specializeNumericCalls(
+                  foldConstantGlobals(
+                    copyStableCaptures(
+                      resolveSelfCaptures(
+                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                      ),
                     ),
                   ),
+                  mangleFunction,
                 ),
                 mangleFunction,
               ),
-              mangleFunction,
             ),
           ),
         )
@@ -481,20 +492,22 @@ export function emitLlvmModuleSource(
   const mod = unshareNodes(input);
   const parts = new LlEmitter(
     options.debugSources === undefined
-      ? addRecordResultEntries(
-          scalarizeNumericRecords(
-            specializeCallbackCalls(
-              specializeNumericCalls(
-                foldConstantGlobals(
-                  copyStableCaptures(
-                    resolveSelfCaptures(
-                      hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+      ? versionParameters(
+          addRecordResultEntries(
+            scalarizeNumericRecords(
+              specializeCallbackCalls(
+                specializeNumericCalls(
+                  foldConstantGlobals(
+                    copyStableCaptures(
+                      resolveSelfCaptures(
+                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                      ),
                     ),
                   ),
+                  mangleFunction,
                 ),
                 mangleFunction,
               ),
-              mangleFunction,
             ),
           ),
         )
