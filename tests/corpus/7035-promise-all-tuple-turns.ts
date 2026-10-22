@@ -26,6 +26,16 @@ async function text(): Promise<string> {
 async function both(): Promise<[number, string]> {
   return Promise.all([num(), text()]);
 }
+const thenable: any = {
+  get then() {
+    log.push("then getter");
+    return (resolve: (v: number) => void) => resolve(1);
+  },
+};
+function evaluated(): Promise<string> {
+  log.push("second entry evaluated");
+  return Promise.resolve("s");
+}
 interface Item {
   id: number;
 }
@@ -49,6 +59,9 @@ async function main(): Promise<void> {
   log.push(`returned ${h}${i}`);
   const mixed = await Promise.all([later("x", 3, "x"), 5, later("y", 1, true), undefined]);
   log.push(`mixed ${mixed[0]} ${mixed[1]} ${mixed[2]} ${mixed[3]}`);
+  // A dynamic entry's `then` getter runs after the whole array evaluated.
+  const [fromThenable, second] = await Promise.all([thenable, evaluated()]);
+  log.push(`thenable ${fromThenable} ${second}`);
   const raw: any = JSON.parse('{"value":41}');
   const [dynamic, counted] = await Promise.all([raw.value, later("z", 2, 2)]);
   log.push(`dynamic ${dynamic + counted}`);

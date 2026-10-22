@@ -72,7 +72,28 @@ function lowerTuplePromiseAll(
   const voidPromise: IrType & { kind: "promise" } = { kind: "promise", inner: VOID };
   const entriesT = arrayOf(voidPromise);
   const dynPromise: IrType = { kind: "promise", inner: DYN };
-  const entries = elems.map((e): IrExpr => {
+  // A checked-dynamic entry's PromiseResolve can run a `then` getter, which
+  // Node runs after the whole array literal evaluated. With such an entry,
+  // every entry evaluates into a hidden local first.
+  const staged: IrStmt[] = [];
+  const values = !elems.some((e) => e.type.kind === "dyn")
+    ? elems
+    : elems.map((e): IrExpr => {
+        if (e.kind === "unitLit") return e;
+        if (isUnitType(e.type)) {
+          staged.push({ kind: "exprStmt", expr: e, loc });
+          return {
+            kind: "unitLit",
+            unit: e.type.kind === "nullT" ? "null" : "undefined",
+            type: e.type,
+            loc,
+          };
+        }
+        const local = lowerer.declareHiddenLocal("%allValue", e.type);
+        staged.push({ kind: "varDecl", localId: local.id, init: e, loc });
+        return varRef(local.id, e.type, loc);
+      });
+  const entries = values.map((e): IrExpr => {
     let promise: IrExpr;
     if (e.type.kind === "promise") promise = e;
     else if (e.type.kind === "dyn")
@@ -164,7 +185,7 @@ function lowerTuplePromiseAll(
       loc,
     });
   }
-  return {
+  const all: IrExpr = {
     kind: "libCall",
     fn: "promise.allTuple",
     args: [
@@ -174,6 +195,9 @@ function lowerTuplePromiseAll(
     type: resultT,
     loc,
   };
+  return staged.length === 0
+    ? all
+    : { kind: "seqExpr", stmts: staged, result: all, type: resultT, loc };
 }
 
 /** `Promise.race([...])` on THE Promise global: the entries lower
