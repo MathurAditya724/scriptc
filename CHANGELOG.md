@@ -13,6 +13,7 @@ All notable changes to scriptc will be documented in this file.
 - **Faster builds of large programs:**
   - scriptc checks with tsc-ts 0.0.7, which answers contextual types and resolved signatures in batches, so lowering asks for them in one request per chunk instead of one per node. A native build of tsc-ts is 7% faster (110.5 → 103.5 s on 8 vCPUs, lowering 12% faster), with an identical executable.
   - The native compiler is built with profile-guided optimization, so tsc-ts builds 6.9% faster cold and 10.7% faster after an edit.
+  - The native compiler's optimization profile is refreshed, so a native build of tsc-ts is a further 10% faster (124.7 → 111.7 s on 16 vCPUs), with lowering 17% faster.
   - The class dispatch passes index their receivers by name instead of testing each one, and they reuse their per-function scans while a function's body is unchanged.
   - Checker replies resolve objects the compiler already holds from their ids without decoding them.
 - **Leaner builds:**
