@@ -99,7 +99,8 @@ export interface SemanticCompletion {
 /** Whether lowering asks the checker for contextual types and resolved
  * signatures in batches (`getContextualTypes`, `getResolvedSignatures`,
  * answered from tsc-ts 0.0.7 on). Off, the batch prefetches (checker.ts) do
- * nothing and lowering asks node by node. */
+ * nothing and lowering asks node by node. A server without a batch method
+ * (tsgo) answers it as unknown once, and the facade stops asking. */
 export const NODE_BATCH_QUERIES = true;
 
 /** The pinned checker's request surface over native objects. Every query
