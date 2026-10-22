@@ -104,6 +104,18 @@ test("other shapes keep the original text", () => {
   expect(unwrap(umd(`    exports.a = 1;`, "req, exp"))).toBeNull();
   // Code after the wrapper.
   expect(unwrap(umd(`    exports.a = 1;`) + "exports.b = 2;\n")).toBeNull();
+  // Other statements in the wrapper, which unwrapping would drop.
+  const wrapped = umd(`    exports.a = 1;`);
+  const call = "        var v = factory(require, exports);\n";
+  expect(unwrap(wrapped.replace(call, call + "        exports.b = 2;\n"))).toBeNull();
+  expect(unwrap(wrapped.replace(call, "        exports.b = 2;\n" + call))).toBeNull();
+  expect(unwrap(wrapped.replace("    }\n})(", "    }\n    exports.b = 2;\n})("))).toBeNull();
+  expect(
+    unwrap(wrapped.replace("define.amd) {", "define.amd) {\n        exports.b = 2;")),
+  ).toBeNull();
+  expect(
+    unwrap(wrapped.replace("define(", "exports.b = 2;\n    }\n    else {\n        define(")),
+  ).toBeNull();
   // Not a UMD wrapper.
   expect(unwrap(`exports.a = 1;\n`)).toBeNull();
 });

@@ -23,8 +23,8 @@
  * the module's top level, where its requires and export assignments are the
  * module's own.
  *
- * Accepted: the wrapper is the file's only statement, its CommonJS branch
- * calls the factory as `factory(require, exports)`, the factory's
+ * Accepted: the wrapper is the file's only statement, the wrapper's body is
+ * exactly the emit above (so dropping it drops nothing else), the factory's
  * parameters are exactly `require` and `exports`, and the body uses no
  * `return` or `arguments` of its own. `this` in the body is the factory's
  * receiver, not the module's: it may appear only in TypeScript's helper
@@ -54,7 +54,7 @@ export function unwrapUmdFactory(sf: ts.SourceFile): string | null {
   const wrapperParams = wrapper.parameters.nodes;
   if (wrapperParams.length !== 1 || !isPlainParameter(wrapperParams[0]!)) return null;
   const factoryName = (wrapperParams[0]!.name as ts.Identifier).text;
-  if (!callsFactoryForCommonJs(wrapper, factoryName)) return null;
+  if (!isTypeScriptUmdWrapper(wrapper, factoryName)) return null;
   const params = factory.parameters.nodes;
   if (
     params.length !== 2 ||
@@ -83,35 +83,49 @@ function isPlainParameter(p: ts.ParameterDeclaration): boolean {
   return ts.isIdentifier(p.name) && p.initializer === undefined && p.dotDotDotToken === undefined;
 }
 
-/** True when the wrapper's first statement is TypeScript's CommonJS test,
- * `if (typeof module === "object" && typeof module.exports === "object")`,
- * whose branch starts by calling the factory as `factory(require, exports)`. */
-function callsFactoryForCommonJs(wrapper: ts.FunctionExpression, factoryName: string): boolean {
-  const first = wrapper.body?.statements.nodes[0];
-  if (first === undefined || !ts.isIfStatement(first)) return false;
+/** True when the wrapper body is exactly TypeScript's emit and nothing else:
+ * one `if` statement whose CommonJS branch holds only the factory call and
+ * the `module.exports` assignment, and whose `else`, when present, is only
+ * the AMD branch:
+ *
+ *   if (typeof module === "object" && typeof module.exports === "object") {
+ *       var v = factory(require, exports);
+ *       if (v !== undefined) module.exports = v;
+ *   }
+ *   else if (typeof define === "function" && define.amd) {
+ *       define([...], factory);
+ *   }
+ *
+ * Unwrapping drops the wrapper, so any other statement in it would be lost. */
+function isTypeScriptUmdWrapper(wrapper: ts.FunctionExpression, factoryName: string): boolean {
+  const stmts = wrapper.body?.statements.nodes ?? [];
+  if (stmts.length !== 1 || !ts.isIfStatement(stmts[0]!)) return false;
+  const test = stmts[0];
   const sf = ts.getSourceFileOfNode(wrapper);
-  const condition = sf.text.slice(tokenStartOfNode(first.expression), first.expression.end);
-  if (
-    condition.replace(/\s+/g, " ") !==
-    'typeof module === "object" && typeof module.exports === "object"'
-  )
+  const text = (n: ts.Node): string =>
+    sf.text.slice(tokenStartOfNode(n), n.end).replace(/\s+/g, " ");
+  if (text(test.expression) !== 'typeof module === "object" && typeof module.exports === "object"')
     return false;
-  const branch = first.thenStatement;
-  const call = ts.isBlock(branch) ? branch.statements.nodes[0] : undefined;
-  if (call === undefined || !ts.isVariableStatement(call)) return false;
+  const branch = test.thenStatement;
+  if (!ts.isBlock(branch) || branch.statements.nodes.length !== 2) return false;
+  const [call, assign] = branch.statements.nodes as [ts.Statement, ts.Statement];
+  if (!ts.isVariableStatement(call)) return false;
   const declarations = call.declarationList.declarations.nodes;
-  const init = declarations.length === 1 ? declarations[0]!.initializer : undefined;
-  if (init === undefined || !ts.isCallExpression(init)) return false;
-  const args = init.arguments.nodes;
-  return (
-    ts.isIdentifier(init.expression) &&
-    init.expression.text === factoryName &&
-    args.length === 2 &&
-    ts.isIdentifier(args[0]!) &&
-    args[0].text === "require" &&
-    ts.isIdentifier(args[1]!) &&
-    args[1].text === "exports"
-  );
+  const name = declarations.length === 1 ? declarations[0]!.name : undefined;
+  if (name === undefined || !ts.isIdentifier(name)) return false;
+  const result = name.text;
+  if (text(call) !== `var ${result} = ${factoryName}(require, exports);`) return false;
+  if (text(assign) !== `if (${result} !== undefined) module.exports = ${result};`) return false;
+  const amd = test.elseStatement;
+  if (amd === undefined) return true;
+  if (!ts.isIfStatement(amd) || amd.elseStatement !== undefined) return false;
+  if (text(amd.expression) !== 'typeof define === "function" && define.amd') return false;
+  const define = ts.isBlock(amd.thenStatement) ? amd.thenStatement.statements.nodes : [];
+  if (define.length !== 1 || !ts.isExpressionStatement(define[0]!)) return false;
+  const defineCall = define[0].expression;
+  if (!ts.isCallExpression(defineCall) || text(defineCall.expression) !== "define") return false;
+  const last = defineCall.arguments.nodes.at(-1);
+  return last !== undefined && ts.isIdentifier(last) && last.text === factoryName;
 }
 
 /** True when the factory body behaves the same as the module's top level:
