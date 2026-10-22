@@ -10977,13 +10977,83 @@ function fenceClassCopyIntoFreshObject(
  * that function returns, not Object.prototype.toString's string. */
 function jsAssignsOwnToString(lowerer: Lowerer, receiver: ts.Expression): boolean {
   if (!ts.isIdentifier(receiver)) return false;
-  let sym = lowerer.checker.getSymbolAtLocation(receiver);
-  if (sym !== undefined && (sym.flags & ts.SymbolFlags.Alias) !== 0)
-    sym = lowerer.checker.getAliasedSymbol(sym);
-  const decl = sym?.valueDeclaration ?? sym?.declarations[0];
+  const decl = bindingDeclaration(lowerer, receiver);
   if (decl === undefined) return false;
   const sf = ts.getSourceFileOfNode(decl);
   if (!isJsSourceFile(sf)) return false;
-  const name = ts.symbolName(sym!);
-  return new RegExp(`\\b${name.replace(/[$]/g, "\\$")}\\.toString\\s*=[^=]`).test(sf.text);
+  let targets = lowerer.ownToStringTargets.get(sf);
+  if (targets === undefined) {
+    targets = ownToStringTargets(lowerer, sf);
+    lowerer.ownToStringTargets.set(sf, targets);
+  }
+  return targets.has(decl);
+}
+
+const unparenthesized = (e: ts.Expression): ts.Expression => {
+  let out = e;
+  while (ts.isParenthesizedExpression(out)) out = out.expression;
+  return out;
+};
+
+/** The declaration of the binding an identifier names, through imports. */
+function bindingDeclaration(lowerer: Lowerer, id: ts.Identifier): ts.Node | undefined {
+  let sym = lowerer.checker.getSymbolAtLocation(id);
+  if (sym !== undefined && (sym.flags & ts.SymbolFlags.Alias) !== 0)
+    sym = lowerer.checker.getAliasedSymbol(sym);
+  return sym?.valueDeclaration ?? sym?.declarations?.[0];
+}
+
+/** The declarations of the bindings a file's assignments `x.toString = ...`
+ * (or `x["toString"] = ...`) give an own `toString`. An assignment through
+ * the parameter of an immediately called function counts for the binding
+ * the call passes (`(function (ns) { ns.toString = f; })(ns || (ns = {}))`). */
+function ownToStringTargets(lowerer: Lowerer, sf: ts.SourceFile): Set<ts.Node> {
+  const targets = new Set<ts.Node>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const left = unparenthesized(node.left);
+      const named =
+        (ts.isPropertyAccessExpression(left) && left.name.text === "toString") ||
+        (ts.isElementAccessExpression(left) &&
+          ts.isStringLiteralLike(left.argumentExpression) &&
+          left.argumentExpression.text === "toString");
+      const target = named
+        ? unparenthesized(
+            (left as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression,
+          )
+        : undefined;
+      if (target !== undefined && ts.isIdentifier(target)) {
+        const decl = bindingDeclaration(lowerer, target);
+        if (decl !== undefined) {
+          targets.add(decl);
+          const passed = iifeArgumentDeclaration(lowerer, decl);
+          if (passed !== undefined) targets.add(passed);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return targets;
+}
+
+/** For a parameter of an immediately called function, the declaration of
+ * the binding its argument names: `x`, `x || (x = {})` or `(x = {})`. */
+function iifeArgumentDeclaration(lowerer: Lowerer, param: ts.Node): ts.Node | undefined {
+  if (!ts.isParameter(param)) return undefined;
+  const fn = param.parent;
+  if (!ts.isFunctionExpression(fn) && !ts.isArrowFunction(fn)) return undefined;
+  let callee: ts.Node = fn;
+  while (ts.isParenthesizedExpression(callee.parent)) callee = callee.parent;
+  const call = callee.parent;
+  if (!ts.isCallExpression(call) || call.expression !== callee) return undefined;
+  const index = fn.parameters.nodes.indexOf(param);
+  let arg = index < 0 ? undefined : call.arguments.nodes[index];
+  if (arg === undefined) return undefined;
+  arg = unparenthesized(arg);
+  if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    arg = unparenthesized(arg.left);
+  if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+    arg = unparenthesized(arg.left);
+  return ts.isIdentifier(arg) ? bindingDeclaration(lowerer, arg) : undefined;
 }
