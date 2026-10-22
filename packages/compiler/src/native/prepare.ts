@@ -7,7 +7,7 @@ import type {
   CompileLibraryOptions,
   CompileRequestOptions,
 } from "../compile-types.js";
-import { emitLlvmModule, lowRegionTarget } from "../backend/llvm/emitter.js";
+import { emitLlvmModule, type ForkPrimitives, lowRegionTarget } from "../backend/llvm/emitter.js";
 import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { executableLinkFeatures } from "../backend/executable-features.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
@@ -24,6 +24,7 @@ import {
   trackedReadFile,
 } from "../frontend/input-tracker.js";
 import { provenanceSources } from "../frontend/provenance-registry.js";
+import { processFork } from "../frontend/process-fork.js";
 import { tokenEquivalentSource } from "../frontend/token-equivalence.js";
 import { llvmBytes, wtf8Bytes } from "../backend/literals.js";
 import { prepareLibrary } from "../library/prepare.js";
@@ -362,6 +363,8 @@ export function prepareNativeExecutable(
           runtimeAbiMarker: outputKind === "obj" || outputKind === "exe",
           objectAudit: options.sanitize === true,
           lowRegion: lowRegionTarget(toolchain.target.platform, options.sanitize === true),
+          functionWorkers: emitWorkers(),
+          forkPrimitives: emitForkPrimitives(),
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
           ...(options.optimization === "dev" && !options.strip
@@ -497,4 +500,23 @@ export function prepareNativeLibrary(
   }
   timing("frontend-cache-publish");
   return input;
+}
+
+/** Worker processes that emit function bodies at a time
+ * (SCRIPTC_EMIT_WORKERS; 0 or 1 emits in this process). */
+function emitWorkers(): number {
+  const value = Number(process.env["SCRIPTC_EMIT_WORKERS"] ?? "4");
+  return Number.isFinite(value) && value > 1 ? Math.floor(value) : 1;
+}
+
+/** The process primitives emission workers fork with, unless the host
+ * cannot fork or this process is a worker itself. */
+function emitForkPrimitives(): ForkPrimitives | undefined {
+  const primitives = processFork.primitives;
+  if (primitives === null || processFork.worker) return undefined;
+  return {
+    fork: () => primitives.fork(),
+    exit: (code) => primitives.exit(code),
+    wait: (pid) => primitives.wait(pid),
+  };
 }

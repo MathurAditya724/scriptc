@@ -68,6 +68,13 @@ const CYC_MAX_TYPES = 32768;
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
+  /** Chunk emitters only (emit-journal.ts): EmitJournal's allocated, built,
+   * opened, used and entry. */
+  journalAllocated?: ((name: string, op: string, args: readonly unknown[]) => void) | undefined;
+  journalBuilt?: (() => void) | undefined;
+  journalOpened?: ((op: string) => void) | undefined;
+  journalUsed?: ((name: string, op: string, args: readonly unknown[]) => void) | undefined;
+  journalEntry?: ((table: string, key: string, value: unknown) => void) | undefined;
   /** The hierarchy root of a class (a program class or a runtime base),
    * or undefined for classes outside the class graph. */
   classRootOf?(className: string): string | undefined;
@@ -392,6 +399,7 @@ function nullableRetainSym(host: ShapeHost, arm: IrType): string {
   const sym = `@sc_nretain_${arm.kind}`;
   if (!host.nullableUnions.retainWrappers.has(sym))
     host.nullableUnions.retainWrappers.set(sym, retainSym(host, arm));
+  host.journalEntry?.("retainWrapper", sym, host.nullableUnions.retainWrappers.get(sym));
   return sym;
 }
 

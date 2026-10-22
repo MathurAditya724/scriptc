@@ -30,6 +30,7 @@ import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { compactRefLoadLines, compactRefStoreLines } from "./classes.js";
 import { elemAccess } from "./shapes.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
+import { integerOrNaNIndex } from "./wrapping-sums.js";
 
 const SCR_ARR_VALUE = 1;
 
@@ -77,12 +78,17 @@ function emitDenseGuard(
   const B = host.B;
   const size = host.sizeType;
   const integer = exactInteger(host, index, indexExpr);
+  const nanIndex = integer ? null : integerOrNaNIndex(host, index, indexExpr);
   let wide: string;
   let integral: string | null = null;
   if (integer) {
     // A proven integer needs no double round-trip. Negative signed values
     // compare above any length or capacity as unsigned 64-bit integers.
     wide = widenInteger(host, integer);
+  } else if (nanIndex) {
+    // An exact integer or NaN is an index exactly when it is ordered.
+    wide = nanIndex.wide;
+    integral = nanIndex.ordered;
   } else {
     // freeze keeps NaN/out-of-range conversions from producing poison; the
     // exact round-trip comparison then rejects every value that is not an

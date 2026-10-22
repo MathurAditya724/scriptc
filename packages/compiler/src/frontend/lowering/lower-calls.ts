@@ -6734,6 +6734,15 @@ export function lowerFilterNarrowCall(
   }
   const narrowed = outElem !== null && !typeEquals(outElem, elem);
   if (!narrowed && !isBooleanArg) return null;
+  // A written predicate (`(p): p is Cat => ...`, a guard function value)
+  // proves nothing at run time: the generic array HOF path filters the
+  // receiver's elements and converts the kept ones checked
+  // (filterResultElem).
+  if (
+    !isBooleanArg &&
+    ((!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) || argNode.type)
+  )
+    return null;
 
   const annotateEscape =
     "keep the receiver's element type instead — annotate the callback's return ': boolean' " +
@@ -6745,6 +6754,9 @@ export function lowerFilterNarrowCall(
       lowerer.badType(call, callT); // defensive: a narrowed non-union receiver
     }
     tag = lowerer.armTag(elem.unionId, outElem);
+    // Several kept arms: the generic path converts the kept elements to
+    // the narrower union (filterResultElem).
+    if (tag < 0 && !isBooleanArg) return null;
     if (tag < 0) {
       lowerer.unsupported(
         "SC1090",
@@ -6766,25 +6778,8 @@ export function lowerFilterNarrowCall(
     return { kind: "call", callee: helper, args: [receiver], type: arrayOf(outElem ?? elem), loc };
   }
 
-  // Inferred type predicate: inline function literal, NO return
-  // annotation (a written one is an unchecked assertion), and the
-  // checker reports a predicate over parameter 0.
-  if (!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) {
-    lowerer.unsupported(
-      "SC1090",
-      argNode,
-      `narrowing '.filter' through a callback VALUE ` +
-        `(only an inline callback whose predicate the checker inferred can re-tag — ${annotateEscape})`,
-    );
-  }
-  if (argNode.type) {
-    lowerer.unsupported(
-      "SC1090",
-      argNode,
-      `narrowing '.filter' with a hand-written type predicate ` +
-        `(a written 'x is T' is an unchecked assertion nothing validates at runtime — ${annotateEscape})`,
-    );
-  }
+  // An inferred type predicate: an inline function literal with no return
+  // annotation, over parameter 0 (written predicates returned above).
   // The receiver evaluates FIRST, in the enclosing function, like JS.
   const receiver = lowerer.lowerExpr(access.expression);
   const fnArg = lowerer.lowerExpr(argNode);

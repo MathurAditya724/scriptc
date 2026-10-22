@@ -51,6 +51,7 @@ import {
   STRING_CHAR_AT_INT_MARKER,
   STRING_CHAR_CODE_AT_DECL,
   STRING_CHAR_CODE_AT_INT_MARKER,
+  emitAsciiCharCode,
   STRING_UTF16_LEN_DECL,
 } from "./string-reads.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
@@ -60,6 +61,7 @@ import {
   emitDenseArrayPush,
 } from "./dense-array-access.js";
 import { emitUnionWiden } from "./expr-records.js";
+import { registerReplay } from "./emit-journal.js";
 
 export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string {
   const key = typeKey(inner);
@@ -67,6 +69,7 @@ export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string
   if (!sym) {
     sym = mangleResolveThunk(host.resolveThunks.size);
     host.resolveThunks.set(key, sym);
+    host.journal?.allocated(sym, "resolveThunkFor", [inner]);
     const v = vAdapters(host.shapeHost, inner);
     host.declare(`declare void @scr_resolve_ref_impl(ptr, ptr, ptr, ptr, ptr)`);
     host.resolveThunkDefs.push(
@@ -77,6 +80,7 @@ export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string
       `}`,
       ``,
     );
+    host.journal?.built();
   }
   return sym;
 }
@@ -326,8 +330,12 @@ export function emitStrIntrinsic(
       const t = B.tmp();
       const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
       if (index) {
-        host.declare(STRING_CHAR_CODE_AT_INT_MARKER);
         const wide = widenInteger(host, index);
+        // An enclosing loop version proved the string ASCII and the index
+        // below its length (bytes-loop-versions.ts).
+        if (host.bytesBounds.has(e))
+          return { name: emitAsciiCharCode(host, r.name, wide), type: e.type };
+        host.declare(STRING_CHAR_CODE_AT_INT_MARKER);
         B.line(`${t} = call double @sc_str_char_code_at_int(ptr ${r.name}, i64 ${wide})`);
         return { name: t, type: e.type };
       }
@@ -1548,3 +1556,5 @@ export function emitSetNew(host: LlvmEmitterContext, e: IrExpr & { kind: "setNew
   }
   return out;
 }
+
+registerReplay("resolveThunkFor", (host, args) => resolveThunkFor(host, args[0] as IrType));

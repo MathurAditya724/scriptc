@@ -563,6 +563,7 @@ export function regexLiteralTemplate(
     };
     host.regexInstances.set(key, re);
   }
+  host.journal?.entry("regex", key, re);
   return `@${re.sym}`;
 }
 
@@ -823,6 +824,7 @@ export function emitStringExpr(
         };
         host.templateStringsInstances.set(e.key, inst);
       }
+      host.journal?.entry("templateStrings", e.key, inst);
       return host.own({ name: host.retainFrame(`@${inst.sym}`, e.type), type: e.type });
     }
     case "regexIntrinsic":
