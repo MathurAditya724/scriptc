@@ -678,8 +678,15 @@ export function emitLocalArrayRead(
 ): { slot: string; type: IrType } | null {
   const B = host.B;
   const array = host.emitStableReceiver(read.array, [read.index]);
-  const integerIndex = inline ? host.emitIntegerLoopIndex(read.index) : null;
+  const loopIndex = inline ? host.emitIntegerLoopIndex(read.index) : null;
   const index = host.emitExpr(read.index);
+  // A proven integer index (a counter with a known range, say) needs no
+  // double round trip, as in a borrowed read.
+  const exact =
+    inline && loopIndex === null && host.sizeType === "i64"
+      ? exactInteger(host, index, read.index)
+      : null;
+  const integerIndex = loopIndex ?? (exact ? widenInteger(host, exact) : null);
   const nullable = read.type.kind === "union" ? host.nullableUnions.get(read.type.unionId) : null;
   if (nullable) {
     // A nullable union is the element pointer itself: borrowed from an
@@ -699,7 +706,7 @@ export function emitLocalArrayRead(
         array,
         index,
         integerIndex,
-        integerIndex !== null,
+        loopIndex !== null,
         store,
         no,
         slow,
@@ -760,7 +767,7 @@ export function emitLocalArrayRead(
       array,
       index,
       integerIndex,
-      integerIndex !== null,
+      loopIndex !== null,
       storeValue,
       no,
       slow,
