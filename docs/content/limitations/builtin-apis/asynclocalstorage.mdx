@@ -3,5 +3,8 @@
   Events of `net`, `tls`, `http` and `https` sockets, servers, requests and responses run with the stores Node runs them with.
   A socket's or client request's events see the context of the call that created it, and a server's events and its requests' and responses' events see the context of its `listen()` call.
   Socket `write` and `end` callbacks, `'finish'` and `server.close(callback)` see the context of their call.
-  Events and callbacks of other streams run with no store, where Node runs them in the context of the code that triggers them.
+  Stream events and callbacks run with the stores of the code that triggers them, as in Node.
+  Stream steps that Node defers with `process.nextTick` see the context that scheduled them, and `stream.finished` and `stream.pipeline` callbacks see the context of their call.
+  `fs` read and write streams and `zlib` streams run their events and callbacks in the context that created them.
+  Events of `child_process` children and of `http2` sessions and streams do not yet run in the contexts Node gives them.
   `AsyncResource` has no lowering yet.

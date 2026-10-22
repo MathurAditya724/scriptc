@@ -515,6 +515,10 @@ typedef struct ScrStreamTick {
   ScrError *err;   /* owned or NULL (SCR_ST_ERROR) */
   ScrClosure *cb;  /* owned or NULL (SCR_ST_AFTER_WRITE / SCR_ST_WCB_ERR / SCR_ST_WRITE_ERR) */
   bool hold;       /* SCR_ST_AFTER_WRITE: counted in w.after_holds */
+  /* The AsyncLocalStorage context active when the tick was scheduled (+1,
+   * NULL outside a store): Node schedules these steps with
+   * process.nextTick, so their events and callbacks run in it. */
+  ScrAlsCtx *ctx;
   struct ScrStreamTick *next;
 } ScrStreamTick;
 
@@ -531,6 +535,7 @@ static void scr_st_tick(ScrStream *s, ScrStreamTickOp op, ScrError *err /*moves*
   t->op = op;
   t->err = err;
   t->cb = cb;
+  t->ctx = scr_als_capture();
   if (scr_st_tail) scr_st_tail->next = t;
   else scr_st_head = t;
   scr_st_tail = t;
@@ -6861,6 +6866,21 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
 
 static void scr_stream_dispatch(void);
 
+/* A tick runs in the context it was scheduled in. */
+static void scr_stream_run_tick_in_context(ScrStreamTick *t) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(t->ctx);
+  scr_stream_run_tick(t);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_stream_tick_free(ScrStreamTick *t) {
+  scr_stream_release(t->s);
+  if (t->err) scr_error_release(t->err);
+  if (t->cb) scr_closure_release(t->cb);
+  scr_als_ctx_release(t->ctx);
+  free(t);
+}
+
 /* One tick-marker's dispatch: the queue's FIFO head (markers and entries
  * are enqueued 1:1 in the same order). After an uncaught throw the
  * remaining entries drop through the station's exc branch below, keeping
@@ -6870,11 +6890,8 @@ static void scr_stream_dispatch_one(void) {
   if (t == NULL || scr_exc_pending()) return;
   scr_st_head = t->next;
   if (scr_st_head == NULL) scr_st_tail = NULL;
-  scr_stream_run_tick(t);
-  scr_stream_release(t->s);
-  if (t->err) scr_error_release(t->err);
-  if (t->cb) scr_closure_release(t->cb);
-  free(t);
+  scr_stream_run_tick_in_context(t);
+  scr_stream_tick_free(t);
   if (scr_exc_pending()) scr_stream_dispatch(); /* its exc branch drops the rest */
 }
 
@@ -6883,11 +6900,8 @@ static void scr_stream_dispatch(void) {
     ScrStreamTick *t = scr_st_head;
     scr_st_head = t->next;
     if (scr_st_head == NULL) scr_st_tail = NULL;
-    scr_stream_run_tick(t);
-    scr_stream_release(t->s);
-    if (t->err) scr_error_release(t->err);
-    if (t->cb) scr_closure_release(t->cb);
-    free(t);
+    scr_stream_run_tick_in_context(t);
+    scr_stream_tick_free(t);
   }
   /* An uncaught throw ends the process (the loop returns to main): the
    * undelivered ticks are DROPPED — release their references here so the
@@ -6896,10 +6910,7 @@ static void scr_stream_dispatch(void) {
     while (scr_st_head != NULL) {
       ScrStreamTick *t = scr_st_head;
       scr_st_head = t->next;
-      scr_stream_release(t->s);
-      if (t->err) scr_error_release(t->err);
-      if (t->cb) scr_closure_release(t->cb);
-      free(t);
+      scr_stream_tick_free(t);
     }
     scr_st_tail = NULL;
   }

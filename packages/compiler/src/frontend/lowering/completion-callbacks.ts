@@ -1,7 +1,8 @@
 /* Completion callbacks in programs that use AsyncLocalStorage. Node runs
  * the callback of an operation a callback-style API starts (fs.readFile,
  * crypto.randomBytes, zlib.gzip, dns.lookup, server.listen, net.connect,
- * http.get, ...) with the stores active when the call started it. The runtime invokes these callbacks from
+ * http.get, stream.finished, stream.pipeline, ...) with the stores active
+ * when the call started it. The runtime invokes these callbacks from
  * the event loop, where the context is empty, so in programs whose
  * scheduling carries contexts (RuntimeFeatures asyncContext) each such
  * argument is bound to the active context at the call: als.bindCallback
@@ -50,6 +51,16 @@ const COMPLETION_CALLBACKS: ReadonlyMap<IrLibFn, CallbackPosition> = new Map<
   ["net.listenPathCb", 2],
   ["process.stderrWriteBytesCb", 2],
   ["process.stdoutWriteBytesCb", 2],
+  // stream.finished and stream.pipeline callbacks, which Node binds to
+  // the context of the call (eos' and pipeline's AsyncResource.bind).
+  ["stream.finished", 1],
+  ["stream.finishedDyn", 1],
+  ["stream.finishedOpts", "last"],
+  ["stream.finishedOptsSignal", "last"],
+  ["stream.pipeline", "last"],
+  ["stream.pipelineDyn", "last"],
+  ["stream.pipelineStages", "last"],
+  ["stream.pipelineStagesDyn", "last"],
   ["zlib.cbOpts", 3],
   ["zlib.cbOptsDyn", 3],
   ["zlib.deflateCb", 1],

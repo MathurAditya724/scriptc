@@ -1392,7 +1392,9 @@
           "tests/corpus/7111-als-bind-snapshot-options.ts",
           "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
           "tests/corpus/7119-als-net-event-context.mjs",
-          "tests/corpus/7380-als-http-event-context.mjs"
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -1447,7 +1449,9 @@
           "tests/corpus/7111-als-bind-snapshot-options.ts",
           "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
           "tests/corpus/7119-als-net-event-context.mjs",
-          "tests/corpus/7380-als-http-event-context.mjs"
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1525,7 +1529,9 @@
           "tests/corpus/7111-als-bind-snapshot-options.ts",
           "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
           "tests/corpus/7119-als-net-event-context.mjs",
-          "tests/corpus/7380-als-http-event-context.mjs"
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1557,7 +1563,9 @@
           "tests/corpus/7111-als-bind-snapshot-options.ts",
           "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
           "tests/corpus/7119-als-net-event-context.mjs",
-          "tests/corpus/7380-als-http-event-context.mjs"
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1589,7 +1597,9 @@
           "tests/corpus/7111-als-bind-snapshot-options.ts",
           "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
           "tests/corpus/7119-als-net-event-context.mjs",
-          "tests/corpus/7380-als-http-event-context.mjs"
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1621,7 +1631,9 @@
           "tests/corpus/7111-als-bind-snapshot-options.ts",
           "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
           "tests/corpus/7119-als-net-event-context.mjs",
-          "tests/corpus/7380-als-http-event-context.mjs"
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1653,7 +1665,9 @@
           "tests/corpus/7111-als-bind-snapshot-options.ts",
           "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
           "tests/corpus/7119-als-net-event-context.mjs",
-          "tests/corpus/7380-als-http-event-context.mjs"
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1962,6 +1976,8 @@
           "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
           "tests/corpus/7119-als-net-event-context.mjs",
           "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -2529,7 +2545,9 @@
           "tests/corpus/7111-als-bind-snapshot-options.ts",
           "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
           "tests/corpus/7119-als-net-event-context.mjs",
-          "tests/corpus/7380-als-http-event-context.mjs"
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs"
         ]
       },
       "anchorSource": "exact"

@@ -1235,10 +1235,14 @@ static SCR_TL ScrNtick *scr_nt_tail = NULL;
  * it, because 'exit' listeners run AFTER the loop's teardown and may
  * enqueue ticks that must never run (Node) yet must not leak. */
 
+static ScrClosure *scr_als_bind(ScrClosure *cb /*moves*/);
+
+/* A tick runs with the AsyncLocalStorage context active when it was
+ * queued, as Node's process.nextTick does. */
 void scr_next_tick(ScrClosure *cb /*moves*/) {
   ScrNtick *t = calloc(1, sizeof *t);
   if (!t) scr_oom();
-  t->cb = cb;
+  t->cb = scr_als_bind(cb);
   if (scr_nt_tail) scr_nt_tail->next = t;
   else scr_nt_head = t;
   scr_nt_tail = t;
@@ -4022,7 +4026,7 @@ double scr_set_timeout_handle_als(ScrClosure *cb, double ms) {
   return scr_set_timeout_handle(scr_als_bind(cb), ms);
 }
 double scr_set_immediate_als(ScrClosure *cb) { return scr_set_immediate(scr_als_bind(cb)); }
-void scr_next_tick_als(ScrClosure *cb) { scr_next_tick(scr_als_bind(cb)); }
+void scr_next_tick_als(ScrClosure *cb) { scr_next_tick(cb); } /* scr_next_tick binds */
 void scr_queue_microtask_als(ScrClosure *cb) { scr_queue_microtask(scr_als_bind(cb)); }
 
 /* A typed callback bound to the context active when it was bound: the
