@@ -630,6 +630,8 @@ async function compileExecutableNative(
     tlsCa: features.tlsCa,
     cipher: features.cipher,
     ecdh: features.ecdh,
+    pki: features.pki,
+    ed25519: features.ed25519,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
