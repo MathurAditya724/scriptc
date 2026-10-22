@@ -410,36 +410,38 @@ export function frontendInputsSemanticallyMatch(
   exclusions: FrontendInputExclusions = {},
 ): FrontendSemanticMatch | null {
   if (!validFrontendInputSnapshot(snapshot)) return null;
-  const sourceProbes = new Map(
-    snapshot.probes
-      .filter((probe): probe is Extract<FrontendInputProbe, { op: "file" }> => probe.op === "file")
-      .map((probe) => [probe.path, probe]),
-  );
+  const sourceProbes = new Map<string, Extract<FrontendInputProbe, { op: "file" }>>();
+  for (const probe of snapshot.probes) if (probe.op === "file") sourceProbes.set(probe.path, probe);
   for (const [path, previous] of previousSources) {
     if (sourceProbes.get(path)?.digest !== frontendSourceDigest(previous)) return null;
   }
   const changed: FrontendSemanticChange[] = [];
   const currentSources = new Map<string, string>();
-  const adjusted: FrontendInputSnapshot = {
-    ...snapshot,
-    probes: snapshot.probes.map((probe) => {
-      if (probe.op !== "file") return probe;
-      const previous = previousSources.get(probe.path);
-      if (previous === undefined || frontendSourceDigest(previous) !== probe.digest) return probe;
-      let current: string;
-      try {
-        current = readFileSync(probe.path, "utf8");
-      } catch {
-        return probe;
-      }
-      const currentDigest = frontendSourceDigest(current);
-      currentSources.set(probe.path, current);
-      if (currentDigest === probe.digest) return probe;
-      if (!isSemanticEquivalent(probe.path, previous, current)) return probe;
-      changed.push({ path: probe.path, previous, current });
-      return { ...probe, digest: currentDigest };
-    }),
-  };
+  const probes: FrontendInputProbe[] = [];
+  for (const probe of snapshot.probes) {
+    const previous = probe.op === "file" ? previousSources.get(probe.path) : undefined;
+    if (probe.op !== "file" || previous === undefined) {
+      probes.push(probe);
+      continue;
+    }
+    let current: string;
+    try {
+      current = readFileSync(probe.path, "utf8");
+    } catch {
+      return null;
+    }
+    const currentDigest = frontendSourceDigest(current);
+    currentSources.set(probe.path, current);
+    if (currentDigest === probe.digest) {
+      probes.push(probe);
+      continue;
+    }
+    // One edit that is not equivalent already rules out the match.
+    if (!isSemanticEquivalent(probe.path, previous, current)) return null;
+    changed.push({ path: probe.path, previous, current });
+    probes.push({ ...probe, digest: currentDigest });
+  }
+  const adjusted: FrontendInputSnapshot = { ...snapshot, probes };
   if (!frontendInputsStillMatch(adjusted, exclusions)) return null;
   for (const [path, previous] of previousSources) {
     if (!currentSources.has(path)) {

@@ -1,0 +1,370 @@
+/* Token equivalence of two versions of a source file, for frontend cache
+ * reuse after edits that touch only comments and whitespace.
+ *
+ * Two versions are equivalent when they have the same tokens, in the same
+ * order, with line breaks between the same pairs of tokens (automatic
+ * semicolon insertion depends on them), and differ only in whitespace and
+ * in comments that cannot affect compilation. The scanner answers "not
+ * equivalent" whenever it cannot classify text with certainty, so a wrong
+ * answer can only cost a cache hit:
+ *
+ * - Every comment in a file that is not TypeScript (`.ts`, `.mts`, `.cts`)
+ *   is kept as a token: JavaScript types come from JSDoc. TypeScript
+ *   comments are kept when they start with `///` (references and
+ *   directives) or contain `@` or `#` (checker directives, JSDoc tags, and
+ *   annotations lowering reads).
+ * - A `/` starts a regular expression or divides according to the token
+ *   before it. After `)` it divides unless the parenthesis closes an `if`,
+ *   `while`, `for`, or `with` header. After `}`, `++` or `--` the scanner
+ *   cannot tell which, so it gives up, as it does for escaped identifiers,
+ *   which can spell keywords.
+ * - Template literals track their `${` substitutions on a brace stack.
+ * - JSX files, unterminated strings, comments, templates and regular
+ *   expressions, and any line terminator outside ASCII give up.
+ *
+ * Plain character scans keep the scanner free of Unicode property escapes:
+ * any non-ASCII code unit outside strings, templates, regular expressions
+ * and comments belongs to the token around it, so an edit there compares
+ * literally. */
+
+interface Token {
+  text: string;
+  comment: boolean;
+  lineBreakBefore: boolean;
+}
+
+/** Keywords after which `/` starts a regular expression. */
+const EXPRESSION_KEYWORDS = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "throw",
+  "case",
+  "do",
+  "else",
+  "yield",
+  "await",
+  "default",
+  "extends",
+]);
+
+/** Keywords whose parenthesized header is followed by a statement. */
+const HEADER_KEYWORDS = new Set(["if", "while", "for", "with"]);
+
+const PUNCTUATORS = [
+  ">>>=",
+  "...",
+  "===",
+  "!==",
+  "**=",
+  "<<=",
+  ">>=",
+  ">>>",
+  "&&=",
+  "||=",
+  "??=",
+  "=>",
+  "==",
+  "!=",
+  "<=",
+  ">=",
+  "&&",
+  "||",
+  "??",
+  "?.",
+  "++",
+  "--",
+  "+=",
+  "-=",
+  "*=",
+  "%=",
+  "&=",
+  "|=",
+  "^=",
+  "**",
+  "<<",
+  ">>",
+];
+
+function isTypeScript(path: string): boolean {
+  return path.endsWith(".ts") || path.endsWith(".mts") || path.endsWith(".cts");
+}
+
+function isIdentifierCode(code: number): boolean {
+  return (
+    (code >= 97 && code <= 122) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 48 && code <= 57) ||
+    code === 36 ||
+    code === 95 ||
+    code === 92 ||
+    code > 127
+  );
+}
+
+function isLineBreak(code: number): boolean {
+  return code === 10 || code === 13;
+}
+
+function isSpace(code: number): boolean {
+  return code === 32 || code === 9 || code === 11 || code === 12 || isLineBreak(code);
+}
+
+/** The tokens of `source`, or null when the scanner cannot classify it. */
+function scan(path: string, source: string): Token[] | null {
+  if (path.endsWith(".tsx") || path.endsWith(".jsx")) return null;
+  const typeScript = isTypeScript(path);
+  const tokens: Token[] = [];
+  // Brace kinds: true for a template substitution, false otherwise.
+  const braces: boolean[] = [];
+  // Paren kinds: true for a statement header.
+  const parens: boolean[] = [];
+  let lineBreakBefore = false;
+  // The previous token, and whether a `)` closed a statement header.
+  const last: { token: string | null } = { token: null };
+  let closedHeader = false;
+  const push = (text: string, comment = false): void => {
+    tokens.push({ text, comment, lineBreakBefore });
+    lineBreakBefore = false;
+    if (!comment) last.token = text;
+  };
+  let index = 0;
+  const length = source.length;
+  // A shebang is one token.
+  if (source.startsWith("#!")) {
+    while (index < length && !isLineBreak(source.charCodeAt(index))) index++;
+    push(source.slice(0, index));
+  }
+  /** Scans template text from `index` (after a backtick or a closing
+   * substitution brace) through the closing backtick or `${`. */
+  const template = (start: number): boolean => {
+    let position = index;
+    while (position < length) {
+      const code = source.charCodeAt(position);
+      if (code === 92) {
+        position += 2;
+        continue;
+      }
+      if (code === 96) {
+        position++;
+        index = position;
+        push(source.slice(start, position));
+        closedHeader = false;
+        return true;
+      }
+      if (code === 36 && source.charCodeAt(position + 1) === 123) {
+        position += 2;
+        index = position;
+        push(source.slice(start, position));
+        braces.push(true);
+        last.token = "${";
+        return true;
+      }
+      position++;
+    }
+    return false;
+  };
+  while (index < length) {
+    const code = source.charCodeAt(index);
+    if (isSpace(code)) {
+      if (isLineBreak(code)) lineBreakBefore = true;
+      index++;
+      continue;
+    }
+    if (code > 127 && (code === 0x2028 || code === 0x2029 || code === 0xa0 || code === 0xfeff))
+      return null;
+    const next = source.charCodeAt(index + 1);
+    // Comments.
+    if (code === 47 && (next === 47 || next === 42)) {
+      const start = index;
+      if (next === 47) {
+        while (index < length && !isLineBreak(source.charCodeAt(index))) index++;
+      } else {
+        const end = source.indexOf("*/", index + 2);
+        if (end < 0) return null;
+        index = end + 2;
+      }
+      const text = source.slice(start, index);
+      const semantic =
+        !typeScript || text.startsWith("///") || text.includes("@") || text.includes("#");
+      if (semantic) push(text, true);
+      else if (/[\r\n]/.test(text)) lineBreakBefore = true;
+      continue;
+    }
+    // Strings.
+    if (code === 34 || code === 39) {
+      const start = index;
+      index++;
+      while (index < length) {
+        const inner = source.charCodeAt(index);
+        if (inner === 92) {
+          index += 2;
+          continue;
+        }
+        if (isLineBreak(inner)) return null;
+        index++;
+        if (inner === code) break;
+        if (index >= length) return null;
+      }
+      if (source.charCodeAt(index - 1) !== code || index - start < 2) return null;
+      push(source.slice(start, index));
+      closedHeader = false;
+      continue;
+    }
+    // Templates.
+    if (code === 96) {
+      const start = index;
+      index++;
+      if (!template(start)) return null;
+      continue;
+    }
+    // Identifiers, keywords and numbers.
+    if (isIdentifierCode(code) || (code === 46 && next >= 48 && next <= 57)) {
+      const start = index;
+      index++;
+      while (index < length) {
+        const inner = source.charCodeAt(index);
+        if (isIdentifierCode(inner) || inner === 46) {
+          // A dot continues only a number (`1.5`), not member access.
+          if (inner === 46) {
+            const first = source.charCodeAt(start);
+            if (!((first >= 48 && first <= 57) || first === 46)) break;
+          }
+          index++;
+          continue;
+        }
+        // Exponent signs (`1e-5`).
+        if (
+          (inner === 43 || inner === 45) &&
+          (source.charCodeAt(index - 1) === 101 || source.charCodeAt(index - 1) === 69)
+        ) {
+          const first = source.charCodeAt(start);
+          if ((first >= 48 && first <= 57) || first === 46) {
+            index++;
+            continue;
+          }
+        }
+        break;
+      }
+      const word = source.slice(start, index);
+      // An escaped identifier can spell a keyword (`\u0072eturn`).
+      if (word.includes("\\")) return null;
+      push(word);
+      closedHeader = false;
+      continue;
+    }
+    // Division or a regular expression.
+    if (code === 47) {
+      const before = last.token;
+      let regex: boolean;
+      if (before === null) regex = true;
+      else if (before === "}") return null;
+      else if (before === ")") regex = closedHeader;
+      // `++/re/.lastIndex` is valid, `x++ / 2` too.
+      else if (before === "++" || before === "--") return null;
+      else if (before === "]") regex = false;
+      else if (/^[A-Za-z0-9_$\\]/.test(before) || before.charCodeAt(0) > 127)
+        regex = EXPRESSION_KEYWORDS.has(before);
+      else if (before.startsWith("'") || before.startsWith('"') || before.endsWith("`"))
+        regex = false;
+      else if (before.startsWith("/") && before.length > 1 && before !== "/=") regex = false;
+      else regex = true;
+      if (regex) {
+        const start = index;
+        index++;
+        let inClass = false;
+        while (index < length) {
+          const inner = source.charCodeAt(index);
+          if (isLineBreak(inner)) return null;
+          if (inner === 92) {
+            index += 2;
+            continue;
+          }
+          if (inner === 91) inClass = true;
+          else if (inner === 93) inClass = false;
+          else if (inner === 47 && !inClass) break;
+          index++;
+        }
+        if (index >= length) return null;
+        index++;
+        while (index < length && isIdentifierCode(source.charCodeAt(index))) index++;
+        push(source.slice(start, index));
+        closedHeader = false;
+        continue;
+      }
+      const text = next === 61 ? "/=" : "/";
+      index += text.length;
+      push(text);
+      closedHeader = false;
+      continue;
+    }
+    // Brackets.
+    if (code === 40) {
+      parens.push(last.token !== null && HEADER_KEYWORDS.has(last.token));
+      index++;
+      push("(");
+      closedHeader = false;
+      continue;
+    }
+    if (code === 41) {
+      const header = parens.pop() ?? false;
+      index++;
+      push(")");
+      closedHeader = header;
+      continue;
+    }
+    if (code === 123) {
+      braces.push(false);
+      index++;
+      push("{");
+      closedHeader = false;
+      continue;
+    }
+    if (code === 125) {
+      if (braces.pop() === true) {
+        const start = index;
+        index++;
+        if (!template(start)) return null;
+        continue;
+      }
+      index++;
+      push("}");
+      closedHeader = false;
+      continue;
+    }
+    // Other punctuators.
+    let text = source[index]!;
+    for (const punctuator of PUNCTUATORS)
+      if (source.startsWith(punctuator, index)) {
+        text = punctuator;
+        break;
+      }
+    index += text.length;
+    push(text);
+    closedHeader = false;
+  }
+  if (braces.length !== 0 || parens.length !== 0) return null;
+  return tokens;
+}
+
+/** Whether `current` differs from `previous` only in whitespace and in
+ * comments that cannot affect compilation. */
+export function tokenEquivalentSource(path: string, previous: string, current: string): boolean {
+  if (previous === current) return true;
+  const left = scan(path, previous);
+  if (left === null) return false;
+  const right = scan(path, current);
+  if (right === null || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const a = left[index]!;
+    const b = right[index]!;
+    if (a.text !== b.text || a.comment !== b.comment) return false;
+    if (index > 0 && a.lineBreakBefore !== b.lineBreakBefore) return false;
+  }
+  return true;
+}
