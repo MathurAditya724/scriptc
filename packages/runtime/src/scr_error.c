@@ -422,6 +422,11 @@ const char *scr_error_message_code(const ScrStr *msg) {
     { "self-signed certificate", false, "DEPTH_ZERO_SELF_SIGNED_CERT" },
     { "unable to verify the first certificate", false, "UNABLE_TO_VERIFY_LEAF_SIGNATURE" },
     { "Hostname/IP does not match certificate's altnames", false, "ERR_TLS_CERT_ALTNAME_INVALID" },
+    { "error:0A000460:SSL routines:ssl3_read_bytes:tlsv1 alert no application protocol", true,
+      "ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL" },
+    { "error:0A00042E:SSL routines:ssl3_read_bytes:tlsv1 alert protocol version", true,
+      "ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION" },
+    { "error:0A0000BF:SSL routines::no protocols available", true, "ERR_SSL_NO_PROTOCOLS_AVAILABLE" },
   };
   for (size_t i = 0; i < sizeof known / sizeof known[0]; i++) {
     size_t n = strlen(known[i].prefix);

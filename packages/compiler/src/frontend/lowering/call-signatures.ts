@@ -546,9 +546,17 @@ export function paramShapes(
 
 /** A declared type that is (or is a union over) a bare type parameter
  * or an instantiation of a generic alias/interface over type arguments. */
-function mentionsTypeParameter(lowerer: Lowerer, t: ts.Type): boolean {
+function mentionsTypeParameter(
+  lowerer: Lowerer,
+  t: ts.Type,
+  seen: Set<ts.Type> = new Set(),
+): boolean {
   if (t.flags & ts.TypeFlags.TypeParameter) return true;
-  const mentions = (part: ts.Type): boolean => mentionsTypeParameter(lowerer, part);
+  // A recursive alias (`type Child = string | Child[]`) reaches itself
+  // through its own type arguments; a type already on the walk adds nothing.
+  if (seen.has(t)) return false;
+  seen.add(t);
+  const mentions = (part: ts.Type): boolean => mentionsTypeParameter(lowerer, part, seen);
   if (t.isUnionType()) return ts.constituentTypes(t).some(mentions);
   if (t.getAliasTypeArguments().some(mentions)) return true;
   return (
@@ -676,12 +684,14 @@ export function requireExactArityValue(
       : null;
   if (mapped && typeEquals(mapped, funcType)) return;
   // An 'any' slot (`C.prototype.m = function (a, b) {…}` through an
-  // untyped receiver) boxes the value into a checked-dynamic function:
+  // untyped receiver), or a slot whose type maps to a checked-dynamic
+  // value (a member of a literal lowered with a generic function's type
+  // parameters erased), boxes the value into a checked-dynamic function:
   // the box completes omitted arguments with undefined and checks every
   // argument into the completed ABI, so any boxable signature passes.
   if (
     target !== undefined &&
-    (target.flags & ts.TypeFlags.Any) !== 0 &&
+    ((target.flags & ts.TypeFlags.Any) !== 0 || mapped?.kind === "dyn") &&
     canBoxFuncIntoDyn(
       funcType,
       (id) => lowerer.shapes.get(id),

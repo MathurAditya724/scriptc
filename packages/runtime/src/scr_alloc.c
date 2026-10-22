@@ -226,6 +226,11 @@ static pthread_cond_t scr_sa_pf_cond = PTHREAD_COND_INITIALIZER;
 static ScrSaPfRange scr_sa_pf_ring[SCR_SA_PF_RING];
 static unsigned scr_sa_pf_head, scr_sa_pf_tail; /* under the lock */
 static bool scr_sa_pf_started, scr_sa_pf_waiting;
+/* The range the helper is faulting in, and the threads that wait for it to
+ * finish (scr_sa_pf_forget); under the lock. */
+static ScrSaPfRange scr_sa_pf_busy;
+static unsigned scr_sa_pf_forgetting;
+static pthread_cond_t scr_sa_pf_done = PTHREAD_COND_INITIALIZER;
 /* 0 = not decided yet, 1 = on, -1 = off (environment, no thread, or a
  * kernel without MADV_POPULATE_WRITE). */
 static _Atomic(int) scr_sa_pf_state;
@@ -323,8 +328,9 @@ static void *scr_sa_pf_main(void *arg) {
       scr_sa_pf_waiting = false;
     }
     ScrSaPfRange r = scr_sa_pf_ring[scr_sa_pf_tail++ % SCR_SA_PF_RING];
+    scr_sa_pf_busy = r;
     pthread_mutex_unlock(&scr_sa_pf_lock);
-    scr_sa_pf_populate(r.lo, r.hi);
+    if (r.hi > r.lo) scr_sa_pf_populate(r.lo, r.hi);
 #ifdef SCR_SA_PF_HEAP
     if (scr_sa_pf_heap_mode) {
       (void)scr_sa_pf_heap();
@@ -332,8 +338,24 @@ static void *scr_sa_pf_main(void *arg) {
     }
 #endif
     pthread_mutex_lock(&scr_sa_pf_lock);
+    scr_sa_pf_busy = (ScrSaPfRange){NULL, NULL};
+    if (scr_sa_pf_forgetting) pthread_cond_broadcast(&scr_sa_pf_done);
   }
   return NULL;
+}
+
+/* Drops the requests that overlap [lo, hi) and waits for the one the helper
+ * is faulting in if it overlaps, so pages returned there stay returned. */
+static void scr_sa_pf_forget(char *lo, char *hi) {
+  pthread_mutex_lock(&scr_sa_pf_lock);
+  for (unsigned k = scr_sa_pf_tail; k != scr_sa_pf_head; k++) {
+    ScrSaPfRange *r = &scr_sa_pf_ring[k % SCR_SA_PF_RING];
+    if (r->lo < hi && r->hi > lo) r->hi = r->lo;
+  }
+  scr_sa_pf_forgetting++;
+  while (scr_sa_pf_busy.lo < hi && scr_sa_pf_busy.hi > lo) pthread_cond_wait(&scr_sa_pf_done, &scr_sa_pf_lock);
+  scr_sa_pf_forgetting--;
+  pthread_mutex_unlock(&scr_sa_pf_lock);
 }
 
 static bool scr_sa_pf_on(void) {
@@ -1482,6 +1504,38 @@ void scr_sa_thread_park(void) {
 #endif
 }
 
+#if defined(SCR_SA_TRIM) && defined(MADV_DONTNEED)
+/* Returns the pages past each slice's frontier that a parking thread leaves
+ * faulted in but never carved: the rest of the huge page the frontier is in
+ * (huge pages fault in whole) and the steps faulted ahead of it. The
+ * thread's objects stay where they are; the next thread to claim the arena
+ * faults the pages in again as it carves, and they read as zero, as fresh
+ * pages do. Until then, a program that does its remaining work on threads
+ * that never claim the arena (parse threads ahead of a check on the main
+ * thread) does not keep them. */
+static void scr_sa_release_frontiers(void) {
+  uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
+  if (page == 0 || page == (uintptr_t)-1) page = 4096;
+#ifdef SCR_SA_THP
+  const uintptr_t ahead = SCR_SA_HUGE_PAGE;
+#else
+  const uintptr_t ahead = page;
+#endif
+  for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
+    if (!scr_sa.lim[c]) continue;
+    const ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
+    char *bump = h->lim ? h->bump : scr_sa.bump[c];
+    char *lim = h->lim ? h->lim : scr_sa.lim[c];
+    char *end = (char *)scr_sa.base + ((size_t)(c + 1) << scr_sa.shift);
+    char *from = (char *)(((uintptr_t)bump + page - 1) & ~(page - 1));
+    /* At most one step of `ahead` is faulted in past the limit. */
+    char *to = (char *)((((uintptr_t)lim + ahead - 1) & ~(ahead - 1)) + ahead);
+    if (to > end) to = end;
+    if (to > from) scr_mem_release_ahead(from, to);
+  }
+}
+#endif
+
 static void scr_sa_park_arena(void) {
   if (scr_sa_arena < 0) return;
   unsigned i = (unsigned)scr_sa_arena;
@@ -1503,6 +1557,9 @@ static void scr_sa_park_arena(void) {
     return;
   }
   if (k) scr_sa_keep_merge(k);
+#ifdef MADV_DONTNEED
+  scr_sa_release_frontiers();
+#endif
   if (scr_sa_trim_worth()) {
     if (scr_sa_start_helper(i)) {
       /* Later frees on this thread take the foreign path into the arena's
@@ -1742,6 +1799,18 @@ void scr_rt_free(void *p) { scr_mem_free(p); }
 void scr_mem_prefault(void *lo, void *hi) {
 #if SCR_SMALL_ALLOC && defined(SCR_SA_PREFAULT)
   scr_sa_prefault(lo, hi);
+#else
+  (void)lo;
+  (void)hi;
+#endif
+}
+
+void scr_mem_release_ahead(void *lo, void *hi) {
+#if SCR_SMALL_ALLOC && defined(SCR_SA_PREFAULT)
+  if (atomic_load_explicit(&scr_sa_pf_state, memory_order_relaxed) > 0) scr_sa_pf_forget(lo, hi);
+#endif
+#if defined(__linux__) && defined(MADV_DONTNEED)
+  if ((char *)hi > (char *)lo) (void)madvise(lo, (size_t)((char *)hi - (char *)lo), MADV_DONTNEED);
 #else
   (void)lo;
   (void)hi;

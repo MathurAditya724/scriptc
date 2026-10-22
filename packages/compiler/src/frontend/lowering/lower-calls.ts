@@ -166,7 +166,6 @@ import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
   v8CalleeText,
-  lowerOptionalNumber,
   lowerPromiseAllTupleCall,
   lowerPromiseRejectCall,
   lowerToNumberArgument,
@@ -1008,10 +1007,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // excludes shadowed names. parseInt's omitted radix completes
     // to 0 — the spec's "undefined" (base 10 with the 0x hex escape);
     // parseFloat lowers the STRING form only (Node would ToString other
-    // values — no static story); isNaN/isFinite's arguments are
-    // checker-pinned (or checked) to number, where the global's ToNumber
-    // coercion is the identity and the tests are Number.isNaN /
-    // Number.isFinite exactly (ms's `isFinite(val)` guard).
+    // values — no static story); isNaN/isFinite apply the global's
+    // ToNumber to any argument, then test like Number.isNaN /
+    // Number.isFinite.
     if (
       (expr.expression.text === "parseInt" ||
         expr.expression.text === "isNaN" ||
@@ -1130,18 +1128,14 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
     if (islFn && expr.arguments.nodes.length === islFn.args.length) {
       // The static forms above already took the exactly-typed argument
-      // (a string for parseFloat, a number for isFinite): name the
-      // argument type that refused the call, so the message states the
-      // condition rather than reading as if the global itself were
-      // unsupported.
+      // (a string for parseFloat): name the argument type that refused
+      // the call, so the message states the condition rather than
+      // reading as if the global itself were unsupported.
       const argText = loweredArgumentText(lowerer, expr.arguments.nodes[0]!);
-      const exact = expr.expression.text === "isFinite" ? "number" : "string";
       lowerer.refuseUnsupportedApi(
         `'${expr.expression.text}' with a '${argText}' argument`,
         expr,
-        exact === "string"
-          ? "only a string argument compiles statically: convert the argument explicitly first (for example String(x), or narrow the union)"
-          : "only a number argument compiles statically: narrow the argument to a number first",
+        "only a string argument compiles statically: convert the argument explicitly first (for example String(x), or narrow the union)",
       );
     }
   }
@@ -4090,6 +4084,12 @@ const DYN_DISPATCH_METHODS = new Set([
   "prependOnceListener",
   "listeners",
   "listenerCount",
+  // The rest of EventEmitter.prototype, which compiled emitters answer
+  // through the class dispatch (class-dynamic-dispatch.ts).
+  "rawListeners",
+  "eventNames",
+  "setMaxListeners",
+  "getMaxListeners",
   "write",
   "end",
   "destroy",
@@ -8071,6 +8071,14 @@ function lowerObjectStaticCall(
             loc,
           };
     }
+    const fnIntegrity = functionIntegrity(
+      lowerer,
+      member,
+      value,
+      call.arguments.nodes[0]!,
+      locOf(call),
+    );
+    if (fnIntegrity) return fnIntegrity;
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
@@ -8154,6 +8162,8 @@ function lowerObjectStaticCall(
         )
     )
       return value;
+    const fnIntegrity = functionIntegrity(lowerer, "freeze", value, argNode, locOf(call));
+    if (fnIntegrity) return fnIntegrity;
     const integrity = lowerClassIntegrity(lowerer, call, "freeze", value);
     if (integrity) return integrity;
     lowerer.noLowering(
@@ -10298,7 +10308,7 @@ export function lowerStaticNumberGlobal(
   args: readonly ts.Expression[],
   loc: SrcLoc,
 ): IrExpr | null {
-  if (name === "parseInt" || name === "isNaN") {
+  if (name === "parseInt" || name === "isNaN" || name === "isFinite") {
     const maxArgs = name === "parseInt" ? 2 : 1;
     if (args.length < 1 || args.length > maxArgs) {
       lowerer.noLowering(
@@ -10306,10 +10316,12 @@ export function lowerStaticNumberGlobal(
         call,
       );
     }
-    if (name === "isNaN") {
-      // The global's ToNumber turns a missing value into NaN.
+    if (name === "isNaN" || name === "isFinite") {
+      // The global's ToNumber turns a missing value into NaN, converts
+      // strings, booleans and null, and calls valueOf/toString on objects.
       const x = lowerToNumberArgument(lowerer, args[0]!);
-      return { kind: "libCall", fn: "num.isNaN", args: [x], type: BOOL, loc };
+      const fn = name === "isNaN" ? "num.isNaN" : "number.isFinite";
+      return { kind: "libCall", fn, args: [x], type: BOOL, loc };
     }
     const radix: IrExpr = args[1]
       ? lowerer.lowerExprExpecting(args[1], F64)
@@ -10445,32 +10457,28 @@ export function lowerStaticNumberGlobal(
         : lowerer.lowerExprExpecting(args[0]!, STRING);
     return { kind: "libCall", fn: "num.parseInt", args: [s, radix], type: F64, loc };
   }
-  // STATIC parseFloat/isFinite over exactly-typed arguments —
-  // parseInt's siblings (num.parseFloat is ECMA 19.2.4's decimal-
-  // literal prefix parse in scr_string.c; a number-typed isFinite IS
-  // Number.isFinite — the global's ToNumber coercion is the identity
-  // there, ms's `isFinite(val)` guard). Other argument types retain
-  // their native coercion checks or the SC2012 refusal. The probe never
-  // emits — lowering is IR construction.
-  if ((name === "parseFloat" || name === "isFinite") && args.length === 1) {
-    if (name === "parseFloat") {
-      const optional = optionalCallValue(lowerer, args[0]!);
-      if (optional) {
-        const parsed = lowerOptionalStringNumber(
-          lowerer,
-          optional,
-          loc,
-          "num.parseFloat",
-          "parseFloat",
-        );
-        if (parsed) return parsed;
-      }
+  // STATIC parseFloat over string arguments — parseInt's sibling
+  // (num.parseFloat is ECMA 19.2.4's decimal-literal prefix parse in
+  // scr_string.c). Other argument types retain their native coercion
+  // checks or the SC2012 refusal. The probe never emits — lowering is IR
+  // construction.
+  if (name === "parseFloat" && args.length === 1) {
+    const optional = optionalCallValue(lowerer, args[0]!);
+    if (optional) {
+      const parsed = lowerOptionalStringNumber(
+        lowerer,
+        optional,
+        loc,
+        "num.parseFloat",
+        "parseFloat",
+      );
+      if (parsed) return parsed;
     }
     const probed = tryLowerExpression(lowerer, args[0]!);
-    if (name === "parseFloat" && probed?.type.kind === "string") {
+    if (probed?.type.kind === "string") {
       return { kind: "libCall", fn: "num.parseFloat", args: [probed], type: F64, loc };
     }
-    if (name === "parseFloat" && probed?.type.kind === "dyn") {
+    if (probed?.type.kind === "dyn") {
       return {
         kind: "libCall",
         fn: "num.parseFloat",
@@ -10478,20 +10486,6 @@ export function lowerStaticNumberGlobal(
         type: F64,
         loc,
       };
-    }
-    if (name === "isFinite" && probed?.type.kind === "f64") {
-      return { kind: "libCall", fn: "number.isFinite", args: [probed], type: BOOL, loc };
-    }
-    // A number the checker trusts but storage may hold missing (an
-    // out-of-range read): the global's ToNumber makes undefined NaN.
-    if (
-      name === "isFinite" &&
-      probed?.type.kind === "union" &&
-      lowerer.armTag(probed.type.unionId, UNDEFINED_T) >= 0 &&
-      lowerer.stripUndefinedArm(probed.type).kind === "f64"
-    ) {
-      const x = lowerOptionalNumber(lowerer, probed, loc, args[0]);
-      return { kind: "libCall", fn: "number.isFinite", args: [x], type: BOOL, loc };
     }
   }
   return null;
@@ -10636,6 +10630,58 @@ function lowerObjectAssignOntoError(lowerer: Lowerer, call: ts.CallExpression): 
     ],
     result: ref(),
     type: target.type,
+    loc,
+  };
+}
+
+/** `Object.freeze(fn)` and the other integrity operations on a function
+ * value: the function's checked-dynamic face holds its own properties (the
+ * ones a program assigns, `name`, `length`, `prototype`) and their
+ * integrity state, which the runtime keeps on its property table. The
+ * mutators answer the function itself; the queries answer from the table.
+ * Null for other values. */
+function functionIntegrity(
+  lowerer: Lowerer,
+  member: string,
+  value: IrExpr,
+  node: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (value.type.kind !== "func" || !lowerer.dynConvertible(value.type)) return null;
+  const operations = {
+    freeze: "dyn.freeze",
+    seal: "dyn.seal",
+    preventExtensions: "dyn.preventExtensions",
+    isSealed: "dyn.isSealed",
+    isExtensible: "dyn.isExtensible",
+  } as const;
+  if (!(member in operations)) return null;
+  const fn = operations[member as keyof typeof operations];
+  // The first operation on a function creates its property table, whose
+  // `name` comes from the box: give the box the function's JS name, as a
+  // closure flowing into any checked-dynamic slot gets.
+  const name = jsFuncNameOf(node, lowerer);
+  const boxed = (e: IrExpr): IrExpr => {
+    const box = lowerer.coerceToExpected(e, DYN);
+    return box.kind === "dynFrom" && name !== null ? { ...box, fnName: name } : box;
+  };
+  if (fn === "dyn.isSealed" || fn === "dyn.isExtensible") {
+    return { kind: "libCall", fn, args: [boxed(value)], type: BOOL, loc };
+  }
+  const held = lowerer.declareHiddenLocal("%integrityFn", value.type);
+  const ref = (): IrExpr => ({ kind: "varRef", localId: held.id, type: value.type, loc });
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: held.id, init: value, loc },
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn, args: [boxed(ref())], type: DYN, loc },
+        loc,
+      },
+    ],
+    result: ref(),
+    type: value.type,
     loc,
   };
 }

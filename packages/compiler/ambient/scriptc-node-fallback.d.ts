@@ -2131,6 +2131,10 @@ declare module "fs/promises" {
     options: import("node:fs").GlobOptionsWithFileTypes,
   ): AsyncIterableIterator<import("node:fs").Dirent>;
   export function rm(path: string): Promise<void>;
+  export function rm(
+    path: string,
+    options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
+  ): Promise<void>;
   export function stat(path: string): Promise<import("node:fs").Stats>;
   export function statfs(
     path: string | Uint8Array | URL,

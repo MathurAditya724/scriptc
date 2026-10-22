@@ -27,6 +27,24 @@ typedef size_t ScrRcCount;
 #define SCR_RC_IMMORTAL ((ScrRcCount)-1)
 #define SCR_RC_COUNT(obj) (*(ScrRcCount *)(obj))
 
+/* Compact class instances (64-bit targets; llvm/classes.ts
+ * LlClassMeta.compact): the instances of a ProgramLifetime hierarchy count
+ * nothing, so their header is one 32-bit word instead of the rc word, and
+ * their fields start at offset 4. The word is SCR_RC_COMPACT_TAG, the class
+ * id (0 outside a hierarchy) in the low 28 bits, and SCR_RC_COMPACT_PUBLISHED
+ * once publication marks it. No count reaches the tag, so a word read through
+ * SCR_RC_COUNT tells the two apart, and a count or word of
+ * SCR_RC_PUBLISHED_MIN and up is published for every object. Only emitted
+ * code holds compact instances in typed slots; the runtime reaches them
+ * through their emitted adapters, publication walkers (SCR_PUB_COMPACT) and
+ * the published test. */
+#define SCR_RC_COMPACT_TAG UINT32_C(0x70000000)
+#define SCR_RC_COMPACT_PUBLISHED UINT32_C(0x80000000)
+#define SCR_RC_COMPACT_ID_MASK UINT32_C(0x0fffffff)
+#define SCR_RC_PUBLISHED_MIN ((ScrRcCount)UINT32_C(0xf0000000))
+/* Whether `obj`, an object of any kind, is published (immortal). */
+#define SCR_RC_PUBLISHED(obj) (SCR_RC_COUNT(obj) >= SCR_RC_PUBLISHED_MIN)
+
 /* The class id in the high half of `obj`'s rc word, or 0 for an object
  * without one: the high half of any other object's word is 0, or 0xffffffff
  * (immortal) or 0x80000000 (program-lifetime), and a class id is never one of
@@ -273,6 +291,10 @@ void scr_rt_free(void *p);
  * of [lo, hi), aligned to 256 KiB, in ahead of use; builds without the
  * helper ignore it. */
 void scr_mem_prefault(void *lo, void *hi);
+/* Returns the pages of [lo, hi) (page aligned), which hold no data, to the
+ * system (Linux): pre-fault requests for them are dropped first, so they
+ * stay returned. Other builds ignore it. */
+void scr_mem_release_ahead(void *lo, void *hi);
 /* Reorders ptrs, distinct pointers `offset` bytes into blocks that are
  * about to be freed in array order, so that the free lists hand the blocks
  * back in ascending address order (scr_alloc.c). Builds without the
@@ -601,6 +623,7 @@ static inline void scr_cyc_dead(void *obj) {
  * after and wants nothing reclaimable left), and it costs a walk of the
  * live heap — do not put it on a per-turn path. */
 void scr_collect_cycles(void);
+void scr_collect_cycles_phase(void);
 void scr_cyc_context_cleanup(void);
 
 /* One pass on the normal generational schedule, for callers that reach a
@@ -636,6 +659,10 @@ enum {
    * the high half (SCR_RC_COUNT). The mark, and a refusal's restore, write
    * only the count. */
   SCR_PUB_CLASS_ID = 0x100,
+  /* Or'ed into a kind: a compact class instance (SCR_RC_COMPACT_TAG). The
+   * mark sets SCR_RC_COMPACT_PUBLISHED; a refusal's restore writes the
+   * logged word back. */
+  SCR_PUB_COMPACT = 0x200,
 };
 void scr_publish(void *root, ScrPubFn fn);
 void scr_pub_push(ScrPub *ctx, void *v, ScrPubFn fn);

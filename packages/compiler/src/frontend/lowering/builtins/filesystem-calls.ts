@@ -866,15 +866,22 @@ export function lowerFsPromisesMkdirCall(
     : { kind: "libCall", fn: "fsp.mkdirRecursive", args: [path], type, loc };
 }
 
-// rmSync(p, options): literal { recursive?, force? } booleans — the
-// cleanup shape rmSync(dir, { recursive: true, force: true }) —
-// plus the maxRetries/retryDelay numbers (the tmpdir-harness shape
+// rmSync(p, options) and fs.promises.rm(p, options): literal
+// { recursive?, force? } booleans — the cleanup shape
+// rmSync(dir, { recursive: true, force: true }) — plus the
+// maxRetries/retryDelay numbers (the tmpdir-harness shape
 // rmSync(p, { maxRetries: 3, recursive: true, force: true })): those
 // lower as ordinary number expressions into the retry libCall, whose
 // runtime implements Node's linear-backoff retry on
 // EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM. The retry-free shape keeps the
-// historical rmOptsSync lowering unchanged.
-export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+// historical rmOptsSync lowering unchanged. The promise form runs the same
+// removal and rejects with its error.
+export function lowerFsRemoveCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+  promise: boolean,
+): IrExpr {
   const opts = literalBoolOptions(
     expr.arguments.nodes[1]!,
     ["recursive", "force"],
@@ -882,7 +889,7 @@ export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc
   );
   if (opts === null) {
     lowerer.noLowering(
-      "rmSync with an options argument beyond { recursive, force, maxRetries, retryDelay }",
+      `${promise ? "fs.promises.rm" : "rmSync"} with an options argument beyond { recursive, force, maxRetries, retryDelay }`,
       expr.arguments.nodes[1]!,
       "the recursive/force flags must be boolean literals; maxRetries/retryDelay are numbers; other options have no lowering",
     );
@@ -891,12 +898,13 @@ export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc
 
   const recursive = boolLit(opts.bools["recursive"] === true, loc);
   const force = boolLit(opts.bools["force"] === true, loc);
+  const type: IrType = promise ? { kind: "promise", inner: VOID } : VOID;
   if (opts.exprs["maxRetries"] === undefined && opts.exprs["retryDelay"] === undefined) {
     return {
       kind: "libCall",
-      fn: "fs.rmOptsSync",
+      fn: promise ? "fsp.rmOpts" : "fs.rmOptsSync",
       args: [path, recursive, force],
-      type: VOID,
+      type,
       loc,
     };
   }
@@ -907,7 +915,7 @@ export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc
     node ? lowerer.lowerExprExpecting(node, F64) : { kind: "numLit", value: dflt, type: F64, loc };
   return {
     kind: "libCall",
-    fn: "fs.rmRetrySync",
+    fn: promise ? "fsp.rmRetry" : "fs.rmRetrySync",
     args: [
       path,
       recursive,
@@ -915,7 +923,7 @@ export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc
       num(opts.exprs["maxRetries"], 0),
       num(opts.exprs["retryDelay"], 100),
     ],
-    type: VOID,
+    type,
     loc,
   };
 }

@@ -1074,15 +1074,16 @@ export function arrNewCall(
   return `call ptr @scr_arr_new_ops(ptr ${arrOps(host, elem)}, ${host.sizeType} ${capText})`;
 }
 
-/** The constant %ScrArrOps descriptor (retain, release, trace) of a REF
- * element type, defined once per module and shared by all its arrays. */
+/** The %ScrArrOps descriptor (retain, release, trace, registry id) of a REF
+ * element type, defined once per module and shared by all its arrays. It is
+ * writable: the runtime stores its registry id on the first array. */
 export function arrOps(host: ShapeHost, elem: IrType): string {
   const v = vAdapters(host, elem);
   const trace = traceArg(host, elem);
   const part = (sym: string): string => sym.replace(/^@/, "").replace(/[^A-Za-z0-9_.]/g, "_");
   const name = `@sc_arrops.${part(v.retain)}.${part(v.release)}.${part(trace)}`;
   host.declare(
-    `${name} = internal constant %ScrArrOps { ptr ${v.retain}, ptr ${v.release}, ptr ${trace} }`,
+    `${name} = internal global %ScrArrOps { ptr ${v.retain}, ptr ${v.release}, ptr ${trace}, i32 0 }`,
   );
   return name;
 }

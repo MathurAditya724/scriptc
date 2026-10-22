@@ -3139,6 +3139,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * scandir failure becomes its rejection. */
   "fsp.readdirTypes": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
   "fsp.rm": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
+  /** `fs.promises.rm(path, options)`: fs.rmOptsSync and fs.rmRetrySync
+   * behind a settled promise; their errors become its rejection. */
+  "fsp.rmOpts": { argTypes: [STRING, BOOL, BOOL], result: { kind: "promise", inner: VOID } },
+  "fsp.rmRetry": {
+    argTypes: [STRING, BOOL, BOOL, F64, F64],
+    result: { kind: "promise", inner: VOID },
+  },
   "fsp.stat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
   "fsp.realpath": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
   "fsp.lstat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
@@ -3756,16 +3763,31 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "emitter.checkListener": { argTypes: [DYN], result: VOID },
   "emitter.onDyn": { argTypes: [null, STRING, DYN, null, BOOL, BOOL], result: VOID },
   "emitter.onFlex": { argTypes: [null, STRING, DYN, BOOL, BOOL], result: VOID },
+  /** on/once/prepend* and emit through an untyped value (the class
+   * dispatch of compiled emitters): onFlex/emitFlex plus runtime typed
+   * adapters under 'error' and the meta events, and Node's unhandled-'error'
+   * contract. emitAny is VARIADIC like emitFlex. */
+  "emitter.onAny": { argTypes: [null, STRING, DYN, BOOL, BOOL], result: VOID },
   "emitter.offDyn": { argTypes: [null, STRING, DYN], result: VOID },
   "emitter.removeAll": { argTypes: [null, STRING, BOOL], result: VOID },
   "emitter.emit": { argTypes: [null, STRING], result: BOOL },
   "emitter.emitFlex": { argTypes: [null, STRING], result: BOOL },
+  "emitter.emitAny": { argTypes: [null, STRING], result: BOOL },
+  /** An untyped emit of an event with a fixed tuple: (recv, name, k, then
+   * k checked-dynamic arguments as given, then the event's converted
+   * tuple) — VARIADIC like emitter.emit. hasTyped answers whether a
+   * listener of the name needs the converted tuple. */
+  "emitter.emitMixed": { argTypes: [null, STRING, F64], result: BOOL },
+  "emitter.hasTyped": { argTypes: [null, STRING], result: BOOL },
   "emitter.emitError": { argTypes: [null, STRING, null], result: BOOL },
   "emitter.count": { argTypes: [null, STRING], result: F64 },
   "emitter.countFn": { argTypes: [null, STRING, null], result: F64 },
   "emitter.countDyn": { argTypes: [null, STRING, DYN], result: F64 },
   "emitter.names": { argTypes: [null], result: VOID },
   "emitter.listeners": { argTypes: [null, STRING], result: VOID },
+  /** listeners()/rawListeners() through an untyped value: a checked-
+   * dynamic array (throws when a listener has typed parameters). */
+  "emitter.listenersDyn": { argTypes: [null, STRING], result: DYN },
   /** Stream-'data' registration twins of emitter.on/onDyn (same args):
    * chosen at registration sites whose receiver is stream-rooted, so the
    * backend emits DATA thunks — the runtime's 'data' emission carries
@@ -4622,8 +4644,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * return value has no lowering (statement position only, frontend-
    * fenced). rmOptsSync is rmSync with (recursive, force) bools: force
    * swallows ENOENT, recursive removes trees post-order, a directory
-   * without recursive throws the EISDIR-worded error (divergence 13's
-   * wording note). mkdtempSync appends the six X's and returns the
+   * without recursive throws Node's ERR_FS_EISDIR SystemError. mkdtempSync appends the six X's and returns the
    * created path (+1). accessSync takes the F_OK/R_OK/W_OK/X_OK bits as
    * one f64 (the frontend bakes fs.constants.* as literals and completes
    * an omitted mode to 0). readFdSync/readFdSyncBytes are the
@@ -4634,7 +4655,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** rmOptsSync's maxRetries/retryDelay form (path, recursive, force,
    * maxRetries, retryDelay): Node's linear-backoff retry on
    * EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM — the tmpdir-harness shape
-   * rmSync(p, { maxRetries: 3, recursive: true, force: true }). */
+   * rmSync(p, { maxRetries: 3, recursive: true, force: true }). Throws
+   * ERR_OUT_OF_RANGE for a retryDelay outside int32 >= 0 or a maxRetries
+   * outside uint32, before checking the path. */
   "fs.rmRetrySync": { argTypes: [STRING, BOOL, BOOL, F64, F64], result: VOID },
   "fs.mkdtempSync": { argTypes: [STRING], result: STRING },
   "fs.accessSync": { argTypes: [STRING, F64], result: VOID },
