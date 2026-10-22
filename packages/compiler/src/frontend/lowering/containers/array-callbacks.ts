@@ -778,6 +778,10 @@ function buildArrayHofFn(
         loc,
       },
       readLen,
+      // map's result has the receiver's length, holes where the receiver
+      // has them. Storage for it is reserved first and the length is set
+      // after the loop, so a result without holes is filled by appends and
+      // gets no state bytes.
       ...(method === "map"
         ? [
             {
@@ -785,6 +789,7 @@ function buildArrayHofFn(
               arr: varRef("out.0", outT, loc),
               length: varRef("n.0", F64, loc),
               loc,
+              reserve: true,
             } satisfies IrStmt,
           ]
         : []),
@@ -816,6 +821,16 @@ function buildArrayHofFn(
           loc,
         },
       ]),
+      ...(method === "map"
+        ? [
+            {
+              kind: "arraySetLength",
+              arr: varRef("out.0", outT, loc),
+              length: varRef("n.0", F64, loc),
+              loc,
+            } satisfies IrStmt,
+          ]
+        : []),
       { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
   } else if (method === "filter" && fastT) {

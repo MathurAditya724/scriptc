@@ -1244,9 +1244,9 @@ void scr_cyc_on_release(void *obj) {
 #define SCR_CYC_ARRAY_WALK(name, visit)                                  \
   static __attribute__((noinline)) void name(const ScrArr *arr, void *ctx) { \
     size_t end = arr->len < arr->cap ? arr->len : arr->cap;               \
-    size_t filled = arr->filled < end ? arr->filled : end;                \
+    const uint8_t *states = scr_arr_scan_states(arr);                     \
+    size_t filled = !states || arr->filled > end ? end : arr->filled;     \
     for (size_t i = 0; i < filled; i++) visit((void *)(uintptr_t)arr->data[i], ctx); \
-    const uint8_t *states = scr_arr_states_end(arr);                      \
     for (size_t i = filled; i < end; i++)                                 \
       if (*scr_arr_state_in(states, i) == SCR_ARR_VALUE)                   \
         visit((void *)(uintptr_t)arr->data[i], ctx);                      \

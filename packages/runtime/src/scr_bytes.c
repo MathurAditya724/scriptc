@@ -3122,7 +3122,7 @@ static void scr_bytes_fill_from_arr(uint8_t *out, ScrBytesElem elem, const ScrAr
       /* Sparse tails and explicit undefined retain ordinary iteration
        * semantics. Numeric array slots own no conversion callbacks. */
       if (index < arr->cap) {
-        if (*scr_arr_state_ptr(arr, index) == SCR_ARR_VALUE)
+        if (scr_arr_dense_state(arr, index) == SCR_ARR_VALUE)
           memcpy(&values[i], &arr->data[index], sizeof(double));
         else values[i] = NAN;
       } else values[i] = scr_arr_get_number(arr, (double)index);

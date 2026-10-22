@@ -14,13 +14,17 @@
  * state bytes altogether: the runtime keeps every state below it a present
  * value, so reads load the slot directly and writes replace it without
  * touching its state. Other dense indices take the state-checked path,
- * whose writes extend the bound when they continue it. */
+ * whose writes extend the bound when they continue it. An array without
+ * state bytes (SCR_ARR_STATES clear in `spare`) keeps its bound at its
+ * length, so reads never reach the state check for it; a write past the
+ * bound tests the flag and, without states, appends at the length. */
 
 import { isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
 import {
   f64Lit,
   loadArrCount,
   SCR_ARR_FIELD,
+  SCR_ARR_STATES,
   scrArrStatePtr,
   scrArrStates,
   sizeToDouble,
@@ -30,6 +34,24 @@ import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 
 const SCR_ARR_VALUE = 1;
+
+/** Whether the array at `array` has state bytes, as an i1. `spare` changes
+ * only in runtime calls, so its loads take their own alias tag. */
+export function emitArrayHasStates(host: LlvmEmitterContext, array: string): string {
+  const B = host.B;
+  const sparePtr = B.tmp(),
+    spare = B.tmp(),
+    bit = B.tmp(),
+    has = B.tmp();
+  B.line(
+    `${sparePtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.spare}`,
+  );
+  host.markMemoryPointer(sparePtr, "array:spare");
+  B.line(`${spare} = load i16, ptr ${sparePtr}${host.fieldAliasAttachment(sparePtr)}`);
+  B.line(`${bit} = and i16 ${spare}, ${SCR_ARR_STATES}`);
+  B.line(`${has} = icmp ne i16 ${bit}, 0`);
+  return has;
+}
 
 /** Call-site effects of the non-retaining read fallbacks: they only read
  * module-visible memory, or trap without returning to the caller (the trap
@@ -482,18 +504,48 @@ export function emitDenseArraySet(
       B.line(`store ptr ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
     }
   };
+  const stated = B.newLabel("arr.set.states"),
+    plain = B.newLabel("arr.set.plain"),
+    plainStore = B.newLabel("arr.set.values"),
+    stored = B.newLabel("arr.set.stored.slot");
+  B.condBr(emitArrayHasStates(host, array), stated, plain);
+  B.startBlock(stated);
   const statePtr = statePointer(host, guard);
   const valuePtr = valuePointer(host, guard, acc);
-  let oldState: string | null = null;
-  let old: string | null = null;
+  let statedOld: string | null = null;
+  let statedHad: string | null = null;
   if (acc === "ref") {
-    oldState = B.tmp();
-    old = B.tmp();
+    const oldState = B.tmp();
+    statedOld = B.tmp();
+    statedHad = B.tmp();
     B.line(`${oldState} = load i8, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
-    B.line(`${old} = load ptr, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    B.line(`${statedOld} = load ptr, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    B.line(`${statedHad} = icmp eq i8 ${oldState}, ${SCR_ARR_VALUE}`);
   }
   storeValue(valuePtr);
   B.line(`store i8 ${SCR_ARR_VALUE}, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
+  const statedEnd = B.currentLabel();
+  B.br(stored);
+  // Without states the bound is the length, so a store here appends at
+  // the length (it replaces no value) or leaves holes, which the runtime
+  // gives states.
+  B.startBlock(plain);
+  const appends = B.tmp();
+  B.line(`${appends} = icmp eq ${host.sizeType} ${offset}, ${len}`);
+  B.condBr(appends, plainStore, slow);
+  B.startBlock(plainStore);
+  storeValue(valuePointer(host, guard, acc));
+  const plainEnd = B.currentLabel();
+  B.br(stored);
+  B.startBlock(stored);
+  let old: string | null = null;
+  let hadValue: string | null = null;
+  if (acc === "ref") {
+    old = B.tmp();
+    hadValue = B.tmp();
+    B.line(`${old} = phi ptr [ ${statedOld}, %${statedEnd} ], [ null, %${plainEnd} ]`);
+    B.line(`${hadValue} = phi i1 [ ${statedHad}, %${statedEnd} ], [ false, %${plainEnd} ]`);
+  }
   // A store at the bound continues the hole-free prefix.
   const filledWide = sizedFilled(host, guard.filled),
     continues = B.tmp();
@@ -537,9 +589,7 @@ export function emitDenseArraySet(
   storeArrCount(host, nextLen, lenPtr, host.fieldAliasAttachment(lenPtr));
   B.br(storedLabel);
   B.startBlock(storedLabel);
-  if (acc === "ref" && oldState && old) {
-    const hadValue = B.tmp();
-    B.line(`${hadValue} = icmp eq i8 ${oldState}, ${SCR_ARR_VALUE}`);
+  if (acc === "ref" && hadValue && old) {
     const releaseLabel = B.newLabel("arr.set.release");
     B.condBr(hadValue, releaseLabel, join);
     B.startBlock(releaseLabel);
@@ -627,7 +677,14 @@ export function emitDenseArrayPop(
     raw = wide;
   }
   B.line(`store ${slotTy} 0, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  // Only an array with states has a state byte to clear.
+  const clear = B.newLabel("arr.pop.state"),
+    cleared = B.newLabel("arr.pop.cleared");
+  B.condBr(emitArrayHasStates(host, array), clear, cleared);
+  B.startBlock(clear);
   B.line(`store i8 0, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
+  B.br(cleared);
+  B.startBlock(cleared);
   let last32 = last;
   if (size === "i64") {
     last32 = B.tmp();
@@ -698,7 +755,14 @@ export function emitDenseArrayPush(
   } else {
     B.line(`store ptr ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   }
+  // Only an array with states has a state byte to mark.
+  const mark = B.newLabel("arr.push.state"),
+    marked = B.newLabel("arr.push.marked");
+  B.condBr(emitArrayHasStates(host, array), mark, marked);
+  B.startBlock(mark);
   B.line(`store i8 ${SCR_ARR_VALUE}, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
+  B.br(marked);
+  B.startBlock(marked);
   const next = B.tmp(),
     fastValue = B.tmp();
   B.line(`${next} = add nuw ${size} ${len}, 1`);
@@ -716,6 +780,7 @@ export function emitDenseArrayPush(
   B.line(`${bumped} = select i1 ${packed}, i32 ${nextFilled}, i32 ${filled}`);
   B.line(`store i32 ${bumped}, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
   B.line(`${fastValue} = ${sizeToDouble(size)} ${size} ${next} to double`);
+  const fastEnd = B.currentLabel();
   B.br(join);
   B.startBlock(slow);
   const slowValue = B.tmp();
@@ -723,6 +788,6 @@ export function emitDenseArrayPush(
   B.br(join);
   B.startBlock(join);
   const result = B.tmp();
-  B.line(`${result} = phi double [ ${fastValue}, %${fast} ], [ ${slowValue}, %${slow} ]`);
+  B.line(`${result} = phi double [ ${fastValue}, %${fastEnd} ], [ ${slowValue}, %${slow} ]`);
   return result;
 }

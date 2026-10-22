@@ -699,21 +699,19 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   for (const code of regexMatchers.values()) out.push(...code.lines, ``);
   for (const [, inst] of emitter.templateStringsInstances) {
     // One immortal ScrArr per tagged-template site: a data global of
-    // interned cooked-string literals followed by their states (the
-    // runtime finds them before data + cap * 9), and the ScrArr header over
-    // it (rc == SIZE_MAX, len == cap == filled, SCR_ELEM_STR = 2, no REF
-    // entry points). Every dense slot is present; reads retain immortal
-    // strings — a no-op. Slots are 8 bytes on every target: on 32-bit
-    // targets each holds the pointer in its low half and zero in its high
-    // half, so the states start where the runtime looks for them.
+    // interned cooked-string literals, and the ScrArr header over it
+    // (rc == SIZE_MAX, len == cap == filled, SCR_ELEM_STR = 2, no REF entry
+    // points, no state bytes: every dense slot is present). Reads retain
+    // immortal strings — a no-op. Slots are 8 bytes on every target: on
+    // 32-bit targets each holds the pointer in its low half and zero in its
+    // high half.
     const n = inst.slots.length;
-    const present = n === 0 ? "zeroinitializer" : `[ ${inst.slots.map(() => "i8 1").join(", ")} ]`;
     const wide = emitter.sizeType === "i64";
     const slot = wide ? "ptr" : "<{ ptr, i32 }>";
     const slotValue = (s: string): string =>
       wide ? `ptr ${s}` : `<{ ptr, i32 }> <{ ptr ${s}, i32 0 }>`;
     out.push(
-      `@${inst.sym}_data = internal constant <{ [${n} x ${slot}], [${n} x i8] }> <{ [${n} x ${slot}] [ ${inst.slots.map(slotValue).join(", ")} ], [${n} x i8] ${present} }>, align 8`,
+      `@${inst.sym}_data = internal constant [${n} x ${slot}] [ ${inst.slots.map(slotValue).join(", ")} ], align 8`,
       `@${inst.sym} = internal global %ScrArr { ${emitter.sizeType} -1, i32 ${n}, i32 ${n}, i8 2, i8 0, i16 0, i32 ${n}, ptr @${inst.sym}_data }`,
     );
   }

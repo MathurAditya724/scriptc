@@ -435,6 +435,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       const length = emitter.emitExpr(s.length);
       if (s.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arraySetLength on non-array");
+      if (s.reserve === true) {
+        emitter.declare(`declare void @scr_arr_reserve_len(ptr, double)`);
+        B.line(`call void @scr_arr_reserve_len(ptr ${arr.name}, double ${length.name})`);
+        break;
+      }
       emitter.emitPublishedArrayGuard(arr.name, s.arr.type, s.pop === true ? 2 : 3);
       emitter.declare(`declare void @scr_arr_set_len(ptr, double)`);
       // Assigning the current length (a reused work array reset to where
