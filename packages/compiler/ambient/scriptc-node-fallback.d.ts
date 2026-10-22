@@ -5929,6 +5929,7 @@ declare module "http2" {
   export interface Http2Stream {
     on(event: "error" | "close", listener: (err: Error) => void): void;
     once(event: "error" | "close", listener: (err: Error) => void): void;
+    addListener(event: "error" | "close", listener: (err: Error) => void): void;
     destroy(): void;
   }
   export interface Http2ServerRequest {
@@ -6029,11 +6030,6 @@ declare module "http2" {
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
     ): void;
     on(event: "session", listener: (session: ServerHttp2Session) => void): void;
-    once(
-      event: "stream",
-      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
-    ): void;
-    once(event: "session", listener: (session: ServerHttp2Session) => void): void;
     /* HTTP CONNECT (and, in Node, the h2 extended CONNECT — which the
      * allowHTTP1 lowering never sees): the second argument is the raw
      * socket on HTTP/1.1 connections; narrow with instanceof. */
@@ -6051,6 +6047,42 @@ declare module "http2" {
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close", listener: () => void): void;
+    once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    once(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    once(event: "session", listener: (session: ServerHttp2Session) => void): void;
+    once(
+      event: "connect",
+      listener: (
+        req: Http2ServerRequest | import("http").IncomingMessage,
+        resOrSocket: Http2ServerResponse | Socket,
+      ) => void,
+    ): void;
+    addListener(event: "connection", listener: (socket: Socket) => void): void;
+    addListener(
+      event: "request",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(event: "close", listener: () => void): void;
+    addListener(
+      event: "sessionError",
+      listener: (err: Error, session: ServerHttp2Session) => void,
+    ): void;
+    addListener(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(event: "session", listener: (session: ServerHttp2Session) => void): void;
+    addListener(
+      event: "connect",
+      listener: (
+        req: Http2ServerRequest | import("http").IncomingMessage,
+        resOrSocket: Http2ServerResponse | Socket,
+      ) => void,
+    ): void;
   }
   export interface SecureServerOptions {
     allowHTTP1?: boolean;
@@ -6392,6 +6424,28 @@ declare module "http2" {
       listener: (errorCode: number, lastStreamID: number, opaqueData?: Uint8Array) => void,
     ): void;
     once(event: "localSettings" | "remoteSettings", listener: (settings: any) => void): void;
+    once(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
+    once(event: "ping", listener: (payload: Uint8Array) => void): void;
+    addListener(event: "close" | "timeout", listener: () => void): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(
+      event: "connect",
+      listener: (session: Http2Session, socket: import("net").Socket) => void,
+    ): void;
+    addListener(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(
+      event: "goaway",
+      listener: (errorCode: number, lastStreamID: number, opaqueData?: Uint8Array) => void,
+    ): void;
+    addListener(event: "localSettings" | "remoteSettings", listener: (settings: any) => void): void;
+    addListener(
+      event: "frameError",
+      listener: (type: number, code: number, id: number) => void,
+    ): void;
+    addListener(event: "ping", listener: (payload: Uint8Array) => void): void;
   }
 
   export interface ClientHttp2Session extends Http2Session {
@@ -6469,7 +6523,30 @@ declare module "http2" {
       listener: () => void,
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
     once(event: "trailers", listener: (trailers: IncomingHttpHeaders, flags: number) => void): void;
+    addListener(event: "data", listener: (chunk: any) => void): void;
+    addListener(
+      event:
+        | "end"
+        | "close"
+        | "aborted"
+        | "ready"
+        | "timeout"
+        | "drain"
+        | "finish"
+        | "wantTrailers",
+      listener: () => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(
+      event: "frameError",
+      listener: (type: number, code: number, id: number) => void,
+    ): void;
+    addListener(
+      event: "trailers",
+      listener: (trailers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
     respond(
       headers?: OutgoingHttpHeaders,
       options?: { endStream?: boolean; waitForTrailers?: boolean },
@@ -6519,6 +6596,7 @@ declare module "http2" {
     on(event: "trailers", listener: (trailers: IncomingHttpHeaders, flags: number) => void): void;
     once(event: "response", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
     once(event: "push", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
+    once(event: "headers", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
     once(event: "data", listener: (chunk: any) => void): void;
     once(
       event:
@@ -6533,6 +6611,42 @@ declare module "http2" {
       listener: () => void,
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
+    once(event: "trailers", listener: (trailers: IncomingHttpHeaders, flags: number) => void): void;
+    addListener(
+      event: "response",
+      listener: (headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(
+      event: "push",
+      listener: (headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(
+      event: "headers",
+      listener: (headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(event: "data", listener: (chunk: any) => void): void;
+    addListener(
+      event:
+        | "end"
+        | "close"
+        | "aborted"
+        | "ready"
+        | "timeout"
+        | "drain"
+        | "finish"
+        | "wantTrailers",
+      listener: () => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(
+      event: "frameError",
+      listener: (type: number, code: number, id: number) => void,
+    ): void;
+    addListener(
+      event: "trailers",
+      listener: (trailers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
   }
 
   export interface Http2Server {
@@ -6567,6 +6681,24 @@ declare module "http2" {
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close" | "listening" | "timeout", listener: () => void): void;
+    once(event: "connection", listener: (socket: import("net").Socket) => void): void;
+    once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    addListener(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(event: "session", listener: (session: ServerHttp2Session) => void): void;
+    addListener(
+      event: "request",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(event: "close" | "listening" | "timeout", listener: () => void): void;
+    addListener(event: "connection", listener: (socket: import("net").Socket) => void): void;
+    addListener(
+      event: "sessionError",
+      listener: (err: Error, session: ServerHttp2Session) => void,
+    ): void;
   }
 
   export interface ServerOptions {
