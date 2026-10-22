@@ -882,16 +882,13 @@ class RxGen {
       this.block(head);
       const i = this.tmp(),
         i16 = this.tmp(),
+        rest = this.tmp(),
         fits = this.tmp();
       this.line(`${i} = phi i32 [ ${a}, %seek ], [ ${i16}, %${next} ]`);
-      this.line(`${i16} = add i32 ${i}, 16`);
-      if (reach === 0) {
-        this.line(`${fits} = icmp sle i32 ${i16}, %len`);
-      } else {
-        const last = this.tmp();
-        this.line(`${last} = add i32 ${i16}, ${reach}`);
-        this.line(`${fits} = icmp sle i32 ${last}, %len`);
-      }
+      // The characters left (0 <= i <= len, so this cannot wrap; i + 16
+      // can for subjects near 2^31 characters).
+      this.line(`${rest} = sub i32 %len, ${i}`);
+      this.line(`${fits} = icmp sge i32 ${rest}, ${16 + reach}`);
       this.line(`br i1 ${fits}, label %${load}, label %${tail}`);
       this.block(load);
       const mask = filter !== null ? this.testPrefix(filter, i) : this.testVector(plan!, i),
@@ -899,6 +896,7 @@ class RxGen {
       this.line(`${any} = icmp ne i16 ${mask}, 0`);
       this.line(`br i1 ${any}, label %${hit}, label %${next}`);
       this.block(next);
+      this.line(`${i16} = add i32 ${i}, 16`);
       this.line(`br label %${head}`);
       this.block(hit);
       const k = this.lowestBit(mask),
@@ -1149,10 +1147,10 @@ class RxGen {
       check = this.label("chk");
     this.block(entry);
     const p = this.loadPos(),
-      end = this.tmp(),
+      rest = this.tmp(),
       inb = this.tmp();
-    this.line(`${end} = add i32 ${p}, ${sets.length}`);
-    this.line(`${inb} = icmp sle i32 ${end}, %len`);
+    this.line(`${rest} = sub i32 %len, ${p}`);
+    this.line(`${inb} = icmp sge i32 ${rest}, ${sets.length}`);
     this.line(`br i1 ${inb}, label %${check}, label %fail`);
     this.block(check);
     let acc = "";
@@ -1171,6 +1169,8 @@ class RxGen {
         acc = both;
       }
     }
+    const end = this.tmp();
+    this.line(`${end} = add i32 ${p}, ${sets.length}`);
     // Storing before the branch is safe: every resume sets the position.
     this.storePos(end);
     this.line(`br i1 ${acc}, label %${succ}, label %fail`);
@@ -1377,10 +1377,11 @@ class RxGen {
       this.block(vhead);
       const kv = this.tmp(),
         kv16 = this.tmp(),
+        left = this.tmp(),
         fits = this.tmp();
       this.line(`${kv} = phi i32 [ 0, %${entry} ], [ ${kv16}, %${vnext} ]`);
-      this.line(`${kv16} = add i32 ${kv}, 16`);
-      this.line(`${fits} = icmp sle i32 ${kv16}, ${lim}`);
+      this.line(`${left} = sub i32 ${lim}, ${kv}`);
+      this.line(`${fits} = icmp sge i32 ${left}, 16`);
       this.line(`br i1 ${fits}, label %${vload}, label %${tail}`);
       this.block(vload);
       const vat = this.tmp();
@@ -1390,6 +1391,7 @@ class RxGen {
       this.line(`${all} = icmp eq i16 ${mask}, -1`);
       this.line(`br i1 ${all}, label %${vnext}, label %${vexit}`);
       this.block(vnext);
+      this.line(`${kv16} = add i32 ${kv}, 16`);
       this.line(`br label %${vhead}`);
       this.block(vexit);
       const missing = this.tmp();
