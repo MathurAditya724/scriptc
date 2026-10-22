@@ -666,11 +666,12 @@ export function lowerPropertyAccessExpr(
       );
       if (fixedArity) {
         // A `this` parameter is type-only: callers never pass it.
+        const declared = (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
+          (p) => !isThisParameter(p),
+        ).length;
         return {
           kind: "numLit",
-          value: (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
-            (p) => !isThisParameter(p),
-          ).length,
+          value: Math.max(declared, contextualArgumentCount(lowerer, fn) ?? 0),
           type: F64,
           loc,
         };
@@ -4439,4 +4440,27 @@ function lowerPromiseConstructorRead(
         };
   }
   return null;
+}
+
+/** The argument count every caller passes a function expression whose
+ * value flows into one fixed-arity function type, an array method's
+ * callback or an annotated slot: that type's parameter count. Null when
+ * there is no such type or its arity varies. */
+function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | null {
+  if (!ts.isFunctionExpression(fn)) return null;
+  const contextual = lowerer.checker.getContextualType(fn);
+  if (contextual === undefined) return null;
+  const signatures = lowerer.checker.getCallSignatures(
+    lowerer.checker.getNonNullableType(contextual),
+  );
+  if (signatures.length !== 1) return null;
+  const declaration = signatures[0]!.declaration;
+  if (declaration === undefined) return null;
+  let count = 0;
+  for (const parameter of (declaration.parameters?.nodes ?? []) as ts.ParameterDeclaration[]) {
+    if (isThisParameter(parameter)) continue;
+    if (parameter.questionToken || parameter.initializer || parameter.dotDotDotToken) return null;
+    count++;
+  }
+  return count;
 }
