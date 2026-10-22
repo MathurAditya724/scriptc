@@ -246,8 +246,13 @@ ScrDyn *scr_global_object(void) {
 }
 
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void)) {
+  /* The compiler passes one immortal name table per program: once it is
+   * registered, later reads of the global object only take a reference. */
+  static SCR_TL const ScrArr *registered;
+  if (known == registered && scr_global_box) return scr_dyn_retain(scr_global_box);
   ScrDyn *global = scr_global_object();
   scr_global_console_get = console_get;
+  if (known->rc == SIZE_MAX) registered = known;
   for (size_t i = 0; i < known->len; i++) {
     ScrStr *key = (ScrStr *)scr_arr_get_ref(known, (double)i);
     if (!scr_dyn_obj_get(scr_global_known, key->data, key->len))
