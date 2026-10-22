@@ -820,6 +820,9 @@ const RUNTIME_FEATURE_RULES = {
    * process-warning unit, and unknown encodings and formats render through
    * the inspect unit. */
   ecdh: rule({ fns: ["crypto.ecdhNew", "crypto.ecdhConvertKey"] }),
+  /** scr_dh.c over the mbedTLS archive; unknown encodings render through
+   * the inspect unit. */
+  dh: rule({ fns: ["crypto.dhNew", "crypto.dhGroupNew"] }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -869,6 +872,8 @@ const RUNTIME_FEATURE_RULES = {
       "webcrypto.unwrapKey",
       "crypto.ecdhNew",
       "crypto.ecdhConvertKey",
+      "crypto.dhNew",
+      "crypto.dhGroupNew",
       ...BUILTIN_CLASS_LIB_FNS,
       ...UTIL_CALLABLE_LIB_FNS,
     ],
@@ -996,6 +1001,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynInvoke: false,
     dynTier: false,
     ecdh: false,
+    dh: false,
     emitter: false,
     eventTarget: false,
     eventsOnceSignal: false,

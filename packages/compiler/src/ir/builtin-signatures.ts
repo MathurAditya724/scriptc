@@ -2813,6 +2813,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** ECDH.convertKey(key, curve, inputEncoding, outputEncoding, format):
    * the converted point as a Buffer or string. */
   "crypto.ecdhConvertKey": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: DYN },
+  /** createDiffieHellman(sizeOrKey, keyEncoding, generator,
+   * generatorEncoding) over checked-dynamic arguments (scr_dh.c): a native
+   * DiffieHellman handle whose methods dispatch through dynInvoke. */
+  "crypto.dhNew": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+  /** getDiffieHellman(groupName) and createDiffieHellmanGroup(name): a
+   * native DiffieHellmanGroup handle. */
+  "crypto.dhGroupNew": { argTypes: [DYN], result: DYN },
   "crypto.hmacNewStr": { argTypes: [STRING, STRING], result: CRYPTOHMAC_T },
   "crypto.hmacNewBytes": { argTypes: [STRING, BYTES_U8], result: CRYPTOHMAC_T },
   "crypto.hashUpdateStr": { argTypes: [CRYPTOHASH_T, STRING], result: CRYPTOHASH_T },
