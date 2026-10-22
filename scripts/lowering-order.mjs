@@ -371,17 +371,55 @@ const differingFunctions = (a, b) => {
   return { functions: [...names], topLevel, paths };
 };
 
+/** Keys whose strings name functions, locals, globals, shapes, unions,
+ * classes and labels. Lowering numbers these in creation order; every other
+ * string (literal values, field names, library functions) is compared as
+ * is. A `name` names a function, record or union when it is one of the
+ * module's numbered definitions or starts with `%`. */
+const ID_KEYS = new Set([
+  "base",
+  "callee",
+  "captures",
+  "catchLocalId",
+  "className",
+  "fnName",
+  "fromId",
+  "globalId",
+  "id",
+  "int32Locals",
+  "int32Params",
+  "label",
+  "labels",
+  "localId",
+  "retag",
+  "shapeId",
+  "targets",
+  "unionId",
+]);
+
 /** The module with every numbered function, record and union renamed by a
- * hash of its own definition (digits stripped), other numbered strings by
- * first use within their function or table entry, source locations
- * dropped, and tables sorted. Orders whose canonical modules match differ
- * only in names and ids numbered in creation order. */
+ * hash of its own definition (ids with their digits stripped), other
+ * numbered ids by first use within their function or table entry, source
+ * locations dropped, and tables sorted. Orders whose canonical modules
+ * match differ only in names and ids numbered in creation order. */
 const canonicalModule = (mod) => {
-  const strip = (v) => JSON.stringify(v).replace(/\d+/g, "#");
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 12);
-  const m = JSON.parse(
-    JSON.stringify(mod, (k, v) => (k === "loc" || k === "source" ? undefined : v)),
-  );
+  const m = JSON.parse(JSON.stringify(mod, (k, v) => (k === "loc" ? undefined : v)));
+  const definitions = new Set([
+    ...(m.functions ?? []).map((fn) => fn.name),
+    ...["records", "unions"].flatMap((key) => (m[key] ?? []).map((item) => item.id)),
+  ]);
+  const isId = (key, value) =>
+    ID_KEYS.has(key) || (key === "name" && (definitions.has(value) || value.startsWith("%")));
+  /** `v` with the strings under id keys passed through `id`. */
+  const mapIds = (v, id, key) => {
+    if (typeof v === "string") return isId(key, v) ? id(v) : v;
+    if (Array.isArray(v)) return v.map((x) => mapIds(x, id, key));
+    if (v && typeof v === "object")
+      return Object.fromEntries(Object.keys(v).map((k) => [k, mapIds(v[k], id, k)]));
+    return v;
+  };
+  const strip = (v) => JSON.stringify(mapIds(v, (id) => id.replace(/\d+/g, "#")));
   const rename = new Map();
   for (const fn of m.functions ?? []) {
     if (!/\d/.test(fn.name)) continue;
@@ -394,25 +432,22 @@ const canonicalModule = (mod) => {
       if (typeof id === "string" && /\d/.test(id))
         rename.set(id, `${id.replace(/\d+/g, "#")}~${hash(strip(rest))}`);
     }
-  const walk = (v, scope) => {
-    if (typeof v === "string") {
-      const renamed = rename.get(v);
+  const canonical = (item) => {
+    const scope = new Map();
+    return mapIds(item, (value) => {
+      const renamed = rename.get(value);
       if (renamed !== undefined) return renamed;
-      if (!/\d/.test(v)) return v;
-      let id = scope.get(v);
-      if (id === undefined) scope.set(v, (id = scope.size));
-      return `${v.replace(/\d+/g, "#")}@${id}`;
-    }
-    if (Array.isArray(v)) return v.map((x) => walk(x, scope));
-    if (v && typeof v === "object")
-      return Object.fromEntries(Object.keys(v).map((k) => [k, walk(v[k], scope)]));
-    return v;
+      if (!/\d/.test(value)) return value;
+      let id = scope.get(value);
+      if (id === undefined) scope.set(value, (id = scope.size));
+      return `${value.replace(/\d+/g, "#")}@${id}`;
+    });
   };
   const out = {};
   for (const key of Object.keys(m))
     out[key] = Array.isArray(m[key])
-      ? m[key].map((item) => JSON.stringify(walk(item, new Map()))).sort()
-      : JSON.stringify(walk(m[key], new Map()));
+      ? m[key].map((item) => JSON.stringify(canonical(item))).sort()
+      : JSON.stringify(canonical(m[key]));
   return out;
 };
 /** Canonical entries present in one order only, by table. */
@@ -479,7 +514,9 @@ await Promise.all(
           join(dir, `seed${seed}.state.json`),
         );
         if (!run.ok) {
-          diffs[seed] = { failed: run.stderr };
+          // A program that lowers in discovery order but not in this one
+          // differs in content.
+          diffs[seed] = { failed: run.stderr, content: { lowering: ["fails in this order"] } };
           continue;
         }
         const diff = differingFunctions(
